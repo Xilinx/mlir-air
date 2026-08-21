@@ -1,288 +1,155 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""int8 vector-matrix multiplication on air.api: C[N] = A[K] @ B[K,N], in i32.
+
+Six channels carry the whole schedule -- there is not a single
+``air.dma_memcpy_nd`` in it:
+
+    A:  L3 --aL3ToL2--> L2 --aL2ToL1--> L1
+    B:  L3 --bL3ToL2--> L2 --bL2ToL1--> L1
+    C:  L1 --cL1ToL2--> L2 --cL2ToL3--> L3
+
+and the herd names none of them as an operand: ``air.herd`` is
+``IsolatedFromAbove``, but a channel is a module-level symbol and resolves by
+name from any depth.
+
+What differs from the bf16 sibling is the layout. The AIE2 int8 vecmat
+intrinsic wants its operands micro-tiled -- ``m x k`` by ``k x n`` with
+``(1, 16, 8)`` -- so the B tile reaches L1 as ``[N/8, K/16, 16, 8]`` rather than
+row-major ``[K, N]``. Nothing reorders it in a core: the *DMA* does the pack,
+by walking the flat L2 buffer out of order. That walk is what ``pack=`` names::
+
+    b_l2_l1.put(l2_b[kk : kk + tile_k, :], pack=mm.b(tile_k, tile_n, lead=()))
+
+``ops.load`` derives the same walk from its destination buffer, which it can
+see. A channel cannot -- put and get are separate ops and the packed side is at
+the far end of the stream -- so the pack is named at the put.
+
+A is micro-tiled too, but with ``m=1`` the pack is the identity: ``[K/16, 16]``
+is just ``[K]`` re-shaped, so its put is an ordinary contiguous slice.
+
+Unchanged from the raw-bindings version this replaces, except for three things
+the DSL requires and one it fixes:
+
+* The L3-side puts and gets sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The L1 tiles are allocated above the K loop and reused across trips, rather
+  than a fresh set per trip.
+* ``linalg_fill_i32_view16x8xi32as2`` is declared with the signature ``vm.cc``
+  actually defines -- ``void linalg_fill_i32_view16x8xi32as2(int *)``, the
+  buffer alone. The predecessor declared it ``(i32, memref)`` and passed a zero
+  the callee never reads; harmless, since the C ABI drops the extra argument,
+  but untrue.
+"""
+
 import argparse
-
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-
 import numpy as np
 
-np.random.seed(42)
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i8, i32
+
+# air.api dtypes, keyed by the numpy dtype the harness works in.
+DTYPE = {np.int8: i8, np.int32: i32}
+
+# The AIE2 int8 vecmat intrinsic's operand shape: m x k by k x n.
+MMUL_MKN = (1, 16, 8)
 
 
-@module_builder
-def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out):
+def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.o"):
     assert k % tile_k == 0
     assert n % tile_n == 0
-    a_size = [k]
-    b_size = [k, n]
-    c_size = [n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    xrt_dtype_out = type_mapper(np_dtype_out)
 
-    mmul_mkn = [1, 16, 8]
+    dt_in = DTYPE[np_dtype_in]
+    dt_out = DTYPE[np_dtype_out]
 
-    # L3 MemRefTypes
-    memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
-    memrefTyB = MemRefType.get(b_size, xrt_dtype_in)
-    memrefTyOut = MemRefType.get(c_size, xrt_dtype_out)
+    m_u, k_u, n_u = MMUL_MKN
+    mm = air.micro_tile(m_u, k_u, n_u)
 
-    Channel("aL3ToL2")
-    Channel("bL3ToL2")
-    Channel("aL2ToL1")
-    Channel("bL2ToL1")
-    Channel("cL1ToL2")
-    Channel("cL2ToL3")
+    A = air.tensor([k], dt_in)
+    B = air.tensor([k, n], dt_in)
+    C = air.tensor([n], dt_out)
 
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    a_l3_l2 = air.channel("aL3ToL2")
+    b_l3_l2 = air.channel("bL3ToL2")
+    a_l2_l1 = air.channel("aL2ToL1")
+    b_l2_l1 = air.channel("bL2ToL1")
+    c_l1_l2 = air.channel("cL1ToL2")
+    c_l2_l3 = air.channel("cL2ToL3")
 
-    a_l1_size = [tile_k // mmul_mkn[1], mmul_mkn[1]]
-    b_l1_size = [tile_n // mmul_mkn[2], tile_k // mmul_mkn[1], mmul_mkn[1], mmul_mkn[2]]
-    l1MemrefTyA = MemRefType.get(
-        shape=a_l1_size,
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    l1MemrefTyB = MemRefType.get(
-        shape=b_l1_size,
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    c_l1_size = [tile_n // mmul_mkn[2], mmul_mkn[2]]
-    l1MemrefTyC = MemRefType.get(
-        shape=c_l1_size,
-        element_type=xrt_dtype_out,
-        memory_space=l1_mem_space,
-    )
-    linalg_fill_func = FuncOp(
-        "linalg_fill_i32_view16x8xi32as2",
-        ([xrt_dtype_out, l1MemrefTyC], []),
-        visibility="private",
-    )
-    vecmat_func = FuncOp(
-        "vecmat_i8_i32",
-        ([l1MemrefTyA, l1MemrefTyB, l1MemrefTyC], []),
-        visibility="private",
-    )
-    for func in [linalg_fill_func, vecmat_func]:
-        func.attributes["link_with"] = StringAttr.get("vm.o")
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    vecmat = air.extern("vecmat_i8_i32", object=link_with)
+    fill = air.extern("linalg_fill_i32_view16x8xi32as2", object=link_with)
 
-    @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyOut)
-    def vecmat_i8(arg0, arg1, arg2):
+    with air.launch(name="vecmat_i8") as launch:
 
-        launch_size = [1, n // tile_n]
+        @launch.body
+        def _():
+            with air.segment([range(0, n, tile_n)], name="vecmat_i8_0") as seg:
 
-        @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_a_data,
-            l3_b_data,
-            l3_c_data,
-        ):
-            ChannelPut(
-                "aL3ToL2",
-                l3_a_data,
-                offsets=[],
-                sizes=[],
-                strides=[],
-            )
+                @seg.body
+                def _(sj):
+                    col = sj * tile_n
 
-            # Affine map for launch iv
-            launch_ivy_map = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(tile_n),
-                    )
-                ],
-            )
-            launch_offset_y = affine_apply(launch_ivy_map, [launch_ivy])
-            ChannelPut(
-                "bL3ToL2",
-                l3_b_data,
-                offsets=[0, launch_offset_y],
-                sizes=[k, tile_n],
-                strides=[n, 1],
-            )
+                    l2_a = air.alloc([k], dt_in, scope=seg.private())
+                    l2_b = air.alloc([k, tile_n], dt_in, scope=seg.private())
+                    l2_c = air.alloc([tile_n], dt_out, scope=seg.private())
 
-            @segment(name="vecmat_i8_0")
-            def segment_body():
-                # L2 MemRefTypes
-                a_size_l2 = [k]
-                b_size_l2 = [k, tile_n]
-                c_size_l2 = [tile_n]
-                l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-                l2MemrefTyA = MemRefType.get(
-                    shape=a_size_l2,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyB = MemRefType.get(
-                    shape=b_size_l2,
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyC = MemRefType.get(
-                    shape=c_size_l2,
-                    element_type=xrt_dtype_out,
-                    memory_space=l2_mem_space,
-                )
-                l2_a_data = AllocOp(l2MemrefTyA, [], [])
+                    a_l3_l2.put(A)
+                    b_l3_l2.put(B[0:k, col : col + tile_n])
+                    a_l3_l2.get(l2_a)
+                    b_l3_l2.get(l2_b)
 
-                ChannelGet(
-                    "aL3ToL2",
-                    l2_a_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
+                    # One slice per K tile, on both sides. Unlike the bf16
+                    # sibling -- where a single whole-buffer put feeds every get
+                    # because the stream is consumed in order -- B is packed
+                    # here, and the pack is per tile: the walk visits all of N
+                    # before advancing in K, so the tiles are not prefixes of
+                    # one whole-buffer walk and have to be sent one at a time.
+                    for i in air.sequential(0, k // tile_k):
+                        kk = i * tile_k
+                        a_l2_l1.put(l2_a[kk : kk + tile_k])
 
-                l2_b_data = AllocOp(l2MemrefTyB, [], [])
-
-                ChannelGet(
-                    "bL3ToL2",
-                    l2_b_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-
-                # L2 to L1 data packing and unpacking, using offsets, sizes and strides
-                a_l2l1_pack_size = [tile_k]
-                a_l2l1_pack_stride = [1]
-                b_l2l1_pack_size = [tile_n // mmul_mkn[2], tile_k, mmul_mkn[2]]
-                b_l2l1_pack_stride = [mmul_mkn[2], tile_n, 1]
-
-                for_iv_map_data = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_k),
-                        )
-                    ],
-                )
-
-                for i in range_(0, k // tile_k):
-                    for_iv_data_offset = affine_apply(for_iv_map_data, [i])
-                    a_l2l1_pack_offset = [for_iv_data_offset]
-                    ChannelPut(
-                        "aL2ToL1",
-                        l2_a_data,
-                        offsets=a_l2l1_pack_offset,
-                        sizes=a_l2l1_pack_size,
-                        strides=a_l2l1_pack_stride,
-                    )
-                    yield_([])
-
-                for i in range_(0, k // tile_k):
-                    for_iv_data_offset = affine_apply(for_iv_map_data, [i])
-                    b_l2l1_pack_offset = [0, for_iv_data_offset, 0]
-                    ChannelPut(
-                        "bL2ToL1",
-                        l2_b_data,
-                        offsets=b_l2l1_pack_offset,
-                        sizes=b_l2l1_pack_size,
-                        strides=b_l2l1_pack_stride,
-                    )
-                    yield_([])
-
-                @herd(name="herd_0", sizes=[1, 1])
-                def herd_body(_tx, _ty, _sx, _sy):
-
-                    l1_c_data = AllocOp(l1MemrefTyC, [], [])
-                    zero_const = ConstantOp(IntegerAttr.get(xrt_dtype_out, 0), None)
-                    zero_fill = CallOp(linalg_fill_func, [zero_const, l1_c_data])
-
-                    for i in range_(0, k, tile_k):
-                        l1_a_data = AllocOp(l1MemrefTyA, [], [])
-
-                        ChannelGet(
-                            "aL2ToL1",
-                            l1_a_data,
-                            offsets=[],
-                            sizes=[],
-                            strides=[],
+                    for i in air.sequential(0, k // tile_k):
+                        kk = i * tile_k
+                        b_l2_l1.put(
+                            l2_b[kk : kk + tile_k, 0:tile_n],
+                            pack=mm.b(tile_k, tile_n, lead=()),
                         )
 
-                        l1_b_data = AllocOp(l1MemrefTyB, [], [])
+                    with air.herd([range(1)], name="herd_0", shape=(1,)) as h:
 
-                        ChannelGet(
-                            "bL2ToL1",
-                            l1_b_data,
-                            offsets=[],
-                            sizes=[],
-                            strides=[],
-                        )
+                        @h.body
+                        def _(tx):
+                            l1_a = air.alloc(
+                                [tile_k // k_u, k_u], dt_in, scope=h.private()
+                            )
+                            l1_b = air.alloc(
+                                [tile_n // n_u, tile_k // k_u, k_u, n_u],
+                                dt_in,
+                                scope=h.private(),
+                            )
+                            l1_c = air.alloc(
+                                [tile_n // n_u, n_u], dt_out, scope=h.private()
+                            )
 
-                        vecmat = CallOp(
-                            vecmat_func,
-                            [l1_a_data, l1_b_data, l1_c_data],
-                        )
+                            fill(l1_c)
+                            for _j in air.sequential(0, k, tile_k):
+                                a_l2_l1.get(l1_a)
+                                b_l2_l1.get(l1_b)
+                                vecmat(l1_a, l1_b, l1_c)
 
-                        DeallocOp(l1_a_data)
-                        DeallocOp(l1_b_data)
+                            c_l1_l2.put(l1_c)
 
-                        yield_([])
+                    c_l1_l2.get(l2_c)
+                    c_l2_l3.put(l2_c)
+                    c_l2_l3.get(C[col : col + tile_n])
 
-                    ChannelPut(
-                        "cL1ToL2",
-                        l1_c_data,
-                        offsets=[],
-                        sizes=[],
-                        strides=[],
-                    )
-                    DeallocOp(l1_c_data)
-
-                herd_body.attributes["link_with"] = StringAttr.get("vm.o")
-
-                l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                ChannelGet(
-                    "cL1ToL2",
-                    l2_c_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-
-                ChannelPut(
-                    "cL2ToL3",
-                    l2_c_data,
-                    offsets=[],
-                    sizes=[],
-                    strides=[],
-                )
-                DeallocOp(l2_a_data)
-                DeallocOp(l2_b_data)
-                DeallocOp(l2_c_data)
-
-            ChannelGet(
-                "cL2ToL3",
-                l3_c_data,
-                offsets=[launch_offset_y],
-                sizes=[tile_n],
-                strides=[1],
-            )
+    return launch
 
 
 if __name__ == "__main__":
     # Default values.
-    M = 1
     K = 288
     N = 48
     TILE_K = 96
@@ -290,9 +157,11 @@ if __name__ == "__main__":
     INPUT_DATATYPE = np.int8
     OUTPUT_DATATYPE = np.int32
 
+    np.random.seed(42)
+
     parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        prog="single_core.py",
+        description="Builds, runs, and tests the int8 vector-matrix multiplication example",
     )
     parser.add_argument(
         "-v",
@@ -327,10 +196,17 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.k,
         args.n,
         args.tile_k,
@@ -338,6 +214,7 @@ if __name__ == "__main__":
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -348,14 +225,12 @@ if __name__ == "__main__":
         size=(args.k),
         dtype=INPUT_DATATYPE,
     )
-    input_a = input_a.astype(INPUT_DATATYPE)
     input_b = np.random.randint(
         np.iinfo(INPUT_DATATYPE).min,
         np.iinfo(INPUT_DATATYPE).max,
         size=(args.k, args.n),
         dtype=INPUT_DATATYPE,
     )
-    input_b = input_b.astype(INPUT_DATATYPE)
     output_c = np.dot(input_a.astype(OUTPUT_DATATYPE), input_b.astype(OUTPUT_DATATYPE))
 
     runner = XRTRunner(
