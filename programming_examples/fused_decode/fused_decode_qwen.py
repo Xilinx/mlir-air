@@ -745,7 +745,6 @@ def build_module():
         # unpinned packet flows REUSE whatever packet channel the tile already has
         # (AIRToAIESchedulingUtils.cpp:1391), which merges two independent producers
         # (hub + shim) into ONE ordered BD chain = head-of-line deadlock.
-        _outY.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 0)
         _lut = channel_decl("ropeLUT", size=[1])  # host cos/sin LUT -> rope core
         # Pin the LUT feed to the rope tile's S2MM1 (the outY QKV demux keeps S2MM0).
         # Under LOOPCLOSE the rms core adds two shim packet feeds (rmsIn/rmsW) which
@@ -756,7 +755,6 @@ def build_module():
         # INDEPENDENT producers (shim + hub mem_1_1) -> head-of-line deadlock (device-
         # confirmed 2026-08-05j: the ONLY diff between the hanging LOOPCLOSE build and
         # the working host-toX build). The pin restores the two-separate-channel layout.
-        _lut.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
         # ...and feed it from a FREE shim column: the packetization above is triggered by
         # shim col 1 being oversubscribed (ropeLUT + rmsIn + rmsW + layerOut + qDrain).
         # Off col 1 the LUT feed stays circuit-switched, which cannot share the rope
@@ -768,7 +766,6 @@ def build_module():
         _rmsin = channel_decl(
             "rmsIn", size=[1]
         )  # host raw input activation -> rms core
-        _rmsin.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
         channel_decl("layerOut", size=[1])  # rms residual2 (layer output) -> shim
         # ---- attention channels (reference-mirroring: rope q -> mem_6_1 q-broadcast tile ->
         # per-CU qk; K/V via KV staging mem_7_1). Ports fused_decode.py exactly. ----
@@ -856,10 +853,8 @@ def build_module():
             # S2MM0 carries only the o-proj outY get, and the @orms get is emitted BEFORE it
             # in _rms_body, so the chain order [orms, outY] matches the dataflow order.
             _orms = channel_decl("orms", size=[1], channel_type="npu_dma_packet")
-            _orms.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 0)
         if PH1_XCHAN:
             channel_decl("xnorm2", size=[1], channel_type="npu_dma_packet")
-        _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
         # rmsW lands on the rms core's S2MM1 alongside rmsIn, which is pinned
         # above; it does not need to say so itself.
         channel_decl("rmsW", size=[1])  # host rms weight -> rms core

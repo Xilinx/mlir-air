@@ -1734,6 +1734,39 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
     return succeeded(ct) && *ct == "npu_dma_packet";
   };
 
+  // The tiles a flow is produced by. Taken from the bundle: an allocation only
+  // knows its own side of the flow.
+  auto sourceTilesOf = [&memcpy_flows](Operation *decl) {
+    llvm::SmallPtrSet<Operation *, 4> tiles;
+    for (auto &f : memcpy_flows) {
+      if (f.air_flow_op != decl)
+        continue;
+      for (auto &fa : f.MM2S_alloc)
+        if (fa.dma_tile)
+          tiles.insert(fa.dma_tile.getOperation());
+    }
+    return tiles;
+  };
+
+  // What KIND of thing produces a flow: the shim, or somewhere on the array.
+  // This is the grain the arrival-order question is really asked at. Shim
+  // traffic is DDR-backed and its timing depends on the host and the NoC, so
+  // nothing on the array bounds when it turns up; two on-array producers are
+  // driven by the same lock protocol as the consumer. So a ring may hold
+  // several on-array producers and still behave, while mixing shim traffic with
+  // on-array traffic on one ring is where the order actually comes apart. It is
+  // also the split the qwen2.5-3b pins encode by hand: {rmsIn, rmsW} from the
+  // host on one channel, {orms, outY} from two memtiles on the other.
+  auto producedOffArray = [&](Operation *decl) {
+    for (auto *t : sourceTilesOf(decl)) {
+      if (auto lt = dyn_cast<AIE::LogicalTileOp>(t))
+        return lt.getTileType() == AIE::AIETileType::ShimNOCTile;
+      if (auto pt = dyn_cast<AIE::TileOp>(t))
+        return pt.getRow() == 0;
+    }
+    return false;
+  };
+
   // One chain as the emitter sees it: every allocation mapped to a
   // (tile, channel), the flows on it in a deterministic order, and which of
   // those flows are packet flows.
@@ -1855,91 +1888,130 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
     // tile and one B tile per iteration from two memtiles, onto a ring that
     // repeats in lockstep with them. Splitting on source count alone was tried
     // and spends both S2MM channels of every compute tile in the project.
+    // Does the ring visit each of its flows exactly once per cycle? That is the
+    // condition under which a shared in-order ring stays synchronised with
+    // producers that are not synchronised with each other: if every flow owns
+    // exactly one BD of the repeating unit, then a flow's k-th transfer always
+    // meets that same BD, whatever order the arrivals interleave in. Let one
+    // flow own two BDs of a cycle and the ring position stops being a function
+    // of how many rounds have happened, so an arrival can land on a BD bound to
+    // another flow's buffer and lock.
+    //
+    // getUniqueBDPattern is the BD emitter's own notion of the repeating unit,
+    // so this asks the question in the emitter's terms rather than inventing a
+    // second one.
+    auto isRoundRobin = [&](const Chain &chain) {
+      llvm::SetVector<Operation *> opSet;
+      for (auto *o : chain.ops)
+        opSet.insert(o);
+      auto unit = air::getUniqueBDPattern(opSet);
+      if (unit.empty())
+        return false; // does not repeat at all
+      llvm::SmallPtrSet<Operation *, 4> seen;
+      for (auto *o : unit)
+        if (!seen.insert(declOf(o)).second)
+          return false; // a flow owning two BDs of one cycle
+      return seen.size() == chain.order.size();
+    };
+
     auto isHazard = [&](const Chain &chain) {
-      // 1. An MM2S port has ONE outgoing connection, and it is either static or
-      //    packet-switched. A packet flow leaving behind a circuit flow is
-      //    carried by the circuit connection and delivered to its destination,
-      //    header unread. Only MM2S: a DESTINATION port is fed by a switchbox
-      //    arbiter and takes both kinds happily, which the shipped qwen rms
-      //    tile relies on (one packet BD and two circuit BDs on S2MM 0).
-      if (isMM2S && !chain.packetDecls.empty() &&
+      // 1. A switchbox port is either statically connected or
+      // packet-arbitrated,
+      //    never both, and a DMA channel is one port. Mixing the kinds asks the
+      //    same port for a static connection AND an arbiter.
+      if (!chain.packetDecls.empty() &&
           chain.packetDecls.size() != chain.order.size())
         return true;
-      // 2. The ring cannot stay in step with the transfers crossing it. Not a
-      //    new judgement: diagnoseBDChain is the BD emitter's own foldability
-      //    test, and this pass's neighbours already call it on both directions
-      //    -- to repair on S2MM, and on MM2S only to REFUSE the design. Being
-      //    refused is what made a front end name a channel by hand; a tile with
-      //    a channel to spare can be handed the answer instead.
+      // 2. Independent producers on a ring that is not a round-robin. Neither
+      //    half is sufficient on its own, which is why both are here:
       //
-      //    `emptyPathsOk` splits the directions exactly as those two callers
-      //    do: a consumer that skips an arrival still receives it and the ring
-      //    slips, whereas a producer that issues nothing on some arm simply
-      //    leaves the ring where it was.
+      //    - producers alone would split every AIR matmul, where two memtiles
+      //      feed a core one A tile and one B tile per iteration. That ring IS
+      //      a round-robin (one BD each) and is safe however the two
+      //      interleave.
+      //    - a non-round-robin ring alone is not a hazard either, as long as
+      //    one
+      //      producer emits the whole cycle: its own BD order then fixes the
+      //      arrival order, which is what lets @appendK and @appendV share.
+      //
+      //    This is the case diagnoseBDChain explicitly declines to judge
+      //    ("convergent flows are trusted to be time-disjoint"). The qwen2.5-3b
+      //    rms core is where that trust is misplaced: four flows, six
+      //    transfers, from the shim and two different memtiles, and it
+      //    deadlocks on device.
+      llvm::SmallPtrSet<Operation *, 4> srcs;
+      for (auto *d : chain.order)
+        for (auto *t : sourceTilesOf(d))
+          srcs.insert(t);
+      if (srcs.size() >= 2 && !isRoundRobin(chain))
+        return true;
+      // 3. The ring cannot stay in step with the transfers crossing it, by the
+      //    emitter's own foldability oracle. repairS2MMChains already acts on
+      //    this; verifyMM2SChains only refuses, and being refused is what made
+      //    a front end name a channel by hand.
       Operation *stopAt = chain.ops.front()->getParentOfType<air::HerdOp>();
       return !diagnoseBDChain(chain.ops, stopAt, /*emptyPathsOk=*/isMM2S)
                   .empty();
     };
 
-    // Which decl KEEPS the channel, and which have to leave? A pinned decl has
-    // to stay -- it named this channel -- so if the chain carries any, the
-    // first of them is the keeper; otherwise the decl that got here first keeps
-    // it. What leaves is then determined, not chosen: the flows whose KIND
-    // differs from the keeper's are exactly the ones making the port both
-    // statically connected and packet-switched. Evicting anything else would
-    // move a flow that was not part of the problem and leave the problem
-    // behind.
-    auto keeperOf = [&](const Chain &chain) {
-      for (auto *d : chain.order)
-        if (isImmovable(d))
-          return d;
-      return chain.order.front();
-    };
-    auto evicteesOf = [&](const Chain &chain) {
-      SmallVector<Operation *> out;
-      // Mixed kinds: what leaves is determined, not chosen -- the flows whose
-      // kind differs from the keeper's are exactly the ones making the port
-      // both statically connected and packet-switched. Evicting anything else
-      // would move a flow that was not part of the problem and leave the
-      // problem behind.
-      if (isMM2S && !chain.packetDecls.empty() &&
-          chain.packetDecls.size() != chain.order.size()) {
-        bool keepPkt = chain.packetDecls.contains(keeperOf(chain));
-        for (auto *d : chain.order)
-          if (chain.packetDecls.contains(d) != keepPkt && !isImmovable(d))
-            out.push_back(d);
-        return out;
+    // Every channel of a tile that is homogeneous in one switching kind, so an
+    // evicted group has somewhere legal to land.
+    auto homogeneousChans = [&](Operation *tileOp, bool wantPkt, int notChan) {
+      SmallVector<int> out;
+      for (auto &[k, c] : buildChains()) {
+        if (k.first != tileOp || k.second == notChan || c.unkeyed ||
+            c.order.empty())
+          continue;
+        if ((c.packetDecls.size() == c.order.size()) == wantPkt)
+          out.push_back(k.second);
       }
-      // A ring out of step: peel the one flow whose removal leaves BOTH halves
-      // in step, exactly as repairS2MMChains chooses. A half carrying a single
-      // flow is out of scope for the same reason the whole chain would be -- it
-      // has no other flow's BD to land on.
-      Operation *stopAt = chain.ops.front()->getParentOfType<air::HerdOp>();
-      auto halfInStep = [&](ArrayRef<Operation *> half) {
-        llvm::SetVector<Operation *> hd;
-        for (auto *o : half)
-          hd.insert(declOf(o));
-        return hd.size() < 2 ||
-               diagnoseBDChain(half, stopAt, /*emptyPathsOk=*/isMM2S).empty();
-      };
-      for (auto *d : chain.order) {
-        if (isImmovable(d))
+      llvm::sort(out);
+      return out;
+    };
+
+    // What has to leave a mixed chain, and where it goes. The channel must end
+    // up homogeneous, and there are exactly two ways to get there: move the
+    // packet flows off, or move the circuit flows off. Which one is not a
+    // preference -- it is whichever the tile can actually accommodate, on a
+    // free channel or one already homogeneous in that kind. Both feasible, the
+    // smaller group moves, because disturbing fewer flows is the weaker change.
+    //
+    // Getting this backwards is not harmless: the qwen2.5-3b rms core ends up
+    // with @rmsIn(circuit) sharing with @orms/@outY(packet) while
+    // @rmsW(circuit) sits alone on the other channel. Evicting the two packets
+    // has nowhere to go and leaves the mix; moving the ONE circuit flow next to
+    // @rmsW makes both channels homogeneous, and is what the hand-written pins
+    // encoded.
+    struct Plan {
+      SmallVector<Operation *> movers;
+      int dest;
+    };
+    auto planFor = [&](const Chain &chain, Operation *tileOp, int chan,
+                       const llvm::SmallDenseSet<int> &used, int numChans) {
+      SmallVector<Operation *> pkt, circ;
+      for (auto *d : chain.order)
+        (chain.packetDecls.contains(d) ? pkt : circ).push_back(d);
+      bool pktFirst = pkt.size() <= circ.size();
+      SmallVector<Plan> out;
+      for (bool wantPkt : {pktFirst, !pktFirst}) {
+        auto &group = wantPkt ? pkt : circ;
+        if (group.empty() || llvm::any_of(group, isImmovable))
           continue;
-        std::vector<Operation *> m, r;
-        for (auto *o : chain.ops)
-          (declOf(o) == d ? m : r).push_back(o);
-        if (m.empty() || r.empty())
-          continue;
-        if (!halfInStep(m) || !halfInStep(r))
-          continue;
-        out.push_back(d);
-        break; // one peel is what fixes it; taking more would be gratuitous
+        int dest = -1;
+        for (int c = 0; c < numChans && dest < 0; c++)
+          if (!used.count(c))
+            dest = c; // a channel nobody is using takes the group whole
+        if (dest < 0) {
+          auto same = homogeneousChans(tileOp, wantPkt, chan);
+          if (!same.empty())
+            dest = same.front();
+        }
+        if (dest >= 0)
+          out.push_back({group, dest});
       }
       return out;
     };
 
-    // Phase 1: move what has to leave onto a channel the tile was not using in
-    // this direction.
     for (auto &[key, chain] : buildChains()) {
       if (chain.unkeyed || chain.order.size() < 2 || !isHazard(chain))
         continue;
@@ -1948,50 +2020,132 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
       auto used = channelsInUse(tileOp);
       int numChans = isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                             : tile.getNumDestConnections(AIE::WireBundle::DMA);
-      for (auto *d : evicteesOf(chain)) {
-        int freeChan = -1;
-        for (int c = 0; c < numChans; c++)
-          if (!used.count(c)) {
-            freeChan = c;
-            break;
-          }
-        if (freeChan < 0)
-          break; // fully subscribed: phase 2 looks for somewhere to double up
-        moveFlow(chain.allocIdxs, d, tileOp, key.second, freeChan);
-        used.insert(freeChan);
-      }
-    }
 
-    // Phase 2: the same hazard on a tile with no channel to spare. Phase 1 has
-    // taken every free one, so double up instead -- move each evictee onto a
-    // channel of the tile carrying its OWN kind only. Two packet flows sharing
-    // a packet-switched port is what multiplexing is for and costs nothing
-    // beyond the shared ring; leaving one behind a circuit connection is wrong
-    // however few channels the tile has.
-    for (auto &[key, chain] : buildChains()) {
-      if (chain.unkeyed || chain.order.size() < 2 || !isHazard(chain))
+      bool mixed = !chain.packetDecls.empty() &&
+                   chain.packetDecls.size() != chain.order.size();
+      if (mixed) {
+        auto plans = planFor(chain, tileOp, key.second, used, numChans);
+        if (plans.empty())
+          continue; // no legal home; the router will have the last word
+        for (auto *d : plans.front().movers)
+          moveFlow(chain.allocIdxs, d, tileOp, key.second, plans.front().dest);
         continue;
-      Operation *tileOp = key.first;
-      for (auto *d : evicteesOf(chain)) {
-        bool wantPkt = chain.packetDecls.contains(d);
-        int target = -1;
-        for (auto &[k2, c2] : buildChains()) {
-          if (k2.first != tileOp || k2.second == key.second)
-            continue;
-          if (c2.unkeyed || c2.order.empty())
-            continue;
-          // Pure in the kind we are placing, or the move just relocates the
-          // mix.
-          if ((c2.packetDecls.size() == c2.order.size()) != wantPkt)
-            continue;
-          if (!wantPkt && !c2.packetDecls.empty())
-            continue;
-          if (target < 0 || k2.second < target)
-            target = k2.second;
+      }
+
+      // Unsynchronised producers on a ring that is not a round-robin. The
+      // repair is not a peel but a PARTITION BY PRODUCER: give each producer
+      // its own channel, and the arrival order on each ring is then fixed by
+      // that producer's own BD order, which is the property the ring needs.
+      // Peeling one flow instead leaves the rest of the group sharing with a
+      // stranger -- on the qwen2.5-3b rms core that leaves three flows and two
+      // producers on one channel, having spent the only spare.
+      llvm::SmallPtrSet<Operation *, 4> srcs;
+      for (auto *d : chain.order)
+        for (auto *t : sourceTilesOf(d))
+          srcs.insert(t);
+      if (srcs.size() >= 2 && !isRoundRobin(chain)) {
+        SmallVector<
+            std::pair<SmallVector<Operation *>, SmallVector<Operation *>>>
+            groups; // (producer signature, flows produced there)
+        for (auto *d : chain.order) {
+          auto st = sourceTilesOf(d);
+          SmallVector<Operation *> sig(st.begin(), st.end());
+          llvm::sort(sig);
+          bool placed = false;
+          for (auto &g : groups)
+            if (g.first == sig) {
+              g.second.push_back(d);
+              placed = true;
+              break;
+            }
+          if (!placed)
+            groups.push_back({sig, {d}});
         }
-        if (target < 0)
-          continue; // nowhere unmixed to go; the router will have the last word
-        moveFlow(chain.allocIdxs, d, tileOp, key.second, target);
+
+        int spare = 0;
+        for (int c = 0; c < numChans; c++)
+          if (!used.count(c))
+            spare++;
+        // More producers than channels: something must double up, and the
+        // choice is not free. Coalesce the ON-ARRAY producers and keep the shim
+        // apart -- shim traffic is DDR-backed and its timing depends on the
+        // host and the NoC, so nothing on the array bounds when it turns up,
+        // whereas two on-array producers run under the same lock protocol as
+        // the consumer. This is the merge the qwen2.5-3b rms core needs: three
+        // producers, two channels, and the working split is {rmsIn, rmsW} from
+        // the host against {orms, outY} from two different memtiles.
+        if ((int)groups.size() > spare + 1) {
+          SmallVector<Operation *> onArray;
+          SmallVector<
+              std::pair<SmallVector<Operation *>, SmallVector<Operation *>>>
+              merged;
+          for (auto &g : groups) {
+            if (g.second.empty())
+              continue;
+            if (producedOffArray(g.second.front()))
+              merged.push_back(g);
+            else
+              llvm::append_range(onArray, g.second);
+          }
+          if (!onArray.empty())
+            merged.push_back({{}, onArray});
+          // Keep the group holding the first-allocated flow in front, so it is
+          // the one that keeps the channel it already has.
+          for (size_t i = 0; i < merged.size(); i++)
+            if (llvm::is_contained(merged[i].second, chain.order.front())) {
+              std::swap(merged[0], merged[i]);
+              break;
+            }
+          groups = merged;
+        }
+
+        // The group that got here first keeps the channel; the others take the
+        // channels the tile was not using, one group each while they last.
+        for (size_t gi = 1; gi < groups.size(); gi++) {
+          if (llvm::any_of(groups[gi].second, isImmovable))
+            continue;
+          int dest = -1;
+          for (int c = 0; c < numChans && dest < 0; c++)
+            if (!used.count(c))
+              dest = c;
+          if (dest < 0)
+            break;
+          for (auto *d : groups[gi].second)
+            moveFlow(chain.allocIdxs, d, tileOp, key.second, dest);
+          used.insert(dest);
+        }
+        continue;
+      }
+
+      // Out of step by the emitter's oracle: peel the one flow whose removal
+      // leaves BOTH halves in step, exactly as repairS2MMChains chooses, onto a
+      // channel the tile was not using. A half carrying a single flow is out of
+      // scope for the same reason the whole chain would be -- it has no other
+      // flow's BD to land on.
+      Operation *stopAt = chain.ops.front()->getParentOfType<air::HerdOp>();
+      auto halfInStep = [&](ArrayRef<Operation *> half) {
+        llvm::SetVector<Operation *> hd;
+        for (auto *o : half)
+          hd.insert(declOf(o));
+        return hd.size() < 2 ||
+               diagnoseBDChain(half, stopAt, /*emptyPathsOk=*/isMM2S).empty();
+      };
+      int freeChan = -1;
+      for (int c = 0; c < numChans && freeChan < 0; c++)
+        if (!used.count(c))
+          freeChan = c;
+      if (freeChan < 0)
+        continue;
+      for (auto *d : chain.order) {
+        if (isImmovable(d))
+          continue;
+        std::vector<Operation *> m, r;
+        for (auto *o : chain.ops)
+          (declOf(o) == d ? m : r).push_back(o);
+        if (m.empty() || r.empty() || !halfInStep(m) || !halfInStep(r))
+          continue;
+        moveFlow(chain.allocIdxs, d, tileOp, key.second, freeChan);
+        break;
       }
     }
 
