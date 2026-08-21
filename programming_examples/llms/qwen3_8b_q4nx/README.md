@@ -1,6 +1,8 @@
 # QWEN3-8B Q4NX prefill + decode on AMD NPU2
 
-This implementation is an MLIR-AIR reimplementation, based on the corresponding AMD NPU LLM design originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team.
+This implementation is an MLIR-AIR reimplementation, based on the corresponding
+AMD NPU LLM design originally developed by the
+[FastFlowLM](https://github.com/ROCm/FastFlowLM) team.
 
 Qwen3-8B in MLIR-AIR, reproducing FastFlowLM's mechanism end to end on the NPU:
 
