@@ -1,8 +1,8 @@
 # PHI-4-MINI Q4NX Inference on AMD NPU2 (MLIR-AIR)
 
-This implementation is an MLIR-AIR reimplementation, based on the corresponding
-AMD NPU LLM design originally developed by the
-[FastFlowLM](https://github.com/ROCm/FastFlowLM) team.
+This implementation reimplements the corresponding AMD NPU LLM design,
+originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM)
+team, using the higher-level abstractions of the MLIR-AIR dialect.
 
 A full **prefill + decode** MLIR-AIR inference for `microsoft/Phi-4-mini-instruct` using
 **Q4NX** weights (per-block 4-bit affine quantization, `w = q*scale + min`) on

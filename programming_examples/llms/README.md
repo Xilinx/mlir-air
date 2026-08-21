@@ -7,11 +7,11 @@ multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
 
 ## Acknowledgments
 
-Some of the LLM implementations in this directory are MLIR-AIR
-reimplementations, based on AMD NPU LLM designs originally developed by the
-[FastFlowLM](https://fastflowlm.com/) team
-([github.com/ROCm/FastFlowLM](https://github.com/ROCm/FastFlowLM)). We thank the
-FastFlowLM team for their original work on these implementations.
+Some of the LLM implementations in this directory reimplement AMD NPU LLM
+designs originally developed by the [FastFlowLM](https://fastflowlm.com/) team
+([github.com/ROCm/FastFlowLM](https://github.com/ROCm/FastFlowLM)), using the
+higher-level abstractions of the MLIR-AIR dialect. We thank the FastFlowLM team
+for their original work on these implementations.
 
 The remaining models were developed directly in MLIR-AIR.
 
