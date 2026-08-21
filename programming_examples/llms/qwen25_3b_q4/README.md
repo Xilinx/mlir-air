@@ -1,5 +1,7 @@
 # Qwen2.5-3B Q4_0 Prefill on AMD NPU2 (MLIR-AIR)
 
+This implementation is an MLIR-AIR reimplementation, based on the corresponding AMD NPU LLM design originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team.
+
 Structural port of [`../llama32_1b_q4nx/`](../llama32_1b_q4nx/) to Qwen2.5-3B:
 4-bit weights, host dequant at load, then the whole transformer block —
 RMSNorm, Q/K/V GEMM, QKV bias, RoPE, causal GQA flash attention, O projection,

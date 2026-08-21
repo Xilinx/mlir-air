@@ -1,5 +1,7 @@
 # LLAMA-3.2-3B Q4NX Inference on AMD NPU2 (MLIR-AIR)
 
+This implementation is an MLIR-AIR reimplementation, based on the corresponding AMD NPU LLM design originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team.
+
 A full **prefill + decode** MLIR-AIR inference for Llama-3.2-3B using **Q4NX**
 weights (per-block 4-bit affine quantization, `w = q*scale + min`) on NPU2
 (AIE2P). The decoder layer runs **entirely on the AIE array** — attention
