@@ -166,3 +166,48 @@ def dot_rank_dispatch():
                     air.ops.store(c, out[0:T, 0:T])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: dot_transpose_b
+# transpose_b=True says B is stored [n, k] rather than [k, n]. That is still a
+# named linalg.matmul -- the transpose rides in the indexing maps, so nothing
+# downstream has to recognise a second op. Pinning the maps here is the point:
+# B's map must be (n, k), and dropping the transpose would silently give the
+# default (k, n) and a matmul against the wrong operand layout.
+# CHECK-DAG: #[[MA:.*]] = affine_map<(d0, d1, d2) -> (d0, d2)>
+# CHECK-DAG: #[[MB:.*]] = affine_map<(d0, d1, d2) -> (d1, d2)>
+# CHECK-DAG: #[[MC:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
+# CHECK: linalg.matmul indexing_maps = [#[[MA]], #[[MB]], #[[MC]]] ins(%{{.*}}, %{{.*}} : memref<32x64xbf16, 2 : i32>, memref<32x64xbf16, 2 : i32>) outs(%{{.*}} : memref<32x32xf32, 2 : i32>)
+#
+# The untransposed spelling is unchanged -- no indexing_maps at all.
+# CHECK: linalg.matmul ins(%{{.*}}, %{{.*}} : memref<32x64xbf16, 2 : i32>, memref<64x32xbf16, 2 : i32>) outs(%{{.*}} : memref<32x32xf32, 2 : i32>)
+@run
+def dot_transpose_b():
+    K, T = 64, 32
+    a = air.tensor([T, K], bf16)
+    bt = air.tensor([T, K], bf16)  # B stored transposed: [n, k]
+    bn = air.tensor([K, T], bf16)  # and the ordinary [k, n]
+    out = air.tensor([T, T], f32)
+
+    with air.launch(name="tb") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, 1, 1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    ab = air.alloc([T, K], bf16, scope=h.private())
+                    tb = air.alloc([T, K], bf16, scope=h.private())
+                    nb = air.alloc([K, T], bf16, scope=h.private())
+                    air.ops.load(ab, a[0:T, 0:K])
+                    air.ops.load(tb, bt[0:T, 0:K])
+                    air.ops.load(nb, bn[0:K, 0:T])
+
+                    c = air.alloc([T, T], f32, scope=h.private(), vector=0)
+                    c[:] = 0.0
+                    air.ops.dot(ab, tb, acc=c, transpose_b=True)
+                    air.ops.dot(ab, nb, acc=c)
+                    air.ops.store(c, out[0:T, 0:T])
+
+    print(launch.mlir())

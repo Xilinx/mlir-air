@@ -587,6 +587,23 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
     One rule covers all four: ``a``'s last axis contracts against ``b``'s first,
     and ``acc`` keeps what is left of each.
 
+    ``transpose_b=True`` says B is stored ``[n, k]`` rather than ``[k, n]``, so
+    ``a``'s last axis contracts against b's last. It is emitted as a named
+    ``linalg.matmul`` carrying the transpose in its indexing maps -- not the
+    deprecated ``linalg.matmul_transpose_b``, and not a ``linalg.generic``.
+    Nothing downstream needs to know: ``air-to-aie`` matches no named
+    contraction, and both ``lower_linalg_to_func`` and
+    ``transform.air.herd_vectorize`` go through the ``LinalgOp`` interface,
+    which is indexing-map agnostic.
+
+    Two limits worth stating. It is verified through the scalar path -- lowered
+    by ``convert-linalg-to-loops`` and run on npu1 -- and *not* through the AIE2
+    matmul intrinsic, which wants micro-tiled operands whose layout the DMA pack
+    (``mm.b(...)``) already fixes. And under ``lower_linalg_to_func`` an external
+    kernel built for ``[k, n]`` links happily against an ``[n, k]`` operand and
+    computes silently wrong results, so pass ``kernel=`` to give the transposed
+    form its own symbol.
+
     ``kernel=`` is keyword-only, and sits after ``dependency`` so that every
     existing positional binding is unchanged: inserting it earlier would have
     silently rebound a positionally-passed ``dependency`` to it. It names the
@@ -660,30 +677,55 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
             f"air.api.ops.dot(transpose_b=True) is meaningless for {signature}; "
             "it transposes a matrix operand"
         )
-    if transpose_b:
-        raise NotImplementedError(
-            "air.api.ops.dot(transpose_b=True) is not implemented yet; it needs "
-            "linalg.matmul_transpose_b"
-        )
-
-    # a's last axis contracts against b's first; acc keeps the rest of each.
-    k_a, k_b = a.shape[-1], b.shape[0]
+    # a's last axis contracts against b's first -- or against b's last, when B
+    # is stored transposed. acc keeps what is left of each.
+    k_a = a.shape[-1]
+    k_b = b.shape[-1] if transpose_b else b.shape[0]
     if k_a != k_b:
         raise ValueError(
             f"air.api.ops.dot shape mismatch for {signature}: a is {a.shape} and "
             f"b is {b.shape}; a's contracting dimension ({k_a}) must equal b's "
             f"({k_b})"
+            + (" -- with transpose_b=True, b is [n, k]" if transpose_b else "")
         )
-    expected = tuple(a.shape[:-1]) + tuple(b.shape[1:])
+    expected = tuple(a.shape[:-1]) + (
+        tuple(b.shape[:-1]) if transpose_b else tuple(b.shape[1:])
+    )
     if tuple(acc.shape) != expected:
         raise ValueError(
             f"air.api.ops.dot shape mismatch for {signature}: a . b is "
             f"{expected} but acc is {tuple(acc.shape)}"
         )
 
-    op = getattr(linalg, op_name)(a.value, b.value, outs=[acc.value])
+    if transpose_b:
+        # A named linalg.matmul carrying the transpose in its indexing maps,
+        # rather than the deprecated linalg.matmul_transpose_b. Downstream this
+        # is the same op: air-to-aie matches no named contraction, and both
+        # `lower_linalg_to_func` and transform.air.herd_vectorize go through the
+        # LinalgOp interface, which is indexing-map agnostic.
+        op = linalg.matmul(
+            a.value, b.value, outs=[acc.value], indexing_maps=_transpose_b_maps()
+        )
+    else:
+        op = getattr(linalg, op_name)(a.value, b.value, outs=[acc.value])
     _set_library_call(kernel)
     return Token(op)
+
+
+def _transpose_b_maps():
+    """Indexing maps for ``acc[m, n] += a[m, k] * b[n, k]``.
+
+    Raw ``AffineMap``s, not ``AffineMapAttr``s: the linalg wrapper's type hint
+    says otherwise but it wraps them itself, and pre-wrapping raises.
+    """
+    from air.ir import AffineDimExpr, AffineMap
+
+    m, n, k = (AffineDimExpr.get(i) for i in range(3))
+    return [
+        AffineMap.get(3, 0, [m, k]),
+        AffineMap.get(3, 0, [n, k]),
+        AffineMap.get(3, 0, [m, n]),
+    ]
 
 
 def _set_library_call(kernel):
