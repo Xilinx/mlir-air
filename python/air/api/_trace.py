@@ -44,6 +44,7 @@ __all__ = [
     "herd",
     "segment",
     "alloc",
+    "dealloc",
     "tensor",
     "symbol",
     "wait",
@@ -252,23 +253,6 @@ def open_launch_region(launch, tensors, counts, body):
         finally:
             for t, v in zip(tensors, saved):
                 t.value = v
-
-
-def infer_name(fallback, depth=2):
-    """Recover ``tile_m`` from the source line ``tile_m = air.symbol()``.
-
-    Cosmetic only: it affects how ``launch.search_space`` and error messages
-    read back, never what is emitted.
-    """
-    try:
-        frame = inspect.stack()[depth]
-        line = (frame.code_context or [""])[0]
-        match = re.match(r"\s*([A-Za-z_]\w*)\s*=", line)
-        if match:
-            return match.group(1)
-    except Exception:
-        pass
-    return fallback
 
 
 def infer_name(fallback, depth=2):
@@ -526,6 +510,123 @@ def _positional_arity(fn):
     )
 
 
+def _block_position(block, op):
+    for i, other in enumerate(block.operations):
+        if other.operation == op:
+            return i
+    raise AssertionError("operation is not in the block it reports as its parent")
+
+
+def _last_use_anchor(value, ignore=None):
+    """The op in ``value``'s own block after which ``value`` is no longer read.
+
+    A use nested inside a loop keeps the buffer live until the loop as a whole
+    is finished, so each use is walked out to the ancestor that sits directly
+    in the block the alloc was emitted into. ``ignore`` drops one op from the
+    scan, so that a dealloc can ask where the last *other* use was.
+    """
+    home = value.owner.operation.block
+    anchor = value.owner.operation
+    best = _block_position(home, anchor)
+    for use in value.uses:
+        op = use.owner.operation
+        if ignore is not None and op == ignore:
+            continue
+        while op.block != home:
+            op = op.parent
+        position = _block_position(home, op)
+        if position > best:
+            anchor, best = op, position
+    return home, anchor
+
+
+def free_buffers(buffers):
+    """End the life of every buffer that ``air.dealloc`` did not already end.
+
+    A buffer's lifetime is a logical property the tracer can see: it ends at
+    the last op that reads or writes it. Emitting every dealloc at the end of
+    the body instead overstates that lifetime, and the overstatement is not
+    free -- it tells the compiler a value is still needed when it is not, so
+    the schedule it builds has to keep the buffer available for longer than the
+    program requires. In a design where each worker hands its tile to a
+    neighbour, that is enough to serialise the hand-off into a cycle and hang
+    the herd (``channel_examples/worker_to_worker``).
+
+    Inference is the default rather than the only option: ``air.dealloc``
+    exists for a program that wants to say where a buffer dies. This also
+    checks those explicit calls, which is the one thing inference cannot get
+    wrong and a hand-placed release can.
+
+    Every anchor is computed before any dealloc is emitted, so the deallocs
+    this adds cannot themselves count as uses.
+    """
+    from air.dialects.memref import DeallocOp
+    from air.ir import InsertionPoint
+
+    pending = []
+    for buf in buffers:
+        if buf.released is not None:
+            _check_released(buf)
+        else:
+            pending.append((buf, *_last_use_anchor(buf.value)))
+
+    for buf, home, anchor in pending:
+        successor, seen = None, False
+        for op in home.operations:
+            if seen:
+                successor = op.operation
+                break
+            seen = op.operation == anchor
+        # No successor means the anchor is currently last in the block; the
+        # region's terminator has not been appended yet, so the end is right.
+        with InsertionPoint(successor) if successor else InsertionPoint(home):
+            DeallocOp(buf.value)
+
+
+def _check_released(buf):
+    """Reject an air.dealloc that a later use contradicts."""
+    release = buf.released
+    home, anchor = _last_use_anchor(buf.value, ignore=release)
+    if release.block != home:
+        raise ValueError(
+            "air.dealloc released a buffer from a different region than the "
+            "one it was allocated in; release it in the body that allocated "
+            "it, so the dealloc is dominated by its alloc"
+        )
+    if _block_position(home, anchor) > _block_position(home, release):
+        raise ValueError(
+            f"air.dealloc released this buffer before its last use "
+            f"({anchor.name}): a released buffer cannot be read or written "
+            "again. Move the air.dealloc after the last op that touches it, "
+            "or drop it and let air.api place it there."
+        )
+
+
+def dealloc(buffer):
+    """End a buffer's life here, rather than letting the tracer infer it.
+
+    The counterpart to :func:`alloc`. Without it the tracer places the release
+    after the last use it observes, which is what a program that does not care
+    wants; call this when the program has something to say about the point
+    itself -- and on a target with a real allocator behind ``memref.dealloc``,
+    that point is a free rather than a scheduling hint.
+
+    Using the buffer afterwards is an error, reported when the body is finished
+    rather than at this call: the tracer has to see the rest of the body before
+    it can know whether a later use exists.
+    """
+    from air.dialects.memref import DeallocOp
+
+    if not isinstance(buffer, Buffer):
+        raise TypeError(
+            f"air.dealloc takes a buffer from air.alloc, got "
+            f"{type(buffer).__name__}"
+        )
+    if buffer.released is not None:
+        raise ValueError("air.dealloc: this buffer has already been released")
+    buffer.released = DeallocOp(buffer.value).operation
+
+
 # ---------------------------------------------------------------------------
 # Segment
 # ---------------------------------------------------------------------------
@@ -659,7 +760,6 @@ class SegmentContext:
         global _CURRENT_SEGMENT
 
         from air.dialects.air import segment as segment_region
-        from air.dialects.memref import DeallocOp
 
         tensors = trace.tensors
         segment_self = self
@@ -690,8 +790,7 @@ class SegmentContext:
             previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
             try:
                 fn(*coords)
-                for buf in segment_self._buffers:
-                    DeallocOp(buf.value)
+                free_buffers(segment_self._buffers)
             finally:
                 segment_self._buffers.clear()
                 for t, v in zip(tensors, saved):
@@ -823,7 +922,6 @@ class HerdContext:
             )
 
         from air.dialects.air import herd as herd_region
-        from air.dialects.memref import DeallocOp
         from air.dialects.scf import for_ as range_, yield_
 
         from ._loop import aborted_loops, enter_body, exit_body
@@ -881,11 +979,11 @@ class HerdContext:
                         tile = tile + IndexExpr.leaf(strip_ivs[axis], f"i{axis}")
                     tile_ids.append(tile)
                 fn(*tile_ids)
-                # Free within the same region the allocs were emitted into: with
-                # strip-mining that region is the innermost scf.for body, and a
-                # dealloc hoisted above it would not be dominated by its alloc.
-                for buf in herd_self._buffers:
-                    DeallocOp(buf.value)
+                # Each dealloc lands in the block its alloc was emitted into,
+                # which under strip-mining is the innermost scf.for body: a
+                # dealloc hoisted above that would not be dominated by its
+                # alloc.
+                free_buffers(herd_self._buffers)
                 herd_self._buffers.clear()
 
             outer_depth = enter_body()

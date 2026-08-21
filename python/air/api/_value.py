@@ -175,6 +175,10 @@ class Buffer:
         # The memref SSA value produced by memref.alloc.
         self.value = value
         self.strides = _row_major_strides(self.shape)
+        # The memref.dealloc that ended this buffer's life, if air.dealloc was
+        # called on it. None means the tracer will place one itself, after the
+        # last use it observes.
+        self.released = None
 
     # -- reading: whole tile is a lazy expression, a region is a DMA slice ---
 

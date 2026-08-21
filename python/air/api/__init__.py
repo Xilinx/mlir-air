@@ -86,6 +86,7 @@ from ._trace import (
     SegmentContext,
     Symbol,
     alloc,
+    dealloc,
     herd,
     segment,
     symbol,
@@ -105,6 +106,7 @@ __all__ = [
     # declarations
     "tensor",
     "alloc",
+    "dealloc",
     "symbol",
     "extern",
     "channel",

@@ -23,11 +23,20 @@ tracer needs cheap and exact:
     ``split_static_dynamic`` then keeps in the static half of a memcpy's
     access pattern instead of materialising an SSA operand.
 
-Non-linear combinations (leaf * leaf, floordiv/mod by a leaf) are rejected with
-an explicit error rather than silently degraded.
+``x // k`` and ``x % k`` for a *constant* ``k`` are affine too, but they are not
+linear, so they cannot be a coefficient on a leaf. They become a
+:class:`DerivedLeaf` -- an opaque term that the linear form treats exactly like
+a coordinate, and that expands back into ``affine.floordiv``/``affine.mod``
+only at materialisation. That keeps ``((tw + 1) % sw) * 2`` linear in the thing
+it is actually linear in, and it keeps the whole expression a single
+``affine.apply``, which is what ``worker_to_worker`` builds by hand.
+
+Genuinely non-affine combinations -- leaf * leaf, and floordiv/mod by a
+coordinate -- are rejected with an explicit error rather than silently
+degraded.
 """
 
-__all__ = ["IndexExpr", "Leaf", "coerce_index", "materialize_index"]
+__all__ = ["IndexExpr", "Leaf", "DerivedLeaf", "coerce_index", "materialize_index"]
 
 
 class Leaf:
@@ -44,8 +53,57 @@ class Leaf:
         self.value = value
         self.name = name
 
+    def leaves(self):
+        return (self,)
+
+    def _affine(self, symbol_of):
+        return symbol_of(self)
+
     def __repr__(self):
         return self.name
+
+
+class DerivedLeaf:
+    """``expr // k`` or ``expr % k`` for a constant ``k``, used as a leaf.
+
+    Neither operation is linear, so it cannot live in :class:`IndexExpr`'s
+    coefficient map directly. Wrapping it makes it opaque to the linear form
+    while remaining fully affine in the IR.
+
+    Unlike :class:`Leaf`, identity here is *structural*: two separately built
+    copies of ``(tw + 1) % sw`` must share a term so that they cancel under
+    subtraction and materialise once.
+    """
+
+    __slots__ = ("kind", "expr", "k", "_key")
+
+    def __init__(self, kind, expr, k):
+        self.kind = kind
+        self.expr = expr
+        self.k = int(k)
+        self._key = (kind, expr._key(), self.k)
+
+    def leaves(self):
+        return self.expr.leaves()
+
+    def _affine(self, symbol_of):
+        from air.ir import AffineExpr, AffineConstantExpr
+
+        lhs = self.expr._affine(symbol_of)
+        rhs = AffineConstantExpr.get(self.k)
+        if self.kind == "mod":
+            return AffineExpr.get_mod(lhs, rhs)
+        return AffineExpr.get_floor_div(lhs, rhs)
+
+    def __eq__(self, other):
+        return isinstance(other, DerivedLeaf) and self._key == other._key
+
+    def __hash__(self):
+        return hash(self._key)
+
+    def __repr__(self):
+        op = "mod" if self.kind == "mod" else "floordiv"
+        return f"({self.expr} {op} {self.k})"
 
 
 class IndexExpr:
@@ -108,29 +166,73 @@ class IndexExpr:
     def __neg__(self):
         return IndexExpr({leaf: -c for leaf, c in self.terms.items()}, -self.const)
 
-    def __floordiv__(self, other):
+    def _divide(self, other, kind):
         other = coerce_index(other)
-        if not self.terms and not other.terms:
-            return IndexExpr({}, self.const // other.const)
-        raise NotImplementedError(
-            "floordiv on a tile coordinate is not supported by air.api yet; "
-            "restructure the index as a linear expression"
-        )
+        if other.terms:
+            raise TypeError(
+                f"non-affine index expression: cannot take {kind} of {self} by "
+                f"{other} (the divisor must be a constant, not a tile "
+                "coordinate)"
+            )
+        k = other.const
+        if k <= 0:
+            raise ValueError(
+                f"index {kind} by {k}: the divisor must be a positive constant"
+            )
+        if not self.terms:
+            # Python's // and % are floor-based, which is what affine.floordiv
+            # and affine.mod implement, so the folded and emitted forms agree.
+            return IndexExpr(
+                {}, self.const // k if kind == "floordiv" else self.const % k
+            )
+        if k == 1:
+            return IndexExpr({}, 0) if kind == "mod" else self
+        return IndexExpr({DerivedLeaf(kind, self, k): 1}, 0)
+
+    def __floordiv__(self, other):
+        return self._divide(other, "floordiv")
 
     def __mod__(self, other):
-        other = coerce_index(other)
-        if not self.terms and not other.terms:
-            return IndexExpr({}, self.const % other.const)
-        raise NotImplementedError(
-            "mod on a tile coordinate is not supported by air.api yet; "
-            "restructure the index as a linear expression"
-        )
+        return self._divide(other, "mod")
+
+    def __rfloordiv__(self, other):
+        return coerce_index(other)._divide(self, "floordiv")
+
+    def __rmod__(self, other):
+        return coerce_index(other)._divide(self, "mod")
 
     # -- queries ------------------------------------------------------------
 
     def as_const(self):
         """The Python int value, or None if the expression is coordinate-dependent."""
         return self.const if not self.terms else None
+
+    def _key(self):
+        """A hashable structural key, so equal expressions share a DerivedLeaf."""
+        return (frozenset(self.terms.items()), self.const)
+
+    def leaves(self):
+        """The distinct real :class:`Leaf` values this expression reads, in order."""
+        seen = {}
+        for term in self.terms:
+            for leaf in term.leaves():
+                seen.setdefault(leaf, None)
+        return list(seen)
+
+    def _affine(self, symbol_of):
+        from air.ir import AffineExpr, AffineConstantExpr
+
+        expr = None
+        for term, coeff in self.terms.items():
+            part = term._affine(symbol_of)
+            if coeff != 1:
+                part = AffineExpr.get_mul(part, AffineConstantExpr.get(coeff))
+            expr = part if expr is None else AffineExpr.get_add(expr, part)
+        if expr is None:
+            return AffineConstantExpr.get(self.const)
+        if self.const:
+            expr = AffineExpr.get_add(expr, AffineConstantExpr.get(self.const))
+        return expr
 
     def __repr__(self):
         parts = [
@@ -152,19 +254,15 @@ class IndexExpr:
         if not self.terms:
             return self.const
 
-        from air.ir import AffineMap, AffineExpr, AffineSymbolExpr, AffineConstantExpr
+        from air.ir import AffineMap, AffineSymbolExpr
         from air.dialects.affine import apply as affine_apply
 
-        leaves = list(self.terms)
-        expr = None
-        for i, leaf in enumerate(leaves):
-            term = AffineSymbolExpr.get(i)
-            coeff = self.terms[leaf]
-            if coeff != 1:
-                term = AffineExpr.get_mul(term, AffineConstantExpr.get(coeff))
-            expr = term if expr is None else AffineExpr.get_add(expr, term)
-        if self.const:
-            expr = AffineExpr.get_add(expr, AffineConstantExpr.get(self.const))
+        # One symbol per distinct real leaf, shared across every term -- a
+        # DerivedLeaf expands in place rather than taking a symbol of its own,
+        # so `(tw + 1) % sw` and `tw` reach the map as the same symbol.
+        leaves = self.leaves()
+        position = {leaf: i for i, leaf in enumerate(leaves)}
+        expr = self._affine(lambda leaf: AffineSymbolExpr.get(position[leaf]))
 
         amap = AffineMap.get(0, len(leaves), [expr])
         return affine_apply(amap, [leaf.value for leaf in leaves])

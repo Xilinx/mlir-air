@@ -1,17 +1,45 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A ring of workers passing tiles to their neighbours, on air.api.
+
+    air.channel @ChanIn          L3 -> L1, one bundle member per worker
+    air.channel @WorkerToWorker  L1 -> L1, worker (th, tw) -> its successor
+    air.channel @ChanOut         L1 -> L3, one bundle member per worker
+
+Each worker stamps its own tile number onto its tile and hands the result not
+to itself but to the *next* worker in row-major order, which then writes it
+out. So the tile that lands at (th, tw) in the output carries the tile number
+of the worker *before* it -- the test's expected output is built from exactly
+that permutation, and a kernel that quietly kept its own tile would fail it.
+
+The successor is where the index arithmetic comes in:
+
+    tw_next = (tw + 1) % W
+    th_next = (th + (tw + 1) // W) % H
+
+Both must reach the IR as affine expressions rather than a chain of arith ops,
+because the AIR dependency analysis and the DMA specialisation passes read
+affine offsets directly. The raw-bindings version this replaces built them by
+hand -- three ``AffineMap.get`` calls with ``AffineExpr.get_mod`` and
+``get_floor_div``, forty lines of them. Written as ordinary Python operators on
+the herd coordinates, ``IndexExpr`` produces the same two maps.
+
+Unchanged from the predecessor, except for two things:
+
+* The L3-side put and get sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The two per-tile kernels are whole-tile expressions rather than scalar loop
+  nests over every (i, j). ``vector=0`` keeps them scalar as the predecessor
+  was: a tile row is 4 i32 wide, well under a vector.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.dialects.affine import apply as affine_apply
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 12
 IMAGE_HEIGHT = 4
@@ -24,179 +52,100 @@ TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
 assert IMAGE_HEIGHT % TILE_HEIGHT == 0
 assert IMAGE_WIDTH % TILE_WIDTH == 0
 
+# The worker grid: one worker per tile.
+GRID_HEIGHT = IMAGE_HEIGHT // TILE_HEIGHT
+GRID_WIDTH = IMAGE_WIDTH // TILE_WIDTH
+
 INOUT_DATATYPE = np.int32
 
 
-@module_builder
+def next_worker(th, tw):
+    """The successor of worker (th, tw) in row-major order, wrapping around.
+
+    Shared by the kernel and the test's expected output, so the two cannot
+    drift: the same expression runs on herd coordinates in the kernel and on
+    Python ints in the check below.
+    """
+    tw_next = (tw + 1) % GRID_WIDTH
+    th_next = (th + (tw + 1) // GRID_WIDTH) % GRID_HEIGHT
+    return th_next, tw_next
+
+
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+    A = air.tensor(IMAGE_SIZE, i32)
+    B = air.tensor(IMAGE_SIZE, i32)
 
-    # Create an input/output channel pair per worker
-    Channel("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
-    Channel("ChanOut", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
-    Channel(
-        "WorkerToWorker", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH]
-    )
+    # An input and an output channel per worker, plus the ring between them.
+    chan_in = air.channel("ChanIn", size=[GRID_HEIGHT, GRID_WIDTH])
+    chan_out = air.channel("ChanOut", size=[GRID_HEIGHT, GRID_WIDTH])
+    ring = air.channel("WorkerToWorker", size=[GRID_HEIGHT, GRID_WIDTH])
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    with air.launch(name="copy") as launch:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
-
-                    # Put data into the channel tile by tile
-                    ChannelPut(
-                        "ChanIn",
-                        a,
-                        indices=[h, w],
-                        offsets=[offset0, offset1],
-                        sizes=TILE_SIZE,
-                        strides=[IMAGE_WIDTH, 1],
-                    )
-
-            # The arguments are still the input and the output
-            @segment(name="seg")
-            def segment_body():
-
-                @herd(
-                    name="xaddherd",
-                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
-                )
-                def herd_body(th, tw, sh, sw):
-                    get_tile_num = AffineMap.get(
-                        0,
-                        3,
-                        [
-                            AffineExpr.get_add(
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(0),
-                                    AffineSymbolExpr.get(1),
-                                ),
-                                AffineSymbolExpr.get(2),
-                            )
-                        ],
-                    )
-                    tile_num = affine_apply(get_tile_num, [th, sw, tw])
-                    get_tile_width_next = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_mod(
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(0),
-                                    AffineConstantExpr.get(1),
-                                ),
-                                AffineSymbolExpr.get(1),
-                            )
-                        ],
-                    )
-                    tw_next = affine_apply(get_tile_width_next, [tw, sw])
-                    # th_next = (th + ((tw + 1) // sw)) % sh
-                    get_tile_height_next = AffineMap.get(
-                        0,
-                        4,
-                        [
-                            AffineExpr.get_mod(
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(2),
-                                    AffineExpr.get_floor_div(
-                                        AffineExpr.get_add(
-                                            AffineSymbolExpr.get(0),
-                                            AffineConstantExpr.get(1),
-                                        ),
-                                        AffineSymbolExpr.get(1),
-                                    ),
-                                ),
-                                AffineSymbolExpr.get(3),
-                            )
-                        ],
-                    )
-                    th_next = affine_apply(get_tile_height_next, [tw, sw, th, sh])
-
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
-                    # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=xrt_dtype,
-                        memory_space=mem_space,
-                    )
-
-                    # We must allocate a buffer of tile size for the input/output
-                    tile_in = AllocOp(tile_type, [], [])
-                    tile_out = AllocOp(tile_type, [], [])
-
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                    ChannelGet("ChanIn", tile_in, indices=[th, tw])
-
-                    # Access every value in the tile
-                    for i in range_(TILE_HEIGHT):
-                        for j in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
-                            val_in = load(tile_in, [i, j])
-
-                            val_out = arith.AddIOp(
-                                arith.index_cast(xrt_dtype, tile_num), val_in
+                @seg.body
+                def _():
+                    # One tile of the image into each worker's bundle member.
+                    for i in range(GRID_HEIGHT):
+                        for j in range(GRID_WIDTH):
+                            chan_in.put(
+                                A[
+                                    i * TILE_HEIGHT : (i + 1) * TILE_HEIGHT,
+                                    j * TILE_WIDTH : (j + 1) * TILE_WIDTH,
+                                ],
+                                indices=[i, j],
                             )
 
-                            # Store the output value in tile_out
-                            store(val_out, tile_out, [i, j])
-                            yield_([])
-                        yield_([])
+                    with air.herd(
+                        [range(GRID_HEIGHT), range(GRID_WIDTH)],
+                        name="xaddherd",
+                        shape=(GRID_HEIGHT, GRID_WIDTH),
+                    ) as h:
 
-                    ChannelPut("WorkerToWorker", tile_out, indices=[th_next, tw_next])
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
+                        @h.body
+                        def _(th, tw):
+                            tile_num = th * GRID_WIDTH + tw
+                            th_next, tw_next = next_worker(th, tw)
 
-                    tile_in2 = AllocOp(tile_type, [], [])
-                    tile_out2 = AllocOp(tile_type, [], [])
-                    ChannelGet("WorkerToWorker", tile_in2, indices=[th, tw])
+                            # Stamp this worker's number on its own tile, then
+                            # hand it to the next worker rather than keeping it.
+                            tile_in = air.alloc(TILE_SIZE, i32, scope=h.private())
+                            tile_out = air.alloc(
+                                TILE_SIZE, i32, scope=h.private(), vector=0
+                            )
+                            chan_in.get(tile_in, indices=[th, tw])
+                            tile_out[:] = tile_in[:] + tile_num
+                            ring.put(tile_out, indices=[th_next, tw_next])
 
-                    for i in range_(TILE_HEIGHT):
-                        for j in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
-                            val = load(tile_in2, [i, j])
+                            # ...and what arrives here came from the previous
+                            # worker, carrying that worker's number.
+                            tile_in2 = air.alloc(TILE_SIZE, i32, scope=h.private())
+                            tile_out2 = air.alloc(
+                                TILE_SIZE, i32, scope=h.private(), vector=0
+                            )
+                            ring.get(tile_in2, indices=[th, tw])
+                            tile_out2[:] = tile_in2[:]
+                            chan_out.put(tile_out2, indices=[th, tw])
 
-                            # Store the output value in tile_out
-                            store(val, tile_out2, [i, j])
-                            yield_([])
-                        yield_([])
+                    for i in range(GRID_HEIGHT):
+                        for j in range(GRID_WIDTH):
+                            chan_out.get(
+                                B[
+                                    i * TILE_HEIGHT : (i + 1) * TILE_HEIGHT,
+                                    j * TILE_WIDTH : (j + 1) * TILE_WIDTH,
+                                ],
+                                indices=[i, j],
+                            )
 
-                    # Copy the output tile into the output
-                    ChannelPut("ChanOut", tile_out2, indices=[th, tw])
-                    DeallocOp(tile_in2)
-                    DeallocOp(tile_out2)
-
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
-
-                    # Write data back out to the channel tile by tile
-                    ChannelGet(
-                        "ChanOut",
-                        b,
-                        indices=[h, w],
-                        offsets=[offset0, offset1],
-                        sizes=TILE_SIZE,
-                        strides=[IMAGE_WIDTH, 1],
-                    )
+    return launch
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="worker_to_worker.py",
         description="Builds, runs, and tests the channel worker_to_worker example",
     )
     parser.add_argument(
@@ -217,10 +166,18 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -228,33 +185,17 @@ if __name__ == "__main__":
     input_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
     output_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
 
-    def get_next_tile_num(tile_height, tile_width):
-        # This should be the same math for how tile next values are calculated in the herd
-        tw_next = (tile_width + 1) % (IMAGE_WIDTH // TILE_WIDTH)
-        th_next = (tile_height + ((tile_width + 1) // (IMAGE_WIDTH // TILE_WIDTH))) % (
-            IMAGE_HEIGHT // TILE_HEIGHT
-        )
-        assert tw_next >= 0 and tw_next <= (IMAGE_WIDTH // TILE_WIDTH)
-        assert th_next >= 0 and th_next <= (IMAGE_HEIGHT // TILE_HEIGHT)
-        print(f"{tile_height}, {tile_width} => {th_next}, {tw_next}")
-        return th_next, tw_next
+    # The tile that lands at (th, tw) was stamped by that worker's
+    # *predecessor*, so invert next_worker to find whose number to expect.
+    stamped_by = {}
+    for th in range(GRID_HEIGHT):
+        for tw in range(GRID_WIDTH):
+            stamped_by[next_worker(th, tw)] = th * GRID_WIDTH + tw
 
-    # Create a map of current tile coordinates to the tile_num of the "previous" tile num
-    tile_num_map = {}
-    for tile_height in range(IMAGE_HEIGHT // TILE_HEIGHT):
-        for tile_width in range(IMAGE_WIDTH // TILE_WIDTH):
-            next_tile_coords = get_next_tile_num(tile_height, tile_width)
-            tile_num_map[next_tile_coords] = (
-                # This should be the same math for how tile_num is calculated in the herd
-                tile_height * (IMAGE_WIDTH // TILE_WIDTH)
-                + tile_width
-            )
-
-    # Add the tile num of the "previous" tile to each value in each tile in the output data
     for i in range(IMAGE_HEIGHT):
         for j in range(IMAGE_WIDTH):
             output_matrix[i, j] = (
-                input_matrix[i, j] + tile_num_map[(i // TILE_HEIGHT, j // TILE_WIDTH)]
+                input_matrix[i, j] + stamped_by[(i // TILE_HEIGHT, j // TILE_WIDTH)]
             )
 
     runner = XRTRunner(
