@@ -1,16 +1,36 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A four-channel hierarchy, one hop per level of memory, on air.api.
+
+    air.channel @ChanInL2    L3 -> L2
+    air.channel @ChanInL1    L2 -> L1
+    air.channel @ChanOutL1   L1 -> L2
+    air.channel @ChanOutL2   L2 -> L3
+
+Every hop is a channel, so there is not one ``air.dma_memcpy_nd`` in the
+example: it is the same journey ``ops.load``/``ops.store`` would make, written
+as four independent producer/consumer pairs instead of four copies. Each level
+stages into its own buffer and forwards, and the herd names none of the
+channels as an operand -- a channel is a module-level symbol and resolves by
+name from any depth.
+
+Unchanged from the raw-bindings version this replaces, except for two things:
+
+* The L3-side put and get sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The increment is written ``out[:] = in[:] + 1`` rather than as a scalar loop
+  nest over every (i, j). ``vector=0`` keeps it scalar, as the predecessor was:
+  the image is 32 i32 wide and a <8 x i32> add is 256-bit, which does not
+  legalize.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
@@ -19,86 +39,55 @@ IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 INOUT_DATATYPE = np.int32
 
 
-@module_builder
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+    A = air.tensor(IMAGE_SIZE, i32)
+    B = air.tensor(IMAGE_SIZE, i32)
 
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
+    in_l2 = air.channel("ChanInL2")
+    out_l2 = air.channel("ChanOutL2")
+    in_l1 = air.channel("ChanInL1")
+    out_l1 = air.channel("ChanOutL1")
 
-    image_type_l1 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
-    image_type_l2 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l2,
-    )
+    with air.launch(name="copy") as launch:
 
-    Channel("ChanInL2")
-    Channel("ChanOutL2")
-    Channel("ChanInL1")
-    Channel("ChanOutL1")
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+                @seg.body
+                def _():
+                    image_in_l2 = air.alloc(IMAGE_SIZE, i32, scope=seg.private())
+                    image_out_l2 = air.alloc(IMAGE_SIZE, i32, scope=seg.private())
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+                    in_l2.put(A)
+                    in_l2.get(image_in_l2)
+                    in_l1.put(image_in_l2)
 
-            ChannelPut("ChanInL2", a)
+                    with air.herd([range(1)], name="addherd", shape=(1,)) as h:
 
-            @segment(name="seg")
-            def segment_body():
-                image_in_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanInL2", image_in_l2)
-                ChannelPut("ChanInL1", image_in_l2)
-                DeallocOp(image_in_l2)
+                        @h.body
+                        def _(tx):
+                            image_in = air.alloc(
+                                IMAGE_SIZE, i32, scope=h.private(), vector=0
+                            )
+                            image_out = air.alloc(
+                                IMAGE_SIZE, i32, scope=h.private(), vector=0
+                            )
 
-                @herd(name="addherd", sizes=[1, 1])
-                def herd_body(tx, ty, sx, sy):
+                            in_l1.get(image_in)
+                            image_out[:] = image_in[:] + 1
+                            out_l1.put(image_out)
 
-                    # We must allocate a buffer of image size for the input/output
-                    image_in = AllocOp(image_type_l1, [], [])
-                    image_out = AllocOp(image_type_l1, [], [])
+                    out_l1.get(image_out_l2)
+                    out_l2.put(image_out_l2)
+                    out_l2.get(B)
 
-                    ChannelGet("ChanInL1", image_in)
-
-                    # Access every value in the image
-                    for i in range_(IMAGE_HEIGHT):
-                        for j in range_(IMAGE_WIDTH):
-                            # Load the input value
-                            val_in = load(image_in, [i, j])
-
-                            # Calculate the output value
-                            val_out = arith.addi(val_in, arith.ConstantOp(xrt_dtype, 1))
-
-                            # Store the output value
-                            store(val_out, image_out, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    ChannelPut("ChanOutL1", image_out)
-
-                    DeallocOp(image_in)
-                    DeallocOp(image_out)
-
-                image_out_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanOutL1", image_out_l2)
-                ChannelPut("ChanOutL2", image_out_l2)
-                DeallocOp(image_out_l2)
-
-            ChannelGet("ChanOutL2", b)
+    return launch
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="hierarchical.py",
         description="Builds, runs, and tests the channel hierarchical example",
     )
     parser.add_argument(
@@ -120,9 +109,18 @@ if __name__ == "__main__":
         help="Output format for the compiled binary (default: xclbin)",
     )
 
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)

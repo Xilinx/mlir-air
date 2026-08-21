@@ -1,16 +1,33 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A worker that sends data to itself through a channel, on air.api.
+
+    air.channel @ChanIn     L3 -> L2
+    air.channel @ToSelf     L2 -> L1, both ends inside the same herd body
+    air.channel @ChanOut    L1 -> L3
+
+``ToSelf`` is the point of the example: its put and its get are both in the herd
+body, one core talking to itself. That is legal precisely because a channel is
+not a value -- it is a module-level symbol, so the two ends need no common
+scope, not even a common operand. The staged L2 buffer is what the core puts,
+and air.api passes it into the herd for free.
+
+Unchanged from the raw-bindings version this replaces, except for two things:
+
+* The L3-side put and get sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The copy is written ``out[:] = in[:]`` rather than as a scalar loop nest over
+  every (i, j). Same transfer, one line. ``vector=0`` keeps it scalar: the image
+  is 32 i32 wide and a <8 x i32> add is 256-bit, which does not legalize.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
@@ -19,87 +36,55 @@ IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 INOUT_DATATYPE = np.int32
 
 
-@module_builder
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    A = air.tensor(IMAGE_SIZE, i32)
+    B = air.tensor(IMAGE_SIZE, i32)
 
-    # Type and method of input/output
-    memrefTyInOut = T.MemRefType.get(IMAGE_SIZE, xrt_dtype)
-    Channel("ChanIn")
-    Channel("ChanOut")
-    Channel("ToSelf")
+    chan_in = air.channel("ChanIn")
+    chan_out = air.channel("ChanOut")
+    to_self = air.channel("ToSelf")
 
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    image_type_l1 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    with air.launch(name="copy") as launch:
 
-    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
-    image_type_l2 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l2,
-    )
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+                @seg.body
+                def _():
+                    l2_in = air.alloc(IMAGE_SIZE, i32, scope=seg.private())
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
-            ChannelPut("ChanIn", a)
+                    chan_in.put(A)
+                    chan_in.get(l2_in)
 
-            # The arguments are still the input and the output
-            @segment(name="seg")
-            def segment_body():
+                    with air.herd([range(1)], name="copyherd", shape=(1,)) as h:
 
-                tensor_in_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanIn", tensor_in_l2)
+                        @h.body
+                        def _(tx):
+                            l1_in = air.alloc(
+                                IMAGE_SIZE, i32, scope=h.private(), vector=0
+                            )
+                            l1_out = air.alloc(
+                                IMAGE_SIZE, i32, scope=h.private(), vector=0
+                            )
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
-                @herd(
-                    name="copyherd",
-                    sizes=[1, 1],
-                    operands=[tensor_in_l2],
-                )
-                def herd_body(tx, ty, sx, sy, tensor_in_l2):
+                            # Both ends of @ToSelf, in one body: the core sends
+                            # the staged L2 tile and receives it into L1.
+                            to_self.put(l2_in)
+                            to_self.get(l1_in)
 
-                    # We must allocate a buffer of image size for the input/output
-                    tensor_in_l1 = AllocOp(image_type_l1, [], [])
-                    tensor_out_l1 = AllocOp(image_type_l1, [], [])
+                            l1_out[:] = l1_in[:]
 
-                    ChannelPut("ToSelf", tensor_in_l2)
-                    ChannelGet("ToSelf", tensor_in_l1)
+                            chan_out.put(l1_out)
 
-                    # Access every value in the tile
-                    for i in range_(IMAGE_HEIGHT):
-                        for j in range_(IMAGE_WIDTH):
-                            # Load the input value from tile_in
-                            val = load(tensor_in_l1, [i, j])
+                    chan_out.get(B)
 
-                            # Store the output value in tile_out
-                            store(val, tensor_out_l1, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    ChannelPut("ChanOut", tensor_out_l1)
-
-                    # Deallocate our L1 buffers
-                    DeallocOp(tensor_in_l1)
-                    DeallocOp(tensor_out_l1)
-
-                DeallocOp(tensor_in_l2)
-
-            ChannelGet("ChanOut", b)
+    return launch
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="worker_to_self.py",
         description="Builds, runs, and tests the channel worker_to_self example",
     )
     parser.add_argument(
@@ -120,10 +105,18 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)

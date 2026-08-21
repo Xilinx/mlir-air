@@ -54,6 +54,11 @@ unsloth/gemma-3-4b-it
 FastFlowLM/Qwen3-8B-NPU2
 Qwen/Qwen3-8B
 
+# Qwen2.5-7B-Instruct is listed ONCE, not as a pair: FastFlowLM publishes no
+# Qwen2.5-7B bundle, so llms/qwen25_7b_q4nx quantizes this checkpoint to Q4NX on
+# load and `make verify` compares against the same repo in bf16. Ungated.
+Qwen/Qwen2.5-7B-Instruct
+
 # Same Q4NX packaging of Phi-4-mini-instruct. Used by llms/phi4_mini_q4nx (the
 # fused decode loads weights from this repo), plus the bf16 reference `make
 # verify` compares against -- microsoft/Phi-4-mini-instruct is ungated, and is

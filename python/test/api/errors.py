@@ -986,3 +986,117 @@ def _():
         ops.load(small, A)
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: broadcast_index_bounded_by_broadcast_shape
+# A broadcast channel is indexed over its destinations, so the bound is
+# broadcast_shape, not size -- and the message has to say which, or it reads as
+# a contradiction ("index 1 out of range, size is [1, 1]") to someone whose
+# 3-destination fan-out is working exactly as declared.
+# CHECK: ValueError: air.channel 'BC' index 3 is out of range on axis 0: broadcast_shape is [3, 1], so that axis admits 0..2
+@expect(ValueError, "broadcast_index_bounded_by_broadcast_shape")
+def _():
+    ch = air.channel("BC", size=[1, 1], broadcast_shape=[3, 1])
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.get(buf, indices=[3, 0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: broadcast_put_still_bounded_by_size
+# The two ends of a broadcast are indexed over different grids. A *get* names a
+# destination, so broadcast_shape bounds it (above). A *put* names a slot in the
+# source bundle, which is `size` -- widening the bound for puts too would accept
+# an out-of-range source and emit an invalid bundle index.
+# CHECK: ValueError: air.channel 'BP' index 2 is out of range on axis 0: size is [1, 2], so that axis admits 0..0
+@expect(ValueError, "broadcast_put_still_bounded_by_size")
+def _():
+    ch = air.channel("BP", size=[1, 2], broadcast_shape=[3, 2])
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf, indices=[2, 0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_pack_not_a_packed_shape
+# pack= takes a shape from air.micro_tile(...).a/.b, not a plain list: the
+# micro-tile is what the walk is derived from, and a bare list carries none.
+# CHECK: TypeError: air.channel.put(pack=...) takes a packed shape from air.micro_tile
+@expect(TypeError, "channel_pack_not_a_packed_shape")
+def _():
+    ch = air.channel("P")
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf[0:16, 0:8], pack=[2, 2, 8, 8])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_pack_needs_a_region
+# The pack reorders a *slice* of a flat staging buffer, so there has to be one
+# to reorder; a whole buffer carries no pattern to rewrite.
+# CHECK: TypeError: air.channel.put(pack=...) needs a *region* to walk
+@expect(TypeError, "channel_pack_needs_a_region")
+def _():
+    ch = air.channel("Q")
+    mm = air.micro_tile(1, 16, 8)
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf, pack=mm.b(16, 8, lead=()))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_pack_c_operand
+# A C accumulator unpacks the other way round -- the pattern belongs on the
+# packed buffer, not on the channel -- so asking a channel to pack one raises
+# instead of emitting a walk that would drain it in the wrong order.
+# CHECK: NotImplementedError: air.channel.put(pack=...) packs an A or B operand
+@expect(NotImplementedError, "channel_pack_c_operand")
+def _():
+    ch = air.channel("R")
+    mm = air.micro_tile(1, 16, 8)
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf[0:16, 0:8], pack=mm.c(16, 8, lead=()))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_pack_wrong_rank
+# The region has to end in the operand's two logical axes; a rank-1 slice has
+# only one, so there is nothing to split into micro-tiles.
+# CHECK: ValueError: air.channel.put(pack=...) needs a region of rank 2 for a B operand
+@expect(ValueError, "channel_pack_wrong_rank")
+def _():
+    ch = air.channel("S")
+    mm = air.micro_tile(1, 16, 8)
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([128], bf16, scope=h.private())
+        ch.put(buf[0:128], pack=mm.b(16, 8, lead=()))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_pack_indivisible
+# The region's extents must be whole micro-tiles: 20 is not a multiple of the
+# k=16 the buffer would be packed with.
+# CHECK: ValueError: operand B's K extent 20 is not a multiple of the micro-tile k=16
+@expect(ValueError, "channel_pack_indivisible")
+def _():
+    ch = air.channel("T")
+    mm = air.micro_tile(1, 16, 8)
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([20, 8], bf16, scope=h.private())
+        ch.put(buf[0:20, 0:8], pack=mm.b(20, 8, lead=()))
+
+    _trace(body)

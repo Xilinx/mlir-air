@@ -1943,6 +1943,110 @@
       "best": {
         "high": "fused-cast"
       }
+    },
+    {
+      "M": 2048,
+      "K": 3584,
+      "N": 3584,
+      "used_by": "Qwen2.5-7B Q/O proj (emb=3584, q_dim=28*128=3584 -> square o_proj)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6106,
+          "mean_rel_L1": 0.00988,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      },
+      "_note": "tile_k_l2 matters far more here than for the other emb widths: 256 places but collapses to 575 GFLOP/s (91.4 ms), ~10x off 128. K=3584=512*7; the sweep of placeable values gives 64 -> 5815, 128 -> 6106, 256 -> 575, and 512 overflows the memtile. Do not carry the 256 that the 4096-wide Qwen3-8B rows use."
+    },
+    {
+      "M": 2048,
+      "K": 3584,
+      "N": 512,
+      "used_by": "Qwen2.5-7B K/V proj (emb=3584, kv_dim=4*128=512)",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4635,
+          "mean_rel_L1": 0.00944,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      },
+      "_note": "M*K*N = 3.76e9 < 4e9, so --method auto selects drain (tile_m=32), as for the other narrow-N K/V rows. tile_n=128 at tile_m=64 exceeds L1."
+    },
+    {
+      "M": 2048,
+      "K": 3584,
+      "N": 18944,
+      "used_by": "Qwen2.5-7B Gate/Up proj (emb=3584, ffn=18944)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5711,
+          "mean_rel_L1": 0.00988,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 32,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3346,
+          "mean_rel_L1": 0.01484,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      },
+      "_note": "The low-precision (direct) path is stride-bound, not tile-bound: its B-matrix descriptor needs stride tile_k_l2*N, and aie.dma_bd caps strides at 1048576. At N=18944 that forces tile_k_l2 <= 55, so 32 is the only legal value (64 gives 1212416, 128 gives 2424832 and fails to build). Hence 3346 GFLOP/s here vs the ~4400 the narrower Gate/Up rows reach at tile_k_l2=128. The high-precision fused-cast method above is unaffected (tile_n=128 decomposes differently)."
+    },
+    {
+      "M": 2048,
+      "K": 18944,
+      "N": 3584,
+      "used_by": "Qwen2.5-7B Down proj (ffn=18944 -> emb=3584)",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9740,
+          "mean_rel_L1": 0.00988,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      },
+      "_note": "tile_k_l2=256 is the largest memtile-legal value at K=18944 (512 overflows), so it is also the fewest L2 steps and the cheapest compile."
     }
   ]
 }

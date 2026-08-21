@@ -1,0 +1,37 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+_q4nx_*/
+.wcache/
+kernel_cache/
+air_project/
+
+# Compiled kernels + decode templates (reproduced by `make compile-decode`; never committed).
+*.o
+*.ll
+decode.xclbin
+decode.insts.bin
+decode_L*.xclbin
+decode_L*.insts.bin
+decode_dyn_L*.xclbin
+decode_dyn_L*.insts.bin
+decode_dyn_L*.txn.h
+
+# Stray artifacts from running the driver outside build_*/ (xrt.py +
+# external_kernels.py write these to CWD by design).
+air.mlir
+air.elf
+air.xclbin
+air.insts.bin
+
+# Golden / weight caches produced at runtime (external data; see README.md).
+*.npz
+diag_cache/
+
+# build-flag stamp: makes the decode-template skip W_DUAL_CHAN-aware
+.decode_flags
+
+# Staircase window manifest (which ATTN_MAXL pairs this dir holds).
+.decode_windows

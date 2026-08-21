@@ -464,16 +464,56 @@ def _swiglu_tile_n(seq_len, hidden_dim, herd_x=8):
     raise RuntimeError(f"No SwiGLU tile_n for seq={seq_len} hidden={hidden_dim}")
 
 
+# Largest per-launch iteration count known to place. Above this the shim runs out
+# of simultaneously-active buffer descriptors ("Too many simultaneously active
+# buffer descriptors on tile (0,0), which supports up to 16"). The shipped models
+# sit at 448 (8960), 512 (9728) and 688 (11008), so 688 is the observed ceiling.
+_SWIGLU_MAX_ITERS = 688
+
+
+def swiglu_plan(seq_len, hidden_dim, herd_x=8):
+    """(n_chunks, rows_per_chunk) for the SwiGLU launch.
+
+    iters = seq*hidden/(tile_n*herd_x) is bounded below by the hardware: herd_x
+    caps at 8 (a 3-DMA/tile kernel cannot place herd_y>1) and tile_n at ~5120
+    (tile_n * 2B * 3 buffers * ping-pong must fit a 64 KiB L1). At hidden_dim
+    18944 that floors iters at 1024, past the BD budget, so the launch is split
+    over row chunks -- SwiGLU is elementwise, so a row split is exact.
+
+    Returns (1, seq_len) whenever one launch fits, which is every hidden_dim
+    shipped before Qwen2.5-7B; that path is unchanged and emits identical IR."""
+    tile_n = _swiglu_tile_n(seq_len, hidden_dim, herd_x)
+    n = 1
+    while (
+        seq_len // n * hidden_dim // (tile_n * herd_x) > _SWIGLU_MAX_ITERS
+        and (seq_len // n) % 2 == 0
+    ):
+        n *= 2
+    iters = seq_len // n * hidden_dim // (tile_n * herd_x)
+    if iters > _SWIGLU_MAX_ITERS:
+        raise RuntimeError(
+            f"No SwiGLU row split for seq={seq_len} hidden={hidden_dim}: "
+            f"{iters} iters/launch exceeds {_SWIGLU_MAX_ITERS} and seq_len is "
+            f"not further divisible by 2"
+        )
+    return n, seq_len // n
+
+
 def build_swiglu_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
-    """Standalone NPU SwiGLU ELF: silu(gate)*up -> swiglu (seq x hidden)."""
+    """Standalone NPU SwiGLU ELF: silu(gate)*up -> swiglu (rows x hidden).
+
+    Built for ONE row chunk (see swiglu_plan); the driver dispatches it
+    n_chunks times over row slices. n_chunks==1 for every pre-Qwen2.5-7B model."""
     from silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
 
     tile_n = _swiglu_tile_n(seq_len, hidden_dim, herd_x)
+    n_chunks, rows = swiglu_plan(seq_len, hidden_dim, herd_x)
+    split = "" if n_chunks == 1 else f" x{n_chunks} row chunks"
     print(
-        f"  [swiglu] SwiGLU {seq_len}x{hidden_dim} (tile_n={tile_n}, "
-        f"iters={seq_len * hidden_dim // (tile_n * herd_x)})..."
+        f"  [swiglu] SwiGLU {rows}x{hidden_dim}{split} (tile_n={tile_n}, "
+        f"iters={rows * hidden_dim // (tile_n * herd_x)})..."
     )
-    module = build_swiglu(seq_len, hidden_dim, tile_n, bfloat16, herd_x, herd_y)
+    module = build_swiglu(rows, hidden_dim, tile_n, bfloat16, herd_x, herd_y)
     print(f"  swiglu module: {len(str(module).splitlines())} lines, parsed OK")
     return module
 
@@ -1034,12 +1074,14 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
         )
 
         # SwiGLU: NPU ELF (no static weights — only warms the per-layer BO set).
+        # Sized to one row chunk, matching the ELF build (see swiglu_plan).
+        _, sw_rows = swiglu_plan(seq_len, hidden_dim)
         cache.load_and_run(
             "swiglu",
             _swiglu_backend(),
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),
+            np.zeros((sw_rows, hidden_dim), dtype=bfloat16),
+            np.zeros((sw_rows, hidden_dim), dtype=bfloat16),
+            np.zeros((sw_rows, hidden_dim), dtype=bfloat16),
             output_indices=[2],
             intermediate_indices={2},
             bo_key=f"swiglu_L{layer_idx}",
@@ -1229,19 +1271,25 @@ def run_transformer_block_qwen25(
     )
     up = up_res[2].reshape(seq_len, hidden_dim)
 
-    # ELF A4: swiglu (NPU silu(gate)*up).
-    sw_res = cache.load_and_run(
-        "swiglu",
-        _swiglu_backend(verbose),
-        np.asarray(gate, dtype=bfloat16).reshape(seq_len, hidden_dim),  # 0 gate
-        np.asarray(up, dtype=bfloat16).reshape(seq_len, hidden_dim),  # 1 up
-        np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 2 swiglu (out)
-        output_indices=[2],
-        intermediate_indices={2},
-        bo_key=f"swiglu_L{layer_idx}",
-        shared_nonstatic=True,
-    )
-    swiglu = sw_res[2].reshape(seq_len, hidden_dim)
+    # ELF A4: swiglu (NPU silu(gate)*up), dispatched once per row chunk.
+    n_sw, sw_rows = swiglu_plan(seq_len, hidden_dim)
+    gate_2d = np.asarray(gate, dtype=bfloat16).reshape(seq_len, hidden_dim)
+    up_2d = np.asarray(up, dtype=bfloat16).reshape(seq_len, hidden_dim)
+    swiglu = np.zeros((seq_len, hidden_dim), dtype=bfloat16)
+    for c in range(n_sw):
+        r0 = c * sw_rows
+        sw_res = cache.load_and_run(
+            "swiglu",
+            _swiglu_backend(verbose),
+            np.ascontiguousarray(gate_2d[r0 : r0 + sw_rows]),  # 0 gate
+            np.ascontiguousarray(up_2d[r0 : r0 + sw_rows]),  # 1 up
+            np.zeros((sw_rows, hidden_dim), dtype=bfloat16),  # 2 swiglu (out)
+            output_indices=[2],
+            intermediate_indices={2},
+            bo_key=f"swiglu_L{layer_idx}",
+            shared_nonstatic=True,
+        )
+        swiglu[r0 : r0 + sw_rows] = sw_res[2].reshape(sw_rows, hidden_dim)
 
     # ELF B: down_add → output (arg4). Down GEMM is launch 0 (K=hidden NaN fix).
     down_args = [

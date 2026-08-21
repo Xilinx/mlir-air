@@ -158,7 +158,7 @@ class Channel:
             )
         self._declared = True
 
-    def _indices(self, indices):
+    def _indices(self, indices, direction):
         if indices is None:
             indices = ()
         if isinstance(indices, int):
@@ -185,19 +185,37 @@ class Channel:
         # be materialised into an index-typed Value; a constant folds back to a
         # Python int, which the op keeps static. Only the constant case can be
         # range-checked -- the herd shape already bounds the dynamic one.
+        # The two ends of a broadcast are indexed over different grids, so the
+        # bound depends on the direction. A consumer names its slot among the
+        # *destinations*: with `size=[1, 1], broadcast_shape=[3, 1]`, one
+        # producer feeds a 3x1 grid and the gets are [0,0], [1,0], [2,0] --
+        # bounding those by size would admit only [0, 0], which is what
+        # broadcast/multi_herd hit. A producer still indexes the *source*
+        # bundle, which is `size`, so widening the bound for puts as well would
+        # accept an out-of-range source and emit an invalid bundle index.
+        bounds = (
+            self.broadcast_shape
+            if (direction == "get" and self.broadcast_shape)
+            else self.size
+        )
         out = []
-        for axis, (idx, extent) in enumerate(zip(indices, self.size)):
+        for axis, (idx, extent) in enumerate(zip(indices, bounds)):
             value = coerce_index(idx).materialize()
             if isinstance(value, int) and not 0 <= value < extent:
                 raise ValueError(
-                    f"air.channel {self.name!r} index {value} is out of range on "
-                    f"axis {axis}: size is {self.size}, so that axis admits "
-                    f"0..{extent - 1}"
+                    f"air.channel {self.name!r} index {value} is out of range "
+                    f"on axis {axis}: "
+                    + (
+                        f"broadcast_shape is {self.broadcast_shape}"
+                        if bounds is self.broadcast_shape
+                        else f"size is {self.size}"
+                    )
+                    + f", so that axis admits 0..{extent - 1}"
                 )
             out.append(value)
         return out
 
-    def _emit(self, obj, indices, dependency, direction):
+    def _emit(self, obj, indices, dependency, direction, pack=None):
         from ._trace import current_segment
         from .ops import _check_dependency, _endpoint
 
@@ -218,7 +236,11 @@ class Channel:
             )
 
         offsets, sizes, strides = endpoint.pattern or ([], [], [])
-        idx = self._indices(indices)
+        if pack is not None:
+            offsets, sizes, strides = self._packed_pattern(
+                endpoint, pack, direction, obj
+            )
+        idx = self._indices(indices, direction)
 
         if direction == "get" and endpoint.tensor is not None:
             # Same rule ops.store applies: being written from the device is what
@@ -239,17 +261,73 @@ class Channel:
             )
         )
 
+    def _packed_pattern(self, endpoint, pack, direction, obj):
+        """Walk a flat region in micro-tile order, so the DMA does the pack.
+
+        ``ops.load`` derives this from its *destination* buffer, which it can
+        see. A channel cannot: put and get are separate ops, and the packed side
+        is at the far end of the stream, possibly in another scope. So the walk
+        is named where it happens::
+
+            mm = air.micro_tile(m=1, k=16, n=8)
+            b_l2_l1.put(l2_b[kk : kk + tile_k, :], pack=mm.b(tile_k, tile_n))
+
+        The consumer then does a plain whole-buffer ``get`` into an L1 tile of
+        whatever shape holds those elements contiguously -- which is why this
+        takes the *shape* rather than the destination buffer. The two vecmat i8
+        kernels declare their B tile 4-D and their B-scale tile 3-D, and both
+        are the same contiguous run of micro-tiles.
+        """
+        from ._pack import PackedShape, pack_pattern
+
+        if not isinstance(pack, PackedShape):
+            raise TypeError(
+                f"air.channel.{direction}(pack=...) takes a packed shape from "
+                "air.micro_tile(...).a or .b, e.g. "
+                "pack=air.micro_tile(1, 16, 8).b(tile_k, tile_n); got "
+                f"{type(pack).__name__}"
+            )
+        if pack.role == "C":
+            raise NotImplementedError(
+                f"air.channel.{direction}(pack=...) packs an A or B operand. A C "
+                "accumulator is drained the other way round -- the pattern goes "
+                "on the packed buffer itself -- so put the region on that side "
+                "instead of asking the channel to pack it."
+            )
+        if endpoint.raw is None:
+            raise TypeError(
+                f"air.channel.{direction}(pack=...) needs a *region* to walk, not "
+                f"a whole {endpoint.what}: the pack reorders a slice of a flat "
+                "staging buffer, so index it, e.g. l2_b[kk : kk + tile_k, :]"
+            )
+        offsets, sizes, strides = endpoint.raw
+        nlead = len(pack.lead)
+        flat_ok = len(sizes) == 2 and all(e == 1 for e in pack.lead)
+        if len(sizes) != nlead + 2 and not flat_ok:
+            # The "or rank 2" alternative only exists when the packed shape has
+            # leading dimensions to pad away; with lead=() it is the same rank.
+            either = (
+                " (or rank 2 when its leading dimensions are all 1)" if nlead else ""
+            )
+            raise ValueError(
+                f"air.channel.{direction}(pack=...) needs a region of rank "
+                f"{nlead + 2} for a {pack.role} operand{either}, with the two "
+                f"logical axes last; got rank {len(sizes)}, {tuple(sizes)}"
+            )
+        p_off, p_sizes, p_strides = pack_pattern(pack, sizes, strides, offsets)
+        return [o.materialize() for o in p_off], p_sizes, p_strides
+
     # -- public ------------------------------------------------------------
 
-    def put(self, obj, indices=None, dependency=None, **unsupported):
+    def put(self, obj, indices=None, dependency=None, pack=None, **unsupported):
         """Send a tensor, a buffer, or a region of either into the channel."""
         _reject_unsupported(unsupported)
-        return self._emit(obj, indices, dependency, "put")
+        return self._emit(obj, indices, dependency, "put", pack=pack)
 
-    def get(self, obj, indices=None, dependency=None, **unsupported):
+    def get(self, obj, indices=None, dependency=None, pack=None, **unsupported):
         """Receive the channel's next chunk into a tensor, buffer, or region."""
         _reject_unsupported(unsupported)
-        return self._emit(obj, indices, dependency, "get")
+        return self._emit(obj, indices, dependency, "get", pack=pack)
 
 
 # Keywords the underlying ops accept and this DSL does not lower. They raise
