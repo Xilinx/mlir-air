@@ -1784,6 +1784,20 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
     AIE::DMAChannelDir dir = allocs->front().dma_channel.direction;
     bool isMM2S = dir == AIE::DMAChannelDir::MM2S;
 
+    // Where each allocation sat before the pass ran. A split has to be APPENDED
+    // when it is made -- inserting into the vector mid-pass would invalidate
+    // the chain indices still to be visited -- but appending also reorders the
+    // allocations, and this vector is the order flows are later created in.
+    // The pathfinder is greedy, so that order decides routes: llama-3.2-1b
+    // routes under one order of the rope tile's two packet appends and fails to
+    // route under the other, on identical channels. Changing which channel a
+    // flow uses is this pass's business; changing the order they are emitted in
+    // is not. So a split remembers the position of the allocation it came from,
+    // and the vector is put back in that order at the end, each split sitting
+    // immediately after its parent.
+    SmallVector<size_t> origPos(allocs->size());
+    std::iota(origPos.begin(), origPos.end(), 0);
+
     // Chains are keyed exactly as the emitter groups them: one per
     // (tile, channel), over every allocation mapped to it. Rebuilt between
     // phases, since moving a flow changes the grouping.
@@ -1831,7 +1845,7 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
                         Operation *tileOp, int fromChan, int toChan) {
       touched.insert({tileOp, fromChan});
       touched.insert({tileOp, toChan});
-      SmallVector<allocation_info_t> splits;
+      SmallVector<std::pair<size_t, allocation_info_t>> splits;
       for (size_t i : allocIdxs) {
         std::vector<Operation *> keepOps, moveOps;
         for (auto *o : (*allocs)[i].memcpyOps)
@@ -1849,9 +1863,12 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
         split.tile_channel = toChan;
         split.memcpyOps = moveOps;
         (*allocs)[i].memcpyOps = keepOps;
-        splits.push_back(split);
+        splits.push_back({origPos[i], split});
       }
-      llvm::append_range(*allocs, splits);
+      for (auto &[parentPos, split] : splits) {
+        allocs->push_back(split);
+        origPos.push_back(parentPos);
+      }
 
       for (auto &f : memcpy_flows) {
         if (f.air_flow_op != moveDecl)
@@ -2099,8 +2116,25 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
           groups = merged;
         }
 
-        // The group that got here first keeps the channel; the others take the
-        // channels the tile was not using, one group each while they last.
+        // Which group KEEPS the channel it is on? Not simply the one that got
+        // here first. A group whose flows are each fed by ONE producer already
+        // has its arrival order fixed by that producer's BD order -- it is the
+        // well-behaved party. A CONVERGENT flow, one channel fed by several
+        // producers, is the party nothing orders, so that is what gets moved to
+        // the fresh channel and what the well-behaved group is protected from.
+        //
+        // This is also the choice the hand-written pins made. On the llama rms
+        // core @xnorm is convergent (rms core L1 + down_buffer L2) and
+        // @layerOut is not, and the pin moved @xnorm. Moving @layerOut instead
+        // leaves the same partition on swapped indices, which routes on some
+        // designs and not on others -- llama-3.2-1b, llama-3.1-8b and phi4-mini
+        // all fail to route (2,2) DMA0 -> (1,1) DMA2 that way.
+        llvm::stable_sort(groups, [](const auto &a, const auto &b) {
+          return a.first.size() < b.first.size();
+        });
+
+        // The keeper is now groups[0]; the others take the channels the tile
+        // was not using, one group each while they last.
         for (size_t gi = 1; gi < groups.size(); gi++) {
           if (llvm::any_of(groups[gi].second, isImmovable))
             continue;
