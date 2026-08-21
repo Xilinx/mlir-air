@@ -434,7 +434,7 @@ def parse_lit_file(filepath):
     """Extract REQUIRES tags and XFAIL presence from a .lit file."""
     requires_tags = set()
     has_xfail = False
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
             m = re.search(r"//\s*REQUIRES:\s*(.+)", line)
             if m:
@@ -574,7 +574,7 @@ def load_llm_sweep_history(path):
         return []
     newest = {}
     verify = {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -625,7 +625,7 @@ def load_llm_sweeps(sweep_path):
     if not p.is_file():
         return []
     try:
-        recs = json.loads(p.read_text())
+        recs = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     # The combined artifact is a list of per-model records. A single per-model
@@ -749,7 +749,7 @@ def load_llm_history(path):
     if not path or not Path(path).is_file():
         return []
     newest, measured = {}, {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -806,7 +806,7 @@ def render_llm_benchmark(
     recs = load_llm_history(history_path)
     if not recs and perf_path and Path(perf_path).is_file():
         try:
-            recs = json.loads(Path(perf_path).read_text())
+            recs = json.loads(Path(perf_path).read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             recs = []
     if not recs:
@@ -1051,5 +1051,7 @@ if __name__ == "__main__":
         llm_sweep_history_path=args.llm_sweep_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(content)
+    # Explicit encoding: the tables carry the verify/status emoji, and on a
+    # Windows checkout the default (cp1252) raises UnicodeEncodeError on them.
+    args.output.write_text(content, encoding="utf-8")
     print(f"Generated {args.output}")

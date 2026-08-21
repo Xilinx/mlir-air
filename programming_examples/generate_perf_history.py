@@ -65,7 +65,7 @@ def load_history(history_path):
     if not p or not p.is_file():
         return []
     rows = []
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -341,9 +341,12 @@ def main():
     # Always write a page (empty-state when there are no rows) so the site's
     # link to this page is stable and never 404s.
     args.output.write_text(
-        generate_embed_md(rows, args.window)
-        if args.embed
-        else generate_html(rows, args.window)
+        (
+            generate_embed_md(rows, args.window)
+            if args.embed
+            else generate_html(rows, args.window)
+        ),
+        encoding="utf-8",
     )
     print(f"Generated {args.output} ({len(rows)} rows)")
     return 0

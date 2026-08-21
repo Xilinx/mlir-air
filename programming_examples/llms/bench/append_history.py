@@ -92,7 +92,7 @@ def _existing_run_ids(history_path):
     p = Path(history_path)
     if not p.is_file():
         return ids
-    with p.open() as f:
+    with p.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -130,7 +130,7 @@ def main():
         print(f"no {src_path.name}; nothing to append")
         return 0
     try:
-        recs = json.loads(src_path.read_text())
+        recs = json.loads(src_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         # Best-effort: a missing/corrupt/partial input should not crash the CI
         # step (which is itself continue-on-error), just skip this run.
@@ -147,7 +147,7 @@ def main():
     rows = list(flatten(recs, run_id))
     hist = Path(args.history)
     hist.parent.mkdir(parents=True, exist_ok=True)
-    with hist.open("a") as f:
+    with hist.open("a", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row) + "\n")
     print(f"appended {len(rows)} rows for run {run_id} to {hist}")
