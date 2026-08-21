@@ -1,16 +1,40 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""One image broadcast to three separate herds, on air.api.
+
+    air.channel @ChanIn [1, 1] {broadcast_shape = [3, 1]}
+    air.channel @ChanOutB / @ChanOutC / @ChanOutD
+
+The sibling under ``broadcast/single_herd`` fans out to the three *cores* of one
+herd; this one fans out to three *herds*, each a 1x1 grid of its own. One put,
+three gets, each naming its own destination with ``indices=[n, 0]`` -- and each
+herd drains through a channel of its own, which is why there are three output
+channels rather than one array.
+
+Nothing about the fan-out changes between the two: ``broadcast_shape`` is a
+declaration-level attribute describing the grid of destinations, and it does not
+care whether that grid is cores or herds.
+
+Each herd adds its own index plus one, so the three outputs differ, which is
+what makes the broadcast observable rather than merely asserted.
+
+Unchanged from the raw-bindings version this replaces, except for two things:
+
+* The L3-side put and gets sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The increment is written ``out[:] = in[:] + n`` rather than as a scalar loop
+  nest over every (i, j). ``vector=0`` keeps it scalar, as the predecessor was:
+  the image is 32 i32 wide and a <8 x i32> add is 256-bit, which does not
+  legalize.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
@@ -18,77 +42,61 @@ IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
 
+HERDS = 3
 OUTPUT_HERD_NAMES = ["ChanOutB", "ChanOutC", "ChanOutD"]
 
 
-@module_builder
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+    A = air.tensor(IMAGE_SIZE, i32)
+    outs = [air.tensor(IMAGE_SIZE, i32) for _ in range(HERDS)]
 
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    image_type_l1 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    chan_in = air.channel("ChanIn", size=[1, 1], broadcast_shape=[HERDS, 1])
+    chan_out = [air.channel(name) for name in OUTPUT_HERD_NAMES]
 
-    Channel("ChanIn", size=[1, 1], broadcast_shape=[3, 1])
-    for name in OUTPUT_HERD_NAMES:
-        Channel(name)
+    with air.launch(name="copy") as launch:
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1, arg2, arg3):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1, arg2, arg3])
-        def launch_body(a, b, c, d):
+                @seg.body
+                def _():
+                    chan_in.put(A)
 
-            ChannelPut("ChanIn", a)
-            ChannelGet(OUTPUT_HERD_NAMES[0], b)
-            ChannelGet(OUTPUT_HERD_NAMES[1], c)
-            ChannelGet(OUTPUT_HERD_NAMES[2], d)
+                    # A closure per herd rather than `def _(tx, n=n)`: the
+                    # body's positional arity is how air.api knows the grid's
+                    # rank, so a defaulted capture would read as a second
+                    # coordinate and raise.
+                    def one_herd(n):
+                        with air.herd(
+                            [range(1)], name=f"broadcastherd{n}", shape=(1,)
+                        ) as h:
 
-            @segment(name="seg")
-            def segment_body():
-
-                for herd_num in range(3):
-
-                    @herd(name="broadcastherd" + str(herd_num), sizes=[1, 1])
-                    def herd_body(_tx, _ty, _sx, _sy):
-
-                        # We must allocate a buffer of image size for the input/output
-                        image_in = AllocOp(image_type_l1, [], [])
-                        image_out = AllocOp(image_type_l1, [], [])
-
-                        ChannelGet("ChanIn", image_in, indices=[herd_num, 0])
-
-                        # Access every value in the image
-                        for i in range_(IMAGE_HEIGHT):
-                            for j in range_(IMAGE_WIDTH):
-                                # Load the input value
-                                val_in = load(image_in, [i, j])
-
-                                # Calculate the output value
-                                val_out = arith.addi(
-                                    val_in, arith.ConstantOp(T.i32(), herd_num + 1)
+                            @h.body
+                            def _(tx):
+                                image_in = air.alloc(
+                                    IMAGE_SIZE, i32, scope=h.private(), vector=0
+                                )
+                                image_out = air.alloc(
+                                    IMAGE_SIZE, i32, scope=h.private(), vector=0
                                 )
 
-                                # Store the output value
-                                store(val_out, image_out, [i, j])
-                                yield_([])
-                            yield_([])
+                                chan_in.get(image_in, indices=[n, 0])
+                                image_out[:] = image_in[:] + (n + 1)
+                                chan_out[n].put(image_out)
 
-                        ChannelPut(OUTPUT_HERD_NAMES[herd_num], image_out)
+                    for n in range(HERDS):
+                        one_herd(n)
 
-                        DeallocOp(image_in)
-                        DeallocOp(image_out)
+                    for n, out in enumerate(outs):
+                        chan_out[n].get(out)
+
+    return launch
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="broadcast.py",
         description="Builds, runs, and tests the channel broadcast multi herd example",
     )
     parser.add_argument(
@@ -110,9 +118,18 @@ if __name__ == "__main__":
         help="Output format for the compiled binary (default: xclbin)",
     )
 
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
