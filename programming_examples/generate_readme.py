@@ -639,7 +639,7 @@ def load_llm_sweeps(sweep_path):
 
 
 def _sweep_cell(pt):
-    """The point's tok/s, or a marker: — expected_fail, ✗ any other failure."""
+    """The point's tok/s, or a marker: ✗ for a failure, — otherwise."""
     tps = pt.get("decode_tokens_per_sec")
     if isinstance(tps, (int, float)):
         return f"{tps:.2f}"
