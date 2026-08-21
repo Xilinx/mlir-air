@@ -11,7 +11,8 @@ it, mirroring the driver's own sizing:
 
     x   K
     w   W.size                                    (from the requant cache)
-    r   UNI_DEC*RMS_LAYER + 64 + K, LUT at UNI_DEC*RMS_LAYER
+    r   UNI_DEC*RMS_LAYER + rope region + K, LUT at UNI_DEC*RMS_LAYER
+        (the rope region is UNI_DEC slabs when ROPE_W_PER_LAYER, else one)
     y   (HOST_ROUNDS+LAYER_RNDS)*PAYLOAD + UNI_LM*VOCAB_SIZE_PADDED
     kv  UNI_DEC*ATTN_MAXL*KVSZ_TOK
 
@@ -64,7 +65,24 @@ _CHECK_SPLITS = [
         dict(DECODE_STACK="8064", DECODE_WGROUP="8"),
         [545259520, 545259520, 545259520, 545259520, 167772160],
     ),
+    (
+        "qwen2.5-7b",
+        "7",
+        28,
+        dict(DECODE_STACK="6144", DECODE_WGROUP="7"),
+        [509788160, 509788160, 509788160, 509788160, 172605440],
+    ),
 ]
+# A per-layer-rope model, so the rms sizing is covered for both shapes: the
+# single shared LUT (llama-3.2-1B, _CHECK_WANT below) and UNI_DEC slabs. Only
+# the fields that differ by that term are pinned.
+_CHECK_ROPE_PER_LAYER = (
+    "qwen2.5-7b",
+    "7",
+    28,
+    dict(DECODE_STACK="6144", DECODE_WGROUP="7"),
+    dict(rms_size=336896, rms_lut_off=200704),
+)
 _CHECK_WANT = dict(
     k=2048,
     w_elems=386662400,
@@ -80,6 +98,19 @@ _CHECK_WANT = dict(
 # Builder env keys the last geometry() call set via env_extra, so the next one
 # can clear them (the builder reads its knobs at import time).
 _EXTRA_SET = set()
+
+
+def _rope_w_elems(fd):
+    """The rope/qk-norm/qkv-bias region between the rms slabs and the final norm.
+
+    Was hard-coded 64, which is only llama-3.2-1B's value. Models with per-layer
+    slabs (ROPE_W_PER_LAYER = qk-norm or qkv-bias) carry UNI_DEC of them, and
+    ROPE_W_LEN itself is per model -- qwen2.5-7b's is 4736, so its RMS BO was
+    short by 132544 elements and the device read past the end of it.
+    """
+    if not fd.MULTIBLK:
+        return 0
+    return (fd.UNI_DEC if fd.ROPE_W_PER_LAYER else 1) * fd.ROPE_W_LEN
 
 
 def _head_elems(fd):
@@ -186,7 +217,7 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         k=fd.K,
         w_elems=w_elems,
         **({"w_parts": w_parts} if w_parts else {}),
-        rms_size=fd.UNI_DEC * fd.RMS_LAYER + 64 + fd.K,
+        rms_size=fd.UNI_DEC * fd.RMS_LAYER + _rope_w_elems(fd) + fd.K,
         ny=decode_y + fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
         kv_elems=fd.UNI_DEC * fd.ATTN_MAXL * fd.KVSZ_TOK,
         decode_y=decode_y,
@@ -233,6 +264,11 @@ def main():
             got = geometry(model, i2, 2048, n_layers=nl, env_extra=extra).get("w_parts")
             if got != want:
                 bad[f"w_parts[{model}]"] = (want, got)
+        model, i2, nl, extra, want = _CHECK_ROPE_PER_LAYER
+        g2 = geometry(model, i2, 2048, n_layers=nl, env_extra=extra)
+        for k, v in want.items():
+            if g2[k] != v:
+                bad[f"{k}[{model}]"] = (v, g2[k])
         print("SELF-CHECK", "PASS" if not bad else f"FAIL {bad}")
         return 0 if not bad else 1
 
