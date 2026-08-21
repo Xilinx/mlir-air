@@ -1003,3 +1003,20 @@ def _():
         ch.get(buf, indices=[3, 0])
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: broadcast_put_still_bounded_by_size
+# The two ends of a broadcast are indexed over different grids. A *get* names a
+# destination, so broadcast_shape bounds it (above). A *put* names a slot in the
+# source bundle, which is `size` -- widening the bound for puts too would accept
+# an out-of-range source and emit an invalid bundle index.
+# CHECK: ValueError: air.channel 'BP' index 2 is out of range on axis 0: size is [1, 2], so that axis admits 0..0
+@expect(ValueError, "broadcast_put_still_bounded_by_size")
+def _():
+    ch = air.channel("BP", size=[1, 2], broadcast_shape=[3, 2])
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf, indices=[2, 0])
+
+    _trace(body)

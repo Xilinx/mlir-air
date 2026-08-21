@@ -158,7 +158,7 @@ class Channel:
             )
         self._declared = True
 
-    def _indices(self, indices):
+    def _indices(self, indices, direction):
         if indices is None:
             indices = ()
         if isinstance(indices, int):
@@ -185,12 +185,19 @@ class Channel:
         # be materialised into an index-typed Value; a constant folds back to a
         # Python int, which the op keeps static. Only the constant case can be
         # range-checked -- the herd shape already bounds the dynamic one.
-        # A broadcast channel is indexed over its *destinations*, not its
-        # sources: `size=[1, 1], broadcast_shape=[3, 1]` is one producer feeding
-        # a 3x1 grid, and each consumer names its own slot with indices=[n, 0].
-        # Bounding those against size would admit only [0, 0]. The hand-written
-        # broadcast/multi_herd example is exactly this shape.
-        bounds = self.broadcast_shape or self.size
+        # The two ends of a broadcast are indexed over different grids, so the
+        # bound depends on the direction. A consumer names its slot among the
+        # *destinations*: with `size=[1, 1], broadcast_shape=[3, 1]`, one
+        # producer feeds a 3x1 grid and the gets are [0,0], [1,0], [2,0] --
+        # bounding those by size would admit only [0, 0], which is what
+        # broadcast/multi_herd hit. A producer still indexes the *source*
+        # bundle, which is `size`, so widening the bound for puts as well would
+        # accept an out-of-range source and emit an invalid bundle index.
+        bounds = (
+            self.broadcast_shape
+            if (direction == "get" and self.broadcast_shape)
+            else self.size
+        )
         out = []
         for axis, (idx, extent) in enumerate(zip(indices, bounds)):
             value = coerce_index(idx).materialize()
@@ -200,7 +207,7 @@ class Channel:
                     f"on axis {axis}: "
                     + (
                         f"broadcast_shape is {self.broadcast_shape}"
-                        if self.broadcast_shape
+                        if bounds is self.broadcast_shape
                         else f"size is {self.size}"
                     )
                     + f", so that axis admits 0..{extent - 1}"
@@ -229,7 +236,7 @@ class Channel:
             )
 
         offsets, sizes, strides = endpoint.pattern or ([], [], [])
-        idx = self._indices(indices)
+        idx = self._indices(indices, direction)
 
         if direction == "get" and endpoint.tensor is not None:
             # Same rule ops.store applies: being written from the device is what
