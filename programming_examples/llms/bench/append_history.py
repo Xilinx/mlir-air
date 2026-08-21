@@ -42,6 +42,7 @@ def _flat_rows(recs, run_id):
             "aie_hash": tc.get("mlir_aie_hash", ""),
             "peano": tc.get("llvm_aie_version", ""),
             "model": d.get("model", ""),
+            "runner": d.get("runner", ""),
             "ttft_ms": m.get("ttft_ms"),
             "decode_tokens_per_sec": m.get("decode_tokens_per_sec"),
             "context_len": m.get("context_len"),
@@ -55,6 +56,11 @@ def _flat_sweep_rows(recs, run_id):
     Points that did not produce a number are still emitted, with a null metric
     and their status, so a context that starts failing is visible in the series
     rather than the curve just getting shorter.
+
+    `status` is the point's own outcome (did this context produce a number);
+    `verify_status` is the model's `make verify` result for the whole run, which
+    is what the published Verify column reports. They are different things, and
+    both are per-row here because the docs build reads only this file.
     """
     for d in recs:
         tc = d.get("toolchain", {}) or {}
@@ -68,10 +74,12 @@ def _flat_sweep_rows(recs, run_id):
                 "aie_hash": tc.get("mlir_aie_hash", ""),
                 "peano": tc.get("llvm_aie_version", ""),
                 "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
                 "context_len": pt.get("context_len"),
                 "decode_tokens_per_sec": pt.get("decode_tokens_per_sec"),
                 "ms_per_token": pt.get("ms_per_token"),
                 "status": pt.get("status", ""),
+                "verify_status": d.get("verify_status", ""),
             }
 
 

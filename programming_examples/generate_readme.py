@@ -573,6 +573,7 @@ def load_llm_sweep_history(path):
     if not path or not Path(path).is_file():
         return []
     newest = {}
+    verify = {}
     for line in Path(path).read_text().splitlines():
         if not line.strip():
             continue
@@ -590,9 +591,22 @@ def load_llm_sweep_history(path):
         better = r.get("decode_tokens_per_sec") is not None
         if cur is None or (better, ts) >= (cur[0], cur[1]):
             newest[(model, ctx)] = (better, ts, r)
+        # Verify is a per-model property of the whole run, so it is tracked
+        # across the model's rows rather than taken from whichever point won
+        # above -- a stale-but-measured point must not drag a stale verify
+        # badge along with it. Strictly newest, with no preference for a
+        # non-empty value: unlike a throughput number, a correctness badge that
+        # silently goes stale is worse than one that is blank, and this table
+        # has no per-row date to reveal the staleness. Blank until the next
+        # nightly appends the field is the intended transition.
+        if model not in verify or ts >= verify[model][0]:
+            verify[model] = (ts, r.get("verify_status", ""))
     curves = {}
     for (model, ctx), (_, _, r) in sorted(newest.items()):
-        curves.setdefault(model, {"model": model, "points": []})["points"].append(
+        curves.setdefault(
+            model,
+            {"model": model, "points": [], "verify_status": verify[model][1]},
+        )["points"].append(
             {
                 "context_len": ctx,
                 "decode_tokens_per_sec": r.get("decode_tokens_per_sec"),
