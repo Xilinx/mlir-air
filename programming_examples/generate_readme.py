@@ -706,18 +706,8 @@ def render_llm_sweep(recs, base_url=""):
     legend = "\n\n".join(
         note
         for marker, note in (
-            (
-                "—",
-                "— context not reached on this runner (XRT would not pin enough "
-                "host memory for the KV cache; the limit is the machine's, not "
-                "the design's)",
-            ),
-            (
-                "✗",
-                "✗ the sweep did not produce a number here (build, template or "
-                "dispatch failure) — a defect to investigate, not a limit of the "
-                "machine",
-            ),
+            ("—", "— context not reached (KV cache exceeds what XRT will pin)."),
+            ("✗", "✗ sweep failed (build, template or dispatch)."),
         )
         if marker in markers
     )
@@ -875,13 +865,13 @@ def render_llm_benchmark(
 
 ## Nightly LLM Benchmark (NPU2)
 
-End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. Decode streams the whole weight set per token, so it tracks DRAM bandwidth and these numbers do not transfer to a differently configured machine. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
+End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
 | Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
 |:------|--------:|----------:|---------------:|:---------|:------:|
 {table}
 
-\U0001f7e2 verify passed &nbsp; \U0001f534 verify failed &nbsp; ⚪ verify skipped &nbsp; — metric not captured (e.g. the model's profile run failed)
+Verify: \U0001f7e2 pass &nbsp; \U0001f534 fail &nbsp; ⚪ skipped. &nbsp; — not measured.
 
 {_sweep_table}
 \U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
