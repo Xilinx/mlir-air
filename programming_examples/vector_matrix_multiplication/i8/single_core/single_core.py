@@ -56,10 +56,28 @@ DTYPE = {np.int8: i8, np.int32: i32}
 # The AIE2 int8 vecmat intrinsic's operand shape: m x k by k x n.
 MMUL_MKN = (1, 16, 8)
 
+# The L1 tile vm.cc was compiled for: vecmat_vectorized_1x16x8_i8_i32<1, 96, 48>.
+KERNEL_TILE_K = 96
+KERNEL_TILE_N = 48
+
 
 def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.o"):
     assert k % tile_k == 0
     assert n % tile_n == 0
+    # vm.cc instantiates exactly one shape:
+    #     vecmat_vectorized_1x16x8_i8_i32<1, 96, 48>(a_in, b_in, c_out)
+    # so the L1 tile is fixed at 96x48 by the object this links against, not by
+    # anything here. Any other --tile-k/--tile-n builds a launch that calls a
+    # kernel expecting different extents: it links, and it computes the wrong
+    # answer. K and N above stay free -- they are how many tiles, not how big.
+    if (tile_k, tile_n) != (KERNEL_TILE_K, KERNEL_TILE_N):
+        raise ValueError(
+            f"vm.cc instantiates vecmat_i8_i32 for a "
+            f"{KERNEL_TILE_K}x{KERNEL_TILE_N} tile only, so --tile-k "
+            f"{KERNEL_TILE_K} --tile-n {KERNEL_TILE_N} is the only supported "
+            f"pair; got tile_k={tile_k}, tile_n={tile_n}. Rebuild vm.cc with "
+            f"different template arguments to change it."
+        )
 
     dt_in = DTYPE[np_dtype_in]
     dt_out = DTYPE[np_dtype_out]

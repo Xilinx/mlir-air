@@ -55,11 +55,38 @@ DTYPE = {np.int8: i8, np.float32: f32}
 # The AIE2 int8 vecmat intrinsic's operand shape: m x k by k x n.
 MMUL_MKN = (1, 16, 8)
 
+# What vm.cc was compiled for: vecmat_vectorized_1x16x8_i8_f32_i32_32<1, 96, 48>.
+KERNEL_TILE_K = 96
+KERNEL_TILE_N = 48
+KERNEL_BS = 32
+
 
 def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.o"):
     assert k % tile_k == 0
     assert n % tile_n == 0
     assert tile_k % bs == 0
+    # vm.cc instantiates exactly one shape and one block size:
+    #     combos(X) X(int8, i8, float, f32, int, i32, 32, 1, 16, 8)
+    #     vecmat_vectorized_1x16x8_i8_f32_i32_32<1, 96, 48>(...)
+    # so the tile is fixed at 96x48 and the only symbol that exists is
+    # vecmat_i8_f32_i32_32. A different --bs names a function nobody defined
+    # (a link failure); a different tile links and computes the wrong answer.
+    # K and N stay free -- they are how many tiles, not how big.
+    if bs != KERNEL_BS:
+        raise ValueError(
+            f"vm.cc defines vecmat_i8_f32_i32_{KERNEL_BS} only, so --bs "
+            f"{KERNEL_BS} is the only supported block size; got bs={bs}, which "
+            f"would call vecmat_i8_f32_i32_{bs} and fail to link. Rebuild vm.cc "
+            f"with a different group_size to change it."
+        )
+    if (tile_k, tile_n) != (KERNEL_TILE_K, KERNEL_TILE_N):
+        raise ValueError(
+            f"vm.cc instantiates vecmat_i8_f32_i32_{KERNEL_BS} for a "
+            f"{KERNEL_TILE_K}x{KERNEL_TILE_N} tile only, so --tile-k "
+            f"{KERNEL_TILE_K} --tile-n {KERNEL_TILE_N} is the only supported "
+            f"pair; got tile_k={tile_k}, tile_n={tile_n}. Rebuild vm.cc with "
+            f"different template arguments to change it."
+        )
 
     dt_in = DTYPE[np_dtype_in]
     dt_out = DTYPE[np_dtype_out]
