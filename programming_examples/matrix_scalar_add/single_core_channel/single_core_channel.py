@@ -1,130 +1,91 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Add each tile's index to that tile, streamed through channels, on air.api.
+
+    air.channel @ChanIn     L3 -> L1, one put per tile
+    air.channel @ChanOut    L1 -> L3, one put per tile
+
+The image is cut into tiles on the *producer* side: a loop nest at segment scope
+puts one tile region per trip, and the single core does one get per trip. So
+neither end names a tile index -- the channel carries them in order, and the
+core's `tile_num` is just its trip counter. That is the ordering guarantee a
+channel gives, used as the whole indexing scheme.
+
+Unchanged from the raw-bindings version this replaces, except for two things:
+
+* The L3-side puts and gets sit inside the segment. Reaching L3 needs a shim DMA
+  allocation, and outside a segment there is none to link to.
+* The per-tile add is written ``tile_out[:] = tile_in[:] + tile_num`` rather
+  than a scalar loop nest over every (i, j); the trip counter broadcasts into
+  the expression as an index_cast, which is what the predecessor spelled by
+  hand. ``vector=0`` keeps it scalar as it was: a <8 x i32> add is 256-bit and
+  does not legalize.
+"""
+
 import argparse
+import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
+
+DTYPE = {np.int32: i32}
 
 
-@module_builder
 def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
     assert image_height % tile_height == 0
     assert image_width % tile_width == 0
-    image_size = [image_height, image_width]
+    dt = DTYPE[np_dtype]
     tile_size = [tile_height, tile_width]
-    xrt_dtype = type_mapper(np_dtype)
+    rows = image_height // tile_height
+    cols = image_width // tile_width
 
-    memrefTyInOut = MemRefType.get(image_size, xrt_dtype)
+    A = air.tensor([image_height, image_width], dt)
+    B = air.tensor([image_height, image_width], dt)
 
-    # Create two channels which will send/receive the
-    # input/output data respectively
-    Channel("ChanIn")
-    Channel("ChanOut")
+    chan_in = air.channel("ChanIn")
+    chan_out = air.channel("ChanOut")
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    with air.launch(name="copy") as launch:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-            # Transform data into contiguous tiles
-            for offset0 in range_(
-                0, tile_height * (image_height // tile_height), tile_height
-            ):
-                for offset1 in range_(
-                    0, tile_width * (image_width // tile_width), tile_width
-                ):
-                    # Put data into the channel tile by tile
-                    ChannelPut(
-                        "ChanIn",
-                        a,
-                        offsets=[offset0, offset1],
-                        sizes=tile_size,
-                        strides=[image_width, 1],
-                    )
-                    yield_([])
-                yield_([])
+                @seg.body
+                def _():
+                    # One put per tile, row-major -- the order the core's gets
+                    # consume them in.
+                    for r in air.sequential(0, rows):
+                        for c in air.sequential(0, cols):
+                            i0 = r * tile_height
+                            j0 = c * tile_width
+                            chan_in.put(A[i0 : i0 + tile_height, j0 : j0 + tile_width])
 
-            # The arguments are still the input and the output
-            @segment(name="seg")
-            def segment_body():
+                    with air.herd([range(1)], name="xaddherd", shape=(1,)) as h:
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1])
-                def herd_body(_tx, _ty, _sx, _sy):
+                        @h.body
+                        def _(tx):
+                            tile_in = air.alloc(
+                                tile_size, dt, scope=h.private(), vector=0
+                            )
+                            tile_out = air.alloc(
+                                tile_size, dt, scope=h.private(), vector=0
+                            )
 
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                            for tile_num in air.sequential(0, rows * cols):
+                                chan_in.get(tile_in)
+                                tile_out[:] = tile_in[:] + tile_num
+                                chan_out.put(tile_out)
 
-                    # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=tile_size,
-                        element_type=xrt_dtype,
-                        memory_space=mem_space,
-                    )
+                    for r in air.sequential(0, rows):
+                        for c in air.sequential(0, cols):
+                            i0 = r * tile_height
+                            j0 = c * tile_width
+                            chan_out.get(B[i0 : i0 + tile_height, j0 : j0 + tile_width])
 
-                    # Loop over columns and rows of tiles
-                    for tile_num in range_(
-                        (image_width // tile_width) * (image_height // tile_height)
-                    ):
-
-                        # We must allocate a buffer of tile size for the input/output
-                        tile_in = AllocOp(tile_type, [], [])
-                        tile_out = AllocOp(tile_type, [], [])
-
-                        # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                        ChannelGet("ChanIn", tile_in)
-
-                        # Access every value in the tile
-                        for i in range_(tile_height):
-                            for j in range_(tile_width):
-                                # Load the input value from tile_in
-                                val_in = load(tile_in, [i, j])
-
-                                # Compute the output value
-                                val_out = arith.addi(
-                                    val_in, arith.index_cast(xrt_dtype, tile_num)
-                                )
-
-                                # Store the output value in tile_out
-                                store(val_out, tile_out, [i, j])
-                                yield_([])
-                            yield_([])
-
-                        # Copy the output tile into the output
-                        ChannelPut("ChanOut", tile_out)
-
-                        # Deallocate our L1 buffers
-                        DeallocOp(tile_in)
-                        DeallocOp(tile_out)
-
-                        yield_([])
-
-            # Write data back out to the channel tile by tile
-            for offset0 in range_(
-                0, tile_height * (image_height // tile_height), tile_height
-            ):
-                for offset1 in range_(
-                    0, tile_width * (image_width // tile_width), tile_width
-                ):
-                    ChannelGet(
-                        "ChanOut",
-                        b,
-                        offsets=[offset0, offset1],
-                        sizes=tile_size,
-                        strides=[image_width, 1],
-                    )
-                    yield_([])
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -173,15 +134,24 @@ if __name__ == "__main__":
         help="Output format for the compiled binary (default: xclbin)",
     )
 
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.image_height,
         args.image_width,
         args.tile_height,
         args.tile_width,
         INOUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
