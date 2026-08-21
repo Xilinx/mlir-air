@@ -36,6 +36,16 @@ elementwise arithmetic on whole L1 tiles, an ``air.sequential`` loop, and
 ``NotImplementedError`` at the point of use. Nothing degrades quietly into a
 kernel that runs and returns wrong numbers.
 
+Element types are ``bf16 f16 f32``, ``i8 i16 i32`` and ``ui8 ui16 ui32``. The
+unsigned three are *movable but not computable*: MLIR spells signedness in the
+operation rather than the type, so the whole ``arith`` dialect -- and every
+named ``linalg`` contraction built out of it -- takes signless operands, and a
+``ui8`` one does not verify. An unsigned tile can therefore be allocated, moved
+by ``ops.load``/``ops.store`` and ``air.channel``, copied elementwise, and
+handed to an ``air.extern`` kernel, which is what a ``uint8`` example in this
+tree needs; arithmetic on one raises at the call site naming the signed type to
+declare instead.
+
 ``launch``, ``segment`` and ``herd`` are independent levels: a kernel that needs
 no staging writes a herd on its own, and one that does wraps it in a segment.
 Giving ``air.segment`` an iteration space makes it the *launch* grid, one segment
@@ -94,7 +104,7 @@ from ._trace import (
     wait,
 )
 from ._value import Buffer, BufferSlice, Tensor, TensorSlice, Token
-from .types import DType, bf16, f16, f32, i8, i16, i32
+from .types import DType, bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32
 
 __all__ = [
     # operations
@@ -127,6 +137,9 @@ __all__ = [
     "i8",
     "i16",
     "i32",
+    "ui8",
+    "ui16",
+    "ui32",
     # objects surfaced for isinstance checks and typing
     "LaunchContext",
     "SegmentContext",
