@@ -54,10 +54,14 @@ env:
   # nightly rather than assuming.
   #
   # qwen25_7b_q4nx runs off Qwen/Qwen2.5-7B-Instruct directly (quantized on load --
-  # FastFlowLM publishes no Q4NX bundle for it), so it is the same shape as qwen3_8b
-  # above and its peak is likewise unmeasured here. Bound: ~15GB bf16 reference in
-  # the compare phase, ~6GB dequantized Q4NX weights plus five decode weight BOs
-  # (4x0.95GB + 0.32GB, see llms/qwen25_7b_q4nx) in the NPU phase.
+  # FastFlowLM publishes no Q4NX bundle for it). Its NPU phase peaks at ~33GB RSS,
+  # MEASURED (32.6GB for prefill alone on a 96GB dev box): the bf16 checkpoint, the
+  # Q4NX host dequant and the five resident decode weight BOs (4x0.95GB + 0.32GB)
+  # are all live across the load. That is the largest peak of any model here and
+  # over half this 64GB runner, so it must not run concurrently with another model
+  # -- the -j1 in the lit suites is what guarantees that. The compare phase holds
+  # the ~15GB bf16 reference in a separate subprocess, so it is not additive.
+  # Re-measure this if the weight preload's lifetime changes.
 
 jobs:
   benchmark:

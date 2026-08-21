@@ -6,14 +6,14 @@
 # A thin driver over the config-parameterized qwen25_3b prefill builders -- same
 # Qwen2.5 block shape (RMSNorm -> Q/K/V GEMM + bias -> RoPE -> causal GQA flash
 # attention -> SwiGLU), different constants -- rather than a self-contained
-# clone. Weights come from a FastFlowLM Q4NX bundle, dequantized on the host at
-# load and written once into resident per-layer BOs; every op then runs on the
-# NPU.
+# clone. Weights are Q4NX: by default the upstream HF bf16 checkpoint rounded
+# onto the Q4NX grid at load (FastFlowLM publishes no Qwen2.5-7B bundle), or a
+# local model.q4nx bundle if one is given. Either way they are dequantized on the
+# host and written once into resident per-layer BOs; every op then runs on the NPU.
 #
 # Deltas vs the Qwen2.5-3B Q4_0 sibling, all model-driven:
-#   codec   Q4NX (unsigned int4, affine scale+min) from a pre-quantized
-#           FastFlowLM bundle, instead of quantizing an HF bf16 checkpoint to
-#           Q4_0 on the fly. Same codec the fused decode consumes -> prefill and
+#   codec   Q4NX (unsigned int4, affine scale+min) instead of Q4_0 (signed,
+#           scale only). Both quantize the HF bf16 checkpoint on load. Same codec the fused decode consumes -> prefill and
 #           decode agree bit-for-bit on the weights.
 #   shape   28 layers, 28 heads x head_dim 128, 4 kv heads (GQA group 7),
 #           hidden 18944, vocab 152064, rope_theta 1e6.
@@ -23,8 +23,10 @@
 # The GEMM registry shapes exist at M=2048, so the whole prefill runs at
 # seq_len=2048 (pad the prompt, read the last real token's row for the logit).
 #
-# Weight source (env-overridable): MODEL_SOURCE -- an HF repo id, a local dir
-# containing model.q4nx, or a direct model.q4nx path.
+# Weight source (env-overridable): Q4NX_MODEL_SOURCE -- the name the Makefile
+# exports, and what `make run` / `make prefill MODEL_SOURCE=...` end up setting.
+# An HF repo id (quantized onto the Q4NX grid at load), a local dir containing
+# model.q4nx, or a direct model.q4nx path.
 import argparse
 import os
 import sys
@@ -53,7 +55,9 @@ from qwen25_7b_q4nx_weights import (  # noqa: E402
     qwen25_7b_config,
 )
 
-MODEL_DEFAULT = os.environ.get("MODEL_SOURCE", "Qwen/Qwen2.5-7B-Instruct")
+MODEL_DEFAULT = os.environ.get(
+    "Q4NX_MODEL_SOURCE", os.environ.get("MODEL_SOURCE", "Qwen/Qwen2.5-7B-Instruct")
+)
 EPS = 1e-6
 
 # On-device LM head GEMV: 10 partitions of M=16384 (10*16384=163840 >= VOCAB).
@@ -168,8 +172,9 @@ class Qwen25Q4nxPrefill:
 
     # ---- causal_lm interface ----
     def load_weights(self, model=None):
-        """Load the Q4NX bundle, dequant to bf16 on the host, and pre-load every
-        projection into resident per-layer BOs."""
+        """Load the weights -- an HF checkpoint quantized onto the Q4NX grid at
+        load (the default) or a local model.q4nx bundle -- dequant to bf16 on the
+        host, and pre-load every projection into resident per-layer BOs."""
         model = model or MODEL_DEFAULT
         self._weights = load_q4nx_weights(model, config=self.config)
         self._lm_head = self._weights.lm_head

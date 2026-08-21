@@ -8,10 +8,11 @@
 // HF checkpoint rounded onto the Q4NX grid; the reference is that checkpoint in
 // bf16, so the gate measures the 4-bit loss and nothing else.
 //
-// REFERENCE. The Q4NX bundle is converted from the bartowski
-// Qwen2.5-7B-Instruct Q4_0 GGUF, so the reference is `Qwen/Qwen2.5-7B-Instruct`
-// -- ungated, so CI needs no license grant. Both MODEL_CHOICES map to it. NOT
-// the -1M variant (same geometry, rope_theta 1e7). See verify_adapter.py.
+// REFERENCE. The NPU side quantizes `Qwen/Qwen2.5-7B-Instruct` onto the Q4NX
+// grid at load (FastFlowLM publishes no Qwen2.5-7B bundle), so the bf16
+// reference is that same checkpoint -- ungated, so CI needs no license grant.
+// Both MODEL_CHOICES map to it. NOT the -1M variant (same geometry, rope_theta
+// 1e7). See verify_adapter.py.
 //
 // (The fast prefill-only Paris-argmax smoke lives at `make verify-paris`, and
 // `make run` still prints its own greedy PARIS_GREEDY verdict as a demo check.)

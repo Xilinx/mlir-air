@@ -61,33 +61,38 @@ Verified against the HF `config.json` and FastFlowLM's own
 ## Performance (NPU2, 28 layers, warm)
 
 Measured on an **AMD Ryzen AI 9 HX 370** (Strix Point, XDNA2 / NPU2), 96 GB,
-Ubuntu 25.04, XRT 2.23.0 (engine built, weights resident):
+Ubuntu 25.04, XRT 2.23.0 (engine built, weights resident). Every prefill figure
+below is from a single `make profile-prefill` run, so they reconcile:
 
 | | |
 |---|---|
-| prefill (TTFT) | **10.0 s** at CTX=2048 (205 tok/s); 9.99 s on-device, 10 ms host |
+| prefill (TTFT) | **9.59 s** at CTX=2048 (214 tok/s); 9.58 s on-device, 8 ms host |
 | decode | **11.46 tok/s** (87.2 ms/token), ATTN_MAXL=2048, 64 tokens |
 
 FastFlowLM publishes no Qwen2.5-7B bundle, so there is no vendor decode number to
 compare against here — unlike the Qwen3-8B and Gemma3-4B siblings.
 
 Prefill runs at a fixed padded context (`CTX`), so its cost is roughly constant in
-prompt length rather than proportional to it. Measure it with `make
-profile-prefill`. On-device time per op at CTX=2048 (summed over 28 layers):
+prompt length rather than proportional to it. On-device time per op at CTX=2048
+(NPU-execution only, summed over 28 layers):
 
-| gate | up | flash_attn | down_add | rms_qkv_bias_rope | o_res_norm | swiglu | lm_head_gemv |
+| up | gate | flash_attn | down_add | rms_qkv_bias_rope | o_res_norm | swiglu | lm_head_gemv |
 |---|---|---|---|---|---|---|---|
-| 2353 ms | 2340 | 1120 | 826 | 464 | 311 | 279 | 31 (x1) |
+| 2368 ms | 2358 | 1135 | 837 | 451 | 311 | 286 | 31 (x1) |
 
-Of the ~8.4 s of measured XRT time, 91% is NPU execution, 7% host→DDR writes of the
-dynamic inputs and 2% readback. Unlike the Gemma3-4B sibling the lever here is not
-attention: the two FFN GEMMs are 61% of device time on their own, because
-`INTERMEDIATE_SIZE=18944` is 5.3x hidden (2.7-4.0x for every other model in
-`llms/`).
+Those sum to 7776 ms. The three prefill totals are different scopes, which is why
+they differ: **7.78 s** of NPU execution, **8.50 s** of instrumented XRT call time
+(adds 577 ms of host→DDR writes of the dynamic inputs and 142 ms of readback), and
+**9.59 s** of wall TTFT (adds ~1.1 s of host-side Python between dispatches).
 
-Separately, loading the model — Q4NX host dequant of ~6 GB of weights plus the
-one-time write into resident BOs — takes ~130 s per process with a warm HF cache.
-That is a startup cost, not part of TTFT; the driver reports the two separately.
+Unlike the Gemma3-4B sibling the lever here is not attention: `up` + `gate` alone
+are 61% of NPU time, because `INTERMEDIATE_SIZE=18944` is 5.3x hidden (2.7-4.0x
+for every other model in `llms/`).
+
+Separately, loading the model — the HF bf16 read, the Q4NX host dequant, and the
+write into resident BOs — takes ~130 s per process with a warm HF cache and peaks
+at **~33 GB RSS** (measured: 32.6 GB for the prefill path alone). That is a
+startup cost, not part of TTFT; the driver reports the two separately.
 
 ## Prerequisites
 
@@ -96,7 +101,9 @@ That is a startup cost, not part of TTFT; the driver reports the two separately.
 - Weights: nothing to fetch beyond the ungated `Qwen/Qwen2.5-7B-Instruct`
   checkpoint (see [Weights](#weights))
 - Python deps on top of the base environment: `pip install -r requirements.txt`
-- ~5 GB of host memory for the decode weight BOs (five buffers, see below)
+- **~33 GB of host RAM.** Peak is the load phase, not the run: the bf16
+  checkpoint, the Q4NX dequant and the resident BOs (five decode weight
+  buffers, 4x0.95 GB + 0.32 GB) are live together. Measured 32.6 GB peak RSS.
 
 ## Quick Start
 

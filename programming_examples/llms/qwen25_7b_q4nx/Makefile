@@ -250,9 +250,9 @@ chat:
 ## k=5) -- the same gate, through the same shared verify/ subsystem, as the other
 ## quantized examples.
 ##
-## REFERENCE. The Q4NX bundle is converted from the bartowski
-## Qwen2.5-7B-Instruct Q4_0 GGUF, so the bf16 reference is
-## `Qwen/Qwen2.5-7B-Instruct` and both MODEL_CHOICE keys map to it -- a base-model
+## REFERENCE. The NPU side quantizes `Qwen/Qwen2.5-7B-Instruct` onto the Q4NX
+## grid at load (FastFlowLM publishes no Qwen2.5-7B bundle), so the bf16
+## reference is that same checkpoint and both MODEL_CHOICE keys map to it -- a base-model
 ## reference would disagree with the instruct weights it is checking. It is
 ## ungated and loads directly with AutoModelForCausalLM. NOT the -1M variant:
 ## same geometry, but rope_theta 1e7 instead of 1e6.

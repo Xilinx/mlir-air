@@ -7,10 +7,11 @@ Drives the SAME on-device path `make run` uses: the batched AIR prefill for the
 prompt, then the fused_decode superkernel (28 layers + the untied LM head in one
 dispatch, attention + KV cache on the AIE array) for each new token.
 
-REFERENCE. The Q4NX bundle is converted from the bartowski Qwen2.5-7B-Instruct
-Q4_0 GGUF (the GGUF family FastFlowLM's own converter consumes), so the bf16
-reference is `Qwen/Qwen2.5-7B-Instruct` -- ungated, rope_theta 1e6. NOT the
--1M long-context variant, which shares the geometry but ropes at 1e7.
+REFERENCE. The NPU weights are `Qwen/Qwen2.5-7B-Instruct` rounded onto the Q4NX
+grid at load (FastFlowLM publishes no Qwen2.5-7B bundle), so the bf16 reference
+is that same checkpoint and the gate measures the 4-bit loss and nothing else --
+ungated, rope_theta 1e6. NOT the -1M long-context variant, which shares the
+geometry but ropes at 1e7.
 
 `prefill()` runs `Qwen25Q4nxPrefill` (full logits + per-layer roped-K / raw-V) and
 seeds the decode's device KV cache from it; each `decode_step()` then dispatches
@@ -58,16 +59,17 @@ class Qwen25Config:
     vocab_size: int = _w.VOCAB
 
 
-# The NPU weights come from the *Instruct* GGUF, so both keys map to it: a
-# base-model reference would disagree with the bundle it is checking.
+# The NPU weights are quantized from the *Instruct* checkpoint, so both keys map
+# to it: a base-model reference would disagree with the weights it is checking.
 MODEL_CHOICES = {
     "base": "Qwen/Qwen2.5-7B-Instruct",
     "instruct": "Qwen/Qwen2.5-7B-Instruct",
 }
 DEFAULT_MODEL = "instruct"
 
-# NPU weight source: the FastFlowLM Q4NX bundle (NOT the bf16 reference above).
-# Same default as the inference driver / Makefile.
+# NPU weight source. By default the same repo id as the bf16 reference above --
+# the NPU side quantizes it to Q4NX on load, the reference side reads it in bf16.
+# A local model.q4nx bundle is also accepted. Same default as the driver/Makefile.
 Q4NX_MODEL_SOURCE = os.environ.get("Q4NX_MODEL_SOURCE", "Qwen/Qwen2.5-7B-Instruct")
 
 # Padded prefill length. The Qwen2.5-7B GEMM registry shapes exist at M=2048, so the
@@ -84,8 +86,8 @@ def resolve_model(model_choice_or_id: str) -> str:
 
 
 def hf_reference(npu_model_name: str) -> str:
-    """The bf16 reference. The NPU weights come from a separate Q4NX bundle
-    (converted from a GGUF), so the two differ."""
+    """The bf16 reference: the same checkpoint the NPU side quantizes to Q4NX on
+    load, so the gate isolates quantization error."""
     return npu_model_name
 
 

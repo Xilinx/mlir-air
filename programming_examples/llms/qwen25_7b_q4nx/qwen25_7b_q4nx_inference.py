@@ -40,7 +40,8 @@ _PE = _HERE.parent.parent  # programming_examples
 _DEC = _PE / "fused_decode"  # shared fused superkernel decode engine
 sys.path.insert(0, str(_HERE))
 
-# HF repo id of the self-contained model.q4nx bundle, or a local dir/file
+# Weight source: by default an HF repo id quantized onto the Q4NX grid at load;
+# a local dir containing model.q4nx, or a direct model.q4nx path, also work
 # (qwen25_7b_q4nx_weights resolves all three).
 MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "Qwen/Qwen2.5-7B-Instruct")
 # "The capital of France is" (Qwen2.5 tokenizer, no BOS); prefill -> 12095 " Paris".
