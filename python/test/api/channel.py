@@ -232,3 +232,52 @@ def whole_tensor_transfer():
                     air.ops.store(buf, B)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: channel_pack
+# pack= walks a flat L2 region in micro-tile order, so the DMA performs the
+# pack and the consumer does a plain whole-buffer get. ops.load derives the
+# same walk from its destination buffer; a channel cannot see that far, because
+# put and get are separate ops with the packed side at the other end of the
+# stream, so the walk is named at the put.
+#
+# The B pack of a [K, N] region with micro-tile (k, n) is
+# [N/n, K/k, k, n] over strides [n, k*N, N, 1] -- here [6, 6, 16, 8] over
+# [8, 768, 48, 1] for a [96, 48] region, which is the same walk the
+# hand-written kernel spells collapsed as [6, 96, 8] over [8, 48, 1].
+# CHECK: air.channel.put @Bpack[] (%{{.*}}[0, 0, 0, 0] [6, 6, 16, 8] [8, 768, 48, 1])
+# CHECK: air.channel.get @Bpack[] (%{{.*}}[] [] [])
+@run
+def channel_pack():
+    TILE_K, TILE_N = 96, 48
+    mm = air.micro_tile(1, 16, 8)
+
+    A = air.tensor([TILE_K, TILE_N], i8)
+    Out = air.tensor([TILE_K, TILE_N], i8)
+    pack = air.channel("Bpack")
+
+    with air.launch(name="packed") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    l2_b = air.alloc([TILE_K, TILE_N], i8, scope=seg.private())
+                    air.ops.load(l2_b, A)
+                    pack.put(
+                        l2_b[0:TILE_K, 0:TILE_N],
+                        pack=mm.b(TILE_K, TILE_N, lead=()),
+                    )
+
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            l1_b = air.alloc([6, 6, 16, 8], i8, scope=h.private())
+                            pack.get(l1_b)
+
+                    air.ops.store(l2_b, Out)
+
+    print(launch.mlir())
