@@ -1265,14 +1265,12 @@ def build_module():
         _ropeQ = channel_decl(
             "ropeQ", size=[1]
         )  # rope q (whole 2048) -> q broadcast memtile
-        if KV_APPEND:
-            # Pin roped Q to rope MM2S0 so the K/V append (pinned to MM2S1
-            # below) does not steal it -- matches the reference (Q on 1st MM2S, K/V append
-            # on 2nd). Without this the placer puts the packet append on MM2S0
-            # (allocated first) and shoves Q to MM2S1, deadlocking the front-end.
-            _ropeQ.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                T.i32(), 0
-            )
+        # Q used to be pinned to rope MM2S0 here, to keep the packet K/V append
+        # off the channel carrying this circuit flow. The compiler derives that
+        # now: a DMA channel's port is either statically connected or packet-
+        # switched, never both, so AIRToAIE separates the two by itself
+        # (TileDMAAllocator::spreadCollapsedPacketChannels) and reproduces this
+        # exact placement.
         channel_decl("toAttnQ", size=[N_ATTN_CU])
         # rope k/v -> kv memtiles. PACKET so one rope MM2S can fan to memtiles on
         # MULTIPLE cols (mem_3_1 + mem_4_1) -- the reference routes rope k/v as
@@ -1305,10 +1303,10 @@ def build_module():
                 _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
                     T.i32(), 1
                 )
+                # Only appendK names a channel. It is what holds the pair on
+                # rope's second MM2S, clear of the circuit ropeQ; appendV joins
+                # it there on its own.
                 _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-                _apV.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 1
-                )
             if KV_SPLIT:
                 # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
                 # col group of 2 CUs), so their memtile S2MM fills are independent.
@@ -1366,13 +1364,9 @@ def build_module():
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
-            _lo = channel_decl("layerOut", size=[1])
-            if KV_APPEND:
-                # Keep layerOut on rms MM2S0 (circuit) so xnorm (pinned to MM2S1)
-                # does not share/flip it to packet. See xnorm pin above.
-                _lo.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 0
-                )
+            # layerOut takes rms MM2S0 without being told to: the xnorm pin
+            # above claims MM2S1, and this is the only other flow on the tile.
+            channel_decl("layerOut", size=[1])
         # GLU path: id-demux delivers gate-up DIRECTLY to the GLU herd (no relay);
         # GLU -> gluOut -> down memtile accumulate (8192). FAITHFUL: that 8192 is
         # fed back on-chip as the DOWN phase X by the down_buffer re-broadcasting it

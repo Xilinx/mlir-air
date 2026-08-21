@@ -787,26 +787,21 @@ def build_module():
                 # rope's roped-K / raw-V leave on ONE dedicated rope MM2S as PACKET flows
                 # pinned to the attn shim col (7) -> DDR cache. Qwen has ONE col group
                 # (NGRP=1) so both K and V transit col 7 (Llama split cols 3/4).
-                # CHANNEL 0, NOT 1: rope also emits ropeQ as a CIRCUIT flow (-> the col-6
-                # q-broadcast memtile). Pinning the appends to MM2S1 left ropeQ to land on
-                # MM2S1 TOO, so one physical output port carried a static circuit route AND
-                # two packet routes -- the packet BDs would be steered by the circuit
-                # connection instead of their packet dests. Llama keeps them apart (circuit
-                # ropeQ on MM2S0, packets on MM2S1); pinning the appends to 0 gives Qwen the
-                # same separation with ropeQ taking the remaining channel.
+                #
+                # Which rope MM2S they take is no longer stated. rope also emits ropeQ
+                # as a CIRCUIT flow (-> the col-6 q-broadcast memtile), and a physical
+                # output port cannot carry both a static circuit route and packet
+                # routes -- the packet BDs would be steered by the circuit connection
+                # instead of their packet dests. AIRToAIE separates them itself now
+                # (TileDMAAllocator::spreadCollapsedPacketChannels), reaching the same
+                # placement this used to name.
                 _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
                 _apK.operation.attributes["air.shim_col"] = IntegerAttr.get(
                     i32, ATTN_COL
                 )
-                _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    i32, 0
-                )
                 _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
                 _apV.operation.attributes["air.shim_col"] = IntegerAttr.get(
                     i32, ATTN_COL
-                )
-                _apV.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    i32, 0
                 )
             channel_decl(
                 "toK", size=[N_ATTN_CU]
@@ -865,8 +860,9 @@ def build_module():
         if PH1_XCHAN:
             channel_decl("xnorm2", size=[1], channel_type="npu_dma_packet")
         _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
-        _rmsw = channel_decl("rmsW", size=[1])  # host rms weight -> rms core
-        _rmsw.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 1)
+        # rmsW lands on the rms core's S2MM1 alongside rmsIn, which is pinned
+        # above; it does not need to say so itself.
+        channel_decl("rmsW", size=[1])  # host rms weight -> rms core
         channel_decl("gluOut", size=[1])  # glu-down -> down-X refeed memtile (ph3)
 
         # ============================ proj grid core ============================

@@ -1704,6 +1704,287 @@ void air::TileDMAAllocator::repairS2MMChains(
   }
 }
 
+void air::TileDMAAllocator::spreadCollapsedPacketChannels(
+    std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
+  auto declOf = [](Operation *o) -> Operation * {
+    auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (!chan)
+      return nullptr;
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    return decl ? decl.getOperation() : nullptr;
+  };
+  // A decl the front end has already placed on this tile. Unlike at the shim,
+  // `air.tile_dma_channel` IS about this tile's channel, so it is honoured here
+  // as the explicit override it is documented to be. `broadcast_shape` is not
+  // consulted: a broadcast constrains the SOURCE port it fans out from, which
+  // says nothing about which channel each receiving core takes it in on.
+  auto isImmovable = [](Operation *decl) {
+    return decl->hasAttr(air::attrs::TileDmaChannel) ||
+           decl->hasAttr(air::attrs::DedicatedDmaChannel);
+  };
+  // Whether the flow this transfer belongs to travels as packets. Read from the
+  // memcpy op, the same way simpleDmaChannelAlloc decides whether to multiplex,
+  // so the two agree on what a packet flow is even after the pass has converted
+  // a circuit channel into one.
+  auto isPacket = [](Operation *o) {
+    auto mc = dyn_cast_if_present<air::MemcpyInterface>(o);
+    if (!mc)
+      return false;
+    auto ct = air::getChannelType(mc);
+    return succeeded(ct) && *ct == "npu_dma_packet";
+  };
+
+  // One chain as the emitter sees it: every allocation mapped to a
+  // (tile, channel), the flows on it in a deterministic order, and which of
+  // those flows are packet flows.
+  struct Chain {
+    SmallVector<size_t> allocIdxs;
+    SmallVector<Operation *> order;
+    llvm::SmallPtrSet<Operation *, 4> packetDecls;
+    bool unkeyed = false;
+  };
+
+  for (auto *allocs : {&mm2s_allocs, &s2mm_allocs}) {
+    if (allocs->empty())
+      continue;
+    AIE::DMAChannelDir dir = allocs->front().dma_channel.direction;
+    bool isMM2S = dir == AIE::DMAChannelDir::MM2S;
+
+    // Chains are keyed exactly as the emitter groups them: one per
+    // (tile, channel), over every allocation mapped to it. Rebuilt between
+    // phases, since moving a flow changes the grouping.
+    auto buildChains = [&]() {
+      llvm::MapVector<std::pair<Operation *, int>, Chain> chains;
+      for (auto [i, alloc] : llvm::enumerate(*allocs)) {
+        if (!alloc.dma_tile)
+          continue;
+        auto &c =
+            chains[{alloc.dma_tile.getOperation(), alloc.dma_channel.channel}];
+        c.allocIdxs.push_back(i);
+        for (auto *o : alloc.memcpyOps) {
+          auto *d = declOf(o);
+          if (!d) {
+            c.unkeyed = true; // not attributable to a flow: leave it alone
+            continue;
+          }
+          if (!llvm::is_contained(c.order, d))
+            c.order.push_back(d);
+          if (isPacket(o))
+            c.packetDecls.insert(d);
+        }
+      }
+      return chains;
+    };
+    auto channelsInUse = [&](Operation *tileOp) {
+      llvm::SmallDenseSet<int> used;
+      for (auto &alloc : *allocs)
+        if (alloc.dma_tile && alloc.dma_tile.getOperation() == tileOp)
+          used.insert(alloc.dma_channel.channel);
+      return used;
+    };
+
+    // (tile, channel) pairs this pass has written to, so program order can be
+    // restored on exactly those and nothing else.
+    llvm::SetVector<std::pair<Operation *, int>> touched;
+
+    // Move every transfer of `moveDecl` currently on (tileOp, fromChan) to
+    // `toChan`: retarget an allocation whose transfers all move, split the
+    // rest, and follow with the bundle's own copy -- the flows are connected
+    // from that copy, so leaving it behind would route the packet to the
+    // channel the BDs just left.
+    auto moveFlow = [&](ArrayRef<size_t> allocIdxs, Operation *moveDecl,
+                        Operation *tileOp, int fromChan, int toChan) {
+      touched.insert({tileOp, fromChan});
+      touched.insert({tileOp, toChan});
+      SmallVector<allocation_info_t> splits;
+      for (size_t i : allocIdxs) {
+        std::vector<Operation *> keepOps, moveOps;
+        for (auto *o : (*allocs)[i].memcpyOps)
+          (declOf(o) == moveDecl ? moveOps : keepOps).push_back(o);
+        if (moveOps.empty())
+          continue;
+        (*allocs)[i].packet_flow_id = -1; // reassigned on flow connection
+        if (keepOps.empty()) {
+          (*allocs)[i].dma_channel = {dir, toChan};
+          (*allocs)[i].tile_channel = toChan;
+          continue;
+        }
+        allocation_info_t split = (*allocs)[i];
+        split.dma_channel = {dir, toChan};
+        split.tile_channel = toChan;
+        split.memcpyOps = moveOps;
+        (*allocs)[i].memcpyOps = keepOps;
+        splits.push_back(split);
+      }
+      llvm::append_range(*allocs, splits);
+
+      for (auto &f : memcpy_flows) {
+        if (f.air_flow_op != moveDecl)
+          continue;
+        for (auto *side : {&f.MM2S_alloc, &f.S2MM_alloc})
+          for (auto &fa : *side) {
+            if (!fa.dma_tile || fa.dma_tile.getOperation() != tileOp)
+              continue;
+            if (fa.dma_channel.direction != dir ||
+                fa.dma_channel.channel != fromChan)
+              continue;
+            fa.dma_channel.channel = toChan;
+            fa.tile_channel = toChan;
+            fa.packet_flow_id = -1;
+          }
+      }
+      LLVM_DEBUG(llvm::dbgs()
+                 << "TileDMAAllocator::spreadCollapsedPacketChannels: moved @"
+                 << cast<air::ChannelOp>(moveDecl).getSymName() << " to "
+                 << (isMM2S ? "MM2S" : "S2MM") << " " << toChan << "\n");
+    };
+
+    // Is sharing this ring a hazard, or merely a choice? Collapse is not free
+    // to undo -- several flows on one channel is how the emitter folds a
+    // repeating chain into a single BD with a repeat count -- so it is only
+    // worth breaking where the sharing is unsound.
+    //
+    // The test is a hardware fact, not a preference: a DMA channel's port is
+    // either statically connected or packet-switched, never both. A packet flow
+    // queued behind a circuit flow has its header ignored and is delivered to
+    // the circuit's destination -- the router usually refuses the placement,
+    // and where it does not the design is silently misrouted.
+    //
+    // Deliberately NOT tested here: whether the flows on a ring come from
+    // independent producers, which is the case diagnoseBDChain calls out and
+    // declines to check ("convergent flows are trusted to be time-disjoint").
+    // It is tempting, and it is what several of the hand-written pins are
+    // really guarding, but "two source tiles" does not imply "unordered": every
+    // AIR matmul feeds a core one A tile and one B tile per iteration from two
+    // memtiles, onto a ring that repeats in lockstep with them. Splitting those
+    // would spend both S2MM channels of every compute tile in the project to
+    // fix a hazard they do not have. Separating a genuinely unordered pair
+    // needs evidence this pass does not have; until then those stay pinned by
+    // hand.
+    auto isHazard = [&](const Chain &chain) {
+      return !chain.packetDecls.empty() &&
+             chain.packetDecls.size() != chain.order.size();
+    };
+
+    // Which decl KEEPS the channel, and which have to leave? A pinned decl has
+    // to stay -- it named this channel -- so if the chain carries any, the
+    // first of them is the keeper; otherwise the decl that got here first keeps
+    // it. What leaves is then determined, not chosen: the flows whose KIND
+    // differs from the keeper's are exactly the ones making the port both
+    // statically connected and packet-switched. Evicting anything else would
+    // move a flow that was not part of the problem and leave the problem
+    // behind.
+    auto keeperOf = [&](const Chain &chain) {
+      for (auto *d : chain.order)
+        if (isImmovable(d))
+          return d;
+      return chain.order.front();
+    };
+    auto evicteesOf = [&](const Chain &chain) {
+      SmallVector<Operation *> out;
+      bool keepPkt = chain.packetDecls.contains(keeperOf(chain));
+      for (auto *d : chain.order)
+        if (chain.packetDecls.contains(d) != keepPkt && !isImmovable(d))
+          out.push_back(d);
+      return out;
+    };
+
+    // Phase 1: move what has to leave onto a channel the tile was not using in
+    // this direction.
+    for (auto &[key, chain] : buildChains()) {
+      if (chain.unkeyed || chain.order.size() < 2 || !isHazard(chain))
+        continue;
+      Operation *tileOp = key.first;
+      auto tile = (*allocs)[chain.allocIdxs.front()].dma_tile;
+      auto used = channelsInUse(tileOp);
+      int numChans = isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
+                            : tile.getNumDestConnections(AIE::WireBundle::DMA);
+      for (auto *d : evicteesOf(chain)) {
+        int freeChan = -1;
+        for (int c = 0; c < numChans; c++)
+          if (!used.count(c)) {
+            freeChan = c;
+            break;
+          }
+        if (freeChan < 0)
+          break; // fully subscribed: phase 2 looks for somewhere to double up
+        moveFlow(chain.allocIdxs, d, tileOp, key.second, freeChan);
+        used.insert(freeChan);
+      }
+    }
+
+    // Phase 2: the same hazard on a tile with no channel to spare. Phase 1 has
+    // taken every free one, so double up instead -- move each evictee onto a
+    // channel of the tile carrying its OWN kind only. Two packet flows sharing
+    // a packet-switched port is what multiplexing is for and costs nothing
+    // beyond the shared ring; leaving one behind a circuit connection is wrong
+    // however few channels the tile has.
+    for (auto &[key, chain] : buildChains()) {
+      if (chain.unkeyed || chain.order.size() < 2 || !isHazard(chain))
+        continue;
+      Operation *tileOp = key.first;
+      for (auto *d : evicteesOf(chain)) {
+        bool wantPkt = chain.packetDecls.contains(d);
+        int target = -1;
+        for (auto &[k2, c2] : buildChains()) {
+          if (k2.first != tileOp || k2.second == key.second)
+            continue;
+          if (c2.unkeyed || c2.order.empty())
+            continue;
+          // Pure in the kind we are placing, or the move just relocates the
+          // mix.
+          if ((c2.packetDecls.size() == c2.order.size()) != wantPkt)
+            continue;
+          if (!wantPkt && !c2.packetDecls.empty())
+            continue;
+          if (target < 0 || k2.second < target)
+            target = k2.second;
+        }
+        if (target < 0)
+          continue; // nowhere unmixed to go; the router will have the last word
+        moveFlow(chain.allocIdxs, d, tileOp, key.second, target);
+      }
+    }
+
+    // A ring is walked strictly in order, and the emitter builds it by
+    // concatenating the allocations on a channel in the order they appear here.
+    // Splitting a flow off a shared allocation appends the remainder, so a flow
+    // that the core issues FIRST can end up emitted last -- the transfer then
+    // waits on a BD bound to the other flow's buffer and lock, which serializes
+    // the two and hangs outright when the consumer is blocking. Restore the
+    // order the core issues in, keyed on the same memcpy id `selection` sorts
+    // by within an allocation.
+    //
+    // Each touched group is permuted among ITS OWN slots, so allocations this
+    // pass never looked at keep their positions exactly, and a design where
+    // nothing moved is emitted byte for byte as before.
+    auto minId = [](const allocation_info_t &a) {
+      int64_t m = std::numeric_limits<int64_t>::max();
+      for (auto *o : a.memcpyOps)
+        if (auto mc = dyn_cast_if_present<air::MemcpyInterface>(o))
+          m = std::min(m, (int64_t)mc.getId());
+      return m;
+    };
+    for (auto &key : touched) {
+      SmallVector<size_t> slots;
+      for (auto [i, alloc] : llvm::enumerate(*allocs))
+        if (alloc.dma_tile && alloc.dma_tile.getOperation() == key.first &&
+            alloc.dma_channel.channel == key.second)
+          slots.push_back(i);
+      if (slots.size() < 2)
+        continue;
+      SmallVector<allocation_info_t> group;
+      for (size_t i : slots)
+        group.push_back((*allocs)[i]);
+      llvm::stable_sort(
+          group, [&](const allocation_info_t &a, const allocation_info_t &b) {
+            return minId(a) < minId(b);
+          });
+      for (auto [j, i] : llvm::enumerate(slots))
+        (*allocs)[i] = group[j];
+    }
+  }
+}
 LogicalResult air::TileDMAAllocator::verifyMM2SChains() {
   // Group exactly as the emitter does: one BD chain per (tile, channel), from
   // the concatenation of every allocation mapped to it in mm2s_allocs order.

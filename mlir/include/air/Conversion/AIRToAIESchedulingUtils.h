@@ -343,6 +343,30 @@ public:
   // physical port its flows originate from. Returns failure if any chain is
   // rejected.
   LogicalResult verifyMM2SChains();
+
+  // Separate packet flows from circuit flows sharing a compute-tile DMA
+  // channel. The compute-tile twin of
+  // ShimDMAAllocator::spreadCollapsedPacketChannels, against the same bug in
+  // the same shape: simpleDmaChannelAlloc's packet-reuse branch fires BEFORE
+  // the free-channel search below it, so a core can end up with two flows
+  // queued on S2MM 0 while S2MM 1 sits idle.
+  //
+  // Unlike at the shim, most such collapse is harmless here and worth keeping:
+  // several flows on one channel is how the emitter folds a repeating chain
+  // into one BD with a repeat count. One case is not a preference but a
+  // hardware fact -- a channel's port is either statically connected or
+  // packet-switched, never both -- so a packet flow queued behind a circuit
+  // flow has its header ignored and is delivered to the circuit's destination.
+  // Only that case is broken up, onto a free channel of the tile or, failing
+  // that, onto one carrying packets already.
+  //
+  // Runs after repairS2MMChains, which answers a sharper question about the
+  // same chains and should not have its answer overwritten. Collapse the front
+  // end asked for is left alone; see the .cpp for what counts as immovable, and
+  // for why a shared ring is NOT broken up merely because its flows come from
+  // independent producers.
+  void
+  spreadCollapsedPacketChannels(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };
 
 class ShimDMAAllocator : public DMAAllocator {
