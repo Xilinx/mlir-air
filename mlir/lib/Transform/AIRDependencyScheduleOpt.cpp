@@ -4280,15 +4280,61 @@ public:
     registry.insert<scf::SCFDialect, air::airDialect>();
   }
 
+  // air::getChannel{Put,Get}OpThroughSymbol walks the WHOLE module per call,
+  // and the O(N^2) channel-pair loop in runOnFunction calls them 16x per pair:
+  // an 84-channel module did 55,776 module walks and spent 114s in this pass
+  // without changing the IR. The mapping is invariant except when a merge
+  // rewrites the IR, so keep one air::ChannelIndex and rebuild it after a
+  // mutation.
+  //
+  // These member overloads deliberately shadow the air:: free functions for
+  // unqualified calls inside this class; ChannelIndex uses the same walk order,
+  // so callers that index puts[0]/gets[0] see the same op.
+  air::ChannelIndex chanIndex;
+
+  // Call after ANY IR mutation that can add/remove/reparent a channel put/get.
+  void invalidateChannelIndex() { chanIndex.clear(); }
+
+  air::ChannelIndex &indexFor(air::ChannelOp channel) {
+    Operation *scope = channel->getParentOfType<ModuleOp>();
+    if (!chanIndex.isBuiltFor(scope))
+      chanIndex.rebuild(scope);
+    return chanIndex;
+  }
+
+  std::vector<air::ChannelPutOp>
+  getChannelPutOpThroughSymbol(air::ChannelOp channel) {
+    if (!channel)
+      return {};
+    auto puts = indexFor(channel).getPuts(channel);
+    return {puts.begin(), puts.end()};
+  }
+
+  std::vector<air::ChannelGetOp>
+  getChannelGetOpThroughSymbol(air::ChannelOp channel) {
+    if (!channel)
+      return {};
+    auto gets = indexFor(channel).getGets(channel);
+    return {gets.begin(), gets.end()};
+  }
+
   void runOnFunction(func::FuncOp f, std::vector<air::ChannelOp> channelOps) {
     init_options();
+    // The index is a pass member, so drop anything left from a previous
+    // function on this pass instance rather than trusting the scope guard.
+    invalidateChannelIndex();
     if (channelOps.empty())
       return;
     // Rename symbols
     // TODO: make this greedy
+    // Captures `this` to invalidate the channel index: this rewrites chan_name
+    // attributes, which are that index's KEYS, so any cached name -> ops bucket
+    // is stale afterwards. Invalidating inside the lambda covers every call
+    // site (including a later runOnFunction on the same pass instance) rather
+    // than relying on each one to remember.
     auto renameSymbols =
-        [](std::vector<air::ChannelOp> &channelOps,
-           std::map<air::ChannelOp, air::ChannelOp> chan_merge_map) {
+        [this](std::vector<air::ChannelOp> &channelOps,
+               std::map<air::ChannelOp, air::ChannelOp> chan_merge_map) {
           for (unsigned i = 0; i < channelOps.size(); i++) {
             for (auto chanKey : channelOps) {
               if (!chan_merge_map.count(chanKey))
@@ -4301,6 +4347,7 @@ public:
               (void)error;
             }
           }
+          invalidateChannelIndex();
         };
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     std::vector<std::pair<air::ChannelOp, air::ChannelOp>> nfl_merge_pairs;
@@ -4359,6 +4406,7 @@ public:
           // iterations).
           sortChannelsByLoopNests(chanA, chanB);
           mergeChannelOpsTemporally(chanA, chanB, mergeType);
+          invalidateChannelIndex();
           chan_merge_map[chanB] = chanA;
         } else if (mergeType == "NFL") {
           // Case 2: Fuse channels into a new loop (requires creating an
@@ -4397,12 +4445,15 @@ public:
             getChannelPutsFusableByFor(destChan, srcChan));
         createDummyForOpsAroundOps<air::ChannelGetOp>(
             getChannelGetsFusableByFor(destChan, srcChan));
+        invalidateChannelIndex();
         // Merge temporally after wrapping with dummy loops.
         mergeChannelOpsTemporally(destChan, srcChan, "UB");
+        invalidateChannelIndex();
       }
     } else {
       // Found enclosing regions → wrap them with scf.for loops.
       wrapRegionsWithForLoops(rewriter, nfl_merge_regions);
+      invalidateChannelIndex();
       // Erase obsolete ops (nfl_erased_ops) and replace async semantics.
       for (auto e : nfl_erased_ops) {
         if (air::isAsyncOp(e)) {
@@ -4413,6 +4464,7 @@ public:
               waitAll.getAsyncToken());
         }
         rewriter.eraseOp(e);
+        invalidateChannelIndex();
       }
     }
 
@@ -4424,6 +4476,7 @@ public:
             continue;
           // Aggressively fuse air.channels by time multiplexing.
           mergeChannels(rewriter, channelOps[i], channelOps[j]);
+          invalidateChannelIndex();
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
       }

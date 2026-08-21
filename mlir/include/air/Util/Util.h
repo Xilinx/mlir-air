@@ -164,6 +164,41 @@ int64_t getRefeedCount(ChannelInterface op);
 // Same, for a value already resolved to its buffer/alloc carrier (memtile L2
 // rendezvous buffer): reads air.refeed_count directly off `op`.
 int64_t getRefeedCount(Operation *op);
+// One-shot index of a scope's channel puts/gets, keyed by channel symbol.
+//
+// getChannel{Put,Get}OpThroughSymbol walks the entire scope on EVERY call, so a
+// pass that queries it inside a loop pays O(queries * scope size). Build this
+// once instead and query it. Measured on an 84-channel prefill module,
+// air-fuse-channels issued 55,776 such walks and spent 114s doing so; with the
+// index that pass drops to 0.15s.
+//
+// The index is a SNAPSHOT: it holds raw Operation pointers into `scope`, so any
+// mutation that adds, removes or reparents a channel put/get invalidates it.
+// Call rebuild() after such a mutation (or use it only over a read-only phase).
+// The visit order matches getChannel{Put,Get}OpThroughSymbol, so callers that
+// index puts[0]/gets[0] see the same op either way.
+class ChannelIndex {
+public:
+  ChannelIndex() = default;
+  explicit ChannelIndex(Operation *scope) { rebuild(scope); }
+
+  void rebuild(Operation *scope);
+  void clear();
+  // True once rebuild() has run for `scope`; cheap staleness guard for callers
+  // that keep one index across a phase.
+  bool isBuiltFor(Operation *scope) const { return builtScope == scope; }
+
+  ArrayRef<ChannelPutOp> getPuts(ChannelOp channel) const;
+  ArrayRef<ChannelGetOp> getGets(ChannelOp channel) const;
+  ArrayRef<ChannelPutOp> getPuts(StringRef channelName) const;
+  ArrayRef<ChannelGetOp> getGets(StringRef channelName) const;
+
+private:
+  llvm::DenseMap<StringRef, std::vector<ChannelPutOp>> puts;
+  llvm::DenseMap<StringRef, std::vector<ChannelGetOp>> gets;
+  Operation *builtScope = nullptr;
+};
+
 // Get ChannelPutOps from ChannelOp
 std::vector<ChannelPutOp>
 getChannelPutOpThroughSymbol(ChannelOp channel, Operation *scope = nullptr);
