@@ -65,6 +65,14 @@ env:
   # each model's peak is the larger of its two phases, not the sum, and the LLM
   # lit targets are -j1 (programming_examples/CMakeLists.txt) so no two models'
   # verifies overlap either. Confirm against a nightly rather than assuming.
+  #
+  # qwen25_7b_q4nx is the largest peak here and IS measured: ~33GB RSS in the NPU
+  # phase (32.6GB for prefill alone on a 96GB dev box). It runs off
+  # Qwen/Qwen2.5-7B-Instruct directly -- FastFlowLM publishes no Q4NX bundle for
+  # it -- so the bf16 checkpoint, the Q4NX host dequant and the five resident
+  # decode weight BOs (4x0.95GB + 0.32GB) are all live across the load. That is
+  # over half this 64GB runner; the -j1 above is what keeps it from overlapping
+  # another model. Re-measure if the weight preload's lifetime changes.
 
 jobs:
   benchmark:

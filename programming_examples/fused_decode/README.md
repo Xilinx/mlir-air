@@ -34,13 +34,15 @@ the instruction stream for any `L`, byte-identical to a native per-L build.
 | `qwen25_3b_requant.py` | Q4_0 quantizer + weight cache for the Qwen decode |
 | `qwen_prefill_to_decode.py` | Hands `llms/qwen25_3b_q4`'s prefill KV to the Qwen decode |
 
-### Why Qwen has its own builder
+### Why Qwen2.5-3B has its own builder
 
-`fused_decode.py` covers Llama-3.2-1B/3B and Gemma3-4B, selected by
-`DECODE_MODEL`. Qwen2.5-3B is a separate file because its **on-device weight
-format differs**, not because its weights are packaged differently:
+`fused_decode.py` covers Llama-3.2-1B/3B, Gemma3-4B, Phi-4-mini, Qwen3-8B and
+Qwen2.5-7B, selected by `DECODE_MODEL`. Qwen2.5-**3B** is a separate file because
+its **on-device weight format differs**, not because its weights are packaged
+differently -- and note the split is by codec, not by model family: Qwen2.5-7B is
+Q4NX and so sits in the left column with Llama and Gemma.
 
-| | Llama / Gemma | Qwen2.5 |
+| | `fused_decode.py` (Q4NX) | `fused_decode_qwen.py` (Qwen2.5-3B) |
 |---|---|---|
 | device format | unsigned int4 **+ per-group min** | signed int4, **scale only** |
 | dequant | `w = scale*q + min` | `w = q*scale` |

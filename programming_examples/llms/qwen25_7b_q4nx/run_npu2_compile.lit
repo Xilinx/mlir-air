@@ -1,0 +1,19 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// QWEN2.5-7B Q4NX decode compile-only smoke test: builds the two decode
+// templates (decode_L$LBUILD + decode_L$LREF) through the AIR -> AIE -> aiecc
+// -> Peano pipeline. No NPU dispatch and no weight data (weights are runtime
+// BOs), so this is the signal CI can always give without the external Q4NX
+// weights. Built at LBUILD=16 to keep the smoke test short; the production
+// templates (ATTN_MAXL=2048) are what run_npu2_profile.lit builds. Pairs with
+// run_npu2_compile_prefill.lit (the prefill half) and run_npu2_verify.lit
+// (end-to-end top-k correctness vs HF bf16, gated on the weight data).
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23
+//
+// RUN: mkdir -p test_npu2_compile
+// RUN: cd test_npu2_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode LBUILD=16 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Qwen2.5-7B decode build complete

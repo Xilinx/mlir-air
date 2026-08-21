@@ -125,12 +125,16 @@ def requant_q4_0(Wm, group=GROUP):
     return q.reshape(M, Kc).view(np.uint8), sc
 
 
-def pack_q4k_cascade_fast(q, scale, NCX, NCY, dual_chan=False):
+def pack_q4k_cascade_fast(q, scale, NCX, NCY, dual_chan=False, mins=None):
     """Vectorized iteration-major cascade pack; == proj_qmm_pack.pack_q4k_cascade
-    (iter_major=True) with all-zero mins, but packs every block at once.
+    (iter_major=True), but packs every block at once.
 
     The reference packer's per-block Python loops cost ~30 min for a 36-layer
     model; this is the same layout computed with numpy reshapes.
+
+    `mins` is the affine Q4NX min term, shaped like `scale`. Omit it for the
+    symmetric Q4_0 codec, whose mins are all zero -- that is the default and
+    keeps the Q4_0 callers byte-identical.
     """
     M, K = q.shape
     assert M % ROW_BLOCK == 0 and K % COL_BLOCK == 0
@@ -140,14 +144,17 @@ def pack_q4k_cascade_fast(q, scale, NCX, NCY, dual_chan=False):
     nbi_pc = nbi // n_cores
     G = ROW_BLOCK // PARALLEL  # row groups per block (2)
 
-    # scales[block][group(8)][row(32)] as bf16 (mins stay zero for Q4_0)
-    sc = (
-        scale.reshape(nbi, ROW_BLOCK, nbj, N_GROUPS)
-        .transpose(0, 2, 3, 1)  # [nbi][nbj][group][row]
-        .astype(bfloat16)
-        .view(np.int16)
-    )
-    mn = np.zeros_like(sc)
+    # scales[block][group(8)][row(32)] as bf16; mins identically, or zero (Q4_0)
+    def _per_block(a):
+        return (
+            a.reshape(nbi, ROW_BLOCK, nbj, N_GROUPS)
+            .transpose(0, 2, 3, 1)  # [nbi][nbj][group][row]
+            .astype(bfloat16)
+            .view(np.int16)
+        )
+
+    sc = _per_block(scale)
+    mn = np.zeros_like(sc) if mins is None else _per_block(mins)
 
     # qs[block][rowgrp(2)][col(256)][pair(8)] = (odd<<4) | even
     qv = q.reshape(nbi, ROW_BLOCK, nbj, COL_BLOCK).transpose(
