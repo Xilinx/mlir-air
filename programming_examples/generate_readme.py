@@ -875,7 +875,7 @@ def render_llm_benchmark(
 
 ## Nightly LLM Benchmark (NPU2)
 
-End-to-end LLM inference performance on the AMD Ryzen AI (Krackan Point, NPU2) benchmark runner, refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
+End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. Decode streams the whole weight set per token, so it tracks DRAM bandwidth and these numbers do not transfer to a differently configured machine. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
 | Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
 |:------|--------:|----------:|---------------:|:---------|:------:|

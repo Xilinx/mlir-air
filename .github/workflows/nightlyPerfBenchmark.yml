@@ -8,14 +8,23 @@
 # uploading it as an artifact. Kept out of the per-PR matrix so perf numbers are
 # contention-free. The job goes red if any model's compile/verify fails.
 #
-# Numbers here are this runner's, and are not the figures the examples' READMEs
-# quote. llama32_1b_q4nx measures ~39-40 tok/s / ~1130ms TTFT on it, against
-# ~50 tok/s / ~910ms on a Ryzen AI 9 HX 370. That gap is a property of the
-# runner, not a regression: the identical build (same air SHA, mlir-aie wheel,
-# Peano and llvm-link, byte-identical decode insts.bin) hits ~50 on the HX 370,
-# and both machines report 51.0 TOPS from `xrt-smi validate --run gemm`, Turbo
-# power mode and DDR5-5600. The unexplained difference is the runner's ACPI
-# platform profile (`balanced`), which is why it is logged below.
+# Numbers here are this runner's (Ryzen AI 5 PRO 340, 2x32GB DDR5-5600 SODIMM)
+# and are not the figures the examples' READMEs quote. llama32_1b_q4nx measures
+# ~64 tok/s / ~894ms TTFT on it as of run 32458944539 (2026-08-21).
+#
+# It used to measure ~39-40 tok/s / ~1130ms, against ~50 tok/s / ~910ms on a
+# Ryzen AI 9 HX 370, off an identical build (same air SHA, mlir-aie wheel, Peano
+# and llvm-link, byte-identical decode insts.bin) with both machines reporting
+# 51.0 TOPS from `xrt-smi validate --run gemm`, Turbo power mode and DDR5-5600.
+# That difference was logged as unexplained, with the runner's ACPI platform
+# profile (`balanced`) as the suspect. The suspect was right: the profile became
+# `performance` during 2026-08-18 and the number stepped 42.51 -> 64.12 tok/s
+# between consecutive runs 32166148043 and 32193537561, holding at ~64 since.
+#
+# So the profile is still logged below, but now as the thing most likely to move
+# these numbers rather than as an open question. Power mode (Turbo) is logged for
+# the same reason. Decode streams the whole weight set per token, so both of
+# those and any unrelated load competing for DRAM bandwidth show up directly.
 
 name: Nightly LLM Perf Benchmark
 
