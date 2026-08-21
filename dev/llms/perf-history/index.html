@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#llm-performance-history" class="md-skip">
+        <a href="#llm-performance-history-npu2" class="md-skip">
           Skip to content
         </a>
       
@@ -1298,14 +1298,13 @@
   
 
 
-<h1 id="llm-performance-history">LLM Performance History<a class="headerlink" href="#llm-performance-history" title="Permanent link">&para;</a></h1>
+<h1 id="llm-performance-history-npu2">LLM Performance History (NPU2)<a class="headerlink" href="#llm-performance-history-npu2" title="Permanent link">&para;</a></h1>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>.chart-box { position: relative; height: 380px; margin: 32px 0; }</style>
 
-<p class="sub">Per-nightly end-to-end inference performance on the AMD Ryzen AI (Krackan Point, NPU2)
-benchmark runner. Each point is one nightly build, labeled by date; hover to see the commit SHA and
-verify status. A <span style="color:#d32f2f; font-weight:700;">red &#10007; marker</span> flags a nightly
-whose correctness verify failed (the marker shape, not just its color, signals the failure).</p>
+<p class="sub">Per-nightly TTFT and decode throughput. Each point is one nightly, labeled by date;
+hover for the commit and verify status. A
+<span style="color:#d32f2f; font-weight:700;">red &#10007;</span> marks a nightly whose verify failed.</p>
 <p class="legend-note">Click a model in a legend to toggle its line.</p>
 
 <div class="chart-box"><canvas id="ttft"></canvas></div>
@@ -1387,7 +1386,7 @@ makeChart('decode', DECODE_DATASETS, 'Decode throughput (tok/s) — higher is be
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../" class="md-footer__link md-footer__link--prev" aria-label="Previous: Index">
+          <a href="../" class="md-footer__link md-footer__link--prev" aria-label="Previous: Overview">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -1397,7 +1396,7 @@ makeChart('decode', DECODE_DATASETS, 'Decode throughput (tok/s) — higher is be
                 Previous
               </span>
               <div class="md-ellipsis">
-                Index
+                Overview
               </div>
             </div>
           </a>
