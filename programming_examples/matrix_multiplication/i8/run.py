@@ -102,16 +102,16 @@ def build_module(
     # the micro-tile, so the module is architecture-specific before the herd is
     # even sized, and letting the two disagree would build for one generation
     # while shaped for the other.
-    with air.launch(name="matmul_i8") as launch:
+    with air.launch(
+        [range(0, m, seg_m), range(0, n, seg_n)], name="matmul_i8"
+    ) as launch:
 
         @launch.body
-        def _():
-            with air.segment(
-                [range(0, m, seg_m), range(0, n, seg_n)], name="matmul_seg"
-            ) as seg:
+        def _(si, sj):
+            with air.segment(name="matmul_seg") as seg:
 
                 @seg.body
-                def _(si, sj):
+                def _():
                     row, col = si * seg_m, sj * seg_n
 
                     # L2 staging is flat: each buffer is exactly the region of

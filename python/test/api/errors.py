@@ -589,16 +589,54 @@ def _():
     _staged(body)
 
 
-# A segment grid is the launch iteration space, and air.launch is 2-D.
+# air.launch, air.segment and air.herd each own an iteration space, and it is
+# written on the op that has it. A grid on air.segment is air.segment's own
+# `sizes` -- the unroll that copies the segment body across columns -- and is
+# not a way to spell the outer tiling. Saying so is the whole point: it used to
+# be silently redirected to the launch, which made air.segment's own iteration
+# space unreachable and taught the wrong model of the hierarchy.
+# CHECK-LABEL: TEST: segment_grid_is_not_the_launch_grid
+# CHECK: NotImplementedError: air.segment(<grid>) is the segment's own iteration space
+# CHECK: write air.launch(<grid>) and take the coordinates in the launch body
+@expect(NotImplementedError, "segment_grid_is_not_the_launch_grid")
+def _():
+    air.segment([range(0, 128, 64)])
+
+
 # CHECK-LABEL: TEST: segment_grid_too_deep
-# CHECK: NotImplementedError: air.launch is 2-D, so a segment grid is 1-D or 2-D
+# CHECK: NotImplementedError: an air.segment iteration space is 1-D or 2-D; got 3-D
 @expect(NotImplementedError, "segment_grid_too_deep")
 def _():
     air.segment(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
 
 
+# CHECK-LABEL: TEST: launch_grid_too_deep
+# CHECK: NotImplementedError: air.launch is 1-D or 2-D; got 3-D
+@expect(NotImplementedError, "launch_grid_too_deep")
+def _():
+    air.launch(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
+
+
+# CHECK-LABEL: TEST: launch_body_arity
+# The launch's coordinates arrive in the launch body, so its arity has to match
+# the grid it was given -- the same rule air.herd and air.segment follow.
+# CHECK: TypeError: launch body takes 0 coordinate argument(s) but the launch iteration space is 1-D
+@expect(TypeError, "launch_body_arity")
+def _():
+    air.tensor([64, 64], bf16)
+    air.tensor([64, 64], bf16)
+
+    with air.launch([range(0, 128, 64)], name="k") as launch:
+
+        @launch.body
+        def _():
+            pass
+
+    launch.mlir()
+
+
 # CHECK-LABEL: TEST: segment_body_takes_no_args
-# CHECK: TypeError: segment body takes 1 coordinate argument(s) but the launch iteration space is 0-D
+# CHECK: TypeError: segment body takes 1 coordinate argument(s) but the segment iteration space is 0-D
 @expect(TypeError, "segment_body_takes_no_args")
 def _():
     air.tensor([64, 64], bf16)

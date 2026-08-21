@@ -116,14 +116,14 @@ def build_module(
     B = air.tensor([k], dt_in)
     C = air.tensor([m], dt_out)
 
-    with air.launch(name="matvec_bf16") as launch:
+    with air.launch([range(0, m, seg_m)], name="matvec_bf16") as launch:
 
         @launch.body
-        def _():
-            with air.segment([range(0, m, seg_m)], name="matvec_bf16_0") as seg:
+        def _(si):
+            with air.segment(name="matvec_bf16_0") as seg:
 
                 @seg.body
-                def _(si):
+                def _():
                     row = si * seg_m
 
                     # L3 -> L2: the A panel for this chunk, and the C panel it
