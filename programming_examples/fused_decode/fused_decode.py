@@ -1211,10 +1211,10 @@ def build_module():
         # both as packets into one 2-slot ping-pong (input, then o-proj, then down).
         # Debug configs keep the original circuit rmsX.
         if FULL4:
-            _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
+            channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
-            _rx = channel_decl("rmsX", size=[1])
-        _rw = channel_decl("rmsW", size=[1])
+            channel_decl("rmsX", size=[1])
+        channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
             # rmsW FIFO re-fed twice does NOT pair in AIR (both gets read the same
@@ -1259,9 +1259,7 @@ def build_module():
         channel_decl("ropeLUT", size=[1])
         # S3a flash-attn dataflow: rope q -> qk tile (direct); rope k|v -> KV
         # staging memtile (rope's single k/v MM2S) which splits k->qk, v->kv.
-        _ropeQ = channel_decl(
-            "ropeQ", size=[1]
-        )  # rope q (whole 2048) -> q broadcast memtile
+        channel_decl("ropeQ", size=[1])  # rope q (whole 2048) -> q broadcast memtile
         # Q used to be pinned to rope MM2S0 here, to keep the packet K/V append
         # off the channel carrying this circuit flow. The compiler derives that
         # now: a DMA channel's port is either statically connected or packet-
@@ -1300,7 +1298,7 @@ def build_module():
                 # Only appendK names a channel. It is what holds the pair on
                 # rope's second MM2S, clear of the circuit ropeQ; appendV joins
                 # it there on its own.
-                _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
+                channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
             if KV_SPLIT:
                 # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
                 # col group of 2 CUs), so their memtile S2MM fills are independent.
@@ -1358,8 +1356,10 @@ def build_module():
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
-            # layerOut takes rms MM2S0 without being told to: the xnorm pin
-            # above claims MM2S1, and this is the only other flow on the tile.
+            # layerOut and the xnorm above are the rms core's only two outputs,
+            # and AIRToAIE gives them a channel each: collapsed onto one they
+            # form a ring its diagnoseBDChain oracle calls out of step, and
+            # spreadCollapsedPacketChannels peels one onto the idle channel.
             channel_decl("layerOut", size=[1])
         # GLU path: id-demux delivers gate-up DIRECTLY to the GLU herd (no relay);
         # GLU -> gluOut -> down memtile accumulate (8192). FAITHFUL: that 8192 is

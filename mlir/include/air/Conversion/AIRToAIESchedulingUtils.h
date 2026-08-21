@@ -338,33 +338,48 @@ public:
   // are connected.
   void repairS2MMChains(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
   // Reject MM2S chains whose BD ring cannot stay in step with the transfers the
-  // core actually issues. Diagnosis only: unlike the S2MM side there is nothing
-  // to repair, because moving a producer to another MM2S would change which
-  // physical port its flows originate from. Returns failure if any chain is
-  // rejected.
+  // core actually issues. Diagnosis only, and by the time it runs the repairs
+  // have had their turn: spreadCollapsedPacketChannels moves an MM2S flow onto
+  // a spare channel where the tile has one, so what reaches here is a chain no
+  // spare channel could fix. Moving a producer does change which physical port
+  // its flows leave from, which is why the move is made before flows are
+  // connected rather than after. Returns failure if any chain is rejected.
   LogicalResult verifyMM2SChains();
 
-  // Separate packet flows from circuit flows sharing a compute-tile DMA
-  // channel. The compute-tile twin of
+  // Separate the flows sharing a compute-tile DMA channel where sharing it is
+  // unsound. Applies to BOTH directions -- the pass walks mm2s_allocs and
+  // s2mm_allocs alike, since a ring is walked in order whichever way the data
+  // moves. The compute-tile twin of
   // ShimDMAAllocator::spreadCollapsedPacketChannels, against the same bug in
   // the same shape: simpleDmaChannelAlloc's packet-reuse branch fires BEFORE
-  // the free-channel search below it, so a core can end up with two flows
-  // queued on S2MM 0 while S2MM 1 sits idle.
+  // the free-channel search below it, and its fallback counts ALLOCATIONS
+  // rather than occupied channels, so a core ends up with several flows queued
+  // on channel 0 while channel 1 sits idle.
   //
-  // Unlike at the shim, most such collapse is harmless here and worth keeping:
-  // several flows on one channel is how the emitter folds a repeating chain
-  // into one BD with a repeat count. One case is not a preference but a
-  // hardware fact -- a channel's port is either statically connected or
-  // packet-switched, never both -- so a packet flow queued behind a circuit
-  // flow has its header ignored and is delivered to the circuit's destination.
-  // Only that case is broken up, onto a free channel of the tile or, failing
-  // that, onto one carrying packets already.
+  // Most such collapse is harmless and worth keeping: several flows on one
+  // channel is how the emitter folds a repeating chain into one BD with a
+  // repeat count. A channel is ONE BD ring walked strictly in order, and a
+  // packet header steers a transfer to the tile without choosing which BD
+  // receives it, so sharing is sound exactly when something fixes the arrival
+  // order. Three things can, and only their absence breaks a ring up:
+  //
+  //   - one switching kind. A switchbox port is statically connected OR
+  //     packet-arbitrated, never both, and a channel is one port.
+  //   - a ROUND-ROBIN ring: every flow owning exactly one BD of the repeating
+  //     unit, so a flow's k-th transfer always meets that same BD however the
+  //     arrivals interleave. This is why an AIR matmul's A and B legs may
+  //     share one.
+  //   - a single producer, whose own BD order fixes the arrival order.
+  //
+  // The repair is a free channel of the tile, one already carrying the same
+  // switching kind, or -- for unsynchronised producers -- a partition by
+  // producer. See the .cpp for what counts as immovable and for how the
+  // partition merges when producers outnumber channels.
   //
   // Runs after repairS2MMChains, which answers a sharper question about the
-  // same chains and should not have its answer overwritten. Collapse the front
-  // end asked for is left alone; see the .cpp for what counts as immovable, and
-  // for why a shared ring is NOT broken up merely because its flows come from
-  // independent producers.
+  // same chains and should not have its answer overwritten, and before
+  // verifyMM2SChains, so what that check refuses is only what no spare channel
+  // could fix.
   void
   spreadCollapsedPacketChannels(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };

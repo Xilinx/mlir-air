@@ -740,22 +740,18 @@ def build_module():
         # No packet_ids either. air-annotate-packet-ids allocates them from the
         # top of the id space (so nothing else is renumbered) and rewrites the
         # ordinals the kernel stamps to match.
-        # Keep the hub demux on S2MM0 at every consumer tile; the shim-sourced feeds
-        # (ropeLUT/rmsIn/rmsW) are pinned to S2MM1 below. Without an explicit pin,
-        # unpinned packet flows REUSE whatever packet channel the tile already has
-        # (AIRToAIESchedulingUtils.cpp:1391), which merges two independent producers
-        # (hub + shim) into ONE ordered BD chain = head-of-line deadlock.
+        # The hub demux and the shim-sourced feeds (ropeLUT/rmsIn/rmsW) end up on
+        # separate S2MM channels at each consumer tile, and AIRToAIE works that
+        # out for itself. These used to carry air.tile_dma_channel pins: the
+        # allocator reuses whatever packet channel a tile already has before it
+        # looks for a free one, which merged two INDEPENDENT producers (hub +
+        # shim) into ONE strictly-ordered BD chain -- head-of-line deadlock,
+        # device-confirmed 2026-08-05j as the only difference between the hanging
+        # LOOPCLOSE build and the working host-toX one. spreadCollapsedPacketChannels
+        # now partitions such a ring by producer, so each ring's arrival order is
+        # fixed by the one producer feeding it.
         _lut = channel_decl("ropeLUT", size=[1])  # host cos/sin LUT -> rope core
-        # Pin the LUT feed to the rope tile's S2MM1 (the outY QKV demux keeps S2MM0).
-        # Under LOOPCLOSE the rms core adds two shim packet feeds (rmsIn/rmsW) which
-        # oversubscribe shim col 1, so AIR converts ropeLUT from a circuit flow into a
-        # PACKET flow -- and packet flows on one tile reuse a single physical channel
-        # (AIRToAIESchedulingUtils.cpp:1391) unless pinned. That merged ropeLUT and the
-        # outY QKV payload into ONE strictly-ordered 6-BD chain on rope S2MM0 fed by TWO
-        # INDEPENDENT producers (shim + hub mem_1_1) -> head-of-line deadlock (device-
-        # confirmed 2026-08-05j: the ONLY diff between the hanging LOOPCLOSE build and
-        # the working host-toX build). The pin restores the two-separate-channel layout.
-        # ...and feed it from a FREE shim column: the packetization above is triggered by
+        # Feed the LUT from a FREE shim column: the packetization above is triggered by
         # shim col 1 being oversubscribed (ropeLUT + rmsIn + rmsW + layerOut + qDrain).
         # Off col 1 the LUT feed stays circuit-switched, which cannot share the rope
         # tile's packet S2MM at all.
@@ -763,9 +759,7 @@ def build_module():
         channel_decl(
             "gluDrain", size=[1]
         )  # glu out (down-X) -> shim (Step C; loopclose D)
-        _rmsin = channel_decl(
-            "rmsIn", size=[1]
-        )  # host raw input activation -> rms core
+        channel_decl("rmsIn", size=[1])  # host raw input activation -> rms core
         channel_decl("layerOut", size=[1])  # rms residual2 (layer output) -> shim
         # ---- attention channels (reference-mirroring: rope q -> mem_6_1 q-broadcast tile ->
         # per-CU qk; K/V via KV staging mem_7_1). Ports fused_decode.py exactly. ----
@@ -828,9 +822,10 @@ def build_module():
         # ONE convergent packet channel carries all 4 phase X sources (rms ph0/ph2,
         # attn-o ph1, glu-down ph3) into the X memtile, read by ONE feed loop. Every
         # re-feed on it is written as an n-trip loop around the put (see refeed()).
-        # Pin the rms core's xnorm output to tile MM2S1 (layerOut keeps MM2S0) so the
-        # placer does not flip layerOut circuit->packet.
-        _xn = channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
+        # This and layerOut are the rms core's two outputs, and they take a
+        # channel each rather than collapsing onto one -- which used to need a
+        # pin, and would otherwise flip layerOut circuit->packet.
+        channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
         if OREF_2HOP:
             channel_decl("oref2", size=[1], channel_type="npu_dma_packet")
         if OREF_HOSTSRC:
@@ -840,23 +835,26 @@ def build_module():
             _od = channel_decl("orefDrain", size=[1])
             _od.operation.attributes["air.shim_col"] = IntegerAttr.get(i32, 6)
         if OREF_VIA_RMS:
-            # attn-o gather memtile -> rms core. PIN to the rms tile's S2MM0.
-            # Unpinned, the packet-flow channel reuse collapses it onto S2MM1, which already
-            # carries rmsIn (pkt2) and rmsW (pkt3) as a rigid 3-BD POSITIONAL chain over
-            # three DIFFERENT buffers with different lock pairs. A memtile-sourced @orms then
-            # arrives on a different switchbox port than the shim-sourced rmsIn/rmsW while
-            # both rules target the SAME amsel, so the arbiter interleaves the two streams at
-            # packet granularity and the positional chain desynchronizes -> deadlock.
-            # (device+routed-IR confirmed 2026-08-05x: passing shim-fed @orms has ONE slave
-            # port on tile_1_2 masterset DMA:1; every failing memtile-fed variant has TWO,
-            # independent of oref column and of the attn dependency.)
-            # S2MM0 carries only the o-proj outY get, and the @orms get is emitted BEFORE it
-            # in _rms_body, so the chain order [orms, outY] matches the dataflow order.
-            _orms = channel_decl("orms", size=[1], channel_type="npu_dma_packet")
+            # attn-o gather memtile -> rms core. This must not share a channel
+            # with the shim-sourced rmsIn/rmsW, and AIRToAIE now derives that.
+            # Collapsed onto their channel, a memtile-sourced @orms arrives on a
+            # different switchbox port than they do while both rules target the
+            # SAME amsel, so the arbiter interleaves the two streams at packet
+            # granularity and the positional BD chain -- three different buffers
+            # with different lock pairs -- desynchronizes into a deadlock.
+            # (device+routed-IR confirmed 2026-08-05x: the passing shim-fed @orms
+            # has ONE slave port on tile_1_2 masterset DMA:1; every failing
+            # memtile-fed variant has TWO, independent of oref column and of the
+            # attn dependency.) That is the hazard spreadCollapsedPacketChannels
+            # partitions by producer: on-array @orms/@outY on one channel, the
+            # host-fed @rmsIn/@rmsW on the other.
+            channel_decl("orms", size=[1], channel_type="npu_dma_packet")
         if PH1_XCHAN:
             channel_decl("xnorm2", size=[1], channel_type="npu_dma_packet")
-        # rmsW lands on the rms core's S2MM1 alongside rmsIn, which is pinned
-        # above; it does not need to say so itself.
+        # rmsW shares the rms core's inbound channel with rmsIn, which is right:
+        # both are fed by the host, so one producer's BD order fixes the arrival
+        # order for the pair. It is only the on-array feeds they must be kept
+        # apart from, which the partition above does.
         channel_decl("rmsW", size=[1])  # host rms weight -> rms core
         channel_decl("gluOut", size=[1])  # glu-down -> down-X refeed memtile (ph3)
 
