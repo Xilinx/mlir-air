@@ -1296,10 +1296,7 @@ def build_module():
                 # independent packet readbacks over distinct shim tiles, keeping
                 # the append off rope's own col2 (whose congestion deadlocks the
                 # front-end) without air.shim_col.
-                _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-                _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 1
-                )
+                channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
                 # Only appendK names a channel. It is what holds the pair on
                 # rope's second MM2S, clear of the circuit ropeQ; appendV joins
                 # it there on its own.
