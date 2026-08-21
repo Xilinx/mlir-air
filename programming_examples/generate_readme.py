@@ -639,20 +639,7 @@ def load_llm_sweeps(sweep_path):
 
 
 def _sweep_cell(pt):
-    """One cell of the sweep table: the number, or a marker for why there isn't.
-
-    Two very different things can leave a point without a number, and they must
-    not share a marker. `expected_fail` (and a context a model simply did not
-    sweep) is benign: at 64k/128k it means XRT would not pin enough host memory
-    for the KV BO, which differs between otherwise similar boxes. Every other
-    status -- build_fail, no_template, run_fail, xrt_incomplete, stale_template,
-    and any status sweep_decode.py grows later -- is a defect.
-
-    Tested by exclusion rather than against a list of failures, so a new status
-    reads as a failure until someone decides otherwise. The inverse default is
-    how six qwen25_3b_q4 build failures at 1k-32k were published under a caption
-    calling them a limit of the runner.
-    """
+    """The point's tok/s, or a marker: — expected_fail, ✗ any other failure."""
     tps = pt.get("decode_tokens_per_sec")
     if isinstance(tps, (int, float)):
         return f"{tps:.2f}"
@@ -706,8 +693,8 @@ def render_llm_sweep(recs, base_url=""):
     legend = "\n\n".join(
         note
         for marker, note in (
-            ("—", "— context not reached (KV cache exceeds what XRT will pin)."),
-            ("✗", "✗ sweep failed (build, template or dispatch)."),
+            ("—", "— expected failure."),
+            ("✗", "✗ unexpected failure."),
         )
         if marker in markers
     )

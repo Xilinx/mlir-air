@@ -185,7 +185,7 @@ def main():
         check("✗" in sweep_md, "a build_fail renders as a failure, not a dash")
         check("—" in sweep_md, "an expected_fail still renders as a dash")
         check(
-            "context not reached" in sweep_md and "sweep failed" in sweep_md,
+            "— expected failure" in sweep_md and "✗ unexpected failure" in sweep_md,
             "both markers present -> both legends shown",
         )
 
