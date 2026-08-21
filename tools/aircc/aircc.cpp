@@ -1447,10 +1447,12 @@ static LogicalResult runAieCompilation() {
 
     aieccCmd.push_back("-O");
     aieccCmd.push_back("3");
-    // aiecc defaults to -j 0 (auto CPU count) since mlir-aie commit 1ba5b5c.
-    // Force sequential core compilation to avoid parallel xchesscc crashes.
+    // Chess is not parallel-safe -- concurrent xchesscc/noodle instances die
+    // with a kill signal -- so it stays sequential. Peano has no such limit and
+    // builds cores in parallel. Both halves are stated rather than left to
+    // aiecc's default, which has flipped before (mlir-aie 1ba5b5c).
     aieccCmd.push_back("-j");
-    aieccCmd.push_back("1");
+    aieccCmd.push_back((xchesscc || xbridge) ? "1" : "0");
 
     // bf16 emulation
     if (bf16Emulation)
