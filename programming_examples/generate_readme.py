@@ -638,15 +638,35 @@ def load_llm_sweeps(sweep_path):
     return [r for r in recs if isinstance(r, dict)]
 
 
+def _sweep_cell(pt):
+    """One cell of the sweep table: the number, or a marker for why there isn't.
+
+    Two very different things can leave a point without a number, and they must
+    not share a marker. `expected_fail` (and a context a model simply did not
+    sweep) is benign: at 64k/128k it means XRT would not pin enough host memory
+    for the KV BO, which differs between otherwise similar boxes. Every other
+    status -- build_fail, no_template, run_fail, xrt_incomplete, stale_template,
+    and any status sweep_decode.py grows later -- is a defect.
+
+    Tested by exclusion rather than against a list of failures, so a new status
+    reads as a failure until someone decides otherwise. The inverse default is
+    how six qwen25_3b_q4 build failures at 1k-32k were published under a caption
+    calling them a limit of the runner.
+    """
+    tps = pt.get("decode_tokens_per_sec")
+    if isinstance(tps, (int, float)):
+        return f"{tps:.2f}"
+    return "—" if pt.get("status", "") in ("", "ok", "expected_fail") else "✗"
+
+
 def render_llm_sweep(recs, base_url=""):
     """Render decode tok/s against context length, one row per model.
 
     Models with a sweep are published here instead of in the single-point table:
     decode throughput is dominated by KV streaming and falls by more than 10x
-    across this axis, so one number cannot represent them. A blank cell is a
-    context this runner did not reach, which at 64k/128k means XRT would not pin
-    enough host memory for the KV BO -- a property of the machine rather than of
-    the design, and worth showing rather than hiding.
+    across this axis, so one number cannot represent them. Cells without a
+    number carry a marker for why (see _sweep_cell), and only the markers that
+    actually appear are explained below the table.
     """
     if not recs:
         return ""
@@ -665,20 +685,42 @@ def render_llm_sweep(recs, base_url=""):
     head = "| Model | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
     sep = "|:------|" + "".join("------:|" for _ in ctxs) + ":------:|"
 
-    rows = []
+    rows, markers = [], set()
     for d in sorted(recs, key=lambda r: r.get("model", "")):
         by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
         cells = []
         for c in ctxs:
-            pt = by_ctx.get(c) or {}
-            tps = pt.get("decode_tokens_per_sec")
-            cells.append(f"{tps:.2f}" if isinstance(tps, (int, float)) else "—")
+            cell = _sweep_cell(by_ctx.get(c) or {})
+            if cell in ("—", "✗"):
+                markers.add(cell)
+            cells.append(cell)
         verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
         rows.append(
             f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
             + " | ".join(cells)
             + f" | {verify} |"
         )
+
+    # Only explain the markers that are actually on the table. A legend for a
+    # symbol no cell uses reads as a caveat about the numbers above it.
+    legend = "\n\n".join(
+        note
+        for marker, note in (
+            (
+                "—",
+                "— context not reached on this runner (XRT would not pin enough "
+                "host memory for the KV cache; the limit is the machine's, not "
+                "the design's)",
+            ),
+            (
+                "✗",
+                "✗ the sweep did not produce a number here (build, template or "
+                "dispatch failure) — a defect to investigate, not a limit of the "
+                "machine",
+            ),
+        )
+        if marker in markers
+    )
 
     return f"""
 
@@ -692,7 +734,7 @@ Verify column, which comes from the same nightly's `make verify`).
 {sep}
 {chr(10).join(rows)}
 
-— context not reached on this runner (XRT would not pin enough host memory for the KV cache; the limit is the machine's, not the design's)
+{legend}
 """
 
 
