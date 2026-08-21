@@ -9,20 +9,27 @@
 
 // TileDMAAllocator::spreadCollapsedPacketChannels.
 //
-// A DMA channel's port is either statically connected or packet-switched, and
-// never both: the static connection carries whatever leaves the port, so a
-// packet queued behind a circuit flow is delivered to the CIRCUIT's
-// destination and its header is never consulted.
+// A compute-tile DMA channel is ONE BD ring walked strictly in order, and a
+// packet header steers a transfer to the tile without choosing which BD
+// receives it. Sharing a ring is therefore safe exactly when something fixes
+// the arrival order, and three things can:
 //
-// The allocator produces exactly that. simpleDmaChannelAlloc reuses an existing
-// packet channel on the tile before it looks for a free one, so two packet
-// flows collapse onto one allocation; the next flow then falls through to
-// `chan = num_allocs % tile_dma_channels`, which counts ALLOCATIONS rather than
-// occupied channels and so hands out a channel that is already in use while
-// another sits idle. A circuit flow landing there is the hazard.
+//   - one switching kind. A switchbox port is statically connected OR
+//     packet-arbitrated, never both, and a channel is one port.
+//   - a ROUND-ROBIN ring: every flow owns exactly one BD of the repeating
+//     unit, so a flow's k-th transfer always meets that same BD however the
+//     arrivals interleave.
+//   - a single producer, whose own BD order fixes the arrival order.
 //
-// This pass separates them. Only that case: collapse where every flow on the
-// ring packetizes is what multiplexing is for and is left alone.
+// Absent all three the pass separates the ring; otherwise it leaves it alone,
+// because collapse is how the emitter folds a repeating chain into one BD with
+// a repeat count (see mm2s_flows_program_order.mlir).
+//
+// simpleDmaChannelAlloc produces the unsafe cases on its own: it reuses an
+// existing packet channel before it looks for a free one, and its fallback
+// `chan = num_allocs % tile_dma_channels` counts ALLOCATIONS rather than
+// occupied channels, so it hands out a channel already in use while another
+// sits idle.
 
 // -----
 
