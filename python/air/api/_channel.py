@@ -185,14 +185,25 @@ class Channel:
         # be materialised into an index-typed Value; a constant folds back to a
         # Python int, which the op keeps static. Only the constant case can be
         # range-checked -- the herd shape already bounds the dynamic one.
+        # A broadcast channel is indexed over its *destinations*, not its
+        # sources: `size=[1, 1], broadcast_shape=[3, 1]` is one producer feeding
+        # a 3x1 grid, and each consumer names its own slot with indices=[n, 0].
+        # Bounding those against size would admit only [0, 0]. The hand-written
+        # broadcast/multi_herd example is exactly this shape.
+        bounds = self.broadcast_shape or self.size
         out = []
-        for axis, (idx, extent) in enumerate(zip(indices, self.size)):
+        for axis, (idx, extent) in enumerate(zip(indices, bounds)):
             value = coerce_index(idx).materialize()
             if isinstance(value, int) and not 0 <= value < extent:
                 raise ValueError(
-                    f"air.channel {self.name!r} index {value} is out of range on "
-                    f"axis {axis}: size is {self.size}, so that axis admits "
-                    f"0..{extent - 1}"
+                    f"air.channel {self.name!r} index {value} is out of range "
+                    f"on axis {axis}: "
+                    + (
+                        f"broadcast_shape is {self.broadcast_shape}"
+                        if self.broadcast_shape
+                        else f"size is {self.size}"
+                    )
+                    + f", so that axis admits 0..{extent - 1}"
                 )
             out.append(value)
         return out
