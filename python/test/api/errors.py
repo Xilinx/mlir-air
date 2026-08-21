@@ -276,6 +276,37 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: dot_transpose_b_wrong_axis
+# With transpose_b=True, B is [n, k] -- so the contracting axis is its *last*,
+# and passing an ordinary [k, n] operand is caught rather than contracted along
+# the wrong axis. The message says which convention is in force, because the
+# two spellings differ only in a keyword.
+# CHECK: ValueError: air.api.ops.dot shape mismatch for (m, k) @ (k, n) -> (m, n)
+# CHECK: with transpose_b=True, b is [n, k]
+@expect(ValueError, "dot_transpose_b_wrong_axis")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 64], bf16, scope=h.private())
+        b = air.alloc([64, 32], bf16, scope=h.private())  # [k, n], not [n, k]
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, b, acc=acc, transpose_b=True)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_transpose_b_acc_shape
+# CHECK: ValueError: air.api.ops.dot shape mismatch for (m, k) @ (k, n) -> (m, n): a . b is (32, 16) but acc is (32, 32)
+@expect(ValueError, "dot_transpose_b_acc_shape")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 64], bf16, scope=h.private())
+        b = air.alloc([16, 64], bf16, scope=h.private())  # n = 16
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, b, acc=acc, transpose_b=True)
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: dot_shape_mismatch
 # CHECK: ValueError: air.api.ops.dot shape mismatch
 @expect(ValueError, "dot_shape_mismatch")
