@@ -1211,10 +1211,10 @@ def build_module():
         # both as packets into one 2-slot ping-pong (input, then o-proj, then down).
         # Debug configs keep the original circuit rmsX.
         if FULL4:
-            _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
+            channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
-            _rx = channel_decl("rmsX", size=[1])
-        _rw = channel_decl("rmsW", size=[1])
+            channel_decl("rmsX", size=[1])
+        channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
             # rmsW FIFO re-fed twice does NOT pair in AIR (both gets read the same
@@ -1235,17 +1235,14 @@ def build_module():
         # stale-rebroadcast deadlock). Two separate feed loops (the prior bug)
         # lowered to two repeat_count tasks. Packet (npu_dma_packet) so the two
         # producers (rms core L1 + down_buffer L2, time-disjoint, same id) converge.
-        _xn = channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
-        if KV_APPEND:
-            # Pin the rms core's two outputs (xnorm o-proj-X feedback -> mem_2_1 on
-            # MM2S1; layerOut -> shim on MM2S0) to their known-good split. Adding the
-            # append channels otherwise perturbs the global placer into packing BOTH
-            # onto rms MM2S0 (dual-fan packet), which flips layerOut circuit->packet
-            # and deadlocks. Only the rms core is a compute-tile endpoint of these
-            # channels (consumers are memtile/shim), so the pin is local to it.
-            _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                T.i32(), 1
-            )
+        # The rms core's two outputs (this xnorm o-proj-X feedback -> mem_2_1, and
+        # layerOut -> shim) used to be pinned to a known-good split, because
+        # adding the append channels packed BOTH onto rms MM2S0 and deadlocked.
+        # AIRToAIE reaches the same split by itself now: that packing is a ring
+        # its own diagnoseBDChain calls out of step, and rather than only
+        # refusing it, spreadCollapsedPacketChannels peels one flow onto the
+        # channel that was sitting idle.
+        channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
         # (FAITHFUL ph2): no toBufP2 / buf_ph2 channel -- the rms core emits ph2 X
         # = rmsnorm(x+oproj) directly on @xnorm. Every re-feed on this channel is
         # written as an n-trip loop around the put (see refeed()); the counts are
@@ -1262,17 +1259,13 @@ def build_module():
         channel_decl("ropeLUT", size=[1])
         # S3a flash-attn dataflow: rope q -> qk tile (direct); rope k|v -> KV
         # staging memtile (rope's single k/v MM2S) which splits k->qk, v->kv.
-        _ropeQ = channel_decl(
-            "ropeQ", size=[1]
-        )  # rope q (whole 2048) -> q broadcast memtile
-        if KV_APPEND:
-            # Pin roped Q to rope MM2S0 so the K/V append (pinned to MM2S1
-            # below) does not steal it -- matches the reference (Q on 1st MM2S, K/V append
-            # on 2nd). Without this the placer puts the packet append on MM2S0
-            # (allocated first) and shoves Q to MM2S1, deadlocking the front-end.
-            _ropeQ.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                T.i32(), 0
-            )
+        channel_decl("ropeQ", size=[1])  # rope q (whole 2048) -> q broadcast memtile
+        # Q used to be pinned to rope MM2S0 here, to keep the packet K/V append
+        # off the channel carrying this circuit flow. The compiler derives that
+        # now: a DMA channel's port is either statically connected or packet-
+        # switched, never both, so AIRToAIE separates the two by itself
+        # (TileDMAAllocator::spreadCollapsedPacketChannels) and reproduces this
+        # exact placement.
         channel_decl("toAttnQ", size=[N_ATTN_CU])
         # rope k/v -> kv memtiles. PACKET so one rope MM2S can fan to memtiles on
         # MULTIPLE cols (mem_3_1 + mem_4_1) -- the reference routes rope k/v as
@@ -1301,14 +1294,11 @@ def build_module():
                 # independent packet readbacks over distinct shim tiles, keeping
                 # the append off rope's own col2 (whose congestion deadlocks the
                 # front-end) without air.shim_col.
-                _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-                _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 1
-                )
-                _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-                _apV.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 1
-                )
+                channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
+                # Only appendK names a channel. It is what holds the pair on
+                # rope's second MM2S, clear of the circuit ropeQ; appendV joins
+                # it there on its own.
+                channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
             if KV_SPLIT:
                 # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
                 # col group of 2 CUs), so their memtile S2MM fills are independent.
@@ -1366,13 +1356,11 @@ def build_module():
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
-            _lo = channel_decl("layerOut", size=[1])
-            if KV_APPEND:
-                # Keep layerOut on rms MM2S0 (circuit) so xnorm (pinned to MM2S1)
-                # does not share/flip it to packet. See xnorm pin above.
-                _lo.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 0
-                )
+            # layerOut and the xnorm above are the rms core's only two outputs,
+            # and AIRToAIE gives them a channel each: collapsed onto one they
+            # form a ring its diagnoseBDChain oracle calls out of step, and
+            # spreadCollapsedPacketChannels peels one onto the idle channel.
+            channel_decl("layerOut", size=[1])
         # GLU path: id-demux delivers gate-up DIRECTLY to the GLU herd (no relay);
         # GLU -> gluOut -> down memtile accumulate (8192). FAITHFUL: that 8192 is
         # fed back on-chip as the DOWN phase X by the down_buffer re-broadcasting it
