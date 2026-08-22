@@ -28,6 +28,8 @@ from air.dialects.memref import load as memref_load, store as memref_store
 from air.dialects.scf import for_ as range_, yield_
 from air.dialects.vector import broadcast, transfer_read, transfer_write
 
+from .types import require_signless
+
 __all__ = ["emit_elementwise"]
 
 _FLOAT_OPS = {
@@ -80,6 +82,23 @@ def emit_elementwise(dst, expr):
                 "buffer used before allocation; air.alloc() must be called "
                 "inside the herd body that uses it"
             )
+
+    if dst.dtype.is_unsigned:
+        # An unsigned tile can be *copied* elementwise but not computed on. The
+        # copy holds because it emits memref.load/store and no arith op at all,
+        # which is exactly the loop the hand-written uint8 examples spell out;
+        # anything else -- an operator, or a broadcast constant -- reaches an
+        # arith builder that rejects a signful operand. The vector path is not
+        # available even for the copy: vector.transfer_read takes a padding
+        # value, and that padding value is an arith.constant.
+        if expr.kind != "buffer":
+            require_signless(
+                dst.dtype,
+                "an elementwise operator or broadcast scalar (a plain copy, "
+                "dst[:] = src[:], is)",
+            )
+        _emit_scalar(dst, expr, _INT_OPS)
+        return
 
     shape = dst.shape
     # A rank-0 buffer is a single scalar -- the accumulator linalg.dot writes

@@ -15,7 +15,22 @@ runner can never disagree about how a numpy dtype maps onto the device.
 import numpy as np
 from ml_dtypes import bfloat16
 
-__all__ = ["DType", "bf16", "f16", "f32", "i8", "i16", "i32", "dtype_of"]
+__all__ = [
+    "DType",
+    "bf16",
+    "f16",
+    "f32",
+    "i8",
+    "i16",
+    "i32",
+    "ui8",
+    "ui16",
+    "ui32",
+    "dtype_of",
+]
+# `require_signless` is deliberately absent from __all__: it is the guard the
+# emission paths call, not something a kernel author reaches for. All four
+# callers import it by name, which __all__ does not govern.
 
 
 class DType:
@@ -34,10 +49,13 @@ class DType:
     never exercised there.
 
     Widths for f16, i8, i16 and i32 are extrapolated by element size and have
-    not been compiled; treat them as unverified.
+    not been compiled; treat them as unverified. The unsigned widths are never
+    reached at all -- see ``is_unsigned``.
     """
 
-    def __init__(self, name, np_dtype, default_vector_width, is_float):
+    def __init__(
+        self, name, np_dtype, default_vector_width, is_float, is_unsigned=False
+    ):
         self.name = name
         self.np_dtype = np_dtype
         self.default_vector_width = default_vector_width
@@ -45,6 +63,14 @@ class DType:
         # for the ml_dtypes extension types, which would silently select the
         # integer arithmetic ops for a bf16 kernel.
         self.is_float = is_float
+        # MLIR's arith and linalg ops constrain their integer operands to be
+        # *signless* (`SignlessIntegerLike`), while `type_mapper` maps numpy's
+        # unsigned dtypes onto MLIR's signful `ui8`/`ui16`/`ui32`. So an
+        # unsigned buffer can be declared, allocated, moved and handed to an
+        # external kernel, but arithmetic on one does not verify -- see
+        # `require_signless`, which every emission path that builds an arith or
+        # linalg op calls.
+        self.is_unsigned = is_unsigned
 
     @property
     def itemsize(self):
@@ -69,7 +95,18 @@ i8 = DType("i8", np.int8, 32, is_float=False)
 i16 = DType("i16", np.int16, 16, is_float=False)
 i32 = DType("i32", np.int32, 8, is_float=False)
 
-_BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32)}
+# Unsigned integers exist so that a kernel over `np.uint8` data can say so. The
+# alternative -- declaring i8 and passing uint8 arrays -- type-checks nowhere
+# and makes the emitted `func.func private @...` declaration disagree with the
+# C prototype the object file was compiled from. The vector widths mirror their
+# signed counterparts and are unreachable while arithmetic is refused; they are
+# stated rather than left at 0 so that relaxing the refusal does not silently
+# also change the width.
+ui8 = DType("ui8", np.uint8, 32, is_float=False, is_unsigned=True)
+ui16 = DType("ui16", np.uint16, 16, is_float=False, is_unsigned=True)
+ui32 = DType("ui32", np.uint32, 8, is_float=False, is_unsigned=True)
+
+_BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32)}
 
 
 def dtype_of(np_dtype):
@@ -79,3 +116,30 @@ def dtype_of(np_dtype):
     (``np.dtype("float32")``); the table is keyed by the former.
     """
     return _BY_NP.get(np_dtype) or _BY_NP.get(getattr(np_dtype, "type", None))
+
+
+def require_signless(dtype, what):
+    """Refuse ``what`` on an unsigned element type, naming why it cannot work.
+
+    MLIR spells signedness in the *operation*, not the type: ``arith.divsi`` and
+    ``arith.divui`` both take signless operands. So the whole ``arith`` dialect
+    -- and every named ``linalg`` contraction, whose region is built from it --
+    is constrained to signless integers, and a ``ui8`` operand fails
+    verification rather than being reinterpreted.
+
+    This is not a limitation air.api could paper over by bitcasting to the
+    signed sibling: that would silently change what ``max``, ``div`` and a
+    widening contraction compute. Refuse, and name the signed type to declare
+    instead.
+    """
+    if not dtype.is_unsigned:
+        return
+    raise NotImplementedError(
+        f"{what} is not supported for {dtype}: MLIR's arith and linalg ops "
+        f"require signless integer operands, and an unsigned numpy dtype maps "
+        f"onto the signful MLIR type '{dtype.name}'. An unsigned buffer can be "
+        f"allocated, moved with air.api.ops.load/store and air.channel, and "
+        f"passed to an air.extern kernel -- which is what the uint8 examples in "
+        f"this tree do. To compute on it in the DSL, declare it "
+        f"air.api.{dtype.name[1:]} instead and interpret the data yourself."
+    )

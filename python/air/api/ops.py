@@ -35,6 +35,7 @@ from ``tanh``, which has a checked lowering, so nothing has needed a vector
 """
 
 from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
+from .types import require_signless
 
 __all__ = [
     "load",
@@ -643,6 +644,11 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
             )
         if buf.value is None:
             raise RuntimeError(f"air.api.ops.dot: {name} used before allocation")
+        # A named linalg contraction builds its region from arith ops --
+        # arith.extsi and arith.muli for an integer operand -- so an unsigned
+        # element type fails verification inside the op that was just emitted,
+        # several frames from the call that caused it.
+        require_signless(buf.dtype, f"air.api.ops.dot's {name} operand")
 
     if alpha != 1.0:
         raise NotImplementedError(

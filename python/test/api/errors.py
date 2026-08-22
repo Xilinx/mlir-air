@@ -16,7 +16,7 @@ from itertools import product
 
 from air import api as air
 from air.api import ops  # noqa: F401
-from air.api.types import bf16, f32
+from air.api.types import bf16, f32, i32, ui8
 
 
 def expect(exc_types, label):
@@ -1238,3 +1238,60 @@ def _():
         ch.put(buf[0:20, 0:8], pack=mm.b(20, 8, lead=()))
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_elementwise_operator
+# An unsigned tile can be copied but not computed on: every arith op is
+# constrained to signless integer operands, so `a[:] + b[:]` on ui8 would build
+# an arith.addi that does not verify. Refused at the call site, naming i8.
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+# CHECK-SAME: declare it air.api.i8 instead
+@expect(NotImplementedError, "unsigned_elementwise_operator")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        b = air.alloc([64], ui8, scope=h.private())
+        a[:] = a[:] + b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_fill
+# A fill is not a copy either: the broadcast scalar is an arith.constant, which
+# has no signful form -- `arith.constant 0 : ui8` fails with "integer return
+# type must be signless".
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_fill")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        a[:] = 0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_dot
+# A named linalg contraction builds its region out of arith ops -- arith.extsi
+# then arith.muli for an integer operand -- so the verifier failure would land
+# inside the op rather than at this call.
+# CHECK: NotImplementedError: air.api.ops.dot's a operand is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_dot")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], ui8, scope=h.private())
+        b = air.alloc([16, 16], ui8, scope=h.private())
+        acc = air.alloc([16, 16], i32, scope=h.private())
+        ops.dot(a, b, acc=acc)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_extern_scalar
+# The *buffer* arguments of an extern kernel may be unsigned -- that is the
+# whole point of the type -- but a scalar argument is materialised by
+# arith.constant, so it may not be. Caught at the declaration rather than at the
+# first call, which is where the constant would actually be built.
+# CHECK: NotImplementedError: an air.extern scalar argument is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_extern_scalar")
+def _():
+    air.extern("k", object="k.o", scalars=[ui8])

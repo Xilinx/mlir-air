@@ -55,7 +55,7 @@ class ExternKernel:
                 'should link against, e.g. object="mv.o". It becomes the '
                 "link_with attribute on both the declaration and the herd."
             )
-        from .types import DType
+        from .types import DType, require_signless
 
         for s in scalars:
             if not isinstance(s, DType):
@@ -66,6 +66,11 @@ class ExternKernel:
                     "bf16 or f32, and buffer types are inferred from the buffers "
                     "themselves."
                 )
+            # A scalar argument is materialised by arith.constant, so it has to
+            # be signless even though the *buffer* arguments beside it need not
+            # be. Caught at the declaration rather than at the first call, which
+            # is where the constant would actually be built.
+            require_signless(s, "an air.extern scalar argument")
         self.name = name
         self.object = object
         self.scalars = list(scalars)

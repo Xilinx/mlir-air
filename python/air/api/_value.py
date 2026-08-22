@@ -251,7 +251,12 @@ class Buffer:
         from air.dialects.linalg import fill
 
         from . import ops as _ops
+        from .types import require_signless
 
+        # linalg.fill's value comes from an arith.constant, which has no signful
+        # form; a packed buffer is an accumulator anyway, and ops.dot has
+        # already refused an unsigned one.
+        require_signless(self.dtype, "a fill of a micro-tiled buffer")
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise NotImplementedError(
                 "only a scalar fill is supported on a micro-tiled buffer "
