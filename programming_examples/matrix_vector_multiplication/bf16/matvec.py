@@ -95,8 +95,11 @@ def build_module(
 
     dt_in, dt_out = DTYPE[np_dtype_in], DTYPE[np_dtype_out]
 
-    # Each launch instance owns herd_m * tile_m output rows.
-    seg_m = tile_m * herd_m
+    # The extent of one L2 staging tile, which the launch steps by: each launch
+    # point owns herd_m * tile_m output rows. Named for what it dimensions
+    # rather than for the hierarchy level that consumes it -- air.launch,
+    # air.segment and air.herd each own a separate iteration space.
+    l2_m = tile_m * herd_m
 
     # The kernel and the fill live in the same object file and are linked into
     # the herd by air.extern. The three leading i32s are rows, K and the row
@@ -116,23 +119,23 @@ def build_module(
     B = air.tensor([k], dt_in)
     C = air.tensor([m], dt_out)
 
-    with air.launch([range(0, m, seg_m)], name="matvec_bf16") as launch:
+    with air.launch([range(0, m, l2_m)], name="matvec_bf16") as launch:
 
         @launch.body
-        def _(si):
+        def _(li):
             with air.segment(name="matvec_bf16_0") as seg:
 
                 @seg.body
                 def _():
-                    row = si * seg_m
+                    row = li * l2_m
 
                     # L3 -> L2: the A panel for this chunk, and the C panel it
                     # will drain into. Flat, so each is exactly the L3 region it
                     # holds; a core takes its own window with tx * tile_m.
-                    l2_a = air.alloc([seg_m, k], dt_in, scope=seg.private())
-                    l2_c = air.alloc([seg_m], dt_out, scope=seg.private())
+                    l2_a = air.alloc([l2_m, k], dt_in, scope=seg.private())
+                    l2_c = air.alloc([l2_m], dt_out, scope=seg.private())
 
-                    air.ops.load(l2_a, A[row : row + seg_m, :])
+                    air.ops.load(l2_a, A[row : row + l2_m, :])
 
                     # shape=(herd_m,) rather than letting air.api pick: an
                     # herd_m wider than the part has columns should fail in the
@@ -161,7 +164,7 @@ def build_module(
 
                             air.ops.store(l1_c, l2_c[base : base + tile_m])
 
-                    air.ops.store(l2_c, C[row : row + seg_m])
+                    air.ops.store(l2_c, C[row : row + l2_m])
 
     return launch.build(target=target)
 
