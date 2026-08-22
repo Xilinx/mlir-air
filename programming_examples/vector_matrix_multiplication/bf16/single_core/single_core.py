@@ -70,7 +70,7 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.
 
         @launch.body
         def _(lj):
-            with air.segment(name="vecmat_i8_0") as seg:
+            with air.segment(name="vecmat_bf16_0") as seg:
 
                 @seg.body
                 def _():
