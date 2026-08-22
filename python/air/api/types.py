@@ -27,8 +27,10 @@ __all__ = [
     "ui16",
     "ui32",
     "dtype_of",
-    "require_signless",
 ]
+# `require_signless` is deliberately absent from __all__: it is the guard the
+# emission paths call, not something a kernel author reaches for. All four
+# callers import it by name, which __all__ does not govern.
 
 
 class DType:
