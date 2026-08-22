@@ -1453,6 +1453,13 @@ static LogicalResult runAieCompilation() {
     // aiecc's default, which has flipped before (mlir-aie 1ba5b5c).
     aieccCmd.push_back("-j");
     aieccCmd.push_back((xchesscc || xbridge) ? "1" : "0");
+    // Lower each device's cores once rather than once per core; every core
+    // still compiles and links its own object. Asked for on the Peano path
+    // only, and asked for rather than stated on both: the two drivers disagree
+    // on the default (C++ aiecc per-core, aiecc.py unified), so naming Chess's
+    // half here would change it on one of them.
+    if (!(xchesscc || xbridge))
+      aieccCmd.push_back("--unified");
 
     // bf16 emulation
     if (bf16Emulation)
