@@ -116,12 +116,12 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with=
     with air.launch([range(0, n, tile_n)], name="vecmat_i8") as launch:
 
         @launch.body
-        def _(sj):
+        def _(lj):
             with air.segment(name="vecmat_i8_0") as seg:
 
                 @seg.body
                 def _():
-                    col = sj * tile_n
+                    col = lj * tile_n
 
                     l2_a = air.alloc([k], dt_in, scope=seg.private())
                     l2_a_s = air.alloc([k // bs], dt_out, scope=seg.private())

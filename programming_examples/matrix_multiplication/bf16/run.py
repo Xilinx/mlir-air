@@ -90,10 +90,14 @@ def build_module(
     dt_in, dt_out = DTYPE[np_dtype_in], DTYPE[np_dtype_out]
     mm = air.micro_tile(*MMUL_MKN[arch])
 
-    # One segment covers herd_m x herd_n output tiles; the launch grid covers
-    # the rest of M and N. The outer tiling has to sit here rather than in the
-    # herd because the L2 staging buffers are refilled per launch point.
-    seg_m, seg_n = tile_m * herd_m, tile_n * herd_n
+    # The extent of one L2 staging tile: a segment covers herd_m x herd_n
+    # output tiles, and l2_a/l2_b/l2_c below are sized from it. The launch steps
+    # by exactly that, one L2 tile per point, so the outer tiling sits on the
+    # launch rather than the herd -- the staging buffers are refilled per point.
+    # Named for what it dimensions, not for the hierarchy level that consumes
+    # it: air.launch, air.segment and air.herd each own a separate iteration
+    # space, and a launch point is not a synonym for a segment.
+    l2_m, l2_n = tile_m * herd_m, tile_n * herd_n
 
     A = air.tensor([m, k], dt_in)
     B = air.tensor([k, n], dt_in)
@@ -105,16 +109,16 @@ def build_module(
     # even sized, and letting the two disagree would build for one generation
     # while shaped for the other.
     with air.launch(
-        [range(0, m, seg_m), range(0, n, seg_n)], name="matmul_bf16"
+        [range(0, m, l2_m), range(0, n, l2_n)], name="matmul_bf16"
     ) as launch:
 
         @launch.body
-        def _(si, sj):
+        def _(li, lj):
             with air.segment(name="matmul_seg") as seg:
 
                 @seg.body
                 def _():
-                    row, col = si * seg_m, sj * seg_n
+                    row, col = li * l2_m, lj * l2_n
 
                     # L2 staging is flat: each buffer is exactly the region of
                     # L3 it holds, so filling and draining it are plain
@@ -122,9 +126,9 @@ def build_module(
                     # sub-region out. For A this is also byte-identical to the
                     # predecessor's [herd_m, 1, tile_m, tile_k_l2] -- row-major
                     # [a, 1, b, c] and [a*b, c] are the same buffer.
-                    l2_a = air.alloc([seg_m, tile_k_l2], dt_in, scope=seg.private())
-                    l2_b = air.alloc([tile_k_l2, seg_n], dt_in, scope=seg.private())
-                    l2_c = air.alloc([seg_m, seg_n], dt_out, scope=seg.private())
+                    l2_a = air.alloc([l2_m, tile_k_l2], dt_in, scope=seg.private())
+                    l2_b = air.alloc([tile_k_l2, l2_n], dt_in, scope=seg.private())
+                    l2_c = air.alloc([l2_m, l2_n], dt_out, scope=seg.private())
                     # The accumulator outlives each entry into the compute herd,
                     # because the k2 reduction is at segment scope, so it is
                     # allocated here and carries one slab per core.
@@ -145,8 +149,8 @@ def build_module(
                             acc[:] = 0.0
 
                     for k2 in air.sequential(0, k, tile_k_l2):
-                        air.ops.load(l2_a, A[row : row + seg_m, k2 : k2 + tile_k_l2])
-                        air.ops.load(l2_b, B[k2 : k2 + tile_k_l2, col : col + seg_n])
+                        air.ops.load(l2_a, A[row : row + l2_m, k2 : k2 + tile_k_l2])
+                        air.ops.load(l2_b, B[k2 : k2 + tile_k_l2, col : col + l2_n])
 
                         with air.herd(
                             [range(herd_m), range(herd_n)],
@@ -195,7 +199,7 @@ def build_module(
                                 ],
                             )
 
-                    air.ops.store(l2_c, C[row : row + seg_m, col : col + seg_n])
+                    air.ops.store(l2_c, C[row : row + l2_m, col : col + l2_n])
 
     return launch
 
