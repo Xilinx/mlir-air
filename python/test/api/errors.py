@@ -689,18 +689,51 @@ def _():
     _staged(body)
 
 
-# air.launch, air.segment and air.herd each own an iteration space, and it is
-# written on the op that has it. A grid on air.segment is air.segment's own
-# `sizes` -- the unroll that copies the segment body across columns -- and is
-# not a way to spell the outer tiling. Saying so is the whole point: it used to
-# be silently redirected to the launch, which made air.segment's own iteration
-# space unreachable and taught the wrong model of the hierarchy.
-# CHECK-LABEL: TEST: segment_grid_is_not_the_launch_grid
-# CHECK: NotImplementedError: air.segment(<grid>) is the segment's own iteration space
-# CHECK: write air.launch(<grid>) and take the coordinates in the launch body
-@expect(NotImplementedError, "segment_grid_is_not_the_launch_grid")
+# The segment's iteration space is now emitted rather than refused, so the
+# positive cases live in hierarchy.py. What stays here is its arity rule, which
+# is the same one air.launch and air.herd follow: a body sees exactly as many
+# coordinates as the grid it was given, and a gridless segment sees none. The
+# message has to keep pointing at air.launch for the outer tiling, because
+# reaching for air.segment to spell that is the original conflation.
+# CHECK-LABEL: TEST: segment_body_arity
+# CHECK: TypeError: segment body takes 0 coordinate argument(s) but the segment iteration space is 1-D
+@expect(TypeError, "segment_body_arity")
 def _():
-    air.segment([range(0, 128, 64)])
+    A = air.tensor([128], bf16)
+    B = air.tensor([128], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment([range(2)], name="seg") as seg:
+
+                @seg.body
+                def _():
+                    pass
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: gridless_segment_body_arity
+# CHECK: TypeError: segment body takes 1 coordinate argument(s) but the segment iteration space is 0-D
+# CHECK-SAME: Outer tiling belongs on air.launch
+@expect(TypeError, "gridless_segment_body_arity")
+def _():
+    A = air.tensor([128], bf16)
+    B = air.tensor([128], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _(u0):
+                    pass
+
+    launch.mlir()
 
 
 # CHECK-LABEL: TEST: segment_grid_too_deep

@@ -1,41 +1,54 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""
-Segment Unroll Example
+"""Segment unroll, on air.api.
 
-This example demonstrates the segment unroll feature in MLIR-AIR. A segment with
-a 'sizes' attribute is unrolled, creating multiple copies of the segment body,
-each with different segment indices. This allows for efficient parallelization
-across multiple segment instances.
+``air.launch``, ``air.segment`` and ``air.herd`` each carry their own iteration
+space, and this is the example for the middle one. A grid on ``air.segment``
+becomes its ``sizes``, printed as ``unroll(...)``, and it means something
+different from the other two:
 
-The kernel reads a vector, adds 10 to each element across multiple unrolled
-segments, and writes the result back. Each segment processes a portion of the
-input data using channels indexed by segment coordinates.
+* a **launch** point replays everything inside it -- temporal;
+* a **segment** point is a *spatial copy* of the segment body, which
+  ``air-to-aie`` lays out across columns, so N points is N physical herds at
+  once rather than one herd run N times;
+* a **herd** point is a core.
+
+Each copy is handed its own coordinate and uses it to pick its endpoint of a
+channel declared ``size=[SX, SY]``::
+
+    air.segment @segment_with_unroll unroll(%u0, %u1) in (%c2, %c1)
+      air.channel.put @ChanIn[%u0, %u1] ...
+      air.herd @compute_herd args(%arg=%u0, ...)      <- threaded in explicitly
+        air.channel.get @ChanIn[%u0, %u1] ...
+
+That third line is the one worth understanding: ``air.herd`` is
+``IsolatedFromAbove``, so the segment's coordinate cannot simply be referenced
+from inside the herd body. air.api threads it in as a herd operand, which is
+what the raw-bindings predecessor spelled by hand as ``operands=[seg_x, seg_y]``.
+
+The L3 endpoints sit **inside** the segment, where the predecessor had them
+beside it at launch scope. air.api has no scope between the two, and this is the
+better placement anyway: each copy moves its own chunk, indexed by its own
+coordinate, rather than a host-side Python loop stamping out one put per copy
+from outside. The offset is ``seg_x * CHUNK`` -- an ordinary expression on a
+coordinate.
 """
 
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.dialects import arith
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
-# Configuration
 VECTOR_LEN = 64
-SEGMENT_SIZE_X = 2  # Segment unroll factor in X dimension
-SEGMENT_SIZE_Y = 1  # Segment unroll factor in Y dimension
+SEGMENT_SIZE_X = 2  # Segment unroll factor in X
+SEGMENT_SIZE_Y = 1  # Segment unroll factor in Y
 INOUT_DATATYPE = np.int32
 
-# Sanity checks: ensure vector length is evenly divisible by segment dimensions
-# This is required because VECTOR_LEN // SEGMENT_SIZE_X is used to size L1 memrefs
-# and compute host-side slice sizes. Non-divisible configurations would silently
-# truncate and/or mis-size buffers.
+# CHUNK sizes both the L1 tiles and each copy's slice of L3, so the vector has
+# to divide evenly across the copies.
 assert VECTOR_LEN % SEGMENT_SIZE_X == 0, (
     f"VECTOR_LEN ({VECTOR_LEN}) must be evenly divisible by "
     f"SEGMENT_SIZE_X ({SEGMENT_SIZE_X})"
@@ -45,99 +58,48 @@ assert VECTOR_LEN % (SEGMENT_SIZE_X * SEGMENT_SIZE_Y) == 0, (
     f"total segment count ({SEGMENT_SIZE_X * SEGMENT_SIZE_Y})"
 )
 
+CHUNK = VECTOR_LEN // SEGMENT_SIZE_X
 
-@module_builder
+
 def build_module():
-    """Build a kernel with segment unroll to demonstrate its lowering."""
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = T.memref(VECTOR_LEN, xrt_dtype)
+    """Build the segment-unroll kernel. Returns an ``air.api`` launch."""
+    A = air.tensor([VECTOR_LEN], i32)
+    B = air.tensor([VECTOR_LEN], i32)
 
-    # L1 memory space for tile data
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    image_type_l1 = MemRefType.get(
-        shape=[VECTOR_LEN // SEGMENT_SIZE_X],
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    # One endpoint per unrolled copy, which is why these are sized by the
+    # segment grid and not by the herd.
+    chan_in = air.channel("ChanIn", size=[SEGMENT_SIZE_X, SEGMENT_SIZE_Y])
+    chan_out = air.channel("ChanOut", size=[SEGMENT_SIZE_X, SEGMENT_SIZE_Y])
 
-    # Define channels for data movement with dimensions matching segment unroll
-    # Each unrolled segment instance needs its own channel endpoint
-    Channel("ChanIn", size=[SEGMENT_SIZE_X, SEGMENT_SIZE_Y])
-    Channel("ChanOut", size=[SEGMENT_SIZE_X, SEGMENT_SIZE_Y])
+    with air.launch(name="segment_unroll_test") as launch:
 
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def segment_unroll_test(input_buf, output_buf):
-        """Test function with segment unroll."""
+        @launch.body
+        def _():
+            with air.segment(
+                [range(SEGMENT_SIZE_X), range(SEGMENT_SIZE_Y)],
+                name="segment_with_unroll",
+            ) as seg:
 
-        @launch(operands=[input_buf, output_buf])
-        def launch_body(a, b):
-            # Put on each subchannel at launch level
-            # Each unrolled segment instance reads from its own subchannel
-            chunk_size = VECTOR_LEN // SEGMENT_SIZE_X
-            for sx in range(SEGMENT_SIZE_X):
-                for sy in range(SEGMENT_SIZE_Y):
-                    offset = sx * chunk_size
-                    # Use python indices to create the MLIR constants for channel indices
-                    sx_idx = arith.constant(T.index(), sx)
-                    sy_idx = arith.constant(T.index(), sy)
-                    offset_idx = arith.constant(T.index(), offset)
-                    size_idx = arith.constant(T.index(), chunk_size)
-                    stride_idx = arith.constant(T.index(), 1)
-                    # Put a portion of input to each subchannel
-                    ChannelPut(
-                        "ChanIn",
-                        a,
-                        indices=[sx_idx, sy_idx],
-                        offsets=[offset_idx],
-                        sizes=[size_idx],
-                        strides=[stride_idx],
-                    )
+                @seg.body
+                def _(seg_x, seg_y):
+                    # This copy's slice of the vector.
+                    off = seg_x * CHUNK
+                    chan_in.put(A[off : off + CHUNK], indices=[seg_x, seg_y])
 
-            # Segment with unroll - this creates SEGMENT_SIZE_X * SEGMENT_SIZE_Y
-            # copies of the segment body, each with different segment indices
-            @segment(name="segment_with_unroll", sizes=[SEGMENT_SIZE_X, SEGMENT_SIZE_Y])
-            def segment_body(seg_x, seg_y, seg_sx, seg_sy):
-                """Segment body that will be unrolled."""
+                    with air.herd([range(1)], name="compute_herd", shape=(1,)) as h:
 
-                # Pass segment unroll indices to herd via operands
-                @herd(name="compute_herd", sizes=[1, 1], operands=[seg_x, seg_y])
-                def herd_body(tx, ty, sx, sy, herd_seg_x, herd_seg_y):
-                    """Simple compute: add 10 to each element."""
-                    tile_in = AllocOp(image_type_l1, [], [])
-                    tile_out = AllocOp(image_type_l1, [], [])
+                        @h.body
+                        def _(tx):
+                            tile_in = air.alloc([CHUNK], i32, scope=h.private())
+                            tile_out = air.alloc([CHUNK], i32, scope=h.private())
 
-                    # Use segment indices to select the correct channel endpoint
-                    ChannelGet("ChanIn", tile_in, indices=[herd_seg_x, herd_seg_y])
+                            chan_in.get(tile_in, indices=[seg_x, seg_y])
+                            tile_out[:] = tile_in[:] + 10
+                            chan_out.put(tile_out, indices=[seg_x, seg_y])
 
-                    for i in range_(VECTOR_LEN // SEGMENT_SIZE_X):
-                        val = load(tile_in, [i])
-                        val_plus_10 = arith.addi(val, arith.constant(xrt_dtype, 10))
-                        store(val_plus_10, tile_out, [i])
-                        yield_([])
+                    chan_out.get(B[off : off + CHUNK], indices=[seg_x, seg_y])
 
-                    ChannelPut("ChanOut", tile_out, indices=[herd_seg_x, herd_seg_y])
-
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
-
-            # Get on each subchannel at launch level (after producer @segment)
-            for sx in range(SEGMENT_SIZE_X):
-                for sy in range(SEGMENT_SIZE_Y):
-                    offset = sx * chunk_size
-                    sx_idx = arith.constant(T.index(), sx)
-                    sy_idx = arith.constant(T.index(), sy)
-                    offset_idx = arith.constant(T.index(), offset)
-                    size_idx = arith.constant(T.index(), chunk_size)
-                    stride_idx = arith.constant(T.index(), 1)
-                    # Get a portion of output from each subchannel
-                    ChannelGet(
-                        "ChanOut",
-                        b,
-                        indices=[sx_idx, sy_idx],
-                        offsets=[offset_idx],
-                        sizes=[size_idx],
-                        strides=[stride_idx],
-                    )
+    return launch
 
 
 if __name__ == "__main__":
@@ -165,17 +127,22 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    mlir_module = build_module().build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    # Prepare test data
-    # Input: [0, 1, 2, ..., 63]
-    # Expected output: [10, 11, 12, ..., 73]
+    # Input: [0, 1, ..., 63]; expected output: [10, 11, ..., 73]
     input_a = np.arange(VECTOR_LEN, dtype=INOUT_DATATYPE)
     output_b = input_a + 10
 

@@ -48,9 +48,15 @@ class DType:
     its npu1 config actually runs scalar (VECTOR_SIZE=0), so that advice is
     never exercised there.
 
-    Widths for f16, i8, i16 and i32 are extrapolated by element size and have
-    not been compiled; treat them as unverified. The unsigned widths are never
-    reached at all -- see ``is_unsigned``.
+    i32 is 32-bit like f32 and behaves the same way: 8 lanes (256-bit) fails in
+    the AIE backend with "unable to legalize instruction: <8 x s32> G_ADD", so
+    it also defaults to 16. Measured on npu1 by segment_unroll, which was the
+    first example to vectorise an i32 elementwise body -- the previous value of
+    8 was an extrapolation by element size and was wrong.
+
+    Widths for f16, i8 and i16 are still extrapolated that way and have not been
+    compiled; treat them as unverified. The unsigned widths are never reached at
+    all -- see ``is_unsigned``.
     """
 
     def __init__(
@@ -93,7 +99,7 @@ f16 = DType("f16", np.float16, 16, is_float=True)
 f32 = DType("f32", np.float32, 16, is_float=True)
 i8 = DType("i8", np.int8, 32, is_float=False)
 i16 = DType("i16", np.int16, 16, is_float=False)
-i32 = DType("i32", np.int32, 8, is_float=False)
+i32 = DType("i32", np.int32, 16, is_float=False)
 
 # Unsigned integers exist so that a kernel over `np.uint8` data can say so. The
 # alternative -- declaring i8 and passing uint8 arrays -- type-checks nowhere
