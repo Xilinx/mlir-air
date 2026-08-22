@@ -48,9 +48,15 @@ class DType:
     its npu1 config actually runs scalar (VECTOR_SIZE=0), so that advice is
     never exercised there.
 
-    Widths for f16, i8, i16 and i32 are extrapolated by element size and have
-    not been compiled; treat them as unverified. The unsigned widths are never
-    reached at all -- see ``is_unsigned``.
+    i32 is 32-bit like f32 and behaves the same way: 8 lanes (256-bit) fails in
+    the AIE backend with "unable to legalize instruction: <8 x s32> G_ADD", so
+    it also defaults to 16. Measured on npu1 by segment_unroll, which was the
+    first example to vectorise an i32 elementwise body -- the previous value of
+    8 was an extrapolation by element size and was wrong.
+
+    Widths for f16, i8 and i16 are still extrapolated that way and have not been
+    compiled; treat them as unverified. The unsigned widths are never reached at
+    all -- see ``is_unsigned``.
     """
 
     def __init__(
@@ -93,18 +99,27 @@ f16 = DType("f16", np.float16, 16, is_float=True)
 f32 = DType("f32", np.float32, 16, is_float=True)
 i8 = DType("i8", np.int8, 32, is_float=False)
 i16 = DType("i16", np.int16, 16, is_float=False)
-i32 = DType("i32", np.int32, 8, is_float=False)
+i32 = DType("i32", np.int32, 16, is_float=False)
 
 # Unsigned integers exist so that a kernel over `np.uint8` data can say so. The
 # alternative -- declaring i8 and passing uint8 arrays -- type-checks nowhere
 # and makes the emitted `func.func private @...` declaration disagree with the
-# C prototype the object file was compiled from. The vector widths mirror their
-# signed counterparts and are unreachable while arithmetic is refused; they are
-# stated rather than left at 0 so that relaxing the refusal does not silently
-# also change the width.
-ui8 = DType("ui8", np.uint8, 32, is_float=False, is_unsigned=True)
-ui16 = DType("ui16", np.uint16, 16, is_float=False, is_unsigned=True)
-ui32 = DType("ui32", np.uint32, 8, is_float=False, is_unsigned=True)
+# C prototype the object file was compiled from.
+#
+# The vector width is *taken from* the signed counterpart rather than repeated,
+# so the two cannot drift. They were repeated as literals when these types
+# landed, and i32's 8 -> 16 correction in this PR immediately left ui32 holding
+# the width now known not to legalize -- which is the silent divergence that
+# stating them was meant to prevent. Unreachable while arithmetic on unsigned is
+# refused, and stated anyway so that relaxing that refusal does not also quietly
+# change the width.
+ui8 = DType("ui8", np.uint8, i8.default_vector_width, is_float=False, is_unsigned=True)
+ui16 = DType(
+    "ui16", np.uint16, i16.default_vector_width, is_float=False, is_unsigned=True
+)
+ui32 = DType(
+    "ui32", np.uint32, i32.default_vector_width, is_float=False, is_unsigned=True
+)
 
 _BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32)}
 

@@ -665,22 +665,18 @@ class SegmentContext:
                 f"an air.segment iteration space is 1-D or 2-D; got "
                 f"{len(self.dims)}-D"
             )
-        if self.dims:
-            raise NotImplementedError(
-                "air.segment(<grid>) is the segment's own iteration space -- "
-                "air.segment's `sizes`, which unrolls the segment body into one "
-                "spatial copy per point (see programming_examples/segment_unroll"
-                "). air.api does not emit that yet.\n\n"
-                "If you meant the outer tiling -- one segment instance per "
-                "point, L2 staging refilled each time -- that is the *launch's* "
-                "iteration space: write air.launch(<grid>) and take the "
-                "coordinates in the launch body."
-            )
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
         self.name = name or "segment_0"
         self._buffers = []
         self._registered = False
+        # This segment's own coordinates, as Leaf objects, bound while the body
+        # is traced. A nested herd needs them threaded in as operands, because
+        # air.herd is IsolatedFromAbove -- the same reason the segment itself
+        # takes the launch's coordinates as operands. Empty for a gridless
+        # segment, which is what keeps every existing example's operand list
+        # byte-identical.
+        self.leaves = []
 
     def __enter__(self):
         return self
@@ -778,8 +774,16 @@ class SegmentContext:
 
             # Block arguments are ids + sizes + operands, so a segment with an
             # iteration space of its own offsets the operands by 2 * its rank.
+            # That rank is the *padded* one -- air.segment's sizes are 2-D like
+            # air.launch's -- but the body only ever sees as many coordinates as
+            # it declared, so a 1-D grid yields one. This is the same split the
+            # launch makes; keeping them symmetric is the point of #1868.
             n = len(sizes)
-            coords = [IndexExpr.leaf(v, f"u{axis}") for axis, v in enumerate(args[:n])]
+            declared = len(segment_self.dims)
+            segment_self.leaves = [
+                Leaf(v, f"u{axis}") for axis, v in enumerate(args[:declared])
+            ]
+            coords = [IndexExpr({leaf: 1}, 0) for leaf in segment_self.leaves]
             bound = args[2 * n :]
             saved_outer = [leaf.value for leaf in outer_leaves]
             for leaf, v in zip(outer_leaves, bound[: len(outer_leaves)]):
@@ -936,7 +940,18 @@ class HerdContext:
         # has run it.
         enclosing = current_segment(required=False)
         staged = list(enclosing._buffers) if enclosing is not None else []
-        operands = [t.value for t in tensors] + [b.value for b in staged]
+        # An unrolled segment's own coordinates, threaded in for the same reason
+        # the L2 buffers are: air.herd is IsolatedFromAbove, so a body that
+        # indexes a channel by segment coordinate cannot simply reference it.
+        # Empty unless the segment carries a grid, which is what keeps this
+        # inert for every kernel that does not use one -- an unused herd operand
+        # is not free, it survives air-dependency as an async edge.
+        outer = list(enclosing.leaves) if enclosing is not None else []
+        operands = (
+            [leaf.value for leaf in outer]
+            + [t.value for t in tensors]
+            + [b.value for b in staged]
+        )
         # air.herd is always 2-D. A 1-D grid is laid out along x -- [P, 1], the
         # orientation the hand-written eltwise_add kernel uses for its 8-core
         # npu2 config. [1, P] does not place.
@@ -956,9 +971,13 @@ class HerdContext:
             # herd's block arguments, in the order they were passed as operands.
             saved = [t.value for t in tensors]
             saved_staged = [b.value for b in staged]
-            for t, v in zip(tensors, inner[: len(tensors)]):
+            saved_outer = [leaf.value for leaf in outer]
+            n_outer = len(outer)
+            for leaf, v in zip(outer, inner[:n_outer]):
+                leaf.value = v
+            for t, v in zip(tensors, inner[n_outer : n_outer + len(tensors)]):
                 t.value = v
-            for b, v in zip(staged, inner[len(tensors) :]):
+            for b, v in zip(staged, inner[n_outer + len(tensors) :]):
                 b.value = v
             previous, _CURRENT_HERD = _CURRENT_HERD, herd_self
 
@@ -996,6 +1015,8 @@ class HerdContext:
                     t.value = v
                 for b, v in zip(staged, saved_staged):
                     b.value = v
+                for leaf, v in zip(outer, saved_outer):
+                    leaf.value = v
                 _CURRENT_HERD = previous
 
         # aircc compiles the object named here alongside the herd's cores.

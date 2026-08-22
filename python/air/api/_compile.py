@@ -146,7 +146,29 @@ class LaunchContext:
 
         self._module = module
         self._check_interface()
+        self._verify(module)
         return module
+
+    @staticmethod
+    def _verify(module):
+        """Fail here rather than emitting IR that only aircc will reject.
+
+        Nothing else in this package checks that what the tracer built is
+        *valid* MLIR, and printing does not check either: `str(module)` on an
+        invalid module prints happily, in the generic form, which is easy to
+        read past. That gap hid a real defect -- a segment coordinate referenced
+        inside an air.herd body, which is IsolatedFromAbove, emitted an
+        affine.apply over an SSA value from outside the region and said nothing
+        until an explicit verify(). A DSL whose whole premise is that misuse
+        raises should not hand back IR it has never checked.
+        """
+        try:
+            module.operation.verify()
+        except Exception as e:
+            raise RuntimeError(
+                f"air.api emitted invalid IR -- this is a bug in the DSL, not "
+                f"in the kernel:\n{e}"
+            ) from e
 
     def _run_body(self, state):
         """Run the launch body, opening air.launch first if this launch has a grid.
