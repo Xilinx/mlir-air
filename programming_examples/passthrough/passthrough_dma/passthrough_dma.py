@@ -45,8 +45,9 @@ from air import api as air
 from air.api import bf16, f32, i8, i16, ui8, ui16
 
 # numpy dtype -> air.api element type. The unsigned entries are the point of the
-# table: `type_mapper` maps np.uint8 onto MLIR's signful `ui8`, so declaring i8
-# here would emit a kernel whose signature disagrees with its inputs.
+# table: air.api maps np.uint8 onto MLIR's unsigned `ui8`, not the signless `i8`,
+# so declaring i8 here would emit a kernel whose argument type disagrees with the
+# np.uint8 array handed to XRTRunner below.
 DTYPE = {
     "uint8": (np.uint8, ui8),
     "int8": (np.int8, i8),
