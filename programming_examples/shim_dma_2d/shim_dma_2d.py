@@ -1,13 +1,36 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""One tile through L1 with a strided shim DMA, on air.api.
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
+The smallest program that shows a *2-D* shim transfer. The image is 16x32 and
+the tile is 8x16, so the tile is not contiguous in L3: reading it means a DMA
+with sizes [8, 16] and strides [32, 1], which is what the shim's buffer
+descriptor is for. Everything else -- one core, a copy, and the tile written
+back to the same corner -- is deliberately trivial, so the transfer is the only
+thing under test.
 
-range_ = for_
+    air.ops.load(tile_in, A[0:8, 0:16])      L3 -> L1, strided
+    tile_out[:] = tile_in[:]
+    air.ops.store(tile_out, B[0:8, 0:16])    L1 -> L3, strided
+
+Only the top-left tile is touched; the rest of B stays zero, and all three
+harnesses in this directory check exactly that.
+
+Unchanged from the raw-bindings version this replaces, except that the copy is
+written ``tile_out[:] = tile_in[:]`` rather than a scalar loop nest over every
+(i, j). The tile's innermost dimension is 16, so that vectorises to a
+``<16 x i32>`` (512-bit) read and write, where the predecessor moved one element
+per iteration.
+
+``build_module`` returns the launch rather than a module, matching the other
+converted examples; ``.build(target=...)`` produces the module. ``run.py`` and
+``test.py`` import the shape constants below, so they stay module-level.
+"""
+
+import argparse
+
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
@@ -21,74 +44,44 @@ assert IMAGE_HEIGHT % TILE_HEIGHT == 0
 assert IMAGE_WIDTH % TILE_WIDTH == 0
 
 
-@module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    A = air.tensor(IMAGE_SIZE, i32)
+    B = air.tensor(IMAGE_SIZE, i32)
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    with air.launch(name="copy") as launch:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-            # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="xaddherd", shape=(1,)) as h:
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(_tx, _ty, _sx, _sy, a, b):
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                        @h.body
+                        def _(tx):
+                            tile_in = air.alloc(TILE_SIZE, i32, scope=h.private())
+                            tile_out = air.alloc(TILE_SIZE, i32, scope=h.private())
 
-                    # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=T.i32(),
-                        memory_space=mem_space,
-                    )
+                            air.ops.load(tile_in, A[0:TILE_HEIGHT, 0:TILE_WIDTH])
+                            tile_out[:] = tile_in[:]
+                            air.ops.store(tile_out, B[0:TILE_HEIGHT, 0:TILE_WIDTH])
 
-                    # We must allocate a buffer of tile size for the input/output
-                    tile_in = AllocOp(tile_type, [], [])
-                    tile_out = AllocOp(tile_type, [], [])
-
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                    dma_memcpy_nd(
-                        tile_in,
-                        a,
-                        src_offsets=[0, 0],
-                        src_sizes=TILE_SIZE,
-                        src_strides=[IMAGE_WIDTH, 1],
-                    )
-
-                    # Access every value in the tile
-                    for i in range_(TILE_HEIGHT):
-                        for j in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
-                            val = load(tile_in, [i, j])
-
-                            # Store the output value in tile_out
-                            store(val, tile_out, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    # Copy the output tile into the output
-                    dma_memcpy_nd(
-                        b,
-                        tile_out,
-                        dst_offsets=[0, 0],
-                        dst_sizes=TILE_SIZE,
-                        dst_strides=[IMAGE_WIDTH, 1],
-                    )
-
-                    # Deallocate our L1 buffers
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
+    return launch
 
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    parser = argparse.ArgumentParser(
+        prog="shim_dma_2d.py",
+        description="Prints the AIR module for the shim_dma_2d example",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+    args = parser.parse_args()
+
+    print(build_module().build(target=args.target))
