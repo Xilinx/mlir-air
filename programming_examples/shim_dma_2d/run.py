@@ -29,9 +29,16 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    mlir_module = build_module().build(target=args.target)
 
     input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
     output_b = np.zeros(shape=IMAGE_SIZE, dtype=INOUT_DATATYPE)

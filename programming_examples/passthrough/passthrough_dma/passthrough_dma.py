@@ -1,97 +1,91 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Passthrough a vector one chunk at a time, over plain DMA, on air.api.
+
+The sibling ``passthrough_channel`` streams the same vector through a channel
+pair. This one does it with transfers instead:
+
+    for i in air.sequential(0, n, chunk)
+        air.ops.load(tile_in, A[i : i + chunk])     L3 -> L1
+        tile_out[:] = tile_in[:]
+        air.ops.store(tile_out, B[i : i + chunk])   L1 -> L3
+
+which is the difference worth having both for. A channel is a stream, so one put
+of the whole vector can feed many gets of a chunk each and neither end names an
+offset. A transfer is addressed, so the offset is spelled out per trip and the
+shapes must agree -- and the loop variable is what supplies it.
+
+The six element types the predecessor accepted are all still here, including the
+two unsigned ones. ``uint8`` is the default and the one three of the four lits
+run, so it is the case that has to keep working: an unsigned tile is *movable
+but not computable* in air.api, and this kernel only ever moves and copies it,
+which is exactly the line the DSL draws. Declaring ``i8`` for ``uint8`` data
+instead -- as ``passthrough_channel`` still does -- would make the emitted
+memref element type disagree with the array the runner is handed.
+
+Unchanged from the raw-bindings version this replaces, except for two things:
+
+* The chunk buffers are hoisted above the loop and reused across trips, which is
+  what the loop is for; the predecessor allocated a fresh pair per trip.
+* The copy is written ``tile_out[:] = tile_in[:]`` rather than a scalar loop over
+  every element. For the four signless types that vectorises; for ``uint8`` and
+  ``uint16`` the emitter stays scalar, because a vector copy needs a padding
+  value and that padding value is an ``arith.constant``, which will not take an
+  unsigned type. So the unsigned configs emit the same scalar loop the
+  predecessor did, and the signless ones are strictly faster.
+"""
+
 import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import bf16, f32, i8, i16, ui8, ui16
 
-dtype_map = {
-    "uint8": np.uint8,
-    "int8": np.int8,
-    "int16": np.int16,
-    "uint16": np.uint16,
-    "float32": np.float32,
-    "bfloat16": bfloat16,
+# numpy dtype -> air.api element type. The unsigned entries are the point of the
+# table: `type_mapper` maps np.uint8 onto MLIR's signful `ui8`, so declaring i8
+# here would emit a kernel whose signature disagrees with its inputs.
+DTYPE = {
+    "uint8": (np.uint8, ui8),
+    "int8": (np.int8, i8),
+    "int16": (np.int16, i16),
+    "uint16": (np.uint16, ui16),
+    "float32": (np.float32, f32),
+    "bfloat16": (bfloat16, bf16),
 }
 DEFAULT_DTYPE = "uint8"
 
 
-@module_builder
-def build_module(vector_size, num_subvectors, np_dtype):
+def build_module(vector_size, num_subvectors, dt):
     assert vector_size % num_subvectors == 0
-    xrt_dtype = type_mapper(np_dtype)
+    chunk = vector_size // num_subvectors
 
-    # Type and method of input/output
-    memrefTyInOut = T.memref(vector_size, xrt_dtype)
+    A = air.tensor([vector_size], dt)
+    B = air.tensor([vector_size], dt)
 
-    # The compute core splits input into subvectors for processing
-    lineWidthInBytes = vector_size // num_subvectors
+    with air.launch(name="copy") as launch:
 
-    # Memref type definition used by the compute core and external function
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    tensor_type = MemRefType.get(
-        shape=[lineWidthInBytes],
-        element_type=xrt_dtype,
-        memory_space=mem_space,
-    )
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="copyherd", shape=(1,)) as h:
 
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+                        @h.body
+                        def _(tx):
+                            tile_in = air.alloc([chunk], dt, scope=h.private())
+                            tile_out = air.alloc([chunk], dt, scope=h.private())
 
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
+                            for i in air.sequential(0, num_subvectors * chunk, chunk):
+                                air.ops.load(tile_in, A[i : i + chunk])
+                                tile_out[:] = tile_in[:]
+                                air.ops.store(tile_out, B[i : i + chunk])
 
-                @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(_tx, _ty, _sx, _sy, c, d):
-
-                    # Process each subvector individually
-                    for i in range_(
-                        0, num_subvectors * lineWidthInBytes, lineWidthInBytes
-                    ):
-                        # We must allocate a buffer of image size for the input/output
-                        tensor_in = AllocOp(tensor_type, [], [])
-                        tensor_out = AllocOp(tensor_type, [], [])
-
-                        # Place the input image (a) into the L1 memory region
-                        dma_memcpy_nd(
-                            tensor_in,
-                            c,
-                            src_offsets=[i],
-                            src_sizes=[lineWidthInBytes],
-                            src_strides=[1],
-                        )
-
-                        for j in range_(lineWidthInBytes):
-                            # Load the input value
-                            val = load(tensor_in, [j])
-
-                            # Store the output value
-                            store(val, tensor_out, [j])
-                            yield_([])
-
-                        dma_memcpy_nd(
-                            d,
-                            tensor_out,
-                            dst_offsets=[i],
-                            dst_sizes=[lineWidthInBytes],
-                            dst_strides=[1],
-                        )
-
-                        # Deallocate our L1 buffers
-                        DeallocOp(tensor_in)
-                        DeallocOp(tensor_out)
-                        yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -134,13 +128,21 @@ if __name__ == "__main__":
         "-t",
         "--dtype",
         default=DEFAULT_DTYPE,
-        choices=dtype_map.keys(),
+        choices=DTYPE.keys(),
         help="The data type to use (default: uint8)",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
     )
     args = parser.parse_args()
 
-    np_dtype = dtype_map[args.dtype]
-    mlir_module = build_module(args.vector_size, args.subvector_size, np_dtype)
+    np_dtype, dt = DTYPE[args.dtype]
+    launch = build_module(args.vector_size, args.subvector_size, dt)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
