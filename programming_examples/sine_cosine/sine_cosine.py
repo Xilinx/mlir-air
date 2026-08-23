@@ -1,136 +1,83 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-from math import cos, sin, sqrt, exp
+"""Elementwise sine or cosine via a hand-written AIE kernel, on air.api.
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
-from ml_dtypes import bfloat16
+    sinf = air.extern("sinf_bf16_24_8", object="sine_cosine.o")
+    cosf = air.extern("cosf_bf16_24_8", object="sine_cosine.o")
+    ...
+    air.ops.load(a, A[i0 : i0 + tile_n])
+    (sinf if mode == "sin" else cosf)(a, out)
+    air.ops.store(out, C[i0 : i0 + tile_n])
+
+Nothing is computed in the DSL here -- the whole kernel body is one call into
+``sine_cosine.o``. That is the point: ``air.extern`` emits the private
+``func.func`` declaration, stamps ``link_with`` on both the declaration and the
+herd, and builds the ``func.call``, which the raw-bindings version this replaces
+spelled out as a ``FuncOp`` per symbol plus two attribute assignments plus a
+``CallOp``.
+
+Both symbols live in one object file, and only one of them is called per build
+-- ``--mode`` picks at trace time, so the other is never declared. A herd links
+against a single object, which is the constraint ``air.extern`` enforces; two
+kernels from the *same* object are fine.
+
+Unchanged from the predecessor except that the herd is [herd_n, 1] rather than
+[1, herd_n] -- a 1-D air.api herd is laid out along x, the orientation that
+places on both generations -- and the tile grid is strip-mined onto those cores
+by the DSL rather than by a hand-written outer loop with an AffineMap for the
+offset.
+"""
+
+import argparse
+from math import cos, sin
 
 import numpy as np
+from ml_dtypes import bfloat16
 
+from air import api as air
+from air.api import bf16
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
+
+# Load-bearing: the inputs below are drawn from np.random, and the tolerance is
+# loose enough (rtol=1e0 against a bf16 sine) that an unseeded draw fails
+# intermittently rather than never.
 np.random.seed(42)
 
-range_ = for_
 
-
-@module_builder
-def build_module(n, tile_n, herd_n, sin_or_cos, np_dtype_in):
+def build_module(n, tile_n, herd_n, mode, np_dtype_in):
     assert n % (tile_n * herd_n) == 0
-    if sin_or_cos == "sin":
-        isSine = True
-        isCosine = False
-    elif sin_or_cos == "cos":
-        isSine = False
-        isCosine = True
-    else:
-        raise AssertionError
-    a_size = [n]
-    out_size = a_size
-    xrt_dtype_in = type_mapper(np_dtype_in)
+    dt = bf16
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
+    A = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
+    # Declared per build, not both: --mode selects one, and the unused symbol is
+    # never emitted. Both come from the same object file, which is what lets a
+    # single herd link against them.
+    kernel = air.extern(
+        "sinf_bf16_24_8" if mode == "sin" else "cosf_bf16_24_8",
+        object="sine_cosine.o",
     )
 
-    # Function declaration
-    sinf_func = FuncOp(
-        "sinf_bf16_24_8",
-        ([l1MemrefTy, l1MemrefTy], []),
-        visibility="private",
-    )
-    cosf_func = FuncOp(
-        "cosf_bf16_24_8",
-        ([l1MemrefTy, l1MemrefTy], []),
-        visibility="private",
-    )
-    for func in [sinf_func, cosf_func]:
-        func.attributes["link_with"] = StringAttr.get("sine_cosine.o")
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    with air.launch(name="sine_cosine") as launch:
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def sine_cosine(arg0, arg1):
-        @herd(
-            name="herd_0",
-            sizes=[1, herd_n],
-            operands=[arg0, arg1],
-        )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+        @launch.body
+        def _():
+            with air.herd([range(0, n, tile_n)], name="herd_0", shape=(herd_n,)) as h:
 
-            for t in range_(0, n, tile_n * herd_n):
+                @h.body
+                def _(tx):
+                    # tx counts tiles, not elements.
+                    i0 = tx * tile_n
+                    a = air.alloc([tile_n], dt, scope=h.private())
+                    out = air.alloc([tile_n], dt, scope=h.private())
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [t, _ty])
+                    air.ops.load(a, A[i0 : i0 + tile_n])
+                    kernel(a, out)
+                    air.ops.store(out, C[i0 : i0 + tile_n])
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-
-                if isSine:
-                    sinf_call = CallOp(
-                        sinf_func,
-                        [l1_a_data, l1_out_data],
-                    )
-                elif isCosine:
-                    cosf_call = CallOp(
-                        cosf_func,
-                        [l1_a_data, l1_out_data],
-                    )
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
-
-                yield_([])
-
-        herd_body.attributes["link_with"] = StringAttr.get("sine_cosine.o")
+    return launch
 
 
 if __name__ == "__main__":
@@ -143,7 +90,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the sine_cosine example",
     )
     parser.add_argument(
         "-v",
@@ -191,16 +138,24 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.n,
         args.tile_n,
         args.herd_n,
         args.mode,
         INPUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -225,6 +180,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="sine_cosine",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -242,6 +198,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
