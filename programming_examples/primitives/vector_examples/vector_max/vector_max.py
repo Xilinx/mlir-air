@@ -1,4 +1,4 @@
-# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 """Vector elementwise maximum primitive, on air.api.
 
@@ -186,6 +186,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="vector_max",
             bf16_emulation=bf16_emulation,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -204,6 +205,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             bf16_emulation=bf16_emulation,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
