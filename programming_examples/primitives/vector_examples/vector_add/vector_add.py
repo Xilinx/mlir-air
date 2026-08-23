@@ -1,167 +1,89 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-from ml_dtypes import bfloat16
+"""Vector add primitive, on air.api.
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.dialects.vector import transfer_read, transfer_write
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+    c[:] = a[:] + b[:]
+
+One line of compute, over a [n] vector cut into [tile_n] tiles and spread across
+``NUM_TILES`` cores. It is the smallest member of the vector_examples family,
+and the family is a showcase: each sibling differs from this one only in the
+operator on that line.
+
+That is the whole argument for writing these on air.api. The raw-bindings
+version this replaces spelled the vectorised loop by hand -- an ``scf.for`` over
+the tile in steps of VECTOR_SIZE, three ``memref.subview``s per trip to carve
+out the current lane group, three ``vector.transfer_read``s with an explicit
+identity permutation map and a padding constant, the ``arith`` op, and a
+``transfer_write`` -- roughly forty lines in which exactly one token, ``AddFOp``,
+said what the kernel computes. Here the emitter builds that loop, and the
+subviews are not needed at all: air.api reads at an offset directly.
+
+The strip-mine is also the DSL's. The predecessor asked for a [1, NUM_TILES]
+herd and then wrote the outer loop itself, computing ``_l_ivx + _ty * tile_n``
+through a hand-built AffineMap. Here the herd's iteration space is the whole
+tile grid and air.api strip-mines it onto ``NUM_TILES`` cores, so a core that
+gets more than one tile loops over them without the kernel saying so.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* ``vector=`` is threaded from ``--vector-size`` down to the allocation, so the
+  emitter's loop uses the width the lits ask for rather than the dtype default.
+"""
+
+import argparse
 
 import numpy as np
+from ml_dtypes import bfloat16
+
+from air import api as air
+from air.api import bf16, f32
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
 def build_module(n, tile_n, np_dtype_in, vector_size=16):
-    a_size = [n]
-    b_size = a_size
-    out_size = a_size
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
-    VECTOR_SIZE = vector_size
-    index_type = IndexType.get()
+    assert n % (tile_n * NUM_TILES) == 0
+    dt = bf16 if np_dtype_in is bfloat16 else f32
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
+    A = air.tensor([n], dt)
+    B = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    with air.launch(name="vector_add") as launch:
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
-    def vector_add(arg0, arg1, arg2):
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg1, arg2],
-        )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_b,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_b_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+        @launch.body
+        def _():
+            # The iteration space is every tile; shape= pins the core count to
+            # what the predecessor asked for, and the DSL strip-mines the rest
+            # into a loop on each core.
+            with air.herd(
+                [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not an element offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_n
+                    a = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
+                    b = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
+                    c = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                    air.ops.load(a, A[i0 : i0 + tile_n])
+                    air.ops.load(b, B[i0 : i0 + tile_n])
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-                dma_memcpy_nd(
-                    l1_b_data,
-                    _l3_b,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-                c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_a_vec = subview(
-                        l1_a_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    sub_b_vec = subview(
-                        l1_b_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    sub_c_vec = subview(
-                        l1_out_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    v_a = transfer_read(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                        sub_a_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        cst0,
-                        [True],
-                    )
-                    v_b = transfer_read(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                        sub_b_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        cst0,
-                        [True],
-                    )
-                    v_c = arith.AddFOp(v_a, v_b)
-                    transfer_write(
-                        None,
-                        v_c,
-                        sub_c_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        [True],
-                    )
-                    yield_([])
+                    c[:] = a[:] + b[:]
 
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_b_data)
-                DeallocOp(l1_out_data)
+                    air.ops.store(c, C[i0 : i0 + tile_n])
 
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -173,7 +95,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the vector_add example",
     )
     parser.add_argument(
         "-v",
@@ -221,6 +143,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Use f32 input data type and emulate f32 vector arithmetic using bf16 operations.",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
@@ -228,12 +157,13 @@ if __name__ == "__main__":
         INPUT_DATATYPE = np.float32
     bf16_emulation = args.bf16_emulation
 
-    mlir_module = build_module(
+    launch = build_module(
         args.n,
         args.tile_n,
         INPUT_DATATYPE,
         args.vector_size,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
