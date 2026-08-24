@@ -216,9 +216,41 @@ touch.
 | proj kernels | **done**, gated on device at batch 8 and 16 (section 5d) |
 | proj cores in the builder | **done**, both `_core_blk` and `_core_blk_np` |
 | `DECODE_BATCH` + L1 sizing rules | **done**, strict no-op at 1 |
-| X-feed tile-blocking BD | **derived and checked**, `xfeed_bd.py` |
-| egress BDs, both levels | **derived and checked**, `egress_bd.py` |
-| the feed and drain WIRING | **not done** |
+| X-feed BD / egress BDs / KV-append BD | **derived and checked** |
+| whole path composed, in numpy | **done**, `batch_path_check.py` |
+| X feed wiring (chunk-major `@xnorm` + tile-blocked broadcast) | **done** |
+| egress wiring (both gathers widened) | **done** |
+| KV append wiring (3-D) | **done** |
+| QKV L2 transposer + rope token loop | **done** |
+| **rms / glu row loops** | **not done** |
+| **attention token loop + per-token L** | **not done** |
+| **host driver at batch > 1** | **not done** |
+| **device equivalence gate** | **not done** |
+
+**It does not run yet.** At `DECODE_BATCH=8` the builder emits — 2409 lines on
+qwen3-4b, 2463 on llama-3.2-1b, no batch-1 projection call left in either — and
+at `DECODE_BATCH=1` it is byte-identical to `HEAD` on both models. But rms still
+produces one token where the projection now expects B, so the batched build
+would read garbage for tokens 1..B-1. Nothing about it has been on hardware.
+
+**One design decision worth knowing about**, because it is not obvious and it
+shaped everything downstream. The projection emits **(round, token)**: round r
+is a 32-row band of the output for *all* B tokens, because that is what a
+batched mmul computes in one go. rope wants **(token, round)** — one token's
+whole `M`-wide row — and cannot be given a strided landing for it, because a
+`[B][M]` L1 buffer is 96 KB against a 54 KB budget. Two ways out:
+
+| | cost |
+|---|---|
+| **transpose in L2** (taken) | one `[B][M]` memtile buffer, 96 KB of 512 KB; rope, attention, the KV append and everything downstream stay per-token, looped B times |
+| slice rope by head so it consumes (round, token) directly | a kernel change to `pseduo_rope` plus a rewrite of the attention feed, for a phase that is ~3% of the pass |
+
+The L2 transpose costs nothing that matters — attention does not amortize anyway
+(section 5e), so looping the post-projection phases per token is what the cost
+model already assumes. It does re-introduce a memtile on the QKV path, which is
+what deadlocked the fused vocab build once, so it is **arm-guarded**: in vocab
+mode dest 0 never flows, and a memtile that stalls waiting for it is precisely
+that failure. An idle compute-tile S2MM is harmless; an idle memtile is not.
 
 The two descriptors are the parts that were easy to get silently wrong, and
 they are now numbers rather than intentions:

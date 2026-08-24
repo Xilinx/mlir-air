@@ -1078,6 +1078,27 @@ BATCH = int(_os.environ.get("DECODE_BATCH", "1"))
 #   attention CU     51.0 KB at query tile 8, fits to 8 EXACTLY. No headroom:
 #                    any future per-CU L1 addition on this path has to be paid
 #                    for out of the query tile.
+# The X-feed tile-blocking descriptor, IMPORTED rather than restated:
+# xfeed_bd.py checks it elementwise against pack_A, which q4k_mm_gate.py proved
+# bit-exact on device. A copy here would be a second source of truth for the one
+# permutation whose failure mode is "right number of elements, wrong ones".
+if BATCH > 1:
+    import xfeed_bd as _xfd
+
+    _XFEED_BD = _xfd.xfeed_bd(BATCH, COL_BLOCK, 2)
+else:
+    _XFEED_BD = None
+
+# Egress at batch B: one packet per round, B times longer. GRP_ROWS and
+# MAIN_ROWS are HDR + <payload>*B; N_ROUNDS, the BD count and the instruction
+# stream are all unchanged, which is what "widen, do not repeat" means.
+GRP_ROWS_B = HDR + LEADS_PER_GRP * PAIR_PAY * BATCH
+MAIN_ROWS_B = HDR + PAYLOAD * BATCH
+PAYLOAD_B = PAYLOAD * BATCH
+if BATCH > 1:
+    import egress_bd as _egb
+    import kvappend_bd as _kvb
+
 BATCH_MAX_PROJ = 25
 BATCH_MAX_ATTN_QTILE = 8
 if BATCH < 1:
@@ -1116,7 +1137,24 @@ if BATCH > BATCH_MAX_PROJ:
 # row-independent (per-token rms, per-token rope, per-token glu), so any tile
 # that fits gives the same answer.
 _L1_ROWTILE_BUDGET = 65536 - STACK_SIZE
-ROW_TILE = max(1, min(BATCH, _L1_ROWTILE_BUDGET // (2 * max(M, DQ_PADDED, K))))
+
+
+def _tile_for(*widths):
+    """Largest tile of rows of `widths` bf16 elements that fits one tile's L1.
+
+    PER PHASE, not one global tile. rms holds K per row and fits 10 at block 8;
+    rope holds M (and DQ_PADDED) and fits 4. Taking the min over all of them
+    would tile rms at 4 as well -- correct, but twice the calls for no reason.
+    """
+    return max(1, min(BATCH, _L1_ROWTILE_BUDGET // (2 * max(widths))))
+
+
+RMS_TILE = _tile_for(K)  # rms in/out/weight
+ROPE_TILE = _tile_for(M, DQ_PADDED)  # qkv_l1 is the binding one
+GLU_TILE = _tile_for(GLU_SLICE)
+# The conservative global tile is kept as the default for anything that has to
+# pick one, and as the number the doc quotes.
+ROW_TILE = min(RMS_TILE, ROPE_TILE, GLU_TILE)
 ROW_SUBTILES = (BATCH + ROW_TILE - 1) // ROW_TILE
 
 # Attention gets a query tile too, for the same reason and with a tighter bound
@@ -1295,21 +1333,38 @@ def build_module():
         # buf_ph2 (LOOPCLOSE): ph2 (gate-up) X = a_xn stand-in, re-broadcast from a
         # memtile (mechanism-2 refeed) so it converges on @xnorm AFTER ph1 attn-o.
         bufp2_l2 = MemRefType.get([K], bf16, memory_space=l2)
+        # ---- DECODE_BATCH: the QKV drain transposer ----
+        # The projection emits (ROUND, TOKEN): round r is a 32-row band of the
+        # output for ALL B tokens, because that is what a batched mmul computes
+        # in one go. rope wants (TOKEN, ROUND) -- one token's whole M-wide qkv
+        # row -- and cannot be given a strided landing for it, because a
+        # [B][M] L1 buffer is 96 KB against a 54 KB budget on qwen3-4b.
+        #
+        # So transpose in L2, where 96 KB is nothing, and leave rope, attention,
+        # the KV append and everything downstream operating on ONE token at a
+        # time, looped B times. That is also what the cost model already assumes
+        # (section 5e: attention does not amortize), so nothing is lost by it.
+        #
+        # The alternative -- slicing rope by head so it consumes (round, token)
+        # directly -- is a kernel change to pseduo_rope plus a rewrite of the
+        # attention feed, for a phase that is 3% of the pass.
+        if BATCH > 1:
+            qkvmt_l2 = MemRefType.get([BATCH * M], bf16, memory_space=l2)
 
         # ---- L2 buffers ----
         # X memtile = reproducer x_buffer: 512 (2 blocks) so the producer re-feed +
         # broadcast has the same slack as the reference; the proj cores' 256 ring chops it.
-        xmt_l2 = MemRefType.get([2 * COL_BLOCK], bf16, memory_space=l2)
+        xmt_l2 = MemRefType.get([BATCH * 2 * COL_BLOCK], bf16, memory_space=l2)
         # One fan get. W_DUAL_CHAN halves it: each shim channel feeds its own
         # ring covering half the column's cores (FLM's w_buffer[0:5120] /
         # w_buffer[5120:10240] split).
         wfan_l2 = MemRefType.get(
             [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
         )
-        grp_l2 = MemRefType.get([GRP_ROWS], bf16, memory_space=l2)
-        main_l2 = MemRefType.get([MAIN_ROWS], bf16, memory_space=l2)
+        grp_l2 = MemRefType.get([GRP_ROWS_B], bf16, memory_space=l2)
+        main_l2 = MemRefType.get([MAIN_ROWS_B], bf16, memory_space=l2)
         relay_l2 = MemRefType.get(
-            [PAYLOAD], bf16, memory_space=l2
+            [PAYLOAD_B], bf16, memory_space=l2
         )  # demux relay (stripped)
         down_l2 = MemRefType.get([GLU_OUT], bf16, memory_space=l2)  # GLU out accumulate
         # relay memtile columns for the id-demux dests (free cols, not proj/X/MT).
@@ -1460,6 +1515,52 @@ def build_module():
         # lowered to two repeat_count tasks. Packet (npu_dma_packet) so the two
         # producers (rms core L1 + down_buffer L2, time-disjoint, same id) converge.
         _xn = channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
+
+        # ---- DECODE_BATCH: the @xnorm stream order ----
+        # Every producer on @xnorm (rms, the attn-O memtile, the down/GLU
+        # memtile) feeds the X memtile, which stages one 2*COL_BLOCK window of
+        # ALL B tokens and broadcasts it tile-blocked. So the stream has to
+        # arrive CHUNK-major and token-minor --
+        #   [chunk 0: t0..tB-1][chunk 1: t0..tB-1]...
+        # -- not token-major, or the memtile's contiguous get would land one
+        # token's whole row where it wants one chunk of every token.
+        #
+        # This is the transpose that pairs with xfeed_bd.py's: this one gets the
+        # B tokens' chunk side by side in the memtile, that one puts them in
+        # aie::mmul A-tile order on the way out.
+        _XCHUNK = 2 * COL_BLOCK
+
+        def _xnorm_put(buf, width, ssa=False, **kw):
+            """Put `width` elements per token on @xnorm, chunk-major.
+
+            `ssa` picks index-SSA operands over static attributes for the
+            batch-1 form. Both lower the same, but the attn-O site was written
+            with SSA operands and the batch-1 build has to stay byte-identical,
+            so the distinction is preserved rather than normalised away.
+            """
+            if BATCH == 1:
+                _w = idx if ssa else (lambda v: v)
+                return ChannelPut(
+                    "xnorm",
+                    buf,
+                    offsets=[_w(0)],
+                    sizes=[_w(width)],
+                    strides=[_w(1)],
+                    **kw,
+                )
+            assert width % _XCHUNK == 0, (
+                f"@xnorm producer width {width} is not a multiple of "
+                f"{_XCHUNK}; the X memtile stages whole chunks"
+            )
+            return ChannelPut(
+                "xnorm",
+                buf,
+                offsets=[idx(0), idx(0), idx(0)],
+                sizes=[idx(width // _XCHUNK), idx(BATCH), idx(_XCHUNK)],
+                strides=[idx(_XCHUNK), idx(width), idx(1)],
+                **kw,
+            )
+
         if KV_APPEND:
             # Pin the rms core's two outputs (xnorm o-proj-X feedback -> mem_2_1 on
             # MM2S1; layerOut -> shim on MM2S0) to their known-good split. Adding the
@@ -1484,6 +1585,13 @@ def build_module():
         # ATTN S1: rope LUT (cos/sin, 64) -> rope core S2MM1. Placeholder source =
         # RMS[0:64] for the dataflow test; the real cos/sin LUT is wired in S4.
         channel_decl("ropeLUT", size=[1])
+        if BATCH > 1:
+            # QKV drain, transposed to token-major in L2 (see qkvmt_l2). Only
+            # exists when batched: at batch 1 the rope core reads @outY dest 0
+            # directly, which is the reference-faithful path and the one that
+            # does NOT re-introduce the col-2 memtile relay that deadlocked the
+            # fused vocab build.
+            channel_decl("toRope", size=[1])
         # S3a flash-attn dataflow: rope q -> qk tile (direct); rope k|v -> KV
         # staging memtile (rope's single k/v MM2S) which splits k->qk, v->kv.
         _ropeQ = channel_decl(
@@ -2105,21 +2213,30 @@ def build_module():
                                     # each, CU-order); the nd write places group gi at its
                                     # region slot (ATTN_L-1)*REGION_W. outer dim=NGRP at
                                     # REGION_STRIDE, inner REGION_W contiguous.
+                                    # DECODE_BATCH: B tokens append B CONSECUTIVE
+                                    # positions, so this gains a leading token
+                                    # dimension at stride REGION_W (kvappend_bd.py).
+                                    # The flat base stays on the stride-1
+                                    # dimension, where AIR's left-padding already
+                                    # puts it at batch 1.
+                                    _bt = [idx(BATCH)] if BATCH > 1 else []
+                                    _bs = [idx(REGION_W)] if BATCH > 1 else []
+                                    _bo = [idx(0), idx(0)] if BATCH > 1 else []
                                     _apkG = ChannelGet(
                                         "appendK",
                                         KVC,
                                         indices=[idx(0)],
-                                        offsets=[_loi_slot(_kbase, 0)],
-                                        sizes=[idx(NGRP), idx(REGION_W)],
-                                        strides=[idx(REGION_STRIDE), idx(1)],
+                                        offsets=_bo + [_loi_slot(_kbase, 0)],
+                                        sizes=_bt + [idx(NGRP), idx(REGION_W)],
+                                        strides=_bs + [idx(REGION_STRIDE), idx(1)],
                                     )
                                     _apvG = ChannelGet(
                                         "appendV",
                                         KVC,
                                         indices=[idx(0)],
-                                        offsets=[_loi_slot(_kbase, _vreg_off(0))],
-                                        sizes=[idx(NGRP), idx(REGION_W)],
-                                        strides=[idx(REGION_STRIDE), idx(1)],
+                                        offsets=_bo + [_loi_slot(_kbase, _vreg_off(0))],
+                                        sizes=_bt + [idx(NGRP), idx(REGION_W)],
+                                        strides=_bs + [idx(REGION_STRIDE), idx(1)],
                                     )
                                     return
 
@@ -2401,18 +2518,42 @@ def build_module():
                             xb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), XMT_PCOL)
                             )
+                            # BATCH*2*COL_BLOCK, contiguous: the producers put
+                            # chunk-major (see _xnorm_put), so one get lands the
+                            # B tokens' current window side by side.
                             ChannelGet(
-                                src, xb, offsets=[0], sizes=[2 * COL_BLOCK], strides=[1]
+                                src,
+                                xb,
+                                offsets=[0],
+                                sizes=[BATCH * 2 * COL_BLOCK],
+                                strides=[1],
                             )
                             for _jj in for_(idx(0), idx(2), idx(1)):
-                                joff = arith.muli(_jj, idx(COL_BLOCK))
-                                ChannelPut(
-                                    "inX",
-                                    xb,
-                                    offsets=[joff],
-                                    sizes=[COL_BLOCK],
-                                    strides=[1],
-                                )
+                                if BATCH == 1:
+                                    joff = arith.muli(_jj, idx(COL_BLOCK))
+                                    ChannelPut(
+                                        "inX",
+                                        xb,
+                                        offsets=[joff],
+                                        sizes=[COL_BLOCK],
+                                        strides=[1],
+                                    )
+                                else:
+                                    # Tile-blocked broadcast: the proj cores'
+                                    # q4k_mm_block feeds aie::mmul, which wants
+                                    # its A operand in tile order. Descriptor
+                                    # from xfeed_bd.py, which checks it against
+                                    # pack_A elementwise -- imported rather than
+                                    # restated so the two cannot drift.
+                                    _sz, _st = _XFEED_BD
+                                    _o0 = arith.muli(_jj, idx(COL_BLOCK // _st[0]))
+                                    ChannelPut(
+                                        "inX",
+                                        xb,
+                                        offsets=[_o0] + [idx(0)] * (len(_sz) - 1),
+                                        sizes=[idx(v) for v in _sz],
+                                        strides=[idx(v) for v in _st],
+                                    )
                                 yield_([])
                             DeallocOp(xb)
                             yield_([])
@@ -2533,22 +2674,48 @@ def build_module():
                                     IntegerAttr.get(T.i32(), GRP_PCOL[g])
                                 )
                                 for k, (cx, pp) in enumerate(grp_leads(g)):
-                                    off = 0 if k == 0 else HDR + k * PAIR_PAY
-                                    sz = (HDR + PAIR_PAY) if k == 0 else PAIR_PAY
+                                    if BATCH == 1:
+                                        off = 0 if k == 0 else HDR + k * PAIR_PAY
+                                        sz = (HDR + PAIR_PAY) if k == 0 else PAIR_PAY
+                                        ChannelGet(
+                                            "outA",
+                                            grp,
+                                            indices=[idx(cx), idx(pp)],
+                                            offsets=[off],
+                                            sizes=[sz],
+                                            strides=[1],
+                                        )
+                                        continue
+                                    # Emitter-major in, TOKEN-major out, so that
+                                    # token t's PAYLOAD row is byte-identical to
+                                    # the row batch 1 produces and nothing past
+                                    # this memtile has to know the batch size.
+                                    # Descriptor from egress_bd.py.
+                                    _of, _sz, _st = _egb.egress_bd(
+                                        BATCH, PAIR_PAY, LEADS_PER_GRP, HDR, k
+                                    )
+                                    if k == 0:
+                                        # k=0 also carries the 2-word routing
+                                        # header, which sits in front of the
+                                        # token grid rather than inside it:
+                                        # start at 0 and widen the stride-1
+                                        # extent by HDR.
+                                        _of = [_of[0], 0]
+                                        _sz = [_sz[0], _sz[1] + HDR]
                                     ChannelGet(
                                         "outA",
                                         grp,
                                         indices=[idx(cx), idx(pp)],
-                                        offsets=[off],
-                                        sizes=[sz],
-                                        strides=[1],
+                                        offsets=[idx(v) for v in _of],
+                                        sizes=[idx(v) for v in _sz],
+                                        strides=[idx(v) for v in _st],
                                     )
                                 ChannelPut(
                                     "toMain",
                                     grp,
                                     indices=[idx(g)],
                                     offsets=[0],
-                                    sizes=[GRP_ROWS],
+                                    sizes=[GRP_ROWS_B],
                                     strides=[1],
                                 )
                                 DeallocOp(grp)
@@ -2557,19 +2724,46 @@ def build_module():
                                 IntegerAttr.get(T.i32(), MAIN_PCOL)
                             )
                             for g in range(N_GRP):
-                                off = (
-                                    0
-                                    if g == 0
-                                    else (GRP_ROWS + (g - 1) * LEADS_PER_GRP * PAIR_PAY)
+                                if BATCH == 1:
+                                    off = (
+                                        0
+                                        if g == 0
+                                        else (
+                                            GRP_ROWS
+                                            + (g - 1) * LEADS_PER_GRP * PAIR_PAY
+                                        )
+                                    )
+                                    sz = (
+                                        GRP_ROWS if g == 0 else LEADS_PER_GRP * PAIR_PAY
+                                    )
+                                    ChannelGet(
+                                        "toMain",
+                                        ml,
+                                        indices=[idx(g)],
+                                        offsets=[off],
+                                        sizes=[sz],
+                                        strides=[1],
+                                    )
+                                    continue
+                                # The SAME transpose one level up. Fixing only
+                                # the emitter gather leaves each group's slab
+                                # token-major internally while the groups stay
+                                # laid end to end -- a token's row still in
+                                # N_GRP pieces, and it would look right in any
+                                # single-group test.
+                                _of, _sz, _st = _egb.main_bd(
+                                    BATCH, PAIR_PAY, LEADS_PER_GRP, HDR, PAYLOAD, g
                                 )
-                                sz = GRP_ROWS if g == 0 else LEADS_PER_GRP * PAIR_PAY
+                                if g == 0:
+                                    _of = [_of[0], 0]
+                                    _sz = [_sz[0], _sz[1] + HDR]
                                 ChannelGet(
                                     "toMain",
                                     ml,
                                     indices=[idx(g)],
-                                    offsets=[off],
-                                    sizes=[sz],
-                                    strides=[1],
+                                    offsets=[idx(v) for v in _of],
+                                    sizes=[idx(v) for v in _sz],
+                                    strides=[idx(v) for v in _st],
                                 )
                             # id-demux source: emit the assembled 514 packet (kernel id in
                             # the header) on ONE MM2S; the switchbox routes it to the dest
@@ -2579,7 +2773,7 @@ def build_module():
                                 ml,
                                 indices=[idx(0), idx(0)],
                                 offsets=[0],
-                                sizes=[MAIN_ROWS],
+                                sizes=[MAIN_ROWS_B],
                                 strides=[1],
                             )
                             DeallocOp(ml)
@@ -2607,6 +2801,59 @@ def build_module():
                     # id-demux HOST dests (QKV id1, o-proj id4): per-round relay memtile
                     # -> host (strip demux already delivered pure 512). The gate-up dest
                     # (id8) is NOT here -- it goes DIRECTLY to the GLU tile (below).
+                    if BATCH > 1:
+                        # ---- QKV drain: (round, token) -> (token, round) ----
+                        # Gather the ROUNDS_PER_DEST[0] dest-0 rounds into one
+                        # [B][M] memtile buffer, landing round r of token t at
+                        # t*M + r*PAYLOAD, then emit B whole token rows. rope
+                        # then reads one M-wide row per token exactly as it does
+                        # at batch 1.
+                        #
+                        # Guarded by the same arm as the egress: in vocab mode
+                        # dest 0 never flows, and a MEMTILE that stalls waiting
+                        # for it is precisely the failure that got the original
+                        # col-2 QKV relay removed. An idle compute-tile S2MM is
+                        # harmless; an idle memtile is not.
+                        def _qkv_transpose():
+                            qmt = AllocOp(qkvmt_l2, [], [])
+                            qmt.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), RELAY_COLS[0])
+                            )
+                            for _rq in range(ROUNDS_PER_DEST[0]):
+                                ChannelGet(
+                                    "outY",
+                                    qmt,
+                                    indices=[idx(0), idx(0)],
+                                    offsets=[idx(0), idx(_rq * PAYLOAD)],
+                                    sizes=[idx(BATCH), idx(PAYLOAD)],
+                                    strides=[idx(M), idx(1)],
+                                )
+                            for _t in range(BATCH):
+                                ChannelPut(
+                                    "toRope",
+                                    qmt,
+                                    offsets=[idx(_t * M)],
+                                    sizes=[idx(M)],
+                                    strides=[idx(1)],
+                                )
+                            DeallocOp(qmt)
+
+                        if _seg_arm_i is not None:
+
+                            def _qt_dec():
+                                _qkv_transpose()
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                _seg_arm_i,
+                                [0],
+                                case_body_builder=lambda op, i, cv: yield_([]),
+                                default_body_builder=lambda op: _qt_dec(),
+                            )
+                        elif not LM_HEAD:
+                            _qkv_transpose()
+
                     for p in HOST_DRAIN:
                         if p == 0:
                             continue  # QKV (dest0) consumed by the rope herd (below)
@@ -2656,7 +2903,13 @@ def build_module():
 
                     @herd(name="rope", sizes=[1, 1], operands=[_arm_rope])
                     def rope_h(tx, ty, _sx, _sy, _arm):
-                        def _dec():
+                        def _dec_one():
+                            """One token. At batch 1 this IS _dec; batched, the
+                            caller loops it B times and each iteration consumes
+                            one token row from @toRope and one cos/sin LUT from
+                            @ropeLUT -- the LUT is per POSITION, and a block of B
+                            tokens spans B positions, so the host uploads B of
+                            them and this loop consumes them in order."""
                             a_qkv = AllocOp(qkv_l1, [], [])
                             # the reference-faithful (layer.mlir mem_2_3 S2MM0): the rope COMPUTE
                             # core assembles the 6 id1/dest0 demux rounds (512 each)
@@ -2665,15 +2918,25 @@ def build_module():
                             # get consumes one stripped packet round), just landing in
                             # L1. In vocab mode id1 never flows so this compute-tile
                             # S2MM idles harmlessly.
-                            for _rq in range(ROUNDS_PER_DEST[0]):
+                            if BATCH > 1:
+                                # One whole token row, already transposed in L2.
                                 ChannelGet(
-                                    "outY",
+                                    "toRope",
                                     a_qkv,
-                                    indices=[idx(0), idx(0)],
-                                    offsets=[idx(_rq * PAYLOAD)],
-                                    sizes=[idx(PAYLOAD)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(M)],
                                     strides=[idx(1)],
                                 )
+                            else:
+                                for _rq in range(ROUNDS_PER_DEST[0]):
+                                    ChannelGet(
+                                        "outY",
+                                        a_qkv,
+                                        indices=[idx(0), idx(0)],
+                                        offsets=[idx(_rq * PAYLOAD)],
+                                        sizes=[idx(PAYLOAD)],
+                                        strides=[idx(1)],
+                                    )
                             a_lut = AllocOp(ropelut_l1, [], [])
                             ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
                             a_q = AllocOp(ropeq_l1, [], [])
@@ -2745,6 +3008,18 @@ def build_module():
                             DeallocOp(a_k)
                             DeallocOp(a_v)
 
+                        def _dec():
+                            if BATCH == 1:
+                                _dec_one()
+                            else:
+                                # B tokens, sequentially. rope, the Q broadcast,
+                                # the KV append and the attention behind them all
+                                # stay per-token; only the PROJECTION is batched,
+                                # which is where every byte of the weight-traffic
+                                # win is. Unrolled rather than an scf.for so each
+                                # iteration's channel ops keep distinct BDs.
+                                for _t in range(BATCH):
+                                    _dec_one()
                             yield_([])
 
                         def _voc():
@@ -3314,13 +3589,8 @@ def build_module():
                             )
                         refeed(
                             OPROJ_REFEED,
-                            lambda: ChannelPut(
-                                "xnorm",
-                                omtb,
-                                indices=[idx(0)],
-                                offsets=[idx(0)],
-                                sizes=[idx(N_ATTN_CU * DQ_PER_CU)],
-                                strides=[idx(1)],
+                            lambda: _xnorm_put(
+                                omtb, N_ATTN_CU * DQ_PER_CU, ssa=True, indices=[idx(0)]
                             ),
                         )
                         DeallocOp(omtb)
@@ -3447,13 +3717,7 @@ def build_module():
                         # re-broadcast the resident 8192 into the convergent X feed.
                         refeed(
                             DOWN_REFEED,
-                            lambda: ChannelPut(
-                                "xnorm",
-                                db,
-                                offsets=[0],
-                                sizes=[GLU_OUT],
-                                strides=[1],
-                            ),
+                            lambda: _xnorm_put(db, GLU_OUT),
                         )
                         DeallocOp(db)
 
@@ -4048,13 +4312,7 @@ def build_module():
                                 # top-5 verify, gemma passes its Paris gate.
                                 refeed(
                                     _xn_per_blk,
-                                    lambda: ChannelPut(
-                                        "xnorm",
-                                        a_xnl,
-                                        offsets=[0],
-                                        sizes=[K],
-                                        strides=[1],
-                                    ),
+                                    lambda: _xnorm_put(a_xnl, K),
                                 )
                                 ChannelGet(
                                     "outY",
@@ -4134,9 +4392,7 @@ def build_module():
                             CallOp(rms_norm_lo_aie, [g_xn, g_x, g_wa, _arm])
                             refeed(
                                 XN_REFEED,
-                                lambda: ChannelPut(
-                                    "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
-                                ),
+                                lambda: _xnorm_put(g_xn, K),
                             )
                             # step2 (residual1): h = x + post_attention_norm(o_proj) [g_wa hi]
                             ChannelGet(
@@ -4155,9 +4411,7 @@ def build_module():
                             CallOp(rms_norm_lo_aie, [g_xn, g_h, g_wb, _arm])
                             refeed(
                                 REFEED[GATEUP_PHASE],
-                                lambda: ChannelPut(
-                                    "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
-                                ),
+                                lambda: _xnorm_put(g_xn, K),
                             )
                             DeallocOp(g_xn)
                             # step4 (residual2): res2 = h + post_feedforward_norm(down) [g_wb hi].
@@ -4199,9 +4453,7 @@ def build_module():
                         CallOp(rms_norm_aie, [a_xn, a_x, a_w, _arm])
                         refeed(
                             XN_REFEED,
-                            lambda: ChannelPut(
-                                "xnorm", a_xn, offsets=[0], sizes=[K], strides=[1]
-                            ),
+                            lambda: _xnorm_put(a_xn, K),
                         )
                         # a_w and a_xn are kept for the ph2 (gate-up) emission (step2).
                         if RMS_DEST < 0:
@@ -4241,13 +4493,7 @@ def build_module():
                             )
                             refeed(
                                 REFEED[GATEUP_PHASE],
-                                lambda: ChannelPut(
-                                    "xnorm",
-                                    a_xn,
-                                    offsets=[0],
-                                    sizes=[K],
-                                    strides=[1],
-                                ),
+                                lambda: _xnorm_put(a_xn, K),
                             )
                             DeallocOp(a_xn)
                             DeallocOp(a_w)
