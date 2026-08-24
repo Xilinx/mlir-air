@@ -104,6 +104,7 @@ hold at 8 with room to spare.
 | `xfeed_bd.py` | the X feed's tile-blocking BD, checked against `pack_A` |
 | `egress_bd.py` | the egress gathers, both levels, checked against batch 1 |
 | `kvappend_bd.py` | the KV append BD + the end-of-window overrun guard |
+| `batch_path_check.py` | **the whole path composed** — token t's row vs batch 1's |
 | `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
 | `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
 | `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
@@ -169,6 +170,7 @@ python3 check_kernels_inert.py                         # ~1 min; THE gate
 python3 xfeed_bd.py                                    # seconds; the X-feed BD
 python3 egress_bd.py                                   # seconds; egress BDs
 python3 kvappend_bd.py --overrun                       # seconds; KV append BD
+python3 batch_path_check.py                            # seconds; THE composition gate
 python3 dflash_blocksize.py                            # seconds; the block size
 python3 dflash_blocksize.py --attn-hoistable 1503      # with a perfect hoist
 python3 dflash_blocksize.py --overlap                  # the optimistic bound
@@ -185,8 +187,8 @@ cd ../qwen3_4b_q4nx && python3 qwen3_4b_q4nx_requant.py --check   # packer vs bu
 
 The first three need the NPU; the rest are static and run anywhere. **The gates are
 `q4k_mm_gate.py --mode exact`, `proj_qmm_gate.py`, `batch_attn_mask.py --check`,
-`check_kernels_inert.py` and the `DECODE_HIDDEN_TAPS` no-op diff below** — the
-rest are measurements.
+`check_kernels_inert.py`, the three `*_bd.py` checkers, `batch_path_check.py`
+and the `DECODE_HIDDEN_TAPS` no-op diff below** — the rest are measurements.
 
 **`--noperm` is the one that gives totals.** The default build reports the
 multiply as cycles and the unpack as a rolled static size, because the correct
@@ -239,14 +241,29 @@ path as well as the drain — so the X memtile, the egress widening, the row
 tiling at 4 and the attention query tile all have to land together or the
 engine is inconsistent in between. Nothing smaller than that is testable.
 
-**And it needs a gate that does not exist yet.** Everything so far has been
-gated by "byte-identical at batch 1", which by construction says nothing about
-batch 8. The gate the integration needs is an **equivalence run**: dispatch at
-`DECODE_BATCH=B` with all B tokens identical, and assert every token's output
-equals the batch-1 output for that token. It needs no reference model, it
-exercises the whole chain — feed layout, projection, egress, both gathers — and
-every layout error shows up as a mismatched token rather than as a plausible
-wrong answer. Build it before the wiring, not after.
+**The gate it needs is half built.** Everything else has been gated by
+"byte-identical at batch 1", which by construction says nothing about batch 8.
+
+The *software* half now exists — `batch_path_check.py`. Each descriptor checker
+passes on its own, and that is not the same as the path working, because the
+pieces meet at conventions no single checker sees both sides of: `tok_stride`
+across the flush and the gather, A-tile order across the X feed and `pack_A`,
+C-tile order across the mmul and the de-tiling. Get one wrong and **both**
+checkers still pass — each side is self-consistent, and they are consistent
+with different layouts. So this walks a token block through every stage in
+order, using the same functions and descriptors the engine will use, and
+asserts token t's assembled row equals the row batch 1 produces. Both pairing
+regimes, batch 8 and 16.
+
+**It has been seen to fail**, which is the only reason to trust a checker that
+passed first time. Flush writing role-major instead of token-major: caught.
+De-tiling dropping the `RA` factor: caught — *at batch 16 and not at batch 8*,
+because `RA` is 1 there, so a batch-8-only run does not exercise the tiling.
+
+The *device* half still has to be built, and still comes before the wiring: an
+**equivalence run** — dispatch at `DECODE_BATCH=B` with all B tokens identical,
+assert every token's output equals the batch-1 output. No reference model
+needed, and it covers what numpy cannot: DMA, locks, cascade, backpressure.
 
 **Do not build for block 16.** It is 1.06x. See section 5f before re-litigating.
 
