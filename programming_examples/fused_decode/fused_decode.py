@@ -1194,7 +1194,8 @@ def build_module():
         # HIDDEN_TAPS un-does the in-place part: layer iv reads slot iv and writes
         # slot iv+1, so every layer's hidden state stays readable instead of being
         # overwritten by the next one. See the HIDDEN_TAPS comment above.
-        x_l3 = MemRefType.get([X_SLOTS * K], bf16)  # RAW input activation
+        # DECODE_BATCH: B token embeddings in, token-major.
+        x_l3 = MemRefType.get([X_SLOTS * BATCH * K], bf16)  # RAW input activation
         # LM_HEAD build carries the vocab weights (VOCAB_W_BLOCKS q4k blocks) instead
         # of the decode phase weights. Separate compile-time size -> decode IR is
         # byte-identical; the device (CDO) is unchanged (only this DDR memref size +
@@ -1223,17 +1224,29 @@ def build_module():
         # rms_w[0:K] (which proj_q depends on). Llama: ONE shared per-position LUT
         # (ROPE_W_LEN=64). Per-layer models (ROPE_W_PER_LAYER): UNI_DEC rope_w slabs
         # (dual-theta + per-layer q/k-norm). L=1 ABI unchanged.
+        # The rope LUT slab is PER POSITION, and a block of B tokens spans B
+        # positions -- so it is the one part of this buffer that scales with the
+        # batch. Easy to miss: at batch 1 the host patches a single 64-word
+        # cos/sin LUT per token, and nothing in the shape says "per position".
         rms_l3 = MemRefType.get(
             [
                 UNI_DEC * RMS_LAYER
-                + ((UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN if MULTIBLK else 0)
+                + (
+                    (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN * BATCH
+                    if MULTIBLK
+                    else 0
+                )
                 + K  # dedicated final-norm slot for real lm_head (vocab)
             ],
             bf16,
         )
         # LM_HEAD drains VOCAB_SIZE_PADDED logits into Y (arg3); decode uses Y for the
         # QKV host rounds + rms layer-out. Separate compile-time size (decode unchanged).
-        _y_elems = (HOST_ROUNDS + LAYER_RNDS) * PAYLOAD + UNI_LM * VOCAB_SIZE_PADDED
+        # Every drained PAYLOAD row becomes B rows, token-major (egress_bd.py).
+        # The vocab region does NOT scale here: LM_HEAD is refused at BATCH>1.
+        _y_elems = (
+            HOST_ROUNDS + LAYER_RNDS
+        ) * PAYLOAD * BATCH + UNI_LM * VOCAB_SIZE_PADDED
         y_l3 = MemRefType.get(
             [_y_elems], bf16
         )  # host-drain (QKV) rounds + LAYER_RNDS rms layer-out (down) rounds

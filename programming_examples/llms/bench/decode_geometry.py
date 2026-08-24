@@ -110,7 +110,15 @@ def _rope_w_elems(fd):
     """
     if not fd.MULTIBLK:
         return 0
-    return (fd.UNI_DEC if fd.ROPE_W_PER_LAYER else 1) * fd.ROPE_W_LEN
+    # PER POSITION, so a DECODE_BATCH block of B tokens needs B of them. The
+    # builder scales this slab the same way; getting it wrong here sizes the BO
+    # short and the device reads past the end of it, which is how the qwen2.5-7b
+    # ROPE_W_LEN bug above presented.
+    return (
+        (fd.UNI_DEC if fd.ROPE_W_PER_LAYER else 1)
+        * fd.ROPE_W_LEN
+        * getattr(fd, "BATCH", 1)
+    )
 
 
 def _head_elems(fd):
@@ -212,9 +220,13 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
             f"weight split for {model} sums to {sum(w_parts)}, not {w_elems}"
         )
 
-    decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD
+    # DECODE_BATCH: X is B token embeddings and every drained PAYLOAD row
+    # becomes B rows. The KV cache does NOT scale -- it is indexed by POSITION,
+    # and B tokens occupy B positions of the window that already exists.
+    _b = getattr(fd, "BATCH", 1)
+    decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD * _b
     return dict(
-        k=fd.K,
+        k=fd.K * _b,
         w_elems=w_elems,
         **({"w_parts": w_parts} if w_parts else {}),
         rms_size=fd.UNI_DEC * fd.RMS_LAYER + _rope_w_elems(fd) + fd.K,

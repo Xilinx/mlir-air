@@ -109,6 +109,7 @@ hold at 8 with room to spare.
 | `egress_bd.py` | the egress gathers, both levels, checked against batch 1 |
 | `kvappend_bd.py` | the KV append BD + the end-of-window overrun guard |
 | `batch_path_check.py` | **the whole path composed** — token t's row vs batch 1's |
+| `batch_equiv.py` | **THE device gate** — B identical tokens, B identical rows |
 | `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
 | `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
 | `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
@@ -239,12 +240,31 @@ would read garbage for tokens 1..B-1. Nothing about it has been on hardware.
 
 #### The order to do the rest in
 
-1. **The device equivalence gate, FIRST.** Dispatch at `DECODE_BATCH=B` with all
-   B tokens identical and assert every token's output row equals the batch-1
-   output. No reference model needed; it exercises DMA, locks, cascade and
-   backpressure, which is everything `batch_path_check.py` cannot. Building it
-   after the wiring means debugging the wiring blind — this project's whole
-   method has been to have the check before the change.
+1. ~~**The device equivalence gate, FIRST.**~~ **Written — `batch_equiv.py`.**
+   Dispatch at `DECODE_BATCH=B` with all B tokens identical and assert every
+   token's output row equals the batch-1 output. No reference model, no requant
+   cache: synthetic weights are fine because it is a DATAFLOW gate, and the
+   numerics already have their own device gates. It needs two templates built
+   from the same tree, one per batch size, and it cannot run until step 2.
+
+   **Writing it before the wiring already paid.** It immediately found that the
+   host-facing L3 buffers never scaled — `x_l3`, the rope-LUT slab in `rms_l3`,
+   and `y_l3` — and that `decode_geometry.py` restates those sizes rather than
+   reading the memref shapes, so it reported batch 8 and batch 1 as the same
+   dispatch. Both fixed. The scaling is now visible and is the thesis of this
+   whole document in one table **[measured]**:
+
+   | BO | batch 1 | batch 8 | |
+   |---|---|---|---|
+   | X | 2560 | 20480 | x8 — B token embeddings |
+   | **weights** | **154419200** | **154419200** | **x1 — the entire point** |
+   | rms (+ B rope LUTs) | 200704 | 297472 | x1.48 |
+   | Y | 162304 | 223232 | x1.38 |
+   | KV cache | 150994944 | 150994944 | x1 — indexed by position |
+
+   Read the weight row against the X row. That ratio is what the whole
+   speculative-decoding argument rests on, and it is now a property of the
+   emitted design rather than a claim.
 2. **rms row loop.** The blocker for everything else: rms is the X producer, so
    until it emits B rows the batched projection reads garbage. Buffers go to
    `BATCH*K` (40 KB at block 8, fits — `RMS_TILE` is 8), and the per-row calls
