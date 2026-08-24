@@ -235,6 +235,13 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         decode_y=decode_y,
         voc_n=fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
         rms_lut_off=fd.UNI_DEC * fd.RMS_LAYER,
+        # ONE token's rope/qk-norm/qkv-bias block. The region at rms_lut_off
+        # holds `batch` of these back to back, one per POSITION, because a block
+        # of B tokens spans B positions -- so a host that writes one LUT and
+        # dispatches B tokens gives every one of them position P's rotation.
+        # Nothing in rms_size says that; this is how a caller finds the stride.
+        rope_w_len=fd.ROPE_W_LEN,
+        batch=_b,
     )
 
 

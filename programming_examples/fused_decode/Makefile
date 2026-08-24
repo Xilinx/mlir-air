@@ -41,6 +41,19 @@ ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merg
 # only), never with make verify.
 ATTN_EXTRA     ?=
 NONATTN_EXTRA  ?=
+# DECODE_BATCH tokens per superkernel call (DFlash). The builder reads it from
+# the environment; proj_qmm.cc needs it as a MACRO too, because its batched
+# entry points are behind -DPROJ_MM_BATCH so that a build which does not ask
+# for them does not even parse q4k_mm.h. Forgetting this is not a silent wrong
+# answer, it is `ld.lld: undefined symbol: proj_qmm_mm_zero`. The other batched
+# kernels (rms_residual, glu) take the batch as a runtime argument and need no
+# define. 1 adds nothing to any command line.
+DECODE_BATCH   ?= 1
+ifneq ($(DECODE_BATCH),1)
+NONATTN_EXTRA  += -DPROJ_MM_BATCH=$(DECODE_BATCH)
+ATTN_EXTRA     += -DATTN_BATCH=$(DECODE_BATCH)
+export DECODE_BATCH
+endif
 PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body -Wno-deprecated-declarations \
   -DNDEBUG -DMODEL_TYPE=LLAMA_3_2_1B -D__AIE_API_AIE_ADF_HPP__ \

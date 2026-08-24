@@ -790,4 +790,32 @@ void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                                                                  y_bf16);
   scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(y_bf16, o, l_state);
 }
+
+// DECODE_BATCH > 1: row t of a [BATCH][Q_HEADS_PADDED_PER_CU*DH] output.
+//
+// The batched CU holds every token's o and emits the block in ONE transfer at
+// the end of its token loop, rather than one per token. That is a DEADLOCK fix,
+// not a batching convenience: the o-gather memtile daisy-chains its four
+// per-CU landings, so CU c+1's data cannot arrive until CU c's whole transfer
+// has -- and with a transfer per token, CU 0 would have to finish all B tokens
+// while CU 1 has not started one, which the shared KV re-block memtile forbids
+// (it hands both CUs of a column their block together). One transfer per CU,
+// issued after every token is done, removes the interleaving the chain cannot
+// express.
+//
+// BEHIND -DATTN_BATCH, like proj_qmm.cc's batched entry points, and for a
+// sharper reason than compile time: merely ADDING this function costs
+// attn_kv_fin an instruction at -O1, whether it calls it or not. A batch-only
+// addition that changes shipping code is not inert, and check_kernels_inert.py
+// says so. Compiled out, the shipping build is byte-identical.
+#ifdef ATTN_BATCH
+void attn_kv_fin_row(float *__restrict y_state, float *__restrict l_state,
+                     bf16 *__restrict o, int t) {
+  alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
+  passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
+                                                                 y_bf16);
+  scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(
+      y_bf16, o + t * (Q_HEADS_PADDED_PER_CU * DH), l_state);
+}
+#endif
 }

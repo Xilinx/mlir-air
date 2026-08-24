@@ -11,7 +11,10 @@ because the pieces meet at conventions no single checker sees both sides of:
       -> pack_A       ... which pack_A must agree is A-tile order
       -> the mmul     ... whose C comes back in C-tile order
       -> the FLUSH    ... which de-tiles it at (t*tok_stride + i)*ROW_BLOCK
-      -> egress BD    ... which reads that with stride LEADS_PER_GRP*PAIR_PAY
+      -> the gathers  ... which carry it EMITTER-MAJOR, contiguous, header
+                          intact (see egress_bd.py for why they cannot
+                          transpose)
+      -> outy_tokmajor ... which de-interleaves it at the consumer
 
 Get `tok_stride` wrong between the kernel and the descriptor and BOTH checkers
 still pass: the flush writes a self-consistent layout and the gather reads a
@@ -120,37 +123,41 @@ def flush(C, batch, pair_rows, role):
 
 
 def assemble(bands, batch, pair_rows, leads, ngrp, verbose):
-    """Run every emitter's flush output through both egress gathers.
+    """Every emitter's flush output through both gathers, then the consumer.
 
-    bands[(g, k, role)] is that emitter's flushed buffer. Returns the main
-    memtile contents.
+    bands[(g, k, role)] is that emitter's flushed buffer. The gathers are
+    CONTIGUOUS -- emitter k's B token blocks land back to back, groups laid end
+    to end -- so the assembled packet is emitter-major and its header survives.
+    The de-interleave happens where the payload lands, which is what
+    outy_tokmajor describes. Returns the CONSUMER's buffer, token-major.
     """
     pair_pay = pair_rows * ROW_BLOCK
     payload_w = ngrp * leads * pair_pay
+    n_emit = ngrp * leads
+    # main = [hdr][e=0: t0..tB-1][e=1: ...], each token block pair_pay wide.
     main = np.zeros(HDR + payload_w * batch, np.float32)
     for g in range(ngrp):
         grp = np.zeros(HDR + leads * pair_pay * batch, np.float32)
         for k in range(leads):
-            offs, sizes, strides = egress_bd.egress_bd(batch, pair_pay, leads, HDR, k)
-            ix = np.array(egress_bd.dst_indices(offs, sizes, strides))
-            # The emitter's payload, pair roles already interleaved by the two
-            # flushes that share the buffer.
-            src = np.concatenate(
-                [bands[(g, k, r)][HDR:] for r in range(1)]
-                if pair_rows == 1
-                else [bands[(g, k, 0)][HDR:]]
-            )
-            # For PAIR_ROWS==2 the lead and partner write DIFFERENT halves of
-            # the same buffer, so band 0 already holds both after both flushes.
-            grp[ix] = src[: ix.size]
-        moffs, msizes, mstrides = egress_bd.main_bd(
-            batch, pair_pay, leads, HDR, payload_w, g
-        )
-        mix = np.array(egress_bd.dst_indices(moffs, msizes, mstrides))
-        main[mix] = grp[HDR:][: mix.size]
+            # The gather is a plain contiguous run per emitter: exactly the
+            # batch-1 descriptor with a B-times-longer payload.
+            src = bands[(g, k, 0)][HDR:]
+            base = HDR + k * pair_pay * batch
+            grp[base : base + src.size] = src
+        gbase = HDR + g * leads * pair_pay * batch
+        main[gbase : gbase + leads * pair_pay * batch] = grp[HDR:]
         if verbose and g == 0:
-            print(f"      group {g}: grp {grp.size} -> main slice {mix.size}")
-    return main, payload_w
+            print(f"      group {g}: grp {grp.size} -> main at {gbase}")
+
+    # The consumer's 3-D landing: (emitter, token, element).
+    out = np.zeros(batch * payload_w, np.float32)
+    ix = np.array(
+        egress_bd.dst_indices(
+            *egress_bd.outy_tokmajor(n_emit, pair_pay, batch, payload_w)
+        )
+    )
+    out[ix] = main[HDR:][: ix.size]
+    return out, payload_w
 
 
 def check(label, pair_rows, leads, ngrp, batch, verbose, rng):
@@ -174,7 +181,7 @@ def check(label, pair_rows, leads, ngrp, batch, verbose, rng):
                 C = mmul_tiles(X, w)
                 buf += flush(C, batch, pair_rows, role)
             bands[(g, k, 0)] = buf
-    main, payload_w = assemble(bands, batch, pair_rows, leads, ngrp, verbose)
+    out, payload_w = assemble(bands, batch, pair_rows, leads, ngrp, verbose)
 
     # ---- batch-1 path: the same emitters, one token at a time ----
     # This is the reference, and it is built the way batch 1 builds it: each
@@ -189,7 +196,7 @@ def check(label, pair_rows, leads, ngrp, batch, verbose, rng):
                 for role in range(pair_rows)
             ]
         )
-        got = main[HDR + t * payload_w : HDR + (t + 1) * payload_w]
+        got = out[t * payload_w : (t + 1) * payload_w]
         if not np.allclose(got, want, rtol=1e-4, atol=1e-3):
             bad = int(np.argmax(np.abs(got - want)))
             print(
