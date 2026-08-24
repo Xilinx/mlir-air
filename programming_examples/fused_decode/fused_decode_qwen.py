@@ -1983,7 +1983,7 @@ def build_module():
                             ChannelGet("inKV_K", kb, indices=[idx(gi)])
                             ChannelGet("inKV_V", vb, indices=[idx(gi)])
                             for _lc, _cc in enumerate(_cus):
-                                _pk = ChannelPut(
+                                ChannelPut(
                                     "toK",
                                     kb,
                                     indices=[idx(_cc)],
@@ -1991,7 +1991,7 @@ def build_module():
                                     sizes=[idx(16), idx(16), idx(8)],
                                     strides=[idx(8), idx(_gw), idx(1)],
                                 )
-                                _pv = ChannelPut(
+                                ChannelPut(
                                     "toV",
                                     vb,
                                     indices=[idx(_cc)],
@@ -2004,18 +2004,6 @@ def build_module():
                                     sizes=[idx(2), idx(16), idx(8), idx(8)],
                                     strides=[idx(_gw * 8), idx(8), idx(_gw), idx(1)],
                                 )
-                                # Reserve mem_7_1 MM2S 0 for the q-broadcast (mem_6_1->qk)
-                                # + attn-o feedback (kv->mem_6_1) that transit col-7's
-                                # switchbox: KV on MM2S 0 collides with that transit and
-                                # deadlocks once attn actively couples qk<->kv. Mirror the
-                                # proven Llama _reblock_dec fix (col-3 there) -> steer toK/
-                                # toV onto memtile MM2S channels 1+.
-                                _pk.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = IntegerAttr.get(T.i32(), 1)
-                                _pv.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = IntegerAttr.get(T.i32(), 1)
                             DeallocOp(kb)
                             DeallocOp(vb)
                             yield_([])
