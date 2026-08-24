@@ -627,6 +627,12 @@ DOWN_PCOL = 3 if MODEL["PAIR_ROWS"] == 1 else 4
 # 2048. Per-phase K differs: ph0-2 K=2048 (NBJ=8), ph3 K=8192 (NBJ=32).
 import os as _os
 
+# Tokens per superkernel call. Read HERE rather than beside the rest of the
+# batching constants further down, because the attention block count needs it
+# and that is settled with the model geometry. See the block comment at
+# BATCH_MAX_PROJ for what the value means and why 8 is the ceiling.
+BATCH = int(_os.environ.get("DECODE_BATCH", "1"))
+
 # Faithful decode: real attention (QKV -> rope -> flash attn -> o-proj X), mirroring
 # q4nx_decode_repro/full_decode_faithful.mlir.
 # the reference's fixed attention geometry: 4 CUs, each = 8 q heads + 2 kv heads (= 32 q heads,
@@ -659,7 +665,15 @@ POST_RMS = bool(DECODE_GOLDEN)
 # norms are applied to the sublayer OUTPUT before the residual add. Falls back to
 # 1 when POST_RMS is off (debug configs), keeping RMS_LAYER byte-identical.
 N_NORMS = MODEL["N_NORMS"] if POST_RMS else 1
-ATTN_ROUNDS = (ATTN_L + 15) // 16
+# A block of B tokens occupies B CONSECUTIVE cache positions, so the LAST
+# token's context is ATTN_L + B - 1 and every block count -- the shim readback,
+# the memtile dequeue, the cores' loops -- is sized for that. Each token then
+# reads the same number of KV blocks and masks with its OWN L: attn_qk_blk and
+# attn_kv_blk already return early on a block past L, which is what lets one
+# uniform count serve a batch whose contexts differ. Sizing per token instead
+# would desync the shim's push from the core's consume.
+ATTN_L_BLK = ATTN_L + BATCH - 1
+ATTN_ROUNDS = (ATTN_L_BLK + 15) // 16
 MULTIBLK = True  # fixed config: decode is always multi-block; the L=1 single-token path
 # (attn_qk_p1/attn_kv_p1) was removed. ATTN_L (=DECODE_GOLDEN_L) stays a real parameter
 # (context length: 2048/2047 chatbot, 32 for the run_paris_gen gate).
@@ -690,7 +704,7 @@ def _set_attn_link(op, base):
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
-RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
+RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L_BLK + 15) // 16)))
 # DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
 # in. It becomes a launch operand that drives BOTH the shim readback's block count
 # and the attention herd's RTP-L, so the shim pushes exactly what the cores consume
@@ -728,6 +742,16 @@ DK_TOT_A = N_ATTN_CU * KVPC_DH  # all-CU K (or V) width
 KVSZ_TOK = 2 * DK_TOT_A  # per-token K ++ V (all heads)
 ATTN_MAXL = ATTN_ROUNDS * 16  # padded context (compile-time block count)
 APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
+# kvappend_bd.check_bounds, as a build-time property. The block writes positions
+# ATTN_L-1 .. ATTN_L+BATCH-2, and overrunning does not fault: position ATTN_MAXL
+# of one group's region IS position 0 of the next group's, so a block that
+# crosses the end silently corrupts live KV for a real attention CU. Sizing
+# ATTN_ROUNDS from ATTN_L_BLK makes this hold by construction; the assert is
+# here so that stays true if it is ever sized from something else.
+assert ATTN_L - 1 + BATCH <= ATTN_MAXL, (
+    f"a block of {BATCH} at position {ATTN_L - 1} runs past the "
+    f"{ATTN_MAXL}-position cache and would overwrite the next KV region"
+)
 # the reference-faithful on-device KV append: the rope core writes this token's roped-K/raw-V
 # into the DDR cache (appendK/appendV S2MM -> KVC at slot L-1 = the reference _receive_kv_cache),
 # then the whole cache is read back for the block-loop attention (the reference _move_kv_cache).
@@ -1065,7 +1089,7 @@ NLAYERS = int(_os.environ.get("NLAYERS", "1"))
 # where 16 gives 1.06x. It is also the batched matmul's fastest shape by a wide
 # margin (71.4 MAC/cycle against batch 16's 55.7), because q4k_mmul_small's 1x4
 # blocking at rowA=1 fits where aie::mmul<4,8,8> does not.
-BATCH = int(_os.environ.get("DECODE_BATCH", "1"))
+# (BATCH itself is read near the top -- ATTN_ROUNDS needs it.)
 
 # Per-core L1 ceilings, MEASURED by batch_l1_budget.py on qwen3-4b (the DFlash
 # target) against the 64 KB tile minus DECODE_STACK. These are hard limits, not
@@ -1413,7 +1437,10 @@ def build_module():
         )  # padded Q broadcast
         # o gather memtile (reference mem_5_1 o_buffer): 4 CUs' o (512 each) gathered
         # into 2048, then ONE egress (-> host now; -> mem_1_1 o-proj X in the loop close).
-        omt_l2 = MemRefType.get([DQ], bf16, memory_space=l2)
+        # [BATCH][DQ] at BATCH>1: the CUs emit one o per token, token-major, and
+        # this is the buffer the chunk-major @xnorm re-broadcast reads -- the
+        # same shape contract as the rms core's X and the down buffer's.
+        omt_l2 = MemRefType.get([BATCH * DQ], bf16, memory_space=l2)
         # MULTIBLK per-block KV staging memtile (attn_iso ring, PASS L=16..128): one
         # block [K block 2048 | V block 2048] = 4096; a fresh alloc per block gives a
         # count-free ping-pong ring (1 fill : 1 read), unlike a whole-cache buffer
@@ -1898,14 +1925,17 @@ def build_module():
                 L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
 
                 def _rt_blocks():
-                    """ceil(L/16) as an index Value, for the readback's block count.
+                    """ceil(L_blk/16) as an index Value, for the readback's block count.
 
                     Kept in i32: aie-translate's C++ TXN target emits the integer
                     widths but has no case for index-typed arithmetic, and this
                     expression has to survive all the way into the emitted builder.
                     """
                     _s = arith.addi(
-                        L_rt, arith.ConstantOp(IntegerAttr.get(i32, 15), None).result
+                        L_rt,
+                        arith.ConstantOp(
+                            IntegerAttr.get(i32, 15 + BATCH - 1), None
+                        ).result,
                     )
                     _q = arith.divui(
                         _s, arith.ConstantOp(IntegerAttr.get(i32, 16), None).result
@@ -2382,6 +2412,17 @@ def build_module():
                                     return
 
                             def _emit_readback(_kbase=_kbase):
+                                # One whole-cache pass PER TOKEN. The block does
+                                # not share a KV read: each token runs the
+                                # attention CU once, so the shim streams the
+                                # cache B times. That is section 5e's "attention
+                                # does not amortize" as a descriptor count, and
+                                # it is the reason the block size was priced at
+                                # 8 rather than 16.
+                                for _ in range(BATCH):
+                                    _emit_readback_one(_kbase)
+
+                            def _emit_readback_one(_kbase=_kbase):
                                 # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                                 # separate per-block puts). The whole per-CU cache
                                 # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
@@ -2609,17 +2650,20 @@ def build_module():
                     _seg_L = _sa[-1] if DYNSEQ else None
 
                     def _seg_rounds():
-                        """ceil(L/16) for the memtile's block dequeue.
+                        """ceil(L_blk/16) for the memtile's block dequeue.
 
                         The memtile sits between the shim's readback BD and the
                         cores, so its trip count has to be the same ceil(L/16) both
-                        of those use.
+                        of those use -- and at BATCH>1 that is the LAST token's
+                        L (see ATTN_L_BLK), uniformly for every token.
                         """
                         if not DYNSEQ_MEM:
                             return idx(ATTN_ROUNDS)
                         _s = arith.addi(
                             _seg_L,
-                            arith.ConstantOp(IntegerAttr.get(i32, 15), None).result,
+                            arith.ConstantOp(
+                                IntegerAttr.get(i32, 15 + BATCH - 1), None
+                            ).result,
                         )
                         _q = arith.divui(
                             _s,
@@ -3157,10 +3201,18 @@ def build_module():
                                 # the KV append and the attention behind them all
                                 # stay per-token; only the PROJECTION is batched,
                                 # which is where every byte of the weight-traffic
-                                # win is. Unrolled rather than an scf.for so each
-                                # iteration's channel ops keep distinct BDs.
-                                for _t in range(BATCH):
+                                # win is.
+                                #
+                                # An scf.for, not an unroll. The body is five
+                                # channel ops (qkv in, LUT in, q out, K out,
+                                # V out) and a compute tile has SIXTEEN BDs, so
+                                # eight copies do not fit. Nothing in the body
+                                # depends on the token index -- each channel
+                                # just delivers the next token's data, including
+                                # the per-POSITION rope LUT.
+                                for _t in for_(idx(0), idx(BATCH), idx(1)):
                                     _dec_one()
+                                    yield_([])
                             yield_([])
 
                         def _voc():
@@ -3189,6 +3241,17 @@ def build_module():
                     # q broadcast memtile (reference mem_5_1): get rope q (2048),
                     # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
                     def _qmtb_dec():
+                        # One fan-out per token: rope emits B q rows, each is
+                        # broadcast to the CUs before the next arrives. A loop,
+                        # not an unroll -- see _tok_loop on the BD budget.
+                        if BATCH == 1:
+                            _qmtb_one()
+                            return
+                        for _ in for_(idx(0), idx(BATCH), idx(1)):
+                            _qmtb_one()
+                            yield_([])
+
+                    def _qmtb_one():
                         qmtb = AllocOp(qmt_l2, [], [])
                         qmtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(),
@@ -3358,6 +3421,23 @@ def build_module():
                             # the 4-slot count-free KV memtile ring (mem_tile_3_1/4_1) --
                             # that ring drain was the 16dec+3voc-then-hang bug.
                             def _reblock_dec():
+                                # B tokens, B whole passes over the cache. This
+                                # is where the batch does NOT amortize, and it
+                                # is the measured, accepted cost (section 5e):
+                                # every token re-reads the same KV. Hoisting it
+                                # means feeding the CU a QUERY TILE and looping
+                                # the blocks once, which is worth 1.45x on
+                                # attention and needs attn_qk/attn_kv to carry
+                                # per-query m/c/y/l -- a kernel change, not a
+                                # wiring one.
+                                if BATCH == 1:
+                                    _reblock_one()
+                                    return
+                                for _ in for_(idx(0), idx(BATCH), idx(1)):
+                                    _reblock_one()
+                                    yield_([])
+
+                            def _reblock_one():
                                 if KV_SPLIT:
                                     # the reference mem_3_1: per col GROUP, separate K/V buffers each
                                     # with its own count-free ring (independent S2MM fill from
@@ -3506,20 +3586,27 @@ def build_module():
                                 _reblock_dec()
 
                             def _core_rounds(Lh):
-                                """ceil(Lh/16) as a core-side loop bound.
+                                """ceil(L_blk/16) as a core-side loop bound.
 
                                 Lh is the RTP-L herd block-arg, so this is opaque to
                                 folding and survives to core codegen as a real runtime
                                 trip count -- the same count the shim's readback BD
                                 pushes, which is what keeps the core off a channel get
                                 that never arrives.
+
+                                UNIFORM across the batch, and deliberately: the
+                                per-token L varies but the push count cannot,
+                                so every token loops the LAST token's block
+                                count and the kernels drop the blocks past
+                                their own L. The get still runs on those
+                                blocks -- the stream has to drain either way.
                                 """
                                 if not DYNSEQ_RTP:
                                     return idx(ATTN_ROUNDS)
                                 _s = arith.addi(
                                     Lh,
                                     arith.ConstantOp(
-                                        IntegerAttr.get(i32, 15), None
+                                        IntegerAttr.get(i32, 15 + BATCH - 1), None
                                     ).result,
                                 )
                                 _q = arith.divui(
@@ -3530,7 +3617,41 @@ def build_module():
                                 )
                                 return arith.index_cast(idx_t, _q)
 
+                            def _tok_L(Lh, t_iv):
+                                """This token's context length: Lh + t.
+
+                                A block of B tokens occupies B CONSECUTIVE cache
+                                positions, so token t attends to t more keys
+                                than token 0. Still ONE RTP per dispatch -- the
+                                per-token part is the loop's own induction
+                                variable, not a second runtime value.
+                                """
+                                return arith.addi(Lh, arith.index_cast(i32, t_iv))
+
+                            def _tok_loop(one, sh, Lh, _c):
+                                """Run `one` for each token in the block.
+
+                                An scf.for, NOT an unroll, and that is a BD
+                                budget decision: a compute tile has 16 BDs and
+                                one pass already uses two channels, so eight
+                                copies would not fit. The loop body is
+                                identical per token -- only Lh moves, and it
+                                moves by the induction variable.
+                                """
+                                if BATCH == 1:
+                                    one(sh, Lh, Lh, _c)
+                                    return
+                                for _t in for_(idx(0), idx(BATCH), idx(1)):
+                                    one(sh, _tok_L(Lh, _t), Lh, _c)
+                                    yield_([])
+
                             def _qk_body(sh, Lh, _c):
+                                _tok_loop(_qk_body_one, sh, Lh, _c)
+
+                            def _kv_body(sh, Lh, _c):
+                                _tok_loop(_kv_body_one, sh, Lh, _c)
+
+                            def _qk_body_one(sh, Lh, Lblk, _c):
                                 a_q = AllocOp(aq_l1, [], [])
                                 ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
                                 a_m = AllocOp(m_l1, [], [])
@@ -3541,7 +3662,7 @@ def build_module():
                                 # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
                                 # unrollSCFFors only unrolls all-constant loops, so this
                                 # survives to core codegen as a real runtime loop.
-                                _nblk_qk = _core_rounds(Lh)
+                                _nblk_qk = _core_rounds(Lblk)
                                 for _blk in for_(idx(0), _nblk_qk, idx(1)):
                                     # REQUIRED single-buffer: ping-pong would unroll-by-2 +
                                     # 1-remainder over a 3-buffer toK ring whose remainder reads
@@ -3560,13 +3681,13 @@ def build_module():
                                 DeallocOp(a_m)
                                 DeallocOp(a_cc)
 
-                            def _kv_body(sh, Lh, _c):
+                            def _kv_body_one(sh, Lh, Lblk, _c):
                                 a_y = AllocOp(y_l1, [], [])
                                 a_l = AllocOp(lden_l1, [], [])
                                 a_o = AllocOp(ao_l1, [], [])
                                 # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                 # loops per RTP-L; matched by the shim readback push count.
-                                _nblk_kv = _core_rounds(Lh)
+                                _nblk_kv = _core_rounds(Lblk)
                                 for _blk in for_(idx(0), _nblk_kv, idx(1)):
                                     # REQUIRED single-buffer (see _qk_body): keeps toV/toK
                                     # consumption aligned with the DMA rotation (no unroll-by-2
@@ -3716,18 +3837,38 @@ def build_module():
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), 5
                         )
+
                         # loop close: gathered o (2048) is ph1 o-proj X, re-broadcast
                         # OPROJ_REFEED times into the convergent @xnorm, AFTER ph0 (rms)
                         # and BEFORE ph2. Reference mem_5_1 o_buffer -> mem_1_1 x_buffer.
-                        for c in range(N_ATTN_CU):
-                            ChannelGet(
-                                "attnO",
-                                omtb,
-                                indices=[idx(c)],
-                                offsets=[idx(c * DQ_PER_CU)],
-                                sizes=[idx(DQ_PER_CU)],
-                                strides=[idx(1)],
-                            )
+                        # Token-major: the CUs run their token loop in order, so
+                        # this is the order the four attnO channels deliver in.
+                        # The token dimension is a loop and the CU fan is not:
+                        # the four CUs are four DIFFERENT channels (distinct BDs
+                        # either way), the tokens are the same four.
+                        def _o_gather(_toff):
+                            for c in range(N_ATTN_CU):
+                                ChannelGet(
+                                    "attnO",
+                                    omtb,
+                                    indices=[idx(c)],
+                                    offsets=[
+                                        (
+                                            idx(c * DQ_PER_CU)
+                                            if _toff is None
+                                            else arith.addi(_toff, idx(c * DQ_PER_CU))
+                                        )
+                                    ],
+                                    sizes=[idx(DQ_PER_CU)],
+                                    strides=[idx(1)],
+                                )
+
+                        if BATCH == 1:
+                            _o_gather(None)
+                        else:
+                            for _t in for_(idx(0), idx(BATCH), idx(1)):
+                                _o_gather(arith.muli(_t, idx(DQ)))
+                                yield_([])
                         refeed(
                             OPROJ_REFEED,
                             lambda: _xnorm_put(
