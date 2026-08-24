@@ -19,7 +19,7 @@ that the difference is pinned rather than described in a comment.
 """
 
 from air import api as air
-from air.api.types import bf16, f32, i32
+from air.api.types import bf16, f32
 
 
 def build(body, dtype=bf16, N=65536, tile=1024, vector=16, herd_shape=(2,)):
