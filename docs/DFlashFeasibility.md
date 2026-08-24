@@ -64,9 +64,13 @@ before writing any more code:
 - The **X feed overtakes the weight feed at batch 10** — so at block 8 it is a
   non-issue, where at 16 it was the tightest number in the step (section 5c).
 - ~~Verify needs an intra-block causal mask that does not exist.~~ **It already
-  exists.** `attn_qk_blk`'s tail mask *is* a per-query triangular mask when `L`
-  varies per query, so verify and draft differ by an RTP scalar and nothing
-  else. Guarded by `batch_attn_mask.py --check` (section 6, step 2).
+  exists**, and `attn_qk_blk`'s tail mask *is* a per-query triangular mask when
+  `L` varies per query. But `L` is **one RTP for the whole dispatch**, so "verify
+  and draft differ by a scalar" holds only while attention is called per token.
+  Batch attention into the mmul's R dimension and verify needs a per-query mask
+  in the kernel; draft does not, because its `L` is uniform (section 6, step 2,
+  "What the shipping q4nx models already answer"). Guarded by
+  `batch_attn_mask.py --check`.
 - The hidden-state taps step 3 needs were **already crossing the shim every
   layer**, just overwritten in place. Step 3 turned out to be an offset change
   and is now built behind `DECODE_HIDDEN_TAPS=1` (section 6).
@@ -1412,6 +1416,14 @@ So: worth doing, bounded at +26% on the headline, and **not a prerequisite for
 anything**. Block 8 is the optimum either way, which means step 2's builder
 wiring is not blocked on it.
 
+**One asymmetry the bundle counts do not show.** Batching attention means one
+call spanning several tokens, and verify's tokens have *different* causal
+lengths — `L_eff(t) = P+t+1` — where `L` is a single RTP per dispatch. So the
+lever is clean on the **draft** pass, whose `L` is uniform, and on **verify** it
+additionally requires a per-query mask inside the kernel. Verify is 36 layers
+against draft's 5, so the half that is hard is the half that pays. Costed
+separately, not as one 1.55x (section 6, step 2).
+
 ### The bigger attention lever is not batching
 
 The two largest per-token pieces are the softmax `update` and the **y rescale
@@ -1553,7 +1565,9 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
    - **Attention: query tile of 8**, on qwen3-4b and every other head_dim>=128
      model. Costs a second read of the KV block from L2; no extra DDR traffic.
    - ~~**Attention: a new mask.**~~ **Already there** — see below. It is an RTP
-     value, not a kernel change.
+     value, not a kernel change — *provided attention stays per-token*. See
+     "What the shipping q4nx models already answer" below for the case where it
+     does not.
    - **Attention: it is now the dominant cost.** Section 5e — 71% of batch-16
      compute, and the reason the block size had to be settled before building
      more. Batching it is worth at most 1.45x at block 8 and blocks nothing
@@ -1567,6 +1581,76 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
    - **Attention query tile 8 is exactly at the ceiling** — 51.0 KB of 54 KB,
      max query tile 8 **[measured]**. It fits, with nothing spare, so any
      future per-CU L1 addition on the attention path has to be paid for.
+   - **rope needs B cos/sin LUTs, not one.** See below.
+   - **The KV append gains a dimension.** See below.
+
+   ### What the shipping q4nx models already answer
+
+   Every q4nx/q4 model in `llms/` drives this same superkernel, so its decode
+   wiring is the reference for what batching has to change. Reading it moved
+   three items and added two.
+
+   **Cheaper than the list assumed: rms / rope / glu need no kernel change at
+   all.** Every one of these leaves is strictly per-row — `rms_norm_aie(y, x, w)`
+   normalises one `MODEL_DIM` row, `pseduo_glu<L>` takes gate at `x + L/2` of a
+   single row, `rope_compute` ropes one token's qkv. So "row tiling at 4" is
+   `B` calls at a row stride, not a restructure. The tile exists only because
+   `qkv_l1` cannot hold 8 rows.
+
+   **Missing: rope is per-POSITION, and a block spans B positions.** The driver
+   patches a 64-word cos/sin LUT into the RMS BO every single token
+   (`r_bo.write(lut, _rms_lut_off*2)` in `llama32_1b_q4nx_inference.py`,
+   position `p`). A block of B tokens sits at positions `P..P+B-1`, so it needs
+   **B LUT slabs**, with rope called at `rope_w + t*ROPE_W_LEN`. The L1 side is
+   already priced — `batch_l1_budget.py` scales `ropelut_l1` with the batch —
+   but the host upload and the builder's rope feed are not, and nothing else in
+   this document mentions it.
+
+   **Missing: the KV append gains a dimension.** Today it is one slot,
+   `sizes=[NGRP, REGION_W] strides=[REGION_STRIDE, 1]` at `(L-1)*REGION_W`. B
+   tokens append B consecutive slots, so it becomes 3-D. Same class as the X
+   feed and the egress, and it deserves the same derive-and-check treatment
+   rather than being written by hand.
+
+   **Incomplete: "the mask is just an RTP scalar" holds only while attention is
+   per-token.** `L_c` is ONE value for the whole dispatch — a DYNSEQ RTP patched
+   into the instruction stream. Verify needs `L_eff(t) = P+t+1`, which is B
+   different values inside one dispatch. Two cases, and they differ a lot:
+
+   | | how L varies | cost |
+   |---|---|---|
+   | attention called per token | `L_c + t`, an `arith.addi` on the loop IV | ~free, as claimed |
+   | attention batched into the mmul's R dimension (section 5g) | one call spans B different L | **per-query mask, in the kernel** |
+
+   So section 5g's lever is clean for **draft** (`L_eff = P+16` for every token,
+   uniform) and not for **verify** — and verify is the expensive pass, 36 layers
+   against 5. The pass where batching attention is hardest is the pass where it
+   would pay most. That does not change 5g's conclusion (bounded at 1.45x,
+   blocks nothing) but it does mean the two halves of the lever should be costed
+   separately.
+
+   One piece of luck inside that: `L` currently serves two purposes — the
+   core-side loop bound via `_core_rounds(Lh)` and the mask inside
+   `attn_qk_blk` — and at batch B they must diverge, uniform `ceil((P+B)/16)`
+   for the loop against per-token `L` for the mask. **The kernel already
+   tolerates exactly that**: `attn_qk_blk` returns early on `rem <= 0`, so
+   handing it a loop bound larger than its own `L` is the built-in behaviour,
+   not a change.
+
+   **Reusable rather than rebuilt.** `DecodeInstsGen` specialises one xclbin to
+   any L by patching only the L-dependent words, locating them by diffing two
+   same-`ATTN_MAXL` builds and interpolating a slope — verified byte-exact
+   against native per-L builds. The batched build's KV-append offset and RTP-L
+   are the same kind of word and get the same treatment. `decode_geometry.py`
+   reads BO sizes off the builder, so it will track the batched X and Y sizes
+   for free. `respace_kv` is precedent for host-side KV relayout, which is what
+   DFlash's rollback on rejected tokens is.
+
+   **No prior art for multiple tokens per dispatch.** The `gemms` / `gemv` split
+   in `llms/shared/builders/` is prefill against decode in the *multi-launch*
+   engine, not this one; nothing has ever pushed more than one token through the
+   superkernel. Which is also why no equivalence harness exists to borrow — the
+   batch-equivalence gate has to be built.
 
    ### The mask turned out to already exist
 
