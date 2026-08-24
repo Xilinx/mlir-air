@@ -1,117 +1,102 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-from math import cos, sin, sqrt, exp
+"""Per-tile softmax via a hand-written AIE kernel, on air.api.
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
-from ml_dtypes import bfloat16
+    softmax = air.extern("softmax_bf16", object="softmax.o", scalars=[i32])
+    ...
+    air.ops.load(a, A[i0 : i0 + tile_n])
+    softmax(a, tile_n - 1, out)
+    air.ops.store(out, C[i0 : i0 + tile_n])
+
+Each core runs the reduction over its own [tile_n] tile, so the softmax is
+per-tile rather than over the whole vector -- which is what the reference in
+``__main__`` computes too, tile by tile.
+
+The DSL computes nothing here; the kernel body is one call into ``softmax.o``.
+``air.extern`` emits the private ``func.func`` declaration, stamps ``link_with``
+on both it and the herd, and builds the ``func.call``.
+
+Note where the scalar sits. ``softmax_bf16`` takes ``(memref, i32, memref)`` --
+the length argument is *between* the two buffers, not appended after them.
+``air.extern`` walks the call's arguments in order and takes the next entry from
+``scalars=`` each time it meets a non-buffer, so the declaration comes out with
+the operands in the order the C symbol expects; ``scalars=[i32]`` only says what
+type that one non-buffer argument has, not where it goes.
+
+The scalar is the *only* part of the shape the kernel reads at runtime. The
+element type and the tile extent are compiled into ``softmax.o``:
+``softmax_bf16`` opens with ``zero_vectorized<bfloat16, 1, 256, 16>(out)``,
+which clears 256 elements whatever the memref says. Both are therefore checked
+below rather than accepted and silently miscomputed.
+
+Unchanged from the raw-bindings version this replaces except that the herd is
+[herd_n, 1] rather than [1, herd_n] -- a 1-D air.api herd is laid out along x,
+the orientation that places on both generations -- and the tile grid is
+strip-mined onto those cores by the DSL rather than by a hand-written outer loop
+with an AffineMap for the offset.
+"""
+
+import argparse
+from math import exp
 
 import numpy as np
+from ml_dtypes import bfloat16
+
+from air import api as air
+from air.api import bf16, i32
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
 
-range_ = for_
+
+KERNEL_TILE_N = 256  # the 256 in zero_vectorized<bfloat16, 1, 256, 16>
 
 
-@module_builder
 def build_module(n, tile_n, herd_n, np_dtype_in):
     assert n % (tile_n * herd_n) == 0
-    a_size = [n]
-    out_size = a_size
-    xrt_dtype_in = type_mapper(np_dtype_in)
-
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-
-    # Function declaration
-    softmax_func = FuncOp(
-        "softmax_bf16",
-        ([l1MemrefTy, T.i32(), l1MemrefTy], []),
-        visibility="private",
-    )
-    for func in [softmax_func]:
-        func.attributes["link_with"] = StringAttr.get("softmax.o")
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def softmax(arg0, arg1):
-        @herd(
-            name="herd_0",
-            sizes=[1, herd_n],
-            operands=[arg0, arg1],
+    # Checked, not assumed. softmax.o exports one symbol, and it bakes in both
+    # the element type and the extent -- `softmax_bf16` opens by calling
+    # zero_vectorized<bfloat16, 1, 256, 16>(out), which clears 256 elements
+    # whatever the memref says. A smaller tile is written past its end; a larger
+    # one is left partly dirty. Both link and run.
+    if np_dtype_in is not bfloat16:
+        raise ValueError(
+            f"softmax.o exports only a bf16 kernel (softmax_bf16), so "
+            f"np_dtype_in must be ml_dtypes.bfloat16, got {np_dtype_in!r}"
         )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+    if tile_n != KERNEL_TILE_N:
+        raise ValueError(
+            f"tile_n must be {KERNEL_TILE_N}: the extent is a template "
+            f"argument of the zero_vectorized call inside softmax_bf16, "
+            f"compiled into softmax.o, not taken from the memref. "
+            f"got tile_n={tile_n}"
+        )
+    dt = bf16
 
-            for t in range_(0, n, tile_n * herd_n):
+    A = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [t, _ty])
+    softmax = air.extern("softmax_bf16", object="softmax.o", scalars=[i32])
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-                const_pos = ConstantOp(IntegerAttr.get(T.i32(), tile_n - 1), None)
-                softmax_call = CallOp(
-                    softmax_func,
-                    [l1_a_data, const_pos, l1_out_data],
-                )
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
+    with air.launch(name="softmax") as launch:
 
-                yield_([])
+        @launch.body
+        def _():
+            with air.herd([range(0, n, tile_n)], name="herd_0", shape=(herd_n,)) as h:
 
-        herd_body.attributes["link_with"] = StringAttr.get("softmax.o")
+                @h.body
+                def _(tx):
+                    # tx counts tiles, not elements.
+                    i0 = tx * tile_n
+                    a = air.alloc([tile_n], dt, scope=h.private())
+                    out = air.alloc([tile_n], dt, scope=h.private())
+
+                    air.ops.load(a, A[i0 : i0 + tile_n])
+                    softmax(a, tile_n - 1, out)
+                    air.ops.store(out, C[i0 : i0 + tile_n])
+
+    return launch
 
 
 if __name__ == "__main__":
@@ -123,7 +108,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the softmax example",
     )
     parser.add_argument(
         "-v",
@@ -141,7 +126,14 @@ if __name__ == "__main__":
         default=N,
         help="Total number of elements",
     )
-    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser.add_argument(
+        "--tile-n",
+        type=int,
+        default=TILE_N,
+        help=f"Tile size. Pinned to {KERNEL_TILE_N} by softmax.o, which "
+        f"compiles the extent in as a template argument; other values are "
+        f"rejected rather than silently miscomputed",
+    )
     parser.add_argument(
         "--herd-n",
         type=int,
@@ -164,15 +156,23 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.n,
         args.tile_n,
         args.herd_n,
         INPUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -199,6 +199,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="softmax",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -216,6 +217,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
