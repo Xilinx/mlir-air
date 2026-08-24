@@ -13,9 +13,13 @@ tree) or **[estimated]** (derived from those). No untagged numbers.
 **DFlash is still worth building. The block size is 4-8, not 16, and the
 speedup is ~1.6-2.8x, not 4.9x.**
 
-**Build state, in one line: the batched projection is wired and gated; the
-engine around it is half wired and DOES NOT RUN YET.** Jump to "Next step" for
-what is done, what is not, and the order to do the rest in.
+**Build state, in one line: the batch-8 engine COMPILES and DISPATCHES, and
+gets as far as the KV append before it deadlocks.** Every phase from the rms
+core through the projection, both egress gathers, the id-demux, the QKV
+transpose, rope and the KV append is confirmed working on device — all eight
+tokens' K and V reach the cache **[measured]**. The stall is somewhere between
+the KV readback and the layer output. Jump to "Next step" for what is done, what
+is not, and how the remaining hunt is being run.
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -221,38 +225,102 @@ touch.
 | proj kernels | **done**, gated on device at batch 8 and 16 (section 5d) |
 | proj cores in the builder | **done**, both `_core_blk` and `_core_blk_np` |
 | `DECODE_BATCH` + L1 sizing rules | **done**, strict no-op at 1 |
-| X-feed BD / egress BDs / KV-append BD | **derived and checked** |
+| X-feed BD / egress BD / KV-append BD | **derived and checked** |
 | whole path composed, in numpy | **done**, `batch_path_check.py` |
-| X feed wiring (chunk-major `@xnorm` + tile-blocked broadcast) | **done** |
-| egress wiring (both gathers widened) | **done** |
-| KV append wiring (3-D) | **done** |
-| QKV L2 transposer + rope token loop | **done** |
-| **rms / glu row loops** | **not done** |
-| **attention token loop + per-token L** | **not done** |
-| **host driver at batch > 1** | **not done** |
-| **device equivalence gate** | **not done** |
+| X feed, egress, KV append, QKV transposer, rope | **done** |
+| rms row loop (and why it is not a row loop) | **done** |
+| glu row loop | **done** |
+| attention token loop + per-token L | **done** |
+| a batch-8 template that COMPILES | **done** |
+| a batch-8 template that RUNS | **not yet** |
+| host driver at batch > 1 | **not done** |
 
-**It does not run yet.** At `DECODE_BATCH=8` the builder emits — 2409 lines on
-qwen3-4b, 2463 on llama-3.2-1b, no batch-1 projection call left in either — and
-at `DECODE_BATCH=1` it is byte-identical to `HEAD` on both models. But rms still
-produces one token where the projection now expects B, so the batched build
-would read garbage for tokens 1..B-1. Nothing about it has been on hardware.
+**How far it gets, on device [measured].** A batch-8 llama-3.2-1b template
+dispatches and times out. A hung dispatch still leaves evidence — the layer
+output is written in place over X and the KV cache is written by the rope
+append — so `batch_equiv.py --smoke` reads the buffers back on timeout and
+reports which regions moved:
+
+    x:  nothing written
+    y:  nothing written
+    kv: all 8 tokens' K and V, in all 4 regions
+
+That brackets it. Everything from the rms core through the projection, both
+egress gathers, the id-demux, the QKV L2 transpose, rope and the KV append
+WORKS at batch 8 — rope cannot produce eight tokens' K without having received
+eight tokens' QKV. The stall is at or after the KV readback.
+
+#### Five deadlocks, and what they have in common
+
+None of them was visible in the AIR, all of them were visible in the emitted
+AIE dialect, and none is the kind of bug an element count can find. They are
+worth reading as a set, because the next one will look like them.
+
+| what | why |
+|---|---|
+| token-major egress gathers | a packet's 2-word header rides ONCE at the front; a BD walks its source linearly, so no descriptor lands the header at 0 and token t at `HDR + t*stride`. Two gets do it arithmetically and eat the memtile's ping-pong ring. **The transpose moved to the consumers**; the gathers are now the batch-1 descriptor, B times longer |
+| outY on the rms core's S2MM0 | the batched rms body aliases one staging buffer as both the outY destination and the @xnorm source, so the allocator's packet-flow reuse folded outY onto the port that already had rmsX/rmsW/rmsW2 — as a SECOND BD chain. A channel has one. The first also stopped cycling |
+| the QKV transposer on col-3 MM2S 0 | a documented route deadlock in this builder; the KV puts already carry the floor, the transposer did not |
+| rope blocked on the q broadcast | rope must finish all B tokens before the KV readback can start, the CUs wait on the readback, the q memtile waits on the CUs, rope waits on the q memtile. Got 4 of 8 tokens through |
+| per-token KV append gets | each is a separate shim task and the fused launch paces a `preserve_shim_dma_order` channel at depth 2. Got 6 of 8 tokens through |
+
+And a sixth that is not a deadlock but caused one: writing the q buffering as
+`for t: get slice` then `for t: fan slice` gets rebuilt by
+`air-ping-pong-transform` into a 2-deep ring of slices — **the interleaved form
+again**. One get and one put per CU, with the batch as a BD dimension, gives the
+transform nothing to rewrite.
+
+#### The two tools this needed
+
+Both were written mid-hunt and both found a real fault immediately.
+
+- **`check_channel_balance.py`** — how each SIDE of each channel scaled from
+  batch 1. Ratios, not totals: counting elements absolutely needs a model of
+  `scf.parallel` fans, `index_switch` arms and herd multiplicity, and getting
+  one wrong made the first version call the SHIPPING batch-1 design broken. The
+  same modelling error on both sides of a division cancels.
+- **`check_dma_alloc.py`** — which tiles moved their DMA channels, and how the
+  BD chains and lock counts changed. Found the two-chains-on-one-channel fault
+  in seconds. Needs two AIE dumps, so it costs two builds (~9 min).
+
+What neither can see is ORDER, and four of the five faults above are ordering.
+For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
 
 #### The order to do the rest in
 
 1. ~~**The device equivalence gate, FIRST.**~~ **Written — `batch_equiv.py`.**
-   Dispatch at `DECODE_BATCH=B` with all B tokens identical and assert every
-   token's output row equals the batch-1 output. No reference model, no requant
-   cache: synthetic weights are fine because it is a DATAFLOW gate, and the
-   numerics already have their own device gates. It needs two templates built
-   from the same tree, one per batch size, and it cannot run until step 2.
 
-   **Writing it before the wiring already paid.** It immediately found that the
-   host-facing L3 buffers never scaled — `x_l3`, the rope-LUT slab in `rms_l3`,
-   and `y_l3` — and that `decode_geometry.py` restates those sizes rather than
-   reading the memref shapes, so it reported batch 8 and batch 1 as the same
-   dispatch. Both fixed. The scaling is now visible and is the thesis of this
-   whole document in one table **[measured]**:
+   **Its first premise was wrong, and the correction is the point.** It asserted
+   that B IDENTICAL tokens give B IDENTICAL rows. That is false, and for the
+   reason the batch exists: a block occupies B CONSECUTIVE positions, so token t
+   attends to t more keys than token 0 and rotates by a different RoPE angle.
+   An "all rows equal" gate would have PASSED on an engine that gave every token
+   position P's context — exactly the silent failure `batch_attn_mask.py` was
+   written to warn about. The property that is actually true, and that DFlash
+   rests on, is
+
+       one batch-B dispatch at position P
+         ==
+       B batch-1 dispatches at positions P .. P+B-1, same X each time
+
+   `--tokens 0` needs one batch-1 template and already covers the whole batched
+   data path; `--tokens all` needs one per position (a non-DYNSEQ template bakes
+   L) and is what proves token t gets a DIFFERENT and correct answer rather than
+   a copy of token 0's.
+
+   **Two other things it taught.** Random bytes make random bf16 SCALES: the
+   first run returned 0x7F81 — one NaN — in every element, and a gate whose
+   output is constant passes on anything. It now builds REAL q4k blocks and
+   refuses to compare a flat output. And a hung dispatch is not information-free:
+   `--smoke` reads the buffers back on timeout and says which regions moved,
+   which is the only progress signal this engine gives.
+
+   **Writing it before the wiring already paid.** It found that the host-facing
+   L3 buffers never scaled — `x_l3`, the rope-LUT slab in `rms_l3`, and `y_l3` —
+   and that `decode_geometry.py` restates those sizes rather than reading the
+   memref shapes, so it reported batch 8 and batch 1 as the same dispatch. Both
+   fixed. The scaling is now visible and is the thesis of this whole document in
+   one table **[measured]**:
 
    | BO | batch 1 | batch 8 | |
    |---|---|---|---|
@@ -260,26 +328,49 @@ would read garbage for tokens 1..B-1. Nothing about it has been on hardware.
    | **weights** | **154419200** | **154419200** | **x1 — the entire point** |
    | rms (+ B rope LUTs) | 200704 | 297472 | x1.48 |
    | Y | 162304 | 223232 | x1.38 |
-   | KV cache | 150994944 | 150994944 | x1 — indexed by position |
+   | KV cache | 150994944 | 152174592 | x1.01 — the last token's position |
 
    Read the weight row against the X row. That ratio is what the whole
    speculative-decoding argument rests on, and it is now a property of the
    emitted design rather than a claim.
-2. **rms row loop.** The blocker for everything else: rms is the X producer, so
-   until it emits B rows the batched projection reads garbage. Buffers go to
-   `BATCH*K` (40 KB at block 8, fits — `RMS_TILE` is 8), and the per-row calls
-   want `subview` from `air.dialects.memref`, which the sibling builders already
-   use (`llms/shared/builders/o_ffn_multi.py`). **Check the subview type matches
-   the kernel's `FuncOp` signature** — a `memref<Kxbf16, strided<...>>` is not
-   the same type as `memref<Kxbf16>` and the call will not verify if it is not
-   handled.
-3. **glu row loop.** Same shape, `GLU_TILE` is 8 so no sub-tiling.
-4. **Attention token loop + per-token `L`.** `L_c + t` on the loop IV; see
-   "What the shipping q4nx models already answer" in section 6 step 2 for why
-   that is nearly free and what would make it not be.
-5. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
-   position — easy to miss, see the same section), and `check_bounds` on the KV
-   append before the dispatch.
+2. ~~**rms row loop.**~~ **Done — and it is NOT a row loop.** Everything the rms
+   core does is per row, but it has to hold all B rows of TWO things at once:
+   the raw batch (the residual stream) and the normalized batch (what the
+   projection re-reads REFEED[p] times). On qwen3-4b that is 2 x 40 KB against a
+   54 KB budget, and neither can be dropped. So the normalized batch is **never
+   materialized**: `rms_scale_row_aie` keeps one float per row and
+   `rms_chunk_aie` regenerates whichever @xnorm chunk is being sent, for all B
+   rows, into a staging buffer one chunk wide. The big buffer stays raw and
+   accumulates in place — x, then h, then the layer output, one buffer, three
+   roles. `residual_acc_row_aie` adds a projection round in where it lands,
+   which also removes the K-wide landing buffer on the way in.
+
+   54304 B of 55296 at batch 8 **[measured]**, so `BATCH_MAX_RMS` is exactly 8 —
+   computed from the live set, not asserted. Gemma's sandwich norm is refused
+   rather than half-wired: normalizing the SUBLAYER OUTPUT needs the whole
+   projection row resident, which is the second buffer this design exists to
+   avoid.
+
+   The cost is that a chunk is recomputed once per re-broadcast round rather
+   than once per token. Whether that lands on the critical path is unmeasured;
+   the alternative is a resident X buffer in L2.
+3. ~~**glu row loop.**~~ **Done.** Same shape, ten minutes once step 2 was.
+4. ~~**Attention token loop + per-token `L`.**~~ **Done.** The mask needed no
+   kernel change, as `batch_attn_mask.py` predicted: `attn_qk_blk`'s tail mask
+   IS a per-query causal mask when L is a per-query value, so token t runs with
+   `L + t` — the loop's own induction variable, not a second RTP. The block
+   COUNT stays uniform at `ceil((L+B-1)/16)` because the shim's push and the
+   core's consume have to agree; blocks past a token's own L hit the kernels'
+   existing `rem <= 0` early return. `ATTN_L_BLK` is where that lives, and it
+   also makes `kvappend_bd`'s overrun guard hold by construction.
+5. **Find the last deadlock.** The remaining hunt, and the method that has
+   worked five times: build, `check_dma_alloc.py` against a batch-1 dump, and
+   when that is clean, reason about ORDER — which memtile is being asked to
+   finish one producer before another can start, while something upstream keeps
+   them in lockstep. `--smoke`'s KV readback brackets where to look.
+6. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
+   position — the builder now feeds B of them, one put per token), and
+   `check_bounds` on the KV append before the dispatch.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on

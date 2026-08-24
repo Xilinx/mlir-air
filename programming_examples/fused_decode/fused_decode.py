@@ -2774,6 +2774,23 @@ def build_module():
                     # dispatch, not a constant folded into the core ELF.
                     _seg_L = _sa[-1] if DYNSEQ else None
 
+                    def _seg_blocks():
+                        """Blocks the memtile dequeues for a WHOLE token block.
+
+                        BATCH * ceil(L_blk/16), as ONE loop bound rather than a
+                        token loop around the block loop. The nesting is what
+                        AIR gets to reinterpret -- the fresh per-iteration
+                        allocation inside is what makes the count-free ping-pong
+                        ring, and an outer loop wrapped around it is a second
+                        thing for the ring transform to fold. The body does not
+                        depend on which token it is serving, so flattening is
+                        free and leaves nothing to fold.
+                        """
+                        r = _seg_rounds()
+                        if BATCH == 1:
+                            return r
+                        return arith.muli(r, idx(BATCH))
+
                     def _seg_rounds():
                         """ceil(L_blk/16) for the memtile's block dequeue.
 
@@ -3570,12 +3587,7 @@ def build_module():
                                 # attention and needs attn_qk/attn_kv to carry
                                 # per-query m/c/y/l -- a kernel change, not a
                                 # wiring one.
-                                if BATCH == 1:
-                                    _reblock_one()
-                                    return
-                                for _ in for_(idx(0), idx(BATCH), idx(1)):
-                                    _reblock_one()
-                                    yield_([])
+                                _reblock_one()
 
                             def _reblock_one():
                                 if KV_SPLIT:
@@ -3590,7 +3602,7 @@ def build_module():
                                     if c != _cus[0]:
                                         return
                                     _gw = len(_cus) * KVPC_DH
-                                    for _blk in for_(idx(0), _seg_rounds(), idx(1)):
+                                    for _blk in for_(idx(0), _seg_blocks(), idx(1)):
                                         _kbuf = AllocOp(kvblk_l2, [], [])
                                         _kbuf.operation.attributes[
                                             "air.memtile_col"
@@ -3657,7 +3669,7 @@ def build_module():
                                 # weight-fan) so large ATTN_L stays under the 16-BD limit.
                                 # Fresh kvb per iter (no_split, memtile_col) = the share-ring
                                 # pattern AIR lowers to next_bd rotation, not a repeat_count BD.
-                                for _blk in for_(idx(0), _seg_rounds(), idx(1)):
+                                for _blk in for_(idx(0), _seg_blocks(), idx(1)):
                                     kvb = AllocOp(kvblk_l2, [], [])
                                     kvb.operation.attributes["air.memtile_col"] = (
                                         IntegerAttr.get(T.i32(), col)
