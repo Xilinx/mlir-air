@@ -19,6 +19,13 @@ elementwise body is the documented cause of NPU timeouts on tiles this size.
 When the innermost dimension is not a multiple of the vector width the emitter
 falls back to a scalar ``memref.load``/``store`` loop rather than failing --
 correctness first, with the width left to the caller to fix for speed.
+
+One expression can hold more than one element type, because ``ops.cast``
+converts between them. Everything below a cast node is read and computed in the
+source type and only the conversion itself lands in the destination's; a
+``_Region`` groups the four things that differ between the two (the MLIR element
+type, the arith table, the vector type and the padding constant) so they can be
+looked up per node rather than threaded down the walk.
 """
 
 from air.ir import AffineDimExpr, AffineMap, AffineMapAttr, VectorType
@@ -92,28 +99,72 @@ _INT_OPS = {
 _BITWISE = ("and", "or", "xor")
 
 
-def emit_elementwise(dst, expr):
-    """Emit ``dst[:] = expr`` as a loop nest over ``dst``'s shape."""
-    leaves = expr.leaves()
-    # A bare scalar on the right-hand side is a fill (`acc[:] = 0.0`), which is
-    # how an accumulator is zeroed before a K loop. It needs no leaves: the
-    # destination supplies the shape.
-    for leaf in leaves:
+def _check_region(node, dst, dtype, expected=None):
+    """Check every buffer leaf against the element type of *its* region.
+
+    Without a cast in the tree there is one region and this is the loop that
+    used to live in ``emit_elementwise``, with its two messages unchanged. A
+    cast starts a new region: below it the expected type is the cast's source,
+    so leaves there are checked against that instead of against ``dst`` -- and
+    ``expected`` renames the type in the message accordingly, because "the
+    destination is f32" is untrue of an assignment whose destination is i32 and
+    whose cast happens to convert from f32.
+
+    Shape is checked against the destination in either region: a cast changes
+    the element type and nothing else.
+    """
+    expected = expected or f"destination is {dtype}"
+    if node.kind == "cast":
+        source = node.args[0].element_dtype()
+        _check_region(
+            node.args[0], dst, source, expected=f"the cast converts from {source}"
+        )
+        return
+    if node.kind == "buffer":
+        leaf = node.buffer
         if leaf.shape != dst.shape:
             raise ValueError(
                 f"shape mismatch in elementwise assignment: destination has "
                 f"shape {dst.shape} but operand has shape {leaf.shape}"
             )
-        if leaf.dtype is not dst.dtype:
+        if leaf.dtype is not dtype:
             raise ValueError(
-                f"dtype mismatch in elementwise assignment: destination is "
-                f"{dst.dtype} but operand is {leaf.dtype}"
+                f"dtype mismatch in elementwise assignment: {expected} but "
+                f"operand is {leaf.dtype}"
             )
         if leaf.value is None:
             raise RuntimeError(
                 "buffer used before allocation; air.alloc() must be called "
                 "inside the herd body that uses it"
             )
+        return
+    for arg in node.args:
+        _check_region(arg, dst, dtype, expected)
+
+
+def _regions_in(node, dtype, out):
+    """Element types appearing in ``node``, outermost first.
+
+    Order is deliberate and not incidental: it fixes the order the padding
+    constants are emitted in, so an expression with no cast in it produces
+    byte-identical IR to the version of this emitter that knew only one type.
+    """
+    if dtype is not None and dtype not in out:
+        out.append(dtype)
+    if node.kind == "cast":
+        _regions_in(node.args[0], node.args[0].element_dtype(), out)
+        return out
+    for arg in node.args:
+        _regions_in(arg, dtype, out)
+    return out
+
+
+def emit_elementwise(dst, expr):
+    """Emit ``dst[:] = expr`` as a loop nest over ``dst``'s shape."""
+    # A bare scalar on the right-hand side is a fill (`acc[:] = 0.0`), which is
+    # how an accumulator is zeroed before a K loop. It needs no leaves: the
+    # destination supplies the shape.
+    _check_region(expr, dst, dst.dtype)
 
     if dst.dtype.is_unsigned:
         # An unsigned tile can be *copied* elementwise but not computed on. The
@@ -129,7 +180,7 @@ def emit_elementwise(dst, expr):
                 "an elementwise operator or broadcast scalar (a plain copy, "
                 "dst[:] = src[:], is)",
             )
-        _emit_scalar(dst, expr, _INT_OPS)
+        _emit_scalar(dst, expr)
         return
 
     shape = dst.shape
@@ -139,11 +190,10 @@ def emit_elementwise(dst, expr):
     width = dst.vector_width
     vectorized = bool(shape) and width > 0 and shape[-1] % width == 0
 
-    ops = _FLOAT_OPS if dst.dtype.is_float else _INT_OPS
     if vectorized:
-        _emit_vector(dst, expr, ops, width)
+        _emit_vector(dst, expr, width)
     else:
-        _emit_scalar(dst, expr, ops)
+        _emit_scalar(dst, expr)
 
 
 # ---------------------------------------------------------------------------
@@ -166,41 +216,59 @@ def _nest(bounds, body):
     rec(0, [])
 
 
-def _emit_vector(dst, expr, ops, width):
+class _Region:
+    """Everything the emitter needs to work in one element type.
+
+    Before ``ops.cast`` there was exactly one of these per assignment and its
+    four fields were four separate arguments threaded down ``_eval``. A cast
+    makes an expression hold more than one element type at once, so they are
+    grouped and looked up per node instead.
+
+    The padding constant is built once here rather than per read, which is what
+    keeps it hoisted above the loop nest exactly as before.
+    """
+
+    __slots__ = ("dtype", "ops", "ety", "vec_ty", "pad")
+
+    def __init__(self, dtype, width, vectorized):
+        self.dtype = dtype
+        self.ety = dtype.mlir()
+        self.ops = _FLOAT_OPS if dtype.is_float else _INT_OPS
+        self.vec_ty = VectorType.get([width], self.ety) if vectorized else None
+        self.pad = (
+            arith.ConstantOp(self.ety, 0.0 if dtype.is_float else 0)
+            if vectorized
+            else None
+        )
+
+
+def _emit_vector(dst, expr, width):
     shape = dst.shape
     rank = len(shape)
-    ety = dst.dtype.mlir()
-    vec_ty = VectorType.get([width], ety)
     # Read a rank-1 vector out of a rank-N memref along the innermost dim.
     minor = AffineMapAttr.get(AffineMap.get(rank, 0, [AffineDimExpr.get(rank - 1)]))
-    zero = arith.ConstantOp(ety, 0.0 if dst.dtype.is_float else 0)
+    # One lane count for the whole nest, taken from the destination. A cast does
+    # not change how many elements a trip covers, only how wide each one is, so
+    # the source is read at the destination's lane count and not at its own
+    # dtype's default.
+    regions = {d: _Region(d, width, True) for d in _regions_in(expr, dst.dtype, [])}
 
     bounds = [(0, extent, 1) for extent in shape[:-1]]
     bounds.append((0, shape[-1], width))
 
     def body(ivs):
-        value = _eval(
-            expr,
-            ivs,
-            ops,
-            ety,
-            vectorized=True,
-            vec_ty=vec_ty,
-            minor=minor,
-            pad=zero,
-            reads={},
-        )
+        value = _eval(expr, ivs, regions[dst.dtype], regions, True, minor, {})
         transfer_write(None, value, dst.value, ivs, minor, [True])
 
     _nest(bounds, body)
 
 
-def _emit_scalar(dst, expr, ops):
-    ety = dst.dtype.mlir()
+def _emit_scalar(dst, expr):
+    regions = {d: _Region(d, 0, False) for d in _regions_in(expr, dst.dtype, [])}
     bounds = [(0, extent, 1) for extent in dst.shape]
 
     def body(ivs):
-        value = _eval(expr, ivs, ops, ety, vectorized=False, reads={})
+        value = _eval(expr, ivs, regions[dst.dtype], regions, False, None, {})
         memref_store(value, dst.value, ivs)
 
     _nest(bounds, body)
@@ -224,9 +292,13 @@ def _result(v):
     return v.result if hasattr(v, "result") else v
 
 
-def _eval(
-    node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None, reads=None
-):
+def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
+    ops, ety = region.ops, region.ety
+    vec_ty, pad = region.vec_ty, region.pad
+
+    def recur(child, into=region):
+        return _eval(child, ivs, into, regions, vectorized, minor, reads)
+
     if node.kind == "buffer":
         # One read per buffer per loop body, not one per mention. A buffer that
         # appears more than once in the tree -- `select(a >= b, a, b)` names
@@ -235,6 +307,13 @@ def _eval(
         # Without this the emitter issues a redundant transfer_read for each
         # extra mention, which is what the hand-written kernels avoid by binding
         # the read to a local once.
+        #
+        # The key is the buffer alone, with no region in it, and that is safe
+        # rather than lucky: a buffer has one element type, `_check_region`
+        # requires every leaf to match the type of the region it sits in, and a
+        # cast is the only thing that starts a new region. So a given buffer is
+        # reachable from exactly one region and its cached value can only ever
+        # have been read at that region's vector type.
         key = id(node.buffer)
         if reads is not None and key in reads:
             return reads[key]
@@ -247,6 +326,17 @@ def _eval(
         if reads is not None:
             reads[key] = value
         return value
+
+    if node.kind == "cast":
+        # The operand is evaluated in *its* region -- a different element type,
+        # a different arith table, and a different vector type -- and only the
+        # conversion itself lands in this one.
+        from .ops import _conversion_op
+
+        source = node.args[0].element_dtype()
+        operand = recur(node.args[0], regions[source])
+        build = _conversion_op(source, region.dtype)
+        return _result(build(vec_ty if vectorized else ety, operand))
 
     if node.kind == "scalar":
         value = node.scalar
@@ -296,18 +386,13 @@ def _eval(
                 f"elementwise operator '{node.op}' is not supported for "
                 f"{'integer' if ops is _INT_OPS else 'float'} buffers"
             )
-        return _result(
-            fn(
-                _eval(
-                    node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads
-                )
-            )
-        )
+        return _result(fn(recur(node.args[0])))
 
     if node.kind == "compare":
         # Yields i1 (vector<Wxi1> when vectorised), not the element type. Only
         # a "select" node consumes this, which ops.select enforces at trace
-        # time -- nothing else in _eval can receive one.
+        # time -- nothing else in _eval can receive one. Its *operands* are
+        # ordinary values in this region, so they recur normally.
         table = _CMP_I if ops is _INT_OPS else _CMP_F
         predicate = table.get(node.op)
         if predicate is None:
@@ -315,20 +400,12 @@ def _eval(
                 f"comparison '{node.op}' is not supported for dtype "
                 f"{'integer' if ops is _INT_OPS else 'float'}"
             )
-        lhs = _eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
-        rhs = _eval(node.args[1], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
         build = arith.cmpi if ops is _INT_OPS else arith.cmpf
-        return _result(build(predicate, lhs, rhs))
+        return _result(build(predicate, recur(node.args[0]), recur(node.args[1])))
 
     if node.kind == "select":
         cond, a, b = node.args
-        return _result(
-            arith.select(
-                _eval(cond, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads),
-                _eval(a, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads),
-                _eval(b, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads),
-            )
-        )
+        return _result(arith.select(recur(cond), recur(a), recur(b)))
 
     if node.kind == "binary":
         op = ops.get(node.op)
@@ -343,8 +420,6 @@ def _eval(
                 f"elementwise operator '{node.op}' is not supported for dtype "
                 f"{'float' if ops is _FLOAT_OPS else 'integer'}"
             )
-        lhs = _eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
-        rhs = _eval(node.args[1], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
-        return _result(op(lhs, rhs))
+        return _result(op(recur(node.args[0]), recur(node.args[1])))
 
     raise AssertionError(f"unknown expression node kind {node.kind!r}")

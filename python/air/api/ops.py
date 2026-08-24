@@ -41,6 +41,7 @@ __all__ = [
     "load",
     "store",
     "copy",
+    "cast",
     "maximum",
     "minimum",
     "relu",
@@ -353,6 +354,133 @@ def _elementwise(name, key, a, b):
     return BufferExpr("binary", op=key, args=(a, b))
 
 
+def cast(x, dtype):
+    """Convert an elementwise expression to another element type.
+
+        l1_out[:] = air.api.ops.cast(l1_in[:], air.api.i32)
+
+    This is the one node whose operand has a different element type from its
+    result, so everything below it is read, and computed on, in the source type:
+    ``cast(a[:] * 2.0, i32)`` doubles in f32 and converts once, while
+    ``cast(a[:], i32) * 2`` converts first and doubles in i32.
+
+    Which ``arith`` op it becomes follows from the two types -- ``sitofp``,
+    ``fptosi``, ``extf``, ``truncf`` or ``extsi``. Every one of those was run on
+    npu1 hardware against an exact numpy reference before being allowed here,
+    vectorised and scalar, because compiling is not the same claim as computing:
+    of the pairs probed, four compiled cleanly and returned wrong values.
+
+    Two results of that sweep are worth knowing before using this:
+
+    * **A float result is rounded toward negative infinity, not to nearest.**
+      Converting to bf16 differs from numpy's round-half-to-even by up to one
+      ULP (2^-7 relative). That is not a property of this op -- a plain
+      ``c[:] = a[:] + b[:]`` on bf16 buffers differs from numpy the same way --
+      but an exact comparison against a numpy reference will fail on roughly
+      half of all inputs, so compare with a tolerance.
+    * **Narrowing between integer types is refused**, not supported-with-caveats.
+      See ``_conversion_op`` below for the measurement.
+    """
+    from .types import DType
+
+    if not isinstance(dtype, DType):
+        raise TypeError(
+            f"air.api.ops.cast needs an air.api element type as its second "
+            f"argument (air.api.i32, air.api.f32, ...), got {dtype!r}"
+        )
+    expr = BufferExpr.coerce(x)
+    if expr.kind == "compare":
+        # A comparison evaluates to i1, not to an element type, so there is
+        # nothing to convert *from* -- and a conversion op applied to a
+        # vector<Wxi1> would be a verifier failure well downstream of the
+        # mistake. Say what to do instead.
+        raise TypeError(
+            "air.api.ops.cast got a comparison, which is a predicate rather "
+            "than a value: it evaluates to i1, not to an element type. Turn it "
+            "into values first with air.api.ops.select(cond, a, b), or write "
+            "the comparison against already-converted operands"
+        )
+    source = expr.element_dtype()
+    if source is None:
+        # Two different situations produce no source type, and they need
+        # different messages because they need different fixes.
+        if expr.leaves():
+            # `cast(ops.select(a[:] > 0, 1, 2), i32)`. There *are* buffers, but
+            # only in the predicate: ops.select allows that, and the values it
+            # chooses between are both scalars, so the expression takes its
+            # element type from whatever surrounds it. There is nothing to
+            # convert from, and it cannot simply be adopted into the target
+            # type either -- the predicate's own operands would then have to
+            # be i32 as well, which is not what was written.
+            raise TypeError(
+                "air.api.ops.cast cannot convert this expression: its buffers "
+                "appear only in a comparison, and the values it evaluates to "
+                "are all scalars, so it has no element type of its own to "
+                "convert from. Cast the operands instead -- for example "
+                "ops.select(a[:] > 0, ops.cast(x[:], t), ops.cast(y[:], t))"
+            )
+        # `cast(1.0, i32)` -- no buffer at all, so the constant would simply be
+        # built in the target type anyway. Write the constant you meant.
+        raise TypeError(
+            "air.api.ops.cast needs an expression containing at least one "
+            f"buffer; {x!r} is a bare scalar, which is already built in "
+            "whatever element type surrounds it"
+        )
+    if source is dtype:
+        # Converting to the type it already has. numpy's astype does this too,
+        # and it must not fall through to a builder: arith rejects a same-type
+        # extf with "operand type and result type are cast incompatible".
+        return expr
+    require_signless(source, "air.api.ops.cast")
+    require_signless(dtype, "air.api.ops.cast")
+    _conversion_op(source, dtype)  # raises here, at the call site, not at emit
+    return BufferExpr("cast", args=(expr,), dtype=dtype)
+
+
+def _conversion_op(source, target):
+    """The arith op converting ``source`` to ``target``, or a refusal.
+
+    Shared by ``cast`` (so a bad pair is rejected where the user wrote it) and
+    by the emitter (so it does not need a second copy of the rules).
+    """
+    from air.dialects import arith
+
+    if source.is_float and target.is_float:
+        if target.itemsize > source.itemsize:
+            return arith.ExtFOp
+        if target.itemsize < source.itemsize:
+            return arith.TruncFOp
+        # bf16 and f16 are both 2 bytes, so neither extf nor truncf applies:
+        # they have different exponent widths and MLIR has no direct op.
+        raise NotImplementedError(
+            f"air.api.ops.cast cannot convert {source} to {target} directly: "
+            f"they are the same width, so it is neither a widening nor a "
+            f"narrowing, and arith has no op for it. Convert through "
+            f"air.api.f32 in two steps"
+        )
+    if source.is_float:
+        return arith.FPToSIOp
+    if target.is_float:
+        return arith.SIToFPOp
+    if target.itemsize > source.itemsize:
+        return arith.ExtSIOp
+    # Narrowing int -> int. Refused on evidence rather than on principle:
+    # measured on npu1, arith.trunci wraps on the scalar path (matching both
+    # MLIR's own semantics and numpy) and *saturates* on the vector path --
+    # i32 933033 came back as 32767 rather than 15529. Which path the emitter
+    # takes depends on whether the tile is a multiple of the vector width,
+    # which is not something the author of the cast is thinking about, so the
+    # same source would compute two different things depending on the tile
+    # size. In-range values agree, but nothing here can check that.
+    raise NotImplementedError(
+        f"air.api.ops.cast will not narrow {source} to {target}: on AIE the "
+        f"vectorised arith.trunci saturates while the scalar one wraps, and "
+        f"the emitter picks between them based on the tile size, so the result "
+        f"would depend on a tile shape rather than on the program. Mask "
+        f"explicitly if wrapping is what you want"
+    )
+
+
 def maximum(a, b):
     """Elementwise max. Lowers to arith.maximumf (float) / arith.maxsi (int)."""
     return _elementwise("maximum", "max", a, b)
@@ -371,10 +499,23 @@ def relu(x):
     a Python float fails with "expected floating point type".
     """
     expr = BufferExpr.coerce(x)
-    leaves = expr.leaves()
-    if not leaves:
-        raise ValueError("air.api.ops.relu needs a buffer operand, got a scalar")
-    return maximum(expr, 0.0 if leaves[0].dtype.is_float else 0)
+    # The expression's own element type, not the first buffer under it. Those
+    # agree everywhere except across a cast, where `relu(cast(a[:], i32))` has
+    # an f32 leaf and an i32 result -- and it is the result that decides which
+    # zero to build.
+    dtype = expr.element_dtype()
+    if dtype is None:
+        # No value type of its own. That is a bare scalar, which relu cannot
+        # shape -- or an expression whose buffers sit only in a predicate, as
+        # in `relu(ops.select(a[:] > 0, 1, 2))`, which ops.select allows and
+        # which the emitter shapes from those buffers. Fall back to a leaf,
+        # which is the type the surrounding region will be built in anyway,
+        # since every leaf in a region is required to match it.
+        leaves = expr.leaves()
+        if not leaves:
+            raise ValueError("air.api.ops.relu needs a buffer operand, got a scalar")
+        dtype = leaves[0].dtype
+    return maximum(expr, 0.0 if dtype.is_float else 0)
 
 
 # ---------------------------------------------------------------------------
