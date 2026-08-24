@@ -13,6 +13,10 @@ tree) or **[estimated]** (derived from those). No untagged numbers.
 **DFlash is still worth building. The block size is 4-8, not 16, and the
 speedup is ~1.6-2.8x, not 4.9x.**
 
+**Build state, in one line: the batched projection is wired and gated; the
+engine around it is half wired and DOES NOT RUN YET.** Jump to "Next step" for
+what is done, what is not, and the order to do the rest in.
+
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
 re-reads the whole KV cache — so putting it back moves batch 16 from 1.04x the
@@ -232,6 +236,34 @@ qwen3-4b, 2463 on llama-3.2-1b, no batch-1 projection call left in either — an
 at `DECODE_BATCH=1` it is byte-identical to `HEAD` on both models. But rms still
 produces one token where the projection now expects B, so the batched build
 would read garbage for tokens 1..B-1. Nothing about it has been on hardware.
+
+#### The order to do the rest in
+
+1. **The device equivalence gate, FIRST.** Dispatch at `DECODE_BATCH=B` with all
+   B tokens identical and assert every token's output row equals the batch-1
+   output. No reference model needed; it exercises DMA, locks, cascade and
+   backpressure, which is everything `batch_path_check.py` cannot. Building it
+   after the wiring means debugging the wiring blind — this project's whole
+   method has been to have the check before the change.
+2. **rms row loop.** The blocker for everything else: rms is the X producer, so
+   until it emits B rows the batched projection reads garbage. Buffers go to
+   `BATCH*K` (40 KB at block 8, fits — `RMS_TILE` is 8), and the per-row calls
+   want `subview` from `air.dialects.memref`, which the sibling builders already
+   use (`llms/shared/builders/o_ffn_multi.py`). **Check the subview type matches
+   the kernel's `FuncOp` signature** — a `memref<Kxbf16, strided<...>>` is not
+   the same type as `memref<Kxbf16>` and the call will not verify if it is not
+   handled.
+3. **glu row loop.** Same shape, `GLU_TILE` is 8 so no sub-tiling.
+4. **Attention token loop + per-token `L`.** `L_c + t` on the loop IV; see
+   "What the shipping q4nx models already answer" in section 6 step 2 for why
+   that is nearly free and what would make it not be.
+5. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
+   position — easy to miss, see the same section), and `check_bounds` on the KV
+   append before the dispatch.
+
+Keep running the batch-1 no-op diff on **both** models after every step. It has
+already caught a leaked constant that folded away on qwen3-4b and did not on
+llama, so one model is not enough.
 
 **One design decision worth knowing about**, because it is not obvious and it
 shaped everything downstream. The projection emits **(round, token)**: round r
