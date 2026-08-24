@@ -103,6 +103,7 @@ hold at 8 with room to spare.
 | `check_kernels_inert.py` | **the inertness gate** — every shipping kernel vs `HEAD` |
 | `xfeed_bd.py` | the X feed's tile-blocking BD, checked against `pack_A` |
 | `egress_bd.py` | the egress gathers, both levels, checked against batch 1 |
+| `kvappend_bd.py` | the KV append BD + the end-of-window overrun guard |
 | `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
 | `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
 | `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
@@ -167,6 +168,7 @@ python3 bench_attn_batch.py --model QWEN3_4B --layers 36  # ~8 min; can hoist
 python3 check_kernels_inert.py                         # ~1 min; THE gate
 python3 xfeed_bd.py                                    # seconds; the X-feed BD
 python3 egress_bd.py                                   # seconds; egress BDs
+python3 kvappend_bd.py --overrun                       # seconds; KV append BD
 python3 dflash_blocksize.py                            # seconds; the block size
 python3 dflash_blocksize.py --attn-hoistable 1503      # with a perfect hoist
 python3 dflash_blocksize.py --overlap                  # the optimistic bound
@@ -1608,9 +1610,29 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
 
    **Missing: the KV append gains a dimension.** Today it is one slot,
    `sizes=[NGRP, REGION_W] strides=[REGION_STRIDE, 1]` at `(L-1)*REGION_W`. B
-   tokens append B consecutive slots, so it becomes 3-D. Same class as the X
-   feed and the egress, and it deserves the same derive-and-check treatment
-   rather than being written by hand.
+   tokens append B consecutive slots, so it becomes 3-D. Now derived and
+   checked like the other two — `kvappend_bd.py`; on qwen3-4b at block 8,
+   `offsets=[p,0,0] sizes=[8,2,512] strides=[512,1048576,1]`.
+
+   **It carries a hazard the other two do not**, and it is the reason this one
+   needed writing rather than reasoning. `p*REGION_W` is a valid slot only
+   while `p < ATTN_MAXL`, and position `ATTN_MAXL` of region g **is** position 0
+   of region g+1. At batch 1 the cache can overrun by one and the driver's
+   window bookkeeping prevents it; at batch B it can overrun by B, and the
+   overrun does not fault — it writes into the next group's live KV, which a
+   real attention CU is reading. Wrong logits, no error. Measured on
+   llama-3.2-1b at block 8 with 3 slots left: **2560 of 4096 elements land in
+   the next group's region** **[measured]**. `check_bounds()` refuses it, and
+   the builder needs the same guard.
+
+   Writing the checker also settled a convention the builder relies on twice
+   and documents nowhere: **AIR left-pads a short `offsets` list with zeros**
+   (`air::canonicalizeWrapAndStrideList`, `mlir/lib/Util/Util.cpp`), so a
+   rank-deficient list is **right**-aligned and a single offset lands on the
+   stride-1 dimension as a flat element offset. That is how the existing
+   one-offset-against-two-sizes KV append is correct. Read it as left-aligned
+   and a flat offset silently picks up the outermost stride — here, a factor of
+   `REGION_STRIDE`.
 
    **Incomplete: "the mask is just an RTP scalar" holds only while attention is
    per-token.** `L_c` is ONE value for the whole dispatch — a DYNSEQ RTP patched

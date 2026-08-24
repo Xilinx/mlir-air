@@ -104,6 +104,15 @@ def chunk_offsets(sizes, strides, chunk, kcol):
     The chunk stride is kcol, so it has to be expressed against some dimension
     whose stride divides it. Dimension 0 has stride s and extent kcol//s, so
     offsets[0] = chunk * (kcol // s) lands exactly one window on.
+
+    A RANK-DEFICIENT offsets list is a different thing again, and the builder
+    uses one (the KV append: one offset against two sizes). AIR LEFT-PADS a
+    short list with zeros -- air::canonicalizeWrapAndStrideList in
+    mlir/lib/Util/Util.cpp -- so the entries are RIGHT-aligned and a single
+    offset lands on the stride-1 dimension, behaving as a flat element offset.
+    Assume left alignment instead and a flat offset silently picks up the
+    OUTERMOST stride. Full-rank lists here, so this file is unaffected; noted
+    because the two conventions coexist in the same builder.
     """
     off = [0] * len(sizes)
     off[0] = chunk * (kcol // strides[0])
