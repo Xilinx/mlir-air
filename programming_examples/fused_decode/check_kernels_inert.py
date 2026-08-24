@@ -29,6 +29,16 @@ absolute source path is embedded in the object. That false positive is what
 made the check get skipped by hand before. Compare `llvm-objdump -d` output
 with the header lines (which name the file) dropped.
 
+PER SECTION, NOT WHOLE-FILE. These kernels are compiled with function sections,
+so each entry point lands in its own `.text.<symbol>` with offsets from zero.
+Comparing whole files would call every kernel that gains a NEW entry point
+"changed", which is the opposite of what this gates: adding an inert symbol is
+allowed, altering a shipping one is not. So the diff is keyed by section, and
+only sections the reference already has are compared -- new ones are reported
+and pass. Compiler-generated local labels (.LBB<n>_k, .L_LEnd<n>) carry a
+module-wide counter that shifts when a function is added, so they are renumbered
+per section before comparing; the instructions themselves are compared verbatim.
+
     python3 check_kernels_inert.py           # exit 0 = all inert
     python3 check_kernels_inert.py -v        # print the first differing lines
 
@@ -86,9 +96,39 @@ def disasm(src_path, out_o, flags):
         sys.exit(f"objdump failed ({src_path.name}):\n{r.stderr}")
     # Drop the leading header lines: they carry the object's path, which differs
     # for the HEAD copy by construction and says nothing about the code.
-    return [ln for ln in r.stdout.splitlines() if not ln.startswith(str(out_o.parent))][
-        2:
-    ]
+    lines = [
+        ln for ln in r.stdout.splitlines() if not ln.startswith(str(out_o.parent))
+    ][2:]
+    return sections(lines)
+
+
+SECTION_RE = re.compile(r"^Disassembly of section (\S+):$")
+LABEL_RE = re.compile(r"\.(?:LBB\d+_\d+|L_LEnd\d+)")
+
+
+def sections(lines):
+    """{section name: [normalized line]}, one entry per function section.
+
+    Local labels are rewritten to `.L<k>`, k in order of first appearance within
+    the section. The compiler numbers them across the whole MODULE, so adding
+    one function renames every label after it without changing an instruction;
+    the per-section order does not move.
+    """
+    out, cur = {}, None
+    for ln in lines:
+        m = SECTION_RE.match(ln)
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        elif cur is not None:
+            out[cur].append(ln)
+    for name, body in out.items():
+        seen = {}
+        out[name] = [
+            LABEL_RE.sub(lambda m: f".L{seen.setdefault(m.group(0), len(seen))}", ln)
+            for ln in body
+        ]
+    return out
 
 
 def main():
@@ -132,22 +172,34 @@ def main():
                 )
             finally:
                 ref_path.unlink()
-            ok = a == b
+            # Only sections the reference already has. A section the worktree
+            # adds is a new entry point, which is what this work does on
+            # purpose; a section it DROPS is as much a change as an edit, so
+            # missing ones fail.
+            changed = [s for s in a if s not in b or a[s] != b[s]]
+            added = [s for s in b if s not in a]
             opt = extra[0]
+            nline = sum(len(v) for v in b.values())
+            note = f" (+{len(added)} new)" if added else ""
             print(
-                f"  {kern:14s} {opt:4s} {len(b):6d} lines   {'OK' if ok else 'DIFFERS'}"
+                f"  {kern:14s} {opt:4s} {nline:6d} lines   "
+                f"{'OK' if not changed else 'DIFFERS'}{note}"
             )
-            if not ok:
+            if changed:
                 bad.append(kern)
-                if args.verbose:
-                    for i, (x, y) in enumerate(zip(a, b)):
-                        if x != y:
-                            print(f"      first diff at line {i}:")
-                            print(f"        {args.ref}: {x}")
-                            print(f"        worktree: {y}")
-                            break
-                    if len(a) != len(b):
-                        print(f"      length {len(a)} -> {len(b)}")
+                for s in changed:
+                    if s not in b:
+                        print(f"      section GONE: {s}")
+                        continue
+                    print(f"      section changed: {s}")
+                    if args.verbose:
+                        for i, (x, y) in enumerate(zip(a[s], b[s])):
+                            if x != y:
+                                print(f"        line {i}  {args.ref}: {x}")
+                                print(f"        line {i}  worktree: {y}")
+                                break
+                        if len(a[s]) != len(b[s]):
+                            print(f"        length {len(a[s])} -> {len(b[s])}")
 
     if bad:
         print(f"\n  NOT INERT: {', '.join(bad)}")

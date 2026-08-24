@@ -41,6 +41,15 @@ void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
   pseduo_glu<GLU_SLICE>(y, x);
 }
 
+// DECODE_BATCH > 1: row t of a batched round. The gate-up projection egresses
+// (round, token), so one round arrives as [BATCH][GLU_SLICE] and leaves as
+// [BATCH][GLU_SLICE/2] -- the GLU itself is per token and unchanged, which is
+// the whole reason this is a row index rather than a new kernel.
+void glu_row_aie(bf16 *restrict y, bf16 *restrict x, int t, int _arm) {
+  (void)_arm; // per-token RTP arm-gate operand, as in glu_aie
+  pseduo_glu<GLU_SLICE>(y + t * (GLU_SLICE / 2), x + t * GLU_SLICE);
+}
+
 // Small-slice variant for the demux8 wire-up bisection (M=256 proj payload):
 // x = [up(128) ++ gate(128)], y[i] = silu(gate[i])*up[i] (128 out).
 void glu_aie256(bf16 *restrict y, bf16 *restrict x) { pseduo_glu<256>(y, x); }

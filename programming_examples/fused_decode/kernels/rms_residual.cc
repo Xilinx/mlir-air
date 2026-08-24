@@ -11,11 +11,12 @@
 ///@param x_buf: copy of x
 ///@param x: input
 ///@param w: weight
-void rms_norm(bf16 *restrict y, const bf16 *restrict x,
-              const bf16 *restrict w) {
-  bf16 *it_y = const_cast<bf16 *>(y);
+/// 1 / sqrt(mean(x^2) + eps) over MODEL_DIM elements -- the whole of rmsnorm
+/// except the final scale. Split out because the batched entry points below
+/// need the factor WITHOUT the multiply pass: they regenerate the normalized
+/// row a slice at a time rather than storing it.
+static inline float rms_rsqrt(const bf16 *restrict x) {
   bf16 *it_x = const_cast<bf16 *>(x);
-  bf16 *it_w = const_cast<bf16 *>(w);
   const float epsilon = 1e-6;
 
   constexpr int vector_size = 16;
@@ -30,8 +31,6 @@ void rms_norm(bf16 *restrict y, const bf16 *restrict x,
     sum_squares = aie::mac_square(sum_squares, x_vec);
     it_x += vector_size;
   }
-
-  it_x = const_cast<bf16 *>(x);
 
   mx_vec = sum_squares.template to_vector<float>();
   float sum = aie::reduce_add(mx_vec);
@@ -55,6 +54,18 @@ void rms_norm(bf16 *restrict y, const bf16 *restrict x,
       divrms * (threehalfs -
                 (x2 * divrms * divrms)); // 2nd iteration, this can be removed
   // bf16 divrms_bf16 = (bf16)divrms;
+  return divrms;
+}
+
+void rms_norm(bf16 *restrict y, const bf16 *restrict x,
+              const bf16 *restrict w) {
+  bf16 *it_y = const_cast<bf16 *>(y);
+  bf16 *it_x = const_cast<bf16 *>(x);
+  bf16 *it_w = const_cast<bf16 *>(w);
+
+  constexpr int vector_size = 16;
+  const int F = MODEL_DIM / vector_size;
+  const float divrms = rms_rsqrt(x);
 
   for (int i = 0; i < F; i++) {
     aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
@@ -138,6 +149,96 @@ void rms_norm_aie_hdr(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 void residual_add_aie(bf16 *restrict y, bf16 *restrict x_buf,
                       bf16 *restrict x) {
   residual_add(y, x_buf, x);
+}
+
+// ---- DECODE_BATCH > 1 -----------------------------------------------------
+// The rms core cannot hold two batches. One BATCH*MODEL_DIM bf16 buffer is
+// 32 KB at batch 8 against a ~54 KB L1 budget, so the raw batch and the
+// normalized batch cannot both be resident -- and the raw one has to survive,
+// because it is what the post-attention residual adds into.
+//
+// So the normalized batch is NEVER MATERIALIZED. rms_scale_row_aie records one
+// float per row (the 1/rms factor), and rms_chunk_aie regenerates whatever
+// slice of the normalized batch is being streamed out at that moment, for all
+// BATCH rows at once, into a small staging buffer. The big buffer stays raw
+// and doubles as the residual accumulator: x -> h -> layer output.
+//
+// The cost is that a slice is recomputed once per re-broadcast round rather
+// than once per token, which is a multiply pass over BATCH*MODEL_DIM per
+// round. It buys the batch: without it the core needs two 32 KB buffers.
+//
+// Layout convention, shared with the descriptors in xfeed_bd.py: the big
+// buffer is row-major [BATCH][MODEL_DIM]; the staging buffer is [BATCH][n],
+// which is exactly the (token, element) window one @xnorm chunk carries.
+
+/// scales[t] = 1 / sqrt(mean(x[t]^2) + eps) for row t of a [BATCH][MODEL_DIM].
+/// `_arm` is the per-token RTP gate operand, kept alive for the same reason
+/// rms_norm_aie keeps it: AIR emits the arm lock from the use.
+void rms_scale_row_aie(float *restrict scales, bf16 *restrict x, int t,
+                       int _arm) {
+  (void)_arm;
+  scales[t] = rms_rsqrt(x + t * MODEL_DIM);
+}
+
+/// One chunk of the normalized batch, for every row:
+///   y[t*n + i] = x[t*MODEL_DIM + c*n + i] * w[c*n + i] * scales[t]
+/// Call once per chunk per re-broadcast round; `y` is then put on @xnorm whole.
+static inline void rms_chunk(bf16 *restrict y, bf16 *restrict x,
+                             const bf16 *restrict w,
+                             const float *restrict scales, int batch, int c,
+                             int n) {
+  constexpr int vector_size = 16;
+  const bf16 *w_base = w + c * n;
+  for (int t = 0; t < batch; t++) {
+    const bf16 *it_x = x + t * MODEL_DIM + c * n;
+    const bf16 *it_w = w_base;
+    bf16 *it_y = y + t * n;
+    const float s = scales[t];
+    for (int i = 0; i < n / vector_size; i++) {
+      aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+      aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
+      aie::vector<float, vector_size> wx_vec = aie::mul(x_vec, w_vec);
+      aie::vector<bf16, vector_size> o_vec = aie::mul(wx_vec, s);
+      aie::store_v(it_y, o_vec);
+      it_x += vector_size;
+      it_w += vector_size;
+      it_y += vector_size;
+    }
+  }
+}
+
+void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                   float *restrict scales, int batch, int c, int n) {
+  rms_chunk(y, x, w, scales, batch, c, n);
+}
+
+// 2K-weight variants, matching rms_norm_lo_aie / rms_norm_hi_aie: one packet
+// channel carries two norm weights back to back.
+void rms_chunk_lo_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                      float *restrict scales, int batch, int c, int n) {
+  rms_chunk(y, x, w, scales, batch, c, n);
+}
+void rms_chunk_hi_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                      float *restrict scales, int batch, int c, int n) {
+  rms_chunk(y, x + 0, w + MODEL_DIM, scales, batch, c, n);
+}
+
+/// acc[t*MODEL_DIM + off + i] += x[t*n + i] -- one round of a projection's
+/// output added into row t of the residual accumulator. The projection egresses
+/// (round, token), so a whole round arrives as a [BATCH][n] staging buffer and
+/// lands at a fixed `off` inside every row.
+void residual_acc_row_aie(bf16 *restrict acc, bf16 *restrict x, int t, int off,
+                          int n) {
+  constexpr int vector_size = 16;
+  bf16 *it_a = acc + t * MODEL_DIM + off;
+  bf16 *it_x = x + t * n;
+  for (int i = 0; i < n / vector_size; i++) {
+    aie::vector<bf16, vector_size> a_vec = aie::load_v<vector_size>(it_a);
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+    aie::store_v(it_a, aie::add(a_vec, x_vec));
+    it_a += vector_size;
+    it_x += vector_size;
+  }
 }
 
 // MLIR-managed-lock decode (q4nx_decode_repro): pure-compute leaves that let

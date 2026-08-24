@@ -1152,6 +1152,66 @@ def _tile_for(*widths):
 RMS_TILE = _tile_for(K)  # rms in/out/weight
 ROPE_TILE = _tile_for(M, DQ_PADDED)  # qkv_l1 is the binding one
 GLU_TILE = _tile_for(GLU_SLICE)
+
+# ---- the rms core's batched residency -------------------------------------
+# The rms core is the ONE place a row loop is not enough, and it is worth
+# spelling out because the shape of the whole batched pass follows from it.
+#
+# Everything the core does is per row, so a row loop is the obvious answer. But
+# the core must hold ALL B rows of two different things at once -- the raw
+# batch (the residual stream: x, then h, then the layer output) and the
+# normalized batch (what the projection reads) -- and at batch 8 each of those
+# is BATCH*K bf16 = 32 KB against a budget of 54 KB. Two do not fit. Neither
+# can be dropped: the projection re-reads the normalized batch REFEED[p] times
+# per phase, and the raw one is what the post-attention output adds into.
+#
+# So the normalized batch is never materialized. rms_scale_row_aie keeps one
+# float per row and rms_chunk_aie regenerates whichever @xnorm chunk is being
+# sent, for all B rows, into a staging buffer the size of ONE chunk. The big
+# buffer stays raw and accumulates in place. That is ONE BATCH*K buffer for the
+# whole pass, and it is why the batched rms body looks nothing like the batch-1
+# one rather than being it with a loop around it.
+#
+# STG_W is the wider of the two things that staging buffer carries: one @xnorm
+# chunk out, or one projection round in (both [BATCH][w], token-major).
+STG_W = max(2 * COL_BLOCK, PAYLOAD)
+# ONE norm weight buffer, not all of them: the batched body allocates each
+# where it is first used and frees it after its last, which the batch-1 body
+# does not bother to do because at batch 1 it does not have to. 2K for the
+# Gemma sandwich (two norms packed per channel), K otherwise.
+_RMS_W_RESIDENT = 2 * K if N_NORMS >= 4 else K
+
+
+def _rms_l1_bytes(b):
+    """L1 the batched rms body holds at its peak, for a batch of b."""
+    return 2 * (b * K + b * STG_W + _RMS_W_RESIDENT) + 4 * b
+
+
+BATCH_MAX_RMS = max(
+    (b for b in range(1, 65) if _rms_l1_bytes(b) <= _L1_ROWTILE_BUDGET), default=1
+)
+if BATCH > 1 and N_NORMS >= 4:
+    # Gemma sandwich norm: h = x + post_attn_norm(o_proj). The norm is applied
+    # to the SUBLAYER OUTPUT, so the whole K-wide o-proj row has to be resident
+    # before the residual can be formed -- and that is the second BATCH*K
+    # buffer the batched rms body exists to avoid. Pre-norm models add the
+    # projection output in raw, one round at a time, which is what makes one
+    # buffer enough. Refuse rather than silently produce a design that cannot
+    # fit; the DFlash target (qwen3-4b) is pre-norm.
+    raise SystemExit(
+        f"DECODE_BATCH>1 with N_NORMS={N_NORMS} (sandwich norm) is not wired: "
+        "normalizing the sublayer output needs the whole projection row "
+        "resident, which does not fit beside the residual batch."
+    )
+if BATCH > BATCH_MAX_RMS:
+    raise SystemExit(
+        f"DECODE_BATCH={BATCH} exceeds the rms core's L1 ceiling of "
+        f"{BATCH_MAX_RMS} for {MODEL_NAME} ({_rms_l1_bytes(BATCH)} B of "
+        f"{_L1_ROWTILE_BUDGET} B): one BATCH*{K} residual buffer, a "
+        f"BATCH*{STG_W} staging buffer and {_RMS_W_RESIDENT} elements of norm "
+        "weight. Raising it means moving the @xnorm staging to L2, not tiling "
+        "the row loop -- the projection needs all B rows of a chunk at once."
+    )
 # The conservative global tile is kept as the default for anything that has to
 # pick one, and as the number the doc quotes.
 ROW_TILE = min(RMS_TILE, ROPE_TILE, GLU_TILE)
@@ -1296,12 +1356,28 @@ def build_module():
                 [16 + PAIR_ROWS * ROW_BLOCK * BATCH], bf16, memory_space=l1
             )
         rms_l1 = MemRefType.get([K], bf16, memory_space=l1)  # rms in/out/weight (2048)
+        if BATCH > 1:
+            # ---- the rms core's ONE batched buffer, and its two helpers ----
+            # rmsb: the residual stream for all B rows, [BATCH][K] row-major.
+            # It is raw X on the way in, h after the attention output is added,
+            # and the layer output after the MLP output is -- one buffer, three
+            # roles, which is what keeps a second BATCH*K allocation off the
+            # core (see the STG_W comment above the batch ceilings).
+            # rstg: [BATCH][STG_W], the only thing that ever leaves or arrives
+            # whole -- one @xnorm chunk out, one projection round in.
+            # rscl: one f32 per row, the 1/rms factor the chunk kernel replays.
+            rmsb_l1 = MemRefType.get([BATCH * K], bf16, memory_space=l1)
+            rstg_l1 = MemRefType.get([BATCH * STG_W], bf16, memory_space=l1)
+            rscl_l1 = MemRefType.get([BATCH], T.f32(), memory_space=l1)
         # Gemma 4-norm: two norm weights packed per channel (2K) so the rms tile
         # keeps <=4 packet ids per S2MM port (1 arbiter x 4 msels). lo/hi kernels
         # slice it. Only used when N_NORMS>=4.
         rms_w2k_l1 = MemRefType.get([2 * K], bf16, memory_space=l1)
-        glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
-        glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
+        # [up|gate] in, silu*up out. At BATCH>1 both hold ONE ROUND for every
+        # token -- [BATCH][GLU_SLICE] and [BATCH][GLU_HID] -- because that is
+        # how the projection egresses it. The 2-slot ring below doubles both.
+        glu_x_l1 = MemRefType.get([BATCH * GLU_SLICE], bf16, memory_space=l1)
+        glu_hid_l1 = MemRefType.get([BATCH * GLU_HID], bf16, memory_space=l1)
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
         # k(512), v(512) roped. tile_2_3.
         qkv_l1 = MemRefType.get([M], bf16, memory_space=l1)
@@ -1379,7 +1455,11 @@ def build_module():
         relay_l2 = MemRefType.get(
             [PAYLOAD_B], bf16, memory_space=l2
         )  # demux relay (stripped)
-        down_l2 = MemRefType.get([GLU_OUT], bf16, memory_space=l2)  # GLU out accumulate
+        # GLU out accumulate. Token-major at BATCH>1 ([BATCH][GLU_OUT]), which
+        # is what the chunk-major @xnorm re-broadcast below reads with a
+        # GLU_OUT token stride -- so the down phase sees the same layout the
+        # rms core's X does, and _feed_inX does not need a second shape.
+        down_l2 = MemRefType.get([BATCH * GLU_OUT], bf16, memory_space=l2)
         # relay memtile columns for the id-demux dests (free cols, not proj/X/MT).
         # GLU dest (gate-up) goes DIRECT to the GLU tile (no relay).
         RELAY_COLS = [3, 5, 4][:NDEST]
@@ -1448,6 +1528,35 @@ def build_module():
                 visibility="private",
             )
             rms_norm_hi_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+        if BATCH > 1:
+            # The batched rms core's three entry points. Row and chunk indices
+            # are i32 VALUES, not subviews: an extern C kernel takes a bare
+            # pointer, so `memref + i` is the kernel's own arithmetic and the
+            # FuncOp signature stays the whole buffer. Passing a
+            # memref.subview would mean declaring a strided type that is not
+            # the same type as the buffer, for no gain.
+            rms_scale_row_aie = FuncOp(
+                "rms_scale_row_aie",
+                ([rscl_l1, rmsb_l1, i32, i32], []),
+                visibility="private",
+            )
+            rms_scale_row_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+            # (y_chunk, x_batch, w, scales, batch, chunk, chunk_width)
+            rms_chunk_aie = FuncOp(
+                "rms_chunk_aie",
+                ([rstg_l1, rmsb_l1, rms_l1, rscl_l1, i32, i32, i32], []),
+                visibility="private",
+            )
+            rms_chunk_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+            # (acc_batch, round, row, offset_in_row, round_width)
+            residual_acc_row_aie = FuncOp(
+                "residual_acc_row_aie",
+                ([rmsb_l1, rstg_l1, i32, i32, i32], []),
+                visibility="private",
+            )
+            residual_acc_row_aie.attributes["link_with"] = StringAttr.get(
+                "rms_residual.o"
+            )
         # #4 faithful residual stream (reproducer rms_residual.o): residual_add_aie
         # (y = x_buf + x) for residual1 (input + o-proj-out) and residual2 (h + down-out).
         residual_add_aie = FuncOp(
@@ -1460,6 +1569,14 @@ def build_module():
             "glu_aie", ([glu_hid_l1, glu_x_l1, i32], []), visibility="private"
         )
         glu_aie.attributes["link_with"] = StringAttr.get("glu.o")
+        if BATCH > 1:
+            # (y_batch, x_batch, row, arm) -- one round, one token.
+            glu_row_aie = FuncOp(
+                "glu_row_aie",
+                ([glu_hid_l1, glu_x_l1, i32, i32], []),
+                visibility="private",
+            )
+            glu_row_aie.attributes["link_with"] = StringAttr.get("glu.o")
         # reference rope_compute(q,k,v, qkv, lut): rotate-half RoPE on Q,K (V copied).
         rope_compute = FuncOp(
             "rope_compute",
@@ -1851,18 +1968,22 @@ def build_module():
 
                 # X slot for this wave (see HIDDEN_TAPS). Without taps both are
                 # the literal 0 and the chain is in-place exactly as before.
+                # A slot is one whole BLOCK of hidden states, so it strides by
+                # BATCH*K -- the block is what a layer consumes and produces.
+                _X_SLOT = BATCH * K
+
                 def _x_in():
                     """Slot layer a_iv READS: its input hidden state."""
-                    return _lb(K) if HIDDEN_TAPS else 0
+                    return _lb(_X_SLOT) if HIDDEN_TAPS else 0
 
                 def _x_out():
                     """Slot layer a_iv WRITES: its output, the next layer's input."""
-                    return _lo(_lb(K), K) if HIDDEN_TAPS else 0
+                    return _lo(_lb(_X_SLOT), _X_SLOT) if HIDDEN_TAPS else 0
 
                 # The LM head reads the LAST slot -- what layer UNI_DEC-1 wrote.
                 # Its own wave index is >= UNI_DEC, so this is a constant, not a
                 # function of a_iv.
-                _x_final = (UNI_DEC * K) if HIDDEN_TAPS else 0
+                _x_final = (UNI_DEC * _X_SLOT) if HIDDEN_TAPS else 0
 
                 blk = BLOCK_BF16
                 wstep = NCY * blk  # 10240 = one fan get
@@ -2140,8 +2261,15 @@ def build_module():
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state)
                             # unless HIDDEN_TAPS, which reads slot a_iv instead.
+                            # BATCH*K: B token embeddings, token-major. The rms
+                            # core takes the block in one get and keeps it as
+                            # the residual stream for the whole layer.
                             ChannelPut(
-                                "rmsX", X, offsets=[_x_in()], sizes=[K], strides=[1]
+                                "rmsX",
+                                X,
+                                offsets=[_x_in()],
+                                sizes=[BATCH * K],
+                                strides=[1],
                             )
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
@@ -2453,7 +2581,7 @@ def build_module():
                                 _out_bo,
                                 indices=[idx(0)],
                                 offsets=[_out_base],
-                                sizes=[LAYER_RNDS * PAYLOAD],
+                                sizes=[BATCH * LAYER_RNDS * PAYLOAD],
                                 strides=[1],
                             )
                             yield_([])
@@ -3659,16 +3787,36 @@ def build_module():
                                         gx,
                                         indices=[idx(0), idx(GLU_DEST)],
                                         offsets=[idx(0)],
-                                        sizes=[idx(GLU_SLICE)],
+                                        sizes=[idx(BATCH * GLU_SLICE)],
                                         strides=[idx(1)],
                                     )
                                     gh = AllocOp(glu_hid_l1, [], [])
-                                    CallOp(glu_aie, [gh, gx, _arm])
+                                    if BATCH == 1:
+                                        CallOp(glu_aie, [gh, gx, _arm])
+                                    else:
+                                        # A round is [BATCH][GLU_SLICE]: the GLU
+                                        # is per token, so this is a row loop
+                                        # and nothing else. Unrolled -- the
+                                        # trip count is the batch, and the ring
+                                        # above depends on the body being one
+                                        # get / one put.
+                                        for _t in range(BATCH):
+                                            CallOp(
+                                                glu_row_aie,
+                                                [
+                                                    gh,
+                                                    gx,
+                                                    arith.ConstantOp(
+                                                        IntegerAttr.get(i32, _t), None
+                                                    ).result,
+                                                    _arm,
+                                                ],
+                                            )
                                     ChannelPut(
                                         "gluOut",
                                         gh,
                                         offsets=[idx(0)],
-                                        sizes=[idx(GLU_HID)],
+                                        sizes=[idx(BATCH * GLU_HID)],
                                         strides=[idx(1)],
                                     )
                                     DeallocOp(gx)
@@ -3719,13 +3867,27 @@ def build_module():
                         )
                         for _s in for_(idx(0), idx(NGLU), idx(1)):
                             soff = arith.muli(_s, idx(GLU_HID))
-                            ChannelGet(
-                                "gluOut",
-                                db,
-                                offsets=[soff],
-                                sizes=[idx(GLU_HID)],
-                                strides=[idx(1)],
-                            )
+                            if BATCH == 1:
+                                ChannelGet(
+                                    "gluOut",
+                                    db,
+                                    offsets=[soff],
+                                    sizes=[idx(GLU_HID)],
+                                    strides=[idx(1)],
+                                )
+                            else:
+                                # (round, token) in, (token, round) out: slice s
+                                # of token t belongs at t*GLU_OUT + s*GLU_HID.
+                                # The transpose is free here because the memtile
+                                # is the one place a strided landing costs
+                                # nothing -- the same trick as the QKV drain.
+                                ChannelGet(
+                                    "gluOut",
+                                    db,
+                                    offsets=[idx(0), soff],
+                                    sizes=[idx(BATCH), idx(GLU_HID)],
+                                    strides=[idx(GLU_OUT), idx(1)],
+                                )
                             yield_([])
                         # re-broadcast the resident 8192 into the convergent X feed.
                         refeed(
@@ -4348,6 +4510,15 @@ def build_module():
                             DeallocOp(a_xnl)
                             DeallocOp(a_v)
 
+                        # SINGLE-mode when batched. LM_HEAD is refused at
+                        # BATCH>1, so the vocab arm is dead -- and it is not
+                        # merely dead, it is ILLEGAL: its @xnorm put is the
+                        # memtile-shaped chunk-major descriptor, whose
+                        # 512-element wrap does not fit a compute tile's 8-bit
+                        # wrap field (see batch_wire.py's AIE2p limits).
+                        if BATCH > 1:
+                            _rms_decode_batched(_arm)
+                            return
                         # FUSED: rms is always DUAL-mode (index_switch on arm) so the
                         # device (mem_2_2 BDs) is IDENTICAL in the decode and lm_head
                         # builds -> one shared CDO. arm=1 -> decode residual; arm=0 ->
@@ -4372,6 +4543,142 @@ def build_module():
                             case_body_builder=lambda op, i, cv: _rms_lm_case(),
                             default_body_builder=lambda op: _rms_decode(),
                         )
+
+                    def _rms_decode_batched(_arm):
+                        """The decode pass for B tokens, on ONE BATCH*K buffer.
+
+                        Not the batch-1 body with a row loop around it, and the
+                        reason is L1: the core would need the raw batch AND the
+                        normalized batch resident at the same time, which is
+                        2 x 40 KB on qwen3-4b against a 54 KB budget. So:
+
+                          rmsb   raw X -> h -> layer output. Never copied,
+                                 never duplicated; the projections' outputs are
+                                 added into it a round at a time.
+                          rstg   the only thing that moves whole -- one @xnorm
+                                 chunk out, or one projection round in.
+                          rscl   one f32 per row, so the normalized batch can
+                                 be REGENERATED chunk by chunk instead of
+                                 stored.
+
+                        The cost is that a chunk is recomputed once per
+                        re-broadcast round rather than once per token. That is
+                        a multiply pass over BATCH*K per round on a core whose
+                        alternative is not fitting at all; whether it lands on
+                        the critical path is a measurement nobody has taken.
+                        """
+                        assert RMS_DEST >= 0, (
+                            "DECODE_BATCH>1 needs the FULL4 residual path "
+                            "(RMS_DEST >= 0); the debug configs feed no o-proj"
+                        )
+                        NCHUNK = K // (2 * COL_BLOCK)
+                        assert K % (2 * COL_BLOCK) == 0
+
+                        def _i32(v):
+                            return arith.ConstantOp(
+                                IntegerAttr.get(i32, v), None
+                            ).result
+
+                        xb = AllocOp(rmsb_l1, [], [])
+                        ChannelGet("rmsX", xb, indices=[idx(0)])
+                        stg = AllocOp(rstg_l1, [], [])
+                        scl = AllocOp(rscl_l1, [], [])
+
+                        def _emit_norm(wbuf, nrefeed):
+                            """Re-broadcast rmsnorm(rmsb) nrefeed times, by chunk.
+
+                            The scale pass is per row and runs once; the chunk
+                            loop is what the X memtile actually gets, one
+                            [BATCH][2*COL_BLOCK] window per get, which is the
+                            layout xfeed_bd.py re-blocks for the mmul.
+                            """
+                            for t in range(BATCH):
+                                CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
+                            for _r in for_(idx(0), idx(nrefeed), idx(1)):
+                                for _c in for_(idx(0), idx(NCHUNK), idx(1)):
+                                    CallOp(
+                                        rms_chunk_aie,
+                                        [
+                                            stg,
+                                            xb,
+                                            wbuf,
+                                            scl,
+                                            _i32(BATCH),
+                                            arith.index_cast(i32, _c),
+                                            _i32(2 * COL_BLOCK),
+                                        ],
+                                    )
+                                    # 1-D and contiguous on purpose: a compute
+                                    # tile's wrap field is 8 bits, so the
+                                    # 3-D chunk-major form the MEMTILE
+                                    # producers use would not be legal here.
+                                    ChannelPut(
+                                        "xnorm",
+                                        stg,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(BATCH * 2 * COL_BLOCK)],
+                                        strides=[idx(1)],
+                                    )
+                                    yield_([])
+                                yield_([])
+
+                        def _accumulate(nrnds):
+                            """Add a projection's output into the residual.
+
+                            The projection egresses (round, token): round r is
+                            a PAYLOAD-wide band of every token's row. So a
+                            round lands whole in rstg and goes into rmsb at a
+                            fixed offset inside each row -- no transpose, and
+                            no K-wide landing buffer.
+                            """
+                            for _r in for_(idx(0), idx(nrnds), idx(1)):
+                                ChannelGet(
+                                    "outY",
+                                    stg,
+                                    indices=[idx(0), idx(RMS_DEST)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(BATCH * PAYLOAD)],
+                                    strides=[idx(1)],
+                                )
+                                _off = arith.muli(
+                                    arith.index_cast(i32, _r), _i32(PAYLOAD)
+                                )
+                                for t in range(BATCH):
+                                    CallOp(
+                                        residual_acc_row_aie,
+                                        [xb, stg, _i32(t), _off, _i32(PAYLOAD)],
+                                    )
+                                yield_([])
+
+                        # ph0: input layernorm -> the QKV X feed.
+                        w = AllocOp(rms_l1, [], [])
+                        ChannelGet("rmsW", w, indices=[idx(0)])
+                        _emit_norm(w, XN_REFEED)
+                        if POST_RMS:
+                            # Swap in the post-attention weight BEFORE the first
+                            # o-proj get, not after: rmsW2 packet-muxes onto the
+                            # same S2MM as the o-proj id, and a packet whose BD
+                            # is not armed yet blocks the port behind it.
+                            DeallocOp(w)
+                            w = AllocOp(rms_l1, [], [])
+                            ChannelGet("rmsW2", w, indices=[idx(0)])
+                        # residual1: h = x + o-proj, in place.
+                        _accumulate(OPROJ_RNDS)
+                        # ph2: pre-MLP layernorm of h -> the gate-up X feed.
+                        _emit_norm(w, REFEED[GATEUP_PHASE])
+                        DeallocOp(w)
+                        # residual2: layer output = h + down, in place.
+                        _accumulate(DOWN_RNDS)
+                        ChannelPut(
+                            "layerOut",
+                            xb,
+                            offsets=[idx(0)],
+                            sizes=[idx(BATCH * K)],
+                            strides=[idx(1)],
+                        )
+                        DeallocOp(scl)
+                        DeallocOp(stg)
+                        DeallocOp(xb)
 
                     def _rms_decode_body(_arm):
                         if N_NORMS >= 4:
