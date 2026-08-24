@@ -377,6 +377,93 @@ def relu(x):
     return maximum(expr, 0.0 if leaves[0].dtype.is_float else 0)
 
 
+# ---------------------------------------------------------------------------
+# Comparison and select
+# ---------------------------------------------------------------------------
+
+# Float comparisons are the *ordered* predicates (OGE, not UGE): ordered means
+# the result is false when either operand is NaN, which is what C's `>=` does
+# and what the hand-written vector_select kernel asked for by name.
+_COMPARISONS = {"lt", "le", "gt", "ge", "eq", "ne"}
+
+
+def _comparison(name, key, a, b):
+    for operand, pos in ((a, "first"), (b, "second")):
+        if isinstance(operand, bool) or not isinstance(
+            operand, (Buffer, BufferExpr, int, float)
+        ):
+            raise TypeError(
+                f"air.api.ops.{name} expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+    a, b = BufferExpr.coerce(a), BufferExpr.coerce(b)
+    if not a.leaves() and not b.leaves():
+        raise ValueError(
+            f"air.api.ops.{name} needs at least one buffer operand; both "
+            "arguments are scalars, which the emitter cannot shape"
+        )
+    return BufferExpr("compare", op=key, args=(a, b))
+
+
+def equal(a, b):
+    """Elementwise ==. Lowers to arith.cmpf OEQ (float) / arith.cmpi eq (int).
+
+    Spelled as a function rather than ``==`` on purpose -- see the note on
+    ``BufferExpr.__eq__`` in ``_value.py``. The ordering comparisons (``<``,
+    ``<=``, ``>``, ``>=``) *are* available as operators.
+    """
+    return _comparison("equal", "eq", a, b)
+
+
+def not_equal(a, b):
+    """Elementwise !=. Lowers to arith.cmpf ONE (float) / arith.cmpi ne (int)."""
+    return _comparison("not_equal", "ne", a, b)
+
+
+def select(cond, a, b):
+    """Elementwise ``cond ? a : b``. Lowers to arith.select.
+
+    ``cond`` must be a comparison -- ``x[:] >= y[:]``, or ``ops.equal(x, y)`` --
+    because that is the only thing in this expression language whose result type
+    is i1. The predicate is emitted as an arith.cmpf/cmpi feeding an
+    arith.select, which is the pair the hand-written kernel spells out.
+
+    Note that ``select(a >= b, a, b)`` is ``maximum(a, b)`` and lowers to two
+    ops where ``ops.maximum`` lowers to one. Both spellings exist because the
+    vector_select and vector_max examples exist to compare them; prefer
+    ``ops.maximum`` unless the point is the select itself.
+    """
+    if isinstance(cond, bool):
+        raise TypeError(
+            "air.api.ops.select got a plain bool as its condition. `==` and "
+            "`!=` on buffer expressions are Python identity comparisons, not "
+            "elementwise ones, and evaluate to a bool before select ever sees "
+            "them -- use air.api.ops.equal / not_equal for those, or one of "
+            "the ordering operators <, <=, >, >= which do build a predicate"
+        )
+    if not isinstance(cond, BufferExpr) or cond.kind != "compare":
+        raise TypeError(
+            "air.api.ops.select expects a comparison as its condition (for "
+            f"example x[:] >= y[:], or ops.equal(x[:], y[:])), got "
+            f"{type(cond).__name__}"
+        )
+    for operand, pos in ((a, "second"), (b, "third")):
+        if isinstance(operand, bool) or not isinstance(
+            operand, (Buffer, BufferExpr, int, float)
+        ):
+            raise TypeError(
+                f"air.api.ops.select expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+    a, b = BufferExpr.coerce(a), BufferExpr.coerce(b)
+    if not a.leaves() and not b.leaves() and not cond.leaves():
+        raise ValueError(
+            "air.api.ops.select needs at least one buffer operand; every "
+            "argument is a scalar, which the emitter cannot shape"
+        )
+    return BufferExpr("select", op="select", args=(cond, a, b))
+
+
 def _unary(name, x):
     if not isinstance(x, (Buffer, BufferExpr)):
         raise TypeError(
