@@ -35,7 +35,7 @@ from air.dialects.memref import load as memref_load, store as memref_store
 from air.dialects.scf import for_ as range_, yield_
 from air.dialects.vector import broadcast, transfer_read, transfer_write
 
-from .types import require_signless
+from .types import require_computable, require_signless
 
 __all__ = ["emit_elementwise"]
 
@@ -165,6 +165,18 @@ def emit_elementwise(dst, expr):
     # how an accumulator is zeroed before a K loop. It needs no leaves: the
     # destination supplies the shape.
     _check_region(expr, dst, dst.dtype)
+
+    # A tile the core has no instructions for -- f16 -- follows the same rule
+    # as an unsigned one: it can be *copied* elementwise, because a copy emits a
+    # read and a write and no arith op, and the bits arrive unchanged. Measured
+    # on npu1: an f16 copy is exact on 2048 of 2048 elements, and an f16 add is
+    # wrong on 2048 of 2048. Only the second is refused.
+    if not dst.dtype.computes and expr.kind != "buffer":
+        require_computable(
+            dst.dtype,
+            "an elementwise operator or broadcast scalar (a plain copy, "
+            "dst[:] = src[:], is)",
+        )
 
     if dst.dtype.is_unsigned:
         # An unsigned tile can be *copied* elementwise but not computed on. The

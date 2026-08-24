@@ -55,7 +55,7 @@ class ExternKernel:
                 'should link against, e.g. object="mv.o". It becomes the '
                 "link_with attribute on both the declaration and the herd."
             )
-        from .types import DType, require_signless
+        from .types import DType, require_computable, require_signless
 
         for s in scalars:
             if not isinstance(s, DType):
@@ -71,6 +71,7 @@ class ExternKernel:
             # be. Caught at the declaration rather than at the first call, which
             # is where the constant would actually be built.
             require_signless(s, "an air.extern scalar argument")
+            require_computable(s, "an air.extern scalar argument")
         self.name = name
         self.object = object
         self.scalars = list(scalars)
