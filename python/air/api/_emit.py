@@ -462,10 +462,7 @@ def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
                 "that is (air.alloc(..., vector=W) with shape[-1] % W == 0), "
                 "or write a * b + c, which has a scalar form and rounds twice"
             )
-        a, b, c = (
-            _eval(arg, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
-            for arg in node.args
-        )
+        a, b, c = (recur(arg) for arg in node.args)
         return _result(vector_fma(a, b, c))
 
     if node.kind == "binary":
