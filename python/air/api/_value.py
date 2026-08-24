@@ -357,21 +357,59 @@ class BufferExpr:
     once and emits a single vectorised loop.
     """
 
-    __slots__ = ("kind", "op", "args", "buffer", "scalar")
+    __slots__ = ("kind", "op", "args", "buffer", "scalar", "dtype")
 
-    def __init__(self, kind, op=None, args=(), buffer=None, scalar=None):
+    def __init__(self, kind, op=None, args=(), buffer=None, scalar=None, dtype=None):
         # "buffer" | "scalar" | "unary" | "binary" evaluate to the element
         # type; "compare" evaluates to i1 and only ops.select consumes it;
-        # "select" takes (compare, value, value) back to the element type.
+        # "select" takes (compare, value, value) back to the element type;
+        # "cast" evaluates to a *different* element type from its operand,
+        # which is the only node for which that is true.
         self.kind = kind
         self.op = op
         self.args = tuple(args)
         self.buffer = buffer
         self.scalar = scalar
+        # Set on a "cast" node only: the element type its operand is converted
+        # *to*. Every other node adopts the type of the region it sits in, which
+        # is what ``element_dtype`` below reports.
+        self.dtype = dtype
 
     @staticmethod
     def leaf(buffer):
         return BufferExpr("buffer", buffer=buffer)
+
+    def element_dtype(self):
+        """The element type this subtree evaluates to, or ``None`` if unknown.
+
+        ``None`` means "no buffer decided it" -- a subtree of nothing but
+        scalars, as in the fill ``acc[:] = 0.0``. Such a subtree adopts whatever
+        type surrounds it, so the caller supplies one rather than reading it
+        here.
+
+        A ``cast`` node is where the answer stops depending on its operand: it
+        reports its own target type and does not recurse. That is what makes an
+        expression able to hold more than one element type at once -- everything
+        below a cast is evaluated in the source type, everything above it in the
+        target type.
+        """
+        if self.kind == "buffer":
+            return self.buffer.dtype
+        if self.kind == "cast":
+            return self.dtype
+        if self.kind == "scalar":
+            return None
+        if self.kind == "select":
+            # Skip the predicate: a select evaluates to the type of the two
+            # values it chooses between, and asking the comparison would report
+            # the type of *its* operands. Those agree today, because one region
+            # covers the whole tree -- but only by construction, not by rule.
+            return self.args[1].element_dtype() or self.args[2].element_dtype()
+        for arg in self.args:
+            found = arg.element_dtype()
+            if found is not None:
+                return found
+        return None
 
     @staticmethod
     def coerce(value):
@@ -527,6 +565,8 @@ class BufferExpr:
             return repr(self.buffer)
         if self.kind == "scalar":
             return repr(self.scalar)
+        if self.kind == "cast":
+            return f"cast({self.args[0]!r}, {self.dtype!r})"
         if self.kind == "unary":
             return f"{self.op}({self.args[0]!r})"
         if self.kind == "select":

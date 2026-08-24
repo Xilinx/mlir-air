@@ -1,122 +1,124 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
+"""Elementwise f32 -> i32 conversion primitive, on air.api.
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+    c[:] = air.api.ops.cast(a[:], air.api.i32)
+
+The predecessor built this as a hand-rolled vector loop -- an ``scf.for`` over
+the tile in steps of VECTOR_SIZE, two ``memref.subview``s per trip, a
+``vector.transfer_read`` with an explicit identity permutation map and a padding
+constant, ``arith.fptosi``, and a ``transfer_write``. Here the emitter builds
+that loop, and the subviews are not needed at all: air.api reads at an offset.
+
+The emitted arithmetic is unchanged: a bare ``arith.fptosi`` from
+``vector<VECTOR_SIZExf32>`` to ``vector<VECTOR_SIZExi32>``.
+
+**This is the first example where the two L1 tiles have different element
+types.** Every air.api expression until now was written in one type, and the
+emitter carried a single element type, arith table and vector type down the
+whole tree. ``ops.cast`` is the node where those change: everything below it is
+read and computed in the source type, and only the conversion lands in the
+destination's. That distinction is visible, and load-bearing:
+``cast(a[:] * 2.0, i32)`` doubles in f32 and converts once, while
+``cast(a[:], i32) * 2`` converts first and doubles in i32.
+
+Which ``arith`` op a cast becomes follows from the two types, and each was run
+on npu1 against an exact numpy reference before being allowed -- vectorised and
+scalar, because compiling is a weaker claim than computing. Two results of that
+sweep are worth knowing:
+
+* ``fptosi`` and ``sitofp`` between f32 and i32, the pair this example uses,
+  are **exact on both routes**, so the scalar fallback is safe here. That is not
+  automatic: ``ops.tanh`` has no working scalar form at all, and its example has
+  to refuse both routes into the fallback up front.
+* Converting *to* a narrower float rounds toward negative infinity rather than
+  to nearest, so a bf16 destination differs from numpy by up to one ULP. That
+  is a property of the hardware and not of this op -- a plain
+  ``c[:] = a[:] + b[:]`` on bf16 buffers differs the same way.
+
+``ops.cast`` refuses narrowing between two integer types, which is why there is
+no ``vector_trunci`` sibling: measured on npu1, the vectorised ``arith.trunci``
+saturates while the scalar one wraps, and which one the emitter picks depends on
+the tile size.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's. The predecessor asked for a [1, NUM_TILES] herd
+  and then wrote the outer loop itself, computing ``_l_ivx + _ty * tile_n``
+  through a hand-built AffineMap. Here the herd's iteration space is the whole
+  tile grid and air.api strip-mines it onto NUM_TILES cores.
+"""
+
+import argparse
 
 import numpy as np
 
-np.random.seed(42)
+from air import api as air
+from air.api.types import dtype_of
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
 def build_module(n, tile_n, np_dtype_in, np_dtype_out, vector_size=16):
-    a_size = [n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    xrt_dtype_out = type_mapper(np_dtype_out)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
-    assert tile_n % vector_size == 0
-    VECTOR_SIZE = vector_size
-    index_type = IndexType.get()
+    assert n % (tile_n * NUM_TILES) == 0
+    # Both element types are honoured rather than advertised and ignored: the
+    # signature takes two, so passing np.int8 for the output has to either work
+    # or say why not. `ops.cast` itself rejects the pairs that do not compute,
+    # so there is no second copy of that rule here.
+    #
+    # Note that air.api.f16 is not usable on AIE2 whichever way it is reached:
+    # the backend reads f16 data as bf16, so even a plain `c[:] = a[:] + b[:]`
+    # on f16 buffers returns garbage. That is a property of the element type,
+    # not of the conversion.
+    types = []
+    for np_dtype in (np_dtype_in, np_dtype_out):
+        dt = dtype_of(np_dtype)
+        if dt is None:
+            raise ValueError(
+                f"unsupported element type {np_dtype!r}; air.api knows "
+                f"float32, float16, bfloat16, int8/16/32 and uint8/16/32"
+            )
+        types.append(dt)
+    dt_in, dt_out = types
 
-    l3memrefInTy = MemRefType.get(a_size, xrt_dtype_in)
-    l3memrefOutTy = MemRefType.get(a_size, xrt_dtype_out)
-    l1MemrefInTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-    l1MemrefOutTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_out,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    A = air.tensor([n], dt_in)
+    C = air.tensor([n], dt_out)
 
-    @FuncOp.from_py_func(l3memrefInTy, l3memrefOutTy)
-    def vector_fptosi(arg0, arg1):
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg1],
-        )
-        def herd_body(_tx, _ty, _sx, _sy, _l3_a, _l3_c):
-            l1_a_data = AllocOp(l1MemrefInTy, [], [])
-            l1_out_data = AllocOp(l1MemrefOutTy, [], [])
+    with air.launch(name="vector_fptosi") as launch:
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+        @launch.body
+        def _():
+            # The iteration space is every tile; shape= pins the core count to
+            # what the predecessor asked for, and the DSL strip-mines the rest
+            # into a loop on each core.
+            with air.herd(
+                [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[offset],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-                c0 = ConstantOp(index_type, 0)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_a_vec = subview(l1_a_data.result, [j], [VECTOR_SIZE], [1])
-                    sub_c_vec = subview(l1_out_data.result, [j], [VECTOR_SIZE], [1])
-                    pad = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    v_a = transfer_read(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                        sub_a_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        pad,
-                        [True],
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not an element offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_n
+                    a = air.alloc(
+                        [tile_n], dt_in, scope=h.private(), vector=vector_size
                     )
-                    v_c = arith.FPToSIOp(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_out), v_a
+                    c = air.alloc(
+                        [tile_n], dt_out, scope=h.private(), vector=vector_size
                     )
-                    transfer_write(
-                        None,
-                        v_c,
-                        sub_c_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        [True],
-                    )
-                    yield_([])
 
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[offset],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
+                    air.ops.load(a, A[i0 : i0 + tile_n])
 
-                yield_([])
+                    c[:] = air.ops.cast(a[:], dt_out)
+
+                    air.ops.store(c, C[i0 : i0 + tile_n])
+
+    return launch
 
 
 if __name__ == "__main__":
@@ -154,12 +156,20 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.n, args.tile_n, INPUT_DATATYPE, OUTPUT_DATATYPE, args.vector_size
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -190,6 +200,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="vector_fptosi",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -205,6 +216,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         backend.compile(mlir_module)

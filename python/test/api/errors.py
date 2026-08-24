@@ -16,7 +16,7 @@ from itertools import product
 
 from air import api as air
 from air.api import ops  # noqa: F401
-from air.api.types import bf16, f32, i32, ui8
+from air.api.types import bf16, f16, f32, i16, i32, ui8
 
 
 def expect(exc_types, label):
@@ -1412,5 +1412,137 @@ def _():
         a = air.alloc([64], ui8, scope=h.private())
         b = air.alloc([64], ui8, scope=h.private())
         a[:] = a[:] ^ b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_narrowing_int
+# Refused on evidence, not on principle: measured on npu1, the vectorised
+# arith.trunci saturates while the scalar one wraps, and the emitter chooses
+# between them from the tile size. Accepting this would make the same source
+# compute two different things depending on a tile shape.
+# CHECK: NotImplementedError: air.api.ops.cast will not narrow air.api.i32 to air.api.i16
+@expect(NotImplementedError, "cast_narrowing_int")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i16, scope=h.private())
+        c[:] = ops.cast(a[:], i16)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_same_width_float
+# bf16 and f16 are both two bytes, so the conversion is neither a widening nor
+# a narrowing and arith has no op for it.
+# CHECK: NotImplementedError: air.api.ops.cast cannot convert air.api.bf16 to air.api.f16 directly
+@expect(NotImplementedError, "cast_same_width_float")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], bf16, scope=h.private())
+        c = air.alloc([16, 16], f16, scope=h.private())
+        c[:] = ops.cast(a[:], f16)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_unsigned
+# A conversion is an arith op like any other, so the signless rule that governs
+# the operators governs it too.
+# CHECK: NotImplementedError: air.api.ops.cast is not supported for air.api.ui8
+@expect(NotImplementedError, "cast_unsigned")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], ui8, scope=h.private())
+        c = air.alloc([16, 16], i32, scope=h.private())
+        c[:] = ops.cast(a[:], i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_of_a_bare_scalar
+# There is no buffer under it, so there is no source type to convert from --
+# and the constant would have been built in the target type anyway.
+# CHECK: TypeError: air.api.ops.cast needs an expression containing at least one buffer
+@expect(TypeError, "cast_of_a_bare_scalar")
+def _():
+    ops.cast(1.0, i32)
+
+
+# CHECK-LABEL: TEST: cast_to_a_non_dtype
+# The second argument is an element type, not a string or a numpy dtype. Named
+# here rather than left to fail later inside the emitter.
+# CHECK: TypeError: air.api.ops.cast needs an air.api element type as its second argument
+@expect(TypeError, "cast_to_a_non_dtype")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], f32, scope=h.private())
+        ops.cast(a[:], "i32")
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dtype_mismatch_without_a_cast_still_raises
+# ops.cast is the *only* way to change element type in an expression; a bare
+# mismatch is still the error it always was, rather than an implicit
+# conversion. The message names the region's type, which without a cast in the
+# tree is the destination's.
+# CHECK: ValueError: dtype mismatch in elementwise assignment: destination is air.api.i32 but operand is air.api.f32
+@expect(ValueError, "dtype_mismatch_without_a_cast_still_raises")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], f32, scope=h.private())
+        c = air.alloc([16, 16], i32, scope=h.private())
+        c[:] = a[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dtype_mismatch_below_a_cast
+# The leaves under a cast are checked against the cast's *source* type, not
+# against the destination of the assignment. Here the cast converts from f32,
+# so an i32 buffer sitting beside it in the same region is the mismatch.
+# CHECK: ValueError: dtype mismatch in elementwise assignment: the cast converts from air.api.f32 but operand is air.api.i32
+@expect(ValueError, "dtype_mismatch_below_a_cast")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], f32, scope=h.private())
+        b = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i32, scope=h.private())
+        c[:] = ops.cast(a[:] + b[:], i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_of_a_comparison
+# A comparison evaluates to i1, not to an element type, so there is nothing to
+# convert from -- and a conversion op applied to a vector<Wxi1> would fail the
+# verifier well downstream of the mistake. This is the one interaction between
+# ops.select and ops.cast that needs naming.
+# CHECK: TypeError: air.api.ops.cast got a comparison, which is a predicate rather than a value
+@expect(TypeError, "cast_of_a_comparison")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        c = air.alloc([64], i32, scope=h.private())
+        c[:] = ops.cast(a[:] > b[:], i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_of_a_predicate_only_expression
+# ops.select allows every buffer to sit in the *predicate*, choosing between
+# two scalars -- so the expression has buffers but no element type of its own,
+# and takes one from whatever surrounds it. That is a different situation from
+# a bare scalar and gets a different message, because the fix is different:
+# cast the operands rather than the select.
+# CHECK: TypeError: air.api.ops.cast cannot convert this expression: its buffers appear only in a comparison
+@expect(TypeError, "cast_of_a_predicate_only_expression")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        c = air.alloc([64], i32, scope=h.private())
+        c[:] = ops.cast(ops.select(a[:] > 0.0, 1, 2), i32)
 
     _trace(body)
