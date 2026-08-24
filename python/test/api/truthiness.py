@@ -110,3 +110,59 @@ def _show(x, y):
 
 
 trace(_show)
+
+
+# CHECK-LABEL: TEST: advice_names_only_surface_that_exists
+# The redirection is built from what the build has, not hardcoded. `&` and
+# ops.select arrive in separate changes, and an error naming surface the caller
+# does not have is worse than the bug it replaces -- while hedging every
+# suggestion with "if available" would make the useful case vague.
+#
+# All four states are *constructed* rather than observed. An earlier version
+# only printed the states the build happened to be in and skipped the rest,
+# which meant its coverage silently shrank as the surface landed: once
+# ops.select merged, two of the four lines stopped being produced at all and
+# the test failed for a reason that had nothing to do with the guard.
+# CHECK: neither: (no advice)
+# CHECK: & only: Use the elementwise operators `&`, `|`, `^` for logic.
+# CHECK: both: Use the elementwise operators `&`, `|`, `^` for logic or air.api.ops.select(cond, a, b) to choose between values.
+# CHECK: select only: Use air.api.ops.select(cond, a, b) to choose between values.
+print("\nTEST: advice_names_only_surface_that_exists")
+
+from air.api import ops as _ops
+from air.api._value import BufferExpr as _Expr
+
+
+def _advice():
+    try:
+        bool(_Expr("scalar", scalar=1))
+    except TypeError as e:
+        return str(e).split("overloaded.")[1].strip() or "(no advice)"
+
+
+_real_and = vars(_Expr).get("__and__")
+_real_select = getattr(_ops, "select", None)
+
+
+def _surface(has_and, has_select):
+    """Put the build into one of the four states, whichever it started in."""
+    if has_and:
+        _Expr.__and__ = _real_and or (lambda self, o: None)
+    elif "__and__" in vars(_Expr):
+        del _Expr.__and__
+    if has_select:
+        _ops.select = _real_select or (lambda *a: None)
+    elif hasattr(_ops, "select"):
+        del _ops.select
+
+
+for _label, _a, _s in (
+    ("neither", False, False),
+    ("& only", True, False),
+    ("both", True, True),
+    ("select only", False, True),
+):
+    _surface(_a, _s)
+    print(f"{_label}: {_advice()}")
+
+_surface(_real_and is not None, _real_select is not None)

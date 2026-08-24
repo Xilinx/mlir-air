@@ -469,12 +469,27 @@ class BufferExpr:
         # short-circuit. Without this, `a[:] and b[:]` takes the default
         # object truthiness (always True), returns b[:], and emits nothing --
         # a kernel that silently computes half of what was written.
+        #
+        # The redirection is built from what this build actually has rather
+        # than hardcoded. `&` and ops.select are landing in separate changes,
+        # and an error that names surface the caller does not have is worse
+        # than the silent bug it replaces -- while hedging every suggestion
+        # with "if available" would make the useful case vague. Asking is
+        # exact in both.
+        suggestions = []
+        if hasattr(type(self), "__and__"):
+            suggestions.append("the elementwise operators `&`, `|`, `^` for logic")
+        from . import ops
+
+        if hasattr(ops, "select"):
+            suggestions.append(
+                "air.api.ops.select(cond, a, b) to choose between values"
+            )
+        advice = f" Use {' or '.join(suggestions)}." if suggestions else ""
         raise TypeError(
             "cannot use a buffer expression as a truth value: `and`, `or` and "
             "`not` would silently return one operand and emit no kernel code, "
-            "because Python does not allow them to be overloaded. Use the "
-            "elementwise operators `&`, `|`, `^` for logic, or "
-            "air.api.ops.select(cond, a, b) to choose between values."
+            "because Python does not allow them to be overloaded." + advice
         )
 
     def leaves(self):
