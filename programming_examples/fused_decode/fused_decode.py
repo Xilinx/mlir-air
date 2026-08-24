@@ -1082,6 +1082,20 @@ BATCH_MAX_PROJ = 25
 BATCH_MAX_ATTN_QTILE = 8
 if BATCH < 1:
     raise SystemExit(f"DECODE_BATCH must be >= 1, got {BATCH}")
+if BATCH > 1 and LM_HEAD:
+    # The lm-head herd runs its OWN _gemv/_emit with different pairing from the
+    # decode path -- it emits per tile at indices=[gcx, ty] rather than through
+    # the lead/partner _role select. Batching it is a separate piece of work,
+    # not a copy of the decode wiring, and getting it wrong would produce
+    # wrong LOGITS rather than a build failure. Refuse the combination until it
+    # is done; DFlash verify needs it (it scores all BATCH tokens), so this is
+    # a real remaining task, not a permanent restriction.
+    raise SystemExit(
+        "DECODE_BATCH>1 with LM_HEAD=1 is not wired yet: the lm-head "
+        "projection still runs the batch-1 GEMV and would emit logits for one "
+        "token. Build the decode layers batched (LM_HEAD=0) or the lm head at "
+        "batch 1."
+    )
 if BATCH > BATCH_MAX_PROJ:
     raise SystemExit(
         f"DECODE_BATCH={BATCH} exceeds the proj core's L1 ceiling of "
@@ -1201,6 +1215,35 @@ def build_module():
         ypair_l1 = MemRefType.get(
             [16 + PAIR_ROWS * ROW_BLOCK], bf16, memory_space=l1  # 80 shared
         )
+        # ---- DECODE_BATCH proj-core buffers (emitted only when batched) ----
+        # Three of the GEMV's four buffers scale with the batch; the weight
+        # block does not, which is the entire point. The fourth buffer is new
+        # and is the one that costs: q4k_mm_block unpacks the 4-bit block into
+        # bf16 before aie::mmul can see it, and that scratch is 16 KB whatever
+        # the batch is. It is also what pays for itself -- the unpack cost then
+        # divides by BATCH instead of being redone per token.
+        #
+        # rcache_l1 has NO batched counterpart, deliberately. The reduce cache
+        # exists for the GEMV's +min factorisation (min[r,g] * sum-of-x over
+        # group g); the batched path materialises w = q*scale + min elementwise
+        # because aie::mmul needs a real B operand, so there is nothing to
+        # cache. 608 B of rc traded for the 16 KB scratch.
+        if BATCH > 1:
+            xblk_mm_l1 = MemRefType.get(
+                [BATCH * COL_BLOCK], bf16, memory_space=l1
+            )  # TILE-BLOCKED, not [BATCH][COL_BLOCK] -- see pack_A in q4k_mm_gate.py
+            yacc_mm_l1 = MemRefType.get([BATCH * ROW_BLOCK], f32, memory_space=l1)
+            wscr_mm_l1 = MemRefType.get(
+                [ROW_BLOCK * COL_BLOCK], bf16, memory_space=l1  # 8192 bf16 = 16 KB
+            )
+            # Token-major, pair-interleaved: token t, pair role i at
+            # (t*PAIR_ROWS + i)*ROW_BLOCK. That is what proj_qmm_mm_flush_row
+            # writes with tok_stride = PAIR_ROWS, and it makes the egress a
+            # straight widen of the existing contiguous put rather than a
+            # scatter.
+            ypair_mm_l1 = MemRefType.get(
+                [16 + PAIR_ROWS * ROW_BLOCK * BATCH], bf16, memory_space=l1
+            )
         rms_l1 = MemRefType.get([K], bf16, memory_space=l1)  # rms in/out/weight (2048)
         # Gemma 4-norm: two norm weights packed per channel (2K) so the rms tile
         # keeps <=4 packet ids per S2MM port (1 arbiter x 4 msels). lo/hi kernels
@@ -1293,6 +1336,31 @@ def build_module():
             "proj_qmm_flush_row", ([yacc_l1, ypair_l1, i32], []), visibility="private"
         )
         flush_row.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+        if BATCH > 1:
+            # Batched projection: same three-entry-point split as the GEMV
+            # (zero / accumulate / flush), for the same alloc-sinking reason --
+            # one call that did all three would keep the accumulator alive
+            # across the j loop's channel gets. Behind -DPROJ_MM_BATCH in
+            # proj_qmm.cc; gated against the GEMV on device by proj_qmm_gate.py.
+            mm_zero = FuncOp(
+                "proj_qmm_mm_zero", ([yacc_mm_l1, i32], []), visibility="private"
+            )
+            mm_zero.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+            mm_acc = FuncOp(
+                "proj_qmm_mm_acc",
+                ([xblk_mm_l1, wblk_l1, yacc_mm_l1, wscr_mm_l1], []),
+                visibility="private",
+            )
+            mm_acc.attributes["link_with"] = StringAttr.get("proj_qmm.o")
+            # (y_acc, y_out, pair_role, tok_stride). tok_stride is a VALUE, not
+            # a template parameter, so one kernel serves both pair roles and
+            # any future non-paired layout.
+            mm_flush = FuncOp(
+                "proj_qmm_mm_flush_row",
+                ([yacc_mm_l1, ypair_mm_l1, i32, i32], []),
+                visibility="private",
+            )
+            mm_flush.attributes["link_with"] = StringAttr.get("proj_qmm.o")
         # input-layernorm producer kernel (reproducer rms_norm_aie_hdr, lock-free).
         rms_norm_aie = FuncOp(
             "rms_norm_aie", ([rms_l1, rms_l1, rms_l1, i32], []), visibility="private"
@@ -3451,9 +3519,49 @@ def build_module():
                                     yield_([])
                                 return a_acc
 
+                            def _mm(J2v):
+                                # See _core_blk's _mm for why the scratch is
+                                # hoisted and why there is no reduce cache. The
+                                # only difference here is that there is no pair
+                                # to share with, so tok_stride is 1 and the
+                                # token blocks are simply contiguous.
+                                J2x2 = arith.muli(J2v, c2)
+                                a_acc = AllocOp(yacc_mm_l1, [], [])
+                                a_ws = AllocOp(wscr_mm_l1, [], [])
+                                CallOp(mm_zero, [a_acc, _arm])
+                                for _j in for_(idx(0), J2x2, idx(1)):
+                                    a_x = AllocOp(xblk_mm_l1, [], [])
+                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                    a_w = AllocOp(wblk_l1, [], [])
+                                    ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                                    CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
+                                    DeallocOp(a_x)
+                                    DeallocOp(a_w)
+                                    yield_([])
+                                DeallocOp(a_ws)
+                                return a_acc
+
+                            _proj = _mm if BATCH > 1 else _gemv
+                            # PAIR_ROWS is 1 on this path, so tok_stride is 1
+                            # and token t lands at 16 + t*ROW_BLOCK. Guarded for
+                            # the same reason as the paired core's: an unused
+                            # constant is still an op in the batch-1 diff.
+                            _tokstr = (
+                                arith.ConstantOp(
+                                    IntegerAttr.get(i32, PAIR_ROWS), None
+                                ).result
+                                if BATCH > 1
+                                else None
+                            )
+
                             def _emit(a_acc, destv):
-                                yb = AllocOp(ypair_l1, [], [])
-                                CallOp(flush_row, [a_acc, yb, c0i])
+                                yb = AllocOp(
+                                    ypair_mm_l1 if BATCH > 1 else ypair_l1, [], []
+                                )
+                                if BATCH > 1:
+                                    CallOp(mm_flush, [a_acc, yb, c0i, _tokstr])
+                                else:
+                                    CallOp(flush_row, [a_acc, yb, c0i])
                                 # dest = which egress consumer this round feeds.
                                 # The compiler allocates that destination's packet
                                 # id and emits the header store at offsets[0]; the
@@ -3463,7 +3571,7 @@ def build_module():
                                     yb,
                                     indices=[gcx, ty],
                                     offsets=[idx(14)],
-                                    sizes=[idx(HDR + PAIR_PAY)],
+                                    sizes=[idx(HDR + PAIR_PAY * BATCH)],
                                     strides=[idx(1)],
                                     dest=destv,
                                 )
@@ -3497,7 +3605,7 @@ def build_module():
                                 pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
-                                        _emit(_gemv(J2v), pktv)
+                                        _emit(_proj(J2v), pktv)
                                     yield_([])  # v1
                                 yield_([])  # ph
 
@@ -3582,6 +3690,71 @@ def build_module():
                                     yield_([])
                                 return a_acc
 
+                            def _mm(J2v, a_rc=None, fill=None):
+                                """_gemv's batched twin: BATCH tokens per pass.
+
+                                Same j-step structure, same single get site for
+                                the same BD-count reason. Three differences, all
+                                of them the point of the swap:
+
+                                  - the X chunk is BATCH*COL_BLOCK and arrives
+                                    TILE-BLOCKED (aie::mmul's A order), not as
+                                    a plain [BATCH][COL_BLOCK] row-major buffer;
+                                  - the unpacked-weight scratch is allocated
+                                    ONCE outside the j loop, not per step. It is
+                                    scratch, dead across steps, and 16 KB is far
+                                    too much to ping-pong;
+                                  - a_rc / fill are accepted and IGNORED. The
+                                    reduce cache is machinery for the GEMV's
+                                    +min factorisation, which this path does not
+                                    use; taking the arguments keeps one call
+                                    shape at every site instead of branching the
+                                    callers too.
+                                """
+                                del a_rc, fill
+                                J2x2 = arith.muli(J2v, c2)
+                                a_acc = AllocOp(yacc_mm_l1, [], [])
+                                a_ws = AllocOp(wscr_mm_l1, [], [])
+                                CallOp(mm_zero, [a_acc, _arm])
+                                for _j in for_(idx(0), J2x2, idx(1)):
+                                    a_x = AllocOp(xblk_mm_l1, [], [])
+                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                    a_w = AllocOp(wblk_l1, [], [])
+                                    ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                                    CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
+                                    DeallocOp(a_x)
+                                    DeallocOp(a_w)
+                                    yield_([])
+                                DeallocOp(a_ws)
+                                return a_acc
+
+                            _proj = _mm if BATCH > 1 else _gemv
+
+                            # tok_stride for the batched flush: token t, pair
+                            # role i land at (t*PAIR_ROWS + i)*ROW_BLOCK, which
+                            # is token-major with the pair interleaved -- so the
+                            # egress stays ONE contiguous put and only its size
+                            # changes. Unused at BATCH 1.
+                            # Guarded, not unconditional: an unused constant
+                            # is still an op, and on llama-3.2-1b (PAIR_ROWS 2)
+                            # it survived CSE and broke the batch-1 no-op diff.
+                            # qwen3-4b hid it -- PAIR_ROWS is 1 there, so it
+                            # folded into the existing c1i and the IR matched by
+                            # luck. Both models have to be checked, always.
+                            _tokstr = (
+                                arith.ConstantOp(
+                                    IntegerAttr.get(i32, PAIR_ROWS), None
+                                ).result
+                                if BATCH > 1
+                                else None
+                            )
+
+                            def _flush(acc, buf, role):
+                                if BATCH > 1:
+                                    CallOp(mm_flush, [acc, buf, role, _tokstr])
+                                else:
+                                    CallOp(flush_row, [acc, buf, role])
+
                             def _emit(a_acc, yb, pktv):
                                 # Nested exact-IV select: column by tx==0, pair by ty<2,
                                 # role by ty==const (even row = lead). Every guard is a
@@ -3597,19 +3770,23 @@ def build_module():
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        CallOp(flush_row, [a_acc, bufs[yb], c0i])
+                                        _flush(a_acc, bufs[yb], c0i)
+                                        # WIDEN, do not repeat: one packet per
+                                        # round, BATCH times longer. N_ROUNDS,
+                                        # the BD count and the instruction
+                                        # stream all stay put.
                                         ChannelPut(
                                             "outA",
                                             bufs[yb],
                                             indices=[gcx, idx(pp_c)],
                                             offsets=[idx(14)],
-                                            sizes=[idx(HDR + PAIR_PAY)],
+                                            sizes=[idx(HDR + PAIR_PAY * BATCH)],
                                             strides=[idx(1)],
                                             dest=pktv,
                                         )
                                         yield_([])
                                     with InsertionPoint(_if.elseRegion.blocks[0]):
-                                        CallOp(flush_row, [a_acc, bufs[yb], c1i])
+                                        _flush(a_acc, bufs[yb], c1i)
                                         yield_([])
 
                                 def _pairs(pA, pB):
@@ -3705,7 +3882,7 @@ def build_module():
                                                 else (_fill0 if _e == 0 else _c0i)
                                             )
                                         )
-                                        _emit(_gemv(J2v, a_rc, _f), _e, pktv)
+                                        _emit(_proj(J2v, a_rc, _f), _e, pktv)
                                     yield_([])  # v1
                                 if PROJ_RC_CACHE:
                                     DeallocOp(a_rc)
@@ -3729,7 +3906,8 @@ def build_module():
                             # non-paired: each tile allocs its own y buffer locally.
                             _ops = [_arm_proj]
                         else:
-                            bufs = [AllocOp(ypair_l1, [], []) for _ in range(8)]
+                            _ypair_t = ypair_mm_l1 if BATCH > 1 else ypair_l1
+                            bufs = [AllocOp(_ypair_t, [], []) for _ in range(8)]
                             _ops = [b.result for b in bufs] + [_arm_proj]
                         blk_h = herd(
                             name=f"proj_blk{blk}",

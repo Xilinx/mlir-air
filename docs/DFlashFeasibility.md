@@ -97,6 +97,7 @@ hold at 8 with room to spare.
 | `bench_attn.py` | attention's static cost and the corrected roofline |
 | `bench_attn_batch.py` | **what a batch can hoist**, piece by piece |
 | `check_kernels_inert.py` | **the inertness gate** — every shipping kernel vs `HEAD` |
+| `xfeed_bd.py` | the X feed's tile-blocking BD, checked against `pack_A` |
 | `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
 | `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
 | `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
@@ -159,6 +160,7 @@ python3 bench_attn.py --model QWEN3_4B --layers 36     # ~4 min
 python3 bench_attn_batch.py                            # ~8 min; what a batch
 python3 bench_attn_batch.py --model QWEN3_4B --layers 36  # ~8 min; can hoist
 python3 check_kernels_inert.py                         # ~1 min; THE gate
+python3 xfeed_bd.py                                    # seconds; the X-feed BD
 python3 dflash_blocksize.py                            # seconds; the block size
 python3 dflash_blocksize.py --attn-hoistable 1503      # with a perfect hoist
 python3 dflash_blocksize.py --overlap                  # the optimistic bound
@@ -202,9 +204,15 @@ touch.
 step 2 has the list. Two things that are easy to miss, neither a capacity
 question:
 
-- `Xt` has to arrive **tile-blocked**, not as a plain `[BATCH][KCOL]` buffer.
-  `pack_A` in `q4k_mm_gate.py` is the exact order — done in numpy there, and
-  owed a strided memtile BD in the engine.
+- ~~`Xt` has to arrive **tile-blocked**, and is owed a strided memtile BD.~~
+  **Derived and checked** — `xfeed_bd.py`. At block 8 it is
+  `sizes=[32,8,8] strides=[8,512,1] offsets=[chunk*32,0,0]`, verified
+  elementwise against `pack_A` itself rather than against a restatement of the
+  derivation. Two traps it closes: the token stride is `X_CHUNKS*COL_BLOCK`,
+  not `KCOL`, and AIR's offsets follow **`memref.subview`** — the address is
+  `base + Σ offsets[d]*strides[d]`, so a flat chunk offset would be multiplied
+  by `strides[0]` and read the wrong activations while transferring exactly the
+  right *number* of them.
 - The flush has to **de-tile**: `aie::mmul` leaves the accumulator in C tile
   order, so one token's 32 rows are four 8-float runs 64 floats apart.
   `proj_qmm_mm_flush_row` does it; the egress BD has to agree with it.
@@ -1467,8 +1475,17 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
      `proj_qmm_mm_zero` / `_acc` / `_flush_row` in `proj_qmm.cc`, behind
      `-DPROJ_MM_BATCH`, so a build that does not ask for it is unchanged.
      Same three-entry-point split as the GEMV, for the same alloc-sinking
-     reason. Compared against the GEMV on device in section 5d. Builder wiring
-     still to do.
+     reason. Compared against the GEMV on device in section 5d at batch 8 and
+     16. **Builder wiring DONE**: both proj cores — `_core_blk` (paired,
+     `PAIR_ROWS==2`, llama) and `_core_blk_np` (non-paired, `PAIR_ROWS==1`,
+     gemma and **qwen3-4b, the DFlash target**) — select the batched kernels at
+     `DECODE_BATCH>1`. At batch 8 on qwen3-4b the emitted IR contains no
+     batch-1 projection call at all **[measured]**, and at batch 1 it is
+     byte-identical to `HEAD` on both models.
+
+     Wiring only one of the two cores would have looked right and done
+     nothing: the paired core is the one the code reads as "the" proj core, and
+     it is the one the DFlash target does *not* use.
 
      Two things the analysis had not surfaced, both found while writing it:
      **the reduce cache goes away entirely** (`rc`, `fill`, `proj_qmm_rc_arm`
