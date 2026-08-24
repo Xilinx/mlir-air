@@ -1328,3 +1328,58 @@ def _():
 @expect(NotImplementedError, "unsigned_extern_scalar")
 def _():
     air.extern("k", object="k.o", scalars=[ui8])
+
+
+# CHECK-LABEL: TEST: select_on_a_bool
+# The trap this message exists for. `==` and `!=` are NOT overloaded on buffer
+# expressions -- overloading __eq__ would make every expression unhashable and
+# would change what `expr == expr` means for ordinary Python -- so `a[:] ==
+# b[:]` is an identity comparison that evaluates to a plain bool long before
+# select is called. Refusing it by name is the only way that difference does not
+# pass silently as `select(False, ...)`.
+# CHECK: TypeError: air.api.ops.select got a plain bool as its condition.
+@expect(TypeError, "select_on_a_bool")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        ops.select(a[:] == b[:], a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: select_on_a_value
+# A value expression is not a predicate. Its result type is the element type,
+# not i1, so arith.select would fail to verify well downstream of the mistake.
+# CHECK: TypeError: air.api.ops.select expects a comparison as its condition
+@expect(TypeError, "select_on_a_value")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        ops.select(a[:] + b[:], a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: comparison_of_two_scalars
+# A comparison between two scalars has no shape for the emitter to give it, and
+# it is a Python-level constant the caller should have folded themselves.
+# CHECK: ValueError: air.api.ops.equal needs at least one buffer operand
+@expect(ValueError, "comparison_of_two_scalars")
+def _():
+    ops.equal(1.0, 2.0)
+
+
+# CHECK-LABEL: TEST: unsigned_select
+# Comparisons and select go through arith like every other operator, so an
+# unsigned buffer is refused for the same reason it is refused for `+`:
+# arith.cmpi takes signless operands.
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_select")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        a[:] = ops.select(a[:] >= 1, a[:], 1)
+
+    _trace(body)

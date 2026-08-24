@@ -50,6 +50,29 @@ _FLOAT_UNARY_OPS = {
     "tanh": math_dialect.tanh,
 }
 
+# Comparison predicates. The float side uses the *ordered* forms: ordered means
+# false when either operand is NaN, which is C's `>=` and what the hand-written
+# vector_select kernel named (CmpFPredicate.OGE). The integer side uses the
+# signed forms -- air.api's integer dtypes are signless-or-signed, and an
+# unsigned buffer never reaches here (see require_signless below).
+_CMP_F = {
+    "lt": arith.CmpFPredicate.OLT,
+    "le": arith.CmpFPredicate.OLE,
+    "gt": arith.CmpFPredicate.OGT,
+    "ge": arith.CmpFPredicate.OGE,
+    "eq": arith.CmpFPredicate.OEQ,
+    "ne": arith.CmpFPredicate.ONE,
+}
+
+_CMP_I = {
+    "lt": arith.CmpIPredicate.slt,
+    "le": arith.CmpIPredicate.sle,
+    "gt": arith.CmpIPredicate.sgt,
+    "ge": arith.CmpIPredicate.sge,
+    "eq": arith.CmpIPredicate.eq,
+    "ne": arith.CmpIPredicate.ne,
+}
+
 _INT_OPS = {
     "add": arith.AddIOp,
     "sub": arith.SubIOp,
@@ -148,7 +171,15 @@ def _emit_vector(dst, expr, ops, width):
 
     def body(ivs):
         value = _eval(
-            expr, ivs, ops, ety, vectorized=True, vec_ty=vec_ty, minor=minor, pad=zero
+            expr,
+            ivs,
+            ops,
+            ety,
+            vectorized=True,
+            vec_ty=vec_ty,
+            minor=minor,
+            pad=zero,
+            reads={},
         )
         transfer_write(None, value, dst.value, ivs, minor, [True])
 
@@ -160,7 +191,7 @@ def _emit_scalar(dst, expr, ops):
     bounds = [(0, extent, 1) for extent in dst.shape]
 
     def body(ivs):
-        value = _eval(expr, ivs, ops, ety, vectorized=False)
+        value = _eval(expr, ivs, ops, ety, vectorized=False, reads={})
         memref_store(value, dst.value, ivs)
 
     _nest(bounds, body)
@@ -184,13 +215,29 @@ def _result(v):
     return v.result if hasattr(v, "result") else v
 
 
-def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
+def _eval(
+    node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None, reads=None
+):
     if node.kind == "buffer":
+        # One read per buffer per loop body, not one per mention. A buffer that
+        # appears more than once in the tree -- `select(a >= b, a, b)` names
+        # both twice, and gelu names x four times -- is the same value at every
+        # mention: nothing writes to L1 between them inside a single iteration.
+        # Without this the emitter issues a redundant transfer_read for each
+        # extra mention, which is what the hand-written kernels avoid by binding
+        # the read to a local once.
+        key = id(node.buffer)
+        if reads is not None and key in reads:
+            return reads[key]
         if vectorized:
-            return _result(
+            value = _result(
                 transfer_read(vec_ty, node.buffer.value, ivs, minor, pad, [True])
             )
-        return _result(memref_load(node.buffer.value, ivs))
+        else:
+            value = _result(memref_load(node.buffer.value, ivs))
+        if reads is not None:
+            reads[key] = value
+        return value
 
     if node.kind == "scalar":
         value = node.scalar
@@ -241,7 +288,37 @@ def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
                 f"{'integer' if ops is _INT_OPS else 'float'} buffers"
             )
         return _result(
-            fn(_eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad))
+            fn(
+                _eval(
+                    node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads
+                )
+            )
+        )
+
+    if node.kind == "compare":
+        # Yields i1 (vector<Wxi1> when vectorised), not the element type. Only
+        # a "select" node consumes this, which ops.select enforces at trace
+        # time -- nothing else in _eval can receive one.
+        table = _CMP_I if ops is _INT_OPS else _CMP_F
+        predicate = table.get(node.op)
+        if predicate is None:
+            raise NotImplementedError(
+                f"comparison '{node.op}' is not supported for dtype "
+                f"{'integer' if ops is _INT_OPS else 'float'}"
+            )
+        lhs = _eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
+        rhs = _eval(node.args[1], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
+        build = arith.cmpi if ops is _INT_OPS else arith.cmpf
+        return _result(build(predicate, lhs, rhs))
+
+    if node.kind == "select":
+        cond, a, b = node.args
+        return _result(
+            arith.select(
+                _eval(cond, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads),
+                _eval(a, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads),
+                _eval(b, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads),
+            )
         )
 
     if node.kind == "binary":
@@ -251,8 +328,8 @@ def _eval(node, ivs, ops, ety, vectorized, vec_ty=None, minor=None, pad=None):
                 f"elementwise operator '{node.op}' is not supported for dtype "
                 f"{'float' if ops is _FLOAT_OPS else 'integer'}"
             )
-        lhs = _eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad)
-        rhs = _eval(node.args[1], ivs, ops, ety, vectorized, vec_ty, minor, pad)
+        lhs = _eval(node.args[0], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
+        rhs = _eval(node.args[1], ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
         return _result(op(lhs, rhs))
 
     raise AssertionError(f"unknown expression node kind {node.kind!r}")

@@ -334,7 +334,10 @@ class BufferExpr:
     __slots__ = ("kind", "op", "args", "buffer", "scalar")
 
     def __init__(self, kind, op=None, args=(), buffer=None, scalar=None):
-        self.kind = kind  # "buffer" | "scalar" | "unary" | "binary"
+        # "buffer" | "scalar" | "unary" | "binary" evaluate to the element
+        # type; "compare" evaluates to i1 and only ops.select consumes it;
+        # "select" takes (compare, value, value) back to the element type.
+        self.kind = kind
         self.op = op
         self.args = tuple(args)
         self.buffer = buffer
@@ -405,6 +408,34 @@ class BufferExpr:
     def __neg__(self):
         return BufferExpr("scalar", scalar=0) - self
 
+    # Comparisons build a *predicate* node, not a value node. Its result type is
+    # i1 (vector<Wxi1> when vectorised), not the element type every other node
+    # yields, so the only thing that can consume one is air.api.ops.select --
+    # which is why there is no operator spelling for select itself.
+    def _compare(self, other, op, reverse=False):
+        other = BufferExpr.coerce(other)
+        args = (other, self) if reverse else (self, other)
+        return BufferExpr("compare", op=op, args=args)
+
+    def __lt__(self, o):
+        return self._compare(o, "lt")
+
+    def __le__(self, o):
+        return self._compare(o, "le")
+
+    def __gt__(self, o):
+        return self._compare(o, "gt")
+
+    def __ge__(self, o):
+        return self._compare(o, "ge")
+
+    # __eq__ and __ne__ are deliberately NOT overloaded. Defining __eq__ sets
+    # __hash__ to None, making every expression unhashable, and it changes what
+    # `expr == expr` means for ordinary Python code that has nothing to do with
+    # kernels. Equality comparisons are spelled air.api.ops.equal / not_equal
+    # instead; ops.select rejects the plain bool that `a[:] == b[:]` produces,
+    # naming those, so the difference cannot pass silently.
+
     def leaves(self):
         """All buffer leaves, in traversal order."""
         if self.kind == "buffer":
@@ -421,4 +452,7 @@ class BufferExpr:
             return repr(self.scalar)
         if self.kind == "unary":
             return f"{self.op}({self.args[0]!r})"
+        if self.kind == "select":
+            c, a, b = self.args
+            return f"select({c!r}, {a!r}, {b!r})"
         return f"({self.args[0]!r} {self.op} {self.args[1]!r})"
