@@ -114,7 +114,9 @@ def check(verbose=True):
         )
 
     print("SELF-CHECK PASS" if not bad else f"SELF-CHECK FAIL ({bad})")
-    return 0 if bad else 1
+    # Inverted since this was written: it printed PASS and exited 1, so anything
+    # gating on the exit code saw a failing check that read as passing.
+    return 1 if bad else 0
 
 
 def cost(P):
