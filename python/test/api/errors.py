@@ -1383,3 +1383,34 @@ def _():
         a[:] = ops.select(a[:] >= 1, a[:], 1)
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: bitwise_on_a_float_buffer
+# The bitwise operators are the DSL's first integer-only ones. MLIR has
+# arith.andi and no floating-point counterpart, so this cannot be coerced --
+# and the message says which operator and why rather than the generic
+# "not supported for dtype float", because & on a float buffer is usually a
+# dtype mistake upstream rather than a wrong choice of operator.
+# CHECK: NotImplementedError: the bitwise operator 'and' is integer-only
+@expect(NotImplementedError, "bitwise_on_a_float_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        a[:] = a[:] & b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: bitwise_on_an_unsigned_buffer
+# Unsigned is refused earlier and for a different reason: arith takes signless
+# operands, so no operator at all reaches the emitter for a ui8 buffer.
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+@expect(NotImplementedError, "bitwise_on_an_unsigned_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        b = air.alloc([64], ui8, scope=h.private())
+        a[:] = a[:] ^ b[:]
+
+    _trace(body)

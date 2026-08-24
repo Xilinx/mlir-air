@@ -80,7 +80,16 @@ _INT_OPS = {
     "div": arith.DivSIOp,
     "max": arith.MaxSIOp,
     "min": arith.MinSIOp,
+    # Bitwise. Integer only -- there is no arith.andf, so these deliberately
+    # have no _FLOAT_OPS counterpart and _eval names the dtype when a float
+    # buffer reaches one.
+    "and": arith.AndIOp,
+    "or": arith.OrIOp,
+    "xor": arith.XOrIOp,
 }
+
+# Named so the failure can say *why*, not just "not supported for dtype float".
+_BITWISE = ("and", "or", "xor")
 
 
 def emit_elementwise(dst, expr):
@@ -324,6 +333,12 @@ def _eval(
     if node.kind == "binary":
         op = ops.get(node.op)
         if op is None:
+            if node.op in _BITWISE and ops is _FLOAT_OPS:
+                raise NotImplementedError(
+                    f"the bitwise operator '{node.op}' is integer-only: MLIR "
+                    f"has arith.{node.op}i but no floating-point counterpart, "
+                    f"so it cannot be applied to a {ety} buffer"
+                )
             raise NotImplementedError(
                 f"elementwise operator '{node.op}' is not supported for dtype "
                 f"{'float' if ops is _FLOAT_OPS else 'integer'}"
