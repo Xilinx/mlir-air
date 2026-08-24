@@ -13,15 +13,14 @@ tree) or **[estimated]** (derived from those). No untagged numbers.
 **DFlash is still worth building. The block size is 4-8, not 16, and the
 speedup is ~1.6-2.8x, not 4.9x.**
 
-**Build state, in one line: the batch-8 engine RUNS on device, end to end, and
-the remaining work is numeric.** A batch-8 llama-3.2-1b dispatch completes all
-16 decode layers **[measured]**; the deadlocks are gone. What is left is two
-places where the answers are wrong, both localised (see "Next step"): the MLP
-half of the layer, and the last token's V. The first half of the layer — the
-rms core, the X feed, the batched projection, both egress gathers, the id-demux,
-the QKV transpose, rope, attention and the o-projection — agrees with a batch-1
-dispatch to **2.0% rms**, which is what the GEMV-to-mmul kernel swap costs on
-its own **[measured]**.
+**Build state, in one line: the batch-8 engine RUNS on device and its layer
+output matches a batch-1 dispatch to 0.67% rms — closer than the kernel swap
+alone allows.** A batch-8 llama-3.2-1b dispatch completes all 16 decode layers
+**[measured]**; the deadlocks are gone; every stage of the layer has been
+compared against batch 1 and agrees. **One fault is left**, and it is a narrow
+one: the last token's V, 8 elements missing out of every 64 on the last egress
+round. See "Next step" for the stage table, the signature and what is already
+ruled out.
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -250,45 +249,80 @@ a batch-1 dispatch:
 | stage | what it covers | batch 8 token 0 vs batch 1 |
 |---|---|---|
 | `ACC_STOP=1` | the layer-out drain and the in-place residual buffer | **0.00 — bit-exact** |
-| rope's K and V | rms core, X feed, batched mmul, both gathers, id-demux, QKV transpose, rope | **1.1% / 1.2% rms** |
+| rope's K and V | rms core, X feed, batched mmul, both gathers, id-demux, QKV transpose, rope | **1.2% rms** |
 | `ACC_STOP=2` | + attention, the o gather, the o-projection, residual1 | **2.0% rms** |
-| full layer | + ph2 norm, gate-up, GLU, down, residual2 | **101% — WRONG** |
+| full layer | + ph2 norm, gate-up, GLU, down, residual2 | **0.67% rms** |
 
-The 1-2% is the kernel swap and nothing else: `proj_qmm_gate.py --nblk 4
---batch 8` puts the GEMV and the batched mmul **1.65% rms** apart on device off
-the same weights, and says the batched one is the closer of the two to exact
-fp32 (bias 0.03% against the GEMV's 0.73%).
+That is the whole layer, and it is right. The floor is the kernel swap and
+nothing else: `proj_qmm_gate.py --nblk 4 --batch 8` puts the GEMV and the
+batched mmul **1.65% rms** apart on device off the same weights, and says the
+batched one is the closer of the two to exact fp32 (bias 0.03% against the
+GEMV's 0.73%). The layer output lands *below* that floor.
 
-So: **the MLP half of the layer is wrong, and the first half is right.**
+**One fault is left**, and the KV readback found it rather than the layer
+output. Every token in this gate gets the same X and the same rope LUT, and
+neither K nor V depends on position beyond the LUT, so all 8 tokens' K and all
+8 tokens' V have to be bit-identical to each other — they come out of ONE mmul
+over one A operand. All 8 K are. **Token 7's V is not:** 93% rms against token
+0, with 32 of its 256 elements per group still at the cache's initial zero, in
+runs at `[24..31]`, `[88..95]`, `[152..159]`, `[216..223]` — 8 missing every 64.
 
-And a second, separate fault the KV readback found on its own. Every token in
-this gate gets the same X and the same rope LUT, and K and V do not depend on
-position beyond the LUT, so all 8 tokens' K and all 8 tokens' V have to be
-bit-identical to each other — they come out of ONE mmul over one A operand.
-All 8 K are. **Token 7's V is not**: 93% rms against token 0, with 32 of its
-256 elements still at the cache's initial zero. The LAST token's V, and only
-its V. K takes the same path one BD earlier in the same chain.
+Read that signature as a coordinate. 64 is `PAIR_PAY`, one emitter's per-token
+block, laid `[lead's 32 rows | partner's 32]`; 24..31 is the lead's last 8 rows.
+`proj_qmm_mm_flush_row` writes those from `y_acc[(3*RA+z)*64 + rr*8]`, which at
+batch 8 (`RA` 1, `z` 0, `rr` 7) is `y_acc[248:256]` — **the last 8 floats of the
+accumulator, for the last token, and only on the last egress round**. K is the
+round before and is fine, so it is not the accumulator being short. What is
+ruled out so far: the append descriptor (`kvappend_bd.py`, and the region maths
+checks out), rope's DMA (single-buffered K and V BDs in one MM2S chain, correct
+lock protocol), the emitter's egress BD (`offset = 14 len = 514` on a 528
+buffer, correct), and `ypair_l1`'s size (emitted as 528, correctly batched).
 
 #### A gate that measures floating point instead of the engine
 
-Worth reading before trusting any number above. `batch_equiv.py` built its
-weight BO from real q4k blocks — `w = q*scale + min` — but drew `min`
-independently of `scale`. In a real block `min` is the block minimum, so `w` is
-CENTRED on zero; drawn independently it is a small perturbation on a mean of
-`7.5*scale`, and every dot product against a zero-mean activation becomes a sum
-of 2048 terms of magnitude ~55 cancelling to a result of magnitude ~2.
+Worth reading before trusting any number above, and the reason this took as
+long as it did. `batch_equiv.py` had two ill-conditioned fills, one after the
+other, and each produced a confident wrong answer.
 
-A 1.65% difference between two kernels then lands as **20%** in K and V,
-compounds through each projection, and reaches the layer output as **772x**.
-Two days of that looked exactly like a batching fault: a near-constant additive
-offset on V, a clean 1.5x on the o-projection, an unbounded blow-up at the end.
-Setting `min = -7.5*scale` collapsed all of it to the 1-2% above and left the
-one real fault standing.
+**`min` drawn independently of `scale`.** In a real q4k block `min` is the block
+minimum, so `w = q*scale + min` is CENTRED on zero; drawn independently it is a
+small perturbation on a mean of `7.5*scale`, and every dot product against a
+zero-mean activation becomes a sum of 2048 terms of magnitude ~55 cancelling to
+a result of magnitude ~2. The 1.65% kernel difference then landed as **20%** in
+K and V, compounded through each projection, and reached the layer output as
+**772x** — as a near-constant additive offset on V, a clean 1.5x on the
+o-projection, and an unbounded blow-up at the end. It looked exactly like a
+batching fault.
+
+**A gate-up output outside silu's LUT.** `getActivationBf16` is a 64-bin linear
+approximation over about `[-8, 8)` with a truncating out-of-range policy. With
+the weight scale as first written, the gate-up output had an rms of 3.7 and
+roughly 5% of 8192 elements per token fell outside — so which bin a value landed
+in flipped on a fraction of a percent of input, and the layer output was
+CHAOTIC: 101% apart between two builds whose gate-up outputs agreed to 2%.
+Deleting the silu collapsed that to 9.6%, which is how it was found.
+
+**The instrument that settles it is a SWEEP, not a number** [measured]:
+
+| weight scale | layer output | rope K |
+|---|---|---|
+| 1.0 | 49% | 1.1% |
+| 0.5 | 14% | 1.1% |
+| 0.25 | 3.6% | 1.1% |
+| 0.1 | **0.67%** | 1.2% |
+
+Read the columns against each other. K comes off the projection and nothing
+else, and it does not move — 1.1% is the kernel swap. The layer output moves by
+two orders of magnitude over the same sweep, because silu sits between them. A
+wiring fault would move BOTH columns and would not care about the scale. That
+is what turned "the MLP half is wrong" into "the MLP half is fine".
 
 The lesson generalises past this file: a synthetic fill that makes the
 arithmetic ill-conditioned turns every gate downstream of it into a measurement
-of cancellation. The tell was that the difference was an OFFSET rather than a
-scale, and that it grew multiplicatively stage by stage.
+of cancellation, and a single number cannot tell you which you are looking at.
+`batch_equiv.py` now reports a difference as a SHAPE — offset or scale,
+permuted or not, which tokens, how it moves with the conditioning — before it
+reports it as a number.
 
 #### Seven deadlocks, and what they have in common
 
@@ -455,29 +489,24 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    keeps a producer from being blocked by a consumer three hops downstream?**
    Five of the seven faults were exactly that, and the batch-1 design never hits
    it because one token never has to wait for a second.
-6. **The MLP half.** The layer is bit-exact through the residual buffer, 1.1%
-   through rope, 2.0% through attention and the o-projection, and 101% wrong
-   after the gate-up / GLU / down leg — see the stage table above. The new-at-
-   batch-8 pieces in that leg, in the order the data crosses them:
+6. ~~**The MLP half.**~~ **Not a fault — see the sweep above.** The layer output
+   is 0.67% from batch 1 once the gate-up stops being driven outside silu's LUT.
+   The three probes it took are still in the tree and worth knowing about:
+   `GLU_ROW_PROBE=1` swaps the halves, `=2` is `up - gate` (antisymmetric and
+   silu-free, and the one that proved the plumbing), `=3` is `up` alone. All
+   behind `-DGLU_ROW_PROBE`, so `check_kernels_inert.py` stays green.
+7. **The last token's V.** The one fault left, and `batch_equiv.py` now fails on
+   it. 8 elements missing out of every 64 in token 7's V, on the last egress
+   round; K fine for all 8 tokens; the missing 8 are the lead role's rows 24..31,
+   which `proj_qmm_mm_flush_row` sources from `y_acc[248:256]` — the last 8
+   floats of the accumulator, for the last token. Ruled out so far: the append
+   descriptor, rope's DMA, the emitter's egress BD, `ypair_l1`'s size.
 
-   | piece | what to check |
-   |---|---|
-   | the GLU's `outY` get | `outy_tokmajor(GLU_SLICE, rounds=2)` folds TWO egress rounds into the emitter dimension. Is round `2s` really the `up` half and `2s+1` the `gate` half at batch 8, the way `pseduo_glu` assumes and batch 1 gets for free from a contiguous 1024? |
-   | `glu_row_aie` | per token, `y + t*(GLU_SLICE/2)` from `x + t*GLU_SLICE`. Trivial, and gated by nothing |
-   | the `gluOut` get on the down memtile | `[BATCH, GLU_HID]` at stride `GLU_OUT`, folded by AIR into `[NGLU, BATCH, GLU_HID]` — confirmed in the AIE dump, but confirmed against the derivation, not against the stream |
-   | `_xnorm_put(db, GLU_OUT)` | 16 chunks x B tokens x 512, chunk-major. Same shape as the o memtile's, which works |
-
-   The memtile probe taps cannot be used here: on the o-gather they deadlock the
-   loop close, whichever side of the re-broadcast they sit on. What DOES work is
-   `DECODE_ACC_STOP` (drop an add, keep the get) and the KV readback, and neither
-   reaches inside the MLP leg. A third stage marker probably has to come from the
-   same trick applied to the GLU — a debug that makes `glu_row_aie` a
-   pass-through, so the down phase's X is the raw `up` half and the surrounding
-   wiring is measured without the kernel.
-7. **The last token's V.** 93% wrong, 32 of 256 elements still at the initial
-   zero, K fine for all 8 tokens. V is the SECOND put in rope's two-BD MM2S
-   chain and the last transfer rope makes; that is the only asymmetry between
-   them.
+   What has NOT been tried: reading the proj cores' emitted `mm_zero` /
+   `mm_acc` / `mm_flush_row` sequence for the LAST round against the others (the
+   asymmetry has to be there — K is the round before and is correct), and
+   whether `_wscr()`'s segment-scope 16 KB scratch is live across the round
+   boundary in a way the last round's accumulator is not.
 8. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.

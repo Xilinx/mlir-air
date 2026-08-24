@@ -38,7 +38,16 @@ extern "C" {
 void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
+#if defined(GLU_ROW_PROBE) && GLU_ROW_PROBE == 2
+  // The batch-1 half of the probe, so the two builds can be compared under it.
+  // Only the antisymmetric variant needs a batch-1 twin: the others ask about
+  // the BATCHED landing and have nothing to compare against.
+  for (int i = 0; i < GLU_SLICE / 2; i += 16)
+    aie::store_v(y + i, aie::sub(aie::load_v<16>(x + i),
+                                 aie::load_v<16>(x + GLU_SLICE / 2 + i)));
+#else
   pseduo_glu<GLU_SLICE>(y, x);
+#endif
 }
 
 // DECODE_BATCH > 1: row t of a batched round. The gate-up projection egresses
@@ -47,7 +56,35 @@ void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
 // the whole reason this is a row index rather than a new kernel.
 void glu_row_aie(bf16 *restrict y, bf16 *restrict x, int t, int _arm) {
   (void)_arm; // per-token RTP arm-gate operand, as in glu_aie
+#ifdef GLU_ROW_PROBE
+  // Diagnostic builds only, and each answers ONE question about the batched
+  // gate-up egress that no descriptor check can:
+  //   1  swap the halves     -- did the two egress rounds land [gate|up]?
+  //   2  y = up - gate       -- antisymmetric and silu-free: reads BOTH halves,
+  //                             so a half landing in the wrong place shows, and
+  //                             a swap shows as an exact sign flip
+  //   3  y = up              -- the first half alone
+  bf16 *xr = x + t * GLU_SLICE;
+  bf16 *yr = y + t * (GLU_SLICE / 2);
+#if GLU_ROW_PROBE == 1
+  for (int i = 0; i < GLU_SLICE / 2; i += 16) {
+    aie::vector<bf16, 16> up = aie::load_v<16>(xr + i);
+    aie::vector<bf16, 16> gate = aie::load_v<16>(xr + GLU_SLICE / 2 + i);
+    up = getActivationBf16(up);
+    aie::vector<bf16, 16> o = aie::mul(up, gate);
+    aie::store_v(yr + i, o);
+  }
+#elif GLU_ROW_PROBE == 2
+  for (int i = 0; i < GLU_SLICE / 2; i += 16)
+    aie::store_v(yr + i, aie::sub(aie::load_v<16>(xr + i),
+                                  aie::load_v<16>(xr + GLU_SLICE / 2 + i)));
+#else
+  for (int i = 0; i < GLU_SLICE / 2; i += 16)
+    aie::store_v(yr + i, aie::load_v<16>(xr + i));
+#endif
+#else
   pseduo_glu<GLU_SLICE>(y + t * (GLU_SLICE / 2), x + t * GLU_SLICE);
+#endif
 }
 
 // Small-slice variant for the demux8 wire-up bisection (M=256 proj payload):

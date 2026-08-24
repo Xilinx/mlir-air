@@ -46,13 +46,30 @@ the engine moves the right bytes to the right places, which is where this design
 has failed before and where the failures are silent. Numerics have their own
 device gates (q4k_mm_gate.py, proj_qmm_gate.py) and they pass.
 
-BUT NOT RANDOM BYTES. The first attempt filled every BO from a PRNG and the
-device returned 0x7F81 in every element -- one uniform NaN. A gate whose output
-is constant passes on anything. So the weights are REAL q4k blocks
-(proj_qmm_pack), the norms are near 1, X is order 1, and the KV cache starts at
-zero -- zero rather than random because the two builds pad the cache to
-different lengths, so "the same random bytes" would not be the same cache.
-The gate checks the output is not constant before it compares anything.
+BUT NOT RANDOM BYTES, AND NOT AN ILL-CONDITIONED FILL EITHER. Three traps, each
+of which produced a confident wrong answer before it was found:
+
+  random bytes in a BO      the device returned 0x7F81 in every element -- one
+                            uniform NaN -- because random bytes are random bf16
+                            SCALES. A gate whose output is constant passes on
+                            anything. The weights are REAL q4k blocks now.
+  raw int16 for X           half the int16 range is a bf16 exponent of 0xF0 and
+                            up; 0xFF80 alone is -inf. Every output came back
+                            non-finite, from the INPUT.
+  `min` drawn independently  of `scale`. In a real q4k block `min` is the block
+                            minimum, so w is CENTRED; drawn independently it is
+                            a perturbation on a mean of 7.5*scale and every dot
+                            product becomes a cancelling sum. A 1.65% kernel
+                            difference then reads as 772% at the layer output.
+
+The reporting is built around the same lesson: a difference is read as a shape
+(offset or scale, permuted or not, which tokens, how it moves with _WSCALE)
+before it is read as a number. See _WSCALE and shape_of_difference.
+
+The norms are near 1, X is order 1, and the KV cache starts at zero -- zero
+rather than random because the two builds pad the cache to different lengths, so
+"the same random bytes" would not be the same cache. The gate checks the output
+is not constant before it compares anything.
 
     python3 batch_equiv.py --batch 8 --L 128
     python3 batch_equiv.py --batch 8 --L 128 --tokens all
@@ -67,6 +84,30 @@ import time
 from pathlib import Path
 
 import numpy as np
+
+# Multiplier on the q4k scale, so the CONDITIONING of the test can be swept
+# rather than argued about. This is the difference between a gate that measures
+# the engine and one that measures floating point, and the sweep is the evidence
+# that told the two apart [measured, llama-3.2-1b batch 8 vs batch 1 at L 1]:
+#
+#   scale   layer output   rope K
+#   1.0        49%          1.1%
+#   0.5        14%          1.1%
+#   0.25       3.6%         1.1%
+#   0.1        0.67%        1.2%
+#
+# Read the two columns against each other. K is produced by the projection and
+# nothing else, and it does not move: 1.1% is the GEMV-to-mmul kernel swap,
+# which proj_qmm_gate.py measures independently at 1.65%. The LAYER OUTPUT moves
+# by two orders of magnitude over the same sweep, because silu sits between them
+# and its relative error blows up near its own zero -- so the layer-output number
+# is a function of how hard the nonlinearity is being driven, not of the wiring.
+# A wiring fault would move BOTH columns and would not care about the scale.
+#
+# 0.1 puts the layer output below the K floor, which is as sensitive as this
+# comparison can be: at that point the batched engine agrees with the batch-1
+# engine more closely than the kernel swap alone allows.
+_WSCALE = float(os.environ.get("BATCH_EQUIV_WSCALE", "0.1"))
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -134,7 +175,20 @@ def weight_bo(n_elems, seed, n_distinct=64):
     blocks = []
     for _ in range(n_distinct):
         q = rng.integers(0, 16, size=(pk.ROW_BLOCK, pk.COL_BLOCK), dtype=np.uint8)
-        scale = rng.uniform(0.002, 0.01, size=(pk.ROW_BLOCK, pk.N_GROUPS))
+        # Scaled so the GATE-UP output stays inside silu's LUT. getActivationBf16
+        # is a 64-bin linear approximation over about [-8, 8) with a truncating
+        # out-of-range policy, so a gate value past that comes back as whatever
+        # the clamped bin holds -- and which bin a near-8 value lands in flips on
+        # a fraction of a percent of input. With the first scale here the gate-up
+        # output had an rms of 3.7 and roughly 5% of 8192 elements per token were
+        # outside the range, so the layer output was CHAOTIC: 101% apart between
+        # two builds whose gate-up outputs agreed to 2%. Removing the silu
+        # collapsed that to 9.6%, which is how it was found.
+        #
+        # A trained model does not do this -- the shipping engine uses the same
+        # LUT and passes `make verify` -- so an out-of-range gate is a property
+        # of the fill and nothing else.
+        scale = _WSCALE * rng.uniform(0.0008, 0.004, size=(pk.ROW_BLOCK, pk.N_GROUPS))
         # Centred, with a little jitter so the mins are not a function of the
         # scales alone.
         mn = -7.5 * scale + rng.uniform(-0.2, 0.2, size=scale.shape) * scale
@@ -209,7 +263,9 @@ def as_f32(v):
 
 
 def kv_stage(gN, g1, kvN, kv1, batch, tol):
-    """Compare the K and V the rope core appended. A tap that costs nothing.
+    """Compare the K and V the rope core appended, and gate on it.
+
+    Returns False if anything here is wrong. A tap that costs nothing.
 
     Both runs already write the DDR KV cache and the gate already reads it
     back, so this needs no extra channel, no extra shim task and no rebuild --
@@ -230,7 +286,8 @@ def kv_stage(gN, g1, kvN, kv1, batch, tol):
     w, stride, ngrp, L = gN["kv_region"]
     if (w, stride, ngrp, L) != tuple(g1["kv_region"]):
         print(f"    kv: geometry differs {gN['kv_region']} vs {g1['kv_region']}")
-        return
+        return False
+    ok = True
     base = (L - 1) * w
     print("    rope KV taps  (batched token 0 vs batch 1, same position):")
     for name, r0 in (("K", 0), ("V", ngrp)):
@@ -260,6 +317,7 @@ def kv_stage(gN, g1, kvN, kv1, batch, tol):
                 + (f", {nnf} NON-FINITE" if nnf else "")
                 + ("" if rel <= tol and not nnf else "   <-- WRONG BEFORE ROPE")
             )
+            ok = ok and rel <= tol and not nnf
             # Every token in this gate gets the SAME x and the SAME rope LUT, and
             # neither K nor V depends on position beyond the LUT -- so all B
             # tokens' K (and V) have to be bit-identical to each other. They come
@@ -295,10 +353,19 @@ def kv_stage(gN, g1, kvN, kv1, batch, tol):
                     f"token 0 -- identical inputs, so the batch is MIXING "
                     f"TOKENS: {det}"
                 )
+                ok = False
             if g == 0:
                 print("        ref " + " ".join(f"{v:10.4g}" for v in fb[:8]))
                 print("        got " + " ".join(f"{v:10.4g}" for v in fa[:8]))
                 for t in range(1, batch):
+                    z = np.nonzero(kvN[off + t * w : off + (t + 1) * w] == 0)[0]
+                    if z.size:
+                        brk = np.nonzero(np.diff(z) != 1)[0]
+                        runs = np.split(z, brk + 1)
+                        print(
+                            f"         t{t} zero runs: "
+                            + ", ".join(f"[{r[0]}..{r[-1]}]" for r in runs[:6])
+                        )
                     r = as_f32(kvN[off + t * w : off + (t + 1) * w]).astype(np.float64)
                     if not np.array_equal(r, fa):
                         # WHERE it stops matching says whether the transfer was
@@ -309,6 +376,7 @@ def kv_stage(gN, g1, kvN, kv1, batch, tol):
                             + " ".join(f"{v:10.4g}" for v in r[:8])
                             + f"   first differs at {int(d[0])}"
                         )
+    return ok
 
 
 def probe_stages(gN, g1, probeN, probe1, t, tol):
@@ -588,7 +656,7 @@ def main():
 
     K = g1["k"]
     positions = range(args.batch if args.tokens == "all" else 1)
-    bad, missing = [], []
+    bad, missing, kv_ok = [], [], True
     for t in positions:
         b1, b1i = template(args.prefix, 1, args.L + t)
         if not b1.exists():
@@ -606,7 +674,7 @@ def main():
             + ("" if rel <= args.tol and not nnf else f"   <-- FAIL")
         )
         if t == 0:
-            kv_stage(gN, g1, kvN, kv1, args.batch, args.tol)
+            kv_ok = kv_stage(gN, g1, kvN, kv1, args.batch, args.tol)
         probe_stages(gN, g1, probeN, probe1, t, args.tol)
 
     if missing:
@@ -645,10 +713,18 @@ def main():
             "                          all; every one got position P"
         )
         return 1
+    if not kv_ok:
+        print(
+            "\n  The layer outputs agree, and the KV taps do not. Read the taps:\n"
+            "  they see the first half of the layer directly, so they catch what\n"
+            "  a layer-output comparison averages away."
+        )
+        return 1
     n = len(list(positions))
     print(
         f"\n  {n} token{'s' if n > 1 else ''} agree with batch 1 at their own "
-        f"position to within --tol {args.tol:.0e} -- GATE PASS"
+        f"position to within --tol {args.tol:.0e}, and every token's K and V "
+        f"match -- GATE PASS"
     )
     if args.tokens == "0":
         print(
