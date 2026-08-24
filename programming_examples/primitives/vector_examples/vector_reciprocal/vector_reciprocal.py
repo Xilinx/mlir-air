@@ -1,151 +1,95 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Vector reciprocal (1/x) primitive, on air.api.
+
+    c[:] = 1.0 / a[:]
+
+One line of compute. The predecessor built the same expression as a hand-rolled
+vector loop -- an ``scf.for`` over the tile in steps of VECTOR_SIZE, two
+``memref.subview``s per trip, a ``vector.transfer_read`` with an explicit
+identity permutation map and a padding constant, a ``vector.broadcast`` of 1.0,
+``arith.divf``, and a ``transfer_write``. Here the emitter builds that loop, and
+the subviews are not needed at all: air.api reads at an offset directly.
+
+The emitted arithmetic is unchanged: ``vector.broadcast`` of the 1.0 constant,
+then ``arith.divf`` on ``vector<VECTOR_SIZExf32>``. The numerator being a plain
+Python float is what selects the broadcast -- air.api's reflected ``__rtruediv__``
+puts the scalar on the left, which is the operand order the predecessor built by
+hand.
+
+f32 is deliberate and load-bearing: bf16 division does *not* legalize vectorised
+on either generation, so this primitive only exists in f32.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's. The predecessor asked for a [1, NUM_TILES] herd
+  and then wrote the outer loop itself, computing ``_l_ivx + _ty * tile_n``
+  through a hand-built AffineMap. Here the herd's iteration space is the whole
+  tile grid and air.api strip-mines it onto NUM_TILES cores.
+
+``--arch`` still selects only the vector width, exactly as before; it does not
+pin the device. The generation comes from ``--target``, which defaults to
+detecting the installed part.
+"""
+
 import argparse
+
 import numpy as np
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write, broadcast
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import dtype_of
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+NUM_TILES = 2
+
+# Vector width per architecture. Selects the SIMD width only -- it does not pin
+# which device the design is built for.
+ARCH_VECTOR_SIZES = {"aie2": 16, "aie2p": 32}
 
 
-@module_builder
 def build_module(n, tile_n, np_dtype_in, arch="aie2"):
-    a_size = [n]
-    out_size = a_size
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
-    # Architecture-specific vector size
-    arch_vector_sizes = {
-        "aie2": 16,
-        "aie2p": 32,
-    }
-    VECTOR_SIZE = arch_vector_sizes.get(arch, 16)  # default to 16 if unknown
-    index_type = IndexType.get()
-
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def vector_reciprocal(arg0, arg1):
-
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg1],
+    assert n % (tile_n * NUM_TILES) == 0
+    dt = dtype_of(np_dtype_in)
+    if dt is None:
+        raise ValueError(
+            f"unsupported element type {np_dtype_in!r}; air.api knows "
+            f"float32, float16, bfloat16, int8/16/32 and uint8/16/32"
         )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+    vector_size = ARCH_VECTOR_SIZES.get(arch, 16)  # default to 16 if unknown
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
+    A = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+    with air.launch(name="vector_reciprocal") as launch:
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
+        @launch.body
+        def _():
+            # The iteration space is every tile; shape= pins the core count to
+            # what the predecessor asked for, and the DSL strip-mines the rest
+            # into a loop on each core.
+            with air.herd(
+                [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-                c0 = ConstantOp(index_type, 0)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not an element offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_n
+                    a = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
+                    c = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
 
-                # Create constant 1.0 scalar and broadcast to vector
-                one_scalar = arith.ConstantOp(xrt_dtype_in, 1.0)
-                one_vector = broadcast(
-                    VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                    one_scalar,
-                )
+                    air.ops.load(a, A[i0 : i0 + tile_n])
 
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_a_vec = subview(
-                        l1_a_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    sub_c_vec = subview(
-                        l1_out_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    v_a = transfer_read(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                        sub_a_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        cst0,
-                        [True],
-                    )
-                    # Compute reciprocal: 1.0 / a
-                    v_c = arith.DivFOp(one_vector, v_a)
-                    transfer_write(
-                        None,
-                        v_c,
-                        sub_c_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        [True],
-                    )
-                    yield_([])
+                    c[:] = 1.0 / a[:]
 
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
+                    air.ops.store(c, C[i0 : i0 + tile_n])
 
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -180,7 +124,8 @@ if __name__ == "__main__":
         type=str,
         choices=["aie2", "aie2p"],
         default="aie2",
-        help="Target AIE architecture (aie2 or aie2p)",
+        help="AIE architecture whose vector width to use (aie2 or aie2p). "
+        "Selects the SIMD width only; use --target to choose the device",
     )
     parser.add_argument(
         "--compile-mode",
@@ -190,14 +135,22 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.n,
         args.tile_n,
         INPUT_DATATYPE,
         args.arch,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -234,6 +187,7 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -250,6 +204,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
