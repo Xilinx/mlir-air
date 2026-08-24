@@ -270,6 +270,24 @@ And a sixth that is not a deadlock but caused one: writing the q buffering as
 again**. One get and one put per CU, with the batch as a BD dimension, gives the
 transform nothing to rewrite.
 
+#### Two facts about the shim, measured while bisecting
+
+Both cost a build to learn and neither is written down anywhere else.
+
+- **`air.preserve_shim_dma_order` is a GLOBAL order, not a per-channel one.**
+  Moving the layer-output drain to the front of the runtime sequence -- to make
+  it report progress before the KV readback rather than after -- starved the
+  whole sequence: even the KV append, which normally completes, wrote nothing.
+  So a diagnostic drain cannot be hoisted past unrelated traffic, and the
+  ordering between two channels' shim tasks is real.
+- **A drain placed between the append and the readback does not route.**
+  `aie.packet_flow` source (2,2) DMA1 to destination (1,1) DMA2: the pathfinder
+  gives up. The floorplan has no slack for an extra shim endpoint there.
+
+Together those close off the obvious way to bisect a batched hang by phase. The
+signal that does work is the buffer readback on timeout, which is why
+`batch_equiv.py --smoke` does it.
+
 #### The two tools this needed
 
 Both were written mid-hunt and both found a real fault immediately.

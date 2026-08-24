@@ -2544,8 +2544,17 @@ def build_module():
                                 # does not amortize" as a descriptor count, and
                                 # it is the reason the block size was priced at
                                 # 8 rather than 16.
-                                for _ in range(BATCH):
-                                    _emit_readback_one(_kbase)
+                                # ONE descriptor, B times over the same region:
+                                # a leading dimension of extent BATCH and STRIDE
+                                # 0. Not a saving -- a correctness fix of the
+                                # same kind as the KV append. B separate passes
+                                # are B separate shim tasks, the fused launch
+                                # paces a preserve_shim_dma_order channel at
+                                # depth 2, and the append hit exactly that (6 of
+                                # 8 tokens reached the cache and rope waited
+                                # forever for the seventh). One task per channel
+                                # drains continuously.
+                                _emit_readback_one(_kbase)
 
                             def _emit_readback_one(_kbase=_kbase):
                                 # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
@@ -2628,27 +2637,31 @@ def build_module():
                                         # Spelled inline (not hoisted) so the default path's
                                         # constant emission order -- and thus the emitted IR --
                                         # is byte-identical to before this flag existed.
+                                        # extent BATCH, stride 0 -> re-read.
+                                        _rb = [idx(BATCH)] if BATCH > 1 else []
+                                        _r0 = [idx(0)] if BATCH > 1 else []
                                         for gi in range(NGRP):
                                             ChannelPut(
                                                 "inKV_K",
                                                 KVC,
                                                 indices=[idx(gi)],
-                                                offsets=[
-                                                    _loi(_kbase, _kreg_off(gi) + _coff)
-                                                ],
+                                                offsets=_r0
+                                                + [_loi(_kbase, _kreg_off(gi) + _coff)],
                                                 sizes=(
-                                                    [idx(_cb * 16 * REGION_W)]
+                                                    _rb + [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
-                                                    else [
+                                                    else _rb
+                                                    + [
                                                         _cbv(),
                                                         idx(16),
                                                         idx(REGION_W),
                                                     ]
                                                 ),
                                                 strides=(
-                                                    [idx(1)]
+                                                    _r0 + [idx(1)]
                                                     if _KV1D
-                                                    else [
+                                                    else _r0
+                                                    + [
                                                         idx(16 * REGION_W),
                                                         idx(REGION_W),
                                                         idx(1),
@@ -2659,22 +2672,23 @@ def build_module():
                                                 "inKV_V",
                                                 KVC,
                                                 indices=[idx(gi)],
-                                                offsets=[
-                                                    _loi(_kbase, _vreg_off(gi) + _coff)
-                                                ],
+                                                offsets=_r0
+                                                + [_loi(_kbase, _vreg_off(gi) + _coff)],
                                                 sizes=(
-                                                    [idx(_cb * 16 * REGION_W)]
+                                                    _rb + [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
-                                                    else [
+                                                    else _rb
+                                                    + [
                                                         _cbv(),
                                                         idx(16),
                                                         idx(REGION_W),
                                                     ]
                                                 ),
                                                 strides=(
-                                                    [idx(1)]
+                                                    _r0 + [idx(1)]
                                                     if _KV1D
-                                                    else [
+                                                    else _r0
+                                                    + [
                                                         idx(16 * REGION_W),
                                                         idx(REGION_W),
                                                         idx(1),
@@ -5028,6 +5042,15 @@ def build_module():
                                     )
                                 yield_([])
 
+                        def _layer_out():
+                            ChannelPut(
+                                "layerOut",
+                                xb,
+                                offsets=[idx(0)],
+                                sizes=[idx(BATCH * K)],
+                                strides=[idx(1)],
+                            )
+
                         # ph0: input layernorm -> the QKV X feed.
                         w = AllocOp(rms_l1, [], [])
                         ChannelGet("rmsW", w, indices=[idx(0)])
@@ -5047,13 +5070,7 @@ def build_module():
                         DeallocOp(w)
                         # residual2: layer output = h + down, in place.
                         _accumulate(DOWN_RNDS)
-                        ChannelPut(
-                            "layerOut",
-                            xb,
-                            offsets=[idx(0)],
-                            sizes=[idx(BATCH * K)],
-                            strides=[idx(1)],
-                        )
+                        _layer_out()
                         DeallocOp(scl)
                         DeallocOp(stg)
                         DeallocOp(xb)
