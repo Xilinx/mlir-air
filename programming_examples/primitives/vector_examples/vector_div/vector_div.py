@@ -55,12 +55,21 @@ STACK_SIZE = 2048
 
 def build_module(n, tile_n, np_dtype_in, arch="aie2"):
     assert n % (tile_n * NUM_TILES) == 0
-    dt = dtype_of(np_dtype_in)
-    if dt is None:
+    # f32 only, and checked rather than merely documented: division is the one
+    # operator in this directory where no other element type legalizes. bf16,
+    # f16 and i32 all die in the AIE backend's legalizer, on both generations
+    # and at every width tried, e.g. for bf16 at 16 lanes:
+    #     LLVM ERROR: unable to legalize instruction:
+    #     %42:_(<16 x s16>) = G_FDIV %37:_, %41:_ (in function: core_0_2)
+    # Accepting them here would turn a one-line contract violation into a
+    # backend crash several passes downstream.
+    if np_dtype_in is not np.float32:
         raise ValueError(
-            f"unsupported element type {np_dtype_in!r}; air.api knows "
-            f"float32, float16, bfloat16, int8/16/32 and uint8/16/32"
+            f"division legalizes only for f32 on AIE (bf16/f16/i32 all fail "
+            f"the backend legalizer with G_FDIV), so np_dtype_in must be "
+            f"np.float32, got {np_dtype_in!r}"
         )
+    dt = dtype_of(np_dtype_in)
     vector_size = ARCH_VECTOR_SIZES.get(arch, 16)  # default to 16 if unknown
 
     A = air.tensor([n], dt)
