@@ -33,7 +33,12 @@ from air.dialects import arith
 from air.dialects import math as math_dialect
 from air.dialects.memref import load as memref_load, store as memref_store
 from air.dialects.scf import for_ as range_, yield_
-from air.dialects.vector import broadcast, transfer_read, transfer_write
+from air.dialects.vector import (
+    broadcast,
+    fma as vector_fma,
+    transfer_read,
+    transfer_write,
+)
 
 from .types import require_computable, require_signless
 
@@ -418,6 +423,50 @@ def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
     if node.kind == "select":
         cond, a, b = node.args
         return _result(arith.select(recur(cond), recur(a), recur(b)))
+
+    if node.kind == "fma":
+        # a * b + c as one operation, so the product is not rounded before it
+        # is added. Two separate arith ops round twice; the hand-written
+        # vector_fma and axpy kernels both spell vector.fma for that reason.
+        #
+        # There is no integer counterpart and none is needed: integer multiply
+        # and add are exact, so `a * b + c` already computes what an integer
+        # fma would, and MLIR has no arith.fmai to lower to.
+        if ops is _INT_OPS:
+            raise NotImplementedError(
+                "air.api.ops.fma is float-only: fusing the multiply and the "
+                "add exists to avoid the intermediate *rounding*, and integer "
+                "multiply-add has none to avoid. MLIR has no integer fma op "
+                f"to lower to, so on a {ety} buffer write a * b + c instead, "
+                "which computes the same thing"
+            )
+        # The scalar spelling would be math.fma, and it is refused rather than
+        # emitted because it does not compile: AIE2 has no scalar fma
+        # instruction, and `G_FMA` reaches the backend unlegalized. Measured on
+        # npu1 and npu2, bf16 and f32, with and without bf16 emulation -- all
+        # five fail with "unable to legalize instruction: (s16) = G_FMA".
+        #
+        # Emitting it anyway would repeat the math.tanh trap, where the
+        # emitter's usual correctness-first fallback -- drop to a scalar loop
+        # when the innermost dimension is not a multiple of the vector width --
+        # is the *unsafe* direction, turning a working kernel into a build
+        # failure whose error names an LLVM virtual register. Unlike tanh, this
+        # is caught here, where the tile shape that caused it can be named.
+        if not vectorized:
+            raise NotImplementedError(
+                "air.api.ops.fma has no scalar form on AIE2: there is no "
+                "scalar fma instruction, so math.fma reaches the backend and "
+                "fails to legalize. The emitter is on its scalar path here "
+                "because the destination's innermost dimension is not a "
+                "multiple of its vector width -- give the buffer a tile shape "
+                "that is (air.alloc(..., vector=W) with shape[-1] % W == 0), "
+                "or write a * b + c, which has a scalar form and rounds twice"
+            )
+        a, b, c = (
+            _eval(arg, ivs, ops, ety, vectorized, vec_ty, minor, pad, reads)
+            for arg in node.args
+        )
+        return _result(vector_fma(a, b, c))
 
     if node.kind == "binary":
         op = ops.get(node.op)
