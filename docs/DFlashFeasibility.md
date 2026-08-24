@@ -98,6 +98,7 @@ hold at 8 with room to spare.
 | `bench_attn_batch.py` | **what a batch can hoist**, piece by piece |
 | `check_kernels_inert.py` | **the inertness gate** — every shipping kernel vs `HEAD` |
 | `xfeed_bd.py` | the X feed's tile-blocking BD, checked against `pack_A` |
+| `egress_bd.py` | the egress gathers, both levels, checked against batch 1 |
 | `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
 | `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
 | `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
@@ -161,6 +162,7 @@ python3 bench_attn_batch.py                            # ~8 min; what a batch
 python3 bench_attn_batch.py --model QWEN3_4B --layers 36  # ~8 min; can hoist
 python3 check_kernels_inert.py                         # ~1 min; THE gate
 python3 xfeed_bd.py                                    # seconds; the X-feed BD
+python3 egress_bd.py                                   # seconds; egress BDs
 python3 dflash_blocksize.py                            # seconds; the block size
 python3 dflash_blocksize.py --attn-hoistable 1503      # with a perfect hoist
 python3 dflash_blocksize.py --overlap                  # the optimistic bound
@@ -199,23 +201,46 @@ hoistable work is the K/V tile loads — and the real floor is the softmax
 `update` plus the y rescale pass, neither of which any batch arrangement can
 touch.
 
-**Step 2's builder wiring, at block 8.** The kernel half is built and gated
-(`proj_qmm_mm_*`, section 5d); what is left is the engine around it. Section 6
-step 2 has the list. Two things that are easy to miss, neither a capacity
-question:
+**Step 2's builder wiring, at block 8.** Where it stands:
 
-- ~~`Xt` has to arrive **tile-blocked**, and is owed a strided memtile BD.~~
-  **Derived and checked** — `xfeed_bd.py`. At block 8 it is
-  `sizes=[32,8,8] strides=[8,512,1] offsets=[chunk*32,0,0]`, verified
-  elementwise against `pack_A` itself rather than against a restatement of the
-  derivation. Two traps it closes: the token stride is `X_CHUNKS*COL_BLOCK`,
-  not `KCOL`, and AIR's offsets follow **`memref.subview`** — the address is
-  `base + Σ offsets[d]*strides[d]`, so a flat chunk offset would be multiplied
-  by `strides[0]` and read the wrong activations while transferring exactly the
-  right *number* of them.
+| | |
+|---|---|
+| proj kernels | **done**, gated on device at batch 8 and 16 (section 5d) |
+| proj cores in the builder | **done**, both `_core_blk` and `_core_blk_np` |
+| `DECODE_BATCH` + L1 sizing rules | **done**, strict no-op at 1 |
+| X-feed tile-blocking BD | **derived and checked**, `xfeed_bd.py` |
+| egress BDs, both levels | **derived and checked**, `egress_bd.py` |
+| the feed and drain WIRING | **not done** |
+
+The two descriptors are the parts that were easy to get silently wrong, and
+they are now numbers rather than intentions:
+
+- `Xt` at block 8 is `sizes=[32,8,8] strides=[8,512,1] offsets=[chunk*32,0,0]`,
+  verified elementwise against `pack_A` itself rather than against a
+  restatement of the derivation. Two traps closed: the token stride is
+  `X_CHUNKS*COL_BLOCK`, not `KCOL`, and AIR's offsets follow
+  **`memref.subview`** — the address is `base + Σ offsets[d]*strides[d]`, so a
+  flat chunk offset would be multiplied by `strides[0]` and read the wrong
+  activations while transferring exactly the right *number* of them.
+- The egress needs **two** descriptors, group and main. See section 6 step 2.
 - The flush has to **de-tile**: `aie::mmul` leaves the accumulator in C tile
   order, so one token's 32 rows are four 8-float runs 64 floats apart.
-  `proj_qmm_mm_flush_row` does it; the egress BD has to agree with it.
+  `proj_qmm_mm_flush_row` does it; the egress BDs agree with it.
+
+**What is left is one job, not five.** The feed and the drain both terminate at
+`rms` / `rope` / `glu`, and `PAYLOAD` is a structural constant of the refeed
+path as well as the drain — so the X memtile, the egress widening, the row
+tiling at 4 and the attention query tile all have to land together or the
+engine is inconsistent in between. Nothing smaller than that is testable.
+
+**And it needs a gate that does not exist yet.** Everything so far has been
+gated by "byte-identical at batch 1", which by construction says nothing about
+batch 8. The gate the integration needs is an **equivalence run**: dispatch at
+`DECODE_BATCH=B` with all B tokens identical, and assert every token's output
+equals the batch-1 output for that token. It needs no reference model, it
+exercises the whole chain — feed layout, projection, egress, both gathers — and
+every layout error shows up as a mismatched token rather than as a plausible
+wrong answer. Build it before the wiring, not after.
 
 **Do not build for block 16.** It is 1.06x. See section 5f before re-litigating.
 
@@ -1498,10 +1523,27 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
      sets the ceiling at 25 regardless, and block 8 clears it with room —
      31.3 KB of the 54 KB budget **[measured]**.
    - **Egress: widen, do not repeat.** One packet per round, B times longer.
-     `N_ROUNDS`, BD count and instruction stream all stay put. The only edit is
-     the `outA` gather into the group memtile, which gains one dimension
-     (`sizes=[16,32]`, `strides=[128,1]`) to land emitter-major blocks
-     token-major. Legal on all eight models, headroom to batch 511.
+     `N_ROUNDS`, BD count and instruction stream all stay put. Legal on all
+     eight models, headroom to batch 511.
+
+     **The descriptors are derived and checked** — `egress_bd.py`. And there
+     are **two** of them, not one: the `outA` gather into the *group* memtile
+     *and* the `toMain` gather into the *main* memtile. Fixing only the first
+     leaves each group's slab token-major internally while the groups stay laid
+     end to end, so a token's `PAYLOAD` row is still in `N_GRP` pieces — and it
+     would look right in any single-group test. On qwen3-4b at block 8:
+
+     | level | offsets | sizes | strides |
+     |---|---|---|---|
+     | `outA` → group, emitter k | `[0, HDR+k*32]` | `[8, 32]` | `[128, 1]` |
+     | `toMain` → main, group g | `[0, HDR+g*128]` | `[8, 128]` | `[512, 1]` |
+
+     Checked three ways: exactly-once coverage of the payload, **token t's row
+     byte-identical to the row batch 1 produces** (the invariant that lets
+     everything downstream ignore the batch), and batch 1 collapsing to today's
+     1-D descriptors — which it does, reproducing the builder's existing `66 /
+     64 / 1` and `258 / 256 / 1` exactly. That collapse is the check that the
+     derivation matches the code rather than only itself.
    - ~~**X feed: watch it.**~~ **Not a concern at block 8.** The activation
      chunk only overtakes the weight chunk at batch 10; at 8 it is **0.80** of
      the weight chunk and needs **1.77 of 4.0 B/cycle** per broadcast stream,
