@@ -324,6 +324,32 @@ class BufferSlice:
         return f"BufferSlice({self.buffer!r}, sizes={self.sizes})"
 
 
+# How a binary node prints. The tree stores an internal key ("add"), not the
+# source spelling, so without this a repr shows `(Buffer add Buffer)` -- which
+# reads like a typo. Keys with no infix form fall back to a call spelling.
+# Entries are listed for every key the emitter knows, including the comparison
+# and bitwise ones, so the table does not need revisiting when those land.
+_OP_SYMBOLS = {
+    "add": "+",
+    "sub": "-",
+    "mul": "*",
+    "div": "/",
+    "and": "&",
+    "or": "|",
+    "xor": "^",
+    "lt": "<",
+    "le": "<=",
+    "gt": ">",
+    "ge": ">=",
+    "eq": "==",
+    "ne": "!=",
+}
+
+# Keys with no infix spelling print as the call the user actually wrote, so the
+# internal key never reaches a repr either way: ops.maximum, not "max".
+_OP_CALL_NAMES = {"max": "maximum", "min": "minimum"}
+
+
 class BufferExpr:
     """A lazy elementwise expression over buffers and scalars.
 
@@ -436,6 +462,21 @@ class BufferExpr:
     # instead; ops.select rejects the plain bool that `a[:] == b[:]` produces,
     # naming those, so the difference cannot pass silently.
 
+    def __bool__(self):
+        # NumPy's guard, for NumPy's reason. `and`, `or` and `not` are the one
+        # part of Python's operator surface a library cannot reach: there is no
+        # dunder for them, they coerce the operand through __bool__, and they
+        # short-circuit. Without this, `a[:] and b[:]` takes the default
+        # object truthiness (always True), returns b[:], and emits nothing --
+        # a kernel that silently computes half of what was written.
+        raise TypeError(
+            "cannot use a buffer expression as a truth value: `and`, `or` and "
+            "`not` would silently return one operand and emit no kernel code, "
+            "because Python does not allow them to be overloaded. Use the "
+            "elementwise operators `&`, `|`, `^` for logic, or "
+            "air.api.ops.select(cond, a, b) to choose between values."
+        )
+
     def leaves(self):
         """All buffer leaves, in traversal order."""
         if self.kind == "buffer":
@@ -455,4 +496,10 @@ class BufferExpr:
         if self.kind == "select":
             c, a, b = self.args
             return f"select({c!r}, {a!r}, {b!r})"
-        return f"({self.args[0]!r} {self.op} {self.args[1]!r})"
+        symbol = _OP_SYMBOLS.get(self.op)
+        if symbol is None:
+            # No infix spelling (maximum/minimum and anything added later):
+            # show it as the call it is rather than inventing an operator.
+            name = _OP_CALL_NAMES.get(self.op, self.op)
+            return f"{name}({self.args[0]!r}, {self.args[1]!r})"
+        return f"({self.args[0]!r} {symbol} {self.args[1]!r})"
