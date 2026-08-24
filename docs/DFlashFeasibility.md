@@ -386,6 +386,25 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    when that is clean, reason about ORDER — which memtile is being asked to
    finish one producer before another can start, while something upstream keeps
    them in lockstep. `--smoke`'s KV readback brackets where to look.
+
+   **Read the SHIPPING q4/q4nx decode first, and treat it as the reference.**
+   Every one of the six faults was a place where the batched wiring invented a
+   dataflow the batch-1 engine does not use, and the batch-1 engine is a working
+   answer to most of the same questions. Specifically worth reading before
+   guessing again:
+
+   | where | what it answers |
+   |---|---|
+   | `llms/*/q4nx_decode_*.py`, `llama32_1b_q4nx_inference.py` | how the driver sequences a dispatch, and what it does between tokens — the closest thing to a multi-token cadence that already runs |
+   | `decode_staircase.py`, `decode_insts_gen.py` | how L varies per dispatch without a rebuild. The batched build currently bakes one L; the staircase is how the shipping models avoid that |
+   | `decode_dynseq.py` + `DECODE_DYNSEQ=1` | the runtime-L form. It exists, it works, and it would remove the per-position template pair `batch_equiv.py --tokens all` needs |
+   | the `refeed()` sites and their `air.refeed_count` in the AIE dump | the ONE re-broadcast idiom this engine is built around. The batched rms core stepped outside it (a real production loop, not a collapsed re-broadcast) and that is the largest un-audited difference left |
+   | `llms/shared/builders/*_multi.py` | the multi-launch block builders — a different answer to "more than one thing per call" than the one being built here |
+
+   The specific question to take to them: **what does the shipping engine do that
+   keeps a producer from being blocked by a consumer three hops downstream?**
+   Four of the six faults were exactly that, and the batch-1 design never hits it
+   because one token never has to wait for a second.
 6. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
