@@ -88,12 +88,29 @@ def narrower_integer():
     print(build(i16, lambda a, b: a[:] ^ b[:]).mlir())
 
 
-# CHECK-LABEL: TEST: scalar_fallback
-# A tile that is not a multiple of the vector width falls back to a scalar
-# memref.load/store loop, and the bitwise op survives it as a scalar i32.
+# The emitter vectorises only when
+#     bool(shape) and width > 0 and shape[-1] % width == 0
+# so there are *two* independent ways to land on the scalar loop. Both are
+# pinned, because a test that exercises one while claiming the other is worse
+# than no test: it reads as coverage.
+
+
+# CHECK-LABEL: TEST: scalar_fallback_no_vector_width
+# Route 1: the caller asked for no vectorisation at all (width == 0).
 # CHECK-NOT: vector.transfer_read
 # CHECK: arith.andi {{.*}} : i32
 # CHECK: memref.store
 @run
-def scalar_fallback():
+def scalar_fallback_no_vector_width():
     print(build(i32, lambda a, b: a[:] & b[:], N=192, tile=24, vector=0).mlir())
+
+
+# CHECK-LABEL: TEST: scalar_fallback_tile_not_a_multiple
+# Route 2: a non-zero width that does not divide the tile -- 24 % 16 = 8. This
+# is the remainder condition, and it is the one a user hits by accident.
+# CHECK-NOT: vector.transfer_read
+# CHECK: arith.andi {{.*}} : i32
+# CHECK: memref.store
+@run
+def scalar_fallback_tile_not_a_multiple():
+    print(build(i32, lambda a, b: a[:] & b[:], N=192, tile=24, vector=16).mlir())

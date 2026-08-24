@@ -17,9 +17,13 @@ The emitted arithmetic is unchanged: a bare ``arith.andi`` on
 Bitwise operators are integer-only, and that is a property of MLIR rather than
 of this example: there is ``arith.andi`` and no floating-point counterpart, so
 air.api refuses ``&``, ``|`` and ``^`` on a float buffer by name instead of
-letting them fall through a generic "unsupported operator". i32 is checked below
-for the same reason -- see the sibling ``vector_ori / vector_xori`` examples, which differ
-from this one only in that operator.
+letting them fall through a generic "unsupported operator".
+
+What ``build_module`` checks is that the element type is a *signless integer* --
+not that it is i32 specifically. These operators work at any integer width, and
+air.api's own test suite covers i16; i32 is simply what ``__main__`` passes,
+matching the predecessor. See the sibling ``vector_ori / vector_xori`` examples, which
+differ from this one only in the operator.
 
 Two differences from the predecessor worth naming:
 
