@@ -23,6 +23,12 @@ the length argument is *between* the two buffers, not appended after them.
 the operands in the order the C symbol expects; ``scalars=[i32]`` only says what
 type that one non-buffer argument has, not where it goes.
 
+The scalar is the *only* part of the shape the kernel reads at runtime. The
+element type and the tile extent are compiled into ``softmax.o``:
+``softmax_bf16`` opens with ``zero_vectorized<bfloat16, 1, 256, 16>(out)``,
+which clears 256 elements whatever the memref says. Both are therefore checked
+below rather than accepted and silently miscomputed.
+
 Unchanged from the raw-bindings version this replaces except that the herd is
 [herd_n, 1] rather than [1, herd_n] -- a 1-D air.api herd is laid out along x,
 the orientation that places on both generations -- and the tile grid is
@@ -44,8 +50,28 @@ from air.backend.xrt_runner import XRTRunner
 np.random.seed(42)
 
 
+KERNEL_TILE_N = 256  # the 256 in zero_vectorized<bfloat16, 1, 256, 16>
+
+
 def build_module(n, tile_n, herd_n, np_dtype_in):
     assert n % (tile_n * herd_n) == 0
+    # Checked, not assumed. softmax.o exports one symbol, and it bakes in both
+    # the element type and the extent -- `softmax_bf16` opens by calling
+    # zero_vectorized<bfloat16, 1, 256, 16>(out), which clears 256 elements
+    # whatever the memref says. A smaller tile is written past its end; a larger
+    # one is left partly dirty. Both link and run.
+    if np_dtype_in is not bfloat16:
+        raise ValueError(
+            f"softmax.o exports only a bf16 kernel (softmax_bf16), so "
+            f"np_dtype_in must be ml_dtypes.bfloat16, got {np_dtype_in!r}"
+        )
+    if tile_n != KERNEL_TILE_N:
+        raise ValueError(
+            f"tile_n must be {KERNEL_TILE_N}: the extent is a template "
+            f"argument of the zero_vectorized call inside softmax_bf16, "
+            f"compiled into softmax.o, not taken from the memref. "
+            f"got tile_n={tile_n}"
+        )
     dt = bf16
 
     A = air.tensor([n], dt)
@@ -100,7 +126,14 @@ if __name__ == "__main__":
         default=N,
         help="Total number of elements",
     )
-    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser.add_argument(
+        "--tile-n",
+        type=int,
+        default=TILE_N,
+        help=f"Tile size. Pinned to {KERNEL_TILE_N} by softmax.o, which "
+        f"compiles the extent in as a template argument; other values are "
+        f"rejected rather than silently miscomputed",
+    )
     parser.add_argument(
         "--herd-n",
         type=int,

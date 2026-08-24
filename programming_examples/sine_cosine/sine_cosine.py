@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: MIT
 """Elementwise sine or cosine via a hand-written AIE kernel, on air.api.
 
-    sinf = air.extern("sinf_bf16_24_8", object="sine_cosine.o")
-    cosf = air.extern("cosf_bf16_24_8", object="sine_cosine.o")
+    kernel = air.extern(
+        "sinf_bf16_24_8" if mode == "sin" else "cosf_bf16_24_8",
+        object="sine_cosine.o",
+    )
     ...
     air.ops.load(a, A[i0 : i0 + tile_n])
-    (sinf if mode == "sin" else cosf)(a, out)
+    kernel(a, out)
     air.ops.store(out, C[i0 : i0 + tile_n])
 
 Nothing is computed in the DSL here -- the whole kernel body is one call into
@@ -20,6 +22,13 @@ Both symbols live in one object file, and only one of them is called per build
 -- ``--mode`` picks at trace time, so the other is never declared. A herd links
 against a single object, which is the constraint ``air.extern`` enforces; two
 kernels from the *same* object are fine.
+
+Note how much of this example's interface the object file pins.
+``sinf_bf16_24_8`` instantiates ``sinf_cosf_poly_bf16<24, 8, true>``: both the
+element type and the 24-element extent are compiled into the object rather than
+read from the memref it is handed, so a kernel called with any other tile size
+would read and write 24 elements regardless. ``--tile-n`` and the dtype are
+therefore checked below rather than accepted and silently miscomputed.
 
 Unchanged from the predecessor except that the herd is [herd_n, 1] rather than
 [1, herd_n] -- a 1-D air.api herd is laid out along x, the orientation that
@@ -45,8 +54,30 @@ from air.backend.xrt_runner import XRTRunner
 np.random.seed(42)
 
 
+KERNEL_TILE_N = 24  # the 24 in sinf_cosf_poly_bf16<24, 8, ...>
+
+
 def build_module(n, tile_n, herd_n, mode, np_dtype_in):
     assert n % (tile_n * herd_n) == 0
+    # Checked, not assumed. The object file exports exactly two symbols, and
+    # each one bakes in the element type and the extent -- neither is read from
+    # the memref at the call. Getting either wrong links and runs, and computes
+    # the wrong answer, so refuse here where the cause can still be named.
+    if mode not in ("sin", "cos"):
+        raise ValueError(f"mode must be 'sin' or 'cos', got {mode!r}")
+    if np_dtype_in is not bfloat16:
+        raise ValueError(
+            f"sine_cosine.o exports only bf16 kernels (sinf_bf16_24_8 / "
+            f"cosf_bf16_24_8), so np_dtype_in must be ml_dtypes.bfloat16, "
+            f"got {np_dtype_in!r}"
+        )
+    if tile_n != KERNEL_TILE_N:
+        raise ValueError(
+            f"tile_n must be {KERNEL_TILE_N}: the extent is a template "
+            f"argument of sinf_cosf_poly_bf16<{KERNEL_TILE_N}, 8, ...>, "
+            f"compiled into sine_cosine.o, not taken from the memref. "
+            f"got tile_n={tile_n}"
+        )
     dt = bf16
 
     A = air.tensor([n], dt)
@@ -108,7 +139,14 @@ if __name__ == "__main__":
         default=N,
         help="Total number of elements",
     )
-    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser.add_argument(
+        "--tile-n",
+        type=int,
+        default=TILE_N,
+        help=f"Tile size. Pinned to {KERNEL_TILE_N} by sine_cosine.o, which "
+        f"compiles the extent in as a template argument; other values are "
+        f"rejected rather than silently miscomputed",
+    )
     parser.add_argument(
         "--herd-n",
         type=int,
