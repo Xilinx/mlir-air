@@ -53,12 +53,20 @@ ARCH_VECTOR_SIZES = {"aie2": 16, "aie2p": 32}
 def build_module(n, tile_n, np_dtype_in, arch="aie2"):
     assert n % (tile_n * NUM_TILES) == 0
     # f32 only, and checked rather than merely documented: division is the one
-    # operator in this directory where no other element type legalizes. bf16,
-    # f16 and i32 all die in the AIE backend's legalizer, on both generations
-    # and at every width tried, e.g. for bf16 at 16 lanes:
+    # operator in this directory where no other element type legalizes, on
+    # either generation and at every width tried. bf16 and f16 die in the AIE
+    # backend's legalizer as
     #     LLVM ERROR: unable to legalize instruction:
     #     %42:_(<16 x s16>) = G_FDIV %37:_, %41:_ (in function: core_0_2)
-    # Accepting them here would turn a one-line contract violation into a
+    # -- identically to the raw-bindings predecessor, so that much is inherited.
+    # i32 is the exception worth naming: it fails as the integer sibling,
+    # G_SDIV <16 x s32>, where the predecessor could not even build the module
+    # ("expected floating point type", from asking for a float divide on an
+    # integer memref). air.api emits a real integer divide, which is the more
+    # correct IR, but AIE has no vector integer divide either -- so the failure
+    # moved later rather than going away. No lit ever exercised any of this:
+    # the predecessor hardcoded np.float32 and exposed no dtype flag.
+    # Accepting any of them would turn a one-line contract violation into a
     # backend crash several passes downstream.
     if np_dtype_in is not np.float32:
         raise ValueError(
