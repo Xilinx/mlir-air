@@ -1,4 +1,4 @@
-# ./python/test/api/select.py -*- Python -*-
+# ./python/test/api/cmp_select.py -*- Python -*-
 
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
@@ -6,6 +6,15 @@
 # RUN: %PYTHON %s | FileCheck %s
 
 """air.api lowers comparisons and select.
+
+Named cmp_select.py, not select.py: lit puts the test's own directory on
+sys.path, and `select` is a stdlib module. On a Python built with select as a
+shared extension rather than statically -- which is what GitHub's hosted
+runners ship -- a file named select.py here wins the import, so `subprocess`
+(reached via numpy -> platform) picks up this file instead. It then imports
+air.api.types while air.api.types is still importing numpy, and every test in
+this directory dies on a circular import. Do not name a test after a stdlib
+module.
 
 A comparison is the first expression node whose result type is *not* the element
 type -- it yields i1, or vector<Wxi1> when vectorised. That is why it gets its
