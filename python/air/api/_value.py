@@ -435,6 +435,27 @@ class BufferExpr:
     # kernels. Equality comparisons are spelled air.api.ops.equal / not_equal
     # instead; ops.select rejects the plain bool that `a[:] == b[:]` produces,
     # naming those, so the difference cannot pass silently.
+    # Bitwise operators are integer-only: MLIR has arith.andi/ori/xori and no
+    # floating-point counterpart, so a float buffer reaching one of these is a
+    # user error rather than something to coerce. The emitter rejects it by
+    # name rather than falling through a generic "unsupported operator".
+    def __and__(self, o):
+        return self._binary(o, "and")
+
+    def __rand__(self, o):
+        return self._binary(o, "and", reverse=True)
+
+    def __or__(self, o):
+        return self._binary(o, "or")
+
+    def __ror__(self, o):
+        return self._binary(o, "or", reverse=True)
+
+    def __xor__(self, o):
+        return self._binary(o, "xor")
+
+    def __rxor__(self, o):
+        return self._binary(o, "xor", reverse=True)
 
     def leaves(self):
         """All buffer leaves, in traversal order."""
