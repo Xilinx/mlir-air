@@ -209,7 +209,23 @@ static inline void rms_chunk(bf16 *restrict y, bf16 *restrict x,
 
 void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                    float *restrict scales, int batch, int c, int n) {
+#ifdef RMS_CHUNK_PROBE
+  // Diagnostic builds only: make row t of the X feed the CONSTANT (t+1)/8, so
+  // every projection output row comes out proportional to t+1. Reading the KV
+  // cache then says what row 7 of the mmul's A operand actually was -- 8x row 0
+  // if the feed is right, 7x if it got the previous token's, 0 if it got
+  // nothing. The flush-side labels (PROJ_FLUSH_PROBE=3) proved the descriptor
+  // chain BELOW the accumulator; this is the hop above it.
+  for (int t = 0; t < batch; t++)
+    for (int i = 0; i < n; i++)
+      y[t * n + i] = (bf16)((float)(t + 1) * 0.125f);
+  (void)x;
+  (void)w;
+  (void)scales;
+  (void)c;
+#else
   rms_chunk(y, x, w, scales, batch, c, n);
+#endif
 }
 
 // 2K-weight variants, matching rms_norm_lo_aie / rms_norm_hi_aie: one packet

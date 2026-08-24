@@ -13,14 +13,20 @@ tree) or **[estimated]** (derived from those). No untagged numbers.
 **DFlash is still worth building. The block size is 4-8, not 16, and the
 speedup is ~1.6-2.8x, not 4.9x.**
 
-**Build state, in one line: the batch-8 engine RUNS on device and its layer
-output matches a batch-1 dispatch to 0.67% rms — closer than the kernel swap
-alone allows.** A batch-8 llama-3.2-1b dispatch completes all 16 decode layers
-**[measured]**; the deadlocks are gone; every stage of the layer has been
-compared against batch 1 and agrees. **One fault is left**, and it is a narrow
-one: the last token's V, 8 elements missing out of every 64 on the last egress
-round. See "Next step" for the stage table, the signature and what is already
-ruled out.
+**Build state, in one line: the batch-8 engine RUNS on device, and HALF ITS
+PROJECTION ROWS READ THE WRONG TOKEN.** A batch-8 llama-3.2-1b dispatch
+completes all 16 decode layers **[measured]** and its layer output matches a
+batch-1 dispatch to 0.67% rms — and that agreement means much less than it
+looks, because the gate that produced it dispatches B copies of ONE token, so a
+token permutation inside the projection is the identity. Feeding row `t` the
+constant `(t+1)/8` and reading the ratios out of the KV cache says what each row
+of the mmul actually saw **[measured]**:
+
+    role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000   exact
+    role 0:  1.000  1.500  2.000  2.498  3.000  3.500  4.000  0.000
+
+Role 0 is the LEAD of every cascade pair — half the output rows of every
+projection — and its row `t` reads `(X[0] + X[t]) / 2`. See "Next step".
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -114,7 +120,8 @@ hold at 8 with room to spare.
 | `egress_bd.py` | the egress gathers, both levels, checked against batch 1 |
 | `kvappend_bd.py` | the KV append BD + the end-of-window overrun guard |
 | `batch_path_check.py` | **the whole path composed** — token t's row vs batch 1's |
-| `batch_equiv.py` | **THE device gate** — B identical tokens, B identical rows |
+| `batch_equiv.py` | **the dataflow gate** — batch-B token t vs batch-1 at position P+t, stage by stage |
+| `batch_row_probe.py` | **the row-map gate** — does row t of the projection get TOKEN t? The one question the others are blind to |
 | `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
 | `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
 | `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
@@ -253,7 +260,11 @@ a batch-1 dispatch:
 | `ACC_STOP=2` | + attention, the o gather, the o-projection, residual1 | **2.0% rms** |
 | full layer | + ph2 norm, gate-up, GLU, down, residual2 | **0.67% rms** |
 
-That is the whole layer, and it is right. The floor is the kernel swap and
+**Read that table with the row-map result above in hand.** Every row of it
+dispatches B copies of ONE token, so it says nothing about which token a
+projection row read — and half of them read the wrong one. What the table does
+establish is that the DATAFLOW is right end to end, which is exactly the
+question it was built to answer. The floor is the kernel swap and
 nothing else: `proj_qmm_gate.py --nblk 4 --batch 8` puts the GEMV and the
 batched mmul **1.65% rms** apart on device off the same weights, and says the
 batched one is the closer of the two to exact fp32 (bias 0.03% against the
@@ -296,20 +307,35 @@ region maths checks out), rope's DMA (single-buffered K and V BDs in one MM2S
 chain, correct lock protocol), the emitter's egress BD (`offset = 14 len = 514`
 on a 528 buffer), and `ypair_l1`'s size (emitted as 528, correctly batched).
 
-So what is left is: `y_acc` row 7 — the LAST TOKEN's row of `aie::mmul<8,8,8>`'s
-C — is wrong on exactly one round of the QKV phase, nonzero-but-wrong in tiles
-0..2 and exactly zero in tile 3. Every other token's row is right, on every
-round, and the same round's K is right.
+#### The fault: role 0 reads `(X[0] + X[t]) / 2`
 
-Two proj-core buffers are `256xf32` (`buf41`, `buf46`) — one per unrolled `_e`
-in `_mm`'s `for _e in range(PAIR_ROWS)`, not a temporal ring. The round loop
-`_v1` reuses them, so a given round is `(_v1, _e)` and K and V differ in one of
-those. The other thing that is per round is the **X refeed**: each `_proj` call
-consumes one, and the QKV phase's six rounds are `XN_REFEED = 6` re-broadcasts
-of `rms_chunk_aie`'s regenerated chunks. An X whose last token's row is short on
-one refeed would put a wrong row 7 into that round's accumulator and no other —
-which is the shape, except that it does not obviously explain tile 3 being
-exactly zero while tiles 0..2 are merely wrong.
+The probe that names it is one stage further up, and it is the one that should
+have been written first. `RMS_CHUNK_PROBE=1` makes the rms core stop normalising
+and feed row `t` the **constant** `(t+1)/8`. The projection is linear, so every
+output row comes out proportional to whatever X its row of the mmul saw, and the
+ratio of row `t`'s output to row 0's IS that token index — read straight off the
+KV cache, since V passes through rope unrotated. `batch_row_probe.py` is that
+check, and it fails on its first run **[measured]**:
+
+    role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000   exact
+    role 0:  1.000  1.500  2.000  2.498  3.000  3.500  4.000  0.000
+
+`(1 + t/2)/8` is exactly `(X[0] + X[t]) / 2`. **Role 0's row `t` is the mean of
+true row 0 and true row `t`**, with row 7 zero-or-garbage on top. 128 of 128
+output rows agree on each ratio, so it is a clean structural map and not noise.
+Role 0 is the LEAD of every cascade pair, so this is half the output rows of
+every projection in the model.
+
+**Why nothing else could see it.** `batch_equiv.py` dispatches B copies of ONE
+token, because that is what makes token `t` comparable to a batch-1 run at
+position `P+t` — and permuting identical rows is the identity. `batch_path_check.py`
+models ONE core; `proj_qmm_gate.py` runs ONE core. The fault is in a cascade
+PAIR, and it only shows when the tokens differ. Three gates, one blind spot,
+and the engine passed all three.
+
+That also explains the previous section's loose end without a separate cause:
+the "last token's V" was this, seen through a fill where every token was the
+same, so only the row whose map is degenerate (`t = 7` → zero) stood out.
 
 #### A gate that measures floating point instead of the engine
 
@@ -528,22 +554,26 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    `GLU_ROW_PROBE=1` swaps the halves, `=2` is `up - gate` (antisymmetric and
    silu-free, and the one that proved the plumbing), `=3` is `up` alone. All
    behind `-DGLU_ROW_PROBE`, so `check_kernels_inert.py` stays green.
-7. **The last token's V.** The one fault left, and `batch_equiv.py` now fails on
-   it. The signature and the two probes that narrowed it are in the section
-   above; the live lead is the **2-deep accumulator ring**, since K and V are
-   consecutive rounds and therefore land in different slots.
+7. **Role 0 reads `(X[0] + X[t]) / 2`.** The one fault left, and the only one
+   that matters: half of every projection's output rows are computed against the
+   wrong activations. `batch_row_probe.py` is the gate. The section above has
+   the map and why three existing gates are all blind to it.
 
-   The next probe is the same trick one stage up: **label the X**, not the
-   flush. `rms_chunk_aie` can write `t*512 + c*128 + i` instead of the norm, and
-   `PROJ_FLUSH_PROBE=3`-style labels then say whether row 7 of the mmul's A
-   operand is what the X feed thinks it sent, on every refeed. That closes the
-   one hop the flush labels do not reach.
+   Where to look, given what is already ruled out. The flush labels
+   (`PROJ_FLUSH_PROBE=3`) proved every descriptor BELOW the accumulator, and the
+   row map proves role 1's A operand is correct — so the two roles are fed
+   differently and only one of them is fed right. They differ in exactly one
+   thing at the AIR level: `_mm`'s `for _e in range(PAIR_ROWS)` is a PYTHON
+   loop, so both bodies are emitted, each with its own `AllocOp(xblk_mm_l1)` and
+   its own `ChannelGet("inX", ...)`, and each core then folds one of them away
+   per tile. `role 0's row t = (row 0 + row t)/2` is what an A operand looks like
+   when it is read with half the row pitch — the first and last rows of a pair
+   of adjacent true rows — so `_XFEED_BD`'s token stride reaching one of the two
+   `inX` gets and not the other is the first thing to check in the emitted AIE.
 
-   Also untried: reading the proj cores' emitted per-round `mm_zero` / `mm_acc`
-   / `mm_flush_row` sequence out of the AIE dump and diffing the two `_e`
-   bodies, and whether `_wscr()`'s segment-scope 16 KB scratch — which the GEMV
-   path does not have — is adjacent in L1 to whichever accumulator loses its
-   tail.
+   Note `xfeed_bd.py` cannot catch this: it checks the DESCRIPTOR against
+   `pack_A`, and the descriptor is shared. What differs is which core's get it
+   lands on.
 8. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
