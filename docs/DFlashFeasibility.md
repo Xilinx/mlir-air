@@ -269,14 +269,32 @@ runs at `[24..31]`, `[88..95]`, `[152..159]`, `[216..223]` — 8 missing every 6
 
 Read that signature as a coordinate. 64 is `PAIR_PAY`, one emitter's per-token
 block, laid `[lead's 32 rows | partner's 32]`; 24..31 is the lead's last 8 rows.
-`proj_qmm_mm_flush_row` writes those from `y_acc[(3*RA+z)*64 + rr*8]`, which at
-batch 8 (`RA` 1, `z` 0, `rr` 7) is `y_acc[248:256]` — **the last 8 floats of the
-accumulator, for the last token, and only on the last egress round**. K is the
-round before and is fine, so it is not the accumulator being short. What is
-ruled out so far: the append descriptor (`kvappend_bd.py`, and the region maths
-checks out), rope's DMA (single-buffered K and V BDs in one MM2S chain, correct
-lock protocol), the emitter's egress BD (`offset = 14 len = 514` on a 528
-buffer, correct), and `ypair_l1`'s size (emitted as 528, correctly batched).
+`proj_qmm_mm_flush_row` writes those from `y_acc[(j*RA+z)*64 + rr*8]`, which at
+batch 8 (`RA` 1, `z` 0, `rr` 7) is **row 7 of each of the four `aie::mmul<8,8,8>`
+C tiles**, and 24..31 is `j = 3` — `y_acc[248:256]`.
+
+Two probes, both behind `-DPROJ_FLUSH_PROBE` so the shipping kernel stays inert,
+narrow it a long way:
+
+| probe | result | what it rules out |
+|---|---|---|
+| `=1` run the flush's tokens BACKWARDS | the hole does not move | not a write-order race — the egress is not reading before the last store lands |
+| `=2` store a marker instead of the last vector | the marker reaches the KV cache, at exactly 24..31 of token 7's **K** | the WRITE path works. `y_acc[248:256]` really was zero |
+
+And the marker sharpens the shape. On the K round, only 24..31 changed — so
+token 7's K was otherwise CORRECT, which rules out the X feed and the token
+index on their own (the same `rr = 7` reads row 7 of every tile in every round).
+On the V round, token 7 was already wrong from element 0, with the zeros on top.
+So the V round's accumulator is wrong in all four tiles for row 7, and zero in
+the fourth. Also ruled out: the append descriptor (`kvappend_bd.py`, and the
+region maths checks out), rope's DMA (single-buffered K and V BDs in one MM2S
+chain, correct lock protocol), the emitter's egress BD (`offset = 14 len = 514`
+on a 528 buffer), and `ypair_l1`'s size (emitted as 528, correctly batched).
+
+The accumulator is a **2-deep ring** (`buf41` and `buf46`, both `256xf32`, on
+every proj core), and phase 0 has 6 rounds — so K (round 4) and V (round 5) land
+in DIFFERENT slots. That is the one asymmetry between them that is not "last",
+and it is where to look next.
 
 #### A gate that measures floating point instead of the engine
 
@@ -496,17 +514,16 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    silu-free, and the one that proved the plumbing), `=3` is `up` alone. All
    behind `-DGLU_ROW_PROBE`, so `check_kernels_inert.py` stays green.
 7. **The last token's V.** The one fault left, and `batch_equiv.py` now fails on
-   it. 8 elements missing out of every 64 in token 7's V, on the last egress
-   round; K fine for all 8 tokens; the missing 8 are the lead role's rows 24..31,
-   which `proj_qmm_mm_flush_row` sources from `y_acc[248:256]` — the last 8
-   floats of the accumulator, for the last token. Ruled out so far: the append
-   descriptor, rope's DMA, the emitter's egress BD, `ypair_l1`'s size.
+   it. The signature and the two probes that narrowed it are in the section
+   above; the live lead is the **2-deep accumulator ring**, since K and V are
+   consecutive rounds and therefore land in different slots.
 
    What has NOT been tried: reading the proj cores' emitted `mm_zero` /
-   `mm_acc` / `mm_flush_row` sequence for the LAST round against the others (the
-   asymmetry has to be there — K is the round before and is correct), and
-   whether `_wscr()`'s segment-scope 16 KB scratch is live across the round
-   boundary in a way the last round's accumulator is not.
+   `mm_acc` / `mm_flush_row` sequence per ROUND out of the AIE dump and diffing
+   the two ring slots; forcing a single accumulator (hoisting `a_acc` out of
+   `_mm`'s round loop) to see whether the fault survives; and whether
+   `_wscr()`'s segment-scope 16 KB scratch, which the GEMV path does not have,
+   is adjacent in L1 to whichever slot loses its tail.
 8. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.

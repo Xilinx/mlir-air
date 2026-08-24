@@ -285,12 +285,31 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
                 "needs a size_C=32 variant");
   alignas(aie::vector_decl_align) float tmp[RB];
 
-  for (int t = 0; t < PROJ_MM_BATCH; t++) {
+  // PROJ_FLUSH_PROBE, diagnostic builds only. The batched engine loses 8 of
+  // every 64 elements of the LAST token's row on ONE egress round --
+  // y_acc[248:256] at batch 8, the last vector this loop reads.
+  //   1  run the tokens backwards. If the hole moves to token 0 it is about
+  //      being written LAST (the egress reading before the store lands); if it
+  //      stays on token 7 it is the token index or the accumulator.
+  //      [measured: it STAYS. Not a write-order race.]
+  //   2  store a marker instead of the last vector. If the marker reaches the
+  //      KV cache, the WRITE lands and the accumulator was zero; if the hole is
+  //      still a hole, the write itself is being lost.
+  for (int tt = 0; tt < PROJ_MM_BATCH; tt++) {
+#if defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 1
+    const int t = PROJ_MM_BATCH - 1 - tt;
+#else
+    const int t = tt;
+#endif
     const int z = t / 8, rr = t % 8;
     AIE_LOOP_UNROLL_FULL
     for (int j = 0; j < CB; j++)
       aie::store_v(tmp + j * 8,
                    aie::load_v<8>(y_acc + (j * RA + z) * 64 + rr * 8));
+#if defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 2
+    if (t == PROJ_MM_BATCH - 1)
+      aie::store_v(tmp + (CB - 1) * 8, aie::broadcast<float, 8>(0.125f));
+#endif
     copy_float_to_bf16<RB>(y_out + 16 + (t * tok_stride + i) * RB, tmp);
   }
 }
