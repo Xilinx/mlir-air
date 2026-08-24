@@ -38,7 +38,7 @@ import argparse
 import numpy as np
 
 from air import api as air
-from air.api import f32
+from air.api.types import dtype_of
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 
@@ -49,7 +49,17 @@ NUM_TILES = 2
 
 def build_module(n, tile_n, np_dtype_in):
     assert n % (tile_n * NUM_TILES) == 0
-    dt = f32
+    # Honoured, not ignored: the host buffers in __main__ are allocated with
+    # np_dtype_in, so hardcoding an element type here would hand f32 memrefs to
+    # non-f32 host arrays -- an interface the caller cannot see is wrong. The
+    # predecessor mapped it through type_mapper; dtype_of is the same table,
+    # reached through the API's own DType so the vector width comes with it.
+    dt = dtype_of(np_dtype_in)
+    if dt is None:
+        raise ValueError(
+            f"unsupported element type {np_dtype_in!r}; air.api knows "
+            f"float32, float16, bfloat16, int8/16/32 and uint8/16/32"
+        )
 
     A = air.tensor([n], dt)
     B = air.tensor([n], dt)
