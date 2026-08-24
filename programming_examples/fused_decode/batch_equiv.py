@@ -63,6 +63,7 @@ Exit code is the gate: 0 equivalent.
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -151,7 +152,140 @@ def rms_bo(g, batch, seed):
     return buf
 
 
-def dispatch(xclbin, insts, g, batch, x_row, seed, xrt):
+def compare(got, want):
+    """(bytes that differ, rms relative difference) between two layer outputs.
+
+    NOT a byte compare, and the reason is a property of the design rather than
+    a concession. The batch-1 template runs the v1 GEMV projection; the batched
+    one runs the q4k mmul. Those are different kernels computing the same
+    product, in different accumulation orders -- proj_qmm_gate.py already
+    measured the batched one at 1.4x the GEMV's error and 1.7% rms apart at the
+    PROJECTION OUTPUT, on device, off the same weights. Bit-equality was never
+    available here, so a byte gate reports a difference the design has already
+    accounted for and says nothing about whether the WIRING is right.
+
+    What the wiring gets wrong looks different: a swapped stride, a token
+    reading another token's row or the wrong position's context moves a large
+    fraction of the row by O(1), not a few percent. So the number to read is the
+    rms relative difference, and the byte count is kept only because it is the
+    cheaper thing to eyeball.
+    """
+
+    def f32(v):
+        return (v.view(np.int16).astype(np.uint16).astype(np.uint32) << 16).view(
+            np.float32
+        )
+
+    fa, fb = f32(got).astype(np.float64), f32(want).astype(np.float64)
+    # Non-finite is its own answer, not a bad rms. Random weights over many
+    # layers overflow bf16 on their own, and a run that did is not evidence
+    # about the wiring either way -- see --waves.
+    ok = np.isfinite(fa) & np.isfinite(fb)
+    nnf = int(fa.size - ok.sum())
+    if not ok.any():
+        return int((got != want).sum()), float("inf"), nnf
+    den = float(np.sqrt(np.mean(fb[ok] ** 2)))
+    num = float(np.sqrt(np.mean((fa[ok] - fb[ok]) ** 2)))
+    return int((got != want).sum()), (num / den if den else num), nnf
+
+
+def as_f32(v):
+    """bf16 bit patterns -> float32. A BO holds the bit patterns."""
+    return (v.view(np.int16).astype(np.uint16).astype(np.uint32) << 16).view(np.float32)
+
+
+def probe_stages(gN, g1, probeN, probe1, t, tol):
+    """Compare the DECODE_PROBE taps stage by stage, batched token t vs batch 1.
+
+    This is what turns "the layer output is wrong" into "wrong from HERE on".
+    The layer output is the only thing that crosses the shim, so without the
+    taps a numeric divergence anywhere in the layer looks the same at the end.
+    Build both templates with DECODE_PROBE set and the taps say which stage
+    first disagrees:
+
+      Q  rope's q, after the whole block has landed in the q memtile
+      O  the gathered attention output
+      D  the GLU output, on its way to the down projection
+
+    Nothing prints when the taps are off, which is the default.
+    """
+    taps = gN.get("probe") or {}
+    if not taps:
+        return
+    print("    stage taps  (batched token vs batch 1):")
+    first = True
+    for k in ("Q", "O", "D"):
+        if k not in taps or k not in (g1.get("probe") or {}):
+            continue
+        offN, ln = taps[k]
+        off1, l1 = g1["probe"][k]
+        if ln != l1:
+            print(f"      {k}: per-token length {ln} vs {l1} -- not comparable")
+            continue
+        a = probeN[offN + t * ln : offN + (t + 1) * ln]
+        b = probe1[off1 : off1 + l1]
+        n, rel, nnf = compare(a, b)
+        over = not (rel <= tol) or nnf
+        note = "   <-- FIRST STAGE TO DIVERGE" if over and first else ""
+        first = first and not over
+        print(
+            f"      {k}: {n} of {ln} bytes differ, rms rel {rel:.2e}"
+            + (f", {nnf} NON-FINITE" if nnf else "")
+            + note
+        )
+
+
+def shape_of_difference(yN, y1, batch, K):
+    """What KIND of wrong, printed. `rms rel 771` on its own localises nothing.
+
+    Each line separates a family of wiring fault that the others cannot:
+
+      per-token rms      one row far larger than the rest is an accumulate
+                         running too many times; all rows equal is a token
+                         index that never reaches the data
+      sorted-equal       the same VALUES in a different order is a gather or
+                         a stride, not arithmetic
+      scale              a constant ratio to the reference is a count -- a
+                         refeed, a residual added B times, a doubled round
+      leading run        how far in the two agree, which is where the first
+                         descriptor diverges
+    """
+    a = as_f32(yN).astype(np.float64)
+    b = as_f32(y1).astype(np.float64)
+    rows = [a[t * K : (t + 1) * K] for t in range(batch)]
+    print("\n  shape of the difference")
+    print(f"    reference rms {np.sqrt(np.mean(b**2)):.4g}")
+    print(
+        "    batched rms per token  "
+        + " ".join(f"{np.sqrt(np.mean(r**2)):.3g}" for r in rows)
+    )
+    same = sum(1 for r in rows[1:] if np.array_equal(r, rows[0]))
+    print(f"    tokens identical to token 0: {same} of {batch - 1}")
+    perm = np.array_equal(np.sort(rows[0]), np.sort(b))
+    print(f"    token 0 is a PERMUTATION of the reference: {perm}")
+    nz = b != 0
+    if nz.any():
+        ratio = rows[0][nz] / b[nz]
+        print(
+            f"    token 0 / reference: median {np.median(ratio):.4g}, "
+            f"{np.sum(np.isclose(ratio, np.median(ratio), rtol=1e-2))} of "
+            f"{nz.sum()} within 1% of it"
+        )
+    d = np.nonzero(yN[:K] != y1)[0]
+    print(f"    they agree over the first {int(d[0]) if d.size else K} elements")
+    print("    first 8   ref " + " ".join(f"{v:11.4g}" for v in b[:8]))
+    print("              got " + " ".join(f"{v:11.4g}" for v in rows[0][:8]))
+    # A row that repeats with the period of an egress round, a chunk or a
+    # row-block is a descriptor that re-read the same window; the rms per
+    # period says which one.
+    for name, p in (("PAYLOAD 512", 512), ("chunk 512", 512), ("row-block 32", 32)):
+        if p < K and p != 512 or name.startswith("PAYLOAD"):
+            seg = rows[0][: K - K % p].reshape(-1, p)
+            eq = int(sum(1 for r in seg[1:] if np.array_equal(r, seg[0])))
+            print(f"    token 0 repeats every {name}: {eq} of {len(seg) - 1}")
+
+
+def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000):
     """One dispatch. Returns the X buffer afterwards -- the layer output.
 
     Raw int16, not floats: this compares BYTES. A bit-level difference a float
@@ -194,12 +328,15 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt):
         bos[name].write(buf, 0)
         bos[name].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
+    _t0 = time.perf_counter()
     st = kern(3, i_bo, ib.size, bos["x"], bos["w"], bos["r"], bos["y"], bos["kv"]).wait(
-        60000
+        wait_ms
     )
+    _el = time.perf_counter() - _t0
     for b in ("x", "y", "kv"):
         bos[b].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
     out = np.frombuffer(bos["x"].map(), dtype=np.int16, count=g["k"]).copy()
+    yout = np.frombuffer(bos["y"].map(), dtype=np.int16, count=g["ny"]).copy()
     if not str(st).endswith("COMPLETED"):
         # HOW FAR DID IT GET. A timeout says nothing about where; the output
         # buffers do. The layer output is written IN PLACE over X, the KV cache
@@ -220,7 +357,7 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt):
             more = f" (+{len(runs) - 8} more)" if len(runs) > 8 else ""
             return f"{name}: {ix.size} of {n} in {len(runs)} runs: {shown}{more}"
 
-        print("  TIMEOUT. what the device managed to write:")
+        print(f"  TIMEOUT after {_el:.1f}s. what the device managed to write:")
         for name, n in (("x", g["k"]), ("y", g["ny"]), ("kv", g["kv_elems"])):
             print("    " + moved(name, n, fills[name]))
         bos.clear()
@@ -231,7 +368,7 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt):
     # release order for the same reason.
     bos.clear()
     del i_bo, kern, ctx, xb, dev
-    return out
+    return out, yout
 
 
 def template(prefix, batch, L):
@@ -257,6 +394,23 @@ def main():
         help="'0' needs one batch-1 template; 'all' needs one per position",
     )
     ap.add_argument(
+        "--tol",
+        type=float,
+        default=5e-2,
+        help="rms relative difference a token may show against its batch-1 "
+        "reference. Not zero, and see compare(): the two builds run DIFFERENT "
+        "projection kernels. What this is sized against is a wiring fault, "
+        "which moves a row by O(1), not by a few percent.",
+    )
+    ap.add_argument(
+        "--wait",
+        type=int,
+        default=60000,
+        help="ms to wait for a dispatch. Raise it to tell a HANG from a "
+        "slow run: a batched dispatch is B times the attention of a "
+        "batch-1 one, and the default was chosen for batch 1.",
+    )
+    ap.add_argument(
         "--smoke",
         action="store_true",
         help="dispatch the batched build only and report that it completed. "
@@ -273,7 +427,13 @@ def main():
     gN = geom(args.model, args.vocab_chunk_i2, args.L, args.batch, args.n_layers)
     g1 = geom(args.model, args.vocab_chunk_i2, args.L, 1, args.n_layers)
     rng = np.random.default_rng(args.seed)
-    row = rng.integers(-2048, 2048, size=g1["k"], dtype=np.int16)
+    # bf16 of a bounded float, NOT raw int16. A BO holds bit patterns, and half
+    # the int16 range is a bf16 exponent of 0xF0 and up -- 0xFF80 alone is -inf.
+    # The first version of this line filled X from rng.integers and every output
+    # came back non-finite, from the INPUT rather than from anything the engine
+    # did. Same trap as the random-weight NaN this file already documents, one
+    # buffer over.
+    row = bf16(rng.uniform(-1.0, 1.0, size=g1["k"]))
 
     bn, bni = template(args.prefix, args.batch, args.L)
     if not bn.exists():
@@ -285,7 +445,7 @@ def main():
         )
 
     print(f"\nbatch equivalence  [{args.model}, batch {args.batch}, L {args.L}]")
-    yN = dispatch(bn, bni, gN, args.batch, row, args.seed, xrt)
+    yN, probeN = dispatch(bn, bni, gN, args.batch, row, args.seed, xrt, args.wait)
     print(f"  batch {args.batch}: dispatch COMPLETED, {yN.size} elements back")
     # A constant output makes every comparison below trivially true. This is not
     # hypothetical: random-byte weights produced 0x7F81 -- one NaN -- in every
@@ -316,17 +476,18 @@ def main():
         if not b1.exists():
             missing.append(b1.name)
             continue
-        y1 = dispatch(b1, b1i, g1, 1, row, args.seed, xrt)
+        y1, probe1 = dispatch(b1, b1i, g1, 1, row, args.seed, xrt, args.wait)
         got = yN[t * K : (t + 1) * K]
-        if not np.array_equal(got, y1):
-            n = int((got != y1).sum())
-            bad.append((t, n, int(np.argmax(got != y1))))
-        else:
-            bad.append(None) if False else None
+        n, rel, nnf = compare(got, y1)
+        if not (rel <= args.tol) or nnf:
+            bad.append((t, n, int(np.argmax(got != y1)), rel, nnf))
         print(
-            f"  token {t} (L {args.L + t}): "
-            f"{'EQUAL' if not bad or bad[-1][0] != t else f'{bad[-1][1]} of {K} differ'}"
+            f"  token {t} (L {args.L + t}): {n} of {K} bytes differ, "
+            f"rms rel {rel:.2e}"
+            + (f", {nnf} NON-FINITE" if nnf else "")
+            + ("" if rel <= args.tol and not nnf else f"   <-- FAIL")
         )
+        probe_stages(gN, g1, probeN, probe1, t, args.tol)
 
     if missing:
         print(
@@ -337,8 +498,21 @@ def main():
         )
         return 1
     if bad:
-        t, n, first = bad[0]
-        print(f"\n  first mismatch: token {t}, element {first}, {n} elements differ")
+        t, n, first, rel, nnf = bad[0]
+        print(
+            f"\n  first mismatch: token {t}, element {first}, "
+            f"{n} bytes differ, rms rel {rel:.2e}"
+        )
+        if nnf:
+            print(
+                f"  {nnf} elements are NOT FINITE. Read that first: random\n"
+                "  weights over many layers overflow bf16 with no help from the\n"
+                "  batching, and the comparison below means nothing until they\n"
+                "  are gone. Rebuild both templates with UNI_WAVE_HI=1 and pass\n"
+                "  --prefix for the one-wave pair."
+            )
+            return 1
+        shape_of_difference(yN, y1, args.batch, K)
         print(
             "  Read WHICH tokens differ before anything else:\n"
             "    token 0 too        -> the batched PATH: the @xnorm chunk feed,\n"
@@ -353,8 +527,8 @@ def main():
         return 1
     n = len(list(positions))
     print(
-        f"\n  {n} token{'s' if n > 1 else ''} match batch 1 at their own "
-        f"position -- GATE PASS"
+        f"\n  {n} token{'s' if n > 1 else ''} agree with batch 1 at their own "
+        f"position to within --tol {args.tol:.0e} -- GATE PASS"
     )
     if args.tokens == "0":
         print(

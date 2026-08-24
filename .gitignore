@@ -28,6 +28,8 @@ vck5000_aie_base_graph_hw.xsa.link_summary
 Work
 build
 build_*
+# build_* is for build DIRECTORIES; this is a script that happens to match.
+!programming_examples/fused_decode/build_template.sh
 build-xrt
 install
 install-xrt

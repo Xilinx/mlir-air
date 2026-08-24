@@ -225,8 +225,12 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
     # and B tokens occupy B positions of the window that already exists.
     _b = getattr(fd, "BATCH", 1)
     decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD * _b
+    # DECODE_PROBE lays its mid-layer taps after that region; the total is 0
+    # unless the build asked for them, so the shipping numbers do not move.
+    decode_y += getattr(fd, "PROBE_TOTAL", 0)
     return dict(
-        k=fd.K * _b,
+        # X_SLOTS is 1 unless DECODE_HIDDEN_TAPS keeps every layer boundary.
+        k=fd.X_SLOTS * fd.K * _b,
         w_elems=w_elems,
         **({"w_parts": w_parts} if w_parts else {}),
         rms_size=fd.UNI_DEC * fd.RMS_LAYER + _rope_w_elems(fd) + fd.K,
@@ -242,6 +246,18 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         # Nothing in rms_size says that; this is how a caller finds the stride.
         rope_w_len=fd.ROPE_W_LEN,
         batch=_b,
+        # DECODE_PROBE tap regions in Y, per token. Empty unless the build asked
+        # for them. Keyed by tap; the length is ONE token's slice, so a caller
+        # compares slice t of a batched run against slice 0 of a batch-1 one.
+        probe=(
+            {
+                k: (fd.PROBE_OFF[k], fd.PROBE_LEN[k] // _b)
+                for k in fd.PROBE_LEN
+                if fd.PROBE_LEN[k]
+            }
+            if getattr(fd, "PROBE_TOTAL", 0)
+            else {}
+        ),
     )
 
 

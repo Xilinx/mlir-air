@@ -633,6 +633,45 @@ import os as _os
 # BATCH_MAX_PROJ for what the value means and why 8 is the ceiling.
 BATCH = int(_os.environ.get("DECODE_BATCH", "1"))
 
+# DECODE_PROBE: tap mid-layer buffers out to the (otherwise unused) Y BO, so a hung
+# dispatch says HOW FAR it got. This exists because nothing else does.
+#
+# A hung batched dispatch leaves exactly two pieces of evidence -- the DDR KV cache
+# (written by the rope append, early) and X (written by the layer-out drain, last) --
+# and everything in between is one opaque region. The two obvious ways to split it
+# both fail on this floorplan, and both cost a build to learn:
+# air.preserve_shim_dma_order is a GLOBAL order, so hoisting a drain to report
+# earlier starves the whole sequence; and a fresh shim endpoint between the append
+# and the readback does not route. What DOES work is tapping a buffer that ALREADY
+# EXISTS, on a tile that already has a route to a shim, into a BO nothing else writes.
+#
+# A bit mask, so several taps can share one build -- each one costs ~5 minutes:
+#
+#   1  Q  the q memtile, after rope's B q rows have landed and BEFORE the fan
+#         -> rope finished, and the fan is what is blocked
+#   2  O  the o-gather memtile, ONE PUT PER TOKEN as that token's four CU
+#         outputs land -> how many tokens of the block got through attention
+#   4  D  the down memtile, one put per GLU slice
+#         -> o-proj (ph1), the ph2 norm, gate-up and the GLU core all completed
+#
+# PER TOKEN, not once at the end, and that is most of the value. Four of the six
+# faults so far were "got N of B tokens through", and a tap that fires only on
+# completion cannot tell that from "got none". A partially-received shim BD still
+# wrote the bytes it did receive, so the prefix that lands IS the count.
+#
+# ONE CHANNEL PER SOURCE TILE, for a reason that cost two builds: a fresh shim
+# endpoint is not free. probeA from the attention CU took shim_noc_tile_3_0, moved
+# layerOut to column 0, and the cascade left the rms core's @xnorm with no route to
+# the X memtile. So Q and O share one channel out of mem_tile_5_1 -- they are both
+# on it, in program order -- and D has its own out of mem_tile_4_1.
+#
+# Y is the right target: HOST_DRAIN is [dest 0] and dest 0 is loop-closed on chip,
+# so in this config NOTHING writes Y, batch_equiv.py --smoke already reads it back,
+# and it takes no traffic off the KV cache's RAW barrier. Off by default, and the
+# batch-1 no-op gate is what keeps it that way.
+PROBE = int(_os.environ.get("DECODE_PROBE", "0"))
+PROBE_Q, PROBE_O, PROBE_D = 1, 2, 4
+
 # Faithful decode: real attention (QKV -> rope -> flash attn -> o-proj X), mirroring
 # q4nx_decode_repro/full_decode_faithful.mlir.
 # the reference's fixed attention geometry: 4 CUs, each = 8 q heads + 2 kv heads (= 32 q heads,
@@ -935,6 +974,20 @@ UNI_WAVES = UNI_DEC + UNI_LM
 # to test host-wait quiescence between decode and vocab on one xclbin.
 UNI_WAVE_LO = int(_os.environ.get("UNI_WAVE_LO", "0"))
 UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
+if BATCH > 1:
+    # The vocab waves CANNOT run batched, so the batched sequence must not drive
+    # them. LM_HEAD is already refused at BATCH>1 and the rms core's batched body
+    # has no vocab arm at all -- it is not an empty arm, it is the decode body
+    # emitted unconditionally (see _rms_decode_batched: the vocab @xnorm put is a
+    # memtile-shaped chunk-major descriptor whose 512-element wrap does not fit a
+    # compute tile's 8-bit wrap field, so there is nothing legal to put there).
+    #
+    # Left at UNI_WAVES this is a deadlock at the FIRST vocab wave and nowhere
+    # earlier: all UNI_DEC decode layers run, every layer's output lands, every
+    # layer's KV appends, and then the rms core starts a decode pass into a chip
+    # whose every other tile has taken its vocab arm and gone idle. It looks like
+    # a batching fault and it is not one.
+    UNI_WAVE_HI = min(UNI_WAVE_HI, UNI_DEC)
 
 # Weight-buffer grouping: G decode layers per weight BO. A shim BD's byte offset
 # is a uint32 (aiex.npu.address_patch $arg_plus -> uint32_t in AIETargetNPU), so
@@ -1043,6 +1096,28 @@ GLU_PCOL = 5  # GLU compute tile + down memtile column (reference: tile_5_x + me
 HOST_ROUNDS = sum(ROUNDS_PER_DEST[p] for p in HOST_DRAIN)  # host-drained egress rounds
 # #4: the down egresses as the rms layer output (residual2), drained on its own channel.
 LAYER_RNDS = (PAIR_ROWS * I2P[DOWN_PHASE]) if FULL4 else 0
+
+# The probe taps (see DECODE_PROBE): each size is the whole buffer that tile already
+# holds, so a tap is one contiguous put of something already resident.
+#
+# Laid AFTER the region the normal drains use, so a probe build's Y offsets do not
+# move any shipping descriptor -- and so `y: nothing written` keeps meaning what it
+# meant. Absolute, not per layer: with more than one wave the later layers just
+# overwrite, and the question the probe answers is about the FIRST one.
+PROBE_LEN, PROBE_OFF = {}, {}
+_poff = (HOST_ROUNDS + LAYER_RNDS) * PAYLOAD * BATCH
+for _pb, _pn, _plen in (
+    (PROBE_Q, "Q", BATCH * DQ_PADDED),
+    (PROBE_O, "O", BATCH * DQ),
+    (PROBE_D, "D", BATCH * GLU_OUT),
+):
+    PROBE_LEN[_pn] = _plen if PROBE & _pb else 0
+    PROBE_OFF[_pn] = _poff
+    _poff += PROBE_LEN[_pn]
+PROBE_TOTAL = sum(PROBE_LEN.values())
+# Q and O share the mem_tile_5_1 channel, so the shim drains them as ONE task at
+# Q's offset -- which is O's offset when Q is off.
+PROBE_5_LEN = PROBE_LEN["Q"] + PROBE_LEN["O"]
 
 # DECODE_HIDDEN_TAPS=1: keep every layer's hidden state instead of overwriting it.
 #
@@ -1377,8 +1452,10 @@ def build_module():
         # Every drained PAYLOAD row becomes B rows, token-major (egress_bd.py).
         # The vocab region does NOT scale here: LM_HEAD is refused at BATCH>1.
         _y_elems = (
-            HOST_ROUNDS + LAYER_RNDS
-        ) * PAYLOAD * BATCH + UNI_LM * VOCAB_SIZE_PADDED
+            (HOST_ROUNDS + LAYER_RNDS) * PAYLOAD * BATCH
+            + UNI_LM * VOCAB_SIZE_PADDED
+            + PROBE_TOTAL
+        )
         y_l3 = MemRefType.get(
             [_y_elems], bf16
         )  # host-drain (QKV) rounds + LAYER_RNDS rms layer-out (down) rounds
@@ -1460,7 +1537,14 @@ def build_module():
         ropelut_l1 = MemRefType.get([ROPE_W_LEN], bf16, memory_space=l1)
         # ATTN S3a flash-attn (1 CU; attn_iso proven shapes). DH=64, 8 Q heads,
         # 2 KV heads per CU -> DQ=OSZ=512, DK=128, k/v block 16x128, scores 192.
-        aq_l1 = MemRefType.get([DQ_PADDED_PER_CU], bf16, memory_space=l1)  # q per CU
+        # q per CU. [BATCH][DQ_PADDED_PER_CU] when batched, and taken in ONE get
+        # before the token loop -- see _qk_body. This is a deadlock fix, not a
+        # buffering choice: the q memtile's four fan-out puts are a DAISY CHAIN
+        # (CU c+1's transfer is gated on CU c's finishing), so a one-token
+        # landing buffer makes CU 0's link wait for CU 0 to run the whole block,
+        # while CU 1 -- which cannot start without its q -- holds up the KV
+        # re-block memtile that CU 0 is waiting on.
+        aq_l1 = MemRefType.get([BATCH * DQ_PADDED_PER_CU], bf16, memory_space=l1)
         ak_l1 = MemRefType.get(
             [16 * KVPC_DH], bf16, memory_space=l1
         )  # k block 16xKVPC_DH
@@ -1678,6 +1762,16 @@ def build_module():
             visibility="private",
         )
         _set_attn_link(attn_qk_blk, "attn_qk")
+        if BATCH > 1:
+            # Same call, plus which row of the resident q block to read. The
+            # token index goes AFTER L so s_block stays the last memref and
+            # AIR's shared-L1 classifier still tags this call the s producer.
+            attn_qk_blk_row = FuncOp(
+                "attn_qk_blk_row",
+                ([aq_l1, ak_l1, m_l1, c_l1, as_l1, i32, i32, i32], []),
+                visibility="private",
+            )
+            _set_attn_link(attn_qk_blk_row, "attn_qk")
         attn_kv_blk = FuncOp(
             "attn_kv_blk",
             ([as_l1, av_l1, y_l1, lden_l1, i32, i32], []),
@@ -1864,6 +1958,11 @@ def build_module():
             else:
                 channel_decl("inKV", size=[N_ATTN_CU])
         channel_decl("attnO", size=[N_ATTN_CU])
+        # One tap channel per SOURCE TILE, not per tap (see DECODE_PROBE).
+        if PROBE_5_LEN:
+            channel_decl("probe5", size=[1])
+        if PROBE_LEN["D"]:
+            channel_decl("probe4", size=[1])
         # W: host (per col) -> group memtile -> NCY cores.
         if W_DUAL_CHAN:
             # PER-COLUMN channels rather than one [NCX] bundle, so that both of a
@@ -1951,6 +2050,39 @@ def build_module():
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
+
+        def _probe_put(name, chan, buf):
+            """Emit one DECODE_PROBE tap, or nothing when its bit is off.
+
+            A no-op by default, and that is the contract: the batch-1 diff has
+            to stay byte-identical with the taps compiled in.
+
+            EMITTED AFTER the shipping transfer it observes, never before, and
+            that placement is the whole of what makes the taps usable. In front,
+            a tap takes the memtile's first free MM2S and pushes the shipping
+            flow up one -- mem_tile_4_1's @xnorm has no route to the X memtile
+            from MM2S1, so the build does not place -- and pinning the tap higher
+            only trades that for a stall: the q tap sat in front of a fan whose
+            first link it was now gating, and reached the shim with 4 of 8 tokens.
+            Behind the flow it observes, a tap reads a buffer that is already
+            finished with, and is a plain extra reader.
+            """
+            if not PROBE_LEN[name]:
+                return
+            _p = ChannelPut(
+                chan,
+                buf,
+                offsets=[idx(0)],
+                sizes=[idx(PROBE_LEN[name])],
+                strides=[idx(1)],
+            )
+            # AND pinned high. Emission order is not allocation order here: even
+            # behind the re-broadcast it observes, an unpinned tap takes the
+            # memtile's MM2S0 and leaves @xnorm on MM2S1, which does not route to
+            # the X memtile from either mem_tile_4_1 or mem_tile_5_1.
+            _p.operation.attributes["air.memtile_dma_channel_min"] = IntegerAttr.get(
+                T.i32(), 2
+            )
 
         def grp_leads(g):
             # the leads (cx,pp) of group g, header-bearer first (k==0). Group g owns
@@ -2764,6 +2896,31 @@ def build_module():
                                 sizes=[BATCH * LAYER_RNDS * PAYLOAD],
                                 strides=[1],
                             )
+                            # The DECODE_PROBE taps drain LAST, one shim task per
+                            # source tile. Not mid-layer, and this cost a build to
+                            # learn: preserve_shim_dma_order is global, so a tap
+                            # task placed between two weight feeds puts the LATER
+                            # feed behind data the layer cannot produce until that
+                            # feed has been consumed. Behind the layer output, a
+                            # tap is behind everything and gates nothing.
+                            if PROBE_5_LEN:
+                                ChannelGet(
+                                    "probe5",
+                                    Y,
+                                    indices=[idx(0)],
+                                    offsets=[PROBE_OFF["Q"]],
+                                    sizes=[PROBE_5_LEN],
+                                    strides=[1],
+                                )
+                            if PROBE_LEN["D"]:
+                                ChannelGet(
+                                    "probe4",
+                                    Y,
+                                    indices=[idx(0)],
+                                    offsets=[PROBE_OFF["D"]],
+                                    sizes=[PROBE_LEN["D"]],
+                                    strides=[1],
+                                )
                             yield_([])
 
                         index_switch(
@@ -3420,6 +3577,7 @@ def build_module():
                                 strides=[idx(1)],
                             )
                         _qmtb_fan(qmtb)
+                        _probe_put("Q", "probe5", qmtb)
                         DeallocOp(qmtb)
 
                     def _qmtb_fan(qmtb):
@@ -3812,7 +3970,30 @@ def build_module():
                                     yield_([])
 
                             def _qk_body(sh, Lh, _c):
-                                _tok_loop(_qk_body_one, sh, Lh, _c)
+                                if BATCH == 1:
+                                    _tok_loop(_qk_body_one, sh, Lh, _c)
+                                    return
+                                # ONE get of the whole block's q, before the
+                                # token loop -- the same shape the q memtile uses
+                                # one hop up, and for the same reason.
+                                #
+                                # The memtile fans q to the four CUs as a DAISY
+                                # CHAIN: CU c+1's transfer only starts when CU c's
+                                # has finished. A per-token get makes CU 0's link
+                                # 8 tokens long and gates it on CU 0 running the
+                                # whole block -- but CU 0 cannot, because the KV
+                                # re-block memtile fans each block to BOTH CUs of
+                                # the column in lockstep and CU 1 is still waiting
+                                # for the q it will not get until CU 0 finishes.
+                                # Taking all B rows at once breaks the chain: the
+                                # transfer completes on arrival, with no core in
+                                # the loop.
+                                a_q = AllocOp(aq_l1, [], [])
+                                ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                                for _t in for_(idx(0), idx(BATCH), idx(1)):
+                                    _qk_body_one(sh, _tok_L(Lh, _t), Lh, _c, a_q, _t)
+                                    yield_([])
+                                DeallocOp(a_q)
 
                             def _kv_body(sh, Lh, _c):
                                 if BATCH == 1:
@@ -3831,9 +4012,11 @@ def build_module():
                                     _attn_o_put(a_o, _c, _to)
                                 DeallocOp(a_o)
 
-                            def _qk_body_one(sh, Lh, Lblk, _c):
-                                a_q = AllocOp(aq_l1, [], [])
-                                ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                            def _qk_body_one(sh, Lh, Lblk, _c, a_q=None, t_iv=None):
+                                _own_q = a_q is None
+                                if _own_q:
+                                    a_q = AllocOp(aq_l1, [], [])
+                                    ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
                                 a_m = AllocOp(m_l1, [], [])
                                 a_cc = AllocOp(c_l1, [], [])
                                 # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
@@ -3851,13 +4034,29 @@ def build_module():
                                     a_k = AllocOp(ak_l1, [], [])
                                     ChannelGet("toK", a_k, indices=[idx(_c)])
                                     blk_c = arith.index_cast(i32, _blk)
-                                    CallOp(
-                                        attn_qk_blk,
-                                        [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
-                                    )
+                                    if _own_q:
+                                        CallOp(
+                                            attn_qk_blk,
+                                            [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
+                                        )
+                                    else:
+                                        CallOp(
+                                            attn_qk_blk_row,
+                                            [
+                                                a_q,
+                                                a_k,
+                                                a_m,
+                                                a_cc,
+                                                sh,
+                                                blk_c,
+                                                Lh,
+                                                arith.index_cast(i32, t_iv),
+                                            ],
+                                        )
                                     DeallocOp(a_k)
                                     yield_([])
-                                DeallocOp(a_q)
+                                if _own_q:
+                                    DeallocOp(a_q)
                                 DeallocOp(a_m)
                                 DeallocOp(a_cc)
 
@@ -4080,6 +4279,7 @@ def build_module():
                                 omtb, N_ATTN_CU * DQ_PER_CU, ssa=True, indices=[idx(0)]
                             ),
                         )
+                        _probe_put("O", "probe5", omtb)
                         DeallocOp(omtb)
 
                     # gate-off 2026-07-15b: o-gather (attnO get + xnorm o-proj put) is
@@ -4258,6 +4458,7 @@ def build_module():
                             DOWN_REFEED,
                             lambda: _xnorm_put(db, GLU_OUT),
                         )
+                        _probe_put("D", "probe4", db)
                         DeallocOp(db)
 
                     # (FAITHFUL ph2): the gate-up (ph2) X is now emitted by the rms core

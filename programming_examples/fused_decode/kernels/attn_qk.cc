@@ -517,4 +517,22 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
   float *c = (float *)(s_block + Q_HEADS_PADDED_PER_CU * 16);
   aie::store_v(c, aie::load_v<8>(c_state));
 }
+
+#ifdef ATTN_BATCH
+// DECODE_BATCH: the same block, on row t of a RESIDENT B-token q buffer.
+//
+// The CU takes all B tokens' q in one transfer and then walks them, because the
+// q memtile fans to the four CUs as a daisy chain and a one-token landing buffer
+// gates CU c+1's link on CU c finishing the whole block. So q is
+// [B][Q_HEADS_PADDED_PER_CU * DH] and this picks the row; everything else is
+// attn_qk_blk unchanged. Behind the guard so a build that does not ask for the
+// batch does not even parse it -- check_kernels_inert.py compiles without it.
+ATTN_ENTRY
+void attn_qk_blk_row(bf16 *__restrict q, bf16 *__restrict k_block,
+                     bf16 *__restrict m_state, float *__restrict c_state,
+                     bf16 *__restrict s_block, int blk, int L, int t) {
+  attn_qk_blk(q + t * (Q_HEADS_PADDED_PER_CU * DH), k_block, m_state, c_state,
+              s_block, blk, L);
+}
+#endif
 }
