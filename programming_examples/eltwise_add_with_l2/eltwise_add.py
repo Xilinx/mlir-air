@@ -1,168 +1,110 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-from ml_dtypes import bfloat16
+"""Element-wise add staged through L2, on air.api.
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+The sibling ``eltwise_add`` streams tiles from L3 straight into the cores. This
+one lands the whole vector in a memtile first, and the cores read their tiles
+from there:
+
+    l2_a = air.alloc([n], f32, scope=seg.private())   a memtile buffer
+      air.ops.load(l2_a, A)                           L3 -> L2, whole vector
+      ...
+      air.ops.load(a, l2_a[i0 : i0 + tile_n])         L2 -> L1, one tile
+      c[:] = a[:] + b[:]
+      air.ops.store(c, l2_c[i0 : i0 + tile_n])        L1 -> L2
+    air.ops.store(l2_c, C)                            L2 -> L3, whole vector
+
+``seg.private()`` is what makes the staging buffers memtile-resident, and the
+herd nested in the segment body carries them in as operands automatically --
+``air.herd`` is ``IsolatedFromAbove``, so the raw-bindings version this replaces
+had to list them in ``operands=[...]`` by hand and pick them back up as body
+parameters.
+
+Two differences from the predecessor worth naming:
+
+* The compute is written ``c[:] = a[:] + b[:]`` rather than a scalar
+  ``load``/``addf``/``store`` loop over every element. The tile is 1024 f32, so
+  that vectorises to ``<16 x f32>`` (512-bit), which is the width f32 has to use
+  -- 8 lanes does not legalize on either generation. The predecessor moved one
+  element per iteration.
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES], and the tile grid is
+  strip-mined onto those cores by the DSL rather than by a hand-written outer
+  loop with an AffineMap for the offset. A 1-D air.api herd is laid out along x,
+  the orientation that places on both generations.
+"""
+
+import argparse
 
 import numpy as np
 
+from air import api as air
+from air.api.types import dtype_of
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
+
 np.random.seed(42)
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
 def build_module(n, tile_n, np_dtype_in):
-    a_size = [n]
-    b_size = a_size
-    out_size = a_size
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
+    assert n % (tile_n * NUM_TILES) == 0
+    # Honoured, not ignored: the host buffers in __main__ are allocated with
+    # np_dtype_in, so hardcoding an element type here would hand f32 memrefs to
+    # non-f32 host arrays -- an interface the caller cannot see is wrong. The
+    # predecessor mapped it through type_mapper; dtype_of is the same table,
+    # reached through the API's own DType so the vector width comes with it.
+    dt = dtype_of(np_dtype_in)
+    if dt is None:
+        raise ValueError(
+            f"unsupported element type {np_dtype_in!r}; air.api knows "
+            f"float32, float16, bfloat16, int8/16/32 and uint8/16/32"
+        )
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
+    A = air.tensor([n], dt)
+    B = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-    # L2 MemRefTypes
-    l2MemrefTy = MemRefType.get(
-        shape=a_size,
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L2),
-    )
+    with air.launch(name="eltwise_add") as launch:
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+        @launch.body
+        def _():
+            with air.segment(name="segment_0") as seg:
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
-    def eltwise_add(arg0, arg1, arg2):
+                @seg.body
+                def _():
+                    # L2: the whole vector, staged in a memtile. Passed into the
+                    # herd for us.
+                    l2_a = air.alloc([n], dt, scope=seg.private())
+                    l2_b = air.alloc([n], dt, scope=seg.private())
+                    l2_c = air.alloc([n], dt, scope=seg.private())
 
-        launch_size = [1, 1]
+                    air.ops.load(l2_a, A)
+                    air.ops.load(l2_b, B)
 
-        @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            arg0_l,
-            arg1_l,
-            arg2_l,
-        ):
-            @segment(name="segment_0", operands=[arg0_l, arg1_l, arg2_l])
-            def segment_body(
-                arg0_s,
-                arg1_s,
-                arg2_s,
-            ):
+                    with air.herd(
+                        [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+                    ) as h:
 
-                l2_a_data = AllocOp(l2MemrefTy, [], [])
+                        @h.body
+                        def _(tx):
+                            # tx counts tiles, not elements; multiply by the
+                            # tile size to get the window into L2.
+                            i0 = tx * tile_n
+                            a = air.alloc([tile_n], dt, scope=h.private())
+                            b = air.alloc([tile_n], dt, scope=h.private())
+                            c = air.alloc([tile_n], dt, scope=h.private())
 
-                l2_b_data = AllocOp(l2MemrefTy, [], [])
-                l2_out_data = AllocOp(l2MemrefTy, [], [])
+                            air.ops.load(a, l2_a[i0 : i0 + tile_n])
+                            air.ops.load(b, l2_b[i0 : i0 + tile_n])
 
-                dma_memcpy_nd(
-                    l2_a_data,
-                    arg0_s,
-                )
-                dma_memcpy_nd(
-                    l2_b_data,
-                    arg1_s,
-                )
+                            c[:] = a[:] + b[:]
 
-                @herd(
-                    name="herd_0",
-                    sizes=[1, num_tiles],
-                    operands=[l2_a_data, l2_b_data, l2_out_data],
-                )
-                def herd_body(
-                    _tx,
-                    _ty,
-                    _sx,
-                    _sy,
-                    _l3_a,
-                    _l3_b,
-                    _l3_c,
-                ):
-                    l1_a_data = AllocOp(l1MemrefTy, [], [])
-                    l1_b_data = AllocOp(l1MemrefTy, [], [])
-                    l1_out_data = AllocOp(l1MemrefTy, [], [])
+                            air.ops.store(c, l2_c[i0 : i0 + tile_n])
 
-                    for _l_ivx in range_(0, n, tile_n * num_tiles):
+                    air.ops.store(l2_c, C)
 
-                        offset_map = AffineMap.get(
-                            0,
-                            2,
-                            [
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(0),
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(tile_n),
-                                    ),
-                                )
-                            ],
-                        )
-                        offset = affine_apply(offset_map, [_l_ivx, _ty])
-
-                        dma_memcpy_nd(
-                            l1_a_data,
-                            _l3_a,
-                            src_offsets=[
-                                offset,
-                            ],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_b_data,
-                            _l3_b,
-                            src_offsets=[
-                                offset,
-                            ],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        for i in range_(tile_n):
-                            val_a = load(l1_a_data, [i])
-                            val_b = load(l1_b_data, [i])
-                            val_out = arith.addf(val_a, val_b)
-                            store(val_out, l1_out_data, [i])
-                            yield_([])
-                        dma_memcpy_nd(
-                            _l3_c,
-                            l1_out_data,
-                            dst_offsets=[
-                                offset,
-                            ],
-                            dst_sizes=[tile_n],
-                            dst_strides=[1],
-                        )
-                        DeallocOp(l1_a_data)
-                        DeallocOp(l1_b_data)
-                        DeallocOp(l1_out_data)
-
-                        yield_([])
-
-                dma_memcpy_nd(
-                    arg2_s,
-                    l2_out_data,
-                )
-                DeallocOp(l2_a_data)
-                DeallocOp(l2_b_data)
-                DeallocOp(l2_out_data)
+    return launch
 
 
 if __name__ == "__main__":
@@ -173,7 +115,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the eltwise_add_with_l2 example",
     )
     parser.add_argument(
         "-v",
@@ -208,14 +150,22 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.n,
         args.tile_n,
         INPUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -254,6 +204,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="eltwise_add",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -272,6 +223,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_auto_broadcast=True,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
