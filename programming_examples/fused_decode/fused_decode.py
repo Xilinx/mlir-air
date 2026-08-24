@@ -672,6 +672,23 @@ BATCH = int(_os.environ.get("DECODE_BATCH", "1"))
 PROBE = int(_os.environ.get("DECODE_PROBE", "0"))
 PROBE_Q, PROBE_O, PROBE_D = 1, 2, 4
 
+# DECODE_ACC_STOP: send an INTERMEDIATE residual out on layerOut instead of the
+# layer output. The bisector for a wrong layer output, and the one that works
+# where the memtile taps do not.
+#
+#   0  (default)  layer output = x + o-proj + down
+#   1             layer output = x                 -- pure passthrough
+#   2             layer output = x + o-proj        -- through attention and ph1
+#
+# The gets are still issued at every setting, so every channel stays balanced
+# and the shim task is the same task in the same place -- which is the whole
+# trick. layerOut is the ONLY thing the layer sends across the shim, and it is
+# ordered last; moving the PUT earlier in the core's program deadlocks (the
+# later weight feeds are behind that shim task and the core has stopped feeding
+# them), while dropping an ADD leaves the program shape alone and only changes
+# what the buffer holds.
+ACC_STOP = int(_os.environ.get("DECODE_ACC_STOP", "0"))
+
 # Faithful decode: real attention (QKV -> rope -> flash attn -> o-proj X), mirroring
 # q4nx_decode_repro/full_decode_faithful.mlir.
 # the reference's fixed attention geometry: 4 CUs, each = 8 q heads + 2 kv heads (= 32 q heads,
@@ -1725,6 +1742,14 @@ def build_module():
             "residual_add_aie", ([rms_l1, rms_l1, rms_l1], []), visibility="private"
         )
         residual_add_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+        if ACC_STOP:
+            # DECODE_ACC_STOP's batch-1 half: the batched body just drops an add,
+            # but this one writes each residual into a fresh buffer, so stopping
+            # it needs a copy rather than a skip.
+            rms_copy_aie = FuncOp(
+                "rms_copy_aie", ([rms_l1, rms_l1], []), visibility="private"
+            )
+            rms_copy_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
         # GLU: glu_aie(hid, x) = pseduo_glu<1024>: x = [hid 512 | gate 512],
         # hid(512) = silu(gate)*hid. One 1024 slice per call. Prebuilt glu.o.
         glu_aie = FuncOp(
@@ -5211,7 +5236,7 @@ def build_module():
                                     yield_([])
                                 yield_([])
 
-                        def _accumulate(nrnds):
+                        def _accumulate(nrnds, stage):
                             """Add a projection's output into the residual.
 
                             The projection egresses (round, token): round r is
@@ -5219,7 +5244,13 @@ def build_module():
                             round lands whole in rstg and goes into rmsb at a
                             fixed offset inside each row -- no transpose, and
                             no K-wide landing buffer.
+
+                            DECODE_ACC_STOP drops the ADD from `stage` on, and
+                            keeps the GET: the residual stops advancing while
+                            every channel stays balanced, so layerOut carries an
+                            intermediate without moving a single transfer.
                             """
+                            _add = not ACC_STOP or stage < ACC_STOP
                             _rof, _rsz, _rst = outy_tokmajor(PAYLOAD)
                             for _r in for_(idx(0), idx(nrnds), idx(1)):
                                 # De-interleave here, not at the memtile: the
@@ -5236,10 +5267,16 @@ def build_module():
                                 _off = arith.muli(
                                     arith.index_cast(i32, _r), _i32(PAYLOAD)
                                 )
+                                # Length 0, not a dropped call: the kernel's loop
+                                # runs zero times, so nothing is added -- but the
+                                # get still has a reader, and without one AIR is
+                                # free to move it and the channel stops balancing.
+                                # (It did, and the dispatch hung.)
+                                _n = _i32(PAYLOAD if _add else 0)
                                 for t in range(BATCH):
                                     CallOp(
                                         residual_acc_row_aie,
-                                        [xb, stg, _i32(t), _off, _i32(PAYLOAD)],
+                                        [xb, stg, _i32(t), _off, _n],
                                     )
                                 yield_([])
 
@@ -5265,12 +5302,12 @@ def build_module():
                             w = AllocOp(rms_l1, [], [])
                             ChannelGet("rmsW2", w, indices=[idx(0)])
                         # residual1: h = x + o-proj, in place.
-                        _accumulate(OPROJ_RNDS)
+                        _accumulate(OPROJ_RNDS, 1)
                         # ph2: pre-MLP layernorm of h -> the gate-up X feed.
                         _emit_norm(w, REFEED[GATEUP_PHASE])
                         DeallocOp(w)
                         # residual2: layer output = h + down, in place.
-                        _accumulate(DOWN_RNDS)
+                        _accumulate(DOWN_RNDS, 2)
                         _layer_out()
                         DeallocOp(scl)
                         DeallocOp(stg)
@@ -5393,7 +5430,13 @@ def build_module():
                                 strides=[idx(1)],
                             )
                             a_h = AllocOp(rms_l1, [], [])
-                            CallOp(residual_add_aie, [a_h, a_x, a_op])
+                            # DECODE_ACC_STOP=1: h = x. The get above still runs,
+                            # so the channel is balanced and the only thing that
+                            # changes is what layerOut ends up carrying.
+                            if ACC_STOP == 1:
+                                CallOp(rms_copy_aie, [a_h, a_x])
+                            else:
+                                CallOp(residual_add_aie, [a_h, a_x, a_op])
                             DeallocOp(a_x)
                             DeallocOp(a_op)
                             # FAITHFUL ph2 (reproducer core_2_2 step2): gate-up X
@@ -5427,7 +5470,10 @@ def build_module():
                                 strides=[idx(1)],
                             )
                             a_r2 = AllocOp(rms_l1, [], [])
-                            CallOp(residual_add_aie, [a_r2, a_h, a_dn])
+                            if ACC_STOP:
+                                CallOp(rms_copy_aie, [a_r2, a_h])
+                            else:
+                                CallOp(residual_add_aie, [a_r2, a_h, a_dn])
                             DeallocOp(a_h)
                             DeallocOp(a_dn)
                             # BD-COMPACTION: single full-size layerOut put.

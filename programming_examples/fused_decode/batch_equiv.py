@@ -115,6 +115,18 @@ def weight_bo(n_elems, seed, n_distinct=64):
     39680 of them takes minutes and buys nothing, but ONE would make every
     row-block of the output identical and hide a whole class of permutation
     error. 64 is enough that neighbours differ.
+
+    AND `min` IS -7.5*scale, NOT AN INDEPENDENT RANDOM, which is the difference
+    between measuring the engine and measuring floating point. In a real q4k
+    block `min` is the block minimum, so w = q*scale + min is CENTRED on zero.
+    Drawn independently it is a small perturbation on a mean of 7.5*scale, and
+    every dot product against a zero-mean activation becomes a sum of ~2048
+    terms of magnitude 55 cancelling down to a result of magnitude 2.
+    A 1.65% difference between two kernels -- which is what proj_qmm_gate.py
+    measures between the GEMV and the batched mmul, and is expected -- then
+    lands as a 20% difference in the result, compounds through each projection,
+    and reaches the layer output as 772x. That is not a batching fault, and the
+    first version of this fill spent a day looking like one.
     """
     import proj_qmm_pack as pk
 
@@ -123,7 +135,9 @@ def weight_bo(n_elems, seed, n_distinct=64):
     for _ in range(n_distinct):
         q = rng.integers(0, 16, size=(pk.ROW_BLOCK, pk.COL_BLOCK), dtype=np.uint8)
         scale = rng.uniform(0.002, 0.01, size=(pk.ROW_BLOCK, pk.N_GROUPS))
-        mn = rng.uniform(-0.05, 0.05, size=(pk.ROW_BLOCK, pk.N_GROUPS))
+        # Centred, with a little jitter so the mins are not a function of the
+        # scales alone.
+        mn = -7.5 * scale + rng.uniform(-0.2, 0.2, size=scale.shape) * scale
         blocks.append(pk.pack_q4k_block(q, scale, mn))
     slab = np.concatenate(blocks)
     reps = -(-n_elems // slab.size)
@@ -192,6 +206,109 @@ def compare(got, want):
 def as_f32(v):
     """bf16 bit patterns -> float32. A BO holds the bit patterns."""
     return (v.view(np.int16).astype(np.uint16).astype(np.uint32) << 16).view(np.float32)
+
+
+def kv_stage(gN, g1, kvN, kv1, batch, tol):
+    """Compare the K and V the rope core appended. A tap that costs nothing.
+
+    Both runs already write the DDR KV cache and the gate already reads it
+    back, so this needs no extra channel, no extra shim task and no rebuild --
+    which matters, because the memtile taps DECODE_PROBE offers cannot be
+    placed on the o-gather without deadlocking the loop close.
+
+    What it covers is everything up to and including rope: the rms core's
+    chunk regeneration, the chunk-major @xnorm feed, the tile-blocked X
+    broadcast, the batched mmul, both egress gathers, the id-demux, the QKV L2
+    transpose and rope itself. If token 0's K and V match batch 1's, the first
+    half of the layer is right and a difference in the layer output is
+    attention, the o gather, the GLU or the residual accumulate.
+
+    Region-major layout: group g's K region starts at g*stride and its V region
+    at (NGRP+g)*stride; token t sits at t*width inside. Batch 1 at the same L
+    writes position L-1, which is token 0's slot.
+    """
+    w, stride, ngrp, L = gN["kv_region"]
+    if (w, stride, ngrp, L) != tuple(g1["kv_region"]):
+        print(f"    kv: geometry differs {gN['kv_region']} vs {g1['kv_region']}")
+        return
+    base = (L - 1) * w
+    print("    rope KV taps  (batched token 0 vs batch 1, same position):")
+    for name, r0 in (("K", 0), ("V", ngrp)):
+        for g in range(ngrp):
+            off = (r0 + g) * stride + base
+            a, b = kvN[off : off + w], kv1[off : off + w]
+            n, rel, nnf = compare(a, b)
+            # A few wild elements and a uniform tilt are different faults, and
+            # the rms cannot tell them apart. `close` is the share that agrees
+            # to 5%, which is where a rounding difference lives.
+            fa, fb = as_f32(a).astype(np.float64), as_f32(b).astype(np.float64)
+            den = np.where(np.abs(fb) > 0, np.abs(fb), 1.0)
+            close = int(np.sum(np.abs(fa - fb) / den <= 0.05))
+            # The VALUES right and the ORDER wrong is a descriptor; the values
+            # wrong is arithmetic. Nothing else tells those apart when the
+            # elements all sit within a few percent of each other, which is
+            # exactly when an rms difference looks like a scale.
+            perm = "PERMUTED" if np.array_equal(np.sort(fa), np.sort(fb)) else ""
+            nz = fb != 0
+            r = fa[nz] / fb[nz] if nz.any() else np.zeros(1)
+            med = float(np.median(r))
+            tight = int(np.sum(np.isclose(r, med, rtol=1e-2)))
+            perm += f" ratio {med:.4g} ({tight}/{int(nz.sum())} within 1%)"
+            print(
+                f"      {name} group {g}: {n} of {w} bytes differ, rms rel {rel:.2e}"
+                f", {close} of {w} within 5% {perm}"
+                + (f", {nnf} NON-FINITE" if nnf else "")
+                + ("" if rel <= tol and not nnf else "   <-- WRONG BEFORE ROPE")
+            )
+            # Every token in this gate gets the SAME x and the SAME rope LUT, and
+            # neither K nor V depends on position beyond the LUT -- so all B
+            # tokens' K (and V) have to be bit-identical to each other. They come
+            # out of ONE mmul over one A operand, so anything else is the batch
+            # mixing tokens, which no comparison against batch 1 would separate
+            # from arithmetic.
+            same = sum(
+                1
+                for t in range(1, batch)
+                if np.array_equal(
+                    kvN[off + t * w : off + (t + 1) * w], kvN[off : off + w]
+                )
+            )
+            if same != batch - 1:
+                bad = [
+                    t
+                    for t in range(1, batch)
+                    if not np.array_equal(
+                        kvN[off + t * w : off + (t + 1) * w], kvN[off : off + w]
+                    )
+                ]
+                # Zeros vs wrong values: a partially-written region and a
+                # mis-computed one look the same in an rms and are different
+                # faults. The cache starts at zero, so a zero is "never arrived".
+                det = ", ".join(
+                    f"t{t} rms rel "
+                    f"{compare(kvN[off + t * w:off + (t + 1) * w], kvN[off:off + w])[1]:.2e}"
+                    f" ({int(np.sum(kvN[off + t * w:off + (t + 1) * w] == 0))}/{w} still zero)"
+                    for t in bad
+                )
+                print(
+                    f"        only {same} of {batch - 1} other tokens match "
+                    f"token 0 -- identical inputs, so the batch is MIXING "
+                    f"TOKENS: {det}"
+                )
+            if g == 0:
+                print("        ref " + " ".join(f"{v:10.4g}" for v in fb[:8]))
+                print("        got " + " ".join(f"{v:10.4g}" for v in fa[:8]))
+                for t in range(1, batch):
+                    r = as_f32(kvN[off + t * w : off + (t + 1) * w]).astype(np.float64)
+                    if not np.array_equal(r, fa):
+                        # WHERE it stops matching says whether the transfer was
+                        # cut short or landed somewhere else.
+                        d = np.nonzero(r != fa)[0]
+                        print(
+                            f"         t{t} "
+                            + " ".join(f"{v:10.4g}" for v in r[:8])
+                            + f"   first differs at {int(d[0])}"
+                        )
 
 
 def probe_stages(gN, g1, probeN, probe1, t, tol):
@@ -337,6 +454,7 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000):
         bos[b].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
     out = np.frombuffer(bos["x"].map(), dtype=np.int16, count=g["k"]).copy()
     yout = np.frombuffer(bos["y"].map(), dtype=np.int16, count=g["ny"]).copy()
+    kvout = np.frombuffer(bos["kv"].map(), dtype=np.int16, count=g["kv_elems"]).copy()
     if not str(st).endswith("COMPLETED"):
         # HOW FAR DID IT GET. A timeout says nothing about where; the output
         # buffers do. The layer output is written IN PLACE over X, the KV cache
@@ -368,7 +486,7 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000):
     # release order for the same reason.
     bos.clear()
     del i_bo, kern, ctx, xb, dev
-    return out, yout
+    return out, yout, kvout
 
 
 def template(prefix, batch, L):
@@ -445,7 +563,7 @@ def main():
         )
 
     print(f"\nbatch equivalence  [{args.model}, batch {args.batch}, L {args.L}]")
-    yN, probeN = dispatch(bn, bni, gN, args.batch, row, args.seed, xrt, args.wait)
+    yN, probeN, kvN = dispatch(bn, bni, gN, args.batch, row, args.seed, xrt, args.wait)
     print(f"  batch {args.batch}: dispatch COMPLETED, {yN.size} elements back")
     # A constant output makes every comparison below trivially true. This is not
     # hypothetical: random-byte weights produced 0x7F81 -- one NaN -- in every
@@ -476,7 +594,7 @@ def main():
         if not b1.exists():
             missing.append(b1.name)
             continue
-        y1, probe1 = dispatch(b1, b1i, g1, 1, row, args.seed, xrt, args.wait)
+        y1, probe1, kv1 = dispatch(b1, b1i, g1, 1, row, args.seed, xrt, args.wait)
         got = yN[t * K : (t + 1) * K]
         n, rel, nnf = compare(got, y1)
         if not (rel <= args.tol) or nnf:
@@ -487,6 +605,8 @@ def main():
             + (f", {nnf} NON-FINITE" if nnf else "")
             + ("" if rel <= args.tol and not nnf else f"   <-- FAIL")
         )
+        if t == 0:
+            kv_stage(gN, g1, kvN, kv1, args.batch, args.tol)
         probe_stages(gN, g1, probeN, probe1, t, args.tol)
 
     if missing:

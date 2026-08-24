@@ -246,6 +246,9 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         # Nothing in rms_size says that; this is how a caller finds the stride.
         rope_w_len=fd.ROPE_W_LEN,
         batch=_b,
+        # Region-major DDR KV layout, so a caller can find token t's K or V.
+        # (region width, region stride, groups, this build's L).
+        kv_region=(fd.REGION_W, fd.REGION_STRIDE, fd.NGRP, fd.ATTN_L),
         # DECODE_PROBE tap regions in Y, per token. Empty unless the build asked
         # for them. Keyed by tap; the length is ONE token's slice, so a caller
         # compares slice t of a batched run against slice 0 of a batch-1 one.

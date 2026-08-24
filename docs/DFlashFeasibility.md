@@ -13,13 +13,15 @@ tree) or **[estimated]** (derived from those). No untagged numbers.
 **DFlash is still worth building. The block size is 4-8, not 16, and the
 speedup is ~1.6-2.8x, not 4.9x.**
 
-**Build state, in one line: the batch-8 engine COMPILES and DISPATCHES, and
-gets as far as the KV append before it deadlocks.** Every phase from the rms
-core through the projection, both egress gathers, the id-demux, the QKV
-transpose, rope and the KV append is confirmed working on device — all eight
-tokens' K and V reach the cache **[measured]**. The stall is somewhere between
-the KV readback and the layer output. Jump to "Next step" for what is done, what
-is not, and how the remaining hunt is being run.
+**Build state, in one line: the batch-8 engine RUNS on device, end to end, and
+the remaining work is numeric.** A batch-8 llama-3.2-1b dispatch completes all
+16 decode layers **[measured]**; the deadlocks are gone. What is left is two
+places where the answers are wrong, both localised (see "Next step"): the MLP
+half of the layer, and the last token's V. The first half of the layer — the
+rms core, the X feed, the batched projection, both egress gathers, the id-demux,
+the QKV transpose, rope, attention and the o-projection — agrees with a batch-1
+dispatch to **2.0% rms**, which is what the GEMV-to-mmul kernel swap costs on
+its own **[measured]**.
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -232,25 +234,63 @@ touch.
 | glu row loop | **done** |
 | attention token loop + per-token L | **done** |
 | a batch-8 template that COMPILES | **done** |
-| a batch-8 template that RUNS | **not yet** |
+| a batch-8 template that RUNS | **done**, all 16 layers, dispatch completes |
+| the answers | **two faults left**, both localised — see below |
 | host driver at batch > 1 | **not done** |
 
-**How far it gets, on device [measured].** A batch-8 llama-3.2-1b template
-dispatches and times out. A hung dispatch still leaves evidence — the layer
-output is written in place over X and the KV cache is written by the rope
-append — so `batch_equiv.py --smoke` reads the buffers back on timeout and
-reports which regions moved:
+#### Where the layer is right and where it is not [measured]
 
-    x:  nothing written
-    y:  nothing written
-    kv: all 8 tokens' K and V, in all 4 regions
+`DECODE_ACC_STOP` sends an INTERMEDIATE residual out on `layerOut` instead of
+the layer output, by dropping an add and keeping the get — so every channel
+stays balanced and the shim task is the same task in the same place. That, plus
+reading the DDR KV cache back (which both builds already write and the gate
+already reads), splits the layer into stages that can each be compared against
+a batch-1 dispatch:
 
-That brackets it. Everything from the rms core through the projection, both
-egress gathers, the id-demux, the QKV L2 transpose, rope and the KV append
-WORKS at batch 8 — rope cannot produce eight tokens' K without having received
-eight tokens' QKV. The stall is at or after the KV readback.
+| stage | what it covers | batch 8 token 0 vs batch 1 |
+|---|---|---|
+| `ACC_STOP=1` | the layer-out drain and the in-place residual buffer | **0.00 — bit-exact** |
+| rope's K and V | rms core, X feed, batched mmul, both gathers, id-demux, QKV transpose, rope | **1.1% / 1.2% rms** |
+| `ACC_STOP=2` | + attention, the o gather, the o-projection, residual1 | **2.0% rms** |
+| full layer | + ph2 norm, gate-up, GLU, down, residual2 | **101% — WRONG** |
 
-#### Five deadlocks, and what they have in common
+The 1-2% is the kernel swap and nothing else: `proj_qmm_gate.py --nblk 4
+--batch 8` puts the GEMV and the batched mmul **1.65% rms** apart on device off
+the same weights, and says the batched one is the closer of the two to exact
+fp32 (bias 0.03% against the GEMV's 0.73%).
+
+So: **the MLP half of the layer is wrong, and the first half is right.**
+
+And a second, separate fault the KV readback found on its own. Every token in
+this gate gets the same X and the same rope LUT, and K and V do not depend on
+position beyond the LUT, so all 8 tokens' K and all 8 tokens' V have to be
+bit-identical to each other — they come out of ONE mmul over one A operand.
+All 8 K are. **Token 7's V is not**: 93% rms against token 0, with 32 of its
+256 elements still at the cache's initial zero. The LAST token's V, and only
+its V. K takes the same path one BD earlier in the same chain.
+
+#### A gate that measures floating point instead of the engine
+
+Worth reading before trusting any number above. `batch_equiv.py` built its
+weight BO from real q4k blocks — `w = q*scale + min` — but drew `min`
+independently of `scale`. In a real block `min` is the block minimum, so `w` is
+CENTRED on zero; drawn independently it is a small perturbation on a mean of
+`7.5*scale`, and every dot product against a zero-mean activation becomes a sum
+of 2048 terms of magnitude ~55 cancelling to a result of magnitude ~2.
+
+A 1.65% difference between two kernels then lands as **20%** in K and V,
+compounds through each projection, and reaches the layer output as **772x**.
+Two days of that looked exactly like a batching fault: a near-constant additive
+offset on V, a clean 1.5x on the o-projection, an unbounded blow-up at the end.
+Setting `min = -7.5*scale` collapsed all of it to the 1-2% above and left the
+one real fault standing.
+
+The lesson generalises past this file: a synthetic fill that makes the
+arithmetic ill-conditioned turns every gate downstream of it into a measurement
+of cancellation. The tell was that the difference was an OFFSET rather than a
+scale, and that it grew multiplicatively stage by stage.
+
+#### Seven deadlocks, and what they have in common
 
 None of them was visible in the AIR, all of them were visible in the emitted
 AIE dialect, and none is the kind of bug an element count can find. They are
@@ -263,12 +303,21 @@ worth reading as a set, because the next one will look like them.
 | the QKV transposer on col-3 MM2S 0 | a documented route deadlock in this builder; the KV puts already carry the floor, the transposer did not |
 | rope blocked on the q broadcast | rope must finish all B tokens before the KV readback can start, the CUs wait on the readback, the q memtile waits on the CUs, rope waits on the q memtile. Got 4 of 8 tokens through |
 | per-token KV append gets | each is a separate shim task and the fused launch paces a `preserve_shim_dma_order` channel at depth 2. Got 6 of 8 tokens through |
+| **a per-token q get on the attention CU** | the q memtile fans to the four CUs as a DAISY CHAIN — CU c+1's transfer starts when CU c's finishes. At batch 1 each link is one 512-element landing that completes on arrival; taking q a token at a time makes CU 0's link an 8-token transfer gated on CU 0 running the whole block, and CU 0 cannot, because the KV re-block memtile hands both CUs of a column their block together and CU 1 is waiting for a q it will not get until CU 0 finishes. **Take all B rows in ONE get before the token loop** — the shape the q memtile itself already uses one hop up |
+| **the vocab waves, at batch > 1** | `LM_HEAD` is refused when batched and the rms core's batched body has no vocab arm — not an empty arm, the DECODE body emitted unconditionally, because the vocab `@xnorm` put is a memtile-shaped descriptor whose 512-element wrap does not fit a compute tile's 8-bit wrap field. Left at `UNI_WAVES` this deadlocks at the FIRST vocab wave and nowhere earlier: all 16 decode layers run, every layer's output lands, every layer's KV appends, and then the rms core starts a decode pass into a chip that has taken its vocab arm and gone idle. Clamp `UNI_WAVE_HI` to `UNI_DEC` |
 
-And a sixth that is not a deadlock but caused one: writing the q buffering as
+And one that is not a deadlock but caused one: writing the q buffering as
 `for t: get slice` then `for t: fan slice` gets rebuilt by
 `air-ping-pong-transform` into a 2-deep ring of slices — **the interleaved form
 again**. One get and one put per CU, with the batch as a BD dimension, gives the
 transform nothing to rewrite.
+
+**Both of the last two look like a batching fault and neither is about the
+batch.** The q fan is a batch-1 idiom that only has a cycle when a CU has more
+than one thing to wait for; the vocab wave is a mode the batched build was never
+going to run and forgot to stop driving. The common shape is still the one the
+shipping q4nx decode answers by construction: *nothing on the critical path
+waits for a consumer more than one hop downstream.*
 
 #### Two facts about the shim, measured while bisecting
 
@@ -381,17 +430,18 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    core's consume have to agree; blocks past a token's own L hit the kernels'
    existing `rem <= 0` early return. `ATTN_L_BLK` is where that lives, and it
    also makes `kvappend_bd`'s overrun guard hold by construction.
-5. **Find the last deadlock.** The remaining hunt, and the method that has
-   worked five times: build, `check_dma_alloc.py` against a batch-1 dump, and
-   when that is clean, reason about ORDER — which memtile is being asked to
-   finish one producer before another can start, while something upstream keeps
-   them in lockstep. `--smoke`'s KV readback brackets where to look.
+5. ~~**Find the last deadlock.**~~ **Done — there were two.** The q fan and the
+   vocab waves; both are in the deadlock table above, with the mechanism. The
+   method that found them is the one that found the other five: build,
+   `check_dma_alloc.py` against a batch-1 dump, and when that is clean, reason
+   about ORDER in the emitted AIE.
 
-   **Read the SHIPPING q4/q4nx decode first, and treat it as the reference.**
-   Every one of the six faults was a place where the batched wiring invented a
-   dataflow the batch-1 engine does not use, and the batch-1 engine is a working
-   answer to most of the same questions. Specifically worth reading before
-   guessing again:
+   **Reading the SHIPPING q4/q4nx decode first is what closed it**, and the
+   question the doc pointed at — *what keeps a producer from being blocked by a
+   consumer three hops downstream?* — named the q-fan fault directly. Every one
+   of the seven faults was a place where the batched wiring invented a dataflow
+   the batch-1 engine does not use. Still worth reading, for the numeric work
+   that is left:
 
    | where | what it answers |
    |---|---|
@@ -403,9 +453,32 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
 
    The specific question to take to them: **what does the shipping engine do that
    keeps a producer from being blocked by a consumer three hops downstream?**
-   Four of the six faults were exactly that, and the batch-1 design never hits it
-   because one token never has to wait for a second.
-6. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
+   Five of the seven faults were exactly that, and the batch-1 design never hits
+   it because one token never has to wait for a second.
+6. **The MLP half.** The layer is bit-exact through the residual buffer, 1.1%
+   through rope, 2.0% through attention and the o-projection, and 101% wrong
+   after the gate-up / GLU / down leg — see the stage table above. The new-at-
+   batch-8 pieces in that leg, in the order the data crosses them:
+
+   | piece | what to check |
+   |---|---|
+   | the GLU's `outY` get | `outy_tokmajor(GLU_SLICE, rounds=2)` folds TWO egress rounds into the emitter dimension. Is round `2s` really the `up` half and `2s+1` the `gate` half at batch 8, the way `pseduo_glu` assumes and batch 1 gets for free from a contiguous 1024? |
+   | `glu_row_aie` | per token, `y + t*(GLU_SLICE/2)` from `x + t*GLU_SLICE`. Trivial, and gated by nothing |
+   | the `gluOut` get on the down memtile | `[BATCH, GLU_HID]` at stride `GLU_OUT`, folded by AIR into `[NGLU, BATCH, GLU_HID]` — confirmed in the AIE dump, but confirmed against the derivation, not against the stream |
+   | `_xnorm_put(db, GLU_OUT)` | 16 chunks x B tokens x 512, chunk-major. Same shape as the o memtile's, which works |
+
+   The memtile probe taps cannot be used here: on the o-gather they deadlock the
+   loop close, whichever side of the re-broadcast they sit on. What DOES work is
+   `DECODE_ACC_STOP` (drop an add, keep the get) and the KV readback, and neither
+   reaches inside the MLP leg. A third stage marker probably has to come from the
+   same trick applied to the GLU — a debug that makes `glu_row_aie` a
+   pass-through, so the down phase's X is the raw `up` half and the surrounding
+   wiring is measured without the kernel.
+7. **The last token's V.** 93% wrong, 32 of 256 elements still at the initial
+   zero, K fine for all 8 tokens. V is the SECOND put in rope's two-BD MM2S
+   chain and the last transfer rope makes; that is the only asymmetry between
+   them.
+8. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
 
