@@ -16,6 +16,9 @@
 #include "aie_kernel_utils.h"
 #include "model_spec.h"
 #include "q4_k.h"
+#ifdef PROJ_MM_BATCH
+#include "q4k_mm.h" // batched projection only; see the bottom of this file
+#endif
 
 extern "C" {
 
@@ -211,4 +214,71 @@ void proj_qmm_fill_x(bf16 *__restrict x, int n) {
   for (int i = 0; i < n; i++)
     x[i] = c;
 }
+
+// ---------------------------------------------------------------------------
+// BATCHED PROJECTION (DFlash step 2). Behind -DPROJ_MM_BATCH=<B>, so a build
+// that does not ask for it is unchanged and does not even parse q4k_mm.h.
+//
+// Same three entry points as the GEMV above, split the same way and for the
+// same reason: y_acc has to live at row-block scope, so it is caller-provided
+// and AIR must not sink it into the col-block loop.
+//
+// NO REDUCE CACHE, and that is the substantive difference. The GEMV never
+// materializes W -- it factors the +min term out as min[r,g] * (sum of x over
+// group g), which is the entire purpose of b_col_reduce_add and the rc / fill /
+// proj_qmm_rc_arm machinery. q4k_unpack_block builds w = q*scale + min
+// elementwise instead, because aie::mmul needs a materialized B operand. So the
+// batched path drops the cache, the fill bookkeeping and the arm pin, and pays
+// for it with a MROWS*KCOL bf16 scratch: 608 bytes of rc traded for 16 KB of
+// scratch on qwen3-4b. That trade is the batched path's whole L1 cost.
+// ---------------------------------------------------------------------------
+#ifdef PROJ_MM_BATCH
+void proj_qmm_mm_zero(float *__restrict y_acc, int _arm) {
+  (void)_arm; // per-token RTP arm-gate operand, as proj_qmm_zero
+  zero_vectorized<float, PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE>(y_acc);
+}
+
+// Accumulate ONE q4k block across all PROJ_MM_BATCH tokens.
+//   x_tile : this col-block's activations for every token, in aie::mmul's A
+//            TILE ORDER -- not a plain [BATCH][COL_BLOCK] buffer. See pack_A in
+//            q4k_mm_gate.py for the exact order; the memtile owes a strided BD.
+//   w      : one packed q4k block, Q4K_BLOCK_BF16 bf16
+//   y_acc  : PROJ_MM_BATCH*ROW_BLOCK floats in mmul C tile order, accumulated
+//   ws     : ROW_BLOCK*COL_BLOCK bf16 unpack scratch, overwritten every call
+void proj_qmm_mm_acc(bf16 *__restrict x_tile, bf16 *__restrict w,
+                     float *__restrict y_acc, bf16 *__restrict ws) {
+  q4k_mm_block<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE, PROJ_MM_BATCH>(
+      (const q4k_block_t *)w, x_tile, y_acc, ws);
+}
+
+// Batched proj_qmm_flush_row: f32 accumulator -> the bf16 payload of the egress
+// packet, for every token.
+//
+// This has to DE-TILE. y_acc comes out of aie::mmul in C tile order -- tile
+// (z, j) at (j*rowA + z)*64, row-major [8 tokens][8 rows] inside -- so one
+// token's 32 rows are four 8-float runs scattered 64 floats apart, not a
+// contiguous 32. The GEMV had nothing to do here because its accumulator was
+// already one row-block of one token.
+//
+// tok_stride is the number of ROW_BLOCKs between consecutive tokens in the
+// output packet, i.e. how many row-blocks this core emits. Token-major, so the
+// group memtile can gather one row-block across all tokens with a single extra
+// BD dimension (sizes=[B, ROW_BLOCK], strides=[tok_stride*ROW_BLOCK, 1]).
+// Passed rather than assumed: it is a property of the phase, not the kernel.
+void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
+                           int i, int tok_stride) {
+  constexpr int RB = Q4NX_ROW_BLOCK_SIZE;
+  constexpr int RA = PROJ_MM_BATCH / 8; // mmul rowA: token blocks
+  constexpr int CB = RB / 8;            // mmul colB: row blocks within RB
+  alignas(aie::vector_decl_align) float tmp[RB];
+
+  for (int t = 0; t < PROJ_MM_BATCH; t++) {
+    const int z = t / 8, rr = t % 8;
+    AIE_LOOP_UNROLL_FULL
+    for (int j = 0; j < CB; j++)
+      aie::store_v(tmp + j * 8, aie::load_v<8>(y_acc + (j * RA + z) * 64 + rr * 8));
+    copy_float_to_bf16<RB>(y_out + 16 + (t * tok_stride + i) * RB, tmp);
+  }
+}
+#endif // PROJ_MM_BATCH
 }

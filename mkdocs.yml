@@ -27,6 +27,7 @@ exclude_docs: |
   /AIRRunner.md
   /trace.md
   /AIRCorrectnessChecker.md
+  /DFlashFeasibility.md
   /building.md
   /buildingVCK5000.md
   /vck190_microblaze_firmware.md

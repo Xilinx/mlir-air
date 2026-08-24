@@ -27,6 +27,7 @@
 #define QWEN3_8B 5
 #define LLAMA_3_1_8B 6
 #define QWEN2_5_7B 7
+#define QWEN3_4B 8
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
@@ -39,6 +40,7 @@
 #include "../models/phi4-4b.h"
 #include "../models/qwen2.5-3b.h"
 #include "../models/qwen2.5-7b.h"
+#include "../models/qwen3-4b.h"
 #include "../models/qwen3-8b.h"
 
 #endif // __ALL_MODELS_H__

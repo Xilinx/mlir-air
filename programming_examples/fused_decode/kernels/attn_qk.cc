@@ -53,6 +53,7 @@
 #endif
 #define ATTN_ENTRY __attribute__((always_inline))
 
+
 ATTN_HOT aie::vector<bf16, 16> update(bf16 *m, float *c,
                                       aie::vector<bf16, 16> &out,
                                       aie::mask<16> &mask, bool &is_first);
@@ -165,6 +166,10 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
                        bool &is_first) {
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
+#ifdef ATTN_BENCH_NO_KLOAD // bench-only; see aie_kernel_utils.h
+  const aie::vector<bf16, MMUL::size_B> K_hoisted =
+      aie::load_v<MMUL::size_B>(pK);
+#endif
 
   bfloat16 *__restrict pY1 = pY;
   // g times K
@@ -175,11 +180,11 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     bf16 *__restrict pQ1 = pQ;
     aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pQ1);
     pQ1 += MMUL::size_A;
-    aie::vector<bf16, MMUL::size_B> B00 = aie::load_v<MMUL::size_B>(pK1);
-    aie::vector<bf16, MMUL::size_B> B0 = aie::transpose(B00, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B00 = ATTN_KLOAD(pK1);
+    aie::vector<bf16, MMUL::size_B> B0 = ATTN_TRANSPOSE(B00);
     pK1 += MMUL::size_B * 2;
-    aie::vector<bf16, MMUL::size_B> B01 = aie::load_v<MMUL::size_B>(pK2);
-    aie::vector<bf16, MMUL::size_B> B1 = aie::transpose(B01, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B01 = ATTN_KLOAD(pK2);
+    aie::vector<bf16, MMUL::size_B> B1 = ATTN_TRANSPOSE(B01);
     pK2 += MMUL::size_B * 2;
 
     aie::vector<bf16, MMUL::size_C> acc_C00 = aie::zeros<bf16, MMUL::size_C>();
@@ -191,16 +196,18 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     C00.mac(A0, B0);
     C01.mac(A0, B1);
 
-    AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(7) for (unsigned i = 1; i < colQ;
-                                                      ++i) {
+    AIE_PREPARE_FOR_PIPELINING
+    ATTN_Q_LOOP
+    AIE_LOOP_RANGE(7)
+    for (unsigned i = 1; i < colQ; ++i) {
       A0 = aie::load_v<MMUL::size_A>(pQ1);
       pQ1 += MMUL::size_A;
 
-      B00 = aie::load_v<MMUL::size_B>(pK1);
-      B0 = aie::transpose(B00, 8, 8);
+      B00 = ATTN_KLOAD(pK1);
+      B0 = ATTN_TRANSPOSE(B00);
       pK1 += MMUL::size_B * 2;
-      B01 = aie::load_v<MMUL::size_B>(pK2);
-      B1 = aie::transpose(B01, 8, 8);
+      B01 = ATTN_KLOAD(pK2);
+      B1 = ATTN_TRANSPOSE(B01);
       pK2 += MMUL::size_B * 2;
 
       C00.mac(A0, B0);
@@ -225,7 +232,8 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
 
     AIE_LOOP_UNROLL_FULL
     for (int h = 0; h < Q_HEADS_PER_GROUP; h++) {
-      aie::vector<bf16, 16> vec = update(m + h, c + h, out[h], mask, is_first);
+      aie::vector<bf16, 16> vec =
+          ATTN_UPDATE(m + h, c + h, out[h], mask, is_first);
       aie::store_v(pY1, vec);
       pY1 += 16;
     }
@@ -235,11 +243,11 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     bf16 *__restrict pQ1 = pQ;
     aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pQ1);
     pQ1 += MMUL::size_A;
-    aie::vector<bf16, MMUL::size_B> B00 = aie::load_v<MMUL::size_B>(pK1);
-    aie::vector<bf16, MMUL::size_B> B0 = aie::transpose(B00, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B00 = ATTN_KLOAD(pK1);
+    aie::vector<bf16, MMUL::size_B> B0 = ATTN_TRANSPOSE(B00);
     pK1 += MMUL::size_B * 2;
-    aie::vector<bf16, MMUL::size_B> B01 = aie::load_v<MMUL::size_B>(pK2);
-    aie::vector<bf16, MMUL::size_B> B1 = aie::transpose(B01, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B01 = ATTN_KLOAD(pK2);
+    aie::vector<bf16, MMUL::size_B> B1 = ATTN_TRANSPOSE(B01);
     pK2 += MMUL::size_B * 2;
 
     aie::vector<bf16, MMUL::size_C> acc_C00 = aie::zeros<bf16, MMUL::size_C>();
@@ -251,16 +259,18 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     C00.mac(A0, B0);
     C01.mac(A0, B1);
 
-    AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(7) for (unsigned i = 1; i < colQ;
-                                                      ++i) {
+    AIE_PREPARE_FOR_PIPELINING
+    ATTN_Q_LOOP
+    AIE_LOOP_RANGE(7)
+    for (unsigned i = 1; i < colQ; ++i) {
       A0 = aie::load_v<MMUL::size_A>(pQ1);
       pQ1 += MMUL::size_A;
 
-      B00 = aie::load_v<MMUL::size_B>(pK1);
-      B0 = aie::transpose(B00, 8, 8);
+      B00 = ATTN_KLOAD(pK1);
+      B0 = ATTN_TRANSPOSE(B00);
       pK1 += MMUL::size_B * 2;
-      B01 = aie::load_v<MMUL::size_B>(pK2);
-      B1 = aie::transpose(B01, 8, 8);
+      B01 = ATTN_KLOAD(pK2);
+      B1 = ATTN_TRANSPOSE(B01);
       pK2 += MMUL::size_B * 2;
 
       C00.mac(A0, B0);
@@ -283,7 +293,7 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     AIE_LOOP_UNROLL_FULL
     for (int h = 0; h < Q_HEADS_PER_GROUP; h++) {
       aie::vector<bf16, 16> vec =
-          update(m + 4 + h, c + 4 + h, out[h], mask, is_first);
+          ATTN_UPDATE(m + 4 + h, c + 4 + h, out[h], mask, is_first);
       aie::store_v(pY1, vec);
       pY1 += 16;
     }
@@ -299,6 +309,10 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
               bool &is_first) {
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
+#ifdef ATTN_BENCH_NO_KLOAD // bench-only; see aie_kernel_utils.h
+  const aie::vector<bf16, MMUL::size_B> K_hoisted =
+      aie::load_v<MMUL::size_B>(pK);
+#endif
 
   bfloat16 *__restrict pY1 = pY;
   // g times K
@@ -308,11 +322,11 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
     bf16 *__restrict pQ1 = pQ;
     aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pQ1);
     pQ1 += MMUL::size_A;
-    aie::vector<bf16, MMUL::size_B> B00 = aie::load_v<MMUL::size_B>(pK1);
-    aie::vector<bf16, MMUL::size_B> B0 = aie::transpose(B00, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B00 = ATTN_KLOAD(pK1);
+    aie::vector<bf16, MMUL::size_B> B0 = ATTN_TRANSPOSE(B00);
     pK1 += MMUL::size_B * 2;
-    aie::vector<bf16, MMUL::size_B> B01 = aie::load_v<MMUL::size_B>(pK2);
-    aie::vector<bf16, MMUL::size_B> B1 = aie::transpose(B01, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B01 = ATTN_KLOAD(pK2);
+    aie::vector<bf16, MMUL::size_B> B1 = ATTN_TRANSPOSE(B01);
     pK2 += MMUL::size_B * 2;
 
     aie::vector<bf16, MMUL::size_C> acc_C00 = aie::zeros<bf16, MMUL::size_C>();
@@ -324,16 +338,18 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
     C00.mac(A0, B0);
     C01.mac(A0, B1);
 
-    AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(7) for (unsigned i = 1; i < colQ;
-                                                      ++i) {
+    AIE_PREPARE_FOR_PIPELINING
+    ATTN_Q_LOOP
+    AIE_LOOP_RANGE(7)
+    for (unsigned i = 1; i < colQ; ++i) {
       A0 = aie::load_v<MMUL::size_A>(pQ1);
       pQ1 += MMUL::size_A;
 
-      B00 = aie::load_v<MMUL::size_B>(pK1);
-      B0 = aie::transpose(B00, 8, 8);
+      B00 = ATTN_KLOAD(pK1);
+      B0 = ATTN_TRANSPOSE(B00);
       pK1 += MMUL::size_B * 2;
-      B01 = aie::load_v<MMUL::size_B>(pK2);
-      B1 = aie::transpose(B01, 8, 8);
+      B01 = ATTN_KLOAD(pK2);
+      B1 = ATTN_TRANSPOSE(B01);
       pK2 += MMUL::size_B * 2;
 
       C00.mac(A0, B0);
@@ -350,10 +366,10 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
     mout2 = aie::mul(mout2, (bf16)ATTN_SCALE).template to_vector<bf16>(0);
     mout3 = aie::mul(mout3, (bf16)ATTN_SCALE).template to_vector<bf16>(0);
 
-    aie::vector<bf16, 16> vec = update(m, c, mout2, mask, is_first);
+    aie::vector<bf16, 16> vec = ATTN_UPDATE(m, c, mout2, mask, is_first);
     aie::store_v(pY1, vec);
     pY1 += 16;
-    vec = update(m + 1, c + 1, mout3, mask, is_first);
+    vec = ATTN_UPDATE(m + 1, c + 1, mout3, mask, is_first);
     aie::store_v(pY1, vec);
     pY1 += 16;
   }
@@ -368,6 +384,10 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
                        bool &is_first) {
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
+#ifdef ATTN_BENCH_NO_KLOAD // bench-only; see aie_kernel_utils.h
+  const aie::vector<bf16, MMUL::size_B> K_hoisted =
+      aie::load_v<MMUL::size_B>(pK);
+#endif
 
   bfloat16 *__restrict pY1 = pY;
   // g times K
@@ -377,11 +397,11 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     bf16 *__restrict pQ1 = pQ;
     aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pQ1);
     pQ1 += MMUL::size_A;
-    aie::vector<bf16, MMUL::size_B> B00 = aie::load_v<MMUL::size_B>(pK1);
-    aie::vector<bf16, MMUL::size_B> B0 = aie::transpose(B00, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B00 = ATTN_KLOAD(pK1);
+    aie::vector<bf16, MMUL::size_B> B0 = ATTN_TRANSPOSE(B00);
     pK1 += MMUL::size_B * 2;
-    aie::vector<bf16, MMUL::size_B> B01 = aie::load_v<MMUL::size_B>(pK2);
-    aie::vector<bf16, MMUL::size_B> B1 = aie::transpose(B01, 8, 8);
+    aie::vector<bf16, MMUL::size_B> B01 = ATTN_KLOAD(pK2);
+    aie::vector<bf16, MMUL::size_B> B1 = ATTN_TRANSPOSE(B01);
     pK2 += MMUL::size_B * 2;
 
     aie::vector<bf16, MMUL::size_C> acc_C00 = aie::zeros<bf16, MMUL::size_C>();
@@ -393,16 +413,18 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     C00.mac(A0, B0);
     C01.mac(A0, B1);
 
-    AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(7) for (unsigned i = 1; i < colQ;
-                                                      ++i) {
+    AIE_PREPARE_FOR_PIPELINING
+    ATTN_Q_LOOP
+    AIE_LOOP_RANGE(7)
+    for (unsigned i = 1; i < colQ; ++i) {
       A0 = aie::load_v<MMUL::size_A>(pQ1);
       pQ1 += MMUL::size_A;
 
-      B00 = aie::load_v<MMUL::size_B>(pK1);
-      B0 = aie::transpose(B00, 8, 8);
+      B00 = ATTN_KLOAD(pK1);
+      B0 = ATTN_TRANSPOSE(B00);
       pK1 += MMUL::size_B * 2;
-      B01 = aie::load_v<MMUL::size_B>(pK2);
-      B1 = aie::transpose(B01, 8, 8);
+      B01 = ATTN_KLOAD(pK2);
+      B1 = ATTN_TRANSPOSE(B01);
       pK2 += MMUL::size_B * 2;
 
       C00.mac(A0, B0);
@@ -428,7 +450,8 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     out[7] = mout3.extract<16>(3);
 
     for (int h = 0; h < Q_HEADS_PER_CU; h++) {
-      aie::vector<bf16, 16> vec = update(m + h, c + h, out[h], mask, is_first);
+      aie::vector<bf16, 16> vec =
+          ATTN_UPDATE(m + h, c + h, out[h], mask, is_first);
       aie::store_v(pY1, vec);
       pY1 += 16;
     }

@@ -370,6 +370,70 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
         UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
     ),
+    # Qwen3-4B: the DFlash target (see docs/DFlashFeasibility.md). Qwen3 QK-norm
+    # like qwen3-8b, but with the DECOUPLED q dim the bf16 llms/qwen3_4b example
+    # already handles: n_heads*head_dim = 4096 != hidden 2560, so the o-proj
+    # contracts 4096 -> 2560 and J2P[1] is DQ/512, not K/512.
+    #
+    # PAIR_ROWS=1 is forced, as it is for qwen2.5-7b: the paired egress needs
+    # every phase output divisible by ROW_BLOCK*NCX*NCY*PAIR_ROWS = 1024, and the
+    # o/down phases emit K=2560 -> 2.5. Non-paired (divisor 512) is exact.
+    #   I2P = [M, K, 2*INTER, K]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS)
+    #       = [6144, 2560, 19456, 2560]/512 = [12, 5, 38, 5]
+    #   J2P = [K, DQ, K, INTER]/(2*COL_BLOCK)
+    #       = [2560, 4096, 2560, 9728]/512 = [5, 8, 5, 19]
+    "qwen3-4b": dict(
+        K=2560,
+        M=6144,  # DQ+DK+DV = 4096+1024+1024
+        DH_A=128,
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[12, 5, 38, 5],  # blocks/tile per phase (non-paired)
+        J2P=[5, 8, 5, 19],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,  # 32 q / 8 kv = 4 per group, no padding needed
+        PAIR_ROWS=1,  # NON-PAIRED egress (K=2560 is odd in paired units)
+        N_NORMS=2,  # standard pre-norm (input, post_attention)
+        HAS_QK_NORM=True,  # Qwen3: rope_w = [cos/sin(DH), q_norm(DH), k_norm(DH)]
+        VOCAB_SIZE=151936,
+        UNI_DEC=36,  # 36 decoder layers
+        # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(151936/2560)*2560
+        # = 153600 -> 4800 rowblocks. VOCAB_ROWBLKS = 16*VOCAB_I2 (PAIR_ROWS=1)
+        # must divide 4800, so UNI_LM*VOCAB_CHUNK_I2 = 300. K/PAYLOAD = 2560/512
+        # = 5 must divide VOCAB_RNDS = VOCAB_I2, so VOCAB_I2 is a multiple of 5:
+        # {5,10,15,20,25,30} once the tested 2*VOCAB_I2 <= 63 envelope is applied.
+        # 30 is the largest, i.e. the fewest host-armed waves: 300/30 = 10.
+        # The driver MUST set VOCAB_CHUNK_I2=30 (env) to match this UNI_LM.
+        UNI_LM=10,  # vocab chunks per LM head (VOCAB_CHUNK_I2=30)
+    ),
+    # Qwen3-4B DFlash DRAFTER (z-lab/Qwen3-4B-DFlash-b16). Byte-identical to the
+    # qwen3-4b entry above except UNI_DEC: the drafter is 5 Qwen3-4B layers, so
+    # every per-layer constant carries over and only the layer count changes.
+    # That is the "one engine, two configurations" claim in
+    # docs/DFlashFeasibility.md, made concrete.
+    #
+    # Not modelled here (they sit outside the per-layer loop): the mask-token
+    # embedding, the fc linear that fuses the 5 target hidden-state taps
+    # (12800 -> 2560), and hidden_norm.
+    "qwen3-4b-draft": dict(
+        K=2560,
+        M=6144,
+        DH_A=128,
+        KV_PER_CU=2,
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[12, 5, 38, 5],
+        J2P=[5, 8, 5, 19],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,
+        PAIR_ROWS=1,
+        N_NORMS=2,
+        HAS_QK_NORM=True,
+        VOCAB_SIZE=151936,
+        UNI_DEC=5,  # <-- the only difference: 5 drafter layers, not 36
+        UNI_LM=10,  # tied to the target's head; VOCAB_CHUNK_I2=30 as above
+    ),
     # Llama-3.1-8B: same attention topology as 1B/3B (2x4x1, 8 kv heads, DH=128),
     # so the per-CU KV geometry is unchanged; only the proj/FFN widths grow. Like
     # qwen3-8b this needs DECODE_WGROUP (32 layers of K=4096 weights are 3.6 GiB
@@ -956,6 +1020,28 @@ HOST_ROUNDS = sum(ROUNDS_PER_DEST[p] for p in HOST_DRAIN)  # host-drained egress
 # #4: the down egresses as the rms layer output (residual2), drained on its own channel.
 LAYER_RNDS = (PAIR_ROWS * I2P[DOWN_PHASE]) if FULL4 else 0
 
+# DECODE_HIDDEN_TAPS=1: keep every layer's hidden state instead of overwriting it.
+#
+# The layer chaining ABI writes residual2 (= h + down, the layer's hidden state,
+# exactly LAYER_RNDS*PAYLOAD == K elements) back into the X buffer at offset 0,
+# and the next layer's rmsX reads offset 0 -- so layer iv+1 destroys layer iv's
+# output the moment it lands. Speculative decoding with a DFlash-style drafter
+# needs the states at a handful of chosen layers (Qwen3-4B-DFlash-b16 fuses
+# target_layer_ids [1, 9, 17, 25, 33]), and there is no way to read them back.
+#
+# The fix is an offset, not a new drain: give layer iv the read slot iv and the
+# write slot iv+1. Same transfers, same BD count, same instruction stream -- the
+# bytes already cross the shim. The only cost is the X buffer growing from one
+# slot to UNI_DEC+1 (185 KB for qwen3-4b, 68-296 KB across the models).
+#
+# The write->read dependency is unchanged in kind: layer iv+1 still reads what
+# layer iv wrote, just at a different address in the same BO, so the existing
+# air.preserve_shim_dma_order program ordering still carries it.
+#
+# 0 (default) keeps the in-place chain and is a strict no-op: X_SLOTS == 1 and
+# both offsets fold back to the literal 0.
+HIDDEN_TAPS = int(_os.environ.get("DECODE_HIDDEN_TAPS", "0"))
+
 # ===== Multi-layer fused decode (stitch NLAYERS runtime sub-sequences) =====
 # The device (segment/herds) is emitted ONCE; only the launch-scope L3 feeds are
 # emitted per layer, with COMPILE-TIME-CONSTANT per-layer DDR offsets. So the
@@ -969,6 +1055,10 @@ W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights /
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
+# X slots: 1 for the in-place chain, one per layer boundary when tapping. UNI_DEC
+# layers have UNI_DEC+1 boundaries (the prompt embedding in, every layer's output
+# after). The LM head reads the last one, exactly as it reads slot 0 today.
+X_SLOTS = (UNI_DEC + 1) if HIDDEN_TAPS else 1
 
 
 def build_module():
@@ -986,7 +1076,11 @@ def build_module():
         # NLAYERS. The weight / rms / KV DDR buffers hold NLAYERS successive per-layer
         # slabs (offset iv*SLAB), so they scale by NLAYERS. At NLAYERS=1 every size is
         # identical to the single-layer design.
-        x_l3 = MemRefType.get([K], bf16)  # RAW input activation (in-place chain)
+        #
+        # HIDDEN_TAPS un-does the in-place part: layer iv reads slot iv and writes
+        # slot iv+1, so every layer's hidden state stays readable instead of being
+        # overwritten by the next one. See the HIDDEN_TAPS comment above.
+        x_l3 = MemRefType.get([X_SLOTS * K], bf16)  # RAW input activation
         # LM_HEAD build carries the vocab weights (VOCAB_W_BLOCKS q4k blocks) instead
         # of the decode phase weights. Separate compile-time size -> decode IR is
         # byte-identical; the device (CDO) is unchanged (only this DDR memref size +
@@ -1504,6 +1598,21 @@ def build_module():
                     _s = arith.addi(_b, _slot_off())
                     return arith.addi(_s, idx(extra)) if extra else _s
 
+                # X slot for this wave (see HIDDEN_TAPS). Without taps both are
+                # the literal 0 and the chain is in-place exactly as before.
+                def _x_in():
+                    """Slot layer a_iv READS: its input hidden state."""
+                    return _lb(K) if HIDDEN_TAPS else 0
+
+                def _x_out():
+                    """Slot layer a_iv WRITES: its output, the next layer's input."""
+                    return _lo(_lb(K), K) if HIDDEN_TAPS else 0
+
+                # The LM head reads the LAST slot -- what layer UNI_DEC-1 wrote.
+                # Its own wave index is >= UNI_DEC, so this is a constant, not a
+                # function of a_iv.
+                _x_final = (UNI_DEC * K) if HIDDEN_TAPS else 0
+
                 blk = BLOCK_BF16
                 wstep = NCY * blk  # 10240 = one fan get
 
@@ -1685,7 +1794,9 @@ def build_module():
                             # weights; drain VOCAB_SIZE_PADDED logits into Y. No attn/rope/
                             # glu/KV feeds (those herds are parked -- RTP-unarmed -- so they
                             # need no input; feeding them would only back-pressure).
-                            ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
+                            ChannelPut(
+                                "rmsX", X, offsets=[_x_final], sizes=[K], strides=[1]
+                            )
                             # real-lm-head final norm (model.norm.weight): a DEDICATED slot
                             # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
                             # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
@@ -1776,8 +1887,11 @@ def build_module():
                             _wsel[0] = _wgi  # runtime group index (None if unsplit)
                             # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
-                            # in-place (offset 0 every layer -- the chained hidden state).
-                            ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
+                            # in-place (offset 0 every layer -- the chained hidden state)
+                            # unless HIDDEN_TAPS, which reads slot a_iv instead.
+                            ChannelPut(
+                                "rmsX", X, offsets=[_x_in()], sizes=[K], strides=[1]
+                            )
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
@@ -2065,8 +2179,13 @@ def build_module():
                             # arg0 (X) at offset 0, so it feeds the NEXT layer from the same BO.
                             # The next layer's rmsX read (above) is program-ordered after this
                             # write (air.preserve_shim_dma_order) -> layer chaining.
+                            #
+                            # HIDDEN_TAPS moves this to slot a_iv+1 (and the read to
+                            # slot a_iv), which keeps the chain -- same BO, same
+                            # ordering, still the next layer's input -- while leaving
+                            # every earlier layer's output intact to read back.
                             _out_bo = X
-                            _out_base = 0
+                            _out_base = _x_out()
                             # BD-COMPACTION: single full-size drain (matches the rms single
                             # layerOut put) instead of LAYER_RNDS per-round gets.
                             ChannelGet(

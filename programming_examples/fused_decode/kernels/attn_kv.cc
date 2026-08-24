@@ -212,21 +212,35 @@ ATTN_HOT void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
         aie::concat(aie::filter_odd(S_up, 8), aie::filter_odd(S_down, 8));
     bf16 *__restrict pV1 = pV;
     bf16 *__restrict pV2 = pV + MMUL::size_B * colQ;
+    // Bench-only (aie_kernel_utils.h): serve every V tile from ONE hoisted
+    // load. V is the same for every token in a batch, so this is the strict
+    // upper bound on what putting tokens in the mmul's R dimension can save
+    // here -- a batch could hoist the V loads, and nothing else in this
+    // function, out of the per-token path.
+#ifdef ATTN_BENCH_NO_VLOAD
+    const aie::vector<bf16, MMUL::size_B> V_hoisted =
+        aie::load_v<MMUL::size_B>(pV1);
+#define ATTN_VLOAD(p) V_hoisted
+#else
+#define ATTN_VLOAD(p) aie::load_v<MMUL::size_B>(p)
+#endif
     // (1) correction pass (pure vector; CORRECT dies after this scope)
+#ifndef ATTN_BENCH_NO_CORRECT // bench-only; see aie_kernel_utils.h
     {
       aie::vector<y_acc_dtype, 64> CORRECT = aie::concat(
           aie::broadcast<float, 8>(c[0]), aie::broadcast<float, 8>(c[1]),
           aie::broadcast<float, 8>(c[2]), aie::broadcast<float, 8>(c[3]),
           aie::broadcast<float, 8>(c[4]), aie::broadcast<float, 8>(c[5]),
           aie::broadcast<float, 8>(c[6]), aie::broadcast<float, 8>(c[7]));
-      for (unsigned j = 0; j < colQ; j += 1) {
+      ATTN_Q_LOOP for (unsigned j = 0; j < colQ; j += 1) {
         y_acc_dtype *__restrict pYc = pY + j * MMUL::size_C;
         aie::store_v(pYc, aie::mul(CORRECT, aie::load_v<MMUL::size_C>(pYc))
                               .template to_vector<y_acc_dtype>());
       }
     }
+#endif
     // (2) mac pass, one accumulator live at a time (plane0 even ++ plane1 odd)
-    for (unsigned j = 0; j < colQ; j += 1) {
+    ATTN_Q_LOOP for (unsigned j = 0; j < colQ; j += 1) {
       y_acc_dtype *__restrict pYc = pY + j * MMUL::size_C;
       bf16 *__restrict pVa = pV1 + j * MMUL::size_B;
       bf16 *__restrict pVb = pV2 + j * MMUL::size_B;
@@ -240,19 +254,20 @@ ATTN_HOT void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
           aie::load_v<MMUL::size_C>(pYc);
       aie::vector<bf16, MMUL::size_C> zc = aie::zeros<bf16, MMUL::size_C>();
       MMUL Y0(zc);
-      Y0.mac(S0, aie::load_v<MMUL::size_B>(pVa));
-      Y0.mac(S1, aie::load_v<MMUL::size_B>(pVa + MMUL::size_B * colQ * 2));
+      Y0.mac(S0, ATTN_VLOAD(pVa));
+      Y0.mac(S1, ATTN_VLOAD(pVa + MMUL::size_B * colQ * 2));
       auto Yeven = aie::filter_even(
           aie::add(Y0.template to_vector<y_acc_dtype>(), yprev), 32);
       MMUL Y1(zc);
-      Y1.mac(S0, aie::load_v<MMUL::size_B>(pVb));
-      Y1.mac(S1, aie::load_v<MMUL::size_B>(pVb + MMUL::size_B * colQ * 2));
+      Y1.mac(S0, ATTN_VLOAD(pVb));
+      Y1.mac(S1, ATTN_VLOAD(pVb + MMUL::size_B * colQ * 2));
       auto Yodd = aie::filter_odd(
           aie::add(Y1.template to_vector<y_acc_dtype>(), yprev), 32);
       aie::store_v(pYc, aie::concat(Yeven, Yodd));
     }
   }
 }
+#undef ATTN_VLOAD
 
 template <unsigned N>
 __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
@@ -357,8 +372,10 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
   bf16 *__restrict pV1 = pV;
   aie::vector<float, 16> zeros_float = aie::zeros<float, 16>();
 
-  AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(2) for (unsigned j = 0; j < colQ;
-                                                    j += 4) {
+  AIE_PREPARE_FOR_PIPELINING
+  ATTN_Q_LOOP
+  AIE_LOOP_RANGE(2)
+  for (unsigned j = 0; j < colQ; j += 4) {
     // v0
     bf16 *__restrict pV01 = pV1 + (j + 0) * MMUL::size_B;
     bf16 *__restrict pV02 = pV1 + (j + 1) * MMUL::size_B;
@@ -548,20 +565,22 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     aie::vector<bf16, MMUL::size_A> S1 =
         aie::concat(aie::filter_odd(S_up, 8), aie::filter_odd(S_down, 8));
     // (1) correction pass
+#ifndef ATTN_BENCH_NO_CORRECT // bench-only; see aie_kernel_utils.h
     {
       aie::vector<y_acc_dtype, 64> CORRECT = aie::concat(
           aie::broadcast<float, 8>(c[0]), aie::broadcast<float, 8>(c[1]),
           aie::broadcast<float, 8>(c[2]), aie::broadcast<float, 8>(c[3]),
           aie::broadcast<float, 8>(c[4]), aie::broadcast<float, 8>(c[5]),
           aie::broadcast<float, 8>(c[6]), aie::broadcast<float, 8>(c[7]));
-      for (unsigned j = 0; j < colQ; j += 1) {
+      ATTN_Q_LOOP for (unsigned j = 0; j < colQ; j += 1) {
         y_acc_dtype *__restrict pYc = pY + j * MMUL::size_C;
         aie::store_v(pYc, aie::mul(CORRECT, aie::load_v<MMUL::size_C>(pYc))
                               .template to_vector<y_acc_dtype>());
       }
     }
+#endif
     // (2) mac pass, single accumulator
-    for (unsigned j = 0; j < colQ; j += 1) {
+    ATTN_Q_LOOP for (unsigned j = 0; j < colQ; j += 1) {
       y_acc_dtype *__restrict pYc = pY + j * MMUL::size_C;
       bf16 *__restrict pVp = pV1 + j * MMUL::size_B;
       aie::vector<bf16, MMUL::size_B> Vp = aie::load_v<MMUL::size_B>(pVp);
@@ -600,7 +619,7 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
   aie::vector<y_acc_dtype, 64> CORRECT =
       aie::concat(c0, c1, c2, c3, c4, c5, c6, c7);
 
-  for (unsigned j = 0; j < colQ; j += 4)
+  ATTN_Q_LOOP for (unsigned j = 0; j < colQ; j += 4)
     chess_prepare_for_pipelining chess_loop_range(2, ) {
       // v0
       bf16 *__restrict pV01 = pV1 + (j + 0) * MMUL::size_B;
