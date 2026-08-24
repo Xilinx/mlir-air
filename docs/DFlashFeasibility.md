@@ -150,7 +150,9 @@ python3 q4k_mm_gate.py --mode random                   # ~2 min; numeric gate
 python3 q4k_mm_gate.py --mode exact --batch 8          # ~2 min; the small-batch
 python3 q4k_mm_gate.py --mode exact --batch 4          # ~2 min; kernel
 python3 mmul_probe.py                                  # ~2 min; mmul tile order
-python3 proj_qmm_gate.py --nblk 1                      # ~2 min; batched vs GEMV
+python3 proj_qmm_gate.py --nblk 1 --batch 8            # ~2 min; batched vs
+python3 proj_qmm_gate.py --nblk 2 --batch 8            # ~2 min; GEMV, at the
+python3 proj_qmm_gate.py --nblk 1 --batch 16           # ~2 min; block size
 python3 batch_attn_mask.py --check --cost              # seconds; the causal mask
 python3 bench_attn.py                                  # ~4 min; attention roofline
 python3 bench_attn.py --model QWEN3_4B --layers 36     # ~4 min
@@ -1073,15 +1075,32 @@ paper; different roundings, in different places, in different precisions.
 same activations**, so a difference is attributable to the kernels and nothing
 else. Measured **[measured]**:
 
-| | K=256 | K=512 |
-|---|---|---|
-| GEMV vs exact fp32 | 0.917% rms | 1.005% rms |
-| batched vs exact fp32 | 1.274% rms | 1.456% rms |
-| GEMV vs batched | 1.599% rms | 1.711% rms |
-| ratio | 1.39x | 1.45x |
+| | batch 16, K=256 | batch 16, K=512 | **batch 8, K=256** | **batch 8, K=512** |
+|---|---|---|---|---|
+| GEMV vs exact fp32 | 0.917% rms | 1.005% rms | 0.907% rms | 0.951% rms |
+| batched vs exact fp32 | 1.274% rms | 1.456% rms | 1.279% rms | 1.401% rms |
+| GEMV vs batched | 1.599% rms | 1.711% rms | 1.570% rms | 1.664% rms |
+| ratio | 1.39x | 1.45x | **1.41x** | **1.47x** |
+
+**Batch 8 was added after the block size moved, and it had to be: the gate only
+ever ran at 16.** It refused to run below 16 on a stale guard — `q4k_mmul`'s
+`BATCH % 16 == 0` assert, which `q4k_mmul_any` had already made obsolete — so
+the block size the analysis recommends was the one block size the projection
+was never checked at. It passes, and at the same error as 16.
+
+That check also found the real limit, which is not in `q4k_mm.h` at all:
+**`proj_qmm_mm_flush_row` de-tiles for `aie::mmul<8,8,8>` and breaks at batch
+4.** It reads C tile `(z, j)` at `(j*RA + z)*64` with `RA = BATCH/8` — correct
+at 8, 16 and 32, where it coincides with `q4k_mmul_small`'s layout at `RA == 1`.
+At batch 4 the tile is `aie::mmul<4,8,8>`, `size_C` is 32 not 64, and `RA`
+integer-divides to **zero**, so every `j` reads tile 0. It would have compiled
+and returned a plausible wrong answer. Now a `static_assert` and a gate refusal;
+`q4k_mm.h` itself is bit-exact at batch 4 and `q4k_mm_gate.py --batch 4` covers
+it. **If the block size ever moves to 4, that flush needs a `size_C=32`
+variant.**
 
 **The batched path costs about 1.4x the GEMV's error, and that ratio is roughly
-flat in contraction depth.** Both are near-unbiased and both are around 1%. That
+flat in contraction depth and in the batch.** Both are near-unbiased and both are around 1%. That
 is the price of the swap, stated as a number rather than assumed either way —
 and the framing that matters is the third row: swapping moves the projection
 output by ~1.7% rms, which is a real change, not a rounding difference. Whether
@@ -1425,7 +1444,24 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
 
    Everything sizing-related gets easier: at block 8 the activation tile is half
    what sections 5b and 5c priced, the X feed sits below the crossover at batch
-   10, and the egress had headroom to batch 511 anyway. What the build has to do:
+   10, and the egress had headroom to batch 511 anyway.
+
+   **`DECODE_BATCH` exists in the builder now**, and with it the sizing rules
+   the rest of this step has to respect. It is a strict no-op at 1 — emitted IR
+   byte-identical to `HEAD` on both `llama-3.2-1b` and `qwen3-4b` **[measured]**
+   — and it carries three things worth having before any wiring lands:
+
+   - The **L1 ceilings as hard failures**, not as guidance. `DECODE_BATCH=26`
+     exits naming the buffer and the tool that priced it. Overshooting L1 does
+     not produce a slow build, it produces an aiecc failure naming nothing.
+   - `ROW_TILE`, **derived** rather than hardcoded, from the widest of `qkv_l1`
+     / `ropeq_l1` / `rms_l1` against the tile budget. At block 8 on qwen3-4b it
+     comes out **4** — which independently reproduces `batch_l1_budget.py`'s
+     measured `qkv_l1` limit, from a different calculation in a different file.
+   - `ATTN_QTILE`, capped at 8 because the attention CU measures 51.0 KB of a
+     54 KB budget there. It fits with **nothing spare**.
+
+   What the build still has to do:
 
    - ~~**Proj cores: one new buffer.**~~ **Kernel DONE and gated** —
      `proj_qmm_mm_zero` / `_acc` / `_flush_row` in `proj_qmm.cc`, behind
@@ -1442,24 +1478,36 @@ Peano-workaround comments in the tree, and it is orthogonal to DFlash.
      64 floats apart, where the GEMV's accumulator was already contiguous.
      Net L1: 608 bytes of `rc` traded for a 16 KB scratch. That scratch is
      independent of the batch — it holds one unpacked *weight* block — so it
-     sets the ceiling at 25 regardless, and block 4 clears it easily.
+     sets the ceiling at 25 regardless, and block 8 clears it with room —
+     31.3 KB of the 54 KB budget **[measured]**.
    - **Egress: widen, do not repeat.** One packet per round, B times longer.
      `N_ROUNDS`, BD count and instruction stream all stay put. The only edit is
      the `outA` gather into the group memtile, which gains one dimension
      (`sizes=[16,32]`, `strides=[128,1]`) to land emitter-major blocks
      token-major. Legal on all eight models, headroom to batch 511.
-   - ~~**X feed: watch it.**~~ **Not a concern at block 4.** The activation
-     chunk only overtakes the weight chunk at batch 10; at 4 it is 0.40 of the
-     weight chunk, where at 16 it was 1.60. The tightest number in the step
-     stopped being tight when the block size did. If it does bite, `MROWS=64` removes it outright — not
-     `--kcol 512`, which does not touch this ratio.
+   - ~~**X feed: watch it.**~~ **Not a concern at block 8.** The activation
+     chunk only overtakes the weight chunk at batch 10; at 8 it is **0.80** of
+     the weight chunk and needs **1.77 of 4.0 B/cycle** per broadcast stream,
+     where at 16 it was 1.60 **[measured]**. The tightest number in the step
+     stopped being tight when the block size did. If it does bite, `MROWS=64`
+     removes it outright — not `--kcol 512`, which does not touch this ratio.
    - **Attention: query tile of 8**, on qwen3-4b and every other head_dim>=128
      model. Costs a second read of the KV block from L2; no extra DDR traffic.
    - ~~**Attention: a new mask.**~~ **Already there** — see below. It is an RTP
      value, not a kernel change.
    - **Attention: it is now the dominant cost.** Section 5e — 71% of batch-16
-     compute, and the reason to settle the block size before building more.
-   - **rms/rope/glu: row tiling at 4**, set by `qkv_l1` on qwen3-4b.
+     compute, and the reason the block size had to be settled before building
+     more. Batching it is worth at most 1.45x at block 8 and blocks nothing
+     (section 5g), so it is not a dependency of this step.
+   - **rms/rope/glu: row tiling at 4**, set by `qkv_l1` on qwen3-4b. This is a
+     TILE, not the block size: `qkv_l1` wants 96 KB for 8 tokens against a
+     54 KB budget, so block 8 runs these phases as two sub-tiles of 4.
+     `ropeq_l1` (64 KB, fits 6) and `rms_l1` (40 KB, fits 10) also exceed a
+     whole block of 8 and ride the same tiling **[measured,
+     `batch_l1_budget.py --model qwen3-4b --batch 8 -v`]**.
+   - **Attention query tile 8 is exactly at the ceiling** — 51.0 KB of 54 KB,
+     max query tile 8 **[measured]**. It fits, with nothing spare, so any
+     future per-CU L1 addition on the attention path has to be paid for.
 
    ### The mask turned out to already exist
 

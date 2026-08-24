@@ -208,8 +208,22 @@ def main():
     ap.add_argument("--device", default="npu2")
     args = ap.parse_args()
 
-    if args.batch % 16:
-        sys.exit("q4k_mmul static_asserts BATCH % 16 == 0")
+    # 8 and 16/32 only. Not a q4k_mm.h limit -- q4k_mmul_any dispatches to
+    # q4k_mmul_small at 4 and 8 and that kernel is gated bit-exact at both. It
+    # is proj_qmm_mm_flush_row's de-tiling that stops at 8: it reads the
+    # accumulator as C tile (z, j) at (j*RA + z)*64 with RA = BATCH/8, which is
+    # the general aie::mmul<8,8,8> layout and coincides with q4k_mmul_small's
+    # at RA == 1. At BATCH 4 the tile is aie::mmul<4,8,8>, size_C is 32 not 64,
+    # and RA integer-divides to ZERO -- every j would read tile 0. Silently, and
+    # with a plausible wrong answer, which is this project's characteristic
+    # failure mode. Refuse instead.
+    if args.batch not in (8, 16, 32):
+        sys.exit(
+            f"--batch {args.batch}: proj_qmm_mm_flush_row de-tiles for "
+            f"aie::mmul<8,8,8> (batch 8, 16, 32). Batch 4 needs a size_C=32 "
+            f"variant of the flush; q4k_mm.h itself is fine at 4 and "
+            f"q4k_mm_gate.py --batch 4 covers it."
+        )
     need = l1_bytes(args.batch, args.nblk) + L1_STACK
     if need > L1_BYTES:
         sys.exit(

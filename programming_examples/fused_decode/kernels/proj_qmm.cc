@@ -270,13 +270,27 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
   constexpr int RB = Q4NX_ROW_BLOCK_SIZE;
   constexpr int RA = PROJ_MM_BATCH / 8; // mmul rowA: token blocks
   constexpr int CB = RB / 8;            // mmul colB: row blocks within RB
+  // The de-tiling below reads C tile (z, j) at (j*RA + z)*64 and token rr at
+  // rr*8 within it. That is aie::mmul<8,8,8>'s layout, and it is also
+  // q4k_mmul_small's at batch 8, where RA collapses to 1 -- the two agree
+  // exactly there, which is why one formula serves 8, 16 and 32.
+  //
+  // It does NOT serve batch 4. q4k_mmul_any picks aie::mmul<4,8,8> there,
+  // size_C is 32 rather than 64, and RA integer-divides to ZERO so every j
+  // would read tile 0. q4k_mm.h is correct at batch 4 (q4k_mm_gate.py --batch 4
+  // is bit-exact); only this de-tiling is not, and it would fail by returning a
+  // plausible wrong answer rather than by crashing.
+  static_assert(PROJ_MM_BATCH % 8 == 0,
+                "proj_qmm_mm_flush_row de-tiles for aie::mmul<8,8,8>; batch 4 "
+                "needs a size_C=32 variant");
   alignas(aie::vector_decl_align) float tmp[RB];
 
   for (int t = 0; t < PROJ_MM_BATCH; t++) {
     const int z = t / 8, rr = t % 8;
     AIE_LOOP_UNROLL_FULL
     for (int j = 0; j < CB; j++)
-      aie::store_v(tmp + j * 8, aie::load_v<8>(y_acc + (j * RA + z) * 64 + rr * 8));
+      aie::store_v(tmp + j * 8,
+                   aie::load_v<8>(y_acc + (j * RA + z) * 64 + rr * 8));
     copy_float_to_bf16<RB>(y_out + 16 + (t * tok_stride + i) * RB, tmp);
   }
 }

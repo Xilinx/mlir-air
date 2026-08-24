@@ -1049,6 +1049,68 @@ HIDDEN_TAPS = int(_os.environ.get("DECODE_HIDDEN_TAPS", "0"))
 # the runtime instruction sequence grows ("16 sub-sequences stitched one after
 # another"). NLAYERS=1 is a strict no-op (all per-layer bases = 0).
 NLAYERS = int(_os.environ.get("NLAYERS", "1"))
+
+# ===== DFlash batched decode (DECODE_BATCH tokens per superkernel call) =======
+# The superkernel does one token per call. DFlash needs it to do a block of
+# them: draft proposes DECODE_BATCH tokens, verify checks all of them in one
+# pass. See docs/DFlashFeasibility.md.
+#
+# 1 (default) is a STRICT NO-OP -- every derived quantity below folds back to
+# the literal it replaces, and the emitted IR is byte-identical to HEAD. That
+# is gated, not asserted: see the DECODE_HIDDEN_TAPS diff recipe in the doc,
+# which covers this flag too.
+#
+# WHY 8 IS THE DEFAULT CEILING AND NOT 16. The block size was chosen by pricing
+# each pass as max(compute, memory) with attention counted -- 8 wins at 1.65x
+# where 16 gives 1.06x. It is also the batched matmul's fastest shape by a wide
+# margin (71.4 MAC/cycle against batch 16's 55.7), because q4k_mmul_small's 1x4
+# blocking at rowA=1 fits where aie::mmul<4,8,8> does not.
+BATCH = int(_os.environ.get("DECODE_BATCH", "1"))
+
+# Per-core L1 ceilings, MEASURED by batch_l1_budget.py on qwen3-4b (the DFlash
+# target) against the 64 KB tile minus DECODE_STACK. These are hard limits, not
+# guidance: exceeding one does not produce a slow build, it produces an opaque
+# aiecc failure naming no buffer. Fail here instead, naming the buffer.
+#
+#   proj core        31.3 KB at batch 8, fits to 25. The 16 KB unpacked-weight
+#                    scratch is independent of the batch (it holds one WEIGHT
+#                    block), so it sets a batch-independent floor.
+#   attention CU     51.0 KB at query tile 8, fits to 8 EXACTLY. No headroom:
+#                    any future per-CU L1 addition on this path has to be paid
+#                    for out of the query tile.
+BATCH_MAX_PROJ = 25
+BATCH_MAX_ATTN_QTILE = 8
+if BATCH < 1:
+    raise SystemExit(f"DECODE_BATCH must be >= 1, got {BATCH}")
+if BATCH > BATCH_MAX_PROJ:
+    raise SystemExit(
+        f"DECODE_BATCH={BATCH} exceeds the proj core's L1 ceiling of "
+        f"{BATCH_MAX_PROJ}: xblk+yacc+ypair scale with the batch on top of a "
+        f"fixed 16 KB unpacked-weight scratch (wscr). Re-check with "
+        f"`batch_l1_budget.py --model {MODEL_NAME} --batch {BATCH} -v "
+        f"--scratch-rows 32 --scratch-cols 256`."
+    )
+
+# rms / rope / glu do NOT get a whole block at once. qkv_l1 alone wants
+# M*BATCH bf16 -- 96 KB for 8 tokens on qwen3-4b against a 54 KB budget -- so
+# these phases run the block as ceil(BATCH/ROW_TILE) sub-tiles. ropeq_l1 (fits
+# 6) and rms_l1 (fits 10) ride the same tiling. Derived from the widest of the
+# three rather than hardcoded, so a model with different M does not silently
+# overflow: whichever buffer is tightest sets the tile.
+#
+# The tile is a LOOP COUNT, not a correctness parameter -- these phases are
+# row-independent (per-token rms, per-token rope, per-token glu), so any tile
+# that fits gives the same answer.
+_L1_ROWTILE_BUDGET = 65536 - STACK_SIZE
+ROW_TILE = max(1, min(BATCH, _L1_ROWTILE_BUDGET // (2 * max(M, DQ_PADDED, K))))
+ROW_SUBTILES = (BATCH + ROW_TILE - 1) // ROW_TILE
+
+# Attention gets a query tile too, for the same reason and with a tighter bound
+# (the KV block and scores are per-CU fixed, q/o/scores scale). Costs a second
+# read of the KV block from L2 per sub-tile; no extra DDR traffic, because the
+# block is already resident in L2 when the first sub-tile reads it.
+ATTN_QTILE = max(1, min(BATCH, BATCH_MAX_ATTN_QTILE))
+ATTN_QSUBTILES = (BATCH + ATTN_QTILE - 1) // ATTN_QTILE
 # Per-layer DDR slab sizes (elements). LUT is per-position (shared across layers),
 # placed after all NLAYERS rms slabs.
 W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights / layer
