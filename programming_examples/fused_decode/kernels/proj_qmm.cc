@@ -309,6 +309,13 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
 #if defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 2
     if (t == PROJ_MM_BATCH - 1)
       aie::store_v(tmp + (CB - 1) * 8, aie::broadcast<float, 8>(0.125f));
+#elif defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 3
+    // Label every element with WHERE it came from, and read the labels back out
+    // of the KV cache. V is copied through rope unrotated, so its labels
+    // survive; K's do not. t*32 + p is 0..255, which bf16 holds exactly, and
+    // the role goes in the sign.
+    for (int p = 0; p < RB; p++)
+      tmp[p] = (i ? -1.0f : 1.0f) * (float)(t * RB + p);
 #endif
     copy_float_to_bf16<RB>(y_out + 16 + (t * tok_stride + i) * RB, tmp);
   }

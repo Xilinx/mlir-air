@@ -280,6 +280,11 @@ narrow it a long way:
 |---|---|---|
 | `=1` run the flush's tokens BACKWARDS | the hole does not move | not a write-order race — the egress is not reading before the last store lands |
 | `=2` store a marker instead of the last vector | the marker reaches the KV cache, at exactly 24..31 of token 7's **K** | the WRITE path works. `y_acc[248:256]` really was zero |
+| `=3` label every element with `±(t*32 + p)` — the token, the position, the role in the sign — and read the labels out of the KV cache | **every label is exactly right, for all 8 tokens.** Token 7's V region reads `[+224..+255 \| -224..-255]` per emitter, which is `[role 0 \| role 1]` of token 7 and nothing else | the whole descriptor chain: the flush's addressing, both egress gathers, the id-demux, the QKV L2 transpose, rope's per-token slice and the KV append. None of them mixes a token or drops a byte |
+
+The labels are the strongest single result here: **the data path is correct and
+the accumulator's contents are not.** V is copied through rope unrotated, so its
+labels survive to DDR; K's do not, which is why the probe is read on V.
 
 And the marker sharpens the shape. On the K round, only 24..31 changed — so
 token 7's K was otherwise CORRECT, which rules out the X feed and the token
@@ -291,10 +296,20 @@ region maths checks out), rope's DMA (single-buffered K and V BDs in one MM2S
 chain, correct lock protocol), the emitter's egress BD (`offset = 14 len = 514`
 on a 528 buffer), and `ypair_l1`'s size (emitted as 528, correctly batched).
 
-The accumulator is a **2-deep ring** (`buf41` and `buf46`, both `256xf32`, on
-every proj core), and phase 0 has 6 rounds — so K (round 4) and V (round 5) land
-in DIFFERENT slots. That is the one asymmetry between them that is not "last",
-and it is where to look next.
+So what is left is: `y_acc` row 7 — the LAST TOKEN's row of `aie::mmul<8,8,8>`'s
+C — is wrong on exactly one round of the QKV phase, nonzero-but-wrong in tiles
+0..2 and exactly zero in tile 3. Every other token's row is right, on every
+round, and the same round's K is right.
+
+Two proj-core buffers are `256xf32` (`buf41`, `buf46`) — one per unrolled `_e`
+in `_mm`'s `for _e in range(PAIR_ROWS)`, not a temporal ring. The round loop
+`_v1` reuses them, so a given round is `(_v1, _e)` and K and V differ in one of
+those. The other thing that is per round is the **X refeed**: each `_proj` call
+consumes one, and the QKV phase's six rounds are `XN_REFEED = 6` re-broadcasts
+of `rms_chunk_aie`'s regenerated chunks. An X whose last token's row is short on
+one refeed would put a wrong row 7 into that round's accumulator and no other —
+which is the shape, except that it does not obviously explain tile 3 being
+exactly zero while tiles 0..2 are merely wrong.
 
 #### A gate that measures floating point instead of the engine
 
@@ -518,12 +533,17 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    above; the live lead is the **2-deep accumulator ring**, since K and V are
    consecutive rounds and therefore land in different slots.
 
-   What has NOT been tried: reading the proj cores' emitted `mm_zero` /
-   `mm_acc` / `mm_flush_row` sequence per ROUND out of the AIE dump and diffing
-   the two ring slots; forcing a single accumulator (hoisting `a_acc` out of
-   `_mm`'s round loop) to see whether the fault survives; and whether
-   `_wscr()`'s segment-scope 16 KB scratch, which the GEMV path does not have,
-   is adjacent in L1 to whichever slot loses its tail.
+   The next probe is the same trick one stage up: **label the X**, not the
+   flush. `rms_chunk_aie` can write `t*512 + c*128 + i` instead of the norm, and
+   `PROJ_FLUSH_PROBE=3`-style labels then say whether row 7 of the mmul's A
+   operand is what the X feed thinks it sent, on every refeed. That closes the
+   one hop the flush labels do not reach.
+
+   Also untried: reading the proj cores' emitted per-round `mm_zero` / `mm_acc`
+   / `mm_flush_row` sequence out of the AIE dump and diffing the two `_e`
+   bodies, and whether `_wscr()`'s segment-scope 16 KB scratch — which the GEMV
+   path does not have — is adjacent in L1 to whichever accumulator loses its
+   tail.
 8. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
