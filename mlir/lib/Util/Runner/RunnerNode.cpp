@@ -806,8 +806,7 @@ private:
     unsigned dispatched = 0;
 
     // Check how many evnets need to be dispatched in this op
-    unsigned total =
-        this->tokenSpatialFactorForResource(Op.getOperation());
+    unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "outbound", dispatched);
 
@@ -839,8 +838,7 @@ private:
         dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
-    unsigned total =
-        this->tokenSpatialFactorForResource(Op.getOperation());
+    unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "inbound", dispatched);
 
@@ -969,8 +967,7 @@ private:
     }
 
     // Check how many events in total
-    unsigned total =
-        this->tokenSpatialFactorForResource(putOp.getOperation());
+    unsigned total = this->tokenSpatialFactorForResource(putOp.getOperation());
     unsigned already_dispatched = this->getAlreadyDispatchedForDynamicDispatch(
         putOp.getChanName().str(), "put");
 
@@ -1145,8 +1142,7 @@ private:
     // Check if this op has been completely dispatched
     std::pair<std::string, std::string> key =
         std::make_pair(op.getChanName().str(), "put");
-    unsigned total_count =
-        this->tokenSpatialFactorForResource(op);
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
     if (launch_runner->channel_ops_in_progress.count(key)) {
       unsigned processed = launch_runner->channel_ops_in_progress[key].first;
       if (processed == total_count) {
@@ -1171,8 +1167,7 @@ private:
         op.getChanName().str(), "get");
     unsigned bcast_factor =
         launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
-    unsigned total_count =
-        this->tokenSpatialFactorForResource(op);
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
 
     // Calculate how many src and dst ports to deallocate
     std::pair<std::string, std::string> put_key =

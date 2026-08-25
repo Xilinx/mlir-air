@@ -21,6 +21,9 @@
 //
 //  2. getResourceCost(air::SegmentOp) ignored the iteration space, so a 2x1
 //     segment was billed a single DU and fit an arch that cannot hold it.
+//     That half is checked by bad_launch/bad_segment_iteration_space.mlir,
+//     which needs an arch too small for the instances; here the arch is big
+//     enough and only the first defect is in play.
 //
 // Both instances are co-resident, so the pair costs the same wall clock as
 // one (10480 for @nn plus channel and bookkeeping overhead) but twice the
