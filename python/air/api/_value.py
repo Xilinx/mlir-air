@@ -62,6 +62,190 @@ def _normalize_key(key, rank, what):
     return key
 
 
+def _permute(seq, axes):
+    return [seq[a] for a in axes]
+
+
+def _check_axes(axes, rank):
+    """``transpose`` takes a full permutation, as numpy does."""
+    if sorted(axes) != list(range(rank)):
+        raise ValueError(
+            f"transpose{tuple(axes)} is not a permutation of a rank-{rank} "
+            f"view: give every axis exactly once, e.g. "
+            f"transpose{tuple(range(rank))}. numpy has the same rule -- there "
+            "is no partial transpose"
+        )
+
+
+def _carries_offset(offset):
+    """True unless the offset is a compile-time zero.
+
+    A runtime offset counts as carrying one: it may well be non-zero, and a
+    reshape has no way to prove otherwise. This has to go through as_const()
+    rather than comparing to 0 -- IndexExpr does not implement equality against
+    an int, so ``offset != 0`` is true for every offset, compile-time zero
+    included, which would make the two branches below unreachable in turn.
+    """
+    value = offset.as_const() if hasattr(offset, "as_const") else offset
+    return value != 0
+
+
+def _reshape_pattern(sizes, strides, offsets, shape):
+    """Re-express one walk at a different rank, or refuse.
+
+    numpy's reshape silently copies when it cannot produce a view. Here a copy
+    would be a hidden L2-to-L2 transfer nobody asked for, so this raises
+    instead. What it can do is split and merge axes: input and output axes are
+    matched into groups of equal element count, each group's input axes must be
+    contiguous with one another, and the group's output strides are then laid
+    out row-major from its innermost input stride.
+
+    Offsets follow the same grouping. A group's total offset, in elements, is
+    placed on its innermost output axis -- the one carrying the innermost
+    stride -- which for the common case of splitting one axis is just that
+    axis's own offset, unchanged.
+    """
+    shape = [int(e) for e in shape]
+    for e in shape:
+        if e < 1:
+            raise ValueError(f"reshape extents must be positive, got {tuple(shape)}")
+    n_in, n_out = 1, 1
+    for e in sizes:
+        n_in *= e
+    for e in shape:
+        n_out *= e
+    if n_in != n_out:
+        raise ValueError(
+            f"cannot reshape a {tuple(sizes)} view ({n_in} elements) to "
+            f"{tuple(shape)} ({n_out} elements)"
+        )
+
+    if list(sizes) == shape:
+        return list(offsets), list(sizes), list(strides)
+
+    out_sizes, out_strides, out_offsets = [], [], []
+    i = j = 0
+    while i < len(sizes) or j < len(shape):
+        # Unit axes pair up positionally: a size-1 input axis maps onto a
+        # size-1 output axis and keeps its own offset and stride. Pairing does
+        # not consult the offset, because which axis an offset sits on is not
+        # the reshape's to decide -- a staging buffer indexed per core carries a
+        # herd coordinate here, and it has to come out on the axis it went in
+        # on.
+        if i < len(sizes) and j < len(shape) and sizes[i] == 1 and shape[j] == 1:
+            out_sizes.append(1)
+            out_strides.append(strides[i])
+            out_offsets.append(offsets[i])
+            i += 1
+            j += 1
+            continue
+        # A unit input axis with no unit output axis left to pair with holds no
+        # elements, so it can be dropped -- but only when it carries no offset,
+        # since dropping a non-zero one would move the window.
+        if i < len(sizes) and sizes[i] == 1 and not _carries_offset(offsets[i]):
+            i += 1
+            continue
+        if j < len(shape) and shape[j] == 1:
+            # A size-1 axis is never stepped, so its stride is arbitrary. Left
+            # as None and filled in row-major below, which is the value the
+            # hand-written examples carry there.
+            out_sizes.append(1)
+            out_strides.append(None)
+            out_offsets.append(0)
+            j += 1
+            continue
+        if i >= len(sizes) or j >= len(shape):
+            raise ValueError(
+                f"cannot reshape a {tuple(sizes)} view to {tuple(shape)} "
+                "without copying"
+            )
+        # Grow a group on each side until the element counts agree.
+        i0, j0 = i, j
+        c_in, c_out = sizes[i], shape[j]
+        i += 1
+        j += 1
+        while c_in != c_out:
+            if c_in < c_out:
+                if i >= len(sizes):
+                    raise ValueError(
+                        f"cannot reshape a {tuple(sizes)} view to "
+                        f"{tuple(shape)} without copying"
+                    )
+                c_in *= sizes[i]
+                i += 1
+            else:
+                if j >= len(shape):
+                    raise ValueError(
+                        f"cannot reshape a {tuple(sizes)} view to "
+                        f"{tuple(shape)} without copying"
+                    )
+                c_out *= shape[j]
+                j += 1
+        # Trailing unit axes belong to the group they were split from, not to
+        # whatever follows. [3, 48] -> [3, 1, 6, 8] splits the first axis into
+        # (3, 1), and the offset then lands on the innermost of the pair --
+        # which is what keeps a split from scattering across two code paths.
+        while j < len(shape) and shape[j] == 1:
+            j += 1
+        # The group's input axes have to be contiguous with each other, or no
+        # single stride describes the merged walk.
+        for d in range(i0, i - 1):
+            if strides[d] != strides[d + 1] * sizes[d + 1]:
+                raise ValueError(
+                    f"cannot reshape a {tuple(sizes)} view with strides "
+                    f"{tuple(strides)} to {tuple(shape)} without copying: axes "
+                    f"{d} and {d + 1} are not contiguous with each other"
+                )
+        inner = strides[i - 1]
+        # Row-major within the group, innermost first.
+        group = [0] * (j - j0)
+        run = inner
+        for d in range(j - 1, j0 - 1, -1):
+            group[d - j0] = run
+            run *= shape[d]
+        out_sizes.extend(shape[j0:j])
+        out_strides.extend(group)
+        # The group's offset, in elements, goes back onto its innermost axis --
+        # the one that kept the parent's stride.
+        if i - i0 == 1:
+            # A pure split, which is the common case. `inner` is this axis's own
+            # stride, so the offset passes through unchanged and stays symbolic:
+            # a region indexed by a herd coordinate or a loop variable reshapes
+            # without needing its offset to be known at trace time.
+            out_offsets.extend([0] * (j - j0 - 1) + [offsets[i0]])
+        else:
+            # Merging axes really does combine their offsets, and there is no
+            # way to divide that by `inner` without the numbers.
+            total = 0
+            for d in range(i0, i):
+                total += _as_int(offsets[d], "reshape") * strides[d]
+            if total % inner:
+                raise ValueError(
+                    f"cannot reshape a {tuple(sizes)} view without copying: its "
+                    f"offset does not land on a boundary of {tuple(shape)}"
+                )
+            out_offsets.extend([0] * (j - j0 - 1) + [total // inner])
+
+    # Row-major continuation for the unit axes, right to left.
+    run = 1
+    for d in range(len(out_sizes) - 1, -1, -1):
+        if out_strides[d] is None:
+            out_strides[d] = run
+        run = out_sizes[d] * out_strides[d]
+    return out_offsets, out_sizes, out_strides
+
+
+def _as_int(offset, what):
+    value = offset.as_const() if hasattr(offset, "as_const") else offset
+    if value is None:
+        raise ValueError(
+            f"{what} needs compile-time offsets; this region's offset is a "
+            "runtime value. Subscript with constant bounds, or reshape before "
+            "subscripting"
+        )
+    return int(value)
+
+
 class Tensor:
     """A host-visible array in L3. Becomes a ``func.func`` argument."""
 
@@ -156,16 +340,10 @@ class Buffer:
         vector_width=None,
         value=None,
         space="L1",
-        pack=None,
     ):
         self.shape = tuple(int(s) for s in shape)
         self.dtype = dtype
         self.scope = scope
-        # A PackedShape when this tile is laid out in micro-tile order for the
-        # AIE2 matmul intrinsic, else None. It does not change the memref -- the
-        # buffer is contiguous either way -- but it tells ops.load/store how to
-        # walk the flat side. See _pack.py.
-        self.pack = pack
         # "L1" (core-local) or "L2" (memtile). Recorded rather than derived from
         # `scope` so that _value.py stays independent of the tracer.
         self.space = space
@@ -186,8 +364,6 @@ class Buffer:
         if self._is_whole(key):
             self._require_compute("read")
             return BufferExpr.leaf(self)
-        if self.pack is not None:
-            return self._packed_slice(key)
         key = _normalize_key(key, len(self.shape), "buffer")
         offsets, sizes = [], []
         for dim, (sub, extent) in enumerate(zip(key, self.shape)):
@@ -196,29 +372,25 @@ class Buffer:
             sizes.append(size)
         return BufferSlice(self, offsets, sizes, list(self.strides))
 
-    def _packed_slice(self, key):
-        """Subscript a micro-tiled buffer in *logical* coordinates.
+    def reshape(self, *shape):
+        """The whole tile at a different rank, as a view. See BufferSlice."""
+        return self._whole_view().reshape(*shape)
 
-        The whole point of a packed layout is that the program keeps thinking in
-        ``[M, N]`` while the memref is ``[N/n, M/m, m, n]``, so the subscript is
-        the logical one: ``l1_c[tx, ty, :, :]`` on a herd-shared accumulator
-        names one core's ``tile_m x tile_n`` slab. The rank-6 access pattern is
-        derived from it -- see ``_pack.pack_pattern``.
+    def transpose(self, *axes):
+        """The whole tile with its axes permuted. See BufferSlice."""
+        return self._whole_view().transpose(*axes)
+
+    def _whole_view(self):
+        """The whole buffer as a region, for reshape/transpose to work on.
+
+        Built directly rather than through __getitem__, where a full-extent
+        subscript is an elementwise read rather than a region.
         """
-        from ._pack import pack_pattern
-
-        logical = self.pack.lead + self.pack.logical
-        key = _normalize_key(key, len(logical), "packed buffer")
-        offsets, sizes = [], []
-        for dim, (sub, extent) in enumerate(zip(key, logical)):
-            offset, size = _resolve_subscript(sub, extent, dim)
-            offsets.append(offset)
-            sizes.append(size)
-        pat_offsets, pat_sizes, pat_strides = pack_pattern(
-            self.pack, sizes, self.strides, offsets
-        )
         return BufferSlice(
-            self, pat_offsets, pat_sizes, pat_strides, logical_sizes=sizes
+            self,
+            [coerce_index(0) for _ in self.shape],
+            list(self.shape),
+            list(self.strides),
         )
 
     # -- writing: this is what triggers emission ----------------------------
@@ -232,42 +404,9 @@ class Buffer:
                 "whole-tile elementwise assignment (buf[:] = ...) only"
             )
         self._require_compute("write")
-        if self.pack is not None:
-            return self._packed_fill(value)
         from ._emit import emit_elementwise
 
         emit_elementwise(self, BufferExpr.coerce(value))
-
-    def _packed_fill(self, value):
-        """``acc[:] = 0.0`` on a micro-tiled buffer, as one ``linalg.fill``.
-
-        The generic emitter would build a loop nest over the *packed* shape --
-        six nested loops and a scalar store per element, tens of thousands of
-        them for a real tile, which is the documented cause of NPU timeouts.
-        Zeroing an accumulator has no elementwise structure worth preserving, so
-        it goes out as the single op the reference uses.
-        """
-        from air.dialects.arith import ConstantOp
-        from air.dialects.linalg import fill
-
-        from . import ops as _ops
-        from .types import require_computable, require_signless
-
-        # linalg.fill's value comes from an arith.constant, which has no signful
-        # form; a packed buffer is an accumulator anyway, and ops.dot has
-        # already refused an unsigned one.
-        require_signless(self.dtype, "a fill of a micro-tiled buffer")
-        require_computable(self.dtype, "a fill of a micro-tiled buffer")
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise NotImplementedError(
-                "only a scalar fill is supported on a micro-tiled buffer "
-                f"(got {value!r}): its elements are not in row-major order, so "
-                "an elementwise expression over it would not mean what it reads "
-                "like. Compute into it with air.api.ops.dot instead."
-            )
-        scalar = float(value) if self.dtype.is_float else int(value)
-        cst = ConstantOp(self.dtype.mlir(), scalar)
-        return fill(cst, outs=[_ops.accumulator_subview(self)])
 
     @staticmethod
     def _is_whole(key):
@@ -297,9 +436,11 @@ class Buffer:
 class BufferSlice:
     """An access pattern into a :class:`Buffer`, for use as a DMA endpoint."""
 
-    __slots__ = ("buffer", "offsets", "sizes", "strides", "logical_sizes")
+    __slots__ = ("buffer", "offsets", "sizes", "strides", "logical_sizes", "is_view")
 
-    def __init__(self, buffer, offsets, sizes, strides, logical_sizes=None):
+    def __init__(
+        self, buffer, offsets, sizes, strides, logical_sizes=None, is_view=False
+    ):
         self.buffer = buffer
         self.offsets = offsets
         self.sizes = sizes
@@ -309,6 +450,11 @@ class BufferSlice:
         # [1, 1, 8, 4, 8, 4] pattern. Transfers are shape-checked against the
         # logical view, which is the one the two endpoints have in common.
         self.logical_sizes = list(sizes if logical_sizes is None else logical_sizes)
+        # Set by reshape/transpose. A view re-describes the same elements at a
+        # different rank or in a different order, so its shape no longer has to
+        # match the other endpoint's axis for axis -- only the element count
+        # does. Transfers relax their shape check for it, and only for it.
+        self.is_view = is_view
 
     @property
     def dtype(self):
@@ -320,6 +466,48 @@ class BufferSlice:
 
     def materialize_offsets(self):
         return [o.materialize() for o in self.offsets]
+
+    def reshape(self, *shape):
+        """This region's elements at a different rank, as a view.
+
+        Splitting an axis is how a tile is laid out in the blocks a matmul
+        instruction consumes: a [32, 32] region becomes [8, 4, 4, 8] and the
+        walk is unchanged, only re-described. Raises rather than copying when
+        no view exists -- see :func:`_reshape_pattern`.
+        """
+        if len(shape) == 1 and not isinstance(shape[0], int):
+            shape = tuple(shape[0])
+        offsets, sizes, strides = _reshape_pattern(
+            self.sizes, self.strides, self.offsets, shape
+        )
+        return BufferSlice(
+            self.buffer,
+            [coerce_index(o) for o in offsets],
+            sizes,
+            strides,
+            logical_sizes=sizes,
+            is_view=True,
+        )
+
+    def transpose(self, *axes):
+        """This region walked with its axes permuted.
+
+        Nothing moves: offsets, sizes and strides are permuted together, so the
+        descriptor visits the same elements in a different order. Takes a full
+        permutation, as numpy does.
+        """
+        if len(axes) == 1 and not isinstance(axes[0], int):
+            axes = tuple(axes[0])
+        axes = [int(a) for a in axes]
+        _check_axes(axes, len(self.sizes))
+        return BufferSlice(
+            self.buffer,
+            _permute(self.offsets, axes),
+            _permute(self.sizes, axes),
+            _permute(self.strides, axes),
+            logical_sizes=_permute(self.logical_sizes, axes),
+            is_view=True,
+        )
 
     def __repr__(self):
         return f"BufferSlice({self.buffer!r}, sizes={self.sizes})"

@@ -17,16 +17,19 @@ What differs from the bf16 sibling is the layout. The AIE2 int8 vecmat
 intrinsic wants its operands micro-tiled -- ``m x k`` by ``k x n`` with
 ``(1, 16, 8)`` -- so the B tile reaches L1 as ``[N/8, K/16, 16, 8]`` rather than
 row-major ``[K, N]``. Nothing reorders it in a core: the *DMA* does the pack,
-by walking the flat L2 buffer out of order. That walk is what ``pack=`` names::
+by walking the flat L2 buffer out of order. That walk is written the way numpy
+writes one, on the region being sent::
 
-    b_l2_l1.put(l2_b[kk : kk + tile_k, :], pack=mm.b(tile_k, tile_n, lead=()))
+    b_l2_l1.put(l2_b[kk : kk + tile_k, 0:tile_n]
+                .reshape(tile_k // k_u, k_u, tile_n // n_u, n_u)
+                .transpose(2, 0, 1, 3))
 
-``ops.load`` derives the same walk from its destination buffer, which it can
-see. A channel cannot -- put and get are separate ops and the packed side is at
-the far end of the stream -- so the pack is named at the put.
+Splitting each axis into (tiles, within-tile) and then bringing the N tile axis
+outside the K one is the pack; both are views, so nothing is copied and what
+they produce is the channel's access pattern.
 
-A is micro-tiled too, but with ``m=1`` the pack is the identity: ``[K/16, 16]``
-is just ``[K]`` re-shaped, so its put is an ordinary contiguous slice.
+A is blocked too, but with ``m=1`` the pack is the identity: ``[K/16, 16]`` is
+just ``[K]`` re-shaped, so its put is an ordinary contiguous slice.
 
 Unchanged from the raw-bindings version this replaces, except for three things
 the DSL requires and one it fixes:
@@ -83,7 +86,6 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.
     dt_out = DTYPE[np_dtype_out]
 
     m_u, k_u, n_u = MMUL_MKN
-    mm = air.micro_tile(m_u, k_u, n_u)
 
     A = air.tensor([k], dt_in)
     B = air.tensor([k, n], dt_in)
@@ -131,8 +133,9 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.
                     for i in air.sequential(0, k // tile_k):
                         kk = i * tile_k
                         b_l2_l1.put(
-                            l2_b[kk : kk + tile_k, 0:tile_n],
-                            pack=mm.b(tile_k, tile_n, lead=()),
+                            l2_b[kk : kk + tile_k, 0:tile_n]
+                            .reshape(tile_k // k_u, k_u, tile_n // n_u, n_u)
+                            .transpose(2, 0, 1, 3)
                         )
 
                     with air.herd([range(1)], name="herd_0", shape=(1,)) as h:

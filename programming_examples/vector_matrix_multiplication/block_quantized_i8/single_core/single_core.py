@@ -16,16 +16,18 @@ ordinary channel semantics rather than a trick: a channel is a stream, each get
 takes the next chunk, and nothing requires the chunks to be the same shape --
 which is what lets ``[k]`` of data and ``[k/bs]`` of scale share ``aL3ToL2``.
 
-The B side is micro-tiled for the AIE2 int8 vecmat intrinsic (``m x k`` by
+The B side is blocked for the AIE2 int8 vecmat intrinsic (``m x k`` by
 ``k x n``, here ``(1, 16, 8)``), so it reaches L1 as ``[N/8, K/16, 16, 8]``
 rather than row-major. The DMA does the pack, by walking the flat L2 buffer out
-of order, and ``pack=`` names that walk::
+of order, and that walk is written the way numpy writes one::
 
-    b_l2_l1.put(l2_b[kk : kk + tile_k, :], pack=mm.b(tile_k, tile_n, lead=()))
+    b_l2_l1.put(l2_b[kk : kk + tile_k, 0:tile_n]
+                .reshape(tile_k // k_u, k_u, tile_n // n_u, n_u)
+                .transpose(2, 0, 1, 3))
 
 The B *scale* is packed the same way but with one scale per block instead of
-per element, which is exactly a micro-tile of ``k=1`` -- so it reuses the same
-derivation with a different micro-tile rather than a special case.
+per element -- so the same two lines, with the K block size 1 rather than
+``k_u``, rather than a special case.
 
 Unchanged from the raw-bindings version this replaces, except for three things
 the DSL requires and one it fixes:
@@ -92,10 +94,6 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with=
     dt_out = DTYPE[np_dtype_out]
 
     m_u, k_u, n_u = MMUL_MKN
-    mm = air.micro_tile(m_u, k_u, n_u)
-    # One scale per block of bs elements along K, laid out in the same
-    # micro-tile order as the data it scales -- a k=1 micro-tile.
-    mm_scale = air.micro_tile(m_u, 1, n_u)
 
     A = air.tensor([k], dt_in)
     A_s = air.tensor([k // bs], dt_out)
@@ -149,12 +147,17 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with=
                         kk = i * tile_k
                         ks = i * (tile_k // bs)
                         b_l2_l1.put(
-                            l2_b[kk : kk + tile_k, 0:tile_n],
-                            pack=mm.b(tile_k, tile_n, lead=()),
+                            l2_b[kk : kk + tile_k, 0:tile_n]
+                            .reshape(tile_k // k_u, k_u, tile_n // n_u, n_u)
+                            .transpose(2, 0, 1, 3)
                         )
+                        # One scale per block of bs elements along K, walked in
+                        # the same order as the data it scales: the same split
+                        # and permutation with a K block of 1 instead of k_u.
                         b_l2_l1.put(
-                            l2_b_s[ks : ks + tile_k // bs, 0:tile_n],
-                            pack=mm_scale.b(tile_k // bs, tile_n, lead=()),
+                            l2_b_s[ks : ks + tile_k // bs, 0:tile_n]
+                            .reshape(tile_k // bs, 1, tile_n // n_u, n_u)
+                            .transpose(2, 0, 1, 3)
                         )
 
                     with air.herd([range(1)], name="herd_0", shape=(1,)) as h:

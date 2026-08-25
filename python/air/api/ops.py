@@ -28,8 +28,8 @@ larger expression.
 
 ``dot`` is a statement rather than an expression: it accumulates into a buffer
 and returns a Token, matching the signature the API proposal specified. On rank-6
-(micro-tiled) operands it becomes the blocked contraction the AIE2 matmul
-intrinsic wants; see ``air.api._pack``.
+operands it becomes the blocked contraction the AIE2 matmul intrinsic wants,
+whose block layout the caller builds with ``reshape``/``transpose`` on the DMA.
 
 The remaining compute ops from the wider API proposal (``stack``, ``dequant``,
 ``atomic_add``) are not implemented. They raise rather than returning a
@@ -44,6 +44,7 @@ __all__ = [
     "load",
     "store",
     "copy",
+    "fill",
     "cast",
     "maximum",
     "minimum",
@@ -93,10 +94,10 @@ def _check_padding(pad_before, pad_after):
 # access pattern) so load and store can be written once for every level of the
 # memory hierarchy -- L3 to L2, L2 to L1, L1 to L2, L2 to L3.
 class _Endpoint:
-    __slots__ = ("value", "dtype", "sizes", "pattern", "tensor", "what", "raw")
+    __slots__ = ("value", "dtype", "sizes", "pattern", "tensor", "what", "is_view")
 
     def __init__(
-        self, value, dtype, sizes, pattern, tensor=None, what="buffer", raw=None
+        self, value, dtype, sizes, pattern, tensor=None, what="buffer", is_view=False
     ):
         self.value = value
         self.dtype = dtype
@@ -105,21 +106,16 @@ class _Endpoint:
         self.pattern = pattern
         self.tensor = tensor
         self.what = what
-        # The pattern before its offsets were materialised into SSA values, kept
-        # so a packed destination can re-derive the pattern from it (see
-        # _repack_source). Materialising is one-way.
-        self.raw = raw
+        # True when `sizes` describes a reshaped or transposed view, whose rank
+        # and axis order need not match the other endpoint's. See _check_pair.
+        self.is_view = is_view
 
 
 def _endpoint(obj, direction, role):
     if isinstance(obj, Buffer):
         if obj.value is None:
             raise RuntimeError("buffer used before allocation")
-        # A micro-tiled buffer is contiguous, so it still transfers as a whole
-        # memref; but it is *shaped* [.., N/n, M/m, m, n] while the other end
-        # thinks in [.., M, N], so it reports the logical extents.
-        sizes = obj.pack.lead + obj.pack.logical if obj.pack else obj.shape
-        return _Endpoint(obj.value, obj.dtype, sizes, None, what="buffer")
+        return _Endpoint(obj.value, obj.dtype, obj.shape, None, what="buffer")
     if isinstance(obj, BufferSlice):
         if obj.value is None:
             raise RuntimeError("buffer used before allocation")
@@ -129,7 +125,7 @@ def _endpoint(obj, direction, role):
             tuple(obj.logical_sizes),
             (obj.materialize_offsets(), list(obj.sizes), list(obj.strides)),
             what="buffer slice",
-            raw=(list(obj.offsets), list(obj.sizes), list(obj.strides)),
+            is_view=obj.is_view,
         )
     if isinstance(obj, TensorSlice):
         return _Endpoint(
@@ -139,7 +135,6 @@ def _endpoint(obj, direction, role):
             (obj.materialize_offsets(), list(obj.sizes), list(obj.strides)),
             tensor=obj.tensor,
             what="tensor slice",
-            raw=(list(obj.offsets), list(obj.sizes), list(obj.strides)),
         )
     if isinstance(obj, Tensor):
         # A whole tensor, which channel put/get take routinely --
@@ -182,10 +177,32 @@ def _squeeze_leading_units(sizes, rank):
     return tuple(sizes)
 
 
+def _elements(sizes):
+    n = 1
+    for e in sizes:
+        n *= int(e)
+    return n
+
+
 def _check_pair(dst, src, direction):
-    """Shapes and dtypes must agree, up to leading unit dimensions."""
+    """Shapes and dtypes must agree, up to leading unit dimensions.
+
+    When either end is a reshaped or transposed view the axis-by-axis check is
+    dropped and the element count is checked instead. That is not a weakening
+    to taste: re-describing a walk is exactly what those two constructors do, so
+    a view's rank and axis order are deliberately not the other end's, and the
+    only things both ends still have to agree on are how many elements move and
+    of what type. Unviewed transfers keep the strict check.
+    """
     d, s = tuple(dst.sizes), tuple(src.sizes)
-    if d != s:
+    if dst.is_view or src.is_view:
+        if _elements(d) != _elements(s):
+            raise ValueError(
+                f"transfer size mismatch in air.api.ops.{direction}: the "
+                f"destination {dst.what} holds {_elements(d)} elements {d} but "
+                f"the source {src.what} moves {_elements(s)} {s}"
+            )
+    elif d != s:
         rank = min(len(d), len(s))
         if _squeeze_leading_units(d, rank) != _squeeze_leading_units(s, rank):
             raise ValueError(
@@ -231,67 +248,8 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
         )
     dst_ep = _endpoint(dst, "load", "destination")
     src_ep = _endpoint(src, "load", "source")
-    if dst.pack is not None:
-        src_ep = _repack_source(dst, src, src_ep)
     _check_pair(dst_ep, src_ep, "load")
     return Token(_emit_dma(dst_ep, src_ep))
-
-
-def _repack_source(dst, src, src_ep):
-    """Re-walk a flat source in micro-tile order, for a packed destination.
-
-    Filling a micro-tiled A or B tile is the one transfer where the access
-    pattern goes on the *other* side: the destination is contiguous (``[] [] []``
-    in the emitted IR) and the flat source is read out of order, so that the DMA
-    itself performs the pack. The pattern is derived from the destination's
-    micro-tile, so the call site writes an ordinary logical slice::
-
-        ops.load(l1_a, l2_a[tx, 0, :, kk : kk + tile_k])
-
-    A packed source, by contrast, already carries its own pattern -- it is an
-    unpack, and ``Buffer.__getitem__`` built it.
-    """
-    from ._pack import pack_pattern
-
-    # A packed source is already an unpack and carries its own pattern.
-    if _pack_of(src) is not None:
-        return src_ep
-    if dst.pack.role == "C":
-        raise NotImplementedError(
-            "air.api.ops.load into a micro-tiled C accumulator is not supported: "
-            "C is written by ops.dot and drained with ops.store. Zero it with "
-            "acc[:] = 0.0 rather than loading into it."
-        )
-    if src_ep.raw is None:
-        raise TypeError(
-            "air.api.ops.load into a micro-tiled buffer needs a source *region*, "
-            f"not a whole buffer, so that the {dst.pack.role} pack can be "
-            "derived; index the source, e.g. l2_a[tx, 0, :, k : k + tile_k]"
-        )
-    offsets, sizes, strides = src_ep.raw
-    nlead = len(dst.pack.lead)
-    # A rank-2 region is padded by pack_pattern when the destination's leading
-    # dimensions are all 1 -- they are structural, required by block_matmul's
-    # 6-D operands, and a flat staging buffer has no such axes to slice.
-    flat_ok = len(sizes) == 2 and all(e == 1 for e in dst.pack.lead)
-    if len(sizes) != nlead + 2 and not flat_ok:
-        raise ValueError(
-            f"air.api.ops.load into a micro-tiled {dst.pack.role} buffer needs a "
-            f"source region of rank {nlead + 2} (or rank 2 when its leading "
-            f"dimensions are all 1), with the two logical axes last; got rank "
-            f"{len(sizes)}, {tuple(sizes)}"
-        )
-    p_off, p_sizes, p_strides = pack_pattern(dst.pack, sizes, strides, offsets)
-    src_ep.pattern = ([o.materialize() for o in p_off], p_sizes, p_strides)
-    return src_ep
-
-
-def _pack_of(obj):
-    if isinstance(obj, Buffer):
-        return obj.pack
-    if isinstance(obj, BufferSlice):
-        return obj.buffer.pack
-    return None
 
 
 def store(src, dst, pad_before=None, pad_after=None, dependency=None):
@@ -304,18 +262,6 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
 
-    if isinstance(src, Buffer) and src.pack is not None:
-        # Draining a micro-tiled buffer whole would emit `[] [] []` -- a
-        # contiguous read, which copies the tile still in micro-tile order and is
-        # silently wrong. The unpack lives in the access pattern, so the source
-        # has to be subscripted for one to exist.
-        raise TypeError(
-            "air.api.ops.store cannot drain a micro-tiled buffer whole: the "
-            "unpack back to row-major order is the access pattern, and a whole "
-            "buffer has none. Subscript it in logical coordinates, e.g. "
-            f"ops.store(acc[{', '.join(['0'] * len(src.pack.lead))}, :, :], "
-            "l2_c[...])."
-        )
     if not isinstance(src, (Buffer, BufferSlice)):
         raise TypeError(
             f"air.api.ops.store drains a buffer, so its first argument must be "
@@ -332,6 +278,45 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
         dst_ep.tensor.is_output = True
 
     return Token(_emit_dma(dst_ep, src_ep))
+
+
+def fill(buf, value):
+    """Set every element of a buffer to a scalar, as one ``linalg.fill``.
+
+    This is what zeroes an accumulator before a reduction loop. It is a separate
+    op rather than a spelling of ``buf[:] = 0.0`` because the two lower
+    differently and the difference matters: the elementwise path builds a loop
+    nest with a store per element, which for a blocked accumulator is tens of
+    thousands of scalar stores and a documented cause of NPU timeouts. Zeroing
+    has no elementwise structure worth preserving, and which of the two you get
+    should not depend on the buffer's shape.
+    """
+    from air.dialects.arith import ConstantOp
+    from air.dialects.linalg import fill as linalg_fill
+
+    if not isinstance(buf, Buffer):
+        raise TypeError(
+            f"air.api.ops.fill fills a buffer, so its first argument must be one "
+            f"from air.alloc(); got {type(buf).__name__}"
+        )
+    if buf.value is None:
+        raise RuntimeError("buffer used before allocation")
+    # linalg.fill's value comes from an arith.constant, which has no signful form.
+    require_signless(buf.dtype, "air.api.ops.fill")
+    require_computable(buf.dtype, "air.api.ops.fill")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError(
+            f"air.api.ops.fill takes a scalar, got {value!r}; for an elementwise "
+            "expression assign it, e.g. buf[:] = a[:] + b[:]"
+        )
+    scalar = float(value) if buf.dtype.is_float else int(value)
+    cst = ConstantOp(buf.dtype.mlir(), scalar)
+
+    # A herd-shared accumulator is one memref spanning every core, so a core
+    # must fill only its own slab -- the same subview ops.dot accumulates into.
+    shared = getattr(buf.scope, "kind", None) == "shared"
+    out = accumulator_subview(buf) if shared else buf.value
+    return Token(linalg_fill(cst, outs=[out]))
 
 
 def copy(src_slice, dst_slice, pad_before=None, pad_after=None, dependency=None):
@@ -843,7 +828,7 @@ _CONTRACTIONS = {
 }
 
 
-# The micro-tiled contraction. `linalg` has no named op for it -- the reference
+# The blocked contraction. `linalg` has no named op for it -- the reference
 # example defines it with the OpDSL, and so does this, from the same index
 # expression. It is built lazily because the OpDSL decorator runs once and
 # importing linalg.opdsl at module scope would pull it in for every program
@@ -882,7 +867,7 @@ def _block_matmul_op():
 
 
 def accumulator_subview(acc):
-    """The calling core's slab of a micro-tiled accumulator.
+    """The calling core's slab of a blocked accumulator.
 
     A herd-shared accumulator is one memref with a leading dimension per herd
     axis, and a core may only touch its own slab -- there is no choice to make,
@@ -895,13 +880,17 @@ def accumulator_subview(acc):
 
     from ._trace import current_herd
 
-    nlead = len(acc.pack.lead)
     coords = current_herd()._coords
-    if len(coords) > nlead:
+    # One leading axis per herd axis; the rest is the tile. The herd is what
+    # says how many there are -- the accumulator cannot, since a plain shape
+    # carries no mark where the core axes stop.
+    nlead = len(coords)
+    if len(acc.shape) <= nlead:
         raise ValueError(
-            f"the accumulator has {nlead} leading dimension(s) but the herd is "
-            f"{len(coords)}-D; a herd-shared accumulator needs one leading "
-            "dimension per herd axis so that every core has its own slab"
+            f"the accumulator is rank {len(acc.shape)} but the herd is "
+            f"{nlead}-D; a herd-shared accumulator needs one leading dimension "
+            "per herd axis, so that every core has its own slab, and at least "
+            "one more for the tile itself"
         )
     offsets = [c.materialize() for c in coords]
     offsets += [0] * (len(acc.shape) - len(offsets))
@@ -911,48 +900,54 @@ def accumulator_subview(acc):
     )
 
 
-def _check_packed_operands(a, b, acc):
-    """The three micro-tiles have to agree on m, k, n and on their extents."""
-    packs = {"a": a.pack, "b": b.pack, "acc": acc.pack}
-    missing = [n for n, p in packs.items() if p is None]
-    if missing:
-        raise TypeError(
-            f"air.api.ops.dot got rank-6 operands, which means the micro-tiled "
-            f"contraction, but {', '.join(missing)} "
-            f"{'was' if len(missing) == 1 else 'were'} not allocated with a "
-            "micro-tiled shape. Allocate all three from the same air.micro_tile, "
-            "e.g. air.alloc(mm.a(tile_m, tile_k), bf16, scope=h.private())."
-        )
-    roles = {"a": "A", "b": "B", "acc": "C"}
-    for name, want in roles.items():
-        if packs[name].role != want:
-            raise ValueError(
-                f"air.api.ops.dot expects {name} to be a micro-tiled {want} "
-                f"operand (mm.{want.lower()}(...)), but it was built as "
-                f"{packs[name].role}"
-            )
-    micros = {n: p.micro for n, p in packs.items()}
-    if len(set(micros.values())) != 1:
-        raise ValueError(
-            "air.api.ops.dot needs one micro-tile across all three operands, "
-            f"got a={micros['a']!r}, b={micros['b']!r}, acc={micros['acc']!r}. "
-            "The micro-tile is the shape of the hardware intrinsic; mixing them "
-            "would silently contract the wrong elements."
-        )
+def _check_blocked_operands(a, b, acc):
+    """The three blocked operands have to agree on m, k, n and on their extents.
+
+    Nothing is declared: the block shape and the logical extents are read back
+    off the shapes, which are the only thing the buffers actually carry. For
+    ``a = [.., K/k, M/m, m, k]``, ``b = [.., N/n, K/k, k, n]`` and
+    ``c = [.., N/n, M/m, m, n]`` the last two axes are always the block,
+    and one formula recovers both logical extents of each operand:
+    ``shape[-3] * shape[-2]`` and ``shape[-4] * shape[-1]``.
+
+    What this cannot check is the triple against the hardware's actual
+    ``aievec.matmul`` shape -- a self-consistent but wrong (m, k, n) passes.
+    Closing that needs a target-by-dtype table and is not in scope; it is no
+    weaker than what it replaced.
+    """
     (m_a, k_a), (k_b, n_b), (m_c, n_c) = (
-        packs["a"].logical,
-        packs["b"].logical,
-        packs["acc"].logical,
+        tuple(a.shape[-2:]),
+        tuple(b.shape[-2:]),
+        tuple(acc.shape[-2:]),
     )
     if k_a != k_b:
         raise ValueError(
-            f"air.api.ops.dot shape mismatch: a is {m_a}x{k_a} and b is "
-            f"{k_b}x{n_b}; the contracting extents must agree"
+            f"air.api.ops.dot block mismatch: a's trailing axes are "
+            f"{m_a}x{k_a}, so it offers k={k_a}; b's are {k_b}x{n_b}, so it "
+            f"offers k={k_b}. The block is the shape of the hardware intrinsic "
+            "-- a is (m, k) and b is (k, n) in its last two axes -- and mixing "
+            "them would silently contract the wrong elements."
         )
     if (m_c, n_c) != (m_a, n_b):
         raise ValueError(
-            f"air.api.ops.dot shape mismatch: a @ b is {m_a}x{n_b} but acc is "
-            f"{m_c}x{n_c}"
+            f"air.api.ops.dot block mismatch: a x b is {m_a}x{n_b} per "
+            f"block but acc's is {m_c}x{n_c}"
+        )
+
+    def extents(shape):
+        return int(shape[-3]) * int(shape[-2]), int(shape[-4]) * int(shape[-1])
+
+    (log_m_a, log_k_a), (log_k_b, log_n_b) = extents(a.shape), extents(b.shape)
+    log_m_c, log_n_c = extents(acc.shape)
+    if log_k_a != log_k_b:
+        raise ValueError(
+            f"air.api.ops.dot shape mismatch: a is {log_m_a}x{log_k_a} and b is "
+            f"{log_k_b}x{log_n_b}; the contracting extents must agree"
+        )
+    if (log_m_c, log_n_c) != (log_m_a, log_n_b):
+        raise ValueError(
+            f"air.api.ops.dot shape mismatch: a @ b is {log_m_a}x{log_n_b} but "
+            f"acc is {log_m_c}x{log_n_c}"
         )
 
 
@@ -1001,8 +996,8 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
 
     Two limits worth stating. It is verified through the scalar path -- lowered
     by ``convert-linalg-to-loops`` and run on npu1 -- and *not* through the AIE2
-    matmul intrinsic, which wants micro-tiled operands whose layout the DMA pack
-    (``mm.b(...)``) already fixes. And under ``lower_linalg_to_func`` an external
+    matmul intrinsic, which wants blocked operands whose layout the DMA access
+    pattern already fixes. And under ``lower_linalg_to_func`` an external
     kernel built for ``[k, n]`` links happily against an ``[n, k]`` operand and
     computes silently wrong results, so pass ``kernel=`` to give the transposed
     form its own symbol.
@@ -1012,7 +1007,7 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
     silently rebound a positionally-passed ``dependency`` to it. It names the
     external function this contraction should lower to
     under ``lower_linalg_to_func``, by setting linalg's ``library_call``
-    attribute. Without it a micro-tiled contraction lowers to
+    attribute. Without it a blocked contraction lowers to
     ``op_has_no_registered_library_name`` -- MLIR's placeholder for an op with no
     registered name, which the OpDSL emitter never overrides and which every
     hand-written kernel here therefore exports. Sharing one symbol means a
@@ -1064,9 +1059,9 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
         if transpose_b:
             raise NotImplementedError(
                 "air.api.ops.dot(transpose_b=True) is not implemented for "
-                "micro-tiled operands; pack B transposed instead"
+                "blocked operands; lay B out transposed instead"
             )
-        _check_packed_operands(a, b, acc)
+        _check_blocked_operands(a, b, acc)
         op = _block_matmul_op()(a.value, b.value, outs=[accumulator_subview(acc)])
         _set_library_call(kernel)
         return Token(op)
