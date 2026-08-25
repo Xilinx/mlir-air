@@ -146,7 +146,10 @@ if __name__ == "__main__":
         type=str,
         default="bf16",
         choices=sorted(DTYPES),
-        help="element type (default: bf16)",
+        help="element type (default: bf16). NOTE f32 does not compile for npu2: "
+        "AIE2P has no aievec.mul_elem lowering for vector<16xf32>, so aiecc "
+        "fails to legalize it. This is specific to MULTIPLY -- the same shape "
+        "of f32 add legalizes fine -- and is why the npu2 lit covers bf16 only.",
     )
     parser.add_argument(
         "--herd-shape",

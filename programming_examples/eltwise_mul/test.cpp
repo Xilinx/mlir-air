@@ -225,13 +225,13 @@ int main(int argc, const char *argv[]) {
             << " GB/s" << std::endl;
 
   std::cout << std::endl
-            << "Min NPU eltwise_add time: " << npu_time_min << "us."
+            << "Min NPU eltwise_mul time: " << npu_time_min << "us."
             << std::endl;
   std::cout << "Max bandwidth: " << total_bytes / (1000.0f * npu_time_min)
             << " GB/s" << std::endl;
 
   std::cout << std::endl
-            << "Max NPU eltwise_add time: " << npu_time_max << "us."
+            << "Max NPU eltwise_mul time: " << npu_time_max << "us."
             << std::endl;
   std::cout << "Min bandwidth: " << total_bytes / (1000.0f * npu_time_max)
             << " GB/s" << std::endl;
