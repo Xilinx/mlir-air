@@ -1,0 +1,18 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// npu2-only coverage for the bare element-wise multiply (`c = a * b`), the
+// gate of LFM2's Lfm2ShortConv operator. Mirrors eltwise_add's npu2 lit: 1-D
+// f32 at the dtype's default vector width, plus the flagship 2-D bf16 shape
+// at the registry's measured size (4194304 = 2048x2048 = seq*conv_dim).
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_peano_npu2
+// RUN: cd test_peano_npu2
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=65536 DTYPE=f32 | FileCheck %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=4194304 TILE=2048 | FileCheck %s
+// RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=4194304 TILE=2048 | FileCheck --check-prefix=PROFILE %s
+// CHECK: PASS!
+// PROFILE: PASS
