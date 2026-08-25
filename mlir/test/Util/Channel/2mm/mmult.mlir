@@ -5,13 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -o %T/mmult.async.llvm.mlir %s -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -convert-arith-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
-// RUN: air-translate --mlir-to-llvmir %T/mmult.async.llvm.mlir -o %T/mmult.async.ll
-// RUN: %OPT -O3 -o %T/mmult.async.opt.bc < %T/mmult.async.ll
-// RUN: %LLC %T/mmult.async.opt.bc --relocation-model=pic -filetype=obj -o %T/mmult.async.o
-// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %T/main.o
-// RUN: %CLANG %aircpu_lib %mlir_async_lib -o %T/test.exe %T/main.o %T/mmult.async.o
-// RUN: %ld_lib_path %T/test.exe
+// RUN: air-opt -o %t.mmult.async.llvm.mlir %s -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -convert-arith-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
+// RUN: air-translate --mlir-to-llvmir %t.mmult.async.llvm.mlir -o %t.mmult.async.ll
+// RUN: %OPT -O3 -o %t.mmult.async.opt.bc < %t.mmult.async.ll
+// RUN: %LLC %t.mmult.async.opt.bc --relocation-model=pic -filetype=obj -o %t.mmult.async.o
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %t.main.o
+// RUN: %CLANG %aircpu_lib %mlir_async_lib -o %t.test.exe %t.main.o %t.mmult.async.o
+// RUN: %ld_lib_path %t.test.exe
 
 module attributes {torch.debug_module_name = "model"} {
   memref.global "private" @channel_7 : memref<1x1xi64> = dense<0>

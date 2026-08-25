@@ -6,27 +6,32 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
+// The bash -c wrapper is load-bearing under lit's internal shell, which
+// performs no shell expansion at all: $(...), ${VAR} and even $VAR are
+// passed through literally. Handing the line to a real shell keeps the
+// expansion, and lit's own %s/%S/%t substitutions still apply inside the
+// quotes because lit substitutes textually before anything is executed.
+// RUN: bash -c "aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %t.air.a"
 // RUN: cat air_project/aiecc.graph_0.mlir | grep tile | head -n 1
-// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %t.air.a -Wl,--no-whole-archive -rdynamic -o %t.test.elf
+// RUN: %run_on_board %t.test.elf
 
-// RUN: aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
+// RUN: bash -c "aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %t.air.a"
 // RUN: cat air_project/aiecc.graph_0.mlir | grep tile | head -n 1
-// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %t.air.a -Wl,--no-whole-archive -rdynamic -o %t.test.elf
+// RUN: %run_on_board %t.test.elf
 
-// RUN: aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
+// RUN: bash -c "aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %t.air.a"
 // RUN: cat air_project/aiecc.graph_0.mlir | grep tile | head -n 1
-// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %t.air.a -Wl,--no-whole-archive -rdynamic -o %t.test.elf
+// RUN: %run_on_board %t.test.elf
 
-// RUN: aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
+// RUN: bash -c "aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %t.air.a"
 // RUN: cat air_project/aiecc.graph_0.mlir | grep tile | head -n 1
-// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %t.air.a -Wl,--no-whole-archive -rdynamic -o %t.test.elf
+// RUN: %run_on_board %t.test.elf
 
-// RUN: aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
+// RUN: bash -c "aircc -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %t.air.a"
 // RUN: cat air_project/aiecc.graph_0.mlir | grep tile | head -n 1
-// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %t.air.a -Wl,--no-whole-archive -rdynamic -o %t.test.elf
+// RUN: %run_on_board %t.test.elf

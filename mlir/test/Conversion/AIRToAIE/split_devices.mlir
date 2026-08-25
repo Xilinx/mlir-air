@@ -5,8 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-split-devices='output-prefix=%T/' | FileCheck %s
-// RUN: aie-opt %T/aie.TestSegment0.mlir | FileCheck -check-prefix=AIE %s
+// %t.d replaces %T, which lit 23 removed. Unlike %T it is per-test rather than
+// per-directory, and lit does not create it -- the pass opens files under the
+// prefix and does not mkdir, so the directory has to exist first.
+// RUN: rm -rf %t.d
+// RUN: mkdir -p %t.d
+// RUN: air-opt %s -air-split-devices='output-prefix=%t.d/' | FileCheck %s
+// RUN: aie-opt %t.d/aie.TestSegment0.mlir | FileCheck -check-prefix=AIE %s
 
 // CHECK-NOT: aie.device
 // CHECK: func.func @main
