@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dependency -air-dependency-parse-graph='output-dir=%T/dot_output' | FileCheck %s --check-prefix=IR
-// RUN: cat %T/dot_output/host.dot | FileCheck %s --check-prefix=DOT
+// RUN: air-opt %s -air-dependency -air-dependency-parse-graph='output-dir=%t.d/dot_output' | FileCheck %s --check-prefix=IR
+// RUN: cat %t.d/dot_output/host.dot | FileCheck %s --check-prefix=DOT
 
 // IR: air.herd
 

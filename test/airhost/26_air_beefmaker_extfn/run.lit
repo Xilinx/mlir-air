@@ -14,5 +14,5 @@
 // --no-xbridge here meant "xchesscc to compile, Peano lld to link" (this test
 // REQUIRES a valid xchess license). Peano is the default now, so that asymmetric
 // request has to be spelled out.
-// RUN: aiecc.py --xchesscc --xbridge=false aie.segment_0.mlir -- %S/test.cpp -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: aiecc.py --xchesscc --xbridge=false aie.segment_0.mlir -- %S/test.cpp -o %t.test.elf
+// RUN: %run_on_board %t.test.elf

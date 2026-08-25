@@ -20,7 +20,17 @@ from lit.llvm.subst import FindTool
 # name: The name of this test suite.
 config.name = "AIRMLIR"
 
-config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
+# The internal shell, unconditionally. `not llvm_config.use_lit_shell` was the
+# old LLVM idiom for "external shell except on Windows", and lit 23 removed the
+# external shell: ShTest(execute_external=True) now raises at config-parse time,
+# so the suite fails before a single test runs.
+#
+# Migrating rather than setting force_execute_external=True, which is an
+# explicit stay of execution that LLVM-24 removes anyway. The one incompatibility
+# in this repo was a bare `VAR=value` command prefix, which bash treats as an
+# environment assignment and lit's internal shell treats as a command name; see
+# the %ld_lib_path substitution in mlir/test/lit.cfg.py.
+config.test_format = lit.formats.ShTest()
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = [".mlir"]
@@ -48,10 +58,17 @@ config.substitutions.append(
 config.substitutions.append(
     ("%mlir_async_lib", "-L" + config.llvm_obj_root + "/lib -lmlir_async_runtime")
 )
+# Used as a command prefix: `// RUN: %ld_lib_path %t.test.exe`. The leading
+# `env` is load-bearing. A bare `VAR=value` prefix is a shell feature -- bash
+# reads it as an environment assignment for the following command -- and lit's
+# internal shell does not implement it, taking `LD_LIBRARY_PATH=...` as the name
+# of the program to run and failing with "command not found". It does implement
+# the `env` builtin, and `env` is also a real binary, so this spelling works
+# under either shell.
 config.substitutions.append(
     (
         "%ld_lib_path",
-        "LD_LIBRARY_PATH="
+        "env LD_LIBRARY_PATH="
         + air_runtime_lib
         + "/aircpu:"
         + config.llvm_obj_root

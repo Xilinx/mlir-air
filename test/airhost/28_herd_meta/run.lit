@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --filetype=obj -o %T/herd.o
-// RUN: clang++ %S/test.cpp %T/herd.o -o %T/test.elf
-// RUN: %T/test.elf | FileCheck %s
+// RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --filetype=obj -o %t.herd.o
+// RUN: clang++ %S/test.cpp %t.herd.o -o %t.test.elf
+// RUN: %t.test.elf | FileCheck %s
 // CHECK: Num Segments: 1
 // CHECK: Segment 0: segment_0
 // CHECK: Num Herds: 2
