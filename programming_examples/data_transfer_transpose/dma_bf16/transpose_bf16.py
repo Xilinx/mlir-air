@@ -1,77 +1,83 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""bf16 matrix transpose using an external kernel, on air.api.
 
-"""bf16 matrix transpose using an external kernel.
+    transpose_bf16 = air.extern("transpose_bf16", link_with="transpose.o")
+    ...
+    air.ops.load(l1_in, A)
+    transpose_bf16(l1_in, l1_out)
+    air.ops.store(l1_out, B)
 
-Transposes an [M, K] bf16 matrix to [K, M] using a C++ kernel compiled
-with Peano. The kernel performs scalar element-by-element transpose.
+**Why this one has a kernel and its sibling does not.** ``dma/transpose.py``
+transposes by walking the tile with its axes swapped -- a DMA descriptor with
+sizes [k, m] and strides [1, k] -- and needs no compute at all. That route is
+closed here: on AIE the innermost DMA stride must be 1 for data narrower than
+32 bits, so a bf16 transpose cannot be expressed as an access pattern. The
+matrix is DMAed into L1 contiguously instead and a scalar C++ kernel does the
+transpose in place of the descriptor.
 
-DMA stride-based transpose is not possible for sub-32-bit types on AIE
-because the inner-most DMA stride must be 1 for <32b data widths.
-Instead, we DMA the matrix into L1 contiguously and let the kernel
-perform the transpose.
+So the two variants are not duplicates. They are the two halves of one fact
+about the hardware, and the element type is what selects between them.
+
+Everything here is flat: the L3 tensors are ``[m * k]`` and ``[k * m]`` and the
+L1 tiles are ``[m * k]``, because the kernel takes raw buffers and computes the
+indices itself from its ``DIM_M``/``DIM_N`` defines. That is the predecessor's
+shape too, kept rather than tidied -- the flatness is part of the contract with
+transpose.cc, not an artifact.
+
+``air.extern`` carries ``link_with="transpose.o"``, which stamps the attribute
+on both the declaration and the herd; the Makefile compiles transpose.cc to
+exactly that name in the build directory.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-np.random.seed(42)
-
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import bf16
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
+
+np.random.seed(42)
 
 INOUT_DATATYPE = bfloat16
 
+# The object the Makefile compiles transpose.cc into, in the build directory.
+EXTERN_OBJECT = "transpose.o"
 
-@module_builder
+
 def build_module(m, k):
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    # The kernel is compiled with -DDIM_M/-DDIM_N, so it knows the shape; the
+    # buffers it is handed are flat.
+    transpose_bf16 = air.extern("transpose_bf16", link_with=EXTERN_OBJECT)
 
-    memrefTyIn = MemRefType.get(shape=[m * k], element_type=xrt_dtype)
-    memrefTyOut = MemRefType.get(shape=[k * m], element_type=xrt_dtype)
+    A = air.tensor([m * k], bf16)
+    B = air.tensor([k * m], bf16)
 
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1_type = MemRefType.get(
-        shape=[m * k],
-        element_type=xrt_dtype,
-        memory_space=mem_space,
-    )
+    with air.launch(name="transpose") as launch:
 
-    transpose_func = external_func("transpose_bf16", inputs=[l1_type, l1_type])
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-    @FuncOp.from_py_func(memrefTyIn, memrefTyOut)
-    def transpose(arg0, arg1):
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
-                @herd(
-                    name="herd",
-                    sizes=[1, 1],
-                    operands=[arg2, arg3],
-                    link_with="transpose.o",
-                )
-                def herd_body(_tx, _ty, _sx, _sy, a, b):
-                    l1_in = AllocOp(l1_type, [], [])
-                    l1_out = AllocOp(l1_type, [], [])
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(1)], name="herd", shape=(1,), link_with=EXTERN_OBJECT
+                    ) as h:
 
-                    dma_memcpy_nd(l1_in, a)
+                        @h.body
+                        def _(tx):
+                            l1_in = air.alloc([m * k], bf16, scope=h.private())
+                            l1_out = air.alloc([m * k], bf16, scope=h.private())
 
-                    call(
-                        transpose_func,
-                        inputs=[l1_in, l1_out],
-                        input_types=[l1_type, l1_type],
-                    )
+                            air.ops.load(l1_in, A)
+                            transpose_bf16(l1_in, l1_out)
+                            air.ops.store(l1_out, B)
 
-                    dma_memcpy_nd(b, l1_out)
-
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_out)
+    return launch
 
 
 if __name__ == "__main__":
@@ -100,9 +106,17 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(args.m, args.k)
+    launch = build_module(args.m, args.k)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -115,6 +129,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             output_format=args.output_format,
             instance_name="transpose",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -128,6 +143,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

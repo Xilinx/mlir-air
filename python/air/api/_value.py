@@ -539,6 +539,57 @@ _OP_SYMBOLS = {
 _OP_CALL_NAMES = {"max": "maximum", "min": "minimum"}
 
 
+def _check_shift_amount(amount, value, op):
+    """Reject a constant shift count that MLIR would turn into poison.
+
+    ``>>`` matches Python on the part people actually reason about -- it is
+    arithmetic, so a negative value floors rather than filling with zeros --
+    but it does *not* match Python on the shift count, and the difference is
+    silent. Python's ints are arbitrary precision: ``x >> 100`` is 0 or -1, and
+    ``x >> -1`` raises. MLIR inherits LLVM's rule instead, where a shift of the
+    operand's own width or more, or by a negative amount, is **poison**, and
+    poison is not an error -- it is a value the optimiser may assume never
+    happens, which is how it turns into a wrong answer several passes later
+    rather than a diagnostic.
+
+    So a constant out-of-range count is refused here, at the call site, which
+    is the closest this can get to Python's own ValueError. A count that is not
+    a compile-time constant cannot be checked and is documented rather than
+    guarded -- see the shift operators on ``BufferExpr``.
+
+    "Constant" has to include an IndexExpr that folds to one. Index arithmetic
+    over herd coordinates is ordinary in a kernel body, and ``tx - tx + 32``
+    reaches the emitter as a literal ``arith.constant 32`` -- indistinguishable,
+    by the time it gets there, from having been written as ``32``. Reading it
+    back has to go through ``as_const()``: IndexExpr does not implement equality
+    or int conversion against a Python int, so an isinstance test alone sees
+    every index expression as "runtime" and lets the folded ones through.
+    """
+    if amount.kind != "scalar":
+        return  # not a scalar operand at all: nothing to check
+    count = amount.scalar
+    if hasattr(count, "as_const"):
+        count = count.as_const()  # None when it is genuinely runtime
+    if not isinstance(count, (int, bool)):
+        return  # runtime amount: nothing to check, see the docstring
+    count = int(count)
+    dtype = value.element_dtype()
+    spelling = "<<" if op == "shl" else ">>"
+    if count < 0:
+        raise ValueError(
+            f"negative shift count {count} in '{spelling}': Python raises here "
+            f"and MLIR would make it poison, which is silent. Shift by a "
+            f"non-negative amount, or use the opposite operator"
+        )
+    if dtype is not None and count >= dtype.itemsize * 8:
+        raise ValueError(
+            f"shift count {count} is not less than the width of {dtype} "
+            f"({dtype.itemsize * 8} bits) in '{spelling}': Python would give "
+            f"{'0 or -1' if op == 'shr' else 'a wider integer'} but MLIR makes "
+            f"it poison, which is silent. Shift by less than the width"
+        )
+
+
 class BufferExpr:
     """A lazy elementwise expression over buffers and scalars.
 
@@ -641,6 +692,8 @@ class BufferExpr:
     def _binary(self, other, op, reverse=False):
         other = BufferExpr.coerce(other)
         args = (other, self) if reverse else (self, other)
+        if op in ("shl", "shr"):
+            _check_shift_amount(args[1], args[0], op)
         return BufferExpr("binary", op=op, args=args)
 
     def __add__(self, o):
@@ -718,6 +771,33 @@ class BufferExpr:
 
     def __rxor__(self, o):
         return self._binary(o, "xor", reverse=True)
+
+    # Shifts are integer-only for the same reason and rejected the same way.
+    #
+    # `>>` is arithmetic (arith.shrsi). There is no signedness choice to make
+    # here, rather than a convention being picked: arith requires signless
+    # operands, so an unsigned buffer is refused before it reaches any operator
+    # at all, and every buffer that can reach a shift is signed. Arithmetic is
+    # also what Python does -- `-8 >> 1` is -4 in both, not a huge positive.
+    #
+    # The shift *count* is where the resemblance to Python stops. Python's ints
+    # are arbitrary precision, so `x >> 100` is 0 and `x << 100` just gets
+    # wider; MLIR makes a count of the width or more poison, and `<<` wraps.
+    # A constant count out of range is refused by _check_shift_amount above. A
+    # count computed at runtime -- `1 << a[:]`, or a shift read from a buffer --
+    # cannot be checked, and is the one place where an out-of-range value still
+    # reaches the backend as poison.
+    def __lshift__(self, o):
+        return self._binary(o, "shl")
+
+    def __rlshift__(self, o):
+        return self._binary(o, "shl", reverse=True)
+
+    def __rshift__(self, o):
+        return self._binary(o, "shr")
+
+    def __rrshift__(self, o):
+        return self._binary(o, "shr", reverse=True)
 
     def __bool__(self):
         # NumPy's guard, for NumPy's reason. `and`, `or` and `not` are the one

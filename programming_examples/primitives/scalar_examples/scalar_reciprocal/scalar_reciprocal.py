@@ -1,116 +1,91 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Scalar reciprocal (1/x) primitive, on air.api.
+
+    c[:] = 1.0 / a[:]        with vector=0
+
+One line of compute, and the ``vector=0`` beside it is the whole point of this
+example. It is what sends air.api's emitter down its scalar path: a plain
+``scf.for`` over the tile in steps of one, ``memref.load``, ``arith.divf`` on an
+f32 scalar, ``memref.store``. That is precisely what the raw-bindings
+predecessor wrote by hand, and it is what separates this example from
+``vector_examples/vector_reciprocal`` -- which is otherwise the same program at
+the same size with the same seed and the same tolerance, and differs in asking
+for a 16- or 32-lane vector instead.
+
+f32 is deliberate and inherited: the predecessor hardcoded ``np.float32`` and
+exposed no dtype flag. Its vector sibling documents why nothing else legalizes
+there; here the constraint is softer, since a scalar divide has no vector for
+the backend to reject, but no lit exercises another type and a conversion is not
+the place to widen the contract.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's, and it distributes differently. The predecessor
+  wrote the outer loop itself and gave core ``ty`` the tiles at
+  ``_l_ivx + ty * tile_n``, stepping by ``tile_n * NUM_TILES`` -- an interleaved
+  assignment, every other tile. The DSL hands each core a contiguous run of
+  tiles instead. Every tile is still computed exactly once by exactly one core,
+  and the tiles are independent, so the result is unchanged.
+* The L1 buffers are allocated and freed together. The predecessor allocated
+  both outside its temporal loop and called ``DeallocOp`` on them *inside* it,
+  which frees each buffer once per trip -- 32 times, at the default size. Here
+  the pair is scoped to the loop body and balances.
+
+``--target`` is new and defaults to detecting the installed part, which is what
+the predecessor did implicitly by having no device flag at all. Naming it makes
+``-p`` reproducible for a generation that is not the one plugged in.
+"""
+
 import argparse
+
 import numpy as np
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import f32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
-def build_module(n, tile_n, np_dtype_in):
-    a_size = [n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
-    index_type = IndexType.get()
+def build_module(n, tile_n):
+    assert n % (tile_n * NUM_TILES) == 0
+    dt = f32
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
+    A = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    with air.launch(name="scalar_reciprocal") as launch:
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def scalar_reciprocal(arg0, arg1):
+        @launch.body
+        def _():
+            # The iteration space is every tile; shape= pins the core count to
+            # what the predecessor asked for, and the DSL strip-mines the rest
+            # into a loop on each core.
+            with air.herd(
+                [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg1],
-        )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not an element offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_n
+                    # vector=0 is the scalar path -- see the module docstring.
+                    a = air.alloc([tile_n], dt, scope=h.private(), vector=0)
+                    c = air.alloc([tile_n], dt, scope=h.private(), vector=0)
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
+                    air.ops.load(a, A[i0 : i0 + tile_n])
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                    c[:] = 1.0 / a[:]
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
+                    air.ops.store(c, C[i0 : i0 + tile_n])
 
-                c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
-                cTileN = ConstantOp(index_type, tile_n)
-
-                # Constant 1.0 for reciprocal computation
-                one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
-
-                # Scalar loop: compute 1.0 / x for each element
-                for j in range_(c0, cTileN, c1):
-                    # Load scalar value from input
-                    scalar_a = load(l1_a_data.result, [j])
-                    # Compute reciprocal: 1.0 / a
-                    scalar_c = arith.DivFOp(one_const, scalar_a)
-                    # Store result
-                    store(scalar_c, l1_out_data.result, [j])
-                    yield_([])
-
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
-
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -148,13 +123,17 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(
-        args.n,
-        args.tile_n,
-        INPUT_DATATYPE,
-    )
+    launch = build_module(args.n, args.tile_n)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -191,6 +170,7 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -207,6 +187,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

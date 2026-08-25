@@ -530,6 +530,11 @@ private:
     if (num_rows && num_cols) {
       usage_count *= llvm::divideCeil(*num_rows, du_size_x);
       usage_count *= llvm::divideCeil(*num_cols, du_size_y);
+      // All instances of a segment's iteration space are co-resident for the
+      // lifetime of the segment, so their resource demands sum rather than
+      // alias. Without this a 2x1 segment is billed one DU and fits an arch
+      // that cannot hold it.
+      usage_count *= this->canonicalizer.getTripCountInHierarchyOp(op);
       return usage_count;
     } else {
       op->emitOpError("Segment has no placed AIE cores");
@@ -810,9 +815,7 @@ private:
     unsigned dispatched = 0;
 
     // Check how many evnets need to be dispatched in this op
-    unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            Op.getOperation(), {});
+    unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "outbound", dispatched);
 
@@ -844,9 +847,7 @@ private:
         dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
-    unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            Op.getOperation(), {});
+    unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "inbound", dispatched);
 
@@ -975,9 +976,7 @@ private:
     }
 
     // Check how many events in total
-    unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            putOp.getOperation(), {});
+    unsigned total = this->tokenSpatialFactorForResource(putOp.getOperation());
     unsigned already_dispatched = this->getAlreadyDispatchedForDynamicDispatch(
         putOp.getChanName().str(), "put");
 
@@ -1152,8 +1151,7 @@ private:
     // Check if this op has been completely dispatched
     std::pair<std::string, std::string> key =
         std::make_pair(op.getChanName().str(), "put");
-    unsigned total_count =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
     if (launch_runner->channel_ops_in_progress.count(key)) {
       unsigned processed = launch_runner->channel_ops_in_progress[key].first;
       if (processed == total_count) {
@@ -1178,8 +1176,7 @@ private:
         op.getChanName().str(), "get");
     unsigned bcast_factor =
         launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
-    unsigned total_count =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
 
     // Calculate how many src and dst ports to deallocate
     std::pair<std::string, std::string> put_key =
@@ -1295,26 +1292,56 @@ private:
     }
   }
 
+  // Collect every vertex lying on some path from start_v to end_v.
+  //
+  // This enumerated paths and concatenated them, which is exponential in
+  // reconvergent branching rather than in graph size. One stage of a pipelined
+  // model is a wide diamond -- a token fanning out to N segments and rejoining
+  // at a barrier -- so L stages give N^L paths. At N=12 that is 20k paths for
+  // four layers and 10^12 for twelve, and the vector asked for 4.5 billion
+  // entries before aborting. A model whose segments are chained only through
+  // channels never hit it, because channels are not dependency edges and the
+  // launch graph stays shallow.
+  //
+  // The one caller only iterates the result to reset vertices, which is
+  // idempotent and order-independent, so the *set* is all that is needed. The
+  // vertices on some path from a to b are exactly those reachable from a that
+  // also reach b, which is two linear traversals.
   bool hasPath(Graph::VertexId start_v, Graph::VertexId end_v, Graph &G,
                SmallVector<Graph::VertexId, 1> &vec) {
+    llvm::DenseSet<Graph::VertexId> forward, backward;
+    SmallVector<Graph::VertexId> worklist;
+    // Forward-reachable vertices in traversal order. The result is built by
+    // filtering this rather than by iterating the set, so the order does not
+    // depend on the hash function: the caller may push reset vertices onto the
+    // wavefront candidate list, and that order reaches the trace.
+    SmallVector<Graph::VertexId> reached;
 
-    vec.push_back(start_v);
-    if (start_v == end_v)
-      return true;
-    int pathCount = 0;
-    auto adj_set = G.adjacentVertices(start_v);
-    for (auto adj_v : adj_set) {
-      SmallVector<Graph::VertexId, 1> tmp_vec;
-      if (this->hasPath(adj_v, end_v, G, tmp_vec)) {
-        pathCount++;
-        // Concatenate
-        vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
-      }
+    forward.insert(start_v);
+    worklist.push_back(start_v);
+    while (!worklist.empty()) {
+      auto v = worklist.pop_back_val();
+      reached.push_back(v);
+      for (auto adj_v : G.adjacentVertices(v))
+        if (forward.insert(adj_v).second)
+          worklist.push_back(adj_v);
     }
-    if (pathCount)
-      return true;
-    vec.pop_back();
-    return false;
+    if (!forward.contains(end_v))
+      return false;
+
+    backward.insert(end_v);
+    worklist.push_back(end_v);
+    while (!worklist.empty()) {
+      auto v = worklist.pop_back_val();
+      for (auto inv_v : G.inverseAdjacentVertices(v))
+        if (backward.insert(inv_v).second)
+          worklist.push_back(inv_v);
+    }
+
+    for (auto v : reached)
+      if (backward.contains(v))
+        vec.push_back(v);
+    return true;
   }
 
   // Get a vector of async tokens which are ready to advance to the next loop
@@ -1622,14 +1649,28 @@ private:
     return output;
   }
 
-  // Get batch-dispatched count up until type
-  template <typename T>
-  unsigned tokenSpatialFactorForResource(Operation *op,
-                                         std::vector<unsigned> position) {
+  // The number of concurrent instances of an op: the product of every
+  // enclosing spatial factor -- herd and segment iteration spaces, and
+  // scf.parallel trip counts. air.launch is excluded, because the runner
+  // simulates launch iterations separately.
+  //
+  // The walk must not stop at the innermost enclosing hierarchy. Stopping
+  // there leaves a channel op inside a herd blind to the segment iteration
+  // space enclosing that herd, while its matching op at segment level still
+  // sees it. The put then dispatches N instances and its get expects one, so
+  // the pairing test in executeOp(ChannelGetOp) can never hold, the get never
+  // retires, and the herd is left hanging with its body unexecuted -- a
+  // silently truncated simulation that still exits 0.
+  //
+  // A hierarchy with no iteration space contributes a factor of one, so this
+  // is a no-op for IR that does not use one.
+  unsigned tokenSpatialFactorForResource(Operation *op) {
     unsigned output = 1;
     auto parent = op;
-    while ((!isa<T>(parent)) && !(isa<func::FuncOp>(parent))) {
+    while (parent && !isa<func::FuncOp>(parent)) {
       parent = parent->getParentOp();
+      if (!parent)
+        break;
       if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
           auto lbCstOp = scf_par.getLowerBound()[i]
