@@ -95,7 +95,13 @@ the GEMV, batch 8 the mmul, 1.599% apart at the projection while both sit ~1%
 from exact fp32 -- and closing it means putting both paths on the same kernel,
 which would move shipping numerics. That is the open decision.
 
-What remains is that, and the block-size decision below.
+What remains is that. **The block-size decision is closed: it is 8.** Block 16
+does not compile — the rms core's `BATCH*K` residual, which is a lifetime
+problem and not a working-set one — and unblocking it is a known, bounded change
+(band-stream the residual through the `@rmsX`/`@layerOut` round-trip the layer
+already makes; ceiling goes 9 -> 22 on llama-3.2-1b, 7 -> 21 on qwen3-4b) that
+three independent routes say would produce a SLOWER loop. See "What it would
+take to build block 16" and the section after it.
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -784,7 +790,29 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
     places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`, `wscr_mm_l1`) goes
     with it, so it moves SHIPPING batch-1 numerics and needs `make verify`
     behind it. The alternative is to accept a lossy verify and measure what it
-    costs in accepted tokens. This is a decision, not a defect.
+    costs in accepted tokens. **Measured: `spec_accept.py` says 7.20 of 8, so
+    the lossy verify costs 10%** and closing it buys at most 1.11x. This is a
+    decision, not a defect.
+
+11. ~~**Unblock block 16.**~~ **Explored. Do the change, but not for block 16.**
+    What blocks it is the rms core's `BATCH*K` residual, and it is a LIFETIME
+    problem rather than a working-set one — see "What it would take to build
+    block 16". Moving the `@xnorm` staging to L2 (the builder's old advice)
+    reaches 11 on llama-3.2-1b and 8 on qwen3-4b, not 16; band-streaming the
+    residual through the `@rmsX`/`@layerOut` round-trip the layer already makes
+    reaches 22 and 21. Three independent routes say block 16 would be SLOWER
+    than block 8, so the ceiling is now correctly counted and documented rather
+    than lifted for that reason.
+
+    **The reason to do it anyway is qwen3-4b at block 8.** Its ceiling is 7 and
+    the projection kernel's smallest batch is 8, so the DFlash target cannot run
+    a batched verify at any size — every batched number in this document is
+    llama-3.2-1b standing in for it.
+
+12. **Claim the attention term.** 69% of the verify pass, no amortization, and
+    section 5g already measured the ceiling at 1.55x on it and 2.08x end to end.
+    This is the largest unclaimed number in the document and it does not depend
+    on the block size.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -925,7 +953,10 @@ The *device* half still has to be built, and still comes before the wiring: an
 assert every token's output equals the batch-1 output. No reference model
 needed, and it covers what numpy cannot: DMA, locks, cascade, backpressure.
 
-**Do not build for block 16.** It is 1.06x. See section 5f before re-litigating.
+**Do not build for block 16.** It is 1.06x modelled, and the hardware loop
+independently puts it at 0.69-0.90x of the batch-1 baseline at DFlash's own
+`tau16 = 6.00`. It also does not currently compile. See "And it is probably not
+worth building" above, and section 5f, before re-litigating.
 
 Run `q4k_mm_gate.py --mode exact` after **any** change to `q4k_mm.h`, and
 `check_kernels_inert.py` after any change to a production kernel. The first has
@@ -1102,16 +1133,151 @@ one gate**, and neither docstring said which axis it was holding fixed.
 rms-core L1 ceiling and it fires:
 
     DECODE_BATCH=16 exceeds the rms core's L1 ceiling of 9 for llama-3.2-1b
-    (86080 B of 55296 B): one BATCH*2048 residual buffer, a BATCH*512 staging
-    buffer and 2048 elements of norm weight.
+    (90176 B of 55296 B): one BATCH*2048 residual buffer, a BATCH*512 staging
+    buffer and 4096 elements of norm weight.
 
-qwen3-4b is worse -- `K=2560` makes the residual buffer `BATCH*5120` -- and it
-fails to allocate at batch **8**, on tile_2_2, with 40960 B of residual alone
-against a 64 KB tile. qwen3-4b at batch 1 builds fine, so it is the batching and
-not the model. **So every block-16 and block-32 row in the table above is
-modelled on a configuration that cannot currently be compiled**, and raising the
-ceiling means moving the `@xnorm` staging to L2 (the builder's own message says
-so) -- not a sweep parameter.
+qwen3-4b is worse -- `K=2560` makes the residual `BATCH*5120` bytes -- and its
+ceiling is **7**, so it cannot even do block 8. qwen3-4b at batch 1 builds fine,
+so it is the batching and not the model. **So every block-16 and block-32 row in
+the table above is modelled on a configuration that cannot currently be
+compiled.**
+
+That ceiling used to read 8 for qwen3-4b, and the count behind it was wrong by
+`K` bf16: `_rms_l1_bytes` charged for ONE resident norm weight and the batched
+body holds **two** — `w` (input norm) and `w2` (post-attention norm), allocated
+together at the top of `_rms_batched` and freed together at the bottom, because
+reusing one buffer for both costs the separate lock pair AIR gives the second
+weight and hangs the batched decode in wave 0. One buffer's worth of slack is
+enough to matter exactly once, and this was it: `DECODE_BATCH=8` on qwen3-4b
+passed the friendly check and died in the mlir-aie allocator on tile_2_2
+instead, which reports a byte count and names neither the buffer nor the knob.
+Fixed; llama-3.2-1b's ceiling is unchanged at 9 and no shipping build moves.
+`batch_l1_budget.py` now sums the rms core as a tile role and asserts its total
+against `_rms_l1_bytes`, so the tool and the refusal cannot drift again — before
+this it reported `rms_l1 activation ... max batch alone: 13` for llama-3.2-1b
+and could not see the constraint that actually binds.
+
+**And the ceiling is below 8 on every model except llama-3.2-1b** **[measured]**:
+
+| model | K | ceiling | block 8? |
+|---|---|---|---|
+| llama-3.2-1b | 2048 | **9** | yes |
+| qwen3-4b | 2560 | 7 | no |
+| gemma3-4b | 2560 | 7 | no (also refused: sandwich norm) |
+| llama-3.2-3b | 3072 | 5 | no |
+| phi4-mini | 3072 | 5 | no |
+| qwen2.5-7b | 3584 | 4 | no |
+| qwen3-8b | 4096 | 4 | no |
+| llama-3.1-8b | 4096 | 4 | no |
+
+So **the DFlash target model cannot be batched at all as built** — every batched
+result in this document is llama-3.2-1b, and the smallest batch the projection
+kernel will accept is already past what qwen3-4b's rms core holds. The
+band-streaming change below is what qwen3-4b needs for block 8, never mind 16;
+it takes qwen3-4b to 21.
+
+#### What it would take to build block 16 [measured]
+
+**Not the `@xnorm` staging.** The builder's own message used to say so and it
+was wrong. The three terms at batch 16 on llama-3.2-1b are:
+
+| term | bytes | share | ceiling if it went away |
+|---|---|---|---|
+| residual `BATCH*K` | 65536 | 73% | — |
+| staging `BATCH*STG_W` | 16384 | 18% | **11** |
+| two norm weights | 8192 | 9% | 10 |
+
+Staging to L2 buys 9 -> 11 on llama and 7 -> 8 on qwen3-4b. Neither reaches 16.
+**The residual is the term**, and everything else already fits at 16: the proj
+core is 25.0 of 54 KB (max 39), the attention CU 46.0 of 54 KB (max query tile
+19), rope and glu are row-tiled, and `PROJ_MM_BATCH=16` compiles.
+
+**Why the residual is resident is lifetime, not working set.** The rms core
+already tiles `K` for compute — `rms_chunk_aie` regenerates one 512-wide band at
+a time and `residual_acc_row_aie` adds one band at a time, and neither ever
+touches more than `BATCH*512`. Tiling harder changes nothing, because every band
+is simultaneously *live*: the thing added to band `c` is the o-proj output, and
+that does not exist until every band of the normalized X has gone through a
+reduction over all of `K`, attention has run, and o-proj has come back. One
+band's lifecycle cannot close before the next one's opens. For roughly 80% of a
+layer the residual is idle storage.
+
+**So the residual has to leave L1, and the wire for it already exists.** The
+layer chaining ABI writes residual2 back into the X buffer at offset 0 and the
+next layer's `rmsX` reads offset 0 — the full `BATCH*K` residual **already**
+crosses the shim once per layer on `@layerOut`/`@rmsX`. Making it cross a band
+at a time instead of whole is not a new channel and not a new BD chain; it is
+the per-round shape those transfers had before the BD-compaction comment in
+`_uni_dec` collapsed them ("single full-size drain ... instead of LAYER_RNDS
+per-round gets"). L1 then holds one raw band, one staging band and the two norm
+weights — `2*(b*512 + b*512) + 8192 + 4b`, which caps at **22** on llama-3.2-1b
+and **21** on qwen3-4b. Block 16 fits on both, with room.
+
+The cost is that the residual is re-read per band, and the re-read is multiplied
+by the `@xnorm` re-broadcast count: `XN_REFEED = REFEED[0] = 6` for the input
+norm and `REFEED[GATEUP_PHASE] = 32` for the pre-MLP one, against `K/512 = 4`
+bands. That is `4 + 24 + 4` + `4 + 128 + 4` = **168** `@rmsX` band gets per
+layer where there is one whole-buffer get today, ~2.75 MB per layer at batch 16.
+152 of those 168 are refeeds, and they are removable: the X memtile stages ONE
+chunk (`xmt_l2` is `[BATCH * 2 * COL_BLOCK]`), so the core re-sends the whole
+normalized X on every round. Growing `xmt_l2` to `[BATCH][K]` — 32 KB of a
+512 KB memtile — and letting it do the re-broadcast drops the layer to **24**
+band transfers and removes the same factor from the core->memtile `@xnorm`
+traffic. That is the change the phrase "moving the `@xnorm` staging to L2" was
+reaching for, and it belongs on the memtile rather than in place of the L1
+staging buffer.
+
+Estimate for the whole thing: rms core band loop, X memtile refeed, per-band
+shim puts from two X slots, the ceiling arithmetic, then re-gating batch 1 and
+batch 8 before batch 16 is worth compiling once.
+
+#### And it is probably not worth building [measured]
+
+**Three independent routes say block 16 loses to block 8**, so the ceiling above
+is documented rather than lifted.
+
+1. **The modelled sweep in section 5f**: 1.65x at block 8, **1.06x at block 16**.
+2. **The measured kernel table in 5f**: batch 16 is 235.2 cycles/token against
+   batch 8's 290.9 — a 19% per-token *win*, but only on the projection, which is
+   31% of the verify pass. Attention is the other 69% and it does not amortize.
+3. **The hardware loop measured above.** Split the ctx-1800 dispatches into
+   attention (from the measured per-key slopes: 1.55 ms at batch 1, 8.48 at
+   batch 8) and everything else, then fit the rest as a fixed weight-streaming
+   term plus a per-token term — `W + P = 19.30` at batch 1, `W + 8P = 66.62` at
+   batch 8:
+
+       W = 12.54 ms   65% of a batch-1 decode, amortizable
+       P =  6.76 ms   35% of it, paid per token
+
+   35% paid eight times is what holds the batch-8 verify to 2.2-2.5x instead of
+   8x. Extrapolating to 16 — attention at 9.11 us/key, and the projection either
+   flat or taking the 19% per-token win from (2) — gives `verify(16)` of
+   **117-137 ms** against 75.1. `draft(16)` has only one measured point, so
+   bracket it between "the draft has no per-token cost" (21.8, its batch-8
+   value) and "it is all per-token" (43.6): `iter(16)` is **138-181 ms** against
+   97.19.
+
+Across that whole envelope, block 16 beats block 8 only for `tau16` between
+**7.1 and 9.3** (against this document's `tau8 = 4.99`), or **10.3 to 13.4**
+against the measured self-draft ceiling `tau8 = 7.20`. DFlash's own acceptance
+curve puts `tau16` at **6.00**, and at that acceptance block 16 runs at
+**0.69-0.90x of the batch-1 baseline** — below break-even in every corner,
+including the one where the draft costs nothing per token and the projection
+takes its full win. For block 16 to pay, acceptance would have to hold at ~72%
+of the block having been 62% at block 8, and acceptance falls with block
+position rather than rising.
+
+The lever the same three routes agree on is **attention, not the block size**:
+69% of the verify pass, no amortization, and section 5g measures a 1.55x ceiling
+on it that nobody has claimed yet.
+
+**But build the band-streamed residual anyway — for block 8 on qwen3-4b.** The
+change is the same one; only the target moves. qwen3-4b's rms core holds 7 rows
+and the projection kernel's smallest batch is 8, so the DFlash target cannot run
+a batched verify at ANY size today, and band-streaming takes it to 21. That is
+the difference between "DFlash measured on llama-3.2-1b as a stand-in" and
+"DFlash measured on the model it is for", and it is worth more than a block-size
+sweep whose answer is already 8.
 
 What IS buildable is block 8, and the whole loop measured there on
 llama-3.2-1B -- draft = 5 layers at batch 8 (`UNI_WAVE_HI=5`, the DFlash draft
@@ -1218,8 +1384,12 @@ it.
 
 - **DECODE_BATCH must be a multiple of 8.** `aie::mmul<8,8,8>`'s A tile is 8
   rows and `q4k_mm.h` asserts `rowA == 1`, so 8, 16 and 32 compile and 2 and 4
-  fail at `static_assert`. Block 8 and block 16 are both reachable; anything
-  below 8 is not, so there is no small-batch control build to bisect with.
+  fail at `static_assert`. **Only block 8 is actually reachable**: below 8 the
+  kernel refuses, above 8 the rms core's L1 does, and 9-15 are not multiples of
+  8 — so there is neither a small-batch control build to bisect with nor an
+  intermediate block size to test "does a bigger block help" cheaply. The next
+  step up from 8 is 16, and 16 is the change described under "What it would take
+  to build block 16".
 - **`chess_storage(...)` is a NO-OP under Peano.** It expands to nothing in
   `aiebase_chess.h`, so anything relying on it for alignment gets whatever the
   type naturally has. The failure is not a fault and not deterministic across
