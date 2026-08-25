@@ -277,9 +277,9 @@ class _Region:
 def _emit_reduce(dst, expr):
     """Emit ``dst[:] = ops.reduce_*(src)`` -- one vector.reduction per row.
 
-    The destination keeps the operand's rank with the innermost dimension set
-    to 1 (numpy's ``keepdims=True``), so the loop nest walks the outer
-    dimensions and each trip reduces one whole innermost axis.
+    The destination is the operand with its innermost axis collapsed -- kept
+    as 1 or dropped, see the shape check below -- so the loop nest walks the
+    outer dimensions and each trip reduces one whole innermost axis.
 
     That axis is read as a *single* vector of its full extent rather than in
     steps of the destination's vector width. This is what the hand-written

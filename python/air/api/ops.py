@@ -20,13 +20,18 @@ Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, and the
 ``sigmoid``/``silu``/``gelu`` compositions built on them) build lazy expression
 nodes instead, and return a :class:`~air.api._value.BufferExpr`.
 
+``reduce_add`` and ``reduce_max`` build such a node too, but it is the one whose
+shape differs from its operand's: it collapses the innermost axis. That is why a
+reduction has to be the whole right-hand side rather than nesting inside a
+larger expression.
+
 ``dot`` is a statement rather than an expression: it accumulates into a buffer
 and returns a Token, matching the signature the API proposal specified. On rank-6
 (micro-tiled) operands it becomes the blocked contraction the AIE2 matmul
 intrinsic wants; see ``air.api._pack``.
 
-The remaining compute ops from the wider API proposal (``reduce``, ``exp``,
-``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise rather
+The remaining compute ops from the wider API proposal (``exp``, ``stack``,
+``dequant``, ``atomic_add``) are not implemented. They raise rather
 than returning a plausible-looking placeholder: a DSL that accepts an op it
 cannot lower produces a kernel that runs and is silently wrong. ``exp`` is on
 that list by choice rather than by oversight -- the activations here are composed
@@ -702,12 +707,24 @@ def _reduce(name, key, x):
 def reduce_add(x):
     """Sum along the innermost axis. Lowers to vector.reduction <add>.
 
-    The destination keeps the operand's rank with its innermost dimension set
-    to 1, which is numpy's ``keepdims=True`` and is what the hand-written
-    kernels allocate (``[tile_m, n]`` in, ``[tile_m, 1]`` out)::
+    The destination is the operand with its innermost axis collapsed, spelled
+    either way -- keeping the axis as 1 (numpy's ``keepdims=True``) or
+    dropping it::
 
-        acc = air.alloc([tile_m, 1], bf16, scope=h.private())
+        out = air.alloc([tile_m], bf16, scope=h.private())      # dropped
+        out[:] = air.ops.reduce_add(a[:])                       # a is [tile_m, n]
+
+        acc = air.alloc([tile_m, 1], bf16, scope=h.private())   # kept
         acc[:] = air.ops.reduce_add(a[:])
+
+    Both exist because the hand-written kernels use both at once: their L1
+    tile is ``[tile_m, 1]`` while their L3 output is ``[m]``.
+
+    Prefer dropping the axis unless something downstream wants it. ``ops.store``
+    squeezes *leading* unit dimensions but not trailing ones, so a kept-axis
+    ``[tile_m, 1]`` tile cannot be stored into a rank-1 ``[m]`` slice -- which
+    is the DMA those kernels write. Dropping it keeps the L1 tile the same rank
+    as the L3 output and sidesteps that entirely.
 
     This is the only shape-changing operation in the expression language, so
     it has to be the whole right-hand side -- it cannot appear inside a larger
@@ -726,8 +743,9 @@ def reduce_add(x):
 
 def reduce_max(x):
     """Maximum along the innermost axis. Lowers to vector.reduction <maximumf>
-    (float) or <maxsi> (signed integer). See :func:`reduce_add` for the shape
-    rule and why the reduction must be the whole right-hand side.
+    (float) or <maxsi> (signed integer). See :func:`reduce_add` for the two
+    destination spellings and why the reduction must be the whole right-hand
+    side.
     """
     return _reduce("reduce_max", "max", x)
 
