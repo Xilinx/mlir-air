@@ -126,8 +126,16 @@ dispatch's time actually goes"; `decode_cost.py` is the measurement.
 
 The 1.55x attention-hoist ceiling from section 5g still stands as a ceiling, but
 it now applies to 16% of a dispatch rather than 69% — worth about 4% end to end,
-not 26%. **The unexplained 4.5x in the projection is the largest number in this
-document**, and finding it comes before optimizing anything.
+not 26%.
+
+**And it is not the projection either.** Deleting the mmul and the unpack
+outright (`PROJ_MM_PROBE=1`, every channel and descriptor untouched) moves the
+layer from 3.089 ms to 3.017 — the batched projection's whole arithmetic is
+**2% of a dispatch**, and the layer still runs at **3.65x its weight-streaming
+floor with nothing in it**. The batched decode is dataflow bound. That 3.65x is
+the largest number in this document, it is worth more than the speculative
+mechanism it was measured in service of, and finding it comes before optimizing
+anything (item 13).
 
 The recommendation to build it stands. What changes is the block size, the
 headline, and where the optimization effort belongs.
@@ -824,18 +832,24 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
     is worth about 4% end to end rather than 26%. Still real, no longer the
     lever.
 
-13. **Find the 4.5x in the projection.** THE open number. At batch 8 the device
-    spends ~10450 cycles on a 32x256 weight block where `bench_q4k_mm.py`
-    measures 2327 — 3.74x on the layer body against a model that is accurate to
-    one part in eight hundred at batch 1. It is not weight traffic (the weights
-    are identical at both batches) and the issue-slot model cannot see it. Two
-    untested candidates: the shipping build inlines `q4k_mmul` differently from
-    the microbenchmark's translation unit — this document already records a 20%
-    swing of exactly that kind from `q4k_mmul_any` merely existing — or a core
-    is stalling on something that scales with the batch. `decode_cost.py` is the
-    measurement; a disassembly of `proj_qmm.o` at `PROJ_MM_BATCH=8` beside
-    `q4k_mm_bench.o`, or a device trace, is the next step. Closing even half of
-    it moves the batched verify more than every other item here combined.
+13. **THE open number: the batched layer runs at 3.65x its memory floor with no
+    arithmetic in it.** `PROJ_MM_PROBE=1` deletes the mmul and the unpack and
+    the layer goes 3.089 -> 3.017 ms, so the batched projection's entire
+    arithmetic is **2%** of a dispatch. The same design at batch 1 sits on its
+    floor. This is not the kernel and it is not the weights; it is dataflow that
+    appears only above batch 1, and it is worth more than every other item here
+    combined — closing it alone would take the batch-8 verify from 2.2x toward
+    the 8x a shared weight stream allows, which is more than DFlash's whole
+    speculative mechanism is claiming.
+
+    Best hypothesis, measured-consistent but unconfirmed: the `@xnorm` re-feed.
+    Batch 1 normalizes once and `refeed()` collapses the re-broadcast into a
+    lock init, so the core is not in the loop; batch 8 regenerates each chunk
+    inside the loop through a single `rstg` buffer — 152 serialized producer /
+    multicast / release round trips per layer against none. Test it by
+    double-buffering `rstg`, or by growing `xmt_l2` to `[BATCH][K]` and letting
+    the memtile re-broadcast (the same change item 11 needs). A device trace
+    would settle it outright.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -1393,15 +1407,69 @@ this much") is exactly backwards on hardware.
 **At batch 1 the roofline is right and at batch 8 it is not.** Per layer it
 predicts 0.826 ms from the memory floor and measures 0.827 -- one part in eight
 hundred. At batch 8 the weights are unchanged, so the model keeps the pass
-memory bound and predicts the same 0.826; it measures **3.089**. Localized, the
-device spends **~10450 cycles on a 32x256 weight block at batch 8 where
-`bench_q4k_mm.py` measures 2327** (0.827 ms/layer / 464 blocks/core gives 2680
-against the bench's 2240 at batch 1 -- 20% for DMA, which is fine). That 4.5x is
-the whole discrepancy, it is not weight traffic, and it is **not yet explained**.
-Candidates, none tested: the real build inlines `q4k_mmul` differently from the
-microbenchmark's translation unit (the document already records a 20% swing of
-exactly that kind), or the core is stalled on something that scales with the
-batch and the issue-slot model cannot see.
+memory bound and predicts the same 0.826; it measures **3.089**.
+
+#### The batched layer is dataflow bound, and the projection is 2% of it [measured]
+
+`PROJ_MM_PROBE=1` deletes both the `aie::mmul` and `q4k_unpack_block` from
+`proj_qmm_mm_acc` while every channel, descriptor, lock and DMA stays exactly
+where it was -- the weights are still streamed to the core, they are just not
+looked at. So the delta is the batched projection's entire arithmetic, on all 16
+cores, for a whole layer **[measured]**:
+
+| batch-8 layer | ms/layer | vs memory floor |
+|---|---|---|
+| as built | 3.089 | 3.74x |
+| **with the mmul and the unpack deleted** | **3.017** | 3.65x |
+| the weight-streaming floor | 0.826 | 1.00x |
+
+**The arithmetic costs 0.072 ms of a 3.089 ms layer. Two per cent.** The
+projection kernel this entire effort was built around -- `q4k_mm.h`, the 71
+MAC/cycle result, the batch sweep, the block-size roofline that is priced off
+its cycle counts -- is not what a batched dispatch spends its time on. Nor is
+`bench_q4k_mm.py` wrong: it says the arithmetic should be 0.688 ms/layer, and
+90% of that is genuinely hidden. It is hidden behind something 3.65x larger.
+
+So the layer runs at **3.65x its weight-streaming floor with no arithmetic in
+it at all**, while the same design at batch 1 sits *on* the floor (0.827 against
+0.826). Whatever the batched pass is paying for, it is dataflow, it is not the
+weights, and it appears only above batch 1.
+
+**Where it probably is, consistent with the measurement but NOT yet confirmed.**
+The `@xnorm` X feed is produced differently at the two batches, and it is the
+one thing in the layer that both scales with the batch and sits on the critical
+path of every projection:
+
+| per layer | batch 1 | batch 8 |
+|---|---|---|
+| `@xnorm` transfers | 38 | **152** |
+| bytes each | 4 KB (whole `K`) | 8 KB (one chunk, all rows) |
+| core work inside the re-feed loop | **none** | one `rms_chunk_aie` per transfer |
+
+At batch 1 the core normalizes once into a resident `K`-wide buffer and
+`refeed()` wraps a bare put in an n-trip loop, which `air-annotate-refeed`
+collapses into a lock init -- the re-broadcast is the DMA's, and the core is not
+in the loop. At batch 8 the normalized batch is never materialized (that is the
+whole reason the rms core fits at all), so `_rms_batched_norm` regenerates each
+chunk inside the loop and puts it. The loop body now holds a `CallOp`, so it is
+not a re-broadcast any more, and `rstg` is a **single** buffer -- compute, put,
+wait for the release, compute the next. 152 serialized round trips per layer
+where batch 1 has none. Charging the 2.19 ms/layer that is unaccounted for to
+those 152 handshakes gives ~22,600 cycles each, which is far too slow to be
+bandwidth (0.36 B/cycle on an 8 KB transfer) and about right for a full
+producer->memtile->16-core-multicast->release latency paid without pipelining.
+
+Two contained ways at it, neither tried, and **the second is the change already
+scoped for block 16**:
+
+- double-buffer `rstg` into a 2-deep ring so chunk `n+1` is computed while
+  chunk `n` is in flight. Cheap; bounded by whichever of compute and DMA is
+  larger instead of their sum.
+- grow `xmt_l2` from one chunk to `[BATCH][K]` -- 32 KB of a 512 KB memtile --
+  and let the memtile do the re-broadcast. That collapses 152 transfers to 8 and
+  puts the core back out of the re-feed loop, which is what batch 1 already
+  does. It is the same memtile change that removes 152 of the 168 band transfers
+  in "What it would take to build block 16".
 
 **Attention does not amortize at all** -- 8.33x for 8 tokens, slightly worse
 than linear. The earlier "5.5x for 8 tokens" came from a slope fitted through
