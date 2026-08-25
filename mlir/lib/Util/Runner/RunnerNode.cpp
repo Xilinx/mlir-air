@@ -150,8 +150,12 @@ public:
   // Free link resources whose occupancy has ended but whose payload is still
   // in flight. Ports model link bandwidth, not time-of-flight, so holding them
   // until the data lands would cap link throughput at 1/(occupancy + latency)
-  // and stop a deep pipeline from filling. Inert unless the arch model gives
-  // the link a latency, in which case release_time == end_time.
+  // and stop a deep pipeline from filling.
+  //
+  // Only an arch model that gives the link a latency reaches this: that is
+  // what makes release_time < end_time, which is what has_link_latency()
+  // tests. Without one the two are equal, there is no window in which the
+  // ports are free but the payload has not landed, and this is inert.
   void releaseCompletedLinkOccupancy(uint64_t time) {
     Graph &G = this->ctrl_g->g;
     for (auto &entry : this->wavefront) {
