@@ -1102,6 +1102,10 @@ code**. It is not the cause here -- token 0 at P=9 skips block 1 and is correct
 
 ### Gotchas that cost time before
 
+- **DECODE_BATCH must be a multiple of 8.** `aie::mmul<8,8,8>`'s A tile is 8
+  rows and `q4k_mm.h` asserts `rowA == 1`, so 8, 16 and 32 compile and 2 and 4
+  fail at `static_assert`. Block 8 and block 16 are both reachable; anything
+  below 8 is not, so there is no small-batch control build to bisect with.
 - **`chess_storage(...)` is a NO-OP under Peano.** It expands to nothing in
   `aiebase_chess.h`, so anything relying on it for alignment gets whatever the
   type naturally has. The failure is not a fault and not deterministic across
