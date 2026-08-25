@@ -16,7 +16,7 @@ from itertools import product
 
 from air import api as air
 from air.api import ops  # noqa: F401
-from air.api.types import bf16, f16, f32, i16, i32, ui8
+from air.api.types import bf16, f16, f32, i8, i16, i32, ui8
 
 
 def expect(exc_types, label):
@@ -1416,6 +1416,88 @@ def _():
         a = air.alloc([16, 16], i32, scope=h.private())
         c = air.alloc([16, 16], i16, scope=h.private())
         c[:] = ops.cast(a[:], i16)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_narrowing_int_clamped_to_wider_bounds
+# The clamped exception is about the bounds, not the presence of a clamp. These
+# bounds do not fit i8, so values the two trunci paths disagree about can still
+# reach the cast and the refusal stands.
+# CHECK: NotImplementedError: air.api.ops.cast will not narrow air.api.i32 to air.api.i8
+@expect(NotImplementedError, "cast_narrowing_int_clamped_to_wider_bounds")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i8, scope=h.private())
+        c[:] = ops.cast(ops.minimum(ops.maximum(a[:], -200), 127), i8)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_narrowing_int_clamped_on_one_side
+# A single-sided clamp leaves the other side unbounded, so it proves nothing.
+# CHECK: NotImplementedError: air.api.ops.cast will not narrow air.api.i32 to air.api.i8
+@expect(NotImplementedError, "cast_narrowing_int_clamped_on_one_side")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i8, scope=h.private())
+        c[:] = ops.cast(ops.minimum(a[:], 127), i8)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_on_a_float_buffer
+# Integer-only for the same reason as the bitwise operators, and named the same
+# way. The message also says what to write instead, because scaling a float by a
+# power of two is a thing people reach for << to express.
+# CHECK: NotImplementedError: the shift operator '>>' is integer-only
+@expect(NotImplementedError, "shift_on_a_float_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        a[:] = a[:] >> 2
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_by_a_negative_count
+# Python raises ValueError here. MLIR would make it poison instead, which is
+# silent and survives into the backend as a wrong answer rather than a
+# diagnostic, so this is refused where it is written.
+# CHECK: ValueError: negative shift count -1 in '>>'
+@expect(ValueError, "shift_by_a_negative_count")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        a[:] = a[:] >> -1
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_by_the_operand_width
+# The boundary, not an arbitrary large number: 32 is the first count an i32
+# cannot take. Python would give 0 or -1; LLVM says poison.
+# CHECK: ValueError: shift count 32 is not less than the width of air.api.i32
+@expect(ValueError, "shift_by_the_operand_width")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        a[:] = a[:] >> 32
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_width_is_per_dtype
+# i8 runs out eight times sooner, so the check reads the operand's own width
+# rather than assuming 32.
+# CHECK: ValueError: shift count 8 is not less than the width of air.api.i8
+@expect(ValueError, "shift_width_is_per_dtype")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i8, scope=h.private())
+        a[:] = a[:] << 8
 
     _trace(body)
 

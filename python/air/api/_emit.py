@@ -102,10 +102,17 @@ _INT_OPS = {
     "and": arith.AndIOp,
     "or": arith.OrIOp,
     "xor": arith.XOrIOp,
+    # Shifts, likewise integer-only. The right shift is *arithmetic*
+    # (arith.shrsi, sign-replicating) rather than logical, because air.api's
+    # integer dtypes are signed and Python's own `>>` on a negative int is
+    # arithmetic too -- x >> n == floor(x / 2**n) for both.
+    "shl": arith.ShLIOp,
+    "shr": arith.ShRSIOp,
 }
 
 # Named so the failure can say *why*, not just "not supported for dtype float".
 _BITWISE = ("and", "or", "xor")
+_SHIFT = ("shl", "shr")
 
 # vector.reduction combining kinds. maximumf mirrors the elementwise _FLOAT_OPS
 # choice of arith.maximumf over maxnumf; the signed integer form matches the
@@ -446,11 +453,15 @@ def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
         # The operand is evaluated in *its* region -- a different element type,
         # a different arith table, and a different vector type -- and only the
         # conversion itself lands in this one.
-        from .ops import _conversion_op
+        from .ops import _clamped_into, _conversion_op
 
         source = node.args[0].element_dtype()
         operand = recur(node.args[0], regions[source])
-        build = _conversion_op(source, region.dtype)
+        # The same structural check ``cast`` used to accept this node. Asking
+        # again here keeps the rule in one place rather than trusting a flag
+        # threaded down from the call site.
+        narrowing_ok = _clamped_into(node.args[0], region.dtype)
+        build = _conversion_op(source, region.dtype, narrowing_ok=narrowing_ok)
         return _result(build(vec_ty if vectorized else ety, operand))
 
     if node.kind == "scalar":
@@ -571,6 +582,14 @@ def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
                     f"the bitwise operator '{node.op}' is integer-only: MLIR "
                     f"has arith.{node.op}i but no floating-point counterpart, "
                     f"so it cannot be applied to a {ety} buffer"
+                )
+            if node.op in _SHIFT and ops is _FLOAT_OPS:
+                spelling = "<<" if node.op == "shl" else ">>"
+                raise NotImplementedError(
+                    f"the shift operator '{spelling}' is integer-only: MLIR "
+                    f"has arith.shli/shrsi and no floating-point counterpart, "
+                    f"so it cannot be applied to a {ety} buffer. Scaling a "
+                    f"float by a power of two is a multiply"
                 )
             raise NotImplementedError(
                 f"elementwise operator '{node.op}' is not supported for dtype "
