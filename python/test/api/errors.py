@@ -1327,7 +1327,7 @@ def _():
 # CHECK: NotImplementedError: an air.extern scalar argument is not supported for air.api.ui8
 @expect(NotImplementedError, "unsigned_extern_scalar")
 def _():
-    air.extern("k", object="k.o", scalars=[ui8])
+    air.extern("k", link_with="k.o", scalars=[ui8])
 
 
 # CHECK-LABEL: TEST: select_on_a_bool
@@ -1564,6 +1564,20 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: exp_on_an_integer_buffer
+# exp and rsqrt are float-only: there is no integer math.exp, and an integer
+# buffer reaching one is a mistake rather than something to coerce.
+# CHECK: NotImplementedError: elementwise operator 'exp' is not supported for integer buffers
+@expect(NotImplementedError, "exp_on_an_integer_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        c = air.alloc([64], i32, scope=h.private())
+        c[:] = ops.exp(a[:])
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: fma_has_no_scalar_form
 # The emitter's usual fallback -- drop to a scalar loop when the innermost
 # dimension is not a multiple of the vector width -- is the *unsafe* direction
@@ -1692,3 +1706,30 @@ def _():
         b[:] = ops.reduce_add(a[:])
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: rsqrt_of_a_scalar
+# A unary op needs something to be shaped by. A bare Python float has no shape,
+# and the emitter cannot invent one.
+# CHECK: TypeError: air.api.ops.rsqrt expects a buffer slice, got float
+@expect(TypeError, "rsqrt_of_a_scalar")
+def _():
+    ops.rsqrt(2.0)
+
+
+# CHECK-LABEL: TEST: herd_link_with_is_not_a_string
+# link_with= names a compiled object file. Anything else would reach the IR as a
+# StringAttr conversion failure with no mention of which herd.
+# CHECK: TypeError: air.herd(link_with=...) takes the name of a compiled object file
+@expect(TypeError, "herd_link_with_is_not_a_string")
+def _():
+    air.herd(range(0, 128, 64), link_with=17)
+
+
+# CHECK-LABEL: TEST: herd_link_with_is_empty
+# An empty string is the shape of a mistake that would otherwise emit
+# link_with = "" and fail much later, in the linker.
+# CHECK: TypeError: air.herd(link_with=...) takes the name of a compiled object file
+@expect(TypeError, "herd_link_with_is_empty")
+def _():
+    air.herd(range(0, 128, 64), link_with="")

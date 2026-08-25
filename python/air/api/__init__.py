@@ -98,6 +98,7 @@ from ._trace import (
     alloc,
     dealloc,
     herd,
+    resolve_target,
     segment,
     symbol,
     tensor,
@@ -129,6 +130,9 @@ __all__ = [
     "PackedShape",
     # compilation
     "compile",
+    # the NPU generation --target resolves to, for a design that has to branch
+    # on it before tracing (an object file to link, or an element type)
+    "resolve_target",
     # types
     "DType",
     "bf16",

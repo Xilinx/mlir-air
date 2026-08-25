@@ -5,7 +5,7 @@
 
 """Calling a hand-written AIE kernel from a traced program.
 
-    mv = air.extern("matvec_vectorized_bf16_bf16", object="mv.o",
+    mv = air.extern("matvec_vectorized_bf16_bf16", link_with="mv.o",
                     scalars=[i32, i32, i32])
     mv(1, K, row, a_buf, b_buf, c_buf)
 
@@ -46,14 +46,15 @@ __all__ = ["ExternKernel", "extern"]
 class ExternKernel:
     """A private ``func.func`` in an object file, callable from a herd body."""
 
-    def __init__(self, name, object=None, scalars=()):
+    def __init__(self, name, link_with=None, scalars=()):
         if not isinstance(name, str) or not name:
             raise TypeError("air.extern(name) takes the kernel's C symbol name")
-        if not object:
+        if not link_with:
             raise ValueError(
-                "air.extern requires object=<file>, the compiled kernel aircc "
-                'should link against, e.g. object="mv.o". It becomes the '
-                "link_with attribute on both the declaration and the herd."
+                "air.extern requires link_with=<file>, the compiled kernel aircc "
+                'should link against, e.g. link_with="mv.o". It is the '
+                "link_with attribute, stamped on both the declaration and the "
+                "herd."
             )
         from .types import DType, require_computable, require_signless
 
@@ -73,7 +74,7 @@ class ExternKernel:
             require_signless(s, "an air.extern scalar argument")
             require_computable(s, "an air.extern scalar argument")
         self.name = name
-        self.object = object
+        self.link_with = link_with
         self.scalars = list(scalars)
         # The declaration, materialised at the first call from the call's own
         # argument types, and reused after that.
@@ -81,7 +82,7 @@ class ExternKernel:
         self._arg_types = None
 
     def __repr__(self):
-        return f"air.api.extern({self.name!r}, object={self.object!r})"
+        return f"air.api.extern({self.name!r}, link_with={self.link_with!r})"
 
     def __call__(self, *args):
         from air.ir import InsertionPoint, StringAttr, UnitAttr
@@ -120,7 +121,7 @@ class ExternKernel:
             # examples emit them, so the IR reads the same way.
             with InsertionPoint.at_block_begin(trace.module.body):
                 decl = FuncOp(self.name, (types, []), visibility="private")
-                decl.attributes["link_with"] = StringAttr.get(self.object)
+                decl.attributes["link_with"] = StringAttr.get(self.link_with)
                 decl.attributes["llvm.emit_c_interface"] = UnitAttr.get()
             self._decl, self._arg_types = decl, types
         elif [str(t) for t in types] != [str(t) for t in self._arg_types]:
@@ -133,7 +134,7 @@ class ExternKernel:
             )
 
         # aircc links one object per herd, so the attribute is a single string.
-        herd.require_object(self.object, self.name)
+        herd.require_object(self.link_with, self.name)
         return CallOp(self._decl, values)
 
 
@@ -175,6 +176,6 @@ def _scalar_value(arg, dtype, name, pos, arith):
     return arith.ConstantOp(dtype.mlir(), int(arg)).result
 
 
-def extern(name, object=None, scalars=()):
-    """Declare a hand-written kernel from ``object``; call it inside a herd."""
-    return ExternKernel(name, object=object, scalars=scalars)
+def extern(name, link_with=None, scalars=()):
+    """Declare a hand-written kernel from ``link_with``; call it in a herd."""
+    return ExternKernel(name, link_with=link_with, scalars=scalars)
