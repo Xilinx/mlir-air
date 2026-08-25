@@ -976,8 +976,14 @@ but two of its choices make it blind here in ways worth writing down:
   else" is what this measurement contradicts: the real model reaches the same
   region, and there the batched path's 1.6% is not a rounding difference.
 
-**Where to start.** Probe the gate-up range on real weights (a tap on the GLU
-core's input is one build), and if it does leave `[-8, 8)`, the question stops
+**Where to start.** Probe the gate-up range on real weights. The obvious route
+is `DECODE_PROBE=4` (the down-memtile tap, which is the GLU OUTPUT, so
+`GLU_ROW_PROBE=3` gives `up` and `=2` gives `up - gate`, and the gate is the
+difference) -- but **that build times out on device at ATTN_MAXL=128**, which is
+its own unexplained thing and was not chased. Note also that `[-8, 8)` is read
+off `getActivationBf16`'s `step_bits`/`bias` as documented, not measured; if the
+domain is wider than that, the inference below weakens with it. If the gate does
+leave the domain, the question stops
 being a batching question: the same LUT is under the shipping batch-1 engine,
 which is self-consistent only because it is the reference. Speculative verify
 needs the batched pass to AGREE with the single pass, and a LUT that turns 1.6%
