@@ -367,6 +367,15 @@ public:
     resource_hiers.clear();
   }
 
+  // Report a fatal modelling error and stop. Public so the driver can use the
+  // same reporting path for whole-simulation invariants.
+  void runner_assertion(bool cond, std::string msg = "") {
+    if (!cond) {
+      std::cerr << "Error: " + msg + "\n";
+      exit(EXIT_FAILURE);
+    }
+  }
+
 private:
   // Dependency graph helper functions.
   dependencyCanonicalizer canonicalizer;
@@ -1918,13 +1927,6 @@ private:
   }
 
   // Runner error assertion
-  void runner_assertion(bool cond, std::string msg = "") {
-    if (!cond) {
-      std::cerr << "Error: " + msg + "\n";
-      exit(EXIT_FAILURE);
-    }
-  }
-
   // Get a vector of first elements from a vector of tuples
   std::vector<Graph::VertexId> getVectorOfFirstFromVectorOfTuples(
       std::vector<
