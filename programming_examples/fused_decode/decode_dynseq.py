@@ -135,13 +135,20 @@ class DynseqInstsGen:
         )
 
 
-def pick_insts_gen(artifact_dir, max_L=None, verbose=False):
+def pick_insts_gen(artifact_dir, max_L=None, verbose=False, prefix="decode_L", batch=1):
     """The decode instruction generator a driver should use.
 
     DECODE_DYNSEQ=1 selects the build that takes its context length at dispatch
     (one xclbin for every L, streaming only this token's context); otherwise the
     compile-time template pair, extrapolated per token. Shared by every model so
     the choice cannot drift between them.
+
+    `prefix` names the template family: the shipping batch-1 pair is
+    `decode_L<N>` and a batched build is `decode_b<B>_L<N>`, in the same
+    directory. DYNSEQ has no template files, so it ignores it.
+
+    `batch` is what the templates were BUILT at, and it changes which ATTN_MAXL
+    window a given L belongs to -- see attn_maxl_of.
     """
     if os.environ.get("DECODE_DYNSEQ") == "1":
         return DynseqInstsGen(str(artifact_dir), max_L=max_L, verbose=verbose)
@@ -151,7 +158,7 @@ def pick_insts_gen(artifact_dir, max_L=None, verbose=False):
         sys.path.insert(0, str(artifact_dir))
     from decode_insts_gen import DecodeInstsGen
 
-    return DecodeInstsGen(str(artifact_dir), max_L=max_L)
+    return DecodeInstsGen(str(artifact_dir), max_L=max_L, prefix=prefix, batch=batch)
 
 
 def dispatch_args(gen, L):

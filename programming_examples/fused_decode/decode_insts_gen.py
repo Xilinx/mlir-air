@@ -23,30 +23,51 @@ import os
 import numpy as np
 
 
-def attn_maxl_of(L):
-    """ATTN_MAXL a decode build at context length L is compiled for (16*ceil(L/16))."""
-    return ((L + 15) // 16) * 16
+def attn_maxl_of(L, batch=1):
+    """ATTN_MAXL a decode build at context length L and batch B is compiled for.
+
+    16*ceil((L + B - 1)/16), and the B is not decoration. A block of B tokens
+    occupies positions L-1 .. L+B-2, so the builder sizes its block loop from
+    ATTN_L_BLK = L + B - 1 (fused_decode.py) -- at L=128 batch 8 that is 144
+    positions, not 128. Getting it wrong here is not an off-by-one in a loop
+    bound: ATTN_MAXL is the KV REGION STRIDE, so a host that assumes 128 lays
+    every group's region 16 positions short of where the device reads it, every
+    layer reads the wrong keys, and the answer comes back finite, token-varying
+    and wrong.
+    """
+    return ((L + batch - 1 + 15) // 16) * 16
 
 
 class DecodeInstsGen:
-    def __init__(self, artifact_dir, max_L=None):
-        """artifact_dir holds decode_L<N>.{xclbin,insts.bin} builds. Templates are grouped by
+    def __init__(self, artifact_dir, max_L=None, prefix="decode_L", batch=1):
+        """artifact_dir holds <prefix><N>.{xclbin,insts.bin} builds. Templates are grouped by
         ATTN_MAXL; each needs two same-ATTN_MAXL builds to calibrate the L-slope. `max_L`
         (session context cap) selects the smallest ATTN_MAXL template that covers it; if
-        None, the largest calibrated template is used."""
+        None, the largest calibrated template is used.
+
+        `prefix` exists so a batched build can live in the SAME directory as the
+        shipping batch-1 pair. It has to: the two are different xclbins for the
+        same model at the same context length, and naming them alike would make
+        the scan below pick whichever was built last -- which is exactly the
+        "leftover pair from an unrelated build" failure _check_declared_windows
+        was written for, one directory closer."""
         self.dir = artifact_dir
+        self.prefix = prefix
+        # Needed BEFORE the scan: the window a template belongs to depends on the
+        # batch it was built at (see attn_maxl_of).
+        self.batch = int(batch)
         builds = {}
         for fn in os.listdir(artifact_dir):
-            if fn.startswith("decode_L") and fn.endswith(".insts.bin"):
+            if fn.startswith(prefix) and fn.endswith(".insts.bin"):
                 try:
-                    L = int(fn[len("decode_L") : -len(".insts.bin")])
+                    L = int(fn[len(prefix) : -len(".insts.bin")])
                 except ValueError:
                     continue
-                if os.path.exists(os.path.join(artifact_dir, f"decode_L{L}.xclbin")):
+                if os.path.exists(os.path.join(artifact_dir, f"{prefix}{L}.xclbin")):
                     builds[L] = fn
         by_maxl = {}
         for L in builds:
-            by_maxl.setdefault(attn_maxl_of(L), []).append(L)
+            by_maxl.setdefault(attn_maxl_of(L, self.batch), []).append(L)
         # calibrate a base+slope per ATTN_MAXL from two same-ATTN_MAXL builds
         self.templates = {}
         for maxl, Ls in by_maxl.items():
@@ -77,7 +98,7 @@ class DecodeInstsGen:
                 base=base,
                 slope=slope,
                 Ls=Ls,
-                xclbin=os.path.join(artifact_dir, f"decode_L{base_L}.xclbin"),
+                xclbin=os.path.join(artifact_dir, f"{prefix}{base_L}.xclbin"),
             )
         self._check_declared_windows(artifact_dir)
         self.select(max_L)
@@ -86,6 +107,15 @@ class DecodeInstsGen:
     # `make compile-decode-windows`.
     WINDOWS_STAMP = ".decode_windows"
 
+    @property
+    def windows_stamp(self):
+        """The stamp for THIS template family. Batch-1 keeps the historical
+        name; a prefixed family gets its own, because the two families calibrate
+        different windows and one stamp cannot describe both."""
+        if self.prefix == "decode_L":
+            return self.WINDOWS_STAMP
+        return self.WINDOWS_STAMP + "." + self.prefix.rstrip("_L")
+
     def _check_declared_windows(self, artifact_dir):
         """Reject a directory whose calibrated windows differ from what the build declared.
 
@@ -93,7 +123,7 @@ class DecodeInstsGen:
         otherwise changes which window is selected -- silently, and the symptom is a
         plausible-looking but wrong generation rather than an error.
         """
-        stamp = os.path.join(artifact_dir, self.WINDOWS_STAMP)
+        stamp = os.path.join(artifact_dir, self.windows_stamp)
         if not os.path.exists(stamp):
             return  # nothing declared (single-template tree) -- nothing to check
         with open(stamp) as f:
@@ -101,7 +131,7 @@ class DecodeInstsGen:
         have = self.calibrated_windows()
         if have != want:
             raise RuntimeError(
-                f"decode templates in {artifact_dir} do not match {self.WINDOWS_STAMP}: "
+                f"decode templates in {artifact_dir} do not match {self.windows_stamp}: "
                 f"declared ATTN_MAXL {want}, found calibrated {have}. Remove strays or "
                 f"re-run `make compile-decode-windows`."
             )
@@ -121,7 +151,7 @@ class DecodeInstsGen:
             if not covering:
                 raise KeyError(
                     f"no decode template covers max_L={max_L}; largest is {max(cal)} "
-                    f"(build decode_L{max_L} + an adjacent same-ATTN_MAXL build)"
+                    f"(build {self.prefix}{max_L} + an adjacent same-ATTN_MAXL build)"
                 )
             maxl = covering[0]
         self.active_maxl = maxl
@@ -185,7 +215,7 @@ class DecodeInstsGen:
 
     def windows_for_range(self, L_lo, L_hi):
         """Set of ATTN_MAXL window templates needed to cover L in [L_lo, L_hi]."""
-        return sorted({attn_maxl_of(L) for L in range(L_lo, L_hi + 1)})
+        return sorted({attn_maxl_of(L, self.batch) for L in range(L_lo, L_hi + 1)})
 
     def describe(self):
         lines = []

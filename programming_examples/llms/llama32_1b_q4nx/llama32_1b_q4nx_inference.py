@@ -249,7 +249,7 @@ def _compile_only(seq_len=2048):
 
 
 # ------------------------------------------------------------------ fused decoder
-def _pick_decode_gen(dec_dir, max_L=None):
+def _pick_decode_gen(dec_dir, max_L=None, prefix="decode_L", batch=1):
     """Return the decode insts generator.
 
     Default: the compile-time decode_L<M> template (DecodeInstsGen, ATTN_MAXL=2048,
@@ -260,11 +260,15 @@ def _pick_decode_gen(dec_dir, max_L=None):
     the stream is assembled per token from the compiler-emitted TXN builder. The
     readback then moves this token's context instead of the padded ATTN_MAXL --
     what the staircase approximates with a template per window, exactly and from a
-    single build."""
+    single build.
+
+    `prefix` names the template family -- decode_L<N> for batch 1, decode_b<B>_L<N>
+    for a batched build, in the same directory. `batch` is what they were built
+    at, which decides the ATTN_MAXL window each one covers."""
     sys.path.insert(0, str(dec_dir))
     from decode_dynseq import pick_insts_gen
 
-    return pick_insts_gen(dec_dir, max_L=max_L)
+    return pick_insts_gen(dec_dir, max_L=max_L, prefix=prefix, batch=batch)
 
 
 class FusedDecoder:
@@ -277,7 +281,20 @@ class FusedDecoder:
     xclbin, one BO set; the weight + KV BOs are uploaded once and the kernel appends each new
     token's K/V in place."""
 
-    def __init__(self, max_L=None, staircase=False):
+    def __init__(self, max_L=None, staircase=False, batch=1, template_prefix=None):
+        """`batch` tokens per dispatch (DFlash). 1 is the shipping path and is
+        byte-identical to what it was: the batched form needs its own xclbin
+        (the builder reads DECODE_BATCH at import and the descriptors change
+        shape), so it loads a SEPARATE template family, decode_b<B>_L<N>, from
+        the same directory. B embeddings in, B logits out, B rope LUTs -- one
+        per POSITION, because a block of B tokens spans B consecutive positions
+        and each rotates by its own angle.
+
+        `template_prefix` overrides the family name. It exists for
+        batch_dispatch_check.py, which compares a batched build against a
+        batch-1 one and needs BOTH from the same tree: the shipping decode_L<N>
+        pair may have been built by another toolchain, and that difference would
+        land in the comparison as a batching difference."""
         HF = (
             _ensure_paris_golden()
         )  # embed/norm from model.q4nx (single source) if not provided
@@ -288,13 +305,21 @@ class FusedDecoder:
 
         sys.path.insert(0, str(_DEC))
         _load_stair()
+        self.batch = int(batch)
+        if self.batch < 1:
+            raise ValueError(f"batch must be >= 1, got {batch}")
         self.np = np
         self.bf16 = bfloat16
         self.xrt = xrt
         # Decode generator: DecodeInstsGen (decode_L<M>) -- ONE compile-time MAX_L=2048 build; the
         # kernel skips masked blocks and single-buffers the block loop, so it serves every L in
         # [1, 2048] via an RTP-L + append insts patch (the reference one-MAX_L design).
-        self.gen = _pick_decode_gen(_DEC, max_L)
+        # The batched build is a different xclbin for the same model at the
+        # same context length, so it cannot share the template name.
+        self._tpfx = template_prefix or (
+            "decode_L" if self.batch == 1 else f"decode_b{self.batch}_L"
+        )
+        self.gen = _pick_decode_gen(_DEC, max_L, prefix=self._tpfx, batch=self.batch)
         # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
         # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
         # Off by default -- one window, identical to the single-template path.
@@ -309,6 +334,11 @@ class FusedDecoder:
         # UNI_DEC/UNI_LM are fixed constants in fused_decode.py (Llama-3.2-1B: 16/7).
         os.environ.update(
             UNIFIED="1",
+            # The builder reads this at import, and every size below scales with
+            # it: X is B rows, the rope region is B blocks, a wave's vocab chunk
+            # is B chunks. Reading them back from the module is the only way the
+            # host and the xclbin cannot disagree.
+            DECODE_BATCH=str(self.batch),
             # Must match the value the decode templates were BUILT with; honour an
             # explicit override so the lm-head wave count can be varied. It is
             # PAIRED with UNI_LM -- their product is fixed by the vocab size -- so
@@ -319,7 +349,18 @@ class FusedDecoder:
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",  # boolean flag: enable post-attn-RMS decode path
-            DECODE_GOLDEN_L=str(self.ATTN_MAXL),
+            # NOT ATTN_MAXL, and the difference is invisible at batch 1.
+            # The builder derives its window from ATTN_L + BATCH - 1 (a block
+            # of B occupies B positions), so handing it ATTN_MAXL at batch 8
+            # makes it derive a window B-1 positions LARGER than the template
+            # was built with -- 160 against 144 -- and every size below that
+            # depends on it, REGION_STRIDE first. The host then lays each KV
+            # group's region 16 positions from where the device reads it, every
+            # layer attends over the wrong keys, and the result comes back
+            # finite, token-varying and completely wrong. What must hold is
+            # that the value's derived window IS the template's; ATTN_MAXL - B
+            # + 1 is that value, and at B=1 it is ATTN_MAXL.
+            DECODE_GOLDEN_L=str(self.ATTN_MAXL - self.batch + 1),
         )
         spec = importlib.util.spec_from_file_location(
             "fu", str(_DEC / "fused_decode.py")
@@ -340,10 +381,12 @@ class FusedDecoder:
         self.VP = fd.VOCAB_SIZE_PADDED
         self.VPF = fd.VOCAB_SIZE_PADDED_FULL
         self.VOCAB_SIZE = fd.VOCAB_SIZE
-        self.decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD
+        # Every drained row becomes B rows, the vocab region included.
+        self.decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD * self.batch
         self.DH = 64
-        self.ny = self.decode_y + self.UNI_LM * self.VP
-        self._RMS_SIZE = 16 * RMS_LAYER + 64 + self.K
+        self.ny = self.decode_y + self.UNI_LM * self.VP * self.batch
+        self.ROPE_W_LEN = fd.ROPE_W_LEN
+        self._RMS_SIZE = 16 * RMS_LAYER + self.ROPE_W_LEN * self.batch + self.K
         self.LREG = self.ATTN_MAXL * self.KVSZ_TOK
         _kind = type(self.gen).__name__
         _mech = "compile-time 128-block loop, masked-block skip (RTP-L + append patch)"
@@ -378,7 +421,7 @@ class FusedDecoder:
         self.kern = self._kern[self.cur_maxl][1]
         g = self.kern.group_id
         HO = xrt.bo.host_only
-        self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
+        self.x_bo = xrt.bo(self.dev, self.K * self.batch * 2, HO, g(3))
         self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
         self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
         self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
@@ -438,7 +481,12 @@ class FusedDecoder:
     def dispatch(self, tok, p):
         """One decode step at L=p+1 on the single xclbin: patch insts for L (RTP-L + KV-append
         offset), pack the full KV, dispatch (16 layers + lm_head), append the new token's KV at
-        slot p, return logits."""
+        slot p, return logits.
+
+        At batch B, `tok` is a sequence of B token ids occupying positions
+        p..p+B-1 and the return is [B][VOCAB_SIZE]. L is still p+1 -- that is
+        token 0's context, and the device masks token t to p+t, which is exactly
+        the property batch_equiv.py gates."""
         np = self.np
         xrt = self.xrt
         import os as _os, time as _t
@@ -448,6 +496,26 @@ class FusedDecoder:
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
         L = p + 1
+        toks = [int(tok)] if self.batch == 1 else [int(t) for t in tok]
+        if len(toks) != self.batch:
+            raise ValueError(
+                f"dispatch got {len(toks)} tokens for a batch-{self.batch} "
+                "decoder; a block is always B tokens"
+            )
+        # The KV append writes B CONSECUTIVE slots, and position ATTN_MAXL of a
+        # region is position 0 of the NEXT region -- so a block that runs off the
+        # end does not fault, it overwrites a live KV region and returns wrong
+        # logits with no error. kvappend_bd.check_bounds is the same guard the
+        # descriptor derivation uses.
+        import kvappend_bd as _kv
+
+        if not _kv.check_bounds(self.batch, self.cur_maxl, p):
+            raise IndexError(
+                f"decode block at p={p} batch={self.batch} runs past the KV "
+                f"window ATTN_MAXL={self.cur_maxl}: positions "
+                f"{p}..{p + self.batch - 1} must all be < {self.cur_maxl}. "
+                "Nothing on device would report this."
+            )
         _a = _tk()
         # Cache the insts BO: the per-L patch touches only a handful of L-dependent words
         # (RTP-L + append/readback offsets, located by diffing two builds). Write the full
@@ -476,7 +544,7 @@ class FusedDecoder:
             self._kv_dirty = False
         _t_kv = _tk() - _a
         _a = _tk()
-        x0 = np.asarray(self.embed[tok], self.bf16)
+        x0 = np.concatenate([np.asarray(self.embed[t], self.bf16) for t in toks])
         # RMS BO: rms_slabs + final_norm are constant; only the 64-word rope LUT changes per
         # position. Write the full RMS stream ONCE, then patch just the LUT slice each token.
         if not hasattr(self, "_rms_lut_off"):
@@ -484,15 +552,26 @@ class FusedDecoder:
                 self.rms_slabs.size
             )  # LUT sits right after rms_slabs
             _rmsbuf = np.concatenate(
-                [self.rms_slabs, np.zeros(64, self.bf16), self.final_norm]
+                [
+                    self.rms_slabs,
+                    np.zeros(self.ROPE_W_LEN * self.batch, self.bf16),
+                    self.final_norm,
+                ]
             )
             self.r_bo.write(_rmsbuf.view(np.int16), 0)
             self.r_bo.sync(TO)
-        lut = np.empty(64, dtype=self.bf16)
-        lut[:32] = self.rope_cos[p][:32].astype(self.bf16)
-        lut[32:] = self.rope_sin[p][:32].astype(self.bf16)
+        # ONE LUT PER POSITION. Token t of the block sits at position p+t and
+        # rotates by that angle; giving them all position p's would score every
+        # token against the wrong rotation and still return plausible logits.
+        _lw = self.ROPE_W_LEN
+        lut = np.empty(_lw * self.batch, dtype=self.bf16)
+        for t in range(self.batch):
+            lut[t * _lw : t * _lw + 32] = self.rope_cos[p + t][:32].astype(self.bf16)
+            lut[t * _lw + 32 : (t + 1) * _lw] = self.rope_sin[p + t][:32].astype(
+                self.bf16
+            )
         self.r_bo.write(lut.view(np.int16), self._rms_lut_off * 2)
-        self.r_bo.sync(TO, 64 * 2, self._rms_lut_off * 2)
+        self.r_bo.sync(TO, lut.size * 2, self._rms_lut_off * 2)
         self.x_bo.write(x0.view(np.int16), 0)
         self.x_bo.sync(TO)
         # y BO: the kernel overwrites the vocab output region every dispatch, so the old
@@ -517,9 +596,9 @@ class FusedDecoder:
         ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()
-        # only the vocab logits (UNI_LM*VP at decode_y) are needed -- sync+read+convert just
-        # that region, not the whole y BO.
-        _voc_n = self.UNI_LM * self.VP
+        # only the vocab logits (UNI_LM*VP*B at decode_y) are needed -- sync+read+
+        # convert just that region, not the whole y BO.
+        _voc_n = self.UNI_LM * self.VP * self.batch
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)
         # Zero-copy view into the BO (the shared infra's readback idiom): bo.read()
         # returns a buffer whose stride metadata is pyxrt-build dependent, and
@@ -529,8 +608,19 @@ class FusedDecoder:
         ).astype(np.float32)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
-        # yv is already the vocab region (read at decode_y); take the real vocab length.
-        logits = yv[: self.VOCAB_SIZE]
+        # yv is already the vocab region (read at decode_y); take the real vocab
+        # length. Batched, a WAVE writes B tokens' chunk of the vocab and the
+        # tokens are contiguous inside the wave -- so token t's logits are the
+        # UNI_LM slices at (w*B + t)*VP, and the reshape below is that index
+        # split rather than a transpose of the data.
+        if self.batch > 1:
+            logits = (
+                yv.reshape(self.UNI_LM, self.batch, self.VP)
+                .transpose(1, 0, 2)
+                .reshape(self.batch, self.UNI_LM * self.VP)[:, : self.VOCAB_SIZE]
+            )
+        else:
+            logits = yv[: self.VOCAB_SIZE]
         _t_read = _tk() - _a
         if _prof:
             print(
@@ -538,7 +628,7 @@ class FusedDecoder:
                 f"io={_t_io*1e3:.1f} DEV={_t_dev*1e3:.1f} read={_t_read*1e3:.1f} ms",
                 flush=True,
             )
-        return logits[: self.VOCAB_SIZE]
+        return logits if self.batch > 1 else logits[: self.VOCAB_SIZE]
 
     _XRT_RELEASE_ORDER = (
         "ib",

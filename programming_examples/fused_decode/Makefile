@@ -122,14 +122,20 @@ help:
 ## the two MUST agree -- see the preflight comment below.
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
-DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
+# Template family name. The batch-1 pair keeps the historical decode_L<N> and a
+# batched build gets decode_b<B>_L<N>, IN THE SAME DIRECTORY -- they are
+# different xclbins for the same model at the same context length, so sharing a
+# name would leave whichever was built last in place and the driver would pick it
+# up silently. DecodeInstsGen takes the prefix; so does its window stamp.
+TPFX := $(if $(filter 1,$(DECODE_BATCH)),decode_L,decode_b$(DECODE_BATCH)_L)
+DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags$(if $(filter 1,$(DECODE_BATCH)),,.b$(DECODE_BATCH))
 DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
 
 compile-decode:
-	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
-	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ] \
+	@if [ -f $(srcdir)/$(TPFX)$(LBUILD).xclbin ] && [ -f $(srcdir)/$(TPFX)$(LBUILD).insts.bin ] \
+	    && [ -f $(srcdir)/$(TPFX)$(LREF).xclbin ] && [ -f $(srcdir)/$(TPFX)$(LREF).insts.bin ] \
 	    && [ "`cat $(DECODE_FLAGS_STAMP) 2>/dev/null`" = "$(DECODE_FLAGS)" ]; then \
-	  echo "Decode templates already built (decode_L2048 + decode_L2047, $(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	  echo "Decode templates already built ($(TPFX)$(LBUILD) + $(TPFX)$(LREF), $(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
 	  $(MAKE) -f $(srcdir)/Makefile _compile_decode_build \
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
@@ -243,18 +249,18 @@ _compile_decode_build: preflight-llvm-link
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
-	@echo ">>> template decode_L2048 (+ L2047 slope ref) [region-major KV + fire-and-free readback + inline attn]"
+	@echo ">>> template $(TPFX)$(LBUILD) (+ $(LREF) slope ref) [region-major KV + fire-and-free readback + inline attn]"
 	@# The two same-ATTN_MAXL builds (L2048 + L2047) calibrate the L-slope so DecodeInstsGen can
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
 	@# The block loop is single-buffered: air-label-scf-for-to-ping-pong declines it, because the
 	@# running max and accumulator are live across blocks. Turbo for ~50 tok/s.
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).log 2>&1; \
-	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L$(LBUILD).xclbin; mv -f decode.insts.bin decode_L$(LBUILD).insts.bin; \
-	  else echo "decode_L$(LBUILD) FAILED (see /tmp/decode_L$(LBUILD).log)"; exit 1; fi
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LREF).log 2>&1; \
-	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L$(LREF).insts.bin; mv -f decode.xclbin decode_L$(LREF).xclbin; \
-	  else echo "decode_L$(LREF) FAILED (see /tmp/decode_L$(LREF).log)"; exit 1; fi
-	@echo "Decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/$(TPFX)$(LBUILD).log 2>&1; \
+	  if [ -f decode.xclbin ]; then mv -f decode.xclbin $(TPFX)$(LBUILD).xclbin; mv -f decode.insts.bin $(TPFX)$(LBUILD).insts.bin; \
+	  else echo "$(TPFX)$(LBUILD) FAILED (see /tmp/$(TPFX)$(LBUILD).log)"; exit 1; fi
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/$(TPFX)$(LREF).log 2>&1; \
+	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin $(TPFX)$(LREF).insts.bin; mv -f decode.xclbin $(TPFX)$(LREF).xclbin; \
+	  else echo "$(TPFX)$(LREF) FAILED (see /tmp/$(TPFX)$(LREF).log)"; exit 1; fi
+	@echo "Decode build complete: $(TPFX)$(LBUILD) + $(TPFX)$(LREF) templates."
 
 ## ---- C++ decode-latency benchmark (FLM-comparable scope) --------------------
 ## `make bench-decode` times the same per-token sequence the Python driver's
