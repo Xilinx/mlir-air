@@ -56,17 +56,20 @@ def build_module(m, k, np_dtype):
 
         @launch.body
         def _():
-            with air.segment(name="seg"):
-                with air.herd([range(1)], name="herd", shape=(1,)) as h:
+            with air.segment(name="seg") as seg:
 
-                    @h.body
-                    def _(tx):
-                        t = air.alloc([m, k], dt, scope=h.private())
-                        air.ops.load(t, A[:, :])
-                        # The whole example: the same tile, walked with its axes
-                        # swapped. A view, not a copy -- nothing moves until the
-                        # store's descriptor walks it.
-                        air.ops.store(t.transpose(1, 0), B[:, :])
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="herd", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            t = air.alloc([m, k], dt, scope=h.private())
+                            air.ops.load(t, A[:, :])
+                            # The whole example: the same tile, walked with its
+                            # axes swapped. A view, not a copy -- nothing moves
+                            # until the store's descriptor walks it.
+                            air.ops.store(t.transpose(1, 0), B[:, :])
 
     return launch
 

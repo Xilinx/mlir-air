@@ -60,19 +60,22 @@ def build_module(m, k):
 
         @launch.body
         def _():
-            with air.segment(name="seg"):
-                with air.herd(
-                    [range(1)], name="herd", shape=(1,), link_with=EXTERN_OBJECT
-                ) as h:
+            with air.segment(name="seg") as seg:
 
-                    @h.body
-                    def _(tx):
-                        l1_in = air.alloc([m * k], bf16, scope=h.private())
-                        l1_out = air.alloc([m * k], bf16, scope=h.private())
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(1)], name="herd", shape=(1,), link_with=EXTERN_OBJECT
+                    ) as h:
 
-                        air.ops.load(l1_in, A)
-                        transpose_bf16(l1_in, l1_out)
-                        air.ops.store(l1_out, B)
+                        @h.body
+                        def _(tx):
+                            l1_in = air.alloc([m * k], bf16, scope=h.private())
+                            l1_out = air.alloc([m * k], bf16, scope=h.private())
+
+                            air.ops.load(l1_in, A)
+                            transpose_bf16(l1_in, l1_out)
+                            air.ops.store(l1_out, B)
 
     return launch
 
