@@ -1,4 +1,4 @@
-# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
@@ -24,33 +24,33 @@ all: run
 
 # Default target (Version 1)
 print:
-	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v1.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) -p --version 1 --arch $(AIE_TARGET)
 
 run: run-v1
 
-# Version 1: f32 vector rsqrt
+# Version 1: vector rsqrt in the generation's native element type
 print-v1:
-	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v1.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) -p --version 1 --arch $(AIE_TARGET)
 
 run-v1: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v1.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) --version 1 --arch $(AIE_TARGET)
 
 # Version 2: f32 scalar rsqrt in loop
 print-v2:
-	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v2.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) -p --version 2 --arch $(AIE_TARGET)
 
 run-v2: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v2.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) --version 2 --arch $(AIE_TARGET)
 
 # Version 3: bf16 vector rsqrt with f32 conversion
 print-v3:
-	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v3.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) -p --version 3 --arch $(AIE_TARGET)
 
 run-v3: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_rsqrt_v3.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_rsqrt.py $(OUTPUT_FORMAT_FLAG) --version 3 --arch $(AIE_TARGET)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
