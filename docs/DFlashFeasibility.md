@@ -680,13 +680,78 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    before the raw-accumulator dump (`PROJ_FLUSH_PROBE=4`) and the A-operand dump
    (`PROJ_MM_PROBE=1`) said in one run each that both were fine. **Dump the
    operand and dump the accumulator before theorising about either.**
-8. **Host driver.** The one thing left. B embeddings in, B logits out, **B rope LUTs** (per
+8. **The batched lm head.** The prerequisite for the host driver — a verify pass
+   needs B logits — and the thing that blocks it is **not** what the refusal in
+   `fused_decode.py` used to say. See the section below; the refusal has been
+   corrected to name the real constraint.
+9. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
 llama, so one model is not enough.
+
+#### The batched lm head: what actually blocks it [measured]
+
+The refusal used to read "the lm-head herd runs its OWN `_gemv`/`_emit`". **That
+is wrong** — there is one proj herd family (`proj_blk0`/`proj_blk1`), both arms
+go through it by RTP, `_proj = _mm if BATCH > 1 else _gemv` is arm-independent,
+and `_emit` already ships `HDR + PAIR_PAY*BATCH`. **The vocab projection is
+already batched.** So are the group and main gathers (`GRP_ROWS_B`,
+`MAIN_ROWS_B`). Writing `_rms_lm_head_batched` and scaling the Y region is
+straightforward and it compiles.
+
+What blocks it is the **rms core's port budget**, and the rule is exact:
+
+> A compute tile has 2 MM2S and 2 S2MM. Each PORT gets ONE `aie.dma_start`
+> chain, so both RTP arms must present the **same buffer on the same port**, and
+> no buffer may serve more than two ports.
+
+Batch 1 satisfies this for free — every buffer on tile (2,2) is `K` bf16, so the
+four flows (rmsX/rmsW/rmsW2 in, outY in, xnorm out, layerOut out) fold onto four
+chains with one BD each, shared by both arms. Batched they cannot: the buffers
+are 8x and the flows want different shapes. Four arrangements were built and all
+four hang **identically** — wave 0, one layer's KV written, layer output never
+lands, no message — which is why this needs the emitted `aie.mem` block rather
+than a device symptom to tell apart:
+
+| arrangement | emitted | |
+|---|---|---|
+| layerOut from `xb` (decode) and `stg` (vocab) | **two `dma_start(MM2S,0)`**, the second with `repeat_count` | only the first chain cycles |
+| `stg` on three ports (xnorm out, outY in, layerOut out) | one chain per port | still hangs |
+| outY into `lo` (vocab) and `stg` (decode) | **two `dma_start(S2MM,1)`** | as above |
+| `lo` = outY in + layerOut out, both arms; `stg` = xnorm only | one chain per port, **topologically identical to batch 1** | still hangs |
+
+The last one is the interesting failure: the DMA topology matches the working
+build exactly and it still hangs, so the port rule is necessary and not
+sufficient. The core diff against a known-good dump shows a missing
+`use_lock(..., Release)` after the ph2 re-broadcast, so something in the
+dependency analysis is also unhappy — that is where the next attempt should
+start, with `check_dma_alloc.py` on the two dumps rather than by inspection.
+
+**And the space does not fit either.** One-buffer-per-flow at batch 8 on
+llama-3.2-1b:
+
+    xb   BATCH*K      32768        stg  BATCH*2*COL_BLOCK   8192
+    lo   BATCH*PAYLOAD 8192        w    K                   4096
+    w2   K             4096        scl  BATCH f32             32
+                                        -------------------------
+                                        57380 + stack 10240 = 67620
+
+against 65536. It clears only with the stack at ~8 KB, which is a global setting
+and would silently shrink the inlined attention cores' frames too.
+
+**So this is a design decision, not a patch**, and the options are:
+
+| | |
+|---|---|
+| relay the logits off a **different tile** | the glu core is idle in vocab mode and has free ports; needs a new outY destination ordinal and a new shim task |
+| drain the logits from the **memtile**, via `HOST_DRAIN` | the relay already exists for other dests and is already batched (`relay_l2` is `PAYLOAD_B`); needs the vocab arm to stamp a host-drained dest instead of `RMS_DEST`, and the rms core then leaves the logit path entirely, which also frees `lo` |
+| keep it on the rms core and buy the space | re-get `rmsX` per block so `xb` can hold logits — but the x-sends and the drain must stay INTERLEAVED (all 36 sends before the first drain backs the egress up and deadlocks; gemma gets away with it only because its `_voc_blks_2k` is 1), and the extra shim tasks then risk the global `preserve_shim_dma_order` pacing |
+
+The middle one looks right: it removes a relay hop from the critical path, the
+machinery is already batched, and it leaves the proven decode arm untouched.
 
 **One design decision worth knowing about**, because it is not obvious and it
 shaped everything downstream. The projection emits **(round, token)**: round r

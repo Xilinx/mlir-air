@@ -1275,18 +1275,32 @@ BATCH_MAX_ATTN_QTILE = 8
 if BATCH < 1:
     raise SystemExit(f"DECODE_BATCH must be >= 1, got {BATCH}")
 if BATCH > 1 and LM_HEAD:
-    # The lm-head herd runs its OWN _gemv/_emit with different pairing from the
-    # decode path -- it emits per tile at indices=[gcx, ty] rather than through
-    # the lead/partner _role select. Batching it is a separate piece of work,
-    # not a copy of the decode wiring, and getting it wrong would produce
-    # wrong LOGITS rather than a build failure. Refuse the combination until it
-    # is done; DFlash verify needs it (it scores all BATCH tokens), so this is
-    # a real remaining task, not a permanent restriction.
+    # NOT because the projection is unbatched -- it already is. There is ONE
+    # proj herd family, both RTP arms go through it, `_proj` is arm-independent
+    # and `_emit` already ships HDR + PAIR_PAY*BATCH; the group and main gathers
+    # are GRP_ROWS_B / MAIN_ROWS_B. (An earlier version of this comment claimed
+    # a separate lm-head herd. There is none, and believing it costs a day.)
+    #
+    # What is missing is the RMS CORE's vocab arm, and what blocks that is the
+    # tile's PORT budget. A compute tile has 2 MM2S and 2 S2MM, each port gets
+    # ONE aie.dma_start chain, so both arms must present the same buffer on the
+    # same port and no buffer may serve more than two ports. Batch 1 satisfies
+    # that for free -- every buffer on tile (2,2) is K bf16, so the four flows
+    # fold onto four chains with one BD each. At batch 8 the buffers are 8x and
+    # one-buffer-per-flow is 57,380 bytes against 65,536 minus a 10 KB stack.
+    #
+    # Four arrangements were built and all four hang identically (wave 0, one
+    # layer's KV, no layer output) -- see "The batched lm head: what actually
+    # blocks it" in docs/DFlashFeasibility.md for the emitted-AIE signature of
+    # each and the three ways out. The one that looks right is to drain the
+    # logits from the MEMTILE through the existing HOST_DRAIN relay, which is
+    # already batched, and leave the rms core out of the logit path.
     raise SystemExit(
-        "DECODE_BATCH>1 with LM_HEAD=1 is not wired yet: the lm-head "
-        "projection still runs the batch-1 GEMV and would emit logits for one "
-        "token. Build the decode layers batched (LM_HEAD=0) or the lm head at "
-        "batch 1."
+        "DECODE_BATCH>1 with LM_HEAD=1 is not wired yet. The vocab PROJECTION "
+        "is already batched; what is missing is the rms core's vocab arm, and "
+        "it does not fit that tile's DMA ports at batch>1 as currently routed. "
+        "See docs/DFlashFeasibility.md. Build the decode layers batched "
+        "(LM_HEAD=0) or the lm head at batch 1."
     )
 if BATCH > BATCH_MAX_PROJ:
     raise SystemExit(
