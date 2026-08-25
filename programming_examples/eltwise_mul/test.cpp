@@ -172,9 +172,20 @@ int main(int argc, const char *argv[]) {
       memcpy(CVec.data(), bufC, CVec.size() * sizeof(DATATYPE));
       int errors = 0;
       for (int i = 0; i < SIZE; i++) {
-        float expected = float(AVec[i]) + float(BVec[i]);
+        // MULTIPLY, not add. This file began as a copy of eltwise_add's and
+        // the check came with it; against random inputs in [0, 4) an add-shaped
+        // reference rejects a CORRECT multiply, so the bug was a false FAIL
+        // rather than a false PASS -- but either way the gate was not testing
+        // this kernel.
+        //
+        // Tolerance matches the registry entry for this shape
+        // (details/EltwiseMul_bf16.md): rtol 1.6e-2 with an atol floor of
+        // 5e-2, which is the bf16 elementwise tier. A product needs a RELATIVE
+        // bound: |a*b| reaches 16 here where |a+b| only reaches 8, so a fixed
+        // absolute tolerance would tighten as the output grows.
+        float expected = float(AVec[i]) * float(BVec[i]);
         float got = float(CVec[i]);
-        float tol = std::max(0.05f, 0.01f * std::abs(expected));
+        float tol = std::max(0.05f, 0.016f * std::abs(expected));
         if (std::abs(got - expected) > tol) {
           if (errors < 10) {
             std::cout << "Error at index " << i << ": got " << got
@@ -207,7 +218,7 @@ int main(int argc, const char *argv[]) {
             << std::endl;
 
   std::cout << std::endl
-            << "Avg NPU eltwise_add time: " << npu_time_total / n_iterations
+            << "Avg NPU eltwise_mul time: " << npu_time_total / n_iterations
             << "us." << std::endl;
   std::cout << "Avg bandwidth: "
             << total_bytes / (1000.0f * npu_time_total / n_iterations)

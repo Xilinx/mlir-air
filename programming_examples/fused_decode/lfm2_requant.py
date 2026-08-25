@@ -270,10 +270,19 @@ def build_requant_cache(
     # of its own weight buffer.
     WV = pack_lm_head(fd, hf, verbose=verbose) if with_lm_head else []
     if WV:
+        # Check what was PACKED, not what the builder currently streams. The
+        # cache is a per-layer PREFIX by construction, so one full pack serves
+        # both the 16-layer model and every short `LAYERS=N` bisect build -- the
+        # consumer slices it. Asserting against fd.UNI_DEC instead made a pack
+        # under DECODE_UNI_DEC=1 fail here, which broke the documented bisect
+        # workflow for a cache that was in fact correct.
         total = sum(w.size for w in W_all) + sum(w.size for w in WV)
-        want = fd.UNI_DEC * W_LAYER + fd.UNI_LM * WV[0].size
-        assert total == want, (total, want)
-        print(f"[lfm2 requant] W total = {total} bf16 (layers + lm_head)", flush=True)
+        want = len(idxs) * W_LAYER + fd.UNI_LM * WV[0].size
+        assert total == want, (total, want, len(idxs))
+        print(
+            f"[lfm2 requant] W total = {total} bf16 " f"({len(idxs)} layers + lm_head)",
+            flush=True,
+        )
 
     out = dict(
         W=np.stack(W_all),

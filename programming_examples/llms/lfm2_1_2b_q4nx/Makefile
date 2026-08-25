@@ -106,6 +106,10 @@ DECODE_ENV := DECODE_MODEL=lfm2-1.2b VOCAB_CHUNK_I2=16 UNIFIED=1 LM_HEAD=0 NLAYE
 # separate weight pack -- which makes this the bisect when the decode gate says
 # the model is wrong: LAYERS=1 is ShortConv alone (expect cos >= 0.996) and
 # LAYERS=3 adds the first attention layer. Unset = all 16.
+# The weight pack deliberately does NOT take LAYERS: the cache is a per-layer
+# prefix, so ONE full pack serves the 16-layer model and every short build, and
+# re-packing per bisect step would cost minutes for an identical prefix.
+WEIGHTS_ENV := $(DECODE_ENV)
 LAYERS ?=
 ifneq ($(LAYERS),)
   DECODE_ENV += DECODE_UNI_DEC=$(LAYERS)
@@ -163,7 +167,7 @@ compile:
 ## it on demand.
 weights:
 	@mkdir -p $(srcdir)/$(BUILD_DIR)
-	cd $(DEC) && $(DECODE_ENV) $(PYTHON) -c "\
+	cd $(DEC) && $(WEIGHTS_ENV) $(PYTHON) -c "\
 import importlib.util, sys; \
 spec = importlib.util.spec_from_file_location('fd', 'fused_decode.py'); \
 fd = importlib.util.module_from_spec(spec); sys.modules['fd'] = fd; \
