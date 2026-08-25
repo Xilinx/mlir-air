@@ -100,6 +100,13 @@ def main():
         "come from the same tree; a toolchain difference between them would "
         "show up here as a batching difference.",
     )
+    ap.add_argument(
+        "--self-draft",
+        action="store_true",
+        help="use the model's own greedy continuation as the block instead of "
+        "random vocabulary ids -- the realistic speculative-verify operating "
+        "point. Weaker as a permutation test, stronger as a loss estimate.",
+    )
     ap.add_argument("--tol", type=float, default=5e-2)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -121,6 +128,13 @@ def main():
             f"{P + args.batch} > ATTN_MAXL {args.max_l}. Shorten the prompt or "
             "build a larger template."
         )
+
+    if args.self_draft:
+        print(
+            f"\nbatched dispatch  [llama-3.2-1b, batch {args.batch}, "
+            f"P={P}, self-draft]"
+        )
+        return self_draft(np, inf, args, fk, fv, P, first)
 
     # B DISTINCT tokens. The first is the prefill's own next token, so the block
     # starts on the trajectory the model is actually on; the rest are spread
@@ -153,6 +167,40 @@ def main():
     )
     ref.close()
     del ref
+    return report(np, args, got, want, toks, P)
+
+
+def self_draft(np, inf, args, fk, fv, P, first):
+    """The same comparison on a block the model would actually be handed.
+
+    The default block is random vocabulary ids, which is right for the
+    permutation question -- two unrelated rows cannot be confused by accident --
+    but it puts the model on hidden states it never visits, and logit
+    sensitivity there is not the sensitivity that matters. A speculative block is
+    the model's OWN continuation, so draft it sequentially and reuse those
+    logits as the reference: one pass gives both the block and `want`.
+    """
+    ref = inf.FusedDecoder(P + args.batch, batch=1, template_prefix=args.ref_prefix)
+    ref.seed_kv(fk, fv, P)
+    toks, want = [first], []
+    for t in range(args.batch):
+        lg = np.asarray(ref.dispatch(toks[t], P + t), np.float32)
+        want.append(lg)
+        if len(toks) < args.batch:
+            toks.append(int(lg.argmax()))
+    ref.close()
+    del ref
+    print(f"  self-drafted block {toks}")
+
+    dec = inf.FusedDecoder(P + args.batch, batch=args.batch)
+    dec.seed_kv(fk, fv, P)
+    got = np.asarray(dec.dispatch(toks, P), np.float32)
+    dec.close()
+    del dec
+    return report(np, args, got, np.stack(want), toks, P)
+
+
+def report(np, args, got, want, toks, P):
 
     cross = np.array(
         [[rel(got[t], want[r]) for r in range(args.batch)] for t in range(args.batch)]
@@ -169,6 +217,19 @@ def main():
     tops = [(int(got[t].argmax()), int(want[t].argmax())) for t in range(args.batch)]
     agree = sum(a == b for a, b in tops)
     print(f"\n  argmax agrees on {agree} of {args.batch} tokens: {tops}")
+    # And the top-k SET, which is the criterion the shared verify subsystem
+    # actually gates on. An rms logit difference that never changes which tokens
+    # are in play costs nothing at sampling time, so report the two separately
+    # rather than letting one tolerance stand for both.
+    for k in (5, 10):
+        ov = [
+            len(set(got[t].argsort()[-k:]) & set(want[t].argsort()[-k:]))
+            for t in range(args.batch)
+        ]
+        print(
+            f"  top-{k} set overlap: {sum(ov)}/{k * args.batch} "
+            f"({sum(ov) / (k * args.batch) * 100:.0f}%)  per token {ov}"
+        )
 
     over = [t for t in range(args.batch) if cross[t, t] > args.tol]
     mis = [t for t in range(args.batch) if int(np.argmin(cross[t])) != t]
