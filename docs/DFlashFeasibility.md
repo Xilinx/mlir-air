@@ -73,13 +73,27 @@ real weights, all eight tokens:
 The fix is data placement, not codegen: `check_kernels_inert.py` still passes
 and the shipping pair rebuilt under it returns **bitwise identical** logits.
 
-End to end, `batch_dispatch_check.py` now has every token closest to its own
-reference by a wide margin with argmax agreeing on 7 of 8, but the diagonal
-(5.7e-2..2.4e-1) is still over its 5e-2 tolerance. That residual is the
-**projection kernel swap and not a fault** -- batch 1 uses the GEMV, batch 8 the
-mmul, 1.599% apart at the projection while both sit ~1% from exact fp32 -- and
-closing it means putting both paths on the same kernel, which would move
-shipping numerics. That is the open decision.
+End to end, `batch_dispatch_check.py` depends on which block it is given, and
+that turned out to matter more than the tolerance **[measured]**:
+
+|  | random block | self-drafted block |
+|---|---|---|
+| diagonal | 5.7e-2..2.4e-1 | **3.9e-2..6.4e-2** |
+| off-diagonal | ~0.7..2.0 | ~0.39..0.84 |
+| argmax | 7 of 8 | **8 of 8** |
+| top-5 set overlap | 85% | **98%** |
+
+The random block is the right choice for the permutation question and the wrong
+one for the loss question: it puts the model on hidden states it never visits.
+On the block a speculative decoder would actually hand it -- the model's own
+continuation, `--self-draft` -- the batched pass reproduces the sequential
+pass's argmax exactly and its top-5 to 98%, with the diagonal sitting right at
+the 5e-2 line. It still reports NOT EQUIVALENT.
+
+That residual is the **projection kernel swap and not a fault** -- batch 1 uses
+the GEMV, batch 8 the mmul, 1.599% apart at the projection while both sit ~1%
+from exact fp32 -- and closing it means putting both paths on the same kernel,
+which would move shipping numerics. That is the open decision.
 
 What remains is that, and the block-size decision below.
 
