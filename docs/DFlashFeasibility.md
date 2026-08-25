@@ -1044,61 +1044,81 @@ several places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`,
 needs a full `make verify` behind it. That is the next decision, and it is a
 decision rather than a bug.
 
-#### The batched attention past the first 16-key block [measured]
+#### The batched attention past the first 16-key block [measured, FIXED]
 
-**A batch-8 token is wrong if and only if it needs block index >= 1.** The
-first 16 keys are right and everything past them is not. This is a real fault,
-not the kernel-swap tradeoff above, and it was invisible until now for two
-reasons worth naming: every batch-8 real-model test ran at P=6 -- `ATTN_L_BLK`
-14, ONE attention round -- and `batch_equiv`'s L=128 runs feed a ZEROED cache
-where every K and V is the same vector, so which block a key came from cannot
-matter. A single-round test and a degenerate-cache test between them cover
-everything except the thing that is broken.
+**A batch-8 token was wrong if and only if it needed block index >= 1.** The
+cause was in AIR, not in this design: `allocateSharedL1BufferLocks`
+(`AIRToAIEPass.cpp`) scoped a shared-L1 producer/consumer lock to the
+**outermost** `scf.for` containing a core's accesses. The lock scope decides how
+often the buffer is handed over, so it has to match how often the buffer is
+WRITTEN -- once per iteration of the loop that immediately encloses the access.
+The batched attention loops tokens around 16-key blocks and writes the score
+buffer per block, so it got a per-TOKEN handoff:
 
-`ATTN_L_BLK = P + BATCH`, so P=8 is one round and P=9 is two, and the boundary
-is exactly there **[measured, argmax against a batch-1 dispatch on the same
-block]**:
+    scf.for %t = 0 to 8                       scf.for %blk = 0 to 9
+      use_lock(prod, Acquire)        vs         use_lock(prod, Acquire)
+      scf.for %blk = 0 to 9                     call @attn_qk_blk(...)
+        call @attn_qk_blk_row(...)              use_lock(cons, Release)
+      use_lock(cons, Release)
+          batch 8, before                     batch 1, and batch 8 after
 
-| P | `ATTN_L_BLK` | rounds | argmax | top-5 | permuted |
-|---|---|---|---|---|---|
-| 8 | 16 | 1 | **8/8** | 88% | none |
-| 9 | 17 | 2 | 6/8 | 78% | t7 |
-| 25 | 33 | 3 | 3/8 | -- | 6 tokens |
-| 100 | 108 | 7 | 2/8 | 22% | 6 tokens |
+On device that is a race between the two attention cores. With ONE live block
+per token the two cadences agree again and the result is correct, which is
+exactly the observed rule -- and exactly why nothing caught it. **With a single
+enclosing loop the innermost and outermost answers coincide**, so batch-1
+lowering never exercised it and every in-tree AIR test has that shape.
 
-The rule is exact on the attention half alone (`acc2`, `x + oproj`) at P=9,
-where token 7 is the ONLY token whose `L+t` exceeds 16 **[measured]**:
+The fix is one word: take the innermost enclosing loop, not the outermost.
+`check-air-mlir` is unchanged by it (487 passed / 20 failed with and without;
+all 20 are pre-existing air-runner failures that do not touch this pass), and
+the batch-1 decode templates rebuild **byte-identical in their instruction
+streams and bitwise-identical in their logits**.
 
-    t0..t6   1.9% .. 2.8%    <- the kernel-swap floor: correct
-    t7       59.4%
+Measured, batch 8, the attention half (`x + oproj`) against a batch-1 dispatch,
+at P=9 where token 7 is the only token whose `L+t` exceeds 16:
 
-At P=16 every token has `L+t > 16`, every token is wrong, and it reads as a
-whole-engine failure at long context. It is the same one-block rule.
+    t0..t6   1.9% .. 2.8%   (the projection-kernel floor)   unchanged
+    t7       59.4%  ->  2.1%
 
-**What is already ruled out.** The counts balance: the memtile dequeues
-`BATCH * ceil(L_blk/16)` (`_seg_blocks`) and each token's core loop runs
-`ceil(L_blk/16)` (`_core_rounds`), both derived from the LAST token's length so
-that the push count cannot vary per token. The L3 descriptor carries the
-token-major repeat correctly and **it survives lowering** -- AIR emits
-`sizes [8, 9, 16, 256] strides [0, 4096, 256, 1]` and the shim BD comes out as
-`sizes [9, 16, 256] strides [4096, 256, 1]` with `repeat_count = 7`, which is 8
-issues of the 9-block sequence, token-major. Block-major delivery is ruled out
-independently: it would put block 1 in front of tokens 4..7 at P=9 and those
-tokens are clean. The two kernels' skips are symmetric -- `attn_qk_blk` returns
-on `rem <= 0` without writing `s_block` and `attn_kv_blk` returns on the same
-condition without consuming it. And it is not the append: at P=25 token 0's
-block 1 is nine-tenths PREFILL keys and token 0 is still wrong.
+and whole-block over context:
 
-So the fault is in the memtile relay or in the per-token state carried across
-blocks, and the next two experiments are (1) **batch 2** -- if it breaks the
-same way the fault is generic to `BATCH > 1`, and if it does not, it scales with
-B and the memtile ring depth is the place to look -- and (2) dumping the K block
-the core actually receives for `blk == 1`, which no existing probe does.
+| P | rounds | before | after |
+|---|---|---|---|
+| 9 | 2 | argmax 6/8, t7 permuted | argmax 7/8, none permuted |
+| 25 | 3 | argmax 3/8, 6 permuted, `x+oproj` 58.05% | **argmax 8/8**, none permuted, **2.02%** |
+| 100 | 7 | argmax 2/8, top-5 22%, 6 permuted | **1.77%** |
 
-Note what the batch-1 path never exercises: with `BATCH == 1`, `_core_rounds`
-is `ceil(L/16)` and `rem <= 0` never fires, so **the skip path is batch-8-only
-code**. It is not the cause here -- token 0 at P=9 skips block 1 and is correct
--- but it is one more thing no shipping run has ever run.
+**Why two independent gates both missed it.** Every batch-8 real-model test ran
+at P=6 -- `ATTN_L_BLK` 14, ONE attention round -- and `batch_equiv`'s L=128 runs
+do span many blocks but feed a ZEROED cache where every K and V is the same
+vector, so which block a key came from cannot matter. A single-round test and a
+degenerate-cache test between them covered everything except this. The lesson is
+not "add a longer test": it is that **two gates whose blind spots coincide are
+one gate**, and neither docstring said which axis it was holding fixed.
+
+#### What the batched verify costs, in accepted tokens [measured]
+
+`spec_accept.py` counts ACCEPT/REJECT decisions rather than logit distances,
+because a speculative decoder consumes decisions and a logit difference that
+never moves one is free. The draft is self-drafted by the batch-1 engine, so a
+batch-1 verifier accepts every token by construction, the lossless ceiling is
+exactly B, and no reference run or draft-model quality enters. With both faults
+fixed, over 15 blocks of 8 on llama-3.2-1B **[measured]**:
+
+    mean accepted   7.20 of 8      90.0% of the lossless ceiling
+    full blocks     12 of 15
+    standalone      7.20 -> 6.53   if each engine carries its OWN KV (--drift)
+
+**So the projection kernel swap costs 10%,** not the 87.5% the same measurement
+reported before the attention fix -- which is the whole reason to count accepted
+tokens rather than argue from logit distances. `batch_dispatch_check.py` still
+reports NOT EQUIVALENT because its 5e-2 tolerance is on logit rms, and that is
+now a statement about the GEMV-vs-mmul difference alone.
+
+Whether to close the last 10% by putting both paths on the same projection
+kernel is the open decision (item 10). It buys at most 1.11x on the accepted
+length and it moves SHIPPING batch-1 numerics, so it needs `make verify` behind
+it.
 
 ### Gotchas that cost time before
 
