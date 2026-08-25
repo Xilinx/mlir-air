@@ -1286,26 +1286,50 @@ private:
     }
   }
 
+  // Collect every vertex lying on some path from start_v to end_v.
+  //
+  // This enumerated paths and concatenated them, which is exponential in
+  // reconvergent branching rather than in graph size. One stage of a pipelined
+  // model is a wide diamond -- a token fanning out to N segments and rejoining
+  // at a barrier -- so L stages give N^L paths. At N=12 that is 20k paths for
+  // four layers and 10^12 for twelve, and the vector asked for 4.5 billion
+  // entries before aborting. A model whose segments are chained only through
+  // channels never hit it, because channels are not dependency edges and the
+  // launch graph stays shallow.
+  //
+  // The one caller only iterates the result to reset vertices, which is
+  // idempotent and order-independent, so the *set* is all that is needed. The
+  // vertices on some path from a to b are exactly those reachable from a that
+  // also reach b, which is two linear traversals.
   bool hasPath(Graph::VertexId start_v, Graph::VertexId end_v, Graph &G,
                SmallVector<Graph::VertexId, 1> &vec) {
+    std::set<Graph::VertexId> forward, backward;
+    SmallVector<Graph::VertexId> worklist;
 
-    vec.push_back(start_v);
-    if (start_v == end_v)
-      return true;
-    int pathCount = 0;
-    auto adj_set = G.adjacentVertices(start_v);
-    for (auto adj_v : adj_set) {
-      SmallVector<Graph::VertexId, 1> tmp_vec;
-      if (this->hasPath(adj_v, end_v, G, tmp_vec)) {
-        pathCount++;
-        // Concatenate
-        vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
-      }
+    forward.insert(start_v);
+    worklist.push_back(start_v);
+    while (!worklist.empty()) {
+      auto v = worklist.pop_back_val();
+      for (auto adj_v : G.adjacentVertices(v))
+        if (forward.insert(adj_v).second)
+          worklist.push_back(adj_v);
     }
-    if (pathCount)
-      return true;
-    vec.pop_back();
-    return false;
+    if (!forward.count(end_v))
+      return false;
+
+    backward.insert(end_v);
+    worklist.push_back(end_v);
+    while (!worklist.empty()) {
+      auto v = worklist.pop_back_val();
+      for (auto inv_v : G.inverseAdjacentVertices(v))
+        if (backward.insert(inv_v).second)
+          worklist.push_back(inv_v);
+    }
+
+    for (auto v : forward)
+      if (backward.count(v))
+        vec.push_back(v);
+    return true;
   }
 
   // Get a vector of async tokens which are ready to advance to the next loop
