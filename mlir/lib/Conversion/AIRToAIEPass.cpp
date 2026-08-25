@@ -1261,7 +1261,24 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       continue;
     }
 
-    // Find the OUTERMOST scf.for that contains ALL accessing ops
+    // Find the INNERMOST scf.for that contains ALL accessing ops.
+    //
+    // INNERMOST, not outermost, and the difference is a correctness bug rather
+    // than a tuning choice. The lock scope decides how often the buffer is
+    // handed over, so it has to match how often the buffer is WRITTEN, and the
+    // accessing ops are written once per iteration of the loop that immediately
+    // encloses them. Picking an outer loop lets the producer overwrite the
+    // buffer once per inner iteration and hand over only once per outer one --
+    // the consumer then sees whichever write happened last, with no ordering
+    // against its own reads.
+    //
+    // With a single enclosing loop the two answers coincide, which is why this
+    // survived: a herd body whose accesses sit in one loop is the common shape.
+    // It shows up the moment a second level appears -- fused_decode's batched
+    // attention loops tokens around blocks, writes the score buffer per block,
+    // and got a per-TOKEN handoff. Every token that spanned more than one
+    // 16-key block came back wrong, and a token that spanned exactly one was
+    // correct because then the two cadences agree again.
     Operation *candidate = info.accessingOps[0]->getParentOp();
     while (candidate && candidate != coreOp.getOperation()) {
       if (isa<scf::ForOp>(candidate)) {
@@ -1272,8 +1289,10 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
             break;
           }
         }
-        if (containsAll)
+        if (containsAll) {
           info.lockScope = candidate;
+          break; // tightest scope wins
+        }
       }
       candidate = candidate->getParentOp();
     }
