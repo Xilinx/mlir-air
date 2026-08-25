@@ -1914,3 +1914,67 @@ def _():
                 raise ValueError("the body's own problem")
 
     launch.mlir()
+
+
+# CHECK-LABEL: TEST: broadcast_needs_an_extent_of_one
+# Broadcasting stretches an axis of extent 1 and nothing else. A [64, 32]
+# operand against a [64, 64] destination is not "half of each row", it is a
+# mistake, and numpy refuses it for the same reason.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "broadcast_needs_an_extent_of_one")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        b = air.alloc([64, 32], bf16, scope=h.private())
+        a[:] = a[:] + b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: an_operand_cannot_be_wider_than_the_destination
+# The rule is one-sided: operands broadcast *to* the destination, which already
+# exists. Stretching the other way would mean writing 16 values into 1, and
+# numpy's `out=` refuses this too rather than picking one of them.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "an_operand_cannot_be_wider_than_the_destination")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 1], bf16, scope=h.private())
+        b = air.alloc([64, 16], bf16, scope=h.private())
+        a[:] = b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: an_operand_cannot_have_more_axes_than_the_destination
+# Right-aligning a rank-2 operand against a rank-1 destination leaves an axis
+# with nowhere to go. Only the *operand* may be short of axes.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "an_operand_cannot_have_more_axes_than_the_destination")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([4, 64], bf16, scope=h.private())
+        a[:] = b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: a_reduction_does_not_broadcast_its_operands
+# Everywhere else an extent of 1 is stretched, but the innermost extent of a
+# reduction is the thing being collapsed: stretching it would decide how many
+# terms the sum has, which is the reduction's meaning rather than a fit.
+# CHECK: ValueError: shape mismatch inside a reduction
+# CHECK-SAME: does not broadcast its operands
+@expect(ValueError, "a_reduction_does_not_broadcast_its_operands")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        s = air.alloc([64, 1], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.reduce_add(a[:] * s[:])
+
+    _trace(body)

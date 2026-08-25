@@ -121,6 +121,61 @@ _REDUCE_F = {"add": CombiningKind.ADD, "max": CombiningKind.MAXIMUMF}
 _REDUCE_I = {"add": CombiningKind.ADD, "max": CombiningKind.MAXSI}
 
 
+def _broadcast_offset(shape, dst_shape):
+    """numpy's broadcast rule, one-sided: can ``shape`` be read as ``dst_shape``?
+
+    Returns how many destination axes the operand does not have -- the amount
+    the two shapes are offset by once right-aligned -- or None if they do not
+    broadcast. Right-aligned each operand axis must either match the
+    destination's or be 1, and leading axes the operand does not have at all
+    are the ``1`` case written by omission.
+
+    One-sided because the destination of an air.api assignment is a buffer that
+    already exists: numpy would broadcast both sides against each other and
+    allocate the result, and here the result's shape is given, which is numpy's
+    own rule for an explicit ``out=``.
+    """
+    offset = len(dst_shape) - len(shape)
+    if offset < 0:
+        return None
+    for extent, target in zip(shape, dst_shape[offset:]):
+        if extent != target and extent != 1:
+            return None
+    return offset
+
+
+def _is_broadcast(shape, dst_shape):
+    """Does reading ``shape`` as ``dst_shape`` actually stretch anything?"""
+    return tuple(shape) != tuple(dst_shape)
+
+
+def _zero_index_if(needed):
+    """An index-typed 0 for the pinned axes of a broadcast, or None.
+
+    Conditional so that a kernel with no broadcast in it emits no constant, and
+    therefore the same IR it emitted before broadcasting existed.
+    """
+    return _result(arith.ConstantOp(IndexType.get(), 0)) if needed else None
+
+
+def _leaf_index(shape, dst_shape, ivs, zero):
+    """The indices to read a leaf of ``shape`` at, inside a nest over ``dst_shape``.
+
+    An axis that matches the destination's is walked with the destination's own
+    induction variable; an axis of extent 1 against a wider destination is
+    pinned at 0, which is what makes the read a broadcast. Axes the operand does
+    not have contribute no index at all.
+
+    When the shapes are equal this returns ``ivs`` unchanged, which is what
+    keeps every existing kernel's IR byte-identical.
+    """
+    offset = _broadcast_offset(shape, dst_shape)
+    return [
+        ivs[i + offset] if extent == dst_shape[i + offset] else zero
+        for i, extent in enumerate(shape)
+    ]
+
+
 def _check_region(node, dst, dtype, expected=None):
     """Check every buffer leaf against the element type of *its* region.
 
@@ -144,10 +199,12 @@ def _check_region(node, dst, dtype, expected=None):
         return
     if node.kind == "buffer":
         leaf = node.buffer
-        if leaf.shape != dst.shape:
+        if _broadcast_offset(leaf.shape, dst.shape) is None:
             raise ValueError(
                 f"shape mismatch in elementwise assignment: destination has "
-                f"shape {dst.shape} but operand has shape {leaf.shape}"
+                f"shape {dst.shape} but operand has shape {leaf.shape}, which "
+                f"does not broadcast to it. Right-aligned, every operand axis "
+                f"must either match the destination's or be 1"
             )
         if leaf.dtype is not dtype:
             raise ValueError(
@@ -312,7 +369,11 @@ def _emit_reduce(dst, expr):
         if leaf.shape != src_shape:
             raise ValueError(
                 f"shape mismatch inside a reduction: operands have shapes "
-                f"{src_shape} and {leaf.shape}"
+                f"{src_shape} and {leaf.shape}. Unlike a plain elementwise "
+                f"assignment, a reduction does not broadcast its operands: the "
+                f"innermost extent is the thing being collapsed, so an operand "
+                f"of extent 1 there would change what the reduction means "
+                f"rather than being stretched to fit"
             )
         if leaf.dtype is not dtype:
             raise ValueError(
@@ -343,8 +404,7 @@ def _emit_reduce(dst, expr):
         )
 
     lanes = src_shape[-1]
-    rank = len(src_shape)
-    minor = AffineMapAttr.get(AffineMap.get(rank, 0, [AffineDimExpr.get(rank - 1)]))
+    minor = _minor(len(src_shape))
     regions = {d: _Region(d, lanes, True) for d in _regions_in(operand, dtype, [])}
     kind = (_REDUCE_F if dtype.is_float else _REDUCE_I)[expr.op]
 
@@ -353,22 +413,33 @@ def _emit_reduce(dst, expr):
     zero = _result(arith.ConstantOp(IndexType.get(), 0))
     bounds = [(0, extent, 1) for extent in src_shape[:-1]]
 
+    # Every leaf here has the operand's shape -- the check above insists on it,
+    # since a reduction's extent is what is being collapsed -- so the read is
+    # always the plain one and broadcasting does not arise.
+    def load(buf, at, region):
+        return _result(
+            transfer_read(region.vec_ty, buf.value, at, minor, region.pad, [True])
+        )
+
     def body(ivs):
         reads = {}
-        value = _eval(
-            operand, ivs + [zero], regions[dtype], regions, True, minor, reads
-        )
+        value = _eval(operand, ivs + [zero], regions[dtype], regions, True, load, reads)
         scalar = _result(reduction(dtype.mlir(), kind, value))
         memref_store(scalar, dst.value, ivs + [zero] if keepdims else ivs)
 
     _nest(bounds, body)
 
 
+def _minor(rank):
+    """A minor-identity permutation map: read a rank-N memref's innermost dim."""
+    return AffineMapAttr.get(AffineMap.get(rank, 0, [AffineDimExpr.get(rank - 1)]))
+
+
 def _emit_vector(dst, expr, width):
     shape = dst.shape
     rank = len(shape)
     # Read a rank-1 vector out of a rank-N memref along the innermost dim.
-    minor = AffineMapAttr.get(AffineMap.get(rank, 0, [AffineDimExpr.get(rank - 1)]))
+    minor = _minor(rank)
     # One lane count for the whole nest, taken from the destination. A cast does
     # not change how many elements a trip covers, only how wide each one is, so
     # the source is read at the destination's lane count and not at its own
@@ -378,19 +449,55 @@ def _emit_vector(dst, expr, width):
     bounds = [(0, extent, 1) for extent in shape[:-1]]
     bounds.append((0, shape[-1], width))
 
+    # Hoisted above the nest, like the padding constants, so a broadcast costs
+    # one constant for the whole kernel rather than one per trip.
+    zero = _zero_index_if(
+        any(_is_broadcast(leaf.shape, shape) for leaf in expr.leaves())
+    )
+
+    def load(buf, ivs, region):
+        index = _leaf_index(buf.shape, shape, ivs, zero)
+        if buf.shape and buf.shape[-1] == shape[-1]:
+            # The operand has the destination's innermost extent, so the vector
+            # read is the ordinary one -- at the operand's own rank, which is
+            # the destination's unless leading axes were broadcast away.
+            return _result(
+                transfer_read(
+                    region.vec_ty,
+                    buf.value,
+                    index,
+                    _minor(len(buf.shape)),
+                    region.pad,
+                    [True],
+                )
+            )
+        # The innermost axis is the broadcast one, so there is no run of
+        # contiguous elements to read: take the single element the whole vector
+        # is made of and splat it. This is what the hand-written
+        # vector_broadcast_scalar kernel spells as memref.load + vector.broadcast.
+        return _result(broadcast(region.vec_ty, _result(memref_load(buf.value, index))))
+
     def body(ivs):
-        value = _eval(expr, ivs, regions[dst.dtype], regions, True, minor, {})
+        value = _eval(expr, ivs, regions[dst.dtype], regions, True, load, {})
         transfer_write(None, value, dst.value, ivs, minor, [True])
 
     _nest(bounds, body)
 
 
 def _emit_scalar(dst, expr):
+    shape = dst.shape
     regions = {d: _Region(d, 0, False) for d in _regions_in(expr, dst.dtype, [])}
-    bounds = [(0, extent, 1) for extent in dst.shape]
+    bounds = [(0, extent, 1) for extent in shape]
+
+    zero = _zero_index_if(
+        any(_is_broadcast(leaf.shape, shape) for leaf in expr.leaves())
+    )
+
+    def load(buf, ivs, region):
+        return _result(memref_load(buf.value, _leaf_index(buf.shape, shape, ivs, zero)))
 
     def body(ivs):
-        value = _eval(expr, ivs, regions[dst.dtype], regions, False, None, {})
+        value = _eval(expr, ivs, regions[dst.dtype], regions, False, load, {})
         memref_store(value, dst.value, ivs)
 
     _nest(bounds, body)
@@ -414,12 +521,12 @@ def _result(v):
     return v.result if hasattr(v, "result") else v
 
 
-def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
+def _eval(node, ivs, region, regions, vectorized, load, reads=None):
     ops, ety = region.ops, region.ety
     vec_ty, pad = region.vec_ty, region.pad
 
     def recur(child, into=region):
-        return _eval(child, ivs, into, regions, vectorized, minor, reads)
+        return _eval(child, ivs, into, regions, vectorized, load, reads)
 
     if node.kind == "buffer":
         # One read per buffer per loop body, not one per mention. A buffer that
@@ -439,12 +546,7 @@ def _eval(node, ivs, region, regions, vectorized, minor, reads=None):
         key = id(node.buffer)
         if reads is not None and key in reads:
             return reads[key]
-        if vectorized:
-            value = _result(
-                transfer_read(vec_ty, node.buffer.value, ivs, minor, pad, [True])
-            )
-        else:
-            value = _result(memref_load(node.buffer.value, ivs))
+        value = load(node.buffer, ivs, region)
         if reads is not None:
             reads[key] = value
         return value
