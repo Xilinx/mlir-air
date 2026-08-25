@@ -1,184 +1,100 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Average pool over the rows of an [M, N] array, on air.api.
 
-"""Vectorized AveragePool Example
+    c[:] = air.ops.reduce_add(a[:] * (1.0 / n))
 
-Implements 1D average pooling on a 2D input [M, N]:
-  output[i] = mean(input[i, :]) for each row i
+One line of compute. ``ops.reduce_add`` collapses the innermost dimension, so an
+``[tile_m, n]`` tile reduces to an ``[tile_m, 1]`` buffer -- a column of row
+averages -- which is what the predecessor built by hand out of a per-row
+``scf.for`` containing two ``memref.subview``s, two ``memref.collapse_shape``s
+with an explicit dynamic ``StridedLayoutAttr``, a ``vector.transfer_read`` with
+an identity permutation map and a padding constant, a ``vector.broadcast``, an
+``arith.mulf`` and a ``vector.reduction``.
 
-Each row of N elements is scaled by 1/N (vectorized multiply) and then
-reduced to a single scalar using vector.reduction with ADD.
+The emitted arithmetic is unchanged: broadcast 1/n to a vector, multiply, then
+``vector.reduction <add>``.
 
-Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
+**The scale happens before the reduction, and that is load-bearing.** Writing it
+the other way round -- reduce, then scale the result -- is one scalar bf16
+multiply per row instead of one vector multiply per row, and the predecessor
+carries a comment saying a scalar bf16 multiply "can produce corrupted output on
+AIE2". Putting the multiply inside the reduce keeps it on the vector, matching
+both the predecessor's IR and its reference, which also scales each element
+before summing. In bf16 those two orders do not agree to the last bit even in
+exact arithmetic, so this is not only about the AIE2 hazard.
+
+The ``[tile_m, 1]`` shape of the output tile is what a reduction produces, while
+the L3 array it belongs in is ``[m]``. ``ops.store`` accepts the pair: it
+already ignored a *leading* unit axis, which is how a per-core L2 staging tile
+is spelled, and now ignores a trailing one for the symmetric reason. Both
+describe the same tile_m contiguous elements.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's, so each core gets a contiguous run of tiles where
+  the predecessor's hand-built AffineMap interleaved them. Every tile is still
+  computed exactly once by exactly one core, and the rows are independent.
+
+``--target`` is new and defaults to detecting the installed part, which is what
+the predecessor did implicitly by having no device flag at all.
 """
 
 import argparse
-from ml_dtypes import bfloat16
-
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, store, subview, collapse_shape
-from air.dialects.vector import (
-    transfer_read,
-    reduction,
-    CombiningKind,
-    broadcast,
-)
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
 
 import numpy as np
+from ml_dtypes import bfloat16
 
-np.random.seed(42)
+from air import api as air
+from air.api.types import bf16
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
-def build_module(m, n, tile_m, np_dtype_in):
-    a_size = [m, n]
-    out_size = [m]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
+def build_module(m, n, tile_m):
     assert n > 0, "Pool width N must be positive"
-    assert m % (tile_m * num_tiles) == 0
-    index_type = IndexType.get()
+    assert m % (tile_m * NUM_TILES) == 0
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-    l3outputMemrefTy = MemRefType.get(out_size, xrt_dtype_in)
+    A = air.tensor([m, n], bf16)
+    C = air.tensor([m], bf16)
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_m, n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-    l1outputMemrefTy = MemRefType.get(
-        shape=[tile_m, 1],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    with air.launch(name="average_pool") as launch:
 
-    @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
-    def average_pool(arg0, arg2):
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg2],
-        )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1outputMemrefTy, [], [])
+        @launch.body
+        def _():
+            # The iteration space is every tile of rows; shape= pins the core
+            # count to what the predecessor asked for, and the DSL strip-mines
+            # the rest into a loop on each core.
+            with air.herd(
+                [range(0, m, tile_m)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-            for _l_ivx in range_(0, m, tile_m * num_tiles):
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not a row offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_m
+                    # The reduction runs across a whole row, so the vector width
+                    # is the pool width -- the predecessor's vector<Nxbf16>.
+                    a = air.alloc([tile_m, n], bf16, scope=h.private(), vector=n)
+                    # One value per row, and scalar: the reduction writes a
+                    # single element per row, as the predecessor's store does.
+                    c = air.alloc([tile_m, 1], bf16, scope=h.private(), vector=0)
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_m),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                    air.ops.load(a, A[i0 : i0 + tile_m, :])
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[offset, 0],
-                    src_sizes=[tile_m, n],
-                    src_strides=[n, 1],
-                )
-                c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
-                cTileN = ConstantOp(index_type, tile_m)
-                inv_n = arith.ConstantOp(xrt_dtype_in, 1.0 / n)
-                for j in range_(c0, cTileN, c1):
-                    sub_a_vec = subview(
-                        l1_a_data.result,
-                        [j, c0],
-                        [1, n],
-                        [1, 1],
-                    )
-                    sub_c_vec = subview(
-                        l1_out_data.result,
-                        [j, c0],
-                        [1, 1],
-                        [1, 1],
-                    )
-                    layout = StridedLayoutAttr.get(
-                        ShapedType.get_dynamic_size(),
-                        [
-                            1,
-                        ],
-                    )
-                    collapsed_type = MemRefType.get(
-                        (n,),
-                        xrt_dtype_in,
-                        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-                        layout=layout,
-                    )
-                    collapsed_type_2 = MemRefType.get(
-                        (1,),
-                        xrt_dtype_in,
-                        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-                        layout=layout,
-                    )
-                    collapse_dims = [[0, 1]]
-                    collapse_a = collapse_shape(
-                        collapsed_type, sub_a_vec, collapse_dims
-                    )
-                    collapse_c = collapse_shape(
-                        collapsed_type_2, sub_c_vec, collapse_dims
-                    )
-                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    v_a = transfer_read(
-                        VectorType.get([n], xrt_dtype_in),
-                        collapse_a,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        cst0,
-                        [True],
-                    )
-                    # Multiply by 1/N before reduction to avoid scalar bf16
-                    # multiply which can produce corrupted output on AIE2.
-                    v_inv_n = broadcast(VectorType.get([n], xrt_dtype_in), inv_n)
-                    v_scaled = arith.mulf(v_a, v_inv_n)
-                    v_avg = reduction(xrt_dtype_in, CombiningKind.ADD, v_scaled)
-                    store(v_avg, collapse_c, [c0])
-                    yield_([])
+                    # Scale inside the reduce, not after it -- see the module
+                    # docstring. This keeps the multiply on the vector.
+                    c[:] = air.ops.reduce_add(a[:] * (1.0 / n))
 
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_m],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
+                    air.ops.store(c, C[i0 : i0 + tile_m])
 
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -229,15 +145,18 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
-        args.m,
-        args.n,
-        args.tile_m,
-        INPUT_DATATYPE,
-    )
+    launch = build_module(args.m, args.n, args.tile_m)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -251,7 +170,9 @@ if __name__ == "__main__":
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
 
-        # AveragePool reference: sum of (each element * 1/N) per row
+        # AveragePool reference: sum of (each element * 1/N) per row. The scale
+        # is applied per element rather than to the sum, matching the kernel --
+        # see the module docstring.
         inv_n_bf16 = INPUT_DATATYPE(1.0 / args.n)
         sampled_values = np.array(
             [np.sum(input_a[i] * inv_n_bf16) for i in zip(*sampled_indices)],
@@ -269,6 +190,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="average_pool",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -285,6 +207,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

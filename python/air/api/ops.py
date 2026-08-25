@@ -163,17 +163,28 @@ def _endpoint(obj, direction, role):
     )
 
 
-def _squeeze_leading_units(sizes, rank):
-    """Drop leading unit dimensions until ``sizes`` has rank ``rank``.
+def _squeeze_units(sizes, rank):
+    """Drop outer unit dimensions until ``sizes`` has rank ``rank``.
 
-    A staged L2 tile is indexed per core, so the natural access pattern carries
-    a leading 1 -- ``staged[tx, j:j+m, :]`` is ``[1, m, k]`` into an ``[m, k]``
-    L1 buffer, exactly as the hand-written matvec kernel writes it. Only leading
-    ones are dropped, so a genuine shape mismatch still fails.
+    Leading ones come from staging: an L2 tile is indexed per core, so the
+    natural access pattern carries one -- ``staged[tx, j:j+m, :]`` is
+    ``[1, m, k]`` into an ``[m, k]`` L1 buffer, exactly as the hand-written
+    matvec kernel writes it.
+
+    Trailing ones come from reducing. ``ops.reduce_add`` collapses the innermost
+    dimension to 1, so the result of reducing an ``[m, n]`` tile is an ``[m, 1]``
+    buffer -- a column of m values -- and the L3 array it belongs in is ``[m]``.
+    Both spellings describe the same m contiguous elements.
+
+    Only *unit* dimensions are dropped, and only from the ends, so a genuine
+    mismatch still fails: nothing here can turn ``[m, n]`` into ``[n, m]``, or
+    excuse a differing extent.
     """
     sizes = list(sizes)
     while len(sizes) > rank and sizes[0] == 1:
         sizes.pop(0)
+    while len(sizes) > rank and sizes[-1] == 1:
+        sizes.pop()
     return tuple(sizes)
 
 
@@ -185,14 +196,15 @@ def _elements(sizes):
 
 
 def _check_pair(dst, src, direction):
-    """Shapes and dtypes must agree, up to leading unit dimensions.
+    """Shapes and dtypes must agree, up to outer unit dimensions.
 
     When either end is a reshaped or transposed view the axis-by-axis check is
     dropped and the element count is checked instead. That is not a weakening
     to taste: re-describing a walk is exactly what those two constructors do, so
     a view's rank and axis order are deliberately not the other end's, and the
     only things both ends still have to agree on are how many elements move and
-    of what type. Unviewed transfers keep the strict check.
+    of what type. Unviewed transfers keep the strict check, which tolerates a
+    leading or trailing unit axis -- see ``_squeeze_units``.
     """
     d, s = tuple(dst.sizes), tuple(src.sizes)
     if dst.is_view or src.is_view:
@@ -204,7 +216,7 @@ def _check_pair(dst, src, direction):
             )
     elif d != s:
         rank = min(len(d), len(s))
-        if _squeeze_leading_units(d, rank) != _squeeze_leading_units(s, rank):
+        if _squeeze_units(d, rank) != _squeeze_units(s, rank):
             raise ValueError(
                 f"transfer shape mismatch in air.api.ops.{direction}: the "
                 f"destination {dst.what} is {d} but the source {src.what} is {s}"
