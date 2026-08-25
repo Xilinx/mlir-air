@@ -15,10 +15,19 @@ speedup is ~1.6-2.8x, not 4.9x.**
 
 **Build state, in one line: the batch-8 engine RUNS on device and every gate on
 it is green.** A batch-8 llama-3.2-1b dispatch completes all 16 decode layers,
-its layer output matches a batch-1 dispatch to **0.67% rms**, all eight tokens'
-K and V land, and the row-map probe — which feeds row `t` the constant `(t+1)/8`
-and reads the ratios back out of the KV cache — now says every row of the mmul
-saw its own token **[measured]**:
+all eight tokens' K and V land, and **every token agrees with a batch-1 dispatch
+at its own position** — not just token 0 **[measured]**:
+
+    token 0 (L 1)  6.72e-03      token 4 (L 5)  7.87e-03
+    token 1 (L 2)  7.59e-03      token 5 (L 6)  7.89e-03
+    token 2 (L 3)  7.78e-03      token 6 (L 7)  7.88e-03
+    token 3 (L 4)  7.94e-03      token 7 (L 8)  8.03e-03
+
+The error grows smoothly with the context each token attends over, which is the
+shape it should have and is the evidence that token `t` really is getting `t+1`
+positions and not somebody else's. The row-map probe — which feeds row `t` the
+constant `(t+1)/8` and reads the ratios back out of the KV cache — says every
+row of the mmul saw its own token **[measured]**:
 
     role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000
     role 0:  1.000  2.000  3.000  4.000  4.995  6.000  7.000  8.000
@@ -224,6 +233,8 @@ python3 batch_row_probe.py --batch 8 --L 1 --prefix x2    # does row t get token
 UNI_WAVE_HI=1 ./build_template.sh 1 1                     # -> w4_b1_L1
 UNI_WAVE_HI=1 ./build_template.sh 8 1                     # -> w4_b8_L1
 python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens 0
+for L in 2 3 4 5 6 7 8; do UNI_WAVE_HI=1 ./build_template.sh 1 $L; done  # -> w4_b1_L*
+python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens all   # each token at its own position
 ```
 
 **Both halves of a `batch_equiv` pair must carry the same `UNI_WAVE_HI`** — see
@@ -566,7 +577,9 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    `--tokens 0` needs one batch-1 template and already covers the whole batched
    data path; `--tokens all` needs one per position (a non-DYNSEQ template bakes
    L) and is what proves token t gets a DIFFERENT and correct answer rather than
-   a copy of token 0's.
+   a copy of token 0's. **Both now pass** at batch 8 on llama-3.2-1b — see the
+   per-token table in "State of play". The eight batch-1 references cost eight
+   builds; `DECODE_DYNSEQ=1` would remove that.
 
    **Two other things it taught.** Random bytes make random bf16 SCALES: the
    first run returned 0x7F81 — one NaN — in every element, and a gate whose
