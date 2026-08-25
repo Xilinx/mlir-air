@@ -1303,18 +1303,24 @@ private:
   // also reach b, which is two linear traversals.
   bool hasPath(Graph::VertexId start_v, Graph::VertexId end_v, Graph &G,
                SmallVector<Graph::VertexId, 1> &vec) {
-    std::set<Graph::VertexId> forward, backward;
+    llvm::DenseSet<Graph::VertexId> forward, backward;
     SmallVector<Graph::VertexId> worklist;
+    // Forward-reachable vertices in traversal order. The result is built by
+    // filtering this rather than by iterating the set, so the order does not
+    // depend on the hash function: the caller may push reset vertices onto the
+    // wavefront candidate list, and that order reaches the trace.
+    SmallVector<Graph::VertexId> reached;
 
     forward.insert(start_v);
     worklist.push_back(start_v);
     while (!worklist.empty()) {
       auto v = worklist.pop_back_val();
+      reached.push_back(v);
       for (auto adj_v : G.adjacentVertices(v))
         if (forward.insert(adj_v).second)
           worklist.push_back(adj_v);
     }
-    if (!forward.count(end_v))
+    if (!forward.contains(end_v))
       return false;
 
     backward.insert(end_v);
@@ -1326,8 +1332,8 @@ private:
           worklist.push_back(inv_v);
     }
 
-    for (auto v : forward)
-      if (backward.count(v))
+    for (auto v : reached)
+      if (backward.contains(v))
         vec.push_back(v);
     return true;
   }
