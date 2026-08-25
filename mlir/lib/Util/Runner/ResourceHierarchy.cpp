@@ -68,7 +68,9 @@ public:
           for (unsigned i = 0; i < *inbound_port_count; i++) {
             auto bytes_per_second =
                 inboundPortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L1_inbound", bytes_per_second, i);
+            auto latency = inboundPortsObject->getNumber("latency");
+            port *new_port =
+                new port(this, "L1_inbound", bytes_per_second, i, latency);
             inbound_port_vec.push_back(new_port);
           }
           this->ports.insert(std::make_pair("inbound", inbound_port_vec));
@@ -83,7 +85,9 @@ public:
           for (unsigned i = 0; i < *outbound_port_count; i++) {
             auto bytes_per_second =
                 outboundPortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L1_outbound", bytes_per_second, i);
+            auto latency = outboundPortsObject->getNumber("latency");
+            port *new_port =
+                new port(this, "L1_outbound", bytes_per_second, i, latency);
             outbound_port_vec.push_back(new_port);
           }
           this->ports.insert(std::make_pair("outbound", outbound_port_vec));
@@ -178,7 +182,9 @@ public:
           for (unsigned i = 0; i < *inbound_port_count; i++) {
             auto bytes_per_second =
                 inboundPortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L2_inbound", bytes_per_second, i);
+            auto latency = inboundPortsObject->getNumber("latency");
+            port *new_port =
+                new port(this, "L2_inbound", bytes_per_second, i, latency);
             inbound_port_vec.push_back(new_port);
           }
           this->ports.insert(std::make_pair("inbound", inbound_port_vec));
@@ -193,7 +199,9 @@ public:
           for (unsigned i = 0; i < *outbound_port_count; i++) {
             auto bytes_per_second =
                 outboundPortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L2_outbound", bytes_per_second, i);
+            auto latency = outboundPortsObject->getNumber("latency");
+            port *new_port =
+                new port(this, "L2_outbound", bytes_per_second, i, latency);
             outbound_port_vec.push_back(new_port);
           }
           this->ports.insert(std::make_pair("outbound", outbound_port_vec));
@@ -274,7 +282,12 @@ public:
         double b_s = this->getDataRateFromMemorySpace(s, "outbound");
         double b_d = this->getDataRateFromMemorySpace(d, "inbound");
         double b = std::min(b_s, b_d);
-        port *new_port = new port(this, s, d, b);
+        // Bandwidth is the bottleneck of the two ends, but time-of-flight is
+        // paid at both: data serialises out of the source and back in at the
+        // destination, so the two latencies add.
+        double l = this->getLatencyFromMemorySpace(s, "outbound") +
+                   this->getLatencyFromMemorySpace(d, "inbound");
+        port *new_port = new port(this, s, d, b, l);
         this->interfaces.insert({{s, d}, new_port});
       }
     }
@@ -322,7 +335,9 @@ public:
           for (unsigned i = 0; i < *inbound_port_count; i++) {
             auto bytes_per_second =
                 inboundPortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L3_inbound", bytes_per_second, i);
+            auto latency = inboundPortsObject->getNumber("latency");
+            port *new_port =
+                new port(this, "L3_inbound", bytes_per_second, i, latency);
             inbound_port_vec.push_back(new_port);
           }
           this->ports.insert(std::make_pair("inbound", inbound_port_vec));
@@ -337,7 +352,9 @@ public:
           for (unsigned i = 0; i < *outbound_port_count; i++) {
             auto bytes_per_second =
                 outboundPortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L3_outbound", bytes_per_second, i);
+            auto latency = outboundPortsObject->getNumber("latency");
+            port *new_port =
+                new port(this, "L3_outbound", bytes_per_second, i, latency);
             outbound_port_vec.push_back(new_port);
           }
           this->ports.insert(std::make_pair("outbound", outbound_port_vec));
@@ -367,37 +384,40 @@ public:
     this->set_ports(portsObject);
   }
 
-  double getDataRateFromMemorySpace(unsigned memory_space,
-                                    std::string port_direction) {
+  // Get the representative port serving a memory space in a given direction,
+  // or nullptr if the model does not describe one.
+  port *getPortFromMemorySpace(unsigned memory_space,
+                               std::string port_direction) {
     auto ms = symbolizeMemorySpace(memory_space);
     if (!ms)
-      return 0;
+      return nullptr;
     if (*ms == air::MemorySpace::L3) {
       if (this->ports.count(port_direction))
-        return this->ports[port_direction][0]->data_rate;
-      else
-        return 0;
+        return this->ports[port_direction][0];
+      return nullptr;
     } else if (*ms == air::MemorySpace::L2) {
-      if (this->dus.size()) {
-        if (this->dus[0]->ports.count(port_direction))
-          return this->dus[0]->ports[port_direction][0]->data_rate;
-        else
-          return 0;
-      } else
-        return 0;
+      if (this->dus.size() && this->dus[0]->ports.count(port_direction))
+        return this->dus[0]->ports[port_direction][0];
+      return nullptr;
     } else if (*ms == air::MemorySpace::L1) {
-      if (this->dus.size()) {
-        if (this->dus[0]->tiles.size()) {
-          if (this->dus[0]->tiles[0]->ports.count(port_direction))
-            return this->dus[0]->tiles[0]->ports[port_direction][0]->data_rate;
-          else
-            return 0;
-        } else
-          return 0;
-      } else
-        return 0;
-    } else
-      return 0;
+      if (this->dus.size() && this->dus[0]->tiles.size() &&
+          this->dus[0]->tiles[0]->ports.count(port_direction))
+        return this->dus[0]->tiles[0]->ports[port_direction][0];
+      return nullptr;
+    }
+    return nullptr;
+  }
+
+  double getDataRateFromMemorySpace(unsigned memory_space,
+                                    std::string port_direction) {
+    auto *p = this->getPortFromMemorySpace(memory_space, port_direction);
+    return p ? p->data_rate : 0;
+  }
+
+  double getLatencyFromMemorySpace(unsigned memory_space,
+                                   std::string port_direction) {
+    auto *p = this->getPortFromMemorySpace(memory_space, port_direction);
+    return p ? p->latency : 0;
   }
 
   device(std::string name = "", resource *parent = nullptr,
