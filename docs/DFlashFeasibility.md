@@ -55,22 +55,31 @@ That matrix is the gate (`batch_lm_equiv.py`), not the diagonal: with rows drawn
 from one distribution a tolerance alone cannot tell "the batched kernel rounds
 differently" from "token 3 got token 5's row", and the off-diagonal can.
 
-**And the batched engine does not agree with batch 1 on the REAL model.** The
-host driver is written and every synthetic gate passes, but one decode layer on
-llama-3.2-1B's own weights comes out with a layer increment 4x too large and
-barely correlated **[measured]**. It bisects cleanly, and the answer is not the
-batching:
+**And the batched engine now agrees with batch 1 on the REAL model.** It did
+not, and the cause was neither the batching nor -- as the first pass through
+this concluded -- the silu. `chess_storage(...)` expands to nothing under Peano,
+so the silu LUT carried no alignment and landed on a 4-byte boundary in the
+batch-8 build (`0x72804`) while landing aligned in the batch-1 and shipping ones
+(`0x78400`). `getActivationBf16` therefore returned silu in one build and a
+positive, roughly affine function in the other **[measured]**. Every other table
+in that header already had the portable `alignas`; these four did not. One layer,
+real weights, all eight tokens:
 
-    output = x + o-proj            attention half    cos 0.999   ratio 1.00
-    + the MLP half, silu REMOVED   (up - gate)       cos 0.99    ratio 1.00
-    + the MLP half as built                          cos 0.20    ratio 4.4
+    full layer vs batch 1      before  cos 0.121  ratio 4.23
+                               after   cos 0.998  ratio 1.00
+    recovered silu curve       before  185% from true silu
+                               after     6.1%
 
-Everything except the SILU agrees. The batched and batch-1 silu are the same
-function on the same input, so what differs is only that the batched gate-up
-comes from the mmul and the single one from the GEMV -- 1.6% apart
-(`proj_qmm_gate.py`) -- and `getActivationBf16` turns that into a 4x error on
-real activations. It is PRE-EXISTING: a batch-8 build from before the lm-head
-work gives bit-identical wrong numbers.
+The fix is data placement, not codegen: `check_kernels_inert.py` still passes
+and the shipping pair rebuilt under it returns **bitwise identical** logits.
+
+End to end, `batch_dispatch_check.py` now has every token closest to its own
+reference by a wide margin with argmax agreeing on 7 of 8, but the diagonal
+(5.7e-2..2.4e-1) is still over its 5e-2 tolerance. That residual is the
+**projection kernel swap and not a fault** -- batch 1 uses the GEMV, batch 8 the
+mmul, 1.599% apart at the projection while both sit ~1% from exact fp32 -- and
+closing it means putting both paths on the same kernel, which would move
+shipping numerics. That is the open decision.
 
 What remains is that, and the block-size decision below.
 
@@ -747,8 +756,21 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    REGION STRIDE, so either one lays every group's region away from where the
    device reads it.
 
-   `batch_dispatch_check.py` is the gate and it FAILS, for the reason in the
-   banner: the silu, not the driver. That is now the top of this list.
+   `batch_dispatch_check.py` is the gate. The engine fault behind its failure is
+   FIXED -- a misaligned silu LUT, see the section below -- and the driver was
+   never implicated. What is left is not a bug: batch 1 runs the GEMV and batch 8
+   the q4k mmul, 1.599% apart, which compounds over 16 layers to a 5.7e-2..2.4e-1
+   diagonal against a 5e-2 tolerance. Every token is closest to its own reference
+   and argmax agrees on 7 of 8.
+
+10. **Decide the projection kernel.** A lossless speculative verify needs the
+    batched pass to agree with the single pass, and the only thing now keeping
+    them apart is that they use different projection kernels. Putting batch 1 on
+    the mmul would close it, but the builder selects on `BATCH > 1` in several
+    places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`, `wscr_mm_l1`) goes
+    with it, so it moves SHIPPING batch-1 numerics and needs `make verify`
+    behind it. The alternative is to accept a lossy verify and measure what it
+    costs in accepted tokens. This is a decision, not a defect.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -920,77 +942,123 @@ env $E DECODE_HIDDEN_TAPS=0 python3 fused_decode.py   > /tmp/b.mlir
 diff /tmp/a.mlir /tmp/b.mlir && rm _fd_head.py
 ```
 
-#### The batched engine and the real model: it is the silu [measured]
+#### The batched engine and the real model: a misaligned LUT [measured]
 
-Every gate the batch-8 engine had was SYNTHETIC. On llama-3.2-1B's own weights,
-one decode layer at batch 8 does not agree with a batch-1 dispatch at all: the
-layer increment is 4.0-4.8x too large and cos 0.07-0.24 against it. Sixteen
-layers of that come out uncorrelated (cos ~0.02) and the logits peak on the
-INPUT token, which is what a tied lm head does when the hidden state has stopped
-carrying the sentence.
+Every gate the batch-8 engine had was SYNTHETIC, and on llama-3.2-1B's own
+weights the engine was wrong: one decode layer's output was 4.2x too large and
+cos 0.12 against a batch-1 dispatch. It was never the batching -- a batch-8
+build from `f83ec020` reproduced the numbers to the digit -- and it was never
+the silu either, which is what the first pass through this concluded.
 
-**It is not the batching, and it is not new.** A batch-8 build from `f83ec020`,
-before any of the lm-head work, reproduces the numbers to the digit, and the
-batch-1 reference used throughout is bit-identical to the shipping
-`decode_L2048` template. The bisect, one layer, real weights, real seeded KV,
-all eight tokens **[measured]**:
+**The cause.** `chess_storage(...)` expands to NOTHING under Peano
+(`aiebase_chess.h`), so on that toolchain `activation_lut_ab`/`cd` carried no
+alignment at all and got a float's natural 4 bytes. Whether the tables landed
+vector-aligned then fell out of `.data` layout, and the two builds differ
+**[measured, `llvm-readelf -s` on the GLU core ELF]**:
 
-| build | what the layer output is | cos vs batch 1 | rms ratio |
+| build | `activation_lut_ab` | mod 32 |
+|---|---|---|
+| batch 1 (1 wave), and the shipping MAX_L=2048 pair | `0x00078400` | 0 |
+| batch 8 (1 wave) | `0x00072804` | **4** |
+
+So `getActivationBf16` returned silu in one build and, in the other, a strictly
+positive roughly affine function of its input -- same source, same core, same
+silicon. Every other table in that header already used the portable
+`alignas(aie::vector_decl_align)`; these four did not. Adding it moves batch 8
+to `0x72840` and emits byte-identical code, so `check_kernels_inert.py` still
+passes: this is data placement, not codegen. The shipping pair rebuilt under the
+fix returns **bitwise identical logits**, because its table was aligned already.
+
+**Why the first diagnosis was wrong**, which is the more useful half of this.
+It said the real gate-up leaves the LUT's `[-8, 8)` domain and that a 1.6%
+input difference becomes 4x out there. Both halves are false, and both were
+inference rather than measurement:
+
+- the gate-up does not leave the domain. On real weights it has rms 0.21 and
+  max 3.5, and **0.00%** of elements are outside **[measured]**.
+- the LUT does not amplify. Push both engines' real gate-ups through it and a
+  2.1% input difference comes out **2.85%** -- gain **1.0x** **[measured]**.
+
+The bisect's `GLU_ROW_PROBE=2` row was also misread. `up - gate` has ~13x the
+rms of `silu(gate)*up`, so it only ever cleared the plumbing for a signal that
+large; it cannot distinguish a fault that scales with the signal from one that
+does not. **A probe has to match the magnitude of the thing it stands in for.**
+`GLU_ROW_PROBE=4` (`gate*up`: no table, real magnitude) is what actually clears
+the plumbing, and `=5` (`silu(gate)` alone) is what fails.
+
+One layer, real weights, real seeded KV, all eight tokens, each against a HOST
+model rather than against another device build **[measured]**:
+
+| probe | batch 1 | batch 8 before | batch 8 after |
 |---|---|---|---|
-| `DECODE_ACC_STOP=2` | `x + o-proj` | **0.999** | 1.00 |
-| `GLU_ROW_PROBE=2` | full layer, silu replaced by `up - gate` | **0.98-0.999** | 1.00 |
-| as built | full layer | 0.07-0.24 | 4.0-4.8 |
+| full layer, correct model | 5.4%, cos 0.998 | 95.9%, cos **0.121** | 6.1%, cos 0.998 |
+| `=2` `up - gate` (13x too big) | 6.8%, cos 0.998 | 11.9%, cos 0.993 | unchanged |
+| `=4` `gate*up` (no table) | 6.9%, cos 0.999 | 6.9%, cos 0.998 | unchanged |
+| `=5` `silu(gate)` (table alone) | 7.6%, cos 0.997 | 99.8%, cos **0.084** | 10.3%, cos 0.995 |
+| recovered silu curve vs true | 7.8% | **185%** | 6.1% |
 
-The first row clears QKV, rope, the KV append, the causal mask, flash attention,
-the o-gather, o-proj and the residual add — the whole attention half, on a real
-non-empty cache. The second clears the ph2 norm, gate-up, the GLU slice
-plumbing, down and the second residual add. What is left between them is one
-call, and both arms make the SAME call: `glu_row_aie`'s non-probe branch is
-`pseduo_glu<GLU_SLICE>` at a per-token offset, which is exactly what `glu_aie`
-runs at batch 1.
+`silu_range.py` is the tool. Two things in it are worth reusing:
 
-So the input to silu differs and the output diverges. The input differs by the
-one thing that is supposed to differ — the batched gate-up comes from the q4k
-mmul and the single one from the v1 GEMV, which `proj_qmm_gate.py` measures
-**1.6% apart** — and `getActivationBf16` is a 64-entry `aie::linear_approx` over
-`[-8, 8)` in steps of 0.25. Inside that range it interpolates and is Lipschitz,
-so 1.6% in cannot give 4x out; outside it, the index leaves the table. **That
-the amplification is the out-of-range path is inference, not measurement** — the
-difference at the layer output is broadly spread (top 1% of elements carry ~10%
-of it), but the down projection sums 8192 inputs into every output, so it would
-look that way either way. The measurement that would settle it is the gate-up
-distribution itself, which needs a probe.
+- **it validates itself against the batch-1 device before concluding anything.**
+  The host layer model reproduces the batch-1 device output to 5.4%, so when it
+  disagrees with batch 8 the disagreement is the device's. The original bisect
+  compared two device builds against each other and had no such control, which
+  is how a wrong reference survived.
+- **it recovers the device's silu curve by least squares, with no probe tap.**
+  Probe 5's GLU output is `f(gate)` for a SCALAR f. Only `f(gate) @ W_down` ever
+  crosses the shim, but binning the gate into the LUT's own 64 bins makes f 64
+  unknowns against 2048 equations per token -- 16384 in total, heavily
+  overdetermined. That is how the "positive, roughly affine" shape above was
+  read off silicon. The `DECODE_PROBE=4` tap the previous note asked for was
+  never needed.
 
-**Why nothing caught this.** `batch_equiv.py` is a DATAFLOW gate and says so,
-but two of its choices make it blind here in ways worth writing down:
+**Where it stands now.** The batch-8 engine computes the right thing: one layer
+agrees with batch 1 at **3.1%, rms ratio 1.00**. End to end over 16 layers,
+`batch_dispatch_check.py` has every token closest to its OWN reference by a
+wide margin and argmax agreeing on 7 of 8, but the diagonal is 5.7e-2..2.4e-1
+against a 5e-2 tolerance -- so it still reports NOT EQUIVALENT.
 
-- it feeds **B copies of one row into a zeroed KV cache**, so every token's K
-  and V are the same vector and attention returns V whatever the mask does. A
-  mask or KV-layout fault cannot show. (That is also why the attention half
-  above had to be checked separately before it could be cleared.)
-- its weight BO is sized for **one layer**, so a 16-wave run has layers 1..15
-  reading past the end of it. `--n-layers 16` sizes it properly; without that a
-  16-layer comparison is mostly comparing layer 0 twice.
-- and `_WSCALE` is tuned so the synthetic gate-up stays inside silu's range.
-  The note that an out-of-range gate is "a property of the fill and nothing
-  else" is what this measurement contradicts: the real model reaches the same
-  region, and there the batched path's 1.6% is not a rounding difference.
-
-**Where to start.** Probe the gate-up range on real weights. The obvious route
-is `DECODE_PROBE=4` (the down-memtile tap, which is the GLU OUTPUT, so
-`GLU_ROW_PROBE=3` gives `up` and `=2` gives `up - gate`, and the gate is the
-difference) -- but **that build times out on device at ATTN_MAXL=128**, which is
-its own unexplained thing and was not chased. Note also that `[-8, 8)` is read
-off `getActivationBf16`'s `step_bits`/`bias` as documented, not measured; if the
-domain is wider than that, the inference below weakens with it. If the gate does
-leave the domain, the question stops
-being a batching question: the same LUT is under the shipping batch-1 engine,
-which is self-consistent only because it is the reference. Speculative verify
-needs the batched pass to AGREE with the single pass, and a LUT that turns 1.6%
-into 4x is what prevents that.
+That residual is the **projection kernel swap, not a fault**: batch 1 uses the
+v1 GEMV and batch 8 must use the q4k mmul, and `proj_qmm_gate.py` measures them
+**1.599%** apart at the projection output while both sit ~1% from exact fp32
+(0.917% and 1.274%) -- neither is wrong, they are different approximations.
+That 1.6% propagates to 2.1% at the gate-up, 3.1% at one layer output, and
+compounds over 16. **Closing it means putting both paths on the same projection
+kernel**, which is a design change: the builder selects on `BATCH > 1` in
+several places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`,
+`wscr_mm_l1`) goes with it, so it would move the SHIPPING batch-1 numerics and
+needs a full `make verify` behind it. That is the next decision, and it is a
+decision rather than a bug.
 
 ### Gotchas that cost time before
 
+- **`chess_storage(...)` is a NO-OP under Peano.** It expands to nothing in
+  `aiebase_chess.h`, so anything relying on it for alignment gets whatever the
+  type naturally has. The failure is not a fault and not deterministic across
+  builds: the object lands aligned or not depending on `.data` layout, so the
+  same source is correct in one build and silently wrong in another. Use
+  `alignas(aie::vector_decl_align)`. This cost a day and produced an entire
+  wrong theory before anyone read the address.
+- **A probe has to match the MAGNITUDE of what it stands in for.** Replacing
+  `silu(gate)*up` with `up - gate` to "remove the nonlinearity" also multiplies
+  the signal by ~13, and the resulting pass cleared the plumbing for a signal
+  that size while the real fault lived below it. A probe that changes two things
+  at once answers neither question. `gate*up` was the right probe and is one
+  character of difference.
+- **Compare against a HOST model, not against another device build.** Two device
+  builds disagreeing tells you they disagree, not which one is wrong; a bad
+  reference then reads as a fault in the thing under test. Build the host model
+  first, validate it against the path you already trust (`silu_range.py`'s
+  control reproduces the batch-1 device to 5.4%), and only then point it at the
+  suspect.
+- **A batch-1 reference must seed the KV once, not per token.** Re-seeding
+  before each dispatch zeroes the positions the batched run legitimately has, so
+  token 0 comes out right and the rest degrade with `t` -- which looks exactly
+  like an intra-block KV fault in the engine. `batch_dispatch_check.py` seeds
+  once and lets each dispatch append its own.
+- **`build_template.sh` always writes `decode_b<B>_L<N>`.** Building any probe
+  variant at the same batch and length silently eats the model template, and
+  nothing warns. Move the result immediately or back the pair up first.
 - **A buffer's SIZE decides its neighbour's ALIGNMENT.** mlir-aie packs
   compute-tile buffers end to end and only aligns them to the tile load/store
   bus width — 32 bytes on AIE2p — while `aie::mmul`'s C tile is moved in 512-bit
