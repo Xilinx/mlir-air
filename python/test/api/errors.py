@@ -1598,6 +1598,33 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: reduce_of_a_scalar
+# Nothing supplies an axis to reduce over. Caught by the operand type check
+# rather than the leaf check -- a bare float never becomes a BufferExpr at all.
+# CHECK: TypeError: air.api.ops.reduce_add expects a buffer slice, got float
+@expect(TypeError, "reduce_of_a_scalar")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.reduce_add(2.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_of_a_comparison
+# A comparison is i1, a predicate rather than a value, so there is nothing
+# meaningful to sum or maximise.
+# CHECK: TypeError: air.api.ops.reduce_add got a comparison
+@expect(TypeError, "reduce_of_a_comparison")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        b[:] = ops.reduce_add(a[:] > 0.0)
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: fma_of_only_scalars
 # Nothing supplies a shape, so there is no loop to build.
 # CHECK: ValueError: air.api.ops.fma needs at least one buffer operand
@@ -1606,6 +1633,21 @@ def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64], bf16, scope=h.private())
         a[:] = ops.fma(2.0, 3.0, 4.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_of_a_reduce
+# The inner reduction has already collapsed the innermost axis to 1, so the
+# outer one would reduce a single element. Reducing a second axis is a
+# different feature, and the message says so rather than silently no-opping.
+# CHECK: NotImplementedError: air.api.ops.reduce_add cannot reduce a reduction
+@expect(NotImplementedError, "reduce_of_a_reduce")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        b[:] = ops.reduce_add(ops.reduce_add(a[:]))
 
     _trace(body)
 
@@ -1619,5 +1661,34 @@ def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64], bf16, scope=h.private())
         a[:] = ops.fma(2.0, a[:], A[0:64, 0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_into_the_wrong_shape
+# The destination must be the operand with its innermost axis collapsed --
+# either kept as 1 or dropped. Anything else is named with both alternatives,
+# because which one the caller wanted is not inferable.
+# CHECK: ValueError: shape mismatch in a reduction
+@expect(ValueError, "reduce_into_the_wrong_shape")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        b = air.alloc([64, 16], bf16, scope=h.private())
+        b[:] = ops.reduce_add(a[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_on_an_unsigned_buffer
+# Same rule as every other arith-building path: vector.reduction's combining
+# kinds are signed, and a ui8 operand does not verify.
+# CHECK: NotImplementedError: air.api.ops.reduce_add / reduce_max is not supported for air.api.ui8
+@expect(NotImplementedError, "reduce_on_an_unsigned_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], ui8, scope=h.private())
+        b = air.alloc([64], ui8, scope=h.private())
+        b[:] = ops.reduce_add(a[:])
 
     _trace(body)

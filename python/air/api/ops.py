@@ -51,6 +51,8 @@ __all__ = [
     "not_equal",
     "select",
     "fma",
+    "reduce_add",
+    "reduce_max",
     "relu",
     "tanh",
     "sigmoid",
@@ -669,6 +671,65 @@ def fma(a, b, c):
             "is a scalar, which the emitter cannot shape"
         )
     return BufferExpr("fma", op="fma", args=(a, b, c))
+
+
+def _reduce(name, key, x):
+    if not isinstance(x, (Buffer, BufferExpr)):
+        raise TypeError(
+            f"air.api.ops.{name} expects a buffer slice, got {type(x).__name__}"
+        )
+    expr = BufferExpr.coerce(x)
+    if expr.kind == "compare":
+        raise TypeError(
+            f"air.api.ops.{name} got a comparison, which is a predicate (i1) "
+            "rather than a value. Pass it through air.api.ops.select first"
+        )
+    if expr.kind == "reduce":
+        raise NotImplementedError(
+            f"air.api.ops.{name} cannot reduce a reduction: the inner one has "
+            "already collapsed the innermost dimension to 1, so the outer one "
+            "would be a no-op over a single element. Reducing a second axis is "
+            "not supported -- store the first result and reduce that"
+        )
+    if not expr.leaves():
+        raise ValueError(
+            f"air.api.ops.{name} needs a buffer operand, got a scalar; there "
+            "is no shape to reduce over"
+        )
+    return BufferExpr("reduce", op=key, args=(expr,))
+
+
+def reduce_add(x):
+    """Sum along the innermost axis. Lowers to vector.reduction <add>.
+
+    The destination keeps the operand's rank with its innermost dimension set
+    to 1, which is numpy's ``keepdims=True`` and is what the hand-written
+    kernels allocate (``[tile_m, n]`` in, ``[tile_m, 1]`` out)::
+
+        acc = air.alloc([tile_m, 1], bf16, scope=h.private())
+        acc[:] = air.ops.reduce_add(a[:])
+
+    This is the only shape-changing operation in the expression language, so
+    it has to be the whole right-hand side -- it cannot appear inside a larger
+    expression, because the surrounding elementwise ops would be operating on
+    two different shapes. Its *operand* may be any elementwise expression,
+    which is what makes ``reduce_add(a[:] * b[:])`` a row-wise dot product.
+
+    The whole innermost axis is read as a single vector, matching the
+    predecessor kernels: there is no accumulation loop, and therefore no
+    loop-carried vector accumulator, which is the construct ``ops.dot``
+    documents as unlegalizable on AIE2. The cost is that the axis length has
+    to be a vector width the target accepts.
+    """
+    return _reduce("reduce_add", "add", x)
+
+
+def reduce_max(x):
+    """Maximum along the innermost axis. Lowers to vector.reduction <maximumf>
+    (float) or <maxsi> (signed integer). See :func:`reduce_add` for the shape
+    rule and why the reduction must be the whole right-hand side.
+    """
+    return _reduce("reduce_max", "max", x)
 
 
 def _unary(name, x):
