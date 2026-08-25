@@ -812,9 +812,24 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: trailing_squeeze_does_not_excuse_a_real_extent
+# A trailing unit dimension is squeezed so a reduction's [m, 1] tile can reach
+# a rank-1 [m] slice. That is about *unit* axes only: a trailing axis with a
+# real extent still has to match, or the transfer would silently move a
+# different number of elements.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.store
+@expect(ValueError, "trailing_squeeze_does_not_excuse_a_real_extent")
+def _():
+    def body(h, tx, ty, A, B, C):
+        o = air.alloc([16, 4], bf16, scope=h.private())
+        ops.store(o, C[0:16, 0:1])
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: staged_transfer_shape_mismatch
-# Only *leading* unit dimensions are squeezed, so a genuine mismatch still
-# fails rather than being reshaped into something plausible.
+# Only *unit* dimensions are squeezed, and only from the ends, so a genuine
+# mismatch still fails rather than being reshaped into something plausible.
 # CHECK: ValueError: transfer shape mismatch in air.api.ops.load
 @expect(ValueError, "staged_transfer_shape_mismatch")
 def _():
