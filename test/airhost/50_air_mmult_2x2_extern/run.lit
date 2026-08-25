@@ -7,7 +7,12 @@
 
 // REQUIRES: valid_xchess_license
 // XFAIL: *
-// RUN: xchesscc -p me -P ${CARDANO}/data/cervino/lib -c %S/chess/extern_kernel.cc
+// The bash -c wrapper is load-bearing under lit's internal shell, which
+// performs no shell expansion at all: $(...), ${VAR} and even $VAR are
+// passed through literally. Handing the line to a real shell keeps the
+// expansion, and lit's own %s/%S/%t substitutions still apply inside the
+// quotes because lit substitutes textually before anything is executed.
+// RUN: bash -c "xchesscc -p me -P ${CARDANO}/data/cervino/lib -c %S/chess/extern_kernel.cc"
 // RUN: aircc -row-offset=3 -col-offset=5 %S/air.mlir -o %t.air.a
 // RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %t.air.a -Wl,--no-whole-archive -rdynamic -o %t.test.elf
 // RUN: %run_on_board %t.test.elf
