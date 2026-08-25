@@ -1958,6 +1958,15 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
   } else if (auto ifop = dyn_cast_if_present<scf::IfOp>(op)) {
     addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "ScfIfOp",
                     graphNodeProperties("control"), G, dep_ctx);
+  } else if (auto switchop = dyn_cast_if_present<scf::IndexSwitchOp>(op)) {
+    // Same control node as scf.if -- an n-way branch rather than a 2-way one.
+    // It shares IfOpID and the "if_branch" event type so vertex ids stay
+    // unique across both. Without this an scf.index_switch that air-dependency
+    // has given an async token falls through to the catch-all below and is
+    // rejected as "unknown op type producing async token", which is what
+    // happens as soon as one is nested inside another region op.
+    addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "ScfIndexSwitchOp",
+                    graphNodeProperties("control"), G, dep_ctx);
   } else if (auto affineifop = dyn_cast_if_present<affine::AffineIfOp>(op)) {
     addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "AffineIfOp",
                     graphNodeProperties("control"), G, dep_ctx);

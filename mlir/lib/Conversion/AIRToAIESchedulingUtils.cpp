@@ -1962,6 +1962,47 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
           srcs.insert(t);
       if (srcs.size() >= 2 && !isRoundRobin(chain))
         return true;
+      // 2b. Flows on this ring do not all run at the same RATE. Unlike 2, this
+      //     bites with a SINGLE producer, so the argument above -- "one
+      //     producer's own BD order fixes the arrival order" -- does not cover
+      //     it: that is right about ORDER and silent about RATE.
+      //
+      //     The emitter walks a channel's BDs as one cycle, so a cycle holding
+      //     one BD per flow serves them 1:1 whatever their real rates are. A
+      //     core that re-feeds one flow N times per token next to one that goes
+      //     out once acquires N credits on the first, gets one firing per
+      //     cycle, and blocks forever on a credit the other flow releases once.
+      //     Alone on a channel the same flow is fine: one BD in infinite-loop
+      //     mode fires as often as its credits allow.
+      //
+      //     The rate is air.refeed_count, NOT the op count and NOT the trip
+      //     count: air-annotate-refeed has already collapsed the re-feed loop
+      //     by the time this runs, so both read 1 and miss it entirely.
+      //
+      //     Measured on the LFM2 ShortConv mixer, whose o-proj X is a re-feed
+      //     of OPROJ_REFEED and whose carried state goes out once. Both are
+      //     packet flows on one tile, simpleDmaChannelAlloc multiplexes them
+      //     onto one MM2S, and the design deadlocks having written nothing.
+      {
+        llvm::MapVector<Operation *, int> rateOf;
+        for (auto *o : chain.ops) {
+          auto *d = declOf(o);
+          if (!d)
+            continue;
+          int rate = (int)air::getRefeedCount(o);
+          auto it = rateOf.find(d);
+          if (it == rateOf.end())
+            rateOf[d] = rate;
+          else
+            it->second = std::max(it->second, rate);
+        }
+        if (rateOf.size() >= 2) {
+          int first = rateOf.front().second;
+          for (auto &kv : rateOf)
+            if (kv.second != first)
+              return true;
+        }
+      }
       // 3. The ring cannot stay in step with the transfers crossing it, by the
       //    emitter's own foldability oracle. repairS2MMChains already acts on
       //    this; verifyMM2SChains only refuses, and being refused is what made
