@@ -98,7 +98,7 @@ expect(
 # An extern kernel's buffer arguments may be f16 -- moving the data is the
 # point -- but a scalar argument is materialised by arith.constant.
 # CHECK: NotImplementedError: an air.extern scalar argument is not supported for air.api.f16
-expect("f16_extern_scalar", lambda: air.extern("k", object="k.o", scalars=[f16]))
+expect("f16_extern_scalar", lambda: air.extern("k", link_with="k.o", scalars=[f16]))
 
 
 # CHECK-LABEL: TEST: f16_copy_is_allowed

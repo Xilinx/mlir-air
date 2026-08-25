@@ -58,7 +58,7 @@ def extern_kernel_over_ui8():
     B = air.tensor([N], ui8)
     chan_in = air.channel("In")
     chan_out = air.channel("Out")
-    line = air.extern("passThroughLine", object="passThrough.cc.o", scalars=[i32])
+    line = air.extern("passThroughLine", link_with="passThrough.cc.o", scalars=[i32])
 
     with air.launch(name="k") as launch:
 

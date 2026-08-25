@@ -16,9 +16,10 @@ AIR builds its real asynchronous dependency graph from program order in the
 ``air-dependency`` pass, so a v1 token carries no SSA value -- it exists so that
 ``dependency=`` can be type-checked instead of silently ignored.
 
-Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, and the
-``sigmoid``/``silu``/``gelu`` compositions built on them) build lazy expression
-nodes instead, and return a :class:`~air.api._value.BufferExpr`.
+Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, ``exp``,
+``rsqrt``, and the ``sigmoid``/``silu``/``gelu`` compositions built on them)
+build lazy expression nodes instead, and return a
+:class:`~air.api._value.BufferExpr`.
 
 ``reduce_add`` and ``reduce_max`` build such a node too, but it is the one whose
 shape differs from its operand's: it collapses the innermost axis. That is why a
@@ -30,13 +31,10 @@ and returns a Token, matching the signature the API proposal specified. On rank-
 (micro-tiled) operands it becomes the blocked contraction the AIE2 matmul
 intrinsic wants; see ``air.api._pack``.
 
-The remaining compute ops from the wider API proposal (``exp``, ``stack``,
-``dequant``, ``atomic_add``) are not implemented. They raise rather
-than returning a plausible-looking placeholder: a DSL that accepts an op it
-cannot lower produces a kernel that runs and is silently wrong. ``exp`` is on
-that list by choice rather than by oversight -- the activations here are composed
-from ``tanh``, which has a checked lowering, so nothing has needed a vector
-``exp`` yet.
+The remaining compute ops from the wider API proposal (``stack``, ``dequant``,
+``atomic_add``) are not implemented. They raise rather than returning a
+plausible-looking placeholder: a DSL that accepts an op it cannot lower
+produces a kernel that runs and is silently wrong.
 """
 
 from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
@@ -60,6 +58,8 @@ __all__ = [
     "reduce_max",
     "relu",
     "tanh",
+    "exp",
+    "rsqrt",
     "sigmoid",
     "silu",
     "gelu",
@@ -766,10 +766,39 @@ def tanh(x):
     return _unary("tanh", x)
 
 
+# exp and rsqrt lower the same way tanh does -- one math dialect op on the
+# vector -- but with one difference the caller has to know about, because it is
+# not visible from the call site.
+#
+# On AIE2 (npu1) they are not instructions. math.exp on bf16 becomes a call to
+# getExpBf16, and math.rsqrt a call to getRsqrtBf16, both of which live in a
+# hand-written object file the example compiles: see the extern_func.cc beside
+# vector_exp and vector_rsqrt. The herd therefore has to carry link_with, which
+# is what air.herd(link_with=...) is for. Forgetting it is a link failure, not a
+# wrong answer. On AIE2P (npu2) both are native and no object is needed.
+
+
+def exp(x):
+    """Elementwise e**x. Lowers to math.exp. Float only.
+
+    On npu1 this needs air.herd(link_with="extern_func.o"); see above.
+    """
+    return _unary("exp", x)
+
+
+def rsqrt(x):
+    """Elementwise 1/sqrt(x). Lowers to math.rsqrt. Float only.
+
+    On npu1 this needs air.herd(link_with="extern_func.o"); see above.
+    """
+    return _unary("rsqrt", x)
+
+
 # The three activations below are compositions, not new primitives. Each is
 # written the way the hand-written kernel it replaces wrote it -- in particular
 # via tanh rather than exp, which keeps them clear of two AIE2 limitations at
-# once: there is no vector division on bf16, and exp would need one.
+# once: there is no vector division on bf16, and exp would need one. That reason
+# survives exp becoming available: it is about the division, not about exp.
 
 
 def sigmoid(x):
@@ -1144,9 +1173,6 @@ def _unimplemented(name, needs):
 
 # Named so that a program using them fails loudly at the call site rather than
 # at compile time with a confusing IR error.
-# math.exp exists in the bindings, but nothing needs it yet and it has not
-# been checked for an aievec lowering -- untested surface is worse than none.
-exp = _unimplemented("exp", "a checked aievec lowering; use ops.tanh, which has one")
 reduce = _unimplemented("reduce", "a reduction emitter")
 stack = _unimplemented("stack", "multi-buffer concatenation")
 dequant = _unimplemented("dequant", "BlockType support")

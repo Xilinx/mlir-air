@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Per-tile softmax via a hand-written AIE kernel, on air.api.
 
-    softmax = air.extern("softmax_bf16", object="softmax.o", scalars=[i32])
+    softmax = air.extern("softmax_bf16", link_with="softmax.o", scalars=[i32])
     ...
     air.ops.load(a, A[i0 : i0 + tile_n])
     softmax(a, tile_n - 1, out)
@@ -77,7 +77,7 @@ def build_module(n, tile_n, herd_n, np_dtype_in):
     A = air.tensor([n], dt)
     C = air.tensor([n], dt)
 
-    softmax = air.extern("softmax_bf16", object="softmax.o", scalars=[i32])
+    softmax = air.extern("softmax_bf16", link_with="softmax.o", scalars=[i32])
 
     with air.launch(name="softmax") as launch:
 

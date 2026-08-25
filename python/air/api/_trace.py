@@ -814,10 +814,15 @@ def segment(grid=None, name=None):
 # ---------------------------------------------------------------------------
 
 
+def _needs(obj, kernel):
+    """Phrase one claim on a herd's single link_with slot, for a conflict."""
+    return f"calls {kernel} from {obj!r}" if kernel else f"declares link_with={obj!r}"
+
+
 class HerdContext:
     """A herd of compute cores over a (possibly strip-mined) tile grid."""
 
-    def __init__(self, iterable, name=None, shape=None, target=None):
+    def __init__(self, iterable, name=None, shape=None, target=None, link_with=None):
         self.dims = parse_grid(iterable)
         if len(self.dims) > 2:
             raise NotImplementedError(
@@ -831,13 +836,31 @@ class HerdContext:
         self.repeats = tuple(g // p for g, p in zip(self.grid, self.physical))
         self._buffers = []
         self._registered = False
-        # Object files required by air.extern calls in this herd's body.
+        # Object files this herd links against: either called through
+        # air.extern, or named by link_with= for a lowering that emits the call
+        # itself (see require_object).
         self._objects = {}
         # The core's position in the herd, bound while the body is traced.
         self._coords = []
+        if link_with is not None:
+            if not isinstance(link_with, str) or not link_with:
+                raise TypeError(
+                    "air.herd(link_with=...) takes the name of a compiled "
+                    'object file, e.g. link_with="extern_func.o"'
+                )
+            self.require_object(link_with, None)
 
     def require_object(self, obj, kernel):
-        """Record that this herd calls ``kernel`` from ``obj``.
+        """Record that this herd links against ``obj``.
+
+        ``kernel`` names the symbol an air.extern call reaches for, or is None
+        when ``air.herd(link_with=...)`` declared the dependency directly. The
+        second form exists because not every reference to an object file is a
+        call the DSL emits: ``ops.exp`` on bf16 becomes ``math.exp``, and it is
+        the AIE lowering, several passes later, that turns that into a call to
+        ``getExpBf16`` in the example's ``extern_func.o``. Nothing at trace time
+        writes a func.call, so air.extern -- which exists to emit one -- cannot
+        express it, but link_with is needed all the same.
 
         aircc links one object per herd -- link_with is a single string -- so a
         body that reaches into two of them cannot be built.
@@ -845,12 +868,16 @@ class HerdContext:
         if self._objects and obj not in self._objects:
             other, other_kernel = next(iter(self._objects.items()))
             raise ValueError(
-                f"herd '{self.name}' calls {kernel} from {obj!r} and "
-                f"{other_kernel} from {other!r}, but a herd links against a "
+                f"herd '{self.name}' {_needs(obj, kernel)} and "
+                f"{_needs(other, other_kernel)}, but a herd links against a "
                 "single object file. Compile both kernels into one object, or "
                 "put them in separate herds."
             )
-        self._objects[obj] = kernel
+        # An air.extern call names the symbol it wants; keep that over a bare
+        # link_with= declaration of the same file, since it makes a later conflict
+        # report the more specific of the two.
+        if kernel is not None or obj not in self._objects:
+            self._objects[obj] = kernel
 
     def _resolve_physical(self, shape):
         by_rank = PHYSICAL_HERD[self.target]
@@ -1060,9 +1087,18 @@ def run_strip_mined(run, repeats, range_, yield_):
 # ---------------------------------------------------------------------------
 
 
-def herd(iterable, name=None, shape=None, target=None):
-    """A herd of cores over ``iterable``, strip-mined onto the physical array."""
-    return HerdContext(iterable, name=name, shape=shape, target=target)
+def herd(iterable, name=None, shape=None, target=None, link_with=None):
+    """A herd of cores over ``iterable``, strip-mined onto the physical array.
+
+    ``link_with=`` names the object file to stamp on the herd, for a lowering
+    that emits its own call into it -- ``ops.exp`` and ``ops.rsqrt`` on bf16 are
+    the cases in this tree. It is spelled as the attribute it sets, and as the
+    raw ``@herd`` decorator already spells it. For a call the DSL emits itself,
+    use air.extern, which sets link_with from the kernel's own declaration.
+    """
+    return HerdContext(
+        iterable, name=name, shape=shape, target=target, link_with=link_with
+    )
 
 
 def tensor(shape, dtype, name=None):

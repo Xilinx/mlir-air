@@ -110,8 +110,8 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with=
     c_l1_l2 = air.channel("cL1ToL2")
     c_l2_l3 = air.channel("cL2ToL3")
 
-    vecmat = air.extern(f"vecmat_i8_f32_i32_{bs}", object=link_with)
-    fill = air.extern("linalg_fill_i32_view16x8xi32as2", object=link_with)
+    vecmat = air.extern(f"vecmat_i8_f32_i32_{bs}", link_with=link_with)
+    fill = air.extern("linalg_fill_i32_view16x8xi32as2", link_with=link_with)
 
     with air.launch([range(0, n, tile_n)], name="vecmat_i8") as launch:
 

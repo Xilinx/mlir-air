@@ -106,14 +106,14 @@ def build_module(
     # offset within the C tile; the last of those is a loop variable, which
     # air.extern index_casts.
     matvec = air.extern(
-        "matvec_vectorized_bf16_bf16", object=link_with, scalars=[i32, i32, i32]
+        "matvec_vectorized_bf16_bf16", link_with=link_with, scalars=[i32, i32, i32]
     )
     # No scalar: mv.cc defines `void linalg_fill_bf16(bfloat16 *c_out)`, which
     # takes the buffer alone and gets its extent from -DDIM_M_OUTPUT. The
     # raw-bindings predecessor declared it `(bf16, memref)` and passed a zero
     # constant the callee never read -- harmless, since the C ABI drops the
     # extra leading argument, but the declaration did not describe the symbol.
-    fill = air.extern("linalg_fill_bf16", object=link_with)
+    fill = air.extern("linalg_fill_bf16", link_with=link_with)
 
     A = air.tensor([m, k], dt_in)
     B = air.tensor([k], dt_in)

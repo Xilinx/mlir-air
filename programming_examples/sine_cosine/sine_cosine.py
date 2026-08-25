@@ -4,7 +4,7 @@
 
     kernel = air.extern(
         "sinf_bf16_24_8" if mode == "sin" else "cosf_bf16_24_8",
-        object="sine_cosine.o",
+        link_with="sine_cosine.o",
     )
     ...
     air.ops.load(a, A[i0 : i0 + tile_n])
@@ -88,7 +88,7 @@ def build_module(n, tile_n, herd_n, mode, np_dtype_in):
     # single herd link against them.
     kernel = air.extern(
         "sinf_bf16_24_8" if mode == "sin" else "cosf_bf16_24_8",
-        object="sine_cosine.o",
+        link_with="sine_cosine.o",
     )
 
     with air.launch(name="sine_cosine") as launch:
