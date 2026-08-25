@@ -1,15 +1,43 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Transpose an [M, K] matrix on the way out of L1, on air.api.
+
+    air.ops.load(t, A[:, :])
+    air.ops.store(t.transpose(1, 0), B[:, :])
+
+There is no compute here at all. The transpose is a property of the *access
+pattern* the second DMA walks: the tile is read back with its two axes swapped,
+so the descriptor carries sizes [k, m] and strides [1, k] where the buffer's own
+are [m, k] and [k, 1]. The hand-written predecessor spelled that by passing
+``src_sizes=[1, k, m], src_strides=[1, 1, k]`` to ``dma_memcpy_nd`` as literal
+lists; ``transpose`` derives the identical descriptor from the permutation,
+which is the same thing said in terms of what it means rather than what it
+computes to.
+
+``transpose`` takes a full permutation, numpy-style, rather than being a bare
+``.T``: on an nd machine reversing every axis is rarely what is meant, and
+naming the permutation is what makes a rank-3 or rank-4 version of this readable
+instead of a puzzle.
+
+The L1 tile is ``[m, k]`` rather than the predecessor's flat ``[m * k]``. It
+holds the same bytes and the same transfers move them; the shape is now the
+shape of the thing in it, which is what lets the permutation be written at all.
+
+Both element types the Makefile exercises still work -- ``uint32`` via
+``run_int`` and ``float32`` via ``run_float``. Nothing here is arithmetic, so
+the unsigned type is carried by the transfer without being computed on, which is
+the one place air.api accepts one.
+"""
+
 import argparse
+
 import numpy as np
 
-np.random.seed(42)
+from air import api as air
+from air.api.types import dtype_of
+from air.backend.xrt_runner import XRTRunner
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, type_mapper
+np.random.seed(42)
 
 dtype_map = {
     "uint32": np.uint32,
@@ -18,60 +46,35 @@ dtype_map = {
 DEFAULT_DTYPE = "uint32"
 
 
-@module_builder
-def build_module(m, k, dtype):
-    xrt_dtype = type_mapper(dtype)
+def build_module(m, k, np_dtype):
+    dt = dtype_of(np_dtype)
 
-    memrefTyIn = MemRefType.get(shape=[m, k], element_type=xrt_dtype)
-    memrefTyOut = MemRefType.get(shape=[k, m], element_type=xrt_dtype)
+    A = air.tensor([m, k], dt)
+    B = air.tensor([k, m], dt)
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyIn, memrefTyOut)
-    def transpose(arg0, arg1):
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
-                @herd(name="herd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(_tx, _ty, _sx, _sy, a, b):
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    with air.launch(name="transpose") as launch:
 
-                    # This is the type definition of the tensor
-                    tensor_type = MemRefType.get(
-                        shape=[m * k],  # Read as one large array
-                        element_type=xrt_dtype,
-                        memory_space=mem_space,
-                    )
+        @launch.body
+        def _():
+            with air.segment(name="seg"):
+                with air.herd([range(1)], name="herd", shape=(1,)) as h:
 
-                    # We must allocate a buffer of tile size for the input/output
-                    tensor_in = AllocOp(tensor_type, [], [])
+                    @h.body
+                    def _(tx):
+                        t = air.alloc([m, k], dt, scope=h.private())
+                        air.ops.load(t, A[:, :])
+                        # The whole example: the same tile, walked with its axes
+                        # swapped. A view, not a copy -- nothing moves until the
+                        # store's descriptor walks it.
+                        air.ops.store(t.transpose(1, 0), B[:, :])
 
-                    dma_memcpy_nd(
-                        tensor_in,
-                        a,
-                    )
-
-                    dma_memcpy_nd(
-                        b,
-                        tensor_in,
-                        src_sizes=[1, k, m],
-                        src_strides=[1, 1, k],
-                    )
-
-                    # Deallocate our L1 buffer
-                    DeallocOp(tensor_in)
-
-                    # We must allocate a buffer of tile size for the input/output
-                    tensor_in = AllocOp(tensor_type, [], [])
-
-                    DeallocOp(tensor_in)
+    return launch
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the matrix_scalar_add/single_core_channel example",
+        description="Builds, runs, and tests the data_transfer_transpose/dma example",
     )
 
     parser.add_argument(
@@ -109,13 +112,20 @@ if __name__ == "__main__":
         choices=["xclbin", "elf"],
         default="xclbin",
         dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
     )
 
     args = parser.parse_args()
 
     np_dtype = dtype_map[args.dtype]
-    mlir_module = build_module(args.m, args.k, np_dtype)
+    launch = build_module(args.m, args.k, np_dtype)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -146,6 +156,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         output_format=args.output_format,
         instance_name="transpose",
+        target_device=launch.target,
         runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
