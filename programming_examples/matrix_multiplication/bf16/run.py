@@ -23,10 +23,13 @@ expect:
 One layout does the work, and it is not a memref layout attribute -- it is
 carried by the *shape*, with the reordering derived into the DMA access pattern:
 
-  * ``air.micro_tile(m, k, n)`` gives the L1 tiles their micro-blocked shape,
-    ``[1, 1, K/k, M/m, m, k]`` and friends. This is what makes the contraction
-    expressible as the 6-D ``block_matmul`` the intrinsic wants, and what
-    ``mm.cc`` was compiled against (``-DDIM_M``/``-DDIM_K``/``-DDIM_N``).
+  * The L1 tiles are declared block-first -- ``[1, 1, K/k, M/m, m, k]`` and
+    friends -- so that the block the intrinsic consumes is contiguous. This is
+    what makes the contraction expressible as the 6-D ``block_matmul``, and what
+    ``mm.cc`` was compiled against (``-DDIM_M``/``-DDIM_K``/``-DDIM_N``). The
+    reordering itself is a ``reshape`` plus a ``transpose`` on the L2 region
+    being read, exactly as numpy would express it, and it costs nothing: both
+    are views, so what they produce is the DMA's access pattern.
   * The L2 staging buffers are *flat* -- each is exactly the L3 region it
     holds. Filling and draining them are then plain shape-matching transfers,
     and a core slices its own sub-region out with ordinary arithmetic on its
@@ -88,7 +91,7 @@ def build_module(
     assert tile_k_l2 % tile_k_l1 == 0
 
     dt_in, dt_out = DTYPE[np_dtype_in], DTYPE[np_dtype_out]
-    mm = air.micro_tile(*MMUL_MKN[arch])
+    mm_m, mm_k, mm_n = MMUL_MKN[arch]
 
     # The extent of one L2 staging tile: a segment covers herd_m x herd_n
     # output tiles, and l2_a/l2_b/l2_c below are sized from it. The launch steps
@@ -133,7 +136,14 @@ def build_module(
                     # because the k2 reduction is at segment scope, so it is
                     # allocated here and carries one slab per core.
                     acc = air.alloc(
-                        mm.c(tile_m, tile_n, lead=(herd_m, herd_n)),
+                        [
+                            herd_m,
+                            herd_n,
+                            tile_n // mm_n,
+                            tile_m // mm_m,
+                            mm_m,
+                            mm_n,
+                        ],
                         dt_out,
                         scope=seg.shared(),
                     )
@@ -146,7 +156,7 @@ def build_module(
 
                         @zero_herd.body
                         def _(tx, ty):
-                            acc[:] = 0.0
+                            air.ops.fill(acc, 0.0)
 
                     for k2 in air.sequential(0, k, tile_k_l2):
                         air.ops.load(l2_a, A[row : row + l2_m, k2 : k2 + tile_k_l2])
@@ -161,25 +171,65 @@ def build_module(
                             @h.body
                             def _(tx, ty):
                                 l1_a = air.alloc(
-                                    mm.a(tile_m, tile_k_l1), dt_in, scope=h.private()
+                                    [
+                                        1,
+                                        1,
+                                        tile_k_l1 // mm_k,
+                                        tile_m // mm_m,
+                                        mm_m,
+                                        mm_k,
+                                    ],
+                                    dt_in,
+                                    scope=h.private(),
                                 )
                                 l1_b = air.alloc(
-                                    mm.b(tile_k_l1, tile_n), dt_in, scope=h.private()
+                                    [
+                                        1,
+                                        1,
+                                        tile_n // mm_n,
+                                        tile_k_l1 // mm_k,
+                                        mm_k,
+                                        mm_n,
+                                    ],
+                                    dt_in,
+                                    scope=h.private(),
                                 )
                                 for k1 in air.sequential(0, tile_k_l2, tile_k_l1):
+                                    # [M, K] read block-first: split each axis
+                                    # into (tiles, within-tile), then bring the
+                                    # K tile axis outside the M one. The walk is
+                                    # what packs; nothing is copied.
                                     air.ops.load(
                                         l1_a,
                                         l2_a[
                                             tx * tile_m : tx * tile_m + tile_m,
                                             k1 : k1 + tile_k_l1,
-                                        ],
+                                        ]
+                                        .reshape(
+                                            1,
+                                            1,
+                                            tile_m // mm_m,
+                                            mm_m,
+                                            tile_k_l1 // mm_k,
+                                            mm_k,
+                                        )
+                                        .transpose(0, 1, 4, 2, 3, 5),
                                     )
                                     air.ops.load(
                                         l1_b,
                                         l2_b[
                                             k1 : k1 + tile_k_l1,
                                             ty * tile_n : ty * tile_n + tile_n,
-                                        ],
+                                        ]
+                                        .reshape(
+                                            1,
+                                            1,
+                                            tile_k_l1 // mm_k,
+                                            mm_k,
+                                            tile_n // mm_n,
+                                            mm_n,
+                                        )
+                                        .transpose(0, 1, 4, 2, 3, 5),
                                     )
                                     air.ops.dot(l1_a, l1_b, acc=acc)
 
@@ -191,8 +241,10 @@ def build_module(
 
                         @drain_herd.body
                         def _(tx, ty):
+                            # The drain is the inverse walk: no reshape, just
+                            # put the M axes back outside the N ones.
                             air.ops.store(
-                                acc[tx, ty, :, :],
+                                acc[tx, ty, :, :, :, :].transpose(0, 1, 3, 4, 2, 5),
                                 l2_c[
                                     tx * tile_m : tx * tile_m + tile_m,
                                     ty * tile_n : ty * tile_n + tile_n,

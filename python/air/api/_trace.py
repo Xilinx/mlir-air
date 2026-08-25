@@ -33,7 +33,6 @@ import itertools
 import re
 
 from ._index import IndexExpr, Leaf
-from ._pack import PackedShape
 from ._value import Buffer, Tensor, Token
 
 __all__ = [
@@ -940,6 +939,9 @@ class HerdContext:
         # has run it.
         enclosing = current_segment(required=False)
         staged = list(enclosing._buffers) if enclosing is not None else []
+        # The herd is the first thing that knows how many of a shared buffer's
+        # leading dimensions are cores, so it is where their L1 charge is gated.
+        _charge_shared_l1(enclosing, len(self.grid), self.name)
         # An unrolled segment's own coordinates, threaded in for the same reason
         # the L2 buffers are: air.herd is IsolatedFromAbove, so a body that
         # indexes a channel by segment coordinate cannot simply reference it.
@@ -1105,21 +1107,6 @@ def alloc(shape, dtype, scope=None, vector=None):
         # private() is the memtile; shared() is core L1 with segment lifetime.
         if scope.kind == "shared":
             space, memory_space, capacity = "L1", MemorySpace.L1, L1_BYTES
-            if not isinstance(shape, PackedShape):
-                # The L1 budget for a shared buffer is per *core*, so the
-                # accounting has to know which leading dimensions are the herd.
-                # A PackedShape records them; a plain list does not, and
-                # guessing would either overcharge (rejecting a design that
-                # fits) or undercharge (passing one that does not).
-                raise NotImplementedError(
-                    "<segment>.shared() currently requires a micro-tiled shape "
-                    "from air.micro_tile(...), because the per-core L1 charge "
-                    "depends on knowing which leading dimensions are the herd. "
-                    f"Got a plain shape {list(shape)}. Either allocate it with "
-                    "mm.c(...)/mm.a(...)/mm.b(...), or, if the buffer does not "
-                    "have to outlive one entry into the herd, allocate it "
-                    "per-core in the herd body with <herd>.private()."
-                )
         else:
             space, memory_space, capacity = (
                 "L2",
@@ -1169,36 +1156,37 @@ def alloc(shape, dtype, scope=None, vector=None):
         nbytes *= int(extent)
     nbytes *= dtype.itemsize
     if scope.kind == "shared":
-        # A herd-shared buffer is declared once with leading herd dimensions,
-        # and each core addresses exactly one slab of it. Charging the whole
-        # thing against one core's 64 KB would reject configurations that fit
-        # comfortably -- a 4x4 herd of 16 KB slabs is 256 KB in total and 16 KB
-        # per core. The leading dimensions are the herd shape by construction:
-        # that is what makes the per-core subview well defined.
-        per_core = nbytes
-        for extent in shape.lead:
-            per_core //= int(extent)
-        nbytes = per_core
-    # A segment holds L2 memtile buffers and herd-shared L1 buffers at once, so
-    # each budget only counts its own space.
-    live = sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
-    if space == "L1":
-        unit, verb = "a compute tile", "has"
+        # A herd-shared buffer is declared once with one leading dimension per
+        # herd axis, and each core addresses exactly one slab of it. Charging
+        # the whole thing against one core's 64 KB would reject configurations
+        # that fit comfortably -- a 4x4 herd of 16 KB slabs is 256 KB in total
+        # and 16 KB per core. How many leading dimensions are the herd is the
+        # herd's business, and no herd has been entered yet: this is segment
+        # scope. So the charge is deferred to the herd -- see _charge_shared_l1.
+        pass
     else:
-        cols = DEVICE_COLUMNS[current_target()]
-        unit, verb = f"this device's {cols} memtiles", "have"
-    if nbytes > capacity:
-        raise ValueError(
-            f"air.alloc({list(shape)}, {dtype}) needs {nbytes / 1024:.1f} KB but "
-            f"{unit} {verb} {capacity / 1024:.0f} KB of {space}; use a smaller "
-            "tile"
+        # A segment holds L2 memtile buffers and herd-shared L1 buffers at once,
+        # so each budget only counts its own space.
+        live = (
+            sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
         )
-    if live > capacity:
-        raise ValueError(
-            f"{space} budget exceeded: this {where.split()[-1]} body has "
-            f"{live / 1024:.1f} KB of live buffers but {unit} {verb} "
-            f"{capacity / 1024:.0f} KB; use a smaller tile"
-        )
+        if space == "L1":
+            unit, verb = "a compute tile", "has"
+        else:
+            cols = DEVICE_COLUMNS[current_target()]
+            unit, verb = f"this device's {cols} memtiles", "have"
+        if nbytes > capacity:
+            raise ValueError(
+                f"air.alloc({list(shape)}, {dtype}) needs {nbytes / 1024:.1f} KB "
+                f"but {unit} {verb} {capacity / 1024:.0f} KB of {space}; use a "
+                "smaller tile"
+            )
+        if live > capacity:
+            raise ValueError(
+                f"{space} budget exceeded: this {where.split()[-1]} body has "
+                f"{live / 1024:.1f} KB of live buffers but {unit} {verb} "
+                f"{capacity / 1024:.0f} KB; use a smaller tile"
+            )
 
     op = AllocOp(memref_ty, [], [])
     buf = Buffer(
@@ -1208,30 +1196,66 @@ def alloc(shape, dtype, scope=None, vector=None):
         vector_width=vector,
         value=op.result,
         space=space,
-        # A PackedShape is an ordinary tuple as far as the memref is concerned --
-        # the packing is not a layout, it is just this shape. Carrying the
-        # descriptor onto the buffer is what lets ops.load/store derive the
-        # micro-tiled access pattern without the call site restating it.
-        pack=shape if isinstance(shape, PackedShape) else None,
     )
     holder.register_buffer(buf)
-    if space == "L1":
+    if space == "L1" and scope.kind != "shared":
         trace = active_trace()
         trace.l1_peak = max(trace.l1_peak, live)
     return buf
 
 
-def _buffer_bytes(buf):
+def _buffer_bytes(buf, nlead=0):
     n = buf.dtype.itemsize
     for extent in buf.shape:
         n *= extent
-    # Mirror the per-core charge applied when a herd-shared buffer was
-    # allocated, so the running total and the new allocation are on the same
-    # footing.
-    if getattr(buf.scope, "kind", None) == "shared" and buf.pack is not None:
-        for extent in buf.pack.lead:
-            n //= int(extent)
+    # A herd-shared buffer is charged per core: its first `nlead` dimensions are
+    # the herd, and a core touches one slab.
+    for extent in buf.shape[:nlead]:
+        n //= int(extent)
     return n
+
+
+def _charge_shared_l1(segment, nlead, herd_name):
+    """Gate the L1 budget for herd-shared buffers, now that the herd is known.
+
+    ``<segment>.shared()`` allocates at segment scope, where nothing yet says
+    how many of the buffer's leading dimensions are cores rather than tile. The
+    herd is what says, so the check waits until one is entered. Deferring it is
+    not a loosening: a shared buffer is unusable without a herd, so every one
+    of them reaches this.
+    """
+    if segment is None:
+        return
+    shared = [
+        b
+        for b in segment._buffers
+        if b.space == "L1" and getattr(b.scope, "kind", None) == "shared"
+    ]
+    if not shared:
+        return
+    for b in shared:
+        if len(b.shape) <= nlead:
+            raise ValueError(
+                f"air.alloc({list(b.shape)}, {b.dtype}) is herd-shared and the "
+                f"herd {herd_name!r} is {nlead}-D, so its first {nlead} "
+                "dimension(s) are the cores -- leaving nothing for the tile "
+                "itself. Give it one leading dimension per herd axis and at "
+                "least one more."
+            )
+    live = sum(_buffer_bytes(b, nlead) for b in shared)
+    if live > L1_BYTES:
+        detail = ", ".join(
+            f"{list(b.shape)} {b.dtype} ({_buffer_bytes(b, nlead) / 1024:.1f} KB "
+            "per core)"
+            for b in shared
+        )
+        raise ValueError(
+            f"L1 budget exceeded: the buffers shared across herd {herd_name!r} "
+            f"come to {live / 1024:.1f} KB per core but a compute tile has "
+            f"{L1_BYTES / 1024:.0f} KB -- {detail}; use a smaller tile"
+        )
+    trace = active_trace()
+    trace.l1_peak = max(trace.l1_peak, live)
 
 
 def symbol(choices=None, hint=None, default=64, name=None):

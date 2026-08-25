@@ -843,118 +843,150 @@ def _():
 
 
 # ---------------------------------------------------------------------------
-# Micro-tiled (packed) layouts
+# Blocked layouts
 #
-# Every one of these is a case where guessing would produce a kernel that runs
-# and is silently wrong -- a mismatched micro-tile contracts the wrong elements,
-# and a whole-buffer drain copies a tile still in micro-tile order.
+# A tile is laid out block-first by reshaping and transposing the region being
+# moved, so the failures here are numpy's failures: a reshape with no view, a
+# permutation that is not one, a transfer whose two ends hold different numbers
+# of elements. Every one of them would otherwise produce a kernel that runs and
+# is silently wrong -- a mismatched block contracts the wrong elements, and a
+# whole-buffer drain copies a tile still in block order.
 # ---------------------------------------------------------------------------
 
 
-def _mm():
-    return air.micro_tile(m=4, k=8, n=4)
+# The AIE2 bf16 block is 4x8 by 8x4. Written out rather than generated, so the
+# shapes below say what they are.
+def _a(M, K, m=4, k=8):
+    return [1, 1, K // k, M // m, m, k]
 
 
-# CHECK-LABEL: TEST: micro_tile_does_not_divide
-# CHECK: ValueError: operand A's M extent 30 is not a multiple of the micro-tile m=4
-@expect(ValueError, "micro_tile_does_not_divide")
-def _():
-    _mm().a(30, 32)
+def _b(K, N, k=8, n=4):
+    return [1, 1, N // n, K // k, k, n]
 
 
-# CHECK-LABEL: TEST: packed_buffer_no_whole_drain
-# A whole-buffer store emits `[] [] []`, a contiguous read, which would copy the
-# tile still micro-tiled. The unpack *is* the access pattern.
-# CHECK: TypeError: air.api.ops.store cannot drain a micro-tiled buffer whole
-@expect(TypeError, "packed_buffer_no_whole_drain")
+def _c(M, N, m=4, n=4, lead=(1, 1)):
+    return list(lead) + [N // n, M // m, m, n]
+
+
+# CHECK-LABEL: TEST: reshape_element_count_must_match
+# numpy's rule: a reshape rearranges, it never adds or drops elements.
+# CHECK: ValueError: cannot reshape a (30, 32) view (960 elements)
+@expect(ValueError, "reshape_element_count_must_match")
 def _():
     def body(seg, A, C):
-        mm = _mm()
+        l2 = air.alloc([32, 32], bf16, scope=seg.private())
+        l2[0:30, 0:32].reshape(1, 1, 8, 4, 4, 8)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: reshape_must_be_a_view
+# A reshape that no stride can describe would need a copy, and a hidden copy
+# here is a hidden L2 transfer. numpy copies silently; this refuses.
+# CHECK: ValueError: cannot reshape a (4, 8) view with strides
+@expect(ValueError, "reshape_must_be_a_view")
+def _():
+    def body(seg, A, C):
+        l2 = air.alloc([32, 32], bf16, scope=seg.private())
+        # Rows 0:4 of a 32-wide buffer are not contiguous with each other, so
+        # the 32 elements they hold cannot be walked as one axis.
+        l2[0:4, 0:8].reshape(32)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: transpose_takes_a_full_permutation
+# As in numpy: transpose reorders every axis, so a partial list is an error
+# rather than an implied identity on the rest.
+# CHECK: ValueError: transpose(1, 0) is not a permutation of a rank-4 view
+@expect(ValueError, "transpose_takes_a_full_permutation")
+def _():
+    def body(seg, A, C):
+        l2 = air.alloc([32, 32], bf16, scope=seg.private())
+        l2[0:32, 0:32].reshape(8, 4, 4, 8).transpose(1, 0)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: blocked_buffer_no_whole_drain
+# A whole-buffer store emits `[] [] []`, a contiguous read, which would copy the
+# tile still in block order. The unpack *is* the access pattern, so the source
+# has to be subscripted and permuted for one to exist.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.store
+@expect(ValueError, "blocked_buffer_no_whole_drain")
+def _():
+    def body(seg, A, C):
         l2 = air.alloc([1, 1, 32, 32], bf16, scope=seg.private())
-        acc = air.alloc(mm.c(32, 32), bf16, scope=seg.shared())
+        acc = air.alloc(_c(32, 32), bf16, scope=seg.shared())
         ops.store(acc, l2[0, 0, :, :])
 
     _staged(body)
 
 
-# CHECK-LABEL: TEST: packed_load_needs_a_region
-# CHECK: TypeError: air.api.ops.load into a micro-tiled buffer needs a source *region*
-@expect(TypeError, "packed_load_needs_a_region")
+# CHECK-LABEL: TEST: blocked_load_shape_must_match
+# Filling a blocked tile from an unpermuted region moves the right number of
+# elements in the wrong order, so the shapes are what catch it.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.load
+@expect(ValueError, "blocked_load_shape_must_match")
 def _():
     def body(h, tx, ty, A, B, C):
-        l1 = air.alloc(_mm().a(32, 16), bf16, scope=h.private())
+        l1 = air.alloc(_a(32, 16), bf16, scope=h.private())
         other = air.alloc([1, 1, 32, 32], bf16, scope=h.private())
         ops.load(l1, other)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: packed_operands_must_share_a_micro_tile
-# CHECK: ValueError: air.api.ops.dot needs one micro-tile across all three operands
-@expect(ValueError, "packed_operands_must_share_a_micro_tile")
+# CHECK-LABEL: TEST: blocked_operands_must_share_a_block
+# CHECK: ValueError: air.api.ops.dot block mismatch: a x b is 4x8 per block
+@expect(ValueError, "blocked_operands_must_share_a_block")
 def _():
     def body(h, tx, ty, A, B, C):
-        a = air.alloc(air.micro_tile(4, 8, 4).a(32, 16), bf16, scope=h.private())
-        b = air.alloc(air.micro_tile(4, 8, 8).b(16, 32), bf16, scope=h.private())
-        c = air.alloc(air.micro_tile(4, 8, 4).c(32, 32), bf16, scope=h.private())
+        a = air.alloc(_a(32, 16), bf16, scope=h.private())
+        b = air.alloc(_b(16, 32, n=8), bf16, scope=h.private())
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
         ops.dot(a, b, acc=c)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: packed_operand_roles_must_match
-# CHECK: ValueError: air.api.ops.dot expects b to be a micro-tiled B operand
-@expect(ValueError, "packed_operand_roles_must_match")
+# CHECK-LABEL: TEST: blocked_operands_must_agree_on_k
+# Passing an A-shaped tile where B belongs: its last two axes read as (k, n),
+# so the k it offers is not the k a offers.
+# CHECK: ValueError: air.api.ops.dot block mismatch: a's trailing axes are 4x8, so it offers k=8
+@expect(ValueError, "blocked_operands_must_agree_on_k")
 def _():
     def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        b = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        a = air.alloc(_a(32, 16), bf16, scope=h.private())
+        b = air.alloc(_a(32, 16), bf16, scope=h.private())
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
         ops.dot(a, b, acc=c)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: packed_contraction_extents_must_agree
+# CHECK-LABEL: TEST: blocked_contraction_extents_must_agree
 # CHECK: ValueError: air.api.ops.dot shape mismatch: a is 32x16 and b is 32x32
-@expect(ValueError, "packed_contraction_extents_must_agree")
+@expect(ValueError, "blocked_contraction_extents_must_agree")
 def _():
     def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        b = air.alloc(mm.b(32, 32), bf16, scope=h.private())
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        a = air.alloc(_a(32, 16), bf16, scope=h.private())
+        b = air.alloc(_b(32, 32), bf16, scope=h.private())
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
         ops.dot(a, b, acc=c)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: unpacked_operand_in_packed_dot
-# CHECK: TypeError: air.api.ops.dot got rank-6 operands
-@expect(TypeError, "unpacked_operand_in_packed_dot")
+# CHECK-LABEL: TEST: fill_takes_a_scalar
+# ops.fill exists so that zeroing an accumulator is one linalg.fill rather than
+# a six-deep scalar loop nest; an expression belongs in an assignment.
+# CHECK: TypeError: air.api.ops.fill takes a scalar
+@expect(TypeError, "fill_takes_a_scalar")
 def _():
     def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        b = air.alloc([1, 1, 8, 2, 8, 4], bf16, scope=h.private())
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
-        ops.dot(a, b, acc=c)
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: no_elementwise_expression_on_packed
-# The elements are not in row-major order, so an elementwise expression over a
-# packed buffer would not mean what it reads like.
-# CHECK: NotImplementedError: only a scalar fill is supported on a micro-tiled buffer
-@expect(NotImplementedError, "no_elementwise_expression_on_packed")
-def _():
-    def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
-        d = air.alloc(mm.c(32, 32), bf16, scope=h.private())
-        c[:] = d[:]
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
+        ops.fill(c, [0.0])
 
     _trace(body)
 
@@ -982,15 +1014,21 @@ def _():
     _staged(body)
 
 
-# CHECK-LABEL: TEST: shared_alloc_needs_a_packed_shape
-# The per-core L1 charge depends on knowing which leading dimensions are the
-# herd; a plain shape does not say, and guessing either way misreports the
-# budget.
-# CHECK: NotImplementedError: <segment>.shared() currently requires a micro-tiled shape
-@expect(NotImplementedError, "shared_alloc_needs_a_packed_shape")
+# CHECK-LABEL: TEST: shared_alloc_leaves_room_for_a_tile
+# A shared buffer's leading dimensions are the cores, one per herd axis. The
+# check waits for a herd because nothing at segment scope knows how many that
+# is -- and here the 2-D herd would claim both of a rank-2 buffer's axes,
+# leaving each core a slab of nothing.
+# CHECK: ValueError: air.alloc([4, 4], air.api.bf16) is herd-shared and the herd
+@expect(ValueError, "shared_alloc_leaves_room_for_a_tile")
 def _():
     def body(seg, A, C):
-        air.alloc([1, 1, 32, 32], bf16, scope=seg.shared())
+        air.alloc([4, 4], bf16, scope=seg.shared())
+        with air.herd([range(2), range(2)], name="h") as h:
+
+            @h.body
+            def _(tx, ty):
+                pass
 
     _staged(body)
 
@@ -1193,82 +1231,32 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: channel_pack_not_a_packed_shape
-# pack= takes a shape from air.micro_tile(...).a/.b, not a plain list: the
-# micro-tile is what the walk is derived from, and a bare list carries none.
-# CHECK: TypeError: air.channel.put(pack=...) takes a packed shape from air.micro_tile
-@expect(TypeError, "channel_pack_not_a_packed_shape")
-def _():
-    ch = air.channel("P")
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([16, 8], bf16, scope=h.private())
-        ch.put(buf[0:16, 0:8], pack=[2, 2, 8, 8])
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_needs_a_region
-# The pack reorders a *slice* of a flat staging buffer, so there has to be one
-# to reorder; a whole buffer carries no pattern to rewrite.
-# CHECK: TypeError: air.channel.put(pack=...) needs a *region* to walk
-@expect(TypeError, "channel_pack_needs_a_region")
-def _():
-    ch = air.channel("Q")
-    mm = air.micro_tile(1, 16, 8)
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([16, 8], bf16, scope=h.private())
-        ch.put(buf, pack=mm.b(16, 8, lead=()))
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_c_operand
-# A C accumulator unpacks the other way round -- the pattern belongs on the
-# packed buffer, not on the channel -- so asking a channel to pack one raises
-# instead of emitting a walk that would drain it in the wrong order.
-# CHECK: NotImplementedError: air.channel.put(pack=...) packs an A or B operand
-@expect(NotImplementedError, "channel_pack_c_operand")
-def _():
-    ch = air.channel("R")
-    mm = air.micro_tile(1, 16, 8)
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([16, 8], bf16, scope=h.private())
-        ch.put(buf[0:16, 0:8], pack=mm.c(16, 8, lead=()))
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_wrong_rank
-# The region has to end in the operand's two logical axes; a rank-1 slice has
-# only one, so there is nothing to split into micro-tiles.
-# CHECK: ValueError: air.channel.put(pack=...) needs a region of rank 2 for a B operand
-@expect(ValueError, "channel_pack_wrong_rank")
-def _():
-    ch = air.channel("S")
-    mm = air.micro_tile(1, 16, 8)
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([128], bf16, scope=h.private())
-        ch.put(buf[0:128], pack=mm.b(16, 8, lead=()))
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_indivisible
-# The region's extents must be whole micro-tiles: 20 is not a multiple of the
-# k=16 the buffer would be packed with.
-# CHECK: ValueError: operand B's K extent 20 is not a multiple of the micro-tile k=16
-@expect(ValueError, "channel_pack_indivisible")
+# CHECK-LABEL: TEST: transpose_axes_must_be_a_permutation
+# A repeated axis would visit some elements twice and others never, which is
+# not a view of anything -- numpy rejects it for the same reason.
+# CHECK: ValueError: transpose(0, 0, 2, 3) is not a permutation of a rank-4 view
+@expect(ValueError, "transpose_axes_must_be_a_permutation")
 def _():
     ch = air.channel("T")
-    mm = air.micro_tile(1, 16, 8)
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf[0:16, 0:8].reshape(2, 8, 1, 8).transpose(0, 0, 2, 3))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_put_block_must_divide
+# The region's extents have to be whole blocks: 20 is not a multiple of the
+# k=16 it would be split into, so the split has no view.
+# CHECK: ValueError: cannot reshape a (20, 8) view (160 elements)
+@expect(ValueError, "channel_put_block_must_divide")
+def _():
+    ch = air.channel("T")
 
     def body(h, tx, ty, A, B, C):
         buf = air.alloc([20, 8], bf16, scope=h.private())
-        ch.put(buf[0:20, 0:8], pack=mm.b(20, 8, lead=()))
+        ch.put(buf[0:20, 0:8].reshape(20 // 16, 16, 1, 8).transpose(2, 0, 1, 3))
 
     _trace(body)
 
