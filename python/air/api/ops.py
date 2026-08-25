@@ -444,15 +444,74 @@ def cast(x, dtype):
         return expr
     require_signless(source, "air.api.ops.cast")
     require_signless(dtype, "air.api.ops.cast")
-    _conversion_op(source, dtype)  # raises here, at the call site, not at emit
+    if not _clamped_into(expr, dtype):
+        # raises here, at the call site, not at emit
+        _conversion_op(source, dtype)
     return BufferExpr("cast", args=(expr,), dtype=dtype)
 
 
-def _conversion_op(source, target):
+def _int_range(dtype):
+    """The inclusive [lo, hi] a signed integer dtype can represent."""
+    bits = dtype.itemsize * 8
+    return -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
+
+
+def _const_operand(node):
+    """The Python value of a scalar leaf, or ``None`` if it is not one."""
+    if node.kind == "scalar" and isinstance(node.scalar, (int, bool)):
+        return int(node.scalar)
+    return None
+
+
+def _clamped_into(expr, target):
+    """True if *expr* is a clamp whose bounds provably fit *target*.
+
+    This is the one narrowing int -> int cast that is allowed, and it is
+    allowed because the objection to the rest does not apply to it. That
+    objection -- see ``_conversion_op`` -- is that arith.trunci wraps on the
+    emitter's scalar path and saturates on its vector path, so the same source
+    would compute different things depending on the tile shape. The two
+    disagree only on values the target cannot hold. When the operand is
+    ``minimum(maximum(x, lo), hi)`` with constant lo and hi inside the target's
+    range, no such value can reach the cast, both paths agree, and the result
+    is a property of the program again.
+
+    That is a structural check, not a promise from the caller: the clamp has to
+    be *there*, in the expression tree, with constant bounds. ``_conversion_op``
+    ends by saying in-range values agree and nothing can check it -- this is
+    the case where something can.
+
+    Deliberately narrow. Either order of the pair is accepted, since clamping
+    is commutative here, but a runtime bound, a bound read from a buffer, or a
+    clamp one operation further away all fall through to the refusal.
+    """
+    if target.is_float:
+        return False
+    if not (expr.kind == "binary" and expr.op in ("min", "max")):
+        return False
+    inner = expr.args[0] if expr.args[0].kind == "binary" else None
+    outer_bound = _const_operand(expr.args[1]) if len(expr.args) == 2 else None
+    if inner is None or outer_bound is None:
+        return False
+    if not (inner.op in ("min", "max") and inner.op != expr.op):
+        return False
+    inner_bound = _const_operand(inner.args[1]) if len(inner.args) == 2 else None
+    if inner_bound is None:
+        return False
+    hi = outer_bound if expr.op == "min" else inner_bound
+    lo = inner_bound if expr.op == "min" else outer_bound
+    t_lo, t_hi = _int_range(target)
+    return lo >= t_lo and hi <= t_hi and lo <= hi
+
+
+def _conversion_op(source, target, narrowing_ok=False):
     """The arith op converting ``source`` to ``target``, or a refusal.
 
     Shared by ``cast`` (so a bad pair is rejected where the user wrote it) and
     by the emitter (so it does not need a second copy of the rules).
+
+    ``narrowing_ok`` is set only for the int -> int narrowing that
+    ``_clamped_into`` has proven safe; see the comment on the refusal below.
     """
     from air.dialects import arith
 
@@ -482,7 +541,10 @@ def _conversion_op(source, target):
     # takes depends on whether the tile is a multiple of the vector width,
     # which is not something the author of the cast is thinking about, so the
     # same source would compute two different things depending on the tile
-    # size. In-range values agree, but nothing here can check that.
+    # size. In-range values agree, and _clamped_into is the one case where
+    # that can be established from the expression tree rather than assumed.
+    if narrowing_ok:
+        return arith.TruncIOp
     raise NotImplementedError(
         f"air.api.ops.cast will not narrow {source} to {target}: on AIE the "
         f"vectorised arith.trunci saturates while the scalar one wraps, and "
