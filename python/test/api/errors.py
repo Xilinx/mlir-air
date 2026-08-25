@@ -1489,6 +1489,24 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: shift_by_a_folded_index_expression
+# "Constant" has to mean "folds to a constant", not "was typed as an int
+# literal". Index arithmetic over herd coordinates is ordinary in a kernel
+# body, and `tx - tx + 32` reaches the emitter as a literal arith.constant 32 --
+# by then indistinguishable from having been written as 32, and just as much
+# poison. Reading it back needs as_const(): IndexExpr implements neither
+# equality nor int conversion against a Python int, so an isinstance test alone
+# classifies every index expression as runtime and lets the folded ones past.
+# CHECK: ValueError: shift count 32 is not less than the width of air.api.i32
+@expect(ValueError, "shift_by_a_folded_index_expression")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        a[:] = a[:] >> (tx - tx + 32)
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: shift_width_is_per_dtype
 # i8 runs out eight times sooner, so the check reads the operand's own width
 # rather than assuming 32.

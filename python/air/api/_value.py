@@ -556,10 +556,23 @@ def _check_shift_amount(amount, value, op):
     is the closest this can get to Python's own ValueError. A count that is not
     a compile-time constant cannot be checked and is documented rather than
     guarded -- see the shift operators on ``BufferExpr``.
+
+    "Constant" has to include an IndexExpr that folds to one. Index arithmetic
+    over herd coordinates is ordinary in a kernel body, and ``tx - tx + 32``
+    reaches the emitter as a literal ``arith.constant 32`` -- indistinguishable,
+    by the time it gets there, from having been written as ``32``. Reading it
+    back has to go through ``as_const()``: IndexExpr does not implement equality
+    or int conversion against a Python int, so an isinstance test alone sees
+    every index expression as "runtime" and lets the folded ones through.
     """
-    if amount.kind != "scalar" or not isinstance(amount.scalar, (int, bool)):
+    if amount.kind != "scalar":
+        return  # not a scalar operand at all: nothing to check
+    count = amount.scalar
+    if hasattr(count, "as_const"):
+        count = count.as_const()  # None when it is genuinely runtime
+    if not isinstance(count, (int, bool)):
         return  # runtime amount: nothing to check, see the docstring
-    count = int(amount.scalar)
+    count = int(count)
     dtype = value.element_dtype()
     spelling = "<<" if op == "shl" else ">>"
     if count < 0:
