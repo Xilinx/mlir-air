@@ -1170,6 +1170,20 @@ def alloc(shape, dtype, scope=None, vector=None):
         live = (
             sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
         )
+        if space == "L1" and isinstance(owner, HerdContext):
+            # A core's 64 KB holds its private tiles *and* its slab of whatever
+            # the enclosing segment shares across the herd. Those are one
+            # budget, not two: charging them separately passes a design that
+            # overflows once they are added up, which surfaces later as a
+            # placement failure rather than as an air.alloc error.
+            enclosing = current_segment(required=False)
+            if enclosing is not None:
+                nlead = len(owner.grid)
+                live += sum(
+                    _buffer_bytes(b, nlead)
+                    for b in enclosing._buffers
+                    if b.space == "L1" and getattr(b.scope, "kind", None) == "shared"
+                )
         if space == "L1":
             unit, verb = "a compute tile", "has"
         else:

@@ -52,7 +52,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       api/_extern.py
       api/_index.py
       api/_loop.py
-      api/_pack.py
       api/_trace.py
       api/_value.py
       api/ops.py

@@ -77,6 +77,19 @@ def _check_axes(axes, rank):
         )
 
 
+def _carries_offset(offset):
+    """True unless the offset is a compile-time zero.
+
+    A runtime offset counts as carrying one: it may well be non-zero, and a
+    reshape has no way to prove otherwise. This has to go through as_const()
+    rather than comparing to 0 -- IndexExpr does not implement equality against
+    an int, so ``offset != 0`` is true for every offset, compile-time zero
+    included, which would make the two branches below unreachable in turn.
+    """
+    value = offset.as_const() if hasattr(offset, "as_const") else offset
+    return value != 0
+
+
 def _reshape_pattern(sizes, strides, offsets, shape):
     """Re-express one walk at a different rank, or refuse.
 
@@ -113,26 +126,23 @@ def _reshape_pattern(sizes, strides, offsets, shape):
     out_sizes, out_strides, out_offsets = [], [], []
     i = j = 0
     while i < len(sizes) or j < len(shape):
-        # A unit axis that carries an offset is a choice of slab -- a staging
-        # buffer indexed per core, say -- so it has to survive the reshape. Pair
-        # it with a unit output axis and keep both its offset and its stride;
-        # merging it into a group would demand its offset at trace time, which
-        # a herd coordinate does not have.
-        if (
-            i < len(sizes)
-            and j < len(shape)
-            and sizes[i] == 1
-            and shape[j] == 1
-            and offsets[i] != 0
-        ):
+        # Unit axes pair up positionally: a size-1 input axis maps onto a
+        # size-1 output axis and keeps its own offset and stride. Pairing does
+        # not consult the offset, because which axis an offset sits on is not
+        # the reshape's to decide -- a staging buffer indexed per core carries a
+        # herd coordinate here, and it has to come out on the axis it went in
+        # on.
+        if i < len(sizes) and j < len(shape) and sizes[i] == 1 and shape[j] == 1:
             out_sizes.append(1)
             out_strides.append(strides[i])
             out_offsets.append(offsets[i])
             i += 1
             j += 1
             continue
-        # Skip unit axes: they hold no elements and constrain nothing.
-        if i < len(sizes) and sizes[i] == 1 and offsets[i] == 0:
+        # A unit input axis with no unit output axis left to pair with holds no
+        # elements, so it can be dropped -- but only when it carries no offset,
+        # since dropping a non-zero one would move the window.
+        if i < len(sizes) and sizes[i] == 1 and not _carries_offset(offsets[i]):
             i += 1
             continue
         if j < len(shape) and shape[j] == 1:
