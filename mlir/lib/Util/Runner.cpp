@@ -438,6 +438,18 @@ public:
   void scheduleLaunch(runnerNode &launch, device &device_resource_node,
                       uint64_t &time) {
 
+    // Note whether anything reported an error while this launch ran, so the
+    // stall check at the end can stay quiet when a more specific diagnostic
+    // has already been given. Returning failure leaves the diagnostic for the
+    // default handler to print.
+    bool diagnosticEmitted = false;
+    mlir::ScopedDiagnosticHandler diagHandler(
+        launch.ctrl_g->hierarchyOp->getContext(), [&](mlir::Diagnostic &diag) {
+          if (diag.getSeverity() == mlir::DiagnosticSeverity::Error)
+            diagnosticEmitted = true;
+          return mlir::failure();
+        });
+
     auto start_v = launch.ctrl_g->start_vertex;
     // Reset launch graph
     launch.processed_vertices.clear();
@@ -498,6 +510,26 @@ public:
       if (time > 5000000000)
         running = false;
     }
+
+    // The loop stops as soon as no runner node can make progress. That is the
+    // normal end of a simulation, but it is also exactly what a stall looks
+    // like: an op that can never satisfy its dispatch condition -- a
+    // channel.get whose matching put count can never be reached, say -- simply
+    // stops being retried, and everything behind it is abandoned. The reported
+    // time is then a plausible-looking number for a run that never happened.
+    // Reaching the launch terminator is the check that the whole graph ran.
+    //
+    // Only diagnose it when nothing else already has: a run that stopped
+    // because a hierarchy could not be allocated has reported its own reason,
+    // and not reaching the terminator is the expected consequence.
+    auto terminator_v = launch.ctrl_g->terminator_vertex;
+    launch.runner_assertion(
+        launch.ctrl_g->g[terminator_v].is_started() || diagnosticEmitted,
+        "simulation stalled at " + std::to_string(time) +
+            " cycles without reaching the launch terminator. Some op could "
+            "never satisfy its dispatch condition; the most common cause is a "
+            "channel whose put and get disagree on how many spatial instances "
+            "they represent, so the pair can never be matched.");
   }
 
 private:
