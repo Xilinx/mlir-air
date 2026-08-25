@@ -103,7 +103,9 @@ def chains(path):
             out[key][3].append(int(m.group(2)))
         if END_RE.match(ln):
             cur, key = None, None
-    return {k: (v[0], v[1], sorted(set(v[2])), sorted(set(v[3]))) for k, v in out.items()}
+    return {
+        k: (v[0], v[1], sorted(set(v[2])), sorted(set(v[3]))) for k, v in out.items()
+    }
 
 
 def dupes(chans):

@@ -37,6 +37,7 @@ Exit code is the gate: 0 every channel scaled symmetrically.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -214,6 +215,15 @@ print(json.dumps(acc))
 
 
 def balance(model, chunk, batch):
+    """Emit at `batch` and return the per-channel put/get counts.
+
+    Returns `(counts, batch_used)`. The batch may come back LOWER than asked
+    for: the rms core's L1 ceiling is per model (`BATCH_MAX_RMS`), and
+    qwen3-4b's is below the 8 this gate defaults to. Clamping is the right
+    answer rather than skipping the model — the question here is whether both
+    sides of a channel scale together, and any batch above 1 asks it. The
+    ceiling is parsed out of the builder's own refusal so the two cannot drift.
+    """
     env = dict(os.environ, LM_HEAD="0", NLAYERS="1", DECODE_GOLDEN="1", UNIFIED="1")
     env["DECODE_MODEL"] = model
     env["VOCAB_CHUNK_I2"] = str(chunk)
@@ -229,10 +239,13 @@ def balance(model, chunk, batch):
         env=env,
     )
     if r.returncode:
+        cap = re.search(r"exceeds the rms core's L1 ceiling of (\d+)", r.stderr)
+        if cap and int(cap.group(1)) > 1 and int(cap.group(1)) < batch:
+            return balance(model, chunk, int(cap.group(1)))
         sys.exit(f"build failed ({model}, batch {batch}):\n{r.stderr[-3000:]}")
     import json
 
-    return json.loads(r.stdout.strip().splitlines()[-1])
+    return json.loads(r.stdout.strip().splitlines()[-1]), batch
 
 
 def ratio(a, b):
@@ -317,9 +330,14 @@ def main():
     print("\nchannel scaling  [how each SIDE grew from batch 1]")
     bad = []
     for model, chunk in models:
-        one = balance(model, chunk, 1)
-        many = balance(model, chunk, args.batch)
-        bad += report(model, args.batch, one, many, args.verbose)
+        one, _ = balance(model, chunk, 1)
+        many, used = balance(model, chunk, args.batch)
+        if used != args.batch:
+            print(
+                f"\n  {model}: capped at batch {used} -- its rms core's L1 "
+                f"ceiling is below the requested {args.batch}"
+            )
+        bad += report(model, used, one, many, args.verbose)
 
     if bad:
         print(

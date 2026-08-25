@@ -13,16 +13,23 @@ It reads the real buffer shapes out of fused_decode.py for the selected model
 rather than restating them, the same way llms/bench/decode_geometry.py reads BO
 sizes -- a restated shape is a shape that silently goes stale.
 
-SCOPE. Two tile roles are reported exactly, because their buffer sets are
+SCOPE. Three tile roles are reported exactly, because their buffer sets are
 unambiguous in the builder:
 
   proj core       xblk, wblk, yacc, rcache, ypair
   attention CU    aq, ak, av, as, ao
+  rms core        rmsb, rstg, rscl, both norm weights
 
-The rms / rope / glu buffers are listed individually but NOT summed into a tile
-total: they sit on different cores (RMS_PCOL, the rope tile, GLU_PCOL) and this
-script does not model that assignment. Use them to see which buffers need row
-tiling, not as a per-tile budget.
+The rope / glu buffers are listed individually but NOT summed into a tile total:
+they sit on different cores (the rope tile, GLU_PCOL) and this script does not
+model that assignment. Use them to see which buffers need row tiling, not as a
+per-tile budget.
+
+THE RMS CORE IS THE ONE THAT BINDS, and this script could not see it until it
+was summed here -- it reported `rms_l1 activation ... max batch alone: 13` for
+llama-3.2-1b at a point where the real ceiling was 9, because the residual is
+not alone on that tile. Its size comes from `fused_decode._rms_l1_bytes` rather
+than being restated, so the tool and the builder's refusal cannot disagree.
 
 Nothing here is a cycle count -- see bench_q4k_mm.py for the compute side.
 """
@@ -111,11 +118,34 @@ def attn_cu(fd, qtile):
     ]
 
 
-def other_buffers(fd, batch):
-    """rms / rope / glu buffers. Reported individually, not summed (see module docstring)."""
+def rms_core(fd, batch):
+    """[(name, bytes, scales_with_batch)] for the rms core's BATCHED body.
+
+    Not the batch-1 body, which is a different program: at BATCH>1 the core
+    keeps ONE raw [BATCH][K] residual and regenerates the normalized chunks
+    into a [BATCH][STG_W] staging buffer, rather than holding both batches.
+    See the STG_W comment in fused_decode.py.
+
+    The residual is resident for the whole layer for a LIFETIME reason and not
+    a working-set one -- the thing added to band c is the o-proj output, which
+    does not exist until every band has gone through a reduction over all of K
+    -- so no amount of row or band tiling shrinks it in place.
+    """
     return [
-        ("rms_l1     activation", fd.K * BF16 * batch, True),
-        ("rms_w2k_l1 norm weights", 2 * fd.K * BF16, False),
+        ("rmsb   residual [B][K]", fd.K * BF16 * batch, True),
+        ("rstg   chunk staging", fd.STG_W * BF16 * batch, True),
+        ("rscl   1/rms per row", F32 * batch, True),
+        # `w` (input norm) and `w2` (post-attention norm) both, and both for the
+        # whole body: they are allocated together at the top of _rms_batched and
+        # freed together at the bottom. Reusing one buffer costs the separate
+        # lock pair AIR gives the second weight and hangs the decode in wave 0.
+        ("rms_l1 norm weights", fd._RMS_W_RESIDENT * BF16, False),
+    ]
+
+
+def other_buffers(fd, batch):
+    """rope / glu buffers. Reported individually, not summed (see module docstring)."""
+    return [
         ("qkv_l1     qkv out", fd.M * BF16 * batch, True),
         ("ropeq_l1   roped q", fd.DQ_PADDED * BF16 * batch, True),
         ("ropekv_l1  roped kv", fd.DK * BF16 * batch, True),
@@ -146,6 +176,7 @@ def report(fd, model, batch, stack, verbose, scratch_rows=0, scratch_cols=0):
     for title, rows, unit in (
         ("proj core", proj_core(fd, batch, scratch_rows, scratch_cols), "batch"),
         ("attention CU", attn_cu(fd, batch), "query tile"),
+        ("rms core", rms_core(fd, batch), "batch"),
     ):
         fixed = sum(b for _, b, s in rows if not s)
         per = sum(b for _, b, s in rows if s) // batch
@@ -161,7 +192,17 @@ def report(fd, model, batch, stack, verbose, scratch_rows=0, scratch_cols=0):
             f"  ->  max {unit} that fits: {cap}"
         )
 
-    print("\n  rms / rope / glu buffers (per buffer; different cores, not summed):")
+    # Cross-check against the builder's own guard. They are two expressions of
+    # the same thing and a divergence means one of them has gone stale.
+    want = fd._rms_l1_bytes(batch)
+    have = sum(b for _, b, _ in rms_core(fd, batch))
+    assert have == want, f"rms core total {have} != fused_decode._rms_l1_bytes {want}"
+    print(
+        f"      cross-check: fused_decode.BATCH_MAX_RMS = {fd.BATCH_MAX_RMS}"
+        f"  (the builder refuses DECODE_BATCH above this)"
+    )
+
+    print("\n  rope / glu buffers (per buffer; different cores, not summed):")
     for n, b, s in other_buffers(fd, batch):
         if s:
             cap = _largest_fit(0, b // batch, budget)

@@ -1381,11 +1381,22 @@ GLU_TILE = _tile_for(GLU_SLICE)
 # STG_W is the wider of the two things that staging buffer carries: one @xnorm
 # chunk out, or one projection round in (both [BATCH][w], token-major).
 STG_W = max(2 * COL_BLOCK, PAYLOAD)
-# ONE norm weight buffer, not all of them: the batched body allocates each
-# where it is first used and frees it after its last, which the batch-1 body
-# does not bother to do because at batch 1 it does not have to. 2K for the
-# Gemma sandwich (two norms packed per channel), K otherwise.
-_RMS_W_RESIDENT = 2 * K if N_NORMS >= 4 else K
+# BOTH norm weights, because the batched body really does hold both. It allocs
+# `w` (input norm) and `w2` (post-attention norm) together at the top and frees
+# them together at the bottom -- not alloc-at-first-use/free-at-last-use, and
+# not `w` reused for the second weight either. Reuse would save K bf16 on a
+# tile that is short of exactly that, and it costs the separate lock pair AIR
+# gives the second weight, which hangs the batched decode in wave 0. See the
+# rmsW2 get in _rms_batched.
+#
+# Counting one of them was wrong by K bf16 and it was not cosmetic: it put
+# qwen3-4b's ceiling at 8 when the tile only holds 7, so DECODE_BATCH=8 sailed
+# past this check and died in the mlir-aie allocator on tile_2_2 instead --
+# which reports a byte count and not which buffer or which knob.
+#
+# (POST_RMS is what turns the second norm on. N_NORMS>=4 -- the Gemma sandwich,
+# two norms packed per channel -- implies it, and is refused at BATCH>1 anyway.)
+_RMS_W_RESIDENT = 2 * K if POST_RMS else K
 
 
 def _rms_l1_bytes(b):
@@ -1415,8 +1426,20 @@ if BATCH > BATCH_MAX_RMS:
         f"{BATCH_MAX_RMS} for {MODEL_NAME} ({_rms_l1_bytes(BATCH)} B of "
         f"{_L1_ROWTILE_BUDGET} B): one BATCH*{K} residual buffer, a "
         f"BATCH*{STG_W} staging buffer and {_RMS_W_RESIDENT} elements of norm "
-        "weight. Raising it means moving the @xnorm staging to L2, not tiling "
-        "the row loop -- the projection needs all B rows of a chunk at once."
+        "weight.\n"
+        "Tiling the row loop does NOT raise it -- the projection needs all B "
+        f"rows of a chunk at once. Moving the BATCH*{STG_W} staging to L2 does "
+        f"not raise it far enough either: it leaves the BATCH*{K} residual, "
+        f"which caps at {max((b for b in range(1, 65) if 2 * (b * K + _RMS_W_RESIDENT) + 4 * b <= _L1_ROWTILE_BUDGET), default=1)}. "
+        "The residual is the term, and the reason it is resident is LIFETIME "
+        "and not working set: the core computes on one band at a time, but the "
+        "thing added to band c is the o-proj output, which does not exist until "
+        "every band has gone through a reduction over all of K. To go past this "
+        f"the residual has to live in the DDR X buffer and round-trip a band at "
+        f"a time on @rmsX / @layerOut, which caps at "
+        f"{max((b for b in range(1, 65) if 2 * (b * STG_W + b * STG_W + _RMS_W_RESIDENT) + 4 * b <= _L1_ROWTILE_BUDGET), default=1)}. "
+        "See 'block 16 does not build' in docs/DFlashFeasibility.md, which also "
+        "measures why that is probably not worth building."
     )
 # The conservative global tile is kept as the default for anything that has to
 # pick one, and as the number the doc quotes.
