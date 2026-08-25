@@ -695,10 +695,14 @@ class SegmentContext:
         # replacing it here would bury the real error.
         if exc_type is None and not self._registered:
             raise RuntimeError(
-                f"{self._what} was opened but its body was never registered; "
-                f"decorate one with @<name>.body inside the `with` block. "
-                f"Without it nothing is emitted for this scope and the ops "
-                f"inside it are traced into the enclosing one"
+                f"{self._what} was opened but its body was never registered, so "
+                "nothing was emitted for this scope and the ops inside it were "
+                "traced into the enclosing one. The body is a function decorated "
+                "inside the `with`, which means the scope needs a name to "
+                f"decorate:\n\n    with {self._what}(...) as scope:\n"
+                "        @scope.body\n        def _():\n            ...\n\n"
+                "`as scope` is easy to leave off, and without it there is no "
+                "variable to hang the decorator on."
             )
         return False
 
@@ -943,10 +947,14 @@ class HerdContext:
         # replacing it here would bury the real error.
         if exc_type is None and not self._registered:
             raise RuntimeError(
-                f"{self._what} was opened but its body was never registered; "
-                f"decorate one with @<name>.body inside the `with` block. "
-                f"Without it nothing is emitted for this scope and the ops "
-                f"inside it are traced into the enclosing one"
+                f"{self._what} was opened but its body was never registered, so "
+                "nothing was emitted for this scope and the ops inside it were "
+                "traced into the enclosing one. The body is a function decorated "
+                "inside the `with`, which means the scope needs a name to "
+                f"decorate:\n\n    with {self._what}(...) as scope:\n"
+                "        @scope.body\n        def _():\n            ...\n\n"
+                "`as scope` is easy to leave off, and without it there is no "
+                "variable to hang the decorator on."
             )
         return False
 
