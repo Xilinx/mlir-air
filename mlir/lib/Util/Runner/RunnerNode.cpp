@@ -104,12 +104,19 @@ public:
     launchGraph.runner_node = this;
     launchGraph.runner_node->channel_token_counts_ptr =
         &(launchGraph.runner_node->channel_token_counts);
+    // Each herd runner node stores a raw pointer to its parent segment runner
+    // node, so the segment vector must not reallocate while herds are being
+    // attached to it -- otherwise every herd created before a later push_back
+    // is left pointing at freed storage, and its tile pool comes back empty.
+    this->sub_runner_nodes.reserve(launchGraph.subgraphs.size());
     for (auto &segmentGraph : launchGraph.subgraphs) {
       // Create segment runner node
       this->sub_runner_nodes.push_back(runnerNode(
           this, &segmentGraph, "segment", this->dep_ctx, this->sim_granularity,
           &(launchGraph.runner_node->channel_token_counts)));
       auto current_segment_node = &(this->sub_runner_nodes.back());
+      current_segment_node->sub_runner_nodes.reserve(
+          segmentGraph.subgraphs.size());
       for (auto &herdGraph : segmentGraph.subgraphs) {
         // Create herd runner node
         current_segment_node->sub_runner_nodes.push_back(
@@ -542,8 +549,11 @@ private:
                                     std::vector<resource *> &reserved_resources,
                                     unsigned usage_count) {
     // A previously emitted error should have captured this
-    this->runner_assertion(usage_count <= resource_pool.size(),
-                           "failed to reserve resources");
+    this->runner_assertion(
+        usage_count <= resource_pool.size(),
+        "failed to reserve resources for " + this->runner_node_type +
+            " runner node: need " + std::to_string(usage_count) + ", " +
+            std::to_string(resource_pool.size()) + " available");
     for (unsigned i = 0; i < usage_count; i++) {
       resource_pool[i]->isReserved = true;
       reserved_resources.push_back(resource_pool[i]);
