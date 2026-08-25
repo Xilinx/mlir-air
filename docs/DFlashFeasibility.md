@@ -110,14 +110,24 @@ memory floor to **3.58x** (section 5e), and sweeping the block size against
 `max(compute, memory)` puts the best **measured** block at **8**, at 1.65x, with
 block 16 at **1.06x** (section 5f). That conclusion survives every variant tried,
 including feeding the model the undercounted attention figure that started the
-investigation.
+investigation — and it survives the on-device measurement below, which says the
+roofline is wrong about *why*: block 8 is still the answer, but for the opposite
+reason.
 
-And it is an **attention** problem: at block 8 the verify pass is 45.5 ms of
-projection against 100.0 ms of attention **[measured]**. Making the projections
-faster cannot move this much. Making attention amortize over the batch is now
-**measured and bounded**: at most **1.55x** on the attention term, **2.08x**
-end to end against the 1.65x as built, and it leaves the block size at 8
-(section 5g). Worth doing, and not a prerequisite for anything.
+~~And it is an **attention** problem~~ — **it is not, and that was the roofline
+being wrong about the projection.** Measured on device, a batch-8 dispatch is
+**65% layer body, 16% attention, 16% LM head**. The roofline predicts the layer
+body stays memory bound at batch 8 (the weights are read once either way) and so
+costs 1.04x; it costs **3.74x**, and the device spends ~10450 cycles on a 32x256
+weight block where `bench_q4k_mm.py` measures 2327. At batch 1 the same model is
+accurate to one part in eight hundred, so the error is specific to batching and
+it inflates attention's *share* by deflating everything beside it. See "Where a
+dispatch's time actually goes"; `decode_cost.py` is the measurement.
+
+The 1.55x attention-hoist ceiling from section 5g still stands as a ceiling, but
+it now applies to 16% of a dispatch rather than 69% — worth about 4% end to end,
+not 26%. **The unexplained 4.5x in the projection is the largest number in this
+document**, and finding it comes before optimizing anything.
 
 The recommendation to build it stands. What changes is the block size, the
 headline, and where the optimization effort belongs.
@@ -809,10 +819,23 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
     a batched verify at any size — every batched number in this document is
     llama-3.2-1b standing in for it.
 
-12. **Claim the attention term.** 69% of the verify pass, no amortization, and
-    section 5g already measured the ceiling at 1.55x on it and 2.08x end to end.
-    This is the largest unclaimed number in the document and it does not depend
-    on the block size.
+12. ~~**Claim the attention term.**~~ **Demoted by measurement.** It is 16% of
+    a batch-8 dispatch on device, not 69%, so section 5g's 1.55x ceiling on it
+    is worth about 4% end to end rather than 26%. Still real, no longer the
+    lever.
+
+13. **Find the 4.5x in the projection.** THE open number. At batch 8 the device
+    spends ~10450 cycles on a 32x256 weight block where `bench_q4k_mm.py`
+    measures 2327 — 3.74x on the layer body against a model that is accurate to
+    one part in eight hundred at batch 1. It is not weight traffic (the weights
+    are identical at both batches) and the issue-slot model cannot see it. Two
+    untested candidates: the shipping build inlines `q4k_mmul` differently from
+    the microbenchmark's translation unit — this document already records a 20%
+    swing of exactly that kind from `q4k_mmul_any` merely existing — or a core
+    is stalling on something that scales with the batch. `decode_cost.py` is the
+    measurement; a disassembly of `proj_qmm.o` at `PROJ_MM_BATCH=8` beside
+    `q4k_mm_bench.o`, or a device trace, is the next step. Closing even half of
+    it moves the batched verify more than every other item here combined.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -1342,19 +1365,80 @@ about 4% of a dispatch, 0.86 us/key:
 
 So one batch-8 dispatch covers eight positions in 63.7-75.1 ms against
 156.7-166.8 ms for eight sequential ones. Attention is the term that does not
-amortize and it shows in the slope -- 4.71 us/key at batch 8 against 0.86 at
-batch 1 -- but that is 5.5x for 8 tokens, not 8x, and at 1800 context it is
-still only about 13% of the dispatch. **The verify pass holds better than
+amortize, and it shows in the slope. **The verify pass holds better than
 section 5f's roofline predicted (1.65x at block 8); measured it is 2.2-2.5x.**
-That discrepancy is worth resolving before either number is used to size
-anything -- 5f counted `max(compute, memory)` against an attention figure that
-this measurement does not reproduce.
+That discrepancy is now resolved, and it does not resolve in the roofline's
+favour -- see the next section.
 
-Folding in the 7.20-of-8 acceptance below: **~96 tok/s at 1800 context against
-a 48.0 tok/s baseline, 2.0x** -- but only for a draft that costs nothing, and
-**there is no draft model in this repo.** The batched engine is the verify half.
-What a real draft costs comes off that 2.0x directly, and choosing one is the
-next open question after item 10.
+#### Where a dispatch's time actually goes [measured]
+
+`decode_cost.py`. A dispatch is
+`fixed + layers*per_layer(b) + lm_head(b) + ctx*attn(b)`, and only the last term
+had ever been swept -- the context is an RTP, so it is free, and the other three
+need templates built at different `UNI_WAVE_HI`. Four families per batch pin all
+of them. llama-3.2-1b, ctx 8 -> 1800, median of 15 **[measured]**:
+
+| batch | fixed | per layer | x16 | attention | lm head | total |
+|---|---|---|---|---|---|---|
+| 1 | 1.71 | 0.827 | 13.23 | 1.43 | 4.32 | **20.70** |
+| 8 | 2.07 | 3.089 | 49.43 | 11.95 | 12.34 | **75.78** |
+| scaling | 1.21x | **3.74x** | | **8.33x** | 2.86x | 3.66x |
+
+**Attention is 16% of a batch-8 dispatch, not 69%.** The layer body is 65%, the
+LM head 16%. Section 5e's headline -- "it is an attention problem, not a
+projection problem" -- is an artifact of undercharging the projection at batch
+> 1, and the sentence it produced ("making the projections faster cannot move
+this much") is exactly backwards on hardware.
+
+**At batch 1 the roofline is right and at batch 8 it is not.** Per layer it
+predicts 0.826 ms from the memory floor and measures 0.827 -- one part in eight
+hundred. At batch 8 the weights are unchanged, so the model keeps the pass
+memory bound and predicts the same 0.826; it measures **3.089**. Localized, the
+device spends **~10450 cycles on a 32x256 weight block at batch 8 where
+`bench_q4k_mm.py` measures 2327** (0.827 ms/layer / 464 blocks/core gives 2680
+against the bench's 2240 at batch 1 -- 20% for DMA, which is fine). That 4.5x is
+the whole discrepancy, it is not weight traffic, and it is **not yet explained**.
+Candidates, none tested: the real build inlines `q4k_mmul` differently from the
+microbenchmark's translation unit (the document already records a 20% swing of
+exactly that kind), or the core is stalled on something that scales with the
+batch and the issue-slot model cannot see.
+
+**Attention does not amortize at all** -- 8.33x for 8 tokens, slightly worse
+than linear. The earlier "5.5x for 8 tokens" came from a slope fitted through
+points that also carried the per-layer term.
+
+**And attention amortizes worst while costing least**, which is the opposite of
+the shape the block-size argument assumed. Every term above is measured at two
+batches only, so the batch-16 column below is an extrapolation and marked as one.
+
+#### The loop, with the LM head charged to the draft [measured + extrapolated]
+
+The draft templates the loop was measured on return **all-zero logits** -- they
+run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
+never ran. DFlash's draft is a batched multi-head guess that has to produce
+tokens, so it pays the head. Re-priced from the table above, at ctx 1800:
+
+| | block 8 | block 16 *(extrapolated)* |
+|---|---|---|
+| verify (16 layers + head) | 75.78 | 138.75 |
+| draft (5 layers + head) | 33.59 | 59.85 |
+| iteration | **109.37** | **198.60** |
+| break-even tau | **5.28** | **9.59** |
+
+Against a 20.70 ms/token baseline. Two things fall out:
+
+- **Block 8's break-even is 5.28, and this document's assumed `tau8 = 4.99` is
+  below it** -- 0.94x, a loss. The earlier 4.65 came from a draft that was not
+  paying for its LM head.
+- Block 16 needs `tau16 > 1.82 * tau8` to beat block 8. At `tau8 = 7.20`, the
+  measured self-draft ceiling, that is **13.1 of 16**.
+
+**This is llama-3.2-1b standing in for qwen3-4b and the substitution flatters
+the head.** 16 layers against 36 makes the LM head 16% of a dispatch here and
+much less there, so qwen3-4b's break-even is lower than 5.28. What transfers is
+not the number, it is the shape: the layer body does not amortize the way the
+kernel bench says, attention does not amortize at all, and both push the
+block-size optimum **down**, not up.
 
 #### What the batched verify costs, in accepted tokens [measured]
 
@@ -2481,6 +2565,16 @@ unattainable) the optimum moves to **4 at 2.77x**. So the honest range is
 **block 4-8 and 1.6-2.8x**, and every variant tried lands inside it.
 
 ### It is an attention problem, not a projection problem
+
+> **Overturned by measurement.** On device at batch 8, attention is **16%** of a
+> dispatch and the layer body is 65% — see "Where a dispatch's time actually
+> goes". The 69% below is a share of a total whose projection term is measured
+> **3.7x too low**: this model keeps the pass memory bound at batch 8 because
+> the weights are unchanged, and predicts 0.826 ms/layer where the hardware
+> spends 3.089. It is right to one part in eight hundred at batch 1, so what
+> follows is sound for the batch-1 decode and wrong for every batched claim
+> built on it. The conclusion it produced — that making the projections faster
+> cannot move this much — is backwards.
 
 At the winning block size the verify pass splits **45.5 ms projection against
 100.0 ms attention** **[measured]** — attention is **69%** of it. The block size
