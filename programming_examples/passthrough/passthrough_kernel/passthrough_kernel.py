@@ -61,7 +61,7 @@ def build_module(vector_size, num_subvectors):
     # The line width the kernel loops over. Its type has to be declared: a
     # Python int does not say whether the kernel wants i32 or index.
     pass_through_line = air.extern(
-        "passThroughLine", object="passThrough.cc.o", scalars=[i32]
+        "passThroughLine", link_with="passThrough.cc.o", scalars=[i32]
     )
 
     with air.launch(name="copy") as launch:
