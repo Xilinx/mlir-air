@@ -7,18 +7,14 @@ Computes out = alpha * x + y over a 1-D [N] vector.
 
 The DSL emits the herd, the L1 allocations, the affine tile offsets, the DMAs,
 and the vectorised compute loop; what it hands to the backend is an ordinary AIR
-module. `alpha * x_buf[:] + y_buf[:]` is a lazy expression tree that is lowered
-once, as a single vectorised loop, when it is assigned into out_buf.
+module. The right-hand side is a lazy expression tree that is lowered once, as a
+single loop, when it is assigned into out_buf.
 
-Two differences from the raw-bindings implementation this replaces, both
-deliberate:
-
-  - It emits arith.mulf + arith.addf where the predecessor hand-built a
-    vector.fma.
-  - The predecessor pinned a 2-core herd and cycled tiles across it. Here the
-    logical tile grid (N // tile_n) is strip-mined onto whatever the target
-    provides -- 4 cores on npu1, 8 on npu2 -- with each core owning a
-    contiguous block of tiles.
+One difference from the raw-bindings implementation this replaces, deliberate:
+the predecessor pinned a 2-core herd and cycled tiles across it, while here the
+logical tile grid (N // tile_n) is strip-mined onto whatever the target provides
+-- 4 cores on npu1, 8 on npu2 -- with each core owning a contiguous block of
+tiles.
 
 f32 runs scalar, and that is not a tuning choice. A *chained* f32
 multiply-then-add on 512-bit vectors does not legalize in the AIE2 backend:
@@ -30,6 +26,14 @@ own is fine -- f32 vector add, sub, mul and div all compile at 16 lanes, and so
 does `2.0 * x[:]` by itself -- so it is specifically the mul feeding an add.
 bf16 has no such problem and vectorises the whole expression. (bf16 *divide*
 does not legalize, but axpy does not divide.) Hence VECTOR_BY_DTYPE below.
+
+The fused form does not rescue f32 either, which is why the spelling below is
+conditional rather than simply `air.ops.fma` everywhere. A native f32
+`vector.fma` is explicitly marked illegal by the aievec conversion, and there
+is no scalar fma instruction on AIE2 at all -- so on the scalar path there is
+nothing to fuse into, and `alpha * x + y` remains the only expressible form.
+Vectorised bf16 takes the fused route and rounds once, which is what the
+hand-written predecessor did.
 """
 
 import argparse
@@ -101,7 +105,20 @@ def build_axpy(n, tile_n, alpha, dtype=bf16, herd_shape=None, vector=None):
                     air.ops.load(x_buf, x[window])
                     air.ops.load(y_buf, y[window])
 
-                    out_buf[:] = alpha * x_buf[:] + y_buf[:]
+                    # Fused when the emitter will vectorise, two ops when it
+                    # will not. The condition is exactly the emitter's own
+                    # test for taking the vector path, because ops.fma has no
+                    # scalar form to fall back to -- see the module docstring.
+                    # `vector` is None for "use the dtype's default", so the
+                    # width has to be resolved the same way air.alloc resolves
+                    # it; testing `vector` itself would read bf16's None as 0
+                    # and quietly take the unfused path on the one dtype that
+                    # can fuse.
+                    width = dtype.default_vector_width if vector is None else vector
+                    if width and tn % width == 0:
+                        out_buf[:] = air.ops.fma(alpha, x_buf[:], y_buf[:])
+                    else:
+                        out_buf[:] = alpha * x_buf[:] + y_buf[:]
 
                     air.ops.store(out_buf, out[window])
 

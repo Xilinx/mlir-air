@@ -44,6 +44,13 @@ __all__ = [
     "cast",
     "maximum",
     "minimum",
+    # equal/not_equal/select were added with the comparison operators and were
+    # never listed here, so `from air.api.ops import *` silently omitted them.
+    # Corrected while adding fma rather than left as a trap for the next entry.
+    "equal",
+    "not_equal",
+    "select",
+    "fma",
     "relu",
     "tanh",
     "sigmoid",
@@ -603,6 +610,65 @@ def select(cond, a, b):
             "argument is a scalar, which the emitter cannot shape"
         )
     return BufferExpr("select", op="select", args=(cond, a, b))
+
+
+def fma(a, b, c):
+    """Elementwise ``a * b + c`` as one operation. Lowers to vector.fma.
+    Float only, and **vectorised only** -- see the constraints below.
+
+    This is not a shorthand for ``a * b + c``: it is a different computation.
+    Writing the product and the sum as two arith ops rounds twice, once when
+    ``a * b`` is stored into an intermediate of the buffer's element type and
+    again after the add. An fma rounds once, carrying the full-width product
+    into the addition. On bf16, whose 8-bit significand loses the low half of
+    nearly every product, that is a difference you can see in the output
+    rather than a last-ulp curiosity.
+
+    Two constraints, both measured rather than assumed, and both narrower than
+    they first appear:
+
+    * **There is no scalar form.** AIE2 has no scalar fma instruction, so
+      math.fma reaches the backend and fails to legalize -- on npu1 and npu2,
+      bf16 and f32, with and without bf16 emulation. The emitter refuses its
+      own scalar fallback here rather than emitting one that cannot compile.
+    * **f32 needs bf16 emulation.** ``vector.fma`` on ``vector<16xf32>`` is
+      *explicitly marked illegal* by the aievec conversion, so a native f32
+      kernel fails with "failed to legalize operation 'vector.fma'". Under
+      ``bf16_emulation=True`` it lowers through bf16 and compiles.
+
+    So this does **not** rescue f32 from the limitation the axpy conversion
+    documents -- a chained f32 multiply-then-add does not legalize either
+    (``<16 x s32> = G_FMUL``), and f32 has no vectorised route to a
+    multiply-add by any spelling. What ops.fma buys is the single rounding on
+    bf16, which is what the hand-written vector_fma kernel was written for.
+
+    The third argument is the addend, matching C's ``fma(x, y, z)`` and MLIR's
+    operand order; there is no operator spelling because Python has none.
+    """
+    for operand, pos in ((a, "first"), (b, "second"), (c, "third")):
+        if not isinstance(operand, (Buffer, BufferExpr, int, float)):
+            raise TypeError(
+                f"air.api.ops.fma expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+        # A comparison is the one BufferExpr whose result is i1 rather than the
+        # element type. Only ops.select can consume one; feeding it to an fma
+        # would build an arith op over a predicate and fail deep in the MLIR
+        # verifier, naming an SSA value rather than the argument at fault.
+        if isinstance(operand, BufferExpr) and operand.kind == "compare":
+            raise TypeError(
+                f"air.api.ops.fma got a comparison as its {pos} argument. A "
+                "comparison is a predicate (i1), not a value, so it cannot be "
+                "multiplied or added -- pass it through air.api.ops.select "
+                "first to choose between two values"
+            )
+    a, b, c = BufferExpr.coerce(a), BufferExpr.coerce(b), BufferExpr.coerce(c)
+    if not a.leaves() and not b.leaves() and not c.leaves():
+        raise ValueError(
+            "air.api.ops.fma needs at least one buffer operand; every argument "
+            "is a scalar, which the emitter cannot shape"
+        )
+    return BufferExpr("fma", op="fma", args=(a, b, c))
 
 
 def _unary(name, x):

@@ -1546,3 +1546,78 @@ def _():
         c[:] = ops.cast(ops.select(a[:] > 0.0, 1, 2), i32)
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_on_an_integer_buffer
+# fma exists to avoid the intermediate rounding, and integer multiply-add has
+# none to avoid -- so this is not a gap to be filled later, and the message
+# says so and names the spelling that does work rather than implying that
+# an arith.fmai might arrive one day.
+# CHECK: NotImplementedError: air.api.ops.fma is float-only
+@expect(NotImplementedError, "fma_on_an_integer_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        b = air.alloc([64], i32, scope=h.private())
+        a[:] = ops.fma(2, a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_has_no_scalar_form
+# The emitter's usual fallback -- drop to a scalar loop when the innermost
+# dimension is not a multiple of the vector width -- is the *unsafe* direction
+# here, exactly as it is for math.tanh: AIE2 has no scalar fma instruction, so
+# math.fma reaches the backend and fails to legalize. Unlike tanh, which is
+# emitted anyway and fails hours later with an LLVM virtual register in the
+# message, this is refused at the point where the tile shape can be named.
+# CHECK: NotImplementedError: air.api.ops.fma has no scalar form on AIE2
+@expect(NotImplementedError, "fma_has_no_scalar_form")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([60], bf16, scope=h.private(), vector=16)
+        b = air.alloc([60], bf16, scope=h.private(), vector=16)
+        a[:] = ops.fma(2.0, a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_of_a_comparison
+# A comparison is i1, not a value, so it can be selected between but not
+# multiplied. Caught at the call site: letting it through would build an
+# arith op over a predicate and fail in the MLIR verifier, which names an SSA
+# value rather than the argument at fault.
+# CHECK: TypeError: air.api.ops.fma got a comparison as its second argument
+@expect(TypeError, "fma_of_a_comparison")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.fma(2.0, a[:] > b[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_of_only_scalars
+# Nothing supplies a shape, so there is no loop to build.
+# CHECK: ValueError: air.api.ops.fma needs at least one buffer operand
+@expect(ValueError, "fma_of_only_scalars")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.fma(2.0, 3.0, 4.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_of_a_tensor_slice
+# An L3 tensor slice names a DMA region, not a value. The message names the
+# argument position, which matters more for a ternary op than a binary one.
+# CHECK: TypeError: air.api.ops.fma expects a buffer slice or a numeric scalar as its third argument
+@expect(TypeError, "fma_of_a_tensor_slice")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.fma(2.0, a[:], A[0:64, 0])
+
+    _trace(body)

@@ -361,11 +361,14 @@ class BufferExpr:
     __slots__ = ("kind", "op", "args", "buffer", "scalar", "dtype")
 
     def __init__(self, kind, op=None, args=(), buffer=None, scalar=None, dtype=None):
-        # "buffer" | "scalar" | "unary" | "binary" evaluate to the element
-        # type; "compare" evaluates to i1 and only ops.select consumes it;
-        # "select" takes (compare, value, value) back to the element type;
+        # "buffer" | "scalar" | "unary" | "binary" | "fma" evaluate to the
+        # element type; "compare" evaluates to i1 and only ops.select consumes
+        # it; "select" takes (compare, value, value) back to the element type;
         # "cast" evaluates to a *different* element type from its operand,
         # which is the only node for which that is true.
+        #
+        # "fma" is the second ternary kind. Unlike "select", whose first
+        # argument is a predicate, all three of its arguments are value-typed.
         self.kind = kind
         self.op = op
         self.args = tuple(args)
@@ -573,6 +576,11 @@ class BufferExpr:
         if self.kind == "select":
             c, a, b = self.args
             return f"select({c!r}, {a!r}, {b!r})"
+        # The other ternary kind, and like select it needs its own branch: the
+        # tail below is binary and indexes exactly two args.
+        if self.kind == "fma":
+            a, b, c = self.args
+            return f"fma({a!r}, {b!r}, {c!r})"
         symbol = _OP_SYMBOLS.get(self.op)
         if symbol is None:
             # No infix spelling (maximum/minimum and anything added later):
