@@ -842,14 +842,18 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
     the 8x a shared weight stream allows, which is more than DFlash's whole
     speculative mechanism is claiming.
 
-    Best hypothesis, measured-consistent but unconfirmed: the `@xnorm` re-feed.
-    Batch 1 normalizes once and `refeed()` collapses the re-broadcast into a
-    lock init, so the core is not in the loop; batch 8 regenerates each chunk
-    inside the loop through a single `rstg` buffer — 152 serialized producer /
-    multicast / release round trips per layer against none. Test it by
-    double-buffering `rstg`, or by growing `xmt_l2` to `[BATCH][K]` and letting
-    the memtile re-broadcast (the same change item 11 needs). A device trace
-    would settle it outright.
+    Three candidate causes have been **tested and ruled out** — see "What it is
+    not": the `@xnorm` handshake count (`XCHUNK_MUL=4` halves it, runs 1 ms
+    slower, emits bitwise-identical logits), the `@inX` multicast being
+    replicated (it is one MM2S with 16 flows), and a missing ping-pong (X and
+    weights are already 2-deep rings on separate S2MM ports). What remains is
+    that the array sustains **12.3 GB/s at batch 8 where the same design does
+    46 at batch 1**, moving identical weight bytes, with the projection cores
+    idle ~85% of the time.
+
+    **Next step is a device trace, not another hypothesis.** `XRTBackend` takes
+    `trace_size`/`trace_offset`; `fused_decode.py` does not thread them through
+    yet, and that plumbing plus a host-side trace BO and parser is the work.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -1435,41 +1439,59 @@ it at all**, while the same design at batch 1 sits *on* the floor (0.827 against
 0.826). Whatever the batched pass is paying for, it is dataflow, it is not the
 weights, and it appears only above batch 1.
 
-**Where it probably is, consistent with the measurement but NOT yet confirmed.**
-The `@xnorm` X feed is produced differently at the two batches, and it is the
-one thing in the layer that both scales with the batch and sits on the critical
-path of every projection:
+#### What it is not [measured]
 
-| per layer | batch 1 | batch 8 |
-|---|---|---|
-| `@xnorm` transfers | 38 | **152** |
-| bytes each | 4 KB (whole `K`) | 8 KB (one chunk, all rows) |
-| core work inside the re-feed loop | **none** | one `rms_chunk_aie` per transfer |
+Three explanations, each of which fits the shape of the numbers, and all three
+are wrong. Recorded because each one cost a build and would otherwise be
+proposed again.
 
-At batch 1 the core normalizes once into a resident `K`-wide buffer and
-`refeed()` wraps a bare put in an n-trip loop, which `air-annotate-refeed`
-collapses into a lock init -- the re-broadcast is the DMA's, and the core is not
-in the loop. At batch 8 the normalized batch is never materialized (that is the
-whole reason the rms core fits at all), so `_rms_batched_norm` regenerates each
-chunk inside the loop and puts it. The loop body now holds a `CallOp`, so it is
-not a re-broadcast any more, and `rstg` is a **single** buffer -- compute, put,
-wait for the release, compute the next. 152 serialized round trips per layer
-where batch 1 has none. Charging the 2.19 ms/layer that is unaccounted for to
-those 152 handshakes gives ~22,600 cycles each, which is far too slow to be
-bandwidth (0.36 B/cycle on an 8 KB transfer) and about right for a full
-producer->memtile->16-core-multicast->release latency paid without pipelining.
+**Not the `@xnorm` handshake count.** The obvious story: at batch 1 the core
+normalizes once and `refeed()` wraps a bare put, which `air-annotate-refeed`
+collapses into a lock init -- the re-broadcast is the DMA's and the core is not
+in the loop. At batch 8 the normalized batch cannot be materialized (that is why
+the rms core fits at all), so `_rms_batched_norm` regenerates each chunk inside
+the loop and puts it through a **single** `rstg` buffer: compute, put, wait,
+repeat. 152 serialized round trips per layer against batch 1's none, and
+charging the unaccounted 2.19 ms/layer to them gives ~22,600 cycles each --
+plausible for an unpipelined producer -> memtile -> multicast -> release.
 
-Two contained ways at it, neither tried, and **the second is the change already
-scoped for block 16**:
+`XCHUNK_MUL` tests it directly. It sets how much of a row travels in one
+`@xnorm` transfer, in `COL_BLOCK`s, and it is a *transfer-count* knob and
+nothing else -- the bytes, the `@inX` multicast and every descriptor below
+`COL_BLOCK` are untouched, because the X memtile still splits whatever arrives
+into `COL_BLOCK`-wide broadcasts. At `XCHUNK_MUL=4` the count halves, 152 -> 76.
+Measured **[measured]**:
 
-- double-buffer `rstg` into a 2-deep ring so chunk `n+1` is computed while
-  chunk `n` is in flight. Cheap; bounded by whichever of compute and DMA is
-  larger instead of their sum.
-- grow `xmt_l2` from one chunk to `[BATCH][K]` -- 32 KB of a 512 KB memtile --
-  and let the memtile do the re-broadcast. That collapses 152 transfers to 8 and
-  puts the core back out of the re-feed loop, which is what batch 1 already
-  does. It is the same memtile change that removes 152 of the 168 band transfers
-  in "What it would take to build block 16".
+| | `@xnorm`/layer | ctx 8 | logits |
+|---|---|---|---|
+| `XCHUNK_MUL=2` (as built) | 152 | 52.02 ms | — |
+| `XCHUNK_MUL=4` | **76** | **53.03 ms** | **bitwise identical** |
+
+Half the handshakes, one millisecond *slower*, and the same bits out. Not the
+handshake count. (The knob is inert at its default: batch-1 and batch-8 IR are
+byte-identical to `HEAD`.)
+
+**Not the multicast being replicated.** If `@inX` lowered to 16 separate memtile
+transfers rather than a stream-switch fan-out, X would cost 16x and the
+arithmetic would land almost exactly on the measurement. It does not:
+`aie.air.mlir` has **one** `aie.flow(%mem_tile_1_1, DMA : 0, ...)` per
+destination off a **single** MM2S channel -- 16 flows, one source port. The
+bytes leave the memtile once.
+
+**Not a missing ping-pong.** Both consumers on a proj core are already 2-deep
+rings on separate S2MM ports: `S2MM 0` alternates two `memref<2048xbf16>` X
+blocks (`BATCH*COL_BLOCK`), `S2MM 1` two `memref<2560xbf16>` weight blocks. The
+structure is right.
+
+**What is left is a number, not a story.** At batch 8 the array moves the same
+38 MB of weights per layer as at batch 1, and takes 3.089 ms to do it -- **12.3
+GB/s against the 46 GB/s the same design sustains at batch 1**, i.e. the
+projection cores are idle roughly 85% of the time and neither the X path
+(0.30 ms/layer of memtile egress) nor the weight path (0.826 ms/layer at full
+DDR rate) accounts for the wait. Every static account is exhausted. **The next
+step is a device trace**, not another hypothesis: `XRTBackend` takes
+`trace_size`/`trace_offset` and `fused_decode.py` does not thread them through
+yet.
 
 **Attention does not amortize at all** -- 8.33x for 8 tokens, slightly worse
 than linear. The earlier "5.5x for 8 tokens" came from a slope fitted through

@@ -1237,6 +1237,29 @@ NLAYERS = int(_os.environ.get("NLAYERS", "1"))
 #   attention CU     51.0 KB at query tile 8, fits to 8 EXACTLY. No headroom:
 #                    any future per-CU L1 addition on this path has to be paid
 #                    for out of the query tile.
+# ---- @xnorm chunk width -----------------------------------------------------
+# How much of a token's row travels in ONE @xnorm transfer, in COL_BLOCKs. This
+# is a TRANSFER-COUNT knob and nothing else: the bytes, the @inX multicast and
+# every descriptor below COL_BLOCK are unchanged, because the X memtile still
+# splits whatever it gets into COL_BLOCK-wide broadcasts. What moves is how many
+# times the producer and the memtile hand off per layer.
+#
+# It exists to separate two explanations of why a batched layer costs 3.65x its
+# weight-streaming floor with no arithmetic in it (see decode_cost.py and
+# "The batched layer is dataflow bound" in docs/DFlashFeasibility.md). At batch
+# 1 the core normalizes once and refeed() collapses the re-broadcast into a lock
+# init; at batch > 1 the normalized batch cannot be materialized, so
+# _rms_batched_norm regenerates a chunk inside the loop and puts it through a
+# SINGLE staging buffer -- 152 serialized round trips per layer against none.
+# Doubling this halves that count at constant bytes. If the layer tracks the
+# count it is handshake-bound; if it does not, it is not.
+#
+# 2 is what the design has always used and is the default; at 2 the emitted IR
+# is byte-identical, which check_batch1_noop.py holds.
+XCHUNK_MUL = int(_os.environ.get("XCHUNK_MUL", "2"))
+XCHUNK = XCHUNK_MUL * COL_BLOCK
+assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
+
 # The X-feed tile-blocking descriptor, IMPORTED rather than restated:
 # xfeed_bd.py checks it elementwise against pack_A, which q4k_mm_gate.py proved
 # bit-exact on device. A copy here would be a second source of truth for the one
@@ -1244,7 +1267,7 @@ NLAYERS = int(_os.environ.get("NLAYERS", "1"))
 if BATCH > 1:
     import xfeed_bd as _xfd
 
-    _XFEED_BD = _xfd.xfeed_bd(BATCH, COL_BLOCK, 2)
+    _XFEED_BD = _xfd.xfeed_bd(BATCH, COL_BLOCK, XCHUNK_MUL)
 else:
     _XFEED_BD = None
 
@@ -1380,7 +1403,7 @@ GLU_TILE = _tile_for(GLU_SLICE)
 #
 # STG_W is the wider of the two things that staging buffer carries: one @xnorm
 # chunk out, or one projection round in (both [BATCH][w], token-major).
-STG_W = max(2 * COL_BLOCK, PAYLOAD)
+STG_W = max(XCHUNK, PAYLOAD)
 # BOTH norm weights, because the batched body really does hold both. It allocs
 # `w` (input norm) and `w2` (post-attention norm) together at the top and frees
 # them together at the bottom -- not alloc-at-first-use/free-at-last-use, and
@@ -1713,7 +1736,7 @@ def build_module():
         # ---- L2 buffers ----
         # X memtile = reproducer x_buffer: 512 (2 blocks) so the producer re-feed +
         # broadcast has the same slack as the reference; the proj cores' 256 ring chops it.
-        xmt_l2 = MemRefType.get([BATCH * 2 * COL_BLOCK], bf16, memory_space=l2)
+        xmt_l2 = MemRefType.get([BATCH * XCHUNK], bf16, memory_space=l2)
         # One fan get. W_DUAL_CHAN halves it: each shim channel feeds its own
         # ring covering half the column's cores (FLM's w_buffer[0:5120] /
         # w_buffer[5120:10240] split).
@@ -1963,7 +1986,7 @@ def build_module():
         # This is the transpose that pairs with xfeed_bd.py's: this one gets the
         # B tokens' chunk side by side in the memtile, that one puts them in
         # aie::mmul A-tile order on the way out.
-        _XCHUNK = 2 * COL_BLOCK
+        _XCHUNK = XCHUNK
 
         def _xnorm_put(buf, width, ssa=False, **kw):
             """Put `width` elements per token on @xnorm, chunk-major.
@@ -3191,10 +3214,10 @@ def build_module():
                                 src,
                                 xb,
                                 offsets=[0],
-                                sizes=[BATCH * 2 * COL_BLOCK],
+                                sizes=[BATCH * XCHUNK],
                                 strides=[1],
                             )
-                            for _jj in for_(idx(0), idx(2), idx(1)):
+                            for _jj in for_(idx(0), idx(XCHUNK_MUL), idx(1)):
                                 if BATCH == 1:
                                     joff = arith.muli(_jj, idx(COL_BLOCK))
                                     ChannelPut(
@@ -3241,13 +3264,9 @@ def build_module():
                     # standalone). CDO-identity (single xclbin) needs this made
                     # genuinely count-free later; confirming the deadlock cause first.
                     _xc_dec = (REFEED[0] + OPROJ_REFEED + GATEUP_REFEED) * (
-                        K // (2 * COL_BLOCK)
-                    ) + (
-                        DOWN_REFEED * (GLU_OUT // (2 * COL_BLOCK))
-                        if DOWN_PHASE >= 0
-                        else 0
-                    )
-                    _xc_voc = VOCAB_RNDS * (K // (2 * COL_BLOCK))
+                        K // XCHUNK
+                    ) + (DOWN_REFEED * (GLU_OUT // XCHUNK) if DOWN_PHASE >= 0 else 0)
+                    _xc_voc = VOCAB_RNDS * (K // XCHUNK)
                     if _seg_arm_i is not None:
 
                         def _xs_voc():
@@ -5475,7 +5494,7 @@ def build_module():
                         port is the same op in both, which is what lets the two
                         arms fold onto one dma_start chain.
                         """
-                        _nchunk = K // (2 * COL_BLOCK)
+                        _nchunk = K // XCHUNK
 
                         def _i32(v):
                             return arith.ConstantOp(
@@ -5498,7 +5517,7 @@ def build_module():
                                         scl,
                                         _i32(BATCH),
                                         arith.index_cast(i32, _c),
-                                        _i32(2 * COL_BLOCK),
+                                        _i32(XCHUNK),
                                     ],
                                 )
                                 # 1-D and contiguous on purpose: a compute
@@ -5509,7 +5528,7 @@ def build_module():
                                     "xnorm",
                                     stg,
                                     offsets=[idx(0)],
-                                    sizes=[idx(BATCH * 2 * COL_BLOCK)],
+                                    sizes=[idx(BATCH * XCHUNK)],
                                     strides=[idx(1)],
                                 )
                                 yield_([])
@@ -5568,7 +5587,7 @@ def build_module():
                             "DECODE_BATCH>1 needs the FULL4 residual path "
                             "(RMS_DEST >= 0); the debug configs feed no o-proj"
                         )
-                        assert K % (2 * COL_BLOCK) == 0
+                        assert K % XCHUNK == 0
 
                         def _i32(v):
                             return arith.ConstantOp(
