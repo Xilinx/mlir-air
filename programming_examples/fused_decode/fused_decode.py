@@ -998,19 +998,19 @@ UNI_WAVES = UNI_DEC + UNI_LM
 # to test host-wait quiescence between decode and vocab on one xclbin.
 UNI_WAVE_LO = int(_os.environ.get("UNI_WAVE_LO", "0"))
 UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
-if BATCH > 1:
-    # The vocab waves CANNOT run batched, so the batched sequence must not drive
-    # them. LM_HEAD is already refused at BATCH>1 and the rms core's batched body
-    # has no vocab arm at all -- it is not an empty arm, it is the decode body
-    # emitted unconditionally (see _rms_decode_batched: the vocab @xnorm put is a
-    # memtile-shaped chunk-major descriptor whose 512-element wrap does not fit a
-    # compute tile's 8-bit wrap field, so there is nothing legal to put there).
-    #
-    # Left at UNI_WAVES this is a deadlock at the FIRST vocab wave and nowhere
-    # earlier: all UNI_DEC decode layers run, every layer's output lands, every
-    # layer's KV appends, and then the rms core starts a decode pass into a chip
-    # whose every other tile has taken its vocab arm and gone idle. It looks like
-    # a batching fault and it is not one.
+# DECODE_NO_LM_WAVES: stop the batched sequence after the decode layers. This is
+# what the batched build did unconditionally before the LM head was wired, and it
+# is still the right thing when only the decode engine is under test -- the
+# batch-equivalence gates read layer outputs, not logits, and skipping seven vocab
+# waves is most of the build and most of the run.
+#
+# It is NOT a fallback for a broken LM head. Left at UNI_WAVES with no vocab arm on
+# the rms core, the failure is a deadlock at the FIRST vocab wave and nowhere
+# earlier: all UNI_DEC decode layers run, every layer's output lands, every layer's
+# KV appends, and then the rms core starts a decode pass into a chip whose every
+# other tile has taken its vocab arm and gone idle. It looks like a batching fault
+# and it is not one.
+if BATCH > 1 and int(_os.environ.get("DECODE_NO_LM_WAVES", "0")):
     UNI_WAVE_HI = min(UNI_WAVE_HI, UNI_DEC)
 
 # Weight-buffer grouping: G decode layers per weight BO. A shim BD's byte offset
@@ -1099,6 +1099,26 @@ GLU_DEST = DEST[GLU_PHASE] if GLU_PHASE >= 0 else -1
 FULL4 = NPH == 4 and DOWN_PHASE == 3 and DEST[1] == DEST[3] and NDEST == 3
 RMS_DEST = DEST[DOWN_PHASE] if FULL4 else -1
 HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
+# Where the VOCAB projection egresses. At batch 1 it shares the o-proj/down id and
+# the rms core relays it to the shim, which is what the reference decode superkernel
+# does (x broadcast on the rms tile's MM2S0, logits on its MM2S1). Batched, that core
+# cannot take a second job: it already holds a BATCH*K residual and spends both MM2S
+# on @xnorm and @layerOut. So the batched vocab arm stamps the GATE-UP id instead and
+# the logits land on the GLU core, whose vocab arm is otherwise empty.
+#
+# The GLU core rather than a memtile, and the reason is arithmetic rather than taste.
+# The obvious relay is dest 0's memtile -- idle in vocab, already dest 0's endpoint
+# for the batched QKV transpose -- but at batch 8 that memtile (col 3) has FIVE MM2S
+# in use and reserves the sixth (MM2S 0 carries the q-broadcast's route), so there is
+# no channel to drain on and air-to-aie says so: "failed to get MM2S tile for L3
+# allocation". The main egress memtile is worse -- all six MM2S spent. The GLU core
+# has one MM2S free, its column's shim is completely unused, and it is ONE HOP from
+# the demux instead of two.
+#
+# Nothing on the decode path moves: the id is stamped from the arm-selected `pktv`,
+# so decode still stamps its own per-phase ids, and the vocab get on the GLU core is
+# the byte-identical descriptor to the decode one (see _voc there).
+VOCAB_DEST = GLU_DEST if BATCH > 1 else DEST[OPROJ_PHASE]
 # A slice pair is one rotation of the GLU BD ring, and the core's slot sequence is
 # statically unrolled and restarts every layer while the ring's rotation carries
 # over -- an ODD slice count leaves the two a slot apart and every other layer reads
@@ -1117,6 +1137,22 @@ GLU_PCOL = 5  # GLU compute tile + down memtile column (reference: tile_5_x + me
 # DOWN phase: the GLU output (8192) is fed back on-chip as the down X (NOT host).
 # down_buffer re-broadcasts its 8192 DOWN_REFEED(=4) times to the X memtile, which
 # chunks each into 16x512 -> inX for ph3. No gluShim host drain.
+# The batched LM head rides the GLU core's gate-up BD, so it drains in the same
+# granule: GLU_SLICE per token per get, two of them per ring rotation. Sharing the
+# BD is the point -- an index_switch puts BOTH arms' channel ops in the tile's mem
+# block, so two arms with DIFFERENT descriptors would put two BDs on one S2MM chain
+# and the port would cycle through both. Identical descriptors collapse to one.
+VOC_SLICE_RNDS = GLU_SLICE // PAYLOAD  # egress rounds per GLU slice (2 on llama)
+VOC_ROTATIONS = VOCAB_RNDS // (2 * VOC_SLICE_RNDS) if BATCH > 1 else 0
+if BATCH > 1 and VOC_ROTATIONS * 2 * VOC_SLICE_RNDS != VOCAB_RNDS:
+    raise SystemExit(
+        f"DECODE_BATCH>1 with the LM head needs VOCAB_RNDS={VOCAB_RNDS} to be a "
+        f"multiple of {2 * VOC_SLICE_RNDS} (two GLU slices of "
+        f"{VOC_SLICE_RNDS} rounds): the batched logit drain shares the GLU core's "
+        f"ping-pong BD ring, and an odd number of slices desyncs it the same way "
+        f"an odd NGLU does. Pick a VOCAB_CHUNK_I2 that divides -- VOCAB_RNDS is "
+        f"VOCAB_CHUNK_I2*{PAIR_ROWS}."
+    )
 HOST_ROUNDS = sum(ROUNDS_PER_DEST[p] for p in HOST_DRAIN)  # host-drained egress rounds
 # #4: the down egresses as the rms layer output (residual2), drained on its own channel.
 LAYER_RNDS = (PAIR_ROWS * I2P[DOWN_PHASE]) if FULL4 else 0
@@ -1275,32 +1311,17 @@ BATCH_MAX_ATTN_QTILE = 8
 if BATCH < 1:
     raise SystemExit(f"DECODE_BATCH must be >= 1, got {BATCH}")
 if BATCH > 1 and LM_HEAD:
-    # NOT because the projection is unbatched -- it already is. There is ONE
-    # proj herd family, both RTP arms go through it, `_proj` is arm-independent
-    # and `_emit` already ships HDR + PAIR_PAY*BATCH; the group and main gathers
-    # are GRP_ROWS_B / MAIN_ROWS_B. (An earlier version of this comment claimed
-    # a separate lm-head herd. There is none, and believing it costs a day.)
-    #
-    # What is missing is the RMS CORE's vocab arm, and what blocks that is the
-    # tile's PORT budget. A compute tile has 2 MM2S and 2 S2MM, each port gets
-    # ONE aie.dma_start chain, so both arms must present the same buffer on the
-    # same port and no buffer may serve more than two ports. Batch 1 satisfies
-    # that for free -- every buffer on tile (2,2) is K bf16, so the four flows
-    # fold onto four chains with one BD each. At batch 8 the buffers are 8x and
-    # one-buffer-per-flow is 57,380 bytes against 65,536 minus a 10 KB stack.
-    #
-    # Four arrangements were built and all four hang identically (wave 0, one
-    # layer's KV, no layer output) -- see "The batched lm head: what actually
-    # blocks it" in docs/DFlashFeasibility.md for the emitted-AIE signature of
-    # each and the three ways out. The one that looks right is to drain the
-    # logits from the MEMTILE through the existing HOST_DRAIN relay, which is
-    # already batched, and leave the rms core out of the logit path.
+    # The FUSED lm head is batched and gated (batch_lm_equiv.py). This refuses
+    # only the STANDALONE vocab-only build, which is a different launch shape --
+    # no decode waves in front of it, `_seg_arm_i` unused on some paths -- and
+    # has never been dispatched at batch > 1. Nothing is known to be wrong with
+    # it; nothing is known to be right either, and the fused form is what the
+    # host driver uses.
     raise SystemExit(
-        "DECODE_BATCH>1 with LM_HEAD=1 is not wired yet. The vocab PROJECTION "
-        "is already batched; what is missing is the rms core's vocab arm, and "
-        "it does not fit that tile's DMA ports at batch>1 as currently routed. "
-        "See docs/DFlashFeasibility.md. Build the decode layers batched "
-        "(LM_HEAD=0) or the lm head at batch 1."
+        "DECODE_BATCH>1 with LM_HEAD=1 (the standalone vocab-only build) is "
+        "untested. The FUSED lm head IS batched -- build the unified sequence "
+        "(LM_HEAD=0, which drives UNI_DEC decode waves then UNI_LM lm-head "
+        "waves) and gate it with batch_lm_equiv.py."
     )
 if BATCH > BATCH_MAX_PROJ:
     raise SystemExit(
@@ -1487,11 +1508,13 @@ def build_module():
         )
         # LM_HEAD drains VOCAB_SIZE_PADDED logits into Y (arg3); decode uses Y for the
         # QKV host rounds + rms layer-out. Separate compile-time size (decode unchanged).
-        # Every drained PAYLOAD row becomes B rows, token-major (egress_bd.py).
-        # The vocab region does NOT scale here: LM_HEAD is refused at BATCH>1.
+        # Every drained PAYLOAD row becomes B rows, token-major (egress_bd.py) --
+        # the vocab region included, since the batched LM head produces B tokens'
+        # logits per wave. Within a wave they are token-major, so the host reads
+        # token t's chunk as Y[base + w*B*VP + t*VP : +VP].
         _y_elems = (
             (HOST_ROUNDS + LAYER_RNDS) * PAYLOAD * BATCH
-            + UNI_LM * VOCAB_SIZE_PADDED
+            + UNI_LM * VOCAB_SIZE_PADDED * BATCH
             + PROBE_TOTAL
         )
         y_l3 = MemRefType.get(
@@ -1809,6 +1832,16 @@ def build_module():
                 visibility="private",
             )
             glu_row_aie.attributes["link_with"] = StringAttr.get("glu.o")
+            # (y_batch, x_batch, src offset, len, arm) -- the LM head arm's
+            # relay. See glu_copy_aie in glu.cc for why the logits are copied
+            # into the OUTPUT buffer instead of sent straight back out of the
+            # input one.
+            glu_copy_aie = FuncOp(
+                "glu_copy_aie",
+                ([glu_hid_l1, glu_x_l1, i32, i32, i32], []),
+                visibility="private",
+            )
+            glu_copy_aie.attributes["link_with"] = StringAttr.get("glu.o")
         # reference rope_compute(q,k,v, qkv, lut): rotate-half RoPE on Q,K (V copied).
         rope_compute = FuncOp(
             "rope_compute",
@@ -2117,6 +2150,13 @@ def build_module():
         # the down_buffer fill, derived from the DOWN_REFEED loop around the put
         # below), NOT drained to host.
         channel_decl("gluOut", size=[1])
+        # Batched LM head: the GLU core's second MM2S, carrying the vocab logits to
+        # the host. Its own channel and not @layerOut, because a channel with two
+        # producers is a shim fan-in and air-to-aie refuses those ("Fan-in for
+        # aie.flow isn't supported"). Only declared when it is used -- at batch 1
+        # the rms core forwards the logits and this core stays gate-up-only.
+        if BATCH > 1 and GLU_DEST >= 0:
+            channel_decl("vocOut", size=[1])
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
@@ -2462,23 +2502,36 @@ def build_module():
                                         idx(VOCAB_W_BLOCKS * BLOCK_BF16),
                                     ),
                                 )
+                            # Every drained row becomes B rows, here as everywhere
+                            # else: a wave's vocab chunk is BATCH*VOCAB_SIZE_PADDED
+                            # and lays out token-major inside it (see the drain).
                             _vyb = arith.addi(
-                                idx((HOST_ROUNDS + LAYER_RNDS) * PAYLOAD),
+                                idx((HOST_ROUNDS + LAYER_RNDS) * PAYLOAD * BATCH),
                                 arith.muli(
                                     arith.subi(a_iv, idx(UNI_DEC)),
-                                    idx(VOCAB_SIZE_PADDED),
+                                    idx(VOCAB_SIZE_PADDED * BATCH),
                                 ),
                             )
                             # ===== LM head (IS_ATTN=0), the reference gen_lm_head_seq analog =====
                             # Same device, RTP arm=0: the proj cores run ONE vocab phase
-                            # (VOCAB_I2 row-pairs x NBJ col-blocks, id4 -> RMS_DEST) and the
-                            # rms core does final rmsnorm(x) then forwards VOCAB_RNDS logit
-                            # rounds out via layerOut. Feed: x + final rms weight + vocab
-                            # weights; drain VOCAB_SIZE_PADDED logits into Y. No attn/rope/
-                            # glu/KV feeds (those herds are parked -- RTP-unarmed -- so they
-                            # need no input; feeding them would only back-pressure).
+                            # (VOCAB_I2 row-pairs x NBJ col-blocks, id -> VOCAB_DEST) and
+                            # the rms core does the final rmsnorm(x). Feed: x + final rms
+                            # weight + vocab weights; drain VOCAB_SIZE_PADDED logits per
+                            # token into Y. No attn/rope/glu/KV feeds (those herds are
+                            # parked -- RTP-unarmed -- so they need no input; feeding them
+                            # would only back-pressure).
+                            #
+                            # WHO FORWARDS THE LOGITS depends on the batch, and it is the
+                            # only thing that does: at batch 1 the rms core relays them on
+                            # @layerOut (VOCAB_DEST is the o-proj/down id, which that core
+                            # already consumes); batched, they go to dest 0 and its memtile
+                            # relays them on @toShim. See VOCAB_DEST.
                             ChannelPut(
-                                "rmsX", X, offsets=[_x_final], sizes=[K], strides=[1]
+                                "rmsX",
+                                X,
+                                offsets=[_x_final],
+                                sizes=[BATCH * K],
+                                strides=[1],
                             )
                             # real-lm-head final norm (model.norm.weight): a DEDICATED slot
                             # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
@@ -2556,16 +2609,38 @@ def build_module():
                             # count-free KV memtile ring is never touched (was the 3-vocab
                             # hang). _xc_voc already excludes OPROJ_REFEED, so the xnorm
                             # convergence stays balanced with omtb producing no o-proj here.
-                            # drain logits (natural order): rms LM branch
-                            # forwards VOCAB_RNDS x PAYLOAD via layerOut; ONE 2D-strided get.
-                            ChannelGet(
-                                "layerOut",
-                                Y,
-                                indices=[idx(0)],
-                                offsets=[_vyb],
-                                sizes=[VOCAB_RNDS, PAYLOAD],
-                                strides=[PAYLOAD, 1],
-                            )
+                            # drain logits (natural order). ONE strided get either
+                            # way; only the channel and the number of dims differ.
+                            if BATCH > 1:
+                                # The GLU core relays 2*VOC_ROTATIONS slices of
+                                # BATCH x GLU_SLICE, token-major within a slice.
+                                # The get folds them into
+                                # [BATCH][VOCAB_SIZE_PADDED], so a token's chunk
+                                # of the vocab is contiguous and the host reads
+                                # logits[t] as a plain slice.
+                                ChannelGet(
+                                    "vocOut",
+                                    Y,
+                                    indices=[idx(0)],
+                                    offsets=[_vyb],
+                                    sizes=[
+                                        VOCAB_RNDS // VOC_SLICE_RNDS,
+                                        BATCH,
+                                        GLU_SLICE,
+                                    ],
+                                    strides=[GLU_SLICE, VOCAB_SIZE_PADDED, 1],
+                                )
+                            else:
+                                # rms LM branch forwards VOCAB_RNDS x PAYLOAD via
+                                # layerOut.
+                                ChannelGet(
+                                    "layerOut",
+                                    Y,
+                                    indices=[idx(0)],
+                                    offsets=[_vyb],
+                                    sizes=[VOCAB_RNDS, PAYLOAD],
+                                    strides=[PAYLOAD, 1],
+                                )
                             yield_([])
 
                         def _uni_dec():
@@ -4387,6 +4462,176 @@ def build_module():
 
                         @herd(name="glu", sizes=[1, 1], operands=[_arm_glu])
                         def glu_h(tx, ty, _sx, _sy, _arm):
+                            # The batched LM head's logits leave the chip HERE
+                            # (see VOCAB_DEST), so at batch>1 this core has two
+                            # arms and they have to share one ring. Three
+                            # constraints pin the shape, each found by building
+                            # the alternative:
+                            #
+                            #  - Two arms with their own allocs put SEVEN 16 KB
+                            #    buffers on a 64 KB tile: air-to-aie does not
+                            #    merge equal-typed allocs across an
+                            #    index_switch. So the ring is allocated ONCE,
+                            #    above the arms, and both use it.
+                            #  - One arm with an RTP-selected trip count is
+                            #    worse: @outY's demux ids are derived from its
+                            #    gets' static VOLUME, and a dynamic loop bound
+                            #    makes that unknowable -- "selects a
+                            #    destination, but its routing domain has no
+                            #    demux", on all 16 proj emitters. So each arm
+                            #    keeps its own STATIC count.
+                            #  - The two arms' @outY gets are then the same
+                            #    descriptor on the same buffer, which is what
+                            #    keeps them one BD on that S2MM.
+                            #
+                            # scf.if and not index_switch: air-dependency's
+                            # graph builder has no IndexSwitchOp async case
+                            # (Util/Dependency.cpp) and these regions hold
+                            # channel ops on hoisted (async-allocated) memrefs.
+                            # _emit uses scf.if for the same reason.
+                            _voc_arm = BATCH > 1 and GLU_DEST >= 0
+
+                            def _get_slice(gx):
+                                # get 1024 = TWO stripped demux packets DIRECTLY from
+                                # the id-demux dest (reproducer mem_1_1 DMA5 ->
+                                # tile_5_2 DMA0); no relay.
+                                if BATCH == 1:
+                                    ChannelGet(
+                                        "outY",
+                                        gx,
+                                        indices=[idx(0), idx(GLU_DEST)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(GLU_SLICE)],
+                                        strides=[idx(1)],
+                                    )
+                                    return
+                                # Same de-interleave as the rms core. A GLU
+                                # slice is [up | gate] and that is TWO egress
+                                # rounds on llama, folded into the emitter
+                                # dimension. The vocab arm reads the identical
+                                # descriptor -- a slice of the vocab is just
+                                # [BATCH][GLU_SLICE] of logits.
+                                assert GLU_SLICE % PAYLOAD == 0
+                                _go, _gs, _gt = outy_tokmajor(
+                                    GLU_SLICE, rounds=GLU_SLICE // PAYLOAD
+                                )
+                                ChannelGet(
+                                    "outY",
+                                    gx,
+                                    indices=[idx(0), idx(GLU_DEST)],
+                                    offsets=[idx(v) for v in _go],
+                                    sizes=[idx(v) for v in _gs],
+                                    strides=[idx(v) for v in _gt],
+                                )
+
+                            def _glu_slice(gx, mk_gh):
+                                # gh is allocated HERE, after the get, and not
+                                # hoisted beside gx. Both halves of that matter:
+                                # emitting the alloc before the get moves the
+                                # batch-1 IR (the no-op gate says so), and
+                                # hoisting it out of the loop moves the emitted
+                                # `release gh-ready` from once per slice to
+                                # twice at the end of a rotation, which changes
+                                # the decode arm's pipelining for a buffer the
+                                # vocab arm never touches. Only gx has to be
+                                # shared, so only gx is hoisted.
+                                _get_slice(gx)
+                                gh = mk_gh()
+                                if BATCH == 1:
+                                    CallOp(glu_aie, [gh, gx, _arm])
+                                else:
+                                    # A round is [BATCH][GLU_SLICE]: the GLU is
+                                    # per token, so this is a row loop and
+                                    # nothing else. Unrolled -- the trip count
+                                    # is the batch, and the ring depends on the
+                                    # body being one get / one put.
+                                    for _t in range(BATCH):
+                                        CallOp(
+                                            glu_row_aie,
+                                            [
+                                                gh,
+                                                gx,
+                                                arith.ConstantOp(
+                                                    IntegerAttr.get(i32, _t), None
+                                                ).result,
+                                                _arm,
+                                            ],
+                                        )
+                                ChannelPut(
+                                    "gluOut",
+                                    gh,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(BATCH * GLU_HID)],
+                                    strides=[idx(1)],
+                                )
+                                # Returned, not deallocated here: the decode arm
+                                # frees gx before gh and the batch-1 no-op gate
+                                # compares that order.
+                                return gh
+
+                            def _voc_slice(gx, mk_gh):
+                                """One vocab slice: in on @outY, out on @vocOut.
+
+                                Through gh and a COPY, rather than sending gx
+                                straight back out, and the reason is the lock
+                                credit rather than the wire. AIR sizes a
+                                buffer's credit from the ratio of channel ops
+                                that WRITE it to ops that READ it
+                                (getLockValuePair), counted across both arms
+                                because it cannot know they are exclusive.
+                                Sending gx out makes gx both-directional and the
+                                ratio comes out at 2 -- the MM2S then waits for
+                                two core releases per fire and gets one, and the
+                                relay stalls halfway through the wave. Copying
+                                keeps gx write-only and gh read-only, which is
+                                the case AIR gives credit 1 without counting
+                                anything, and is what the decode arm already
+                                looks like.
+
+                                Two halves because gh is half a slice. They are
+                                contiguous and consecutive, so the stream is the
+                                same one a single put would make and the host's
+                                logits[t] stays a plain stride (see the @vocOut
+                                get in _uni_voc).
+                                """
+                                _get_slice(gx)
+                                gh = mk_gh()
+                                _half = BATCH * GLU_HID
+                                for _h in range(2):
+                                    CallOp(
+                                        glu_copy_aie,
+                                        [
+                                            gh,
+                                            gx,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(i32, _h * _half), None
+                                            ).result,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(i32, _half), None
+                                            ).result,
+                                            _arm,
+                                        ],
+                                    )
+                                    ChannelPut(
+                                        "vocOut",
+                                        gh,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(_half)],
+                                        strides=[idx(1)],
+                                    )
+                                return gh
+
+                            # An odd slice count desyncs the ring: the core's
+                            # slot sequence restarts every layer while the
+                            # ring's rotation carries over, so every other layer
+                            # reads a stale slice. GLU_PKTS keeps the count
+                            # even, and VOC_ROTATIONS refuses a vocab chunk that
+                            # would not.
+                            assert NGLU % 2 == 0, (
+                                f"odd NGLU={NGLU} desyncs the GLU BD ring "
+                                f"(GLU_PKTS={GLU_PKTS})"
+                            )
+
                             def _dec():
                                 # FAITHFUL 2-slot ring (reproducer core_5_2: TWO glu_aie
                                 # calls per loop iter, ping x_0/hid_0 + pong x_1/hid_1).
@@ -4395,92 +4640,73 @@ def build_module():
                                 # rolled 1-call loop collapses to 1-slot (no overlap).
                                 def _slice():
                                     gx = AllocOp(glu_x_l1, [], [])
-                                    # get 1024 = TWO stripped demux packets DIRECTLY from
-                                    # the id-demux dest (reproducer mem_1_1 DMA5 ->
-                                    # tile_5_2 DMA0); no relay.
-                                    if BATCH == 1:
-                                        ChannelGet(
-                                            "outY",
-                                            gx,
-                                            indices=[idx(0), idx(GLU_DEST)],
-                                            offsets=[idx(0)],
-                                            sizes=[idx(GLU_SLICE)],
-                                            strides=[idx(1)],
-                                        )
-                                    else:
-                                        # Same de-interleave as the rms core.
-                                        # A GLU slice is [up | gate] and that is
-                                        # TWO egress rounds on llama, folded
-                                        # into the emitter dimension.
-                                        assert GLU_SLICE % PAYLOAD == 0
-                                        _go, _gs, _gt = outy_tokmajor(
-                                            GLU_SLICE, rounds=GLU_SLICE // PAYLOAD
-                                        )
-                                        ChannelGet(
-                                            "outY",
-                                            gx,
-                                            indices=[idx(0), idx(GLU_DEST)],
-                                            offsets=[idx(v) for v in _go],
-                                            sizes=[idx(v) for v in _gs],
-                                            strides=[idx(v) for v in _gt],
-                                        )
-                                    gh = AllocOp(glu_hid_l1, [], [])
-                                    if BATCH == 1:
-                                        CallOp(glu_aie, [gh, gx, _arm])
-                                    else:
-                                        # A round is [BATCH][GLU_SLICE]: the GLU
-                                        # is per token, so this is a row loop
-                                        # and nothing else. Unrolled -- the
-                                        # trip count is the batch, and the ring
-                                        # above depends on the body being one
-                                        # get / one put.
-                                        for _t in range(BATCH):
-                                            CallOp(
-                                                glu_row_aie,
-                                                [
-                                                    gh,
-                                                    gx,
-                                                    arith.ConstantOp(
-                                                        IntegerAttr.get(i32, _t), None
-                                                    ).result,
-                                                    _arm,
-                                                ],
-                                            )
-                                    ChannelPut(
-                                        "gluOut",
-                                        gh,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(BATCH * GLU_HID)],
-                                        strides=[idx(1)],
+                                    gh = _glu_slice(
+                                        gx, lambda: AllocOp(glu_hid_l1, [], [])
                                     )
                                     DeallocOp(gx)
                                     DeallocOp(gh)
 
-                                # An odd slice count desyncs that ring: the core's
-                                # slot sequence restarts every layer while the ring's
-                                # rotation carries over, so every other layer reads a
-                                # stale slice. GLU_PKTS keeps the count even.
-                                assert NGLU % 2 == 0, (
-                                    f"odd NGLU={NGLU} desyncs the GLU BD ring "
-                                    f"(GLU_PKTS={GLU_PKTS})"
-                                )
                                 for _s in for_(idx(0), idx(NGLU // 2), idx(1)):
                                     _slice()  # ping
                                     _slice()  # pong
                                     yield_([])
 
-                                yield_([])
+                            if not _voc_arm:
 
-                            def _voc():
-                                yield_([])
+                                def _dec_case():
+                                    _dec()
+                                    yield_([])
 
-                            index_switch(
-                                [],
-                                arith.index_cast(idx_t, _arm),
-                                [0],
-                                case_body_builder=lambda op, i, cv: _voc(),
-                                default_body_builder=lambda op: _dec(),
-                            )
+                                index_switch(
+                                    [],
+                                    arith.index_cast(idx_t, _arm),
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_([]),
+                                    default_body_builder=lambda op: _dec_case(),
+                                )
+                            else:
+                                # The @outY landing ring, hoisted -- two
+                                # slots because the ring is two deep, and shared
+                                # because it is the one buffer both arms fill.
+                                # gh is not here: see _glu_slice.
+                                # gh is hoisted too, and only here: the vocab
+                                # arm needs a gh of its own and four 8 KB slots
+                                # beside two 16 KB ones do not fit. Sharing the
+                                # ring costs nothing in credit -- gh is
+                                # read-only to the DMA in both arms, which is
+                                # the case AIR gives 1 without counting.
+                                _gx = [AllocOp(glu_x_l1, [], []) for _ in range(2)]
+                                _gh = [AllocOp(glu_hid_l1, [], []) for _ in range(2)]
+                                _ifa = IfOp(
+                                    arith.cmpi(
+                                        arith.CmpIPredicate.ne,
+                                        _arm,
+                                        arith.ConstantOp(
+                                            IntegerAttr.get(i32, 0), None
+                                        ).result,
+                                    ),
+                                    [],
+                                    has_else=True,
+                                )
+                                # then = decode, else = LM head. See _if_decode
+                                # on the rms core for what the label is for.
+                                _ifa.operation.attributes["air.arm_select"] = (
+                                    UnitAttr.get()
+                                )
+                                with InsertionPoint(_ifa.thenRegion.blocks[0]):
+                                    for _s in for_(idx(0), idx(NGLU // 2), idx(1)):
+                                        _glu_slice(_gx[0], lambda: _gh[0])
+                                        _glu_slice(_gx[1], lambda: _gh[1])
+                                        yield_([])
+                                    yield_([])
+                                with InsertionPoint(_ifa.elseRegion.blocks[0]):
+                                    for _s in for_(idx(0), idx(VOC_ROTATIONS), idx(1)):
+                                        _voc_slice(_gx[0], lambda: _gh[0])
+                                        _voc_slice(_gx[1], lambda: _gh[1])
+                                        yield_([])
+                                    yield_([])
+                                for _b in _gx + _gh:
+                                    DeallocOp(_b)
 
                         glu_h.attributes["link_with"] = StringAttr.get("glu.o")
                         glu_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), GLU_PCOL)
@@ -4674,7 +4900,7 @@ def build_module():
                                 DeallocOp(a_acc)
 
                             _arm_i = arith.index_cast(idx_t, _arm)
-                            _id4 = idx(DEST[OPROJ_PHASE])
+                            _id4 = idx(VOCAB_DEST)  # vocab-arm packet dest
 
                             def _sel(voc_val, dec_thunk, ty_):
                                 return index_switch(
@@ -4916,7 +5142,7 @@ def build_module():
                             # would -> >16). _arm==1 -> NPH decode phases; _arm==0 -> 1
                             # vocab phase (I2=VOCAB_I2, J2=VOCAB_J2, pkt=id4=RMS_DEST).
                             _arm_i = arith.index_cast(idx_t, _arm)
-                            _id4 = idx(DEST[OPROJ_PHASE])
+                            _id4 = idx(VOCAB_DEST)  # vocab-arm packet dest
 
                             def _sel(voc_val, dec_thunk, ty):
                                 return index_switch(
@@ -5169,14 +5395,22 @@ def build_module():
                             DeallocOp(a_xnl)
                             DeallocOp(a_v)
 
-                        # SINGLE-mode when batched. LM_HEAD is refused at
-                        # BATCH>1, so the vocab arm is dead -- and it is not
-                        # merely dead, it is ILLEGAL: its @xnorm put is the
-                        # memtile-shaped chunk-major descriptor, whose
+                        # Batched: the same DUAL-mode index_switch, over the
+                        # batched bodies. The vocab arm is NOT the batch-1 one
+                        # -- it cannot be. Its @xnorm put would be the
+                        # memtile-shaped chunk-major descriptor whose
                         # 512-element wrap does not fit a compute tile's 8-bit
-                        # wrap field (see batch_wire.py's AIE2p limits).
+                        # wrap field (batch_wire.py's AIE2p limits), and it
+                        # relays the logits through this core, which at batch 8
+                        # neither fits the tile nor its DMA ports. Both are
+                        # answered by _rms_lm_head_batched: the same chunked
+                        # @xnorm put the decode arm makes, and no logit path at
+                        # all (the memtile drains them -- see the dest-0 vocab
+                        # relay). Every flow it uses is one the decode arm
+                        # already has, on the same buffer, which is what the
+                        # port rule needs.
                         if BATCH > 1:
-                            _rms_decode_batched(_arm)
+                            _rms_batched(_arm)
                             return
                         # FUSED: rms is always DUAL-mode (index_switch on arm) so the
                         # device (mem_2_2 BDs) is IDENTICAL in the decode and lm_head
@@ -5203,13 +5437,94 @@ def build_module():
                             default_body_builder=lambda op: _rms_decode(),
                         )
 
-                    def _rms_decode_batched(_arm):
-                        """The decode pass for B tokens, on ONE BATCH*K buffer.
+                    def _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm):
+                        """Re-broadcast rmsnorm(xb) nrefeed times, by chunk.
 
-                        Not the batch-1 body with a row loop around it, and the
-                        reason is L1: the core would need the raw batch AND the
-                        normalized batch resident at the same time, which is
-                        2 x 40 KB on qwen3-4b against a 54 KB budget. So:
+                        The scale pass is per row and runs once; the chunk loop
+                        is what the X memtile actually gets, one
+                        [BATCH][2*COL_BLOCK] window per get, which is the layout
+                        xfeed_bd.py re-blocks for the mmul.
+
+                        Shared by both arms, and that is the point rather than a
+                        tidiness: the decode residual and the LM head differ
+                        only in the WEIGHT and the COUNT. Every buffer, every
+                        descriptor and therefore every BD on this tile's @xnorm
+                        port is the same op in both, which is what lets the two
+                        arms fold onto one dma_start chain.
+                        """
+                        _nchunk = K // (2 * COL_BLOCK)
+
+                        def _i32(v):
+                            return arith.ConstantOp(
+                                IntegerAttr.get(i32, v), None
+                            ).result
+
+                        for t in range(BATCH):
+                            CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
+                        _n = nrefeed if isinstance(nrefeed, int) else None
+                        for _r in for_(
+                            idx(0), idx(_n) if _n is not None else nrefeed, idx(1)
+                        ):
+                            for _c in for_(idx(0), idx(_nchunk), idx(1)):
+                                CallOp(
+                                    rms_chunk_aie,
+                                    [
+                                        stg,
+                                        xb,
+                                        wbuf,
+                                        scl,
+                                        _i32(BATCH),
+                                        arith.index_cast(i32, _c),
+                                        _i32(2 * COL_BLOCK),
+                                    ],
+                                )
+                                # 1-D and contiguous on purpose: a compute
+                                # tile's wrap field is 8 bits, so the 3-D
+                                # chunk-major form the MEMTILE producers use
+                                # would not be legal here.
+                                ChannelPut(
+                                    "xnorm",
+                                    stg,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(BATCH * 2 * COL_BLOCK)],
+                                    strides=[idx(1)],
+                                )
+                                yield_([])
+                            yield_([])
+
+                    def _rms_batched(_arm):
+                        """Both arms, for B tokens, on ONE BATCH*K buffer.
+
+                        ONE BODY, not one per arm, and that is forced. The two
+                        arms have to share these buffers -- two sets is
+                        2x(32+8+4+4) KB on a 64 KB tile -- and AIR derives a
+                        buffer's lock credit from how many channel ops NAME it
+                        (getLockValuePair, AIRToAIESchedulingUtils.cpp), counting
+                        across scf.if arms because it cannot know they are
+                        exclusive. Two arms therefore doubled the credit on
+                        @layerOut's MM2S and @outY's S2MM -- the DMA waits for
+                        two releases per wave and the core issues one -- and the
+                        decode hung in wave 0 with the KV written and the layer
+                        output never landing. That is the same signature the four
+                        earlier attempts at this had, and this is what it was.
+                        One body, one op per role, credit 1: no arm can perturb
+                        the other's locks because there is only one of each op.
+
+                        What the arm selects, then, is a COUNT and never a
+                        program:
+
+                          @xnorm re-feeds   XN_REFEED / REFEED[GATEUP] for
+                                            decode, VOCAB_RNDS / 0 for the LM
+                                            head. Dynamic loop bounds are fine
+                                            here -- @xnorm is not the demux, so
+                                            nothing needs its volume statically.
+                          the residual      the two _accumulate passes and the
+                                            layer-out are decode-only, under an
+                                            scf.if. Their @outY gets keep STATIC
+                                            bounds, which the demux id analysis
+                                            does need.
+
+                        The batch layout, unchanged:
 
                           rmsb   raw X -> h -> layer output. Never copied,
                                  never duplicated; the projections' outputs are
@@ -5230,7 +5545,6 @@ def build_module():
                             "DECODE_BATCH>1 needs the FULL4 residual path "
                             "(RMS_DEST >= 0); the debug configs feed no o-proj"
                         )
-                        NCHUNK = K // (2 * COL_BLOCK)
                         assert K % (2 * COL_BLOCK) == 0
 
                         def _i32(v):
@@ -5238,48 +5552,50 @@ def build_module():
                                 IntegerAttr.get(i32, v), None
                             ).result
 
+                        def _cnt(voc, dec):
+                            """An arm-selected loop bound."""
+                            return index_switch(
+                                [idx_t],
+                                arith.index_cast(idx_t, _arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: yield_([idx(voc)]),
+                                default_body_builder=lambda op: yield_([idx(dec)]),
+                            )
+
+                        def _if_decode(body):
+                            """Run `body` on the decode arm only.
+
+                            air.arm_select marks this as an ARM select rather
+                            than ordinary control flow, so a static analysis
+                            counts the `then` region and not both. Without it
+                            check_channel_balance.py reads the LM head's traffic
+                            as extra decode traffic and calls @outY unbalanced
+                            -- the same thing it already does for the
+                            index_switch arms, which it knows about by op name.
+                            """
+                            _if = IfOp(
+                                arith.cmpi(
+                                    arith.CmpIPredicate.ne,
+                                    _arm,
+                                    _i32(0),
+                                ),
+                                [],
+                                has_else=False,
+                            )
+                            _if.operation.attributes["air.arm_select"] = UnitAttr.get()
+                            with InsertionPoint(_if.thenRegion.blocks[0]):
+                                body()
+                                yield_([])
+
                         xb = AllocOp(rmsb_l1, [], [])
                         ChannelGet("rmsX", xb, indices=[idx(0)])
                         stg = AllocOp(rstg_l1, [], [])
                         scl = AllocOp(rscl_l1, [], [])
+                        w = AllocOp(rms_l1, [], [])
+                        w2 = AllocOp(rms_l1, [], []) if POST_RMS else None
 
                         def _emit_norm(wbuf, nrefeed):
-                            """Re-broadcast rmsnorm(rmsb) nrefeed times, by chunk.
-
-                            The scale pass is per row and runs once; the chunk
-                            loop is what the X memtile actually gets, one
-                            [BATCH][2*COL_BLOCK] window per get, which is the
-                            layout xfeed_bd.py re-blocks for the mmul.
-                            """
-                            for t in range(BATCH):
-                                CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
-                            for _r in for_(idx(0), idx(nrefeed), idx(1)):
-                                for _c in for_(idx(0), idx(NCHUNK), idx(1)):
-                                    CallOp(
-                                        rms_chunk_aie,
-                                        [
-                                            stg,
-                                            xb,
-                                            wbuf,
-                                            scl,
-                                            _i32(BATCH),
-                                            arith.index_cast(i32, _c),
-                                            _i32(2 * COL_BLOCK),
-                                        ],
-                                    )
-                                    # 1-D and contiguous on purpose: a compute
-                                    # tile's wrap field is 8 bits, so the
-                                    # 3-D chunk-major form the MEMTILE
-                                    # producers use would not be legal here.
-                                    ChannelPut(
-                                        "xnorm",
-                                        stg,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(BATCH * 2 * COL_BLOCK)],
-                                        strides=[idx(1)],
-                                    )
-                                    yield_([])
-                                yield_([])
+                            _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm)
 
                         def _accumulate(nrnds, stage):
                             """Add a projection's output into the residual.
@@ -5334,29 +5650,47 @@ def build_module():
                                 strides=[idx(1)],
                             )
 
-                        # ph0: input layernorm -> the QKV X feed.
-                        w = AllocOp(rms_l1, [], [])
+                        # ph0: input layernorm -> the QKV X feed. On the LM
+                        # head arm this is the FINAL norm (model.norm.weight,
+                        # fed in rmsW's slot -- see _uni_voc) and the count is
+                        # one re-feed per vocab egress round, which is what
+                        # _xc_voc sizes the X memtile's get loop for. N_NORMS>=4
+                        # (the Gemma sandwich, which would need rms_chunk_hi_aie
+                        # here) is already refused at BATCH>1 upstream.
                         ChannelGet("rmsW", w, indices=[idx(0)])
-                        _emit_norm(w, XN_REFEED)
+                        _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
                         if POST_RMS:
                             # Swap in the post-attention weight BEFORE the first
                             # o-proj get, not after: rmsW2 packet-muxes onto the
                             # same S2MM as the o-proj id, and a packet whose BD
                             # is not armed yet blocks the port behind it.
-                            DeallocOp(w)
-                            w = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsW2", w, indices=[idx(0)])
+                            # Its OWN buffer, not `w` reused. Reusing it saves
+                            # 4 KB on a tile that has them, and it costs the
+                            # separate lock pair AIR gives the second weight --
+                            # which serialises the ph0 norm against the rmsW2
+                            # fill and hangs the batched decode in wave 0.
+                            # On the LM head arm this weight is a DUMMY and
+                            # the get exists only to consume it: rmsW2 is
+                            # decode-only but packet-muxes onto the same shim
+                            # MM2S as the vocab-active rmsX, so a hole in that
+                            # group stalls the tail (see _uni_voc).
+                            ChannelGet("rmsW2", w2, indices=[idx(0)])
                         # residual1: h = x + o-proj, in place.
-                        _accumulate(OPROJ_RNDS, 1)
+                        _if_decode(lambda: _accumulate(OPROJ_RNDS, 1))
                         # ph2: pre-MLP layernorm of h -> the gate-up X feed.
-                        _emit_norm(w, REFEED[GATEUP_PHASE])
-                        DeallocOp(w)
+                        # Zero re-feeds on the LM head arm: there is no second
+                        # projection phase there, and a zero-trip scf.for emits
+                        # no @xnorm chunk while keeping the put op -- and the op
+                        # is what the lock credit counts.
+                        _emit_norm(
+                            w2 if POST_RMS else w,
+                            _cnt(0, REFEED[GATEUP_PHASE]),
+                        )
                         # residual2: layer output = h + down, in place.
-                        _accumulate(DOWN_RNDS, 2)
-                        _layer_out()
-                        DeallocOp(scl)
-                        DeallocOp(stg)
-                        DeallocOp(xb)
+                        _if_decode(lambda: _accumulate(DOWN_RNDS, 2))
+                        _if_decode(_layer_out)
+                        for _b in ([w2] if POST_RMS else []) + [w, scl, stg, xb]:
+                            DeallocOp(_b)
 
                     def _rms_decode_body(_arm):
                         if N_NORMS >= 4:

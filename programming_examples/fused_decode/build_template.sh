@@ -78,7 +78,12 @@ PFX=decode
 OUT="${PFX}_b${BATCH}_L${L}"
 echo ">>> template $OUT  [$DECODE_MODEL]"
 LOG="${TMPDIR:-/tmp}/${OUT}.log"
+# Decode-only by default: this script builds the template the BATCH-EQUIVALENCE
+# gates read, and those read layer outputs, not logits. Seven vocab waves would be
+# most of the build and most of the run for something they never look at. Set
+# DECODE_NO_LM_WAVES=0 to build the full fused sequence (decode + LM head).
 env VOCAB_CHUNK_I2="$VOCAB_CHUNK_I2" LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 UNIFIED=1 \
+    DECODE_NO_LM_WAVES="${DECODE_NO_LM_WAVES:-1}" \
     DECODE_MODEL="$DECODE_MODEL" DECODE_BATCH="$BATCH" DECODE_GOLDEN_L="$L" \
     "$PYTHON" fused_decode.py > "$LOG" 2>&1 || true
 if [ -f decode.xclbin ] && [ -f decode.insts.bin ]; then

@@ -234,10 +234,20 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         w_elems=w_elems,
         **({"w_parts": w_parts} if w_parts else {}),
         rms_size=fd.UNI_DEC * fd.RMS_LAYER + _rope_w_elems(fd) + fd.K,
-        ny=decode_y + fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
+        ny=decode_y + fd.UNI_LM * fd.VOCAB_SIZE_PADDED * _b,
         kv_elems=fd.UNI_DEC * fd.ATTN_MAXL * fd.KVSZ_TOK,
         decode_y=decode_y,
-        voc_n=fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
+        # B tokens' logits per wave, token-major within the wave: token t's
+        # chunk w is at decode_y + w*B*VOCAB_SIZE_PADDED + t*VOCAB_SIZE_PADDED.
+        voc_n=fd.UNI_LM * fd.VOCAB_SIZE_PADDED * _b,
+        voc_chunk=fd.VOCAB_SIZE_PADDED,
+        # The wave counts, so a caller can size the weight BO for the WHOLE
+        # sequence without restating UNI_DEC. It matters: the lm-head waves read
+        # their weights at UNI_DEC*W_LAYER, so a BO sized for n_layers=1 is not
+        # merely small -- the head reads past the end of it and every logit
+        # comes back zero, with the dispatch reporting COMPLETED.
+        uni_dec=fd.UNI_DEC,
+        uni_lm=fd.UNI_LM,
         rms_lut_off=fd.UNI_DEC * fd.RMS_LAYER,
         # ONE token's rope/qk-norm/qkv-bias block. The region at rms_lut_off
         # holds `batch` of these back to back, one per POSITION, because a block

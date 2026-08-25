@@ -185,11 +185,20 @@ def walk(op, mult, unknown):
             sub_unknown = True
         else:
             sub = mult * max(0, -(-(hi - lo) // st))
-    # scf.index_switch is the vocab/decode ARM select, and the two arms are
-    # alternatives: counting both mixes an lm-head build's traffic into a decode
-    # build's. Region 0 is the default region (SCF.td declares defaultRegion
-    # first), which is the decode arm everywhere in this builder.
-    regions = [op.regions[0]] if name == "scf.index_switch" else list(op.regions)
+    # The vocab/decode ARM select, in either of its two spellings, is a pair of
+    # ALTERNATIVES: counting both mixes an lm-head build's traffic into a decode
+    # build's. scf.index_switch is one by construction -- region 0 is the
+    # default region (SCF.td declares defaultRegion first), which is the decode
+    # arm everywhere in this builder. An scf.if is only one when the builder
+    # says so, because scf.if is also how per-tile specialisation is written
+    # (see _emit), where both regions are wanted; air.arm_select is the builder
+    # marking the ones that are arms, and their `then` region is decode.
+    arm_if = name == "scf.if" and "air.arm_select" in op.attributes
+    regions = (
+        [op.regions[0]]
+        if (name == "scf.index_switch" or arm_if)
+        else list(op.regions)
+    )
     for r in regions:
         for b in r.blocks:
             for o in b.operations:

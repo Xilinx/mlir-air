@@ -41,6 +41,20 @@ and a misaligned 512-bit access on AIE2 does not fault — it masks the address.
 The whole accumulator landed 8 floats low with its tail never written. See "Next
 step"; `l1_align.py` is the gate.
 
+**The batched LM head works too.** A batch-8 dispatch returns eight tokens'
+logits, and each token's agree with a batch-1 dispatch on ITS OWN embedding to
+1.1-2.0% -- the GEMV-vs-mmul kernel difference and nothing else -- while being
+**64x further** from every other token's **[measured]**:
+
+                     reference 0  reference 3  reference 7
+    token 0             1.23e-02     1.47e+00     1.41e+00
+    token 3             1.39e+00     2.02e-02     1.45e+00
+    token 7             1.33e+00     1.43e+00     1.17e-02
+
+That matrix is the gate (`batch_lm_equiv.py`), not the diagonal: with rows drawn
+from one distribution a tolerance alone cannot tell "the batched kernel rounds
+differently" from "token 3 got token 5's row", and the off-diagonal can.
+
 What remains is the host driver at batch > 1, and the block-size decision below.
 
 Section 5's roofline counted projection weight traffic and left attention out.
@@ -222,8 +236,8 @@ cd ../qwen3_4b_q4nx && python3 qwen3_4b_q4nx_requant.py --check   # packer vs bu
 The first three need the NPU; the rest are static and run anywhere. **The gates are
 `q4k_mm_gate.py --mode exact`, `proj_qmm_gate.py`, `batch_attn_mask.py --check`,
 `check_kernels_inert.py`, the three `*_bd.py` checkers, `batch_path_check.py`,
-`l1_align.py`, `batch_row_probe.py` and the `DECODE_HIDDEN_TAPS` no-op diff
-below** — the rest are measurements.
+`l1_align.py`, `batch_row_probe.py`, `batch_lm_equiv.py` and the
+`DECODE_HIDDEN_TAPS` no-op diff below** — the rest are measurements.
 
 The batched on-device pair, which needs the NPU and two templates each:
 
@@ -235,6 +249,15 @@ UNI_WAVE_HI=1 ./build_template.sh 8 1                     # -> w4_b8_L1
 python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens 0
 for L in 2 3 4 5 6 7 8; do UNI_WAVE_HI=1 ./build_template.sh 1 $L; done  # -> w4_b1_L*
 python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens all   # each token at its own position
+```
+
+And the batched LM head, which needs the FULL wave sequence (the gate builds the
+decode layers as passthroughs rather than trimming the range — see its header):
+
+```bash
+DECODE_NO_LM_WAVES=0 DECODE_ACC_STOP=1 ./build_template.sh 8 1   # -> lm_b8_L1
+DECODE_NO_LM_WAVES=0 DECODE_ACC_STOP=1 ./build_template.sh 1 1   # -> lm_b1_L1
+python3 batch_lm_equiv.py --batch 8 --prefix lm
 ```
 
 **Both halves of a `batch_equiv` pair must carry the same `UNI_WAVE_HI`** — see
@@ -551,7 +574,17 @@ All were written mid-hunt and all found a real fault immediately.
   same modelling error on both sides of a division cancels.
 - **`check_dma_alloc.py`** — which tiles moved their DMA channels, and how the
   BD chains and lock counts changed. Found the two-chains-on-one-channel fault
-  in seconds. Needs two AIE dumps, so it costs two builds (~9 min).
+  in seconds. Needs two AIE dumps, so it costs two builds (~9 min). It answers
+  WHICH CHANNEL and not WHAT IT WAITS FOR: it passed every one of the hung
+  lm-head builds. For that, diff the `use_lock` VALUES in the two dumps'
+  `aie.mem` blocks — see the lm-head section.
+- **`batch_lm_equiv.py`** — the device gate for the batched LM head, and the
+  only one that sees it at all (`batch_equiv` reads layer outputs; the vocab
+  waves write Y). Feeds B DISTINCT embeddings and compares every token against
+  every batch-1 reference, so the answer is a matrix whose off-diagonal is the
+  real gate. Isolates the head from the sixteen layers in front of it with
+  `DECODE_ACC_STOP=1` rather than by trimming the wave range — a vocab wave does
+  not run standalone in this design, at batch 1 either.
 
 What none of them can see is ORDER, and four of the seven faults above are
 ordering.
@@ -680,10 +713,10 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    before the raw-accumulator dump (`PROJ_FLUSH_PROBE=4`) and the A-operand dump
    (`PROJ_MM_PROBE=1`) said in one run each that both were fine. **Dump the
    operand and dump the accumulator before theorising about either.**
-8. **The batched lm head.** The prerequisite for the host driver — a verify pass
-   needs B logits — and the thing that blocks it is **not** what the refusal in
-   `fused_decode.py` used to say. See the section below; the refusal has been
-   corrected to name the real constraint.
+8. ~~**The batched lm head.**~~ **Done.** `batch_lm_equiv.py` passes: eight
+   tokens' logits out of one dispatch, each matching a batch-1 wave on its own
+   row. It was never the port budget the refusal blamed, and it was never the
+   L1 either — both were consequences. See the section below.
 9. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
@@ -692,66 +725,76 @@ Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
 llama, so one model is not enough.
 
-#### The batched lm head: what actually blocks it [measured]
+#### The batched lm head: what it was [measured]
 
-The refusal used to read "the lm-head herd runs its OWN `_gemv`/`_emit`". **That
-is wrong** — there is one proj herd family (`proj_blk0`/`proj_blk1`), both arms
-go through it by RTP, `_proj = _mm if BATCH > 1 else _gemv` is arm-independent,
-and `_emit` already ships `HDR + PAIR_PAY*BATCH`. **The vocab projection is
-already batched.** So are the group and main gathers (`GRP_ROWS_B`,
-`MAIN_ROWS_B`). Writing `_rms_lm_head_batched` and scaling the Y region is
-straightforward and it compiles.
+**The refusal blamed the rms tile's DMA port budget. That was wrong**, and so
+was the version before it (which claimed a separate lm-head herd; there is none).
+The projection was already batched — one proj herd family, both RTP arms through
+it, `_proj = _mm if BATCH > 1 else _gemv` arm-independent, `_emit` already
+shipping `HDR + PAIR_PAY*BATCH`. What was missing was the rms core's vocab arm,
+and four attempts at writing it all hung identically: wave 0, one layer's KV
+written, layer output never landing, no message.
 
-What blocks it is the **rms core's port budget**, and the rule is exact:
+**What it actually was is one line of AIR.** `getLockValuePair`
+(`AIRToAIESchedulingUtils.cpp`) sizes a compute-tile buffer's lock credit from
+the RATIO of the channel ops that write it to the ops that read it:
 
-> A compute tile has 2 MM2S and 2 S2MM. Each PORT gets ONE `aie.dma_start`
-> chain, so both RTP arms must present the **same buffer on the same port**, and
-> no buffer may serve more than two ports.
+    if (!read_counter || !write_counter) return {1, 1};
+    if (read_counter >= write_counter) return {ceil(r/w), 1};
+    else                               return {1, ceil(w/r)};
 
-Batch 1 satisfies this for free — every buffer on tile (2,2) is `K` bf16, so the
-four flows (rmsX/rmsW/rmsW2 in, outY in, xnorm out, layerOut out) fold onto four
-chains with one BD each, shared by both arms. Batched they cannot: the buffers
-are 8x and the flows want different shapes. Four arrangements were built and all
-four hang **identically** — wave 0, one layer's KV written, layer output never
-lands, no message — which is why this needs the emitted `aie.mem` block rather
-than a device symptom to tell apart:
+It counts **all** users, and an `scf.if` / `index_switch` arm select is invisible
+to it — two mutually exclusive arms naming the same buffer look like twice the
+traffic. So the moment the two arms SHARE a buffer, which at batch 8 they must
+(two sets is 2×(32+8+4+4) KB on a 64 KB tile), the credit on that buffer's ports
+doubles: the DMA waits for two core releases per fire and the core issues one.
 
-| arrangement | emitted | |
-|---|---|---|
-| layerOut from `xb` (decode) and `stg` (vocab) | **two `dma_start(MM2S,0)`**, the second with `repeat_count` | only the first chain cycles |
-| `stg` on three ports (xnorm out, outY in, layerOut out) | one chain per port | still hangs |
-| outY into `lo` (vocab) and `stg` (decode) | **two `dma_start(S2MM,1)`** | as above |
-| `lo` = outY in + layerOut out, both arms; `stg` = xnorm only | one chain per port, **topologically identical to batch 1** | still hangs |
+That is the whole of it, and it explains every symptom the earlier attempts had.
+The emitted diff against a working build is two characters — `%c1_i32` becomes
+`%c2_i32` on `@layerOut`'s MM2S and `@outY`'s S2MM — which is exactly "the layer
+output never lands", and it is invisible to `check_dma_alloc.py`, whose subject
+is which channel a flow sits on rather than what it waits for.
 
-The last one is the interesting failure: the DMA topology matches the working
-build exactly and it still hangs, so the port rule is necessary and not
-sufficient. The core diff against a known-good dump shows a missing
-`use_lock(..., Release)` after the ph2 re-broadcast, so something in the
-dependency analysis is also unhappy — that is where the next attempt should
-start, with `check_dma_alloc.py` on the two dumps rather than by inspection.
+**The rule that follows** is the useful part, because it is not about this design:
 
-**And the space does not fit either.** One-buffer-per-flow at batch 8 on
-llama-3.2-1b:
+> Two arms may share a buffer only if, counting BOTH arms, that buffer is
+> DMA-written-only or DMA-read-only, or the read and write op counts are equal.
+> Anything else silently doubles a lock credit.
 
-    xb   BATCH*K      32768        stg  BATCH*2*COL_BLOCK   8192
-    lo   BATCH*PAYLOAD 8192        w    K                   4096
-    w2   K             4096        scl  BATCH f32             32
-                                        -------------------------
-                                        57380 + stack 10240 = 67620
-
-against 65536. It clears only with the stack at ~8 KB, which is a global setting
-and would silently shrink the inlined attention cores' frames too.
-
-**So this is a design decision, not a patch**, and the options are:
+Everything in the fix is that rule applied three times:
 
 | | |
 |---|---|
-| relay the logits off a **different tile** | the glu core is idle in vocab mode and has free ports; needs a new outY destination ordinal and a new shim task |
-| drain the logits from the **memtile**, via `HOST_DRAIN` | the relay already exists for other dests and is already batched (`relay_l2` is `PAYLOAD_B`); needs the vocab arm to stamp a host-drained dest instead of `RMS_DEST`, and the rms core then leaves the logit path entirely, which also frees `lo` |
-| keep it on the rms core and buy the space | re-get `rmsX` per block so `xb` can hold logits — but the x-sends and the drain must stay INTERLEAVED (all 36 sends before the first drain backs the egress up and deadlocks; gemma gets away with it only because its `_voc_blks_2k` is 1), and the extra shim tasks then risk the global `preserve_shim_dma_order` pacing |
+| the rms core | **ONE body**, not two. The arm selects a COUNT (`@xnorm` re-feeds: `XN_REFEED`/`REFEED[GATEUP]` for decode, `VOCAB_RNDS`/0 for the head) and never a program, so every buffer has exactly one op per role. The residual accumulates and the layer-out sit under an `scf.if` — one op each, still credit 1 — which also keeps their `@outY` gets on STATIC loop bounds |
+| the logits' route | the vocab projection stamps the **gate-up id** (`VOCAB_DEST`) and leaves from the **GLU core**, which is idle in vocab, has a free MM2S, and whose column's shim is entirely unused. One hop from the demux instead of two |
+| the GLU core | two arms, so the shared `@outY` landing ring stays write-only: the relay COPIES into the GLU's output buffer (`glu_copy_aie`) instead of sending the input buffer back out. Read-only and write-only buffers hit the `{1,1}` early return and cannot be miscounted at all |
 
-The middle one looks right: it removes a relay hop from the critical path, the
-machinery is already batched, and it leaves the proven decode arm untouched.
+**Two dead ends worth not repeating.**
+
+The first is the memtile. Draining the logits from dest 0's memtile is the
+obvious route — that memtile already exists for the batched QKV transpose and is
+idle in vocab — and it does not compile: at batch 8 `mem_tile_3_1` has five MM2S
+in use and reserves the sixth (MM2S 0 carries the q-broadcast's route), so
+air-to-aie says *"failed to get MM2S tile for L3 allocation"*. The main egress
+memtile is worse, with all six spent. **Count the memtile's channels in a
+working dump before choosing a relay**; the numbers are in `aie.air.mlir` and
+cost nothing to read.
+
+The second is the one-body form on the GLU core. Making its trip count
+RTP-selected — the proj core's shape — puts the `@outY` get under a dynamic loop
+bound, and `@outY` is the DEMUX: its routing ids are derived from its gets'
+static VOLUME (`PacketRoutingDomain.cpp`), so an unknowable volume means no ids
+and all sixteen proj emitters fail with *"selects a destination, but its routing
+domain has no demux"*. **A dynamic trip count is free around an ordinary
+channel and forbidden around a demux's get.**
+
+**What it cost, and what would have found it sooner.** `check_dma_alloc.py` said
+"no tile has two chains on one channel" for every one of these builds, which was
+true and not the question. The diff that mattered was the acquire/release VALUES
+in the two tiles' `aie.mem` blocks against a known-good dump — one `grep` over
+`use_lock` — and it named the fault in one pass once it was run. That comparison
+is now the first thing to do when a batched build hangs with the decode engine
+otherwise green.
 
 **One design decision worth knowing about**, because it is not obvious and it
 shaped everything downstream. The projection emits **(round, token)**: round r
@@ -864,6 +907,15 @@ diff /tmp/a.mlir /tmp/b.mlir && rm _fd_head.py
   `PROJ_FLUSH_PROBE=4` ships `y_acc` raw with scalar loads. One run each said
   "the feed is perfect, the accumulator is shifted by one vector" — which is
   most of the answer, and neither took longer than a build.
+- **A shared buffer across two arms doubles a lock credit.** AIR sizes a
+  compute-tile buffer's credit from how many channel ops write it against how
+  many read it, counting across `scf.if` / `index_switch` arms because it cannot
+  know they are exclusive. Sharing a buffer between a decode arm and a vocab arm
+  therefore makes the DMA wait for two core releases per fire while the core
+  issues one. The symptom is a hang with no message; the evidence is `%c2_i32`
+  where a working build has `%c1_i32`, in the tile's `aie.mem` block. Keep a
+  shared buffer one-directional (write-only or read-only to the DMA) — that case
+  returns `{1,1}` without counting — or keep the op counts equal.
 - **Two templates are only comparable if their `UNI_WAVE_HI` matches.** It is
   not a numerics knob but it moves `batch_equiv`'s answer 7x. Check
   `ls -l <prefix>_b8_L*.insts.bin`: 9,352 bytes is `UNI_WAVE_HI=1`, 149,392 is

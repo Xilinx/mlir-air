@@ -50,6 +50,28 @@ void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
 #endif
 }
 
+// DECODE_BATCH > 1, LM HEAD arm: half a slice, copied. No math at all.
+//
+// This exists for a LOCK reason, not an arithmetic one. On the vocab arm this
+// core is a pure relay -- a slice of logits arrives on the gate-up dest and
+// leaves on the second MM2S -- and the obvious spelling sends the INPUT buffer
+// straight back out. That makes the input buffer both DMA-written and
+// DMA-read, and AIR then sizes its lock credit by the ratio of those two counts
+// (getLockValuePair), which across two arms comes out at 2 and stalls the port.
+// Copying into the output buffer keeps each buffer one-directional -- input
+// written only, output read only -- which is the case AIR gives credit 1
+// unconditionally, and is what the decode arm already looks like.
+//
+// The cost is one L1-to-L1 pass over the slice per relay, against a vocab GEMV
+// of 2048x512 MACs behind it.
+void glu_copy_aie(bf16 *restrict y, bf16 *restrict x, int off, int n,
+                  int _arm) {
+  (void)_arm; // per-token RTP arm-gate operand, as in glu_aie
+  const bf16 *src = x + off;
+  for (int i = 0; i < n; i += 16)
+    aie::store_v(y + i, aie::load_v<16>(src + i));
+}
+
 // DECODE_BATCH > 1: row t of a batched round. The gate-up projection egresses
 // (round, token), so one round arrives as [BATCH][GLU_SLICE] and leaves as
 // [BATCH][GLU_SLICE/2] -- the GLU itself is per token and unchanged, which is
