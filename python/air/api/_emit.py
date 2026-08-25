@@ -28,14 +28,16 @@ type, the arith table, the vector type and the padding constant) so they can be
 looked up per node rather than threaded down the walk.
 """
 
-from air.ir import AffineDimExpr, AffineMap, AffineMapAttr, VectorType
+from air.ir import AffineDimExpr, AffineMap, AffineMapAttr, IndexType, VectorType
 from air.dialects import arith
 from air.dialects import math as math_dialect
 from air.dialects.memref import load as memref_load, store as memref_store
 from air.dialects.scf import for_ as range_, yield_
 from air.dialects.vector import (
+    CombiningKind,
     broadcast,
     fma as vector_fma,
+    reduction,
     transfer_read,
     transfer_write,
 )
@@ -103,6 +105,12 @@ _INT_OPS = {
 # Named so the failure can say *why*, not just "not supported for dtype float".
 _BITWISE = ("and", "or", "xor")
 
+# vector.reduction combining kinds. maximumf mirrors the elementwise _FLOAT_OPS
+# choice of arith.maximumf over maxnumf; the signed integer form matches the
+# rest of air.api's integer dtypes, and unsigned never reaches here.
+_REDUCE_F = {"add": CombiningKind.ADD, "max": CombiningKind.MAXIMUMF}
+_REDUCE_I = {"add": CombiningKind.ADD, "max": CombiningKind.MAXSI}
+
 
 def _check_region(node, dst, dtype, expected=None):
     """Check every buffer leaf against the element type of *its* region.
@@ -166,6 +174,13 @@ def _regions_in(node, dtype, out):
 
 def emit_elementwise(dst, expr):
     """Emit ``dst[:] = expr`` as a loop nest over ``dst``'s shape."""
+    # A reduction is the one right-hand side whose shape is not the
+    # destination's, so it is dispatched before the elementwise shape check
+    # rather than being taught to it.
+    if expr.kind == "reduce":
+        _emit_reduce(dst, expr)
+        return
+
     # A bare scalar on the right-hand side is a fill (`acc[:] = 0.0`), which is
     # how an accumulator is zeroed before a K loop. It needs no leaves: the
     # destination supplies the shape.
@@ -257,6 +272,87 @@ class _Region:
             if vectorized
             else None
         )
+
+
+def _emit_reduce(dst, expr):
+    """Emit ``dst[:] = ops.reduce_*(src)`` -- one vector.reduction per row.
+
+    The destination is the operand with its innermost axis collapsed -- kept
+    as 1 or dropped, see the shape check below -- so the loop nest walks the
+    outer dimensions and each trip reduces one whole innermost axis.
+
+    That axis is read as a *single* vector of its full extent rather than in
+    steps of the destination's vector width. This is what the hand-written
+    kernels do, and it is the reason there is no accumulator here: stepping
+    would need a loop-carried vector accumulator, which is exactly the
+    construct ``ops.dot`` documents as failing to legalize on AIE2 (LLVM
+    splits it into sub-512-bit pieces). The cost is that the reduced axis has
+    to be a vector length the backend accepts.
+    """
+    operand = expr.args[0]
+    dtype = dst.dtype
+    require_computable(dtype, "air.api.ops.reduce_add / reduce_max")
+    require_signless(dtype, "air.api.ops.reduce_add / reduce_max")
+
+    # The source shape is the destination's with the innermost extent taken
+    # from the operand's own leaves: that dimension is what gets collapsed, so
+    # it is the one thing the destination cannot tell us.
+    leaves = operand.leaves()
+    src_shape = leaves[0].shape
+    for leaf in leaves:
+        if leaf.shape != src_shape:
+            raise ValueError(
+                f"shape mismatch inside a reduction: operands have shapes "
+                f"{src_shape} and {leaf.shape}"
+            )
+        if leaf.dtype is not dtype:
+            raise ValueError(
+                f"dtype mismatch in elementwise assignment: destination is "
+                f"{dtype} but operand is {leaf.dtype}"
+            )
+        if leaf.value is None:
+            raise RuntimeError(
+                "buffer used before allocation; air.alloc() must be called "
+                "inside the herd body that uses it"
+            )
+
+    # Two destination spellings are accepted, matching numpy's keepdims:
+    #   [.., n] -> [.., 1]  keeps the reduced axis (keepdims=True)
+    #   [.., n] -> [..]     drops it (keepdims=False)
+    # Both occur in the kernels this replaces, and in the *same* kernel: the
+    # hand-written reduce_add allocates its L1 tile [tile_m, 1] but declares
+    # the L3 output [m], so whichever spelling the DSL refused would have
+    # forced the example to change shape somewhere.
+    kept = tuple(list(src_shape[:-1]) + [1])
+    dropped = tuple(src_shape[:-1])
+    keepdims = tuple(dst.shape) == kept
+    if not keepdims and tuple(dst.shape) != dropped:
+        raise ValueError(
+            f"shape mismatch in a reduction: reducing {src_shape} along its "
+            f"innermost axis gives {kept} (keeping the axis) or {dropped} "
+            f"(dropping it), but the destination is {tuple(dst.shape)}"
+        )
+
+    lanes = src_shape[-1]
+    rank = len(src_shape)
+    minor = AffineMapAttr.get(AffineMap.get(rank, 0, [AffineDimExpr.get(rank - 1)]))
+    regions = {d: _Region(d, lanes, True) for d in _regions_in(operand, dtype, [])}
+    kind = (_REDUCE_F if dtype.is_float else _REDUCE_I)[expr.op]
+
+    # Index-typed 0 for the collapsed axis: it is both where the whole
+    # row is read from and where the scalar result is stored.
+    zero = _result(arith.ConstantOp(IndexType.get(), 0))
+    bounds = [(0, extent, 1) for extent in src_shape[:-1]]
+
+    def body(ivs):
+        reads = {}
+        value = _eval(
+            operand, ivs + [zero], regions[dtype], regions, True, minor, reads
+        )
+        scalar = _result(reduction(dtype.mlir(), kind, value))
+        memref_store(scalar, dst.value, ivs + [zero] if keepdims else ivs)
+
+    _nest(bounds, body)
 
 
 def _emit_vector(dst, expr, width):

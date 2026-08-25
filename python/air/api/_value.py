@@ -369,6 +369,12 @@ class BufferExpr:
         #
         # "fma" is the second ternary kind. Unlike "select", whose first
         # argument is a predicate, all three of its arguments are value-typed.
+        #
+        # "reduce" is the only node whose *shape* differs from its operand's:
+        # it collapses the innermost dimension to 1. Everything else here is
+        # elementwise, which is why the emitter can check leaf shapes against
+        # the destination, and why a reduce has to be the whole right-hand
+        # side rather than nesting inside a larger expression.
         self.kind = kind
         self.op = op
         self.args = tuple(args)
@@ -581,6 +587,8 @@ class BufferExpr:
         if self.kind == "fma":
             a, b, c = self.args
             return f"fma({a!r}, {b!r}, {c!r})"
+        if self.kind == "reduce":
+            return f"reduce_{self.op}({self.args[0]!r})"
         symbol = _OP_SYMBOLS.get(self.op)
         if symbol is None:
             # No infix spelling (maximum/minimum and anything added later):
