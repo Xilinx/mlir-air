@@ -83,12 +83,10 @@ def reduce_max_uses_maxsi_on_integers():
 # Destination [tm, 1] rather than [tm]: the reduced axis is kept, numpy's
 # keepdims=True, and the scalar is stored at index 0 of it.
 #
-# Note the L3 output here is [M, 1], not [M]. ops.store squeezes *leading*
-# unit dimensions but not trailing ones, so a [tm, 1] L1 tile cannot currently
-# be stored into a rank-1 [m] slice -- which is exactly what the hand-written
-# reduce kernel does in its DMA. That is why the converted examples drop the
-# axis instead: it keeps the L1 tile the same rank as the L3 output. Both
-# spellings of the reduction work; only this pairing of the two is unsupported.
+# The L3 output here is [M, 1], matching the L1 tile rank for rank. Storing the
+# same [tm, 1] tile into a rank-1 [m] slice also works now -- see
+# keepdims_stores_into_a_rank_1_output below -- since ops.store squeezes a
+# trailing unit dimension as well as a leading one.
 # CHECK: memref.alloc() : memref<256x1xbf16, 2 : i32>
 # CHECK: vector.reduction <add>
 # CHECK: memref.store {{.*}}memref<256x1xbf16, 2 : i32>
@@ -113,6 +111,40 @@ def keepdims_stores_at_the_collapsed_index():
                     air.ops.load(a, A[row : row + tm, :])
                     o[:] = air.ops.reduce_add(a[:])
                     air.ops.store(o, OUT[row : row + tm, :])
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: keepdims_stores_into_a_rank_1_output
+# The pairing average_pool needs: a [tm, 1] L1 tile -- the shape a reduction
+# produces -- stored into a rank-1 [m] L3 slice, which is the shape the array
+# of row averages actually has. ops.store squeezes the trailing unit dimension,
+# for the same reason it squeezes a leading one on a staged L2 tile: both
+# spellings describe the same tm contiguous elements.
+# CHECK: memref.alloc() : memref<256x1xbf16, 2 : i32>
+# CHECK: vector.reduction <add>
+# CHECK: air.dma_memcpy_nd ({{.*}}[256] [1], {{.*}}memref<256x1xbf16, 2 : i32>)
+@run
+def keepdims_stores_into_a_rank_1_output():
+    M, N, tile = 65536, 16, 256
+    A = air.tensor([M, N], bf16)
+    OUT = air.tensor([M], bf16)
+
+    with air.launch(name="red") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, M, tile), shape=(2,)) as h:
+
+                @h.body
+                def _(tx):
+                    (tm,) = h.tile_sizes
+                    row = tx * tm
+                    a = air.alloc([tm, N], bf16, scope=h.private())
+                    o = air.alloc([tm, 1], bf16, scope=h.private())
+                    air.ops.load(a, A[row : row + tm, :])
+                    o[:] = air.ops.reduce_add(a[:])
+                    air.ops.store(o, OUT[row : row + tm])
 
     print(launch.mlir())
 
