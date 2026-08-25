@@ -1044,6 +1044,62 @@ several places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`,
 needs a full `make verify` behind it. That is the next decision, and it is a
 decision rather than a bug.
 
+#### The batched attention past the first 16-key block [measured]
+
+**A batch-8 token is wrong if and only if it needs block index >= 1.** The
+first 16 keys are right and everything past them is not. This is a real fault,
+not the kernel-swap tradeoff above, and it was invisible until now for two
+reasons worth naming: every batch-8 real-model test ran at P=6 -- `ATTN_L_BLK`
+14, ONE attention round -- and `batch_equiv`'s L=128 runs feed a ZEROED cache
+where every K and V is the same vector, so which block a key came from cannot
+matter. A single-round test and a degenerate-cache test between them cover
+everything except the thing that is broken.
+
+`ATTN_L_BLK = P + BATCH`, so P=8 is one round and P=9 is two, and the boundary
+is exactly there **[measured, argmax against a batch-1 dispatch on the same
+block]**:
+
+| P | `ATTN_L_BLK` | rounds | argmax | top-5 | permuted |
+|---|---|---|---|---|---|
+| 8 | 16 | 1 | **8/8** | 88% | none |
+| 9 | 17 | 2 | 6/8 | 78% | t7 |
+| 25 | 33 | 3 | 3/8 | -- | 6 tokens |
+| 100 | 108 | 7 | 2/8 | 22% | 6 tokens |
+
+The rule is exact on the attention half alone (`acc2`, `x + oproj`) at P=9,
+where token 7 is the ONLY token whose `L+t` exceeds 16 **[measured]**:
+
+    t0..t6   1.9% .. 2.8%    <- the kernel-swap floor: correct
+    t7       59.4%
+
+At P=16 every token has `L+t > 16`, every token is wrong, and it reads as a
+whole-engine failure at long context. It is the same one-block rule.
+
+**What is already ruled out.** The counts balance: the memtile dequeues
+`BATCH * ceil(L_blk/16)` (`_seg_blocks`) and each token's core loop runs
+`ceil(L_blk/16)` (`_core_rounds`), both derived from the LAST token's length so
+that the push count cannot vary per token. The L3 descriptor carries the
+token-major repeat correctly and **it survives lowering** -- AIR emits
+`sizes [8, 9, 16, 256] strides [0, 4096, 256, 1]` and the shim BD comes out as
+`sizes [9, 16, 256] strides [4096, 256, 1]` with `repeat_count = 7`, which is 8
+issues of the 9-block sequence, token-major. Block-major delivery is ruled out
+independently: it would put block 1 in front of tokens 4..7 at P=9 and those
+tokens are clean. The two kernels' skips are symmetric -- `attn_qk_blk` returns
+on `rem <= 0` without writing `s_block` and `attn_kv_blk` returns on the same
+condition without consuming it. And it is not the append: at P=25 token 0's
+block 1 is nine-tenths PREFILL keys and token 0 is still wrong.
+
+So the fault is in the memtile relay or in the per-token state carried across
+blocks, and the next two experiments are (1) **batch 2** -- if it breaks the
+same way the fault is generic to `BATCH > 1`, and if it does not, it scales with
+B and the memtile ring depth is the place to look -- and (2) dumping the K block
+the core actually receives for `blk == 1`, which no existing probe does.
+
+Note what the batch-1 path never exercises: with `BATCH == 1`, `_core_rounds`
+is `ceil(L/16)` and `rem <= 0` never fires, so **the skip path is batch-8-only
+code**. It is not the cause here -- token 0 at P=9 skips block 1 and is correct
+-- but it is one more thing no shipping run has ever run.
+
 ### Gotchas that cost time before
 
 - **`chess_storage(...)` is a NO-OP under Peano.** It expands to nothing in
