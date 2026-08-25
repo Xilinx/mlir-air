@@ -238,6 +238,31 @@ void proj_qmm_mm_zero(float *__restrict y_acc, int _arm) {
   zero_vectorized<float, PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE>(y_acc);
 }
 
+// CRITICAL-PATH PROBE: burn PROJ_DELAY units on this core, per weight block.
+//
+// There is no way to time a core on this part. The AIE trace unit does not work
+// here, and `get_cycles()` -- declared in Peano's aie2p_aie_api_compat.h -- has
+// no implementation under Peano: it compiles to `jl #_Z10get_cyclesv` and links
+// to an undefined symbol. Same shape as chess_storage(), and it would be the
+// third time that trap was walked into. So the core is timed INDIRECTLY: give
+// one role a known amount of extra work and see whether the dispatch notices.
+//
+// Sweeping PROJ_DELAY measures this core's SLACK. While the dispatch time is
+// flat, the core was idle at least that long per block and is not the critical
+// path; past the knee it grows 1:1 and the SLOPE calibrates the unit in
+// cycles -- ms/unit / (blocks per layer * layers) -- so no absolute cycle
+// counter is needed. The knee, in those calibrated units, is the slack.
+//
+// volatile forces the loop to survive -O2; nothing else here may be
+// -- a delay the optimizer deletes reads as "this core has infinite slack".
+#ifdef PROJ_DELAY
+static inline void proj_probe_delay() {
+  volatile int s = 0;
+  for (int i = 0; i < PROJ_DELAY; i++)
+    s += i;
+}
+#endif
+
 // Accumulate ONE q4k block across all PROJ_MM_BATCH tokens.
 //   x_tile : this col-block's activations for every token, in aie::mmul's A
 //            TILE ORDER -- not a plain [BATCH][COL_BLOCK] buffer. See pack_A in
@@ -247,6 +272,9 @@ void proj_qmm_mm_zero(float *__restrict y_acc, int _arm) {
 //   ws     : ROW_BLOCK*COL_BLOCK bf16 unpack scratch, overwritten every call
 void proj_qmm_mm_acc(bf16 *__restrict x_tile, bf16 *__restrict w,
                      float *__restrict y_acc, bf16 *__restrict ws) {
+#ifdef PROJ_DELAY
+  proj_probe_delay();
+#endif
 #if defined(PROJ_MM_PROBE) && PROJ_MM_PROBE == 1
   // Diagnostic builds only: skip the mmul and ship the A OPERAND AS DELIVERED,
   // so the accumulator dump (PROJ_FLUSH_PROBE=4) reads out what the X feed

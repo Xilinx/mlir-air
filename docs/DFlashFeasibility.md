@@ -845,15 +845,22 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
     Three candidate causes have been **tested and ruled out** — see "What it is
     not": the `@xnorm` handshake count (`XCHUNK_MUL=4` halves it, runs 1 ms
     slower, emits bitwise-identical logits), the `@inX` multicast being
-    replicated (it is one MM2S with 16 flows), and a missing ping-pong (X and
-    weights are already 2-deep rings on separate S2MM ports). What remains is
-    that the array sustains **12.3 GB/s at batch 8 where the same design does
-    46 at batch 1**, moving identical weight bytes, with the projection cores
-    idle ~85% of the time.
+    replicated (it is one MM2S with 16 flows), and the ping-pong structure being
+    absent (it is not; both proj-core inputs are 2-deep rings already).
 
-    **Next step is a device trace, not another hypothesis.** `XRTBackend` takes
-    `trace_size`/`trace_offset`; `fused_decode.py` does not thread them through
-    yet, and that plumbing plus a host-side trace BO and parser is the work.
+    **What is confirmed, without a trace** (the AIE trace unit does not work on
+    this part, and `get_cycles()` is an undefined symbol under Peano — see "The
+    pipeline has almost no slack"): injecting a calibrated, known delay into the
+    proj core (`PROJ_DELAY`) shows 25-45% of it exposed in wall time even at
+    small magnitudes, climbing to 89% by `PROJ_DELAY=2000`. That is the
+    signature of several thinly-buffered handshakes, not one buffer with real
+    spare capacity — the array is not idle-with-slack, it is running close to
+    its coupling limit.
+
+    **Next step: deepen a ring past 2 and re-run the `PROJ_DELAY` sweep.** If
+    the exposed fraction at fixed delay drops, buffer depth was the limiter —
+    which is a different fix from the memtile re-broadcast already scoped for
+    item 11, and the two should not be assumed to be the same change.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -1478,20 +1485,78 @@ arithmetic would land almost exactly on the measurement. It does not:
 destination off a **single** MM2S channel -- 16 flows, one source port. The
 bytes leave the memtile once.
 
-**Not a missing ping-pong.** Both consumers on a proj core are already 2-deep
-rings on separate S2MM ports: `S2MM 0` alternates two `memref<2048xbf16>` X
-blocks (`BATCH*COL_BLOCK`), `S2MM 1` two `memref<2560xbf16>` weight blocks. The
-structure is right.
+**Not a missing ping-pong,** in the sense of the structure being absent. Both
+consumers on a proj core are already 2-deep rings on separate S2MM ports:
+`S2MM 0` alternates two `memref<2048xbf16>` X blocks (`BATCH*COL_BLOCK`),
+`S2MM 1` two `memref<2560xbf16>` weight blocks. Whether 2-deep is *enough*
+depth is a different question, and the next result answers it.
 
-**What is left is a number, not a story.** At batch 8 the array moves the same
-38 MB of weights per layer as at batch 1, and takes 3.089 ms to do it -- **12.3
-GB/s against the 46 GB/s the same design sustains at batch 1**, i.e. the
-projection cores are idle roughly 85% of the time and neither the X path
-(0.30 ms/layer of memtile egress) nor the weight path (0.826 ms/layer at full
-DDR rate) accounts for the wait. Every static account is exhausted. **The next
-step is a device trace**, not another hypothesis: `XRTBackend` takes
-`trace_size`/`trace_offset` and `fused_decode.py` does not thread them through
-yet.
+#### The pipeline has almost no slack [measured]
+
+There is no device trace on this part (the AIE trace unit does not produce
+usable output here) and no cycle counter either: `get_cycles()` is declared in
+Peano's `aie2p_aie_api_compat.h` and has no implementation -- it compiles to a
+call to an undefined symbol, the same shape as the `chess_storage` trap this
+document already walked into once. So the core is timed indirectly: give the
+proj core a known amount of extra work per weight block (`PROJ_DELAY`, a
+volatile add-loop inlined into `proj_qmm_mm_acc`, gated so the shipping kernel
+is unaffected when unset) and see how much of it survives into wall-clock time.
+
+**Calibration, not guesswork.** The delay loop's cost in cycles/iteration is
+read off the disassembly rather than assumed -- a `volatile` accumulator forces
+a load/add/store every iteration, unrolled x2 or x4 depending on `PROJ_DELAY`'s
+divisibility, and both shapes cost **10 cycles/iteration** by direct bundle
+count. At 464 blocks/core/layer x 16 layers = 7424 calls/core, the fully-serial
+prediction is `PROJ_DELAY x 10 x 7424 / 1.57 GHz` = **0.04727 ms per
+`PROJ_DELAY` unit** -- what the added time would be if the injected delay were
+never hidden at all.
+
+Six points, llama-3.2-1b, batch 8, 16 layers, no LM head, ctx 8 **[measured]**:
+
+| `PROJ_DELAY` | ctx-8 ms | extra ms | fully-serial prediction | exposed |
+|---|---|---|---|---|
+| 0 | 51.79 | — | — | — |
+| 50 | 52.37 | 0.58 | 2.36 | 25% |
+| 100 | 53.77 | 1.98 | 4.73 | 42% |
+| 200 | 56.07 | 4.28 | 9.45 | 45% |
+| 400 | 59.32 | 7.53 | 18.91 | 40% |
+| 800 | 74.46 | 22.67 | 37.81 | 60% |
+| 2000 | 136.23 | 84.44 | 94.54 | **89%** |
+
+`D=0` (the macro defined but the loop's trip count zero) reproduces the
+undecorated baseline (51.79 against 52.02), so the instrumentation itself is not
+what is being measured.
+
+**Even a small injected delay mostly shows up, and a large one almost entirely
+does.** At `D=50` -- 2.36 ms of synthetic serial work spread across a 52 ms
+dispatch, under 5% of it -- a full quarter of that shows up in wall time anyway.
+There is no flat region at the start of this table: a real spare-capacity
+cushion (a deep buffer absorbing jitter) would produce one, a flat "exposed ~0%"
+run before a knee. Instead the exposed fraction climbs continuously from 25% to
+89%, which is the signature of **several small, thinly-buffered handshakes**
+rather than one buffer with a fixed amount of slack -- consistent with, though
+not proof of, the 2-deep rings already in place being the actual ceiling: two
+slots hide a little jitter and not much more, and there are enough of them
+chained (X feed, weight feed, egress, across 16 cores and the memtiles between
+them) that the aggregate exposure ramps smoothly rather than snapping at one
+threshold.
+
+**This is the load-bearing result, not the earlier framing.** "12.3 GB/s, cores
+idle 85%" describes the same fact but invites the wrong picture -- idle time
+sitting there unclaimed, free for the taking. What is actually measured is that
+the moment ANY extra serial cost is placed on the critical path, at any size,
+most of it is paid for immediately. The array is not resting on a cushion; it is
+running close to its coupling limit, and the 3.65x is the cost of that coupling
+rather than of any one buffer, kernel, or transfer count -- which is also why
+deleting the arithmetic (`PROJ_MM_PROBE`), halving the transfer count
+(`XCHUNK_MUL`), and ruling out replication and missing rings all failed to move
+it.
+
+**The next experiment this result actually proposes:** deepen a ring past 2 and
+re-run this same sweep. If a 3- or 4-deep `xblk`/`wblk` ring drops the exposed
+fraction at fixed `PROJ_DELAY`, depth was the limiter and the fix is
+buffer-depth, not the memtile re-broadcast scoped for item 11 -- those two
+fixes are not the same change and should not be assumed to be.
 
 **Attention does not amortize at all** -- 8.33x for 8 tokens, slightly worse
 than linear. The earlier "5.5x for 8 tokens" came from a slope fitted through
