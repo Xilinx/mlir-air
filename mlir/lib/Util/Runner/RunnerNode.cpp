@@ -521,6 +521,11 @@ private:
     if (num_rows && num_cols) {
       usage_count *= llvm::divideCeil(*num_rows, du_size_x);
       usage_count *= llvm::divideCeil(*num_cols, du_size_y);
+      // All instances of a segment's iteration space are co-resident for the
+      // lifetime of the segment, so their resource demands sum rather than
+      // alias. Without this a 2x1 segment is billed one DU and fits an arch
+      // that cannot hold it.
+      usage_count *= this->canonicalizer.getTripCountInHierarchyOp(op);
       return usage_count;
     } else {
       op->emitOpError("Segment has no placed AIE cores");
@@ -802,8 +807,7 @@ private:
 
     // Check how many evnets need to be dispatched in this op
     unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            Op.getOperation(), {});
+        this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "outbound", dispatched);
 
@@ -836,8 +840,7 @@ private:
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
     unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            Op.getOperation(), {});
+        this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "inbound", dispatched);
 
@@ -967,8 +970,7 @@ private:
 
     // Check how many events in total
     unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            putOp.getOperation(), {});
+        this->tokenSpatialFactorForResource(putOp.getOperation());
     unsigned already_dispatched = this->getAlreadyDispatchedForDynamicDispatch(
         putOp.getChanName().str(), "put");
 
@@ -1144,7 +1146,7 @@ private:
     std::pair<std::string, std::string> key =
         std::make_pair(op.getChanName().str(), "put");
     unsigned total_count =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
+        this->tokenSpatialFactorForResource(op);
     if (launch_runner->channel_ops_in_progress.count(key)) {
       unsigned processed = launch_runner->channel_ops_in_progress[key].first;
       if (processed == total_count) {
@@ -1170,7 +1172,7 @@ private:
     unsigned bcast_factor =
         launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
     unsigned total_count =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
+        this->tokenSpatialFactorForResource(op);
 
     // Calculate how many src and dst ports to deallocate
     std::pair<std::string, std::string> put_key =
@@ -1613,14 +1615,28 @@ private:
     return output;
   }
 
-  // Get batch-dispatched count up until type
-  template <typename T>
-  unsigned tokenSpatialFactorForResource(Operation *op,
-                                         std::vector<unsigned> position) {
+  // The number of concurrent instances of an op: the product of every
+  // enclosing spatial factor -- herd and segment iteration spaces, and
+  // scf.parallel trip counts. air.launch is excluded, because the runner
+  // simulates launch iterations separately.
+  //
+  // The walk must not stop at the innermost enclosing hierarchy. Stopping
+  // there leaves a channel op inside a herd blind to the segment iteration
+  // space enclosing that herd, while its matching op at segment level still
+  // sees it. The put then dispatches N instances and its get expects one, so
+  // the pairing test in executeOp(ChannelGetOp) can never hold, the get never
+  // retires, and the herd is left hanging with its body unexecuted -- a
+  // silently truncated simulation that still exits 0.
+  //
+  // A hierarchy with no iteration space contributes a factor of one, so this
+  // is a no-op for IR that does not use one.
+  unsigned tokenSpatialFactorForResource(Operation *op) {
     unsigned output = 1;
     auto parent = op;
-    while ((!isa<T>(parent)) && !(isa<func::FuncOp>(parent))) {
+    while (parent && !isa<func::FuncOp>(parent)) {
       parent = parent->getParentOp();
+      if (!parent)
+        break;
       if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
           auto lbCstOp = scf_par.getLowerBound()[i]
