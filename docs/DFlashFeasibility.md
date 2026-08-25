@@ -55,7 +55,24 @@ That matrix is the gate (`batch_lm_equiv.py`), not the diagonal: with rows drawn
 from one distribution a tolerance alone cannot tell "the batched kernel rounds
 differently" from "token 3 got token 5's row", and the off-diagonal can.
 
-What remains is the host driver at batch > 1, and the block-size decision below.
+**And the batched engine does not agree with batch 1 on the REAL model.** The
+host driver is written and every synthetic gate passes, but one decode layer on
+llama-3.2-1B's own weights comes out with a layer increment 4x too large and
+barely correlated **[measured]**. It bisects cleanly, and the answer is not the
+batching:
+
+    output = x + o-proj            attention half    cos 0.999   ratio 1.00
+    + the MLP half, silu REMOVED   (up - gate)       cos 0.99    ratio 1.00
+    + the MLP half as built                          cos 0.20    ratio 4.4
+
+Everything except the SILU agrees. The batched and batch-1 silu are the same
+function on the same input, so what differs is only that the batched gate-up
+comes from the mmul and the single one from the GEMV -- 1.6% apart
+(`proj_qmm_gate.py`) -- and `getActivationBf16` turns that into a 4x error on
+real activations. It is PRE-EXISTING: a batch-8 build from before the lm-head
+work gives bit-identical wrong numbers.
+
+What remains is that, and the block-size decision below.
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -578,6 +595,11 @@ All were written mid-hunt and all found a real fault immediately.
   WHICH CHANNEL and not WHAT IT WAITS FOR: it passed every one of the hung
   lm-head builds. For that, diff the `use_lock` VALUES in the two dumps'
   `aie.mem` blocks — see the lm-head section.
+- **`batch_dispatch_check.py`** (in `llms/llama32_1b_q4nx/`) — the only gate
+  that runs the batched engine on the REAL model: real weights, a real prefill,
+  B distinct tokens, and every token compared against every batch-1 reference so
+  the off-diagonal is the answer. It is what found the silu divergence, and
+  nothing synthetic could have.
 - **`batch_lm_equiv.py`** — the device gate for the batched LM head, and the
   only one that sees it at all (`batch_equiv` reads layer outputs; the vocab
   waves write Y). Feeds B DISTINCT embeddings and compares every token against
@@ -717,9 +739,16 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    tokens' logits out of one dispatch, each matching a batch-1 wave on its own
    row. It was never the port budget the refusal blamed, and it was never the
    L1 either — both were consequences. See the section below.
-9. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
-   position — the builder now feeds B of them, one put per token), and
-   `check_bounds` on the KV append before the dispatch.
+9. **Host driver.** ~~B embeddings in, B logits out, B rope LUTs,
+   `check_bounds`.~~ **Written** — `FusedDecoder(batch=B)`, and two silent
+   window bugs fixed on the way (see the commit): `attn_maxl_of` ignored the
+   batch, and the driver imported the builder at a context length whose derived
+   window was B-1 positions larger than the template's. ATTN_MAXL is the KV
+   REGION STRIDE, so either one lays every group's region away from where the
+   device reads it.
+
+   `batch_dispatch_check.py` is the gate and it FAILS, for the reason in the
+   banner: the silu, not the driver. That is now the top of this list.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -890,6 +919,69 @@ env $E python3 _fd_head.py                            > /tmp/a.mlir
 env $E DECODE_HIDDEN_TAPS=0 python3 fused_decode.py   > /tmp/b.mlir
 diff /tmp/a.mlir /tmp/b.mlir && rm _fd_head.py
 ```
+
+#### The batched engine and the real model: it is the silu [measured]
+
+Every gate the batch-8 engine had was SYNTHETIC. On llama-3.2-1B's own weights,
+one decode layer at batch 8 does not agree with a batch-1 dispatch at all: the
+layer increment is 4.0-4.8x too large and cos 0.07-0.24 against it. Sixteen
+layers of that come out uncorrelated (cos ~0.02) and the logits peak on the
+INPUT token, which is what a tied lm head does when the hidden state has stopped
+carrying the sentence.
+
+**It is not the batching, and it is not new.** A batch-8 build from `f83ec020`,
+before any of the lm-head work, reproduces the numbers to the digit, and the
+batch-1 reference used throughout is bit-identical to the shipping
+`decode_L2048` template. The bisect, one layer, real weights, real seeded KV,
+all eight tokens **[measured]**:
+
+| build | what the layer output is | cos vs batch 1 | rms ratio |
+|---|---|---|---|
+| `DECODE_ACC_STOP=2` | `x + o-proj` | **0.999** | 1.00 |
+| `GLU_ROW_PROBE=2` | full layer, silu replaced by `up - gate` | **0.98-0.999** | 1.00 |
+| as built | full layer | 0.07-0.24 | 4.0-4.8 |
+
+The first row clears QKV, rope, the KV append, the causal mask, flash attention,
+the o-gather, o-proj and the residual add — the whole attention half, on a real
+non-empty cache. The second clears the ph2 norm, gate-up, the GLU slice
+plumbing, down and the second residual add. What is left between them is one
+call, and both arms make the SAME call: `glu_row_aie`'s non-probe branch is
+`pseduo_glu<GLU_SLICE>` at a per-token offset, which is exactly what `glu_aie`
+runs at batch 1.
+
+So the input to silu differs and the output diverges. The input differs by the
+one thing that is supposed to differ — the batched gate-up comes from the q4k
+mmul and the single one from the v1 GEMV, which `proj_qmm_gate.py` measures
+**1.6% apart** — and `getActivationBf16` is a 64-entry `aie::linear_approx` over
+`[-8, 8)` in steps of 0.25. Inside that range it interpolates and is Lipschitz,
+so 1.6% in cannot give 4x out; outside it, the index leaves the table. **That
+the amplification is the out-of-range path is inference, not measurement** — the
+difference at the layer output is broadly spread (top 1% of elements carry ~10%
+of it), but the down projection sums 8192 inputs into every output, so it would
+look that way either way. The measurement that would settle it is the gate-up
+distribution itself, which needs a probe.
+
+**Why nothing caught this.** `batch_equiv.py` is a DATAFLOW gate and says so,
+but two of its choices make it blind here in ways worth writing down:
+
+- it feeds **B copies of one row into a zeroed KV cache**, so every token's K
+  and V are the same vector and attention returns V whatever the mask does. A
+  mask or KV-layout fault cannot show. (That is also why the attention half
+  above had to be checked separately before it could be cleared.)
+- its weight BO is sized for **one layer**, so a 16-wave run has layers 1..15
+  reading past the end of it. `--n-layers 16` sizes it properly; without that a
+  16-layer comparison is mostly comparing layer 0 twice.
+- and `_WSCALE` is tuned so the synthetic gate-up stays inside silu's range.
+  The note that an out-of-range gate is "a property of the fill and nothing
+  else" is what this measurement contradicts: the real model reaches the same
+  region, and there the batched path's 1.6% is not a rounding difference.
+
+**Where to start.** Probe the gate-up range on real weights (a tap on the GLU
+core's input is one build), and if it does leave `[-8, 8)`, the question stops
+being a batching question: the same LUT is under the shipping batch-1 engine,
+which is self-consistent only because it is the reference. Speculative verify
+needs the batched pass to AGREE with the single pass, and a LUT that turns 1.6%
+into 4x is what prevents that.
 
 ### Gotchas that cost time before
 
