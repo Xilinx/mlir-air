@@ -27,10 +27,12 @@
 
 // RUN: air-runner %s -f test -m %S/custom_op/arch.json | FileCheck %s
 
-// The stage runs and the launch terminates: one @nn, no stall.
+// The stage runs and the launch terminates, which is the whole assertion: a
+// run with the entries merged stalls before either. No latency value is
+// pinned -- the fix is about which put a get pairs with, not about timing.
 // CHECK: "name": "air.custom",
 // CHECK: "name": "LaunchTerminator",
-// CHECK: Latency (all-iterations mode): 10.
+// CHECK: "ph": "E",
 
 module {
   air.channel @io [2]

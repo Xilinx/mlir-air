@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
 #include <string>
 
 #include "./Runner/Resource.cpp"
