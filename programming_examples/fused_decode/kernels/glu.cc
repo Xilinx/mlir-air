@@ -40,11 +40,25 @@ void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
               // lock)
 #if defined(GLU_ROW_PROBE) && GLU_ROW_PROBE == 2
   // The batch-1 half of the probe, so the two builds can be compared under it.
-  // Only the antisymmetric variant needs a batch-1 twin: the others ask about
-  // the BATCHED landing and have nothing to compare against.
   for (int i = 0; i < GLU_SLICE / 2; i += 16)
     aie::store_v(y + i, aie::sub(aie::load_v<16>(x + i),
                                  aie::load_v<16>(x + GLU_SLICE / 2 + i)));
+#elif defined(GLU_ROW_PROBE) && GLU_ROW_PROBE == 4
+  for (int i = 0; i < GLU_SLICE / 2; i += 16) {
+    aie::vector<bf16, 16> gate = aie::load_v<16>(x + GLU_SLICE / 2 + i);
+    aie::vector<bf16, 16> hid = aie::load_v<16>(x + i);
+    aie::vector<bf16, 16> o = aie::mul(gate, hid);
+    aie::store_v(y + i, o);
+  }
+#elif defined(GLU_ROW_PROBE) && GLU_ROW_PROBE == 5
+  // The batch-1 twin of the table probe. This is the control the whole
+  // diagnosis turns on: the SAME getActivationBf16, the same core, the same
+  // silicon, differing only in whether the build is batched.
+  for (int i = 0; i < GLU_SLICE / 2; i += 16) {
+    aie::vector<bf16, 16> gate = aie::load_v<16>(x + GLU_SLICE / 2 + i);
+    gate = getActivationBf16(gate);
+    aie::store_v(y + i, gate);
+  }
 #else
   pseduo_glu<GLU_SLICE>(y, x);
 #endif
@@ -86,6 +100,15 @@ void glu_row_aie(bf16 *restrict y, bf16 *restrict x, int t, int _arm) {
   //                             so a half landing in the wrong place shows, and
   //                             a swap shows as an exact sign flip
   //   3  y = up              -- the first half alone
+  //   4  y = gate*up         -- the real kernel with ONLY the LUT removed.
+  //                             Probe 2 clears the plumbing, but at ~13x the
+  //                             real GLU magnitude, so it cannot tell a fault
+  //                             that scales with the signal from one that does
+  //                             not. This has the same magnitude and the same
+  //                             multiply as the real thing and no table, so it
+  //                             separates getActivationBf16 from aie::mul.
+  //   5  y = silu(gate)      -- the LUT alone, no multiply. If 4 is clean and
+  //                             5 is not, the table is what is wrong.
   bf16 *xr = x + t * GLU_SLICE;
   bf16 *yr = y + t * (GLU_SLICE / 2);
 #if GLU_ROW_PROBE == 1
@@ -100,6 +123,21 @@ void glu_row_aie(bf16 *restrict y, bf16 *restrict x, int t, int _arm) {
   for (int i = 0; i < GLU_SLICE / 2; i += 16)
     aie::store_v(yr + i, aie::sub(aie::load_v<16>(xr + i),
                                   aie::load_v<16>(xr + GLU_SLICE / 2 + i)));
+#elif GLU_ROW_PROBE == 4
+  // pseduo_glu with getActivationBf16 deleted and nothing else changed.
+  for (int i = 0; i < GLU_SLICE / 2; i += 16) {
+    aie::vector<bf16, 16> gate = aie::load_v<16>(xr + GLU_SLICE / 2 + i);
+    aie::vector<bf16, 16> hid = aie::load_v<16>(xr + i);
+    aie::vector<bf16, 16> o = aie::mul(gate, hid);
+    aie::store_v(yr + i, o);
+  }
+#elif GLU_ROW_PROBE == 5
+  // The table alone. Same loads, same store, no multiply.
+  for (int i = 0; i < GLU_SLICE / 2; i += 16) {
+    aie::vector<bf16, 16> gate = aie::load_v<16>(xr + GLU_SLICE / 2 + i);
+    gate = getActivationBf16(gate);
+    aie::store_v(yr + i, gate);
+  }
 #else
   for (int i = 0; i < GLU_SLICE / 2; i += 16)
     aie::store_v(yr + i, aie::load_v<16>(xr + i));

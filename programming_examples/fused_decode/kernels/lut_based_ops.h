@@ -231,7 +231,16 @@ alignas(aie::vector_decl_align) unsigned char m_inv_lut[128] = {
     4,   4,   3,   3,   2,   2,   1,   1};
 
 #if A_FUNC == A_SILU
-float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
+// alignas AND chess_storage: chess_storage(...) expands to NOTHING under
+// Peano (aiebase_chess.h), so on that toolchain these tables carried no
+// alignment at all and got a float's natural 4 bytes. The LUT fetch needs
+// them vector-aligned, and whether they landed that way fell out of .data
+// layout: llama-3.2-1B's decode core put activation_lut_ab at 0x78400 in the
+// batch-1 build (aligned) and 0x72804 in the batch-8 one (mod 32 = 4), so
+// getActivationBf16 returned silu in one build and a positive, roughly
+// affine function of its input in the other -- same source, same core, same
+// silicon. m_inv_lut above always had the portable form; these did not.
+alignas(aie::vector_decl_align) float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
     -0.00000000f, -0.00000000f, -0.00323609f, -0.02841651f, -0.00399708f,
     -0.03412396f, -0.00492899f, -0.04088030f, -0.00000000f, -0.00000000f,
     -0.00323609f, -0.02841651f, -0.00399708f, -0.03412396f, -0.00492899f,
@@ -285,7 +294,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
     1.00399708f,  -0.03412396f, 1.00323609f,  -0.02841651f, 1.00000000f,
     -0.00000000f};
 
-float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
+alignas(aie::vector_decl_align) float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
     -0.00000000f, -0.00000000f, -0.00323609f, -0.02841651f, -0.00399708f,
     -0.03412396f, -0.00492899f, -0.04088030f, -0.00000000f, -0.00000000f,
     -0.00323609f, -0.02841651f, -0.00399708f, -0.03412396f, -0.00492899f,
@@ -339,7 +348,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
     1.00399708f,  -0.03412396f, 1.00323609f,  -0.02841651f, 1.00000000f,
     -0.00000000f};
 #elif A_FUNC == A_GELU
-float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
+alignas(aie::vector_decl_align) float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
     -0.00000000f, -0.00000000f, -0.00099681f, -0.00406485f, -0.00153315f,
     -0.00607442f, -0.00231779f, -0.00891632f, -0.00000000f, -0.00000000f,
     -0.00099681f, -0.00406485f, -0.00153315f, -0.00607442f, -0.00231779f,
@@ -393,7 +402,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
     1.00153348f,  -0.00607561f, 1.00099703f,  -0.00406568f, 1.00000000f,
     -0.00000000f};
 
-float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
+alignas(aie::vector_decl_align) float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
     -0.00000000f, -0.00000000f, -0.00099681f, -0.00406485f, -0.00153315f,
     -0.00607442f, -0.00231779f, -0.00891632f, -0.00000000f, -0.00000000f,
     -0.00099681f, -0.00406485f, -0.00153315f, -0.00607442f, -0.00231779f,
