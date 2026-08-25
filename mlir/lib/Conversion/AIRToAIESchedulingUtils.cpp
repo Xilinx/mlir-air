@@ -1962,34 +1962,71 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
           srcs.insert(t);
       if (srcs.size() >= 2 && !isRoundRobin(chain))
         return true;
-      // 2b. Flows on this ring do not all run at the same RATE. Unlike 2, this
-      //     bites with a SINGLE producer, so the argument above -- "one
+      // 2b. The ring cannot serve its flows at the rates they DEMAND. Unlike 2,
+      //     this bites with a SINGLE producer, so the argument above -- "one
       //     producer's own BD order fixes the arrival order" -- does not cover
       //     it: that is right about ORDER and silent about RATE.
       //
-      //     The emitter walks a channel's BDs as one cycle, so a cycle holding
-      //     one BD per flow serves them 1:1 whatever their real rates are. A
-      //     core that re-feeds one flow N times per token next to one that goes
-      //     out once acquires N credits on the first, gets one firing per
-      //     cycle, and blocks forever on a credit the other flow releases once.
-      //     Alone on a channel the same flow is fine: one BD in infinite-loop
-      //     mode fires as often as its credits allow.
+      //     Two rates per flow, and the hazard is the mismatch BETWEEN them:
       //
-      //     The rate is air.refeed_count, NOT the op count and NOT the trip
+      //       demand(d) = firings the flow needs to complete one design step
+      //       service(d) = firings one pass of the ring gives it
+      //                  = BDs of the repeating unit it owns
+      //
+      //     The ring stays in step exactly when demand/service is equal across
+      //     its flows: a flow needs demand/service passes to finish a step, so
+      //     if those counts differ the flow needing fewer runs out of credit
+      //     first and blocks. Because the ring is in-order, nothing behind it
+      //     proceeds either, and the design deadlocks having written nothing.
+      //
+      //     Now evaluate that ratio. A flow owning k BDs of the unit is emitted
+      //     k times per step and re-fed air.refeed_count times per emission, so
+      //
+      //       demand(d)  = refeed_count(d) * k(d)
+      //       service(d) = k(d)
+      //       ratio      = refeed_count(d)
+      //
+      //     The BD count CANCELS, and comparing bare re-feed counts is not a
+      //     proxy for the rate condition -- it IS the rate condition, exactly.
+      //     Carrying k explicitly is not more general, it is wrong: it double
+      //     counts, and scoring a flow with two BDs as "served twice as fast"
+      //     splits rings that are perfectly in step (mm2s_flows_program_order
+      //     and tile_s2mm_chain_arrival_order are two such, and both fail if
+      //     the ratio is formed that way).
+      //
+      //     This is also why the condition is independent of isRoundRobin above
+      //     rather than layered on it: k cancels whether it is 1 or not, so 2b
+      //     needs no round-robin precondition, and 2's round-robin test answers
+      //     a different question (ORDER under multiple producers, not RATE).
+      //
+      //     The rate is air.refeed_count and NOT the op count or the trip
       //     count: air-annotate-refeed has already collapsed the re-feed loop
-      //     by the time this runs, so both read 1 and miss it entirely.
+      //     by the time this runs, so both of those read 1 and miss it.
       //
       //     Measured on the LFM2 ShortConv mixer, whose o-proj X is a re-feed
-      //     of OPROJ_REFEED and whose carried state goes out once. Both are
-      //     packet flows on one tile, simpleDmaChannelAlloc multiplexes them
-      //     onto one MM2S, and the design deadlocks having written nothing.
+      //     and whose carried state goes out once, both packet flows on one
+      //     tile that simpleDmaChannelAlloc multiplexes onto one MM2S.
       {
         llvm::MapVector<Operation *, int> rateOf;
         for (auto *o : chain.ops) {
           auto *d = declOf(o);
           if (!d)
             continue;
-          int rate = (int)air::getRefeedCount(o);
+          // Read through the ChannelInterface overload, which honours a
+          // per-emission override AND falls back to the channel declaration.
+          // The bare Operation* overload reads only an attribute sitting on
+          // this op, so a count declared once on the air.channel -- the usual
+          // way to spell it -- would read as 1 here and the mismatch would be
+          // invisible.
+          //
+          // max, not first: the re-feed count is a property of the flow, so if
+          // two emissions of it disagree the largest is the one whose credits
+          // must be satisfied for the design to make progress.
+          int rate = 1;
+          if (auto ci = dyn_cast<air::ChannelInterface>(o))
+            rate = (int)air::getRefeedCount(ci);
+          else
+            rate = (int)air::getRefeedCount(o);
           auto it = rateOf.find(d);
           if (it == rateOf.end())
             rateOf[d] = rate;
