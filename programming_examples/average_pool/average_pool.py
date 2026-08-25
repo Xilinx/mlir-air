@@ -52,6 +52,13 @@ from air.api.types import bf16
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 
+# The rows checked against the reference are drawn at random, so the seed is
+# what makes a failure reproducible: without it a mismatch reports row indices
+# that the next run will not look at. Set at import, before any draw, which is
+# where the predecessor and the rest of this directory set it -- so the sampled
+# indices are not merely stable but the same ones the predecessor checked.
+np.random.seed(42)
+
 NUM_TILES = 2
 
 
