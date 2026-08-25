@@ -1096,6 +1096,48 @@ degenerate-cache test between them covered everything except this. The lesson is
 not "add a longer test": it is that **two gates whose blind spots coincide are
 one gate**, and neither docstring said which axis it was holding fixed.
 
+#### What it runs at [measured]
+
+llama-3.2-1B q4nx on NPU2, shipping decode templates, median of 15-40 dispatches.
+
+**TTFT is 1.3 s and does not depend on the prompt length** -- the prefill runs a
+fixed 2048-shape GEMM whether the prompt is 128 tokens or 2040:
+
+| prompt | warm TTFT | effective |
+|---|---|---|
+| 128 | 1.265 s | 101 tok/s |
+| 512 | 1.293 s | 396 tok/s |
+| 2040 | 1.338 s | 1525 tok/s |
+
+Warm = weights already resident. The FIRST call adds a one-time ~23 s host
+weight load (1856 MB of per-layer BOs), which is a session cost, not a TTFT.
+
+**Decode is weight-bound and nearly flat in context** -- batch-1 attention is
+about 4% of a dispatch, 0.86 us/key:
+
+| ctx | batch 1 | batch 8, per position | verify speedup |
+|---|---|---|---|
+| 8 | 19.59 ms / **51.1 tok/s** | 7.96 ms | **2.46x** |
+| 512 | 19.79 ms / 50.5 tok/s | 8.35 ms | 2.37x |
+| 1024 | 20.22 ms / 49.5 tok/s | 8.75 ms | 2.31x |
+| 1800 | 20.85 ms / **48.0 tok/s** | 9.39 ms | **2.22x** |
+
+So one batch-8 dispatch covers eight positions in 63.7-75.1 ms against
+156.7-166.8 ms for eight sequential ones. Attention is the term that does not
+amortize and it shows in the slope -- 4.71 us/key at batch 8 against 0.86 at
+batch 1 -- but that is 5.5x for 8 tokens, not 8x, and at 1800 context it is
+still only about 13% of the dispatch. **The verify pass holds better than
+section 5f's roofline predicted (1.65x at block 8); measured it is 2.2-2.5x.**
+That discrepancy is worth resolving before either number is used to size
+anything -- 5f counted `max(compute, memory)` against an attention figure that
+this measurement does not reproduce.
+
+Folding in the 7.20-of-8 acceptance below: **~96 tok/s at 1800 context against
+a 48.0 tok/s baseline, 2.0x** -- but only for a draft that costs nothing, and
+**there is no draft model in this repo.** The batched engine is the verify half.
+What a real draft costs comes off that 2.0x directly, and choosing one is the
+next open question after item 10.
+
 #### What the batched verify costs, in accepted tokens [measured]
 
 `spec_accept.py` counts ACCEPT/REJECT decisions rather than logit distances,
