@@ -1096,6 +1096,58 @@ degenerate-cache test between them covered everything except this. The lesson is
 not "add a longer test": it is that **two gates whose blind spots coincide are
 one gate**, and neither docstring said which axis it was holding fixed.
 
+#### The DFlash loop, measured -- and block 16 does not build [measured]
+
+**Block 16 is not buildable on either model.** `fused_decode.py` has an explicit
+rms-core L1 ceiling and it fires:
+
+    DECODE_BATCH=16 exceeds the rms core's L1 ceiling of 9 for llama-3.2-1b
+    (86080 B of 55296 B): one BATCH*2048 residual buffer, a BATCH*512 staging
+    buffer and 2048 elements of norm weight.
+
+qwen3-4b is worse -- `K=2560` makes the residual buffer `BATCH*5120` -- and it
+fails to allocate at batch **8**, on tile_2_2, with 40960 B of residual alone
+against a 64 KB tile. qwen3-4b at batch 1 builds fine, so it is the batching and
+not the model. **So every block-16 and block-32 row in the table above is
+modelled on a configuration that cannot currently be compiled**, and raising the
+ceiling means moving the `@xnorm` staging to L2 (the builder's own message says
+so) -- not a sweep parameter.
+
+What IS buildable is block 8, and the whole loop measured there on
+llama-3.2-1B -- draft = 5 layers at batch 8 (`UNI_WAVE_HI=5`, the DFlash draft
+shape), verify = all 16 at batch 8:
+
+| ctx | baseline | draft | verify | iter | draft share |
+|---|---|---|---|---|---|
+| 512 | 20.03 ms | 18.94 ms | 67.37 ms | 86.31 ms | 22% |
+| 1800 | 20.89 ms | 21.79 ms | 75.41 ms | 97.19 ms | 22% |
+
+**The draft pass costs almost as much as a full batch-1 decode** (18.94 vs
+20.03 ms) despite running 5 of 16 layers, because it still pays the whole LM
+head and the whole batch-8 attention. Depth is not what the draft is made of.
+
+Speedup against the batch-1 baseline, by accepted tokens:
+
+| tau | ctx 512 | ctx 1800 |
+|---|---|---|
+| 4 | 0.93x | 0.86x |
+| 5 | 1.16x | 1.07x |
+| 6 | 1.39x | 1.29x |
+| 7 | 1.62x | 1.50x |
+| 8 | 1.86x | 1.72x |
+
+**Break-even is tau = 4.31 at ctx 512 and 4.65 at 1800.** At the tau=4.99 this
+document assumes for block 8, that is **1.07-1.16x**, not 1.65x. A perfect
+drafter (tau=8, which is the self-draft upper bound measured above) gives
+1.72-1.86x. The loop is real and it works; whether it pays is entirely a
+question of the drafter's acceptance, and the margin is thinner than modelled.
+
+Not measured, and blocked here rather than skipped: the actual DFlash pairing is
+qwen3-4b target + `z-lab/Qwen3-4B-DFlash-b16` drafter, and neither weight set is
+in the local HF cache (only `FastFlowLM/Llama-3.2-1B-NPU2`), there is no network,
+and `llms/qwen3_4b_q4nx/` carries only requant/weight tooling -- no prefill or
+inference driver. So tau for the real drafter is untested.
+
 #### What it runs at [measured]
 
 llama-3.2-1B q4nx on NPU2, shipping decode templates, median of 15-40 dispatches.
