@@ -886,6 +886,13 @@ GRP_ROWS = HDR + LEADS_PER_GRP * PAIR_PAY  # 258
 MAIN_ROWS = GRP_ROWS + (N_GRP - 1) * LEADS_PER_GRP * PAIR_PAY  # 514
 PAYLOAD = N_PAIRS * PAIR_PAY  # 512 payload elems per round (16 rows)
 
+# A 512-bit vector move, in bf16 elements. Compute-tile buffers are packed end
+# to end by mlir-aie and only 32-byte aligned on AIE2p, so any buffer whose SIZE
+# is not a multiple of this misaligns whatever the allocator puts after it --
+# and a misaligned 512-bit access does not fault on AIE2, it silently shifts.
+# See ypair_mm_l1 for the one that bit, and l1_align.py for the gate.
+L1_VEC_BF16 = 32  # 64 bytes
+
 # ===== LM-head (IS_ATTN=0) vocab projection =====================================
 # the reference-faithful LM head: an RTP-guarded MODE of the SAME proj cores + rms core on
 # the SAME xclbin (mirrors the reference llama: lm_head = layer_app_manager->create_app(),
@@ -1518,8 +1525,32 @@ def build_module():
             # writes with tok_stride = PAIR_ROWS, and it makes the egress a
             # straight widen of the existing contiguous put rather than a
             # scatter.
+            #
+            # ROUNDED UP TO 64 BYTES, and that is not cosmetic. mlir-aie aligns
+            # a compute-tile buffer to the tile's LOAD/STORE BUS width and packs
+            # the rest end to end (AIEAssignBuffers.cpp), and on AIE2p that
+            # width is 256 bits -- 32 bytes, not 64. aie::mmul<8,8,8>'s C tile
+            # is 64 floats = 256 bytes and Peano moves it in 512-bit chunks, so
+            # a 32-byte-aligned accumulator is a MISALIGNED 512-bit access, and
+            # AIE2 does not fault on one: it masks the low address bits. The
+            # accumulator lands 32 bytes low, every value shifts by 8 floats and
+            # the last 8 are never written.
+            #
+            # 16 + 2*32*8 = 528 bf16 = 1056 bytes = 16.5 x 64. THIS buffer is
+            # the only odd-sized one on a proj core and the pair's LEAD tile is
+            # the only tile that hosts it, so only lead tiles misplaced what the
+            # allocator packed next -- their second accumulator (the _e=1 round)
+            # at ...820 instead of ...800. The QKV phase's 6 rounds put K on
+            # round 4 (_e=0, aligned, correct) and V on round 5 (_e=1,
+            # misaligned, wrong), on the lead half of every emitter block only.
+            # That reads exactly like "half of every projection's output rows
+            # are computed against the wrong token" and it is not: the X feed,
+            # the descriptors and the L2 transpose were all correct throughout.
+            # l1_align.py checks the emitted addresses; batch_row_probe.py is
+            # the on-device symptom.
+            _YPAIR = 16 + PAIR_ROWS * ROW_BLOCK * BATCH
             ypair_mm_l1 = MemRefType.get(
-                [16 + PAIR_ROWS * ROW_BLOCK * BATCH], bf16, memory_space=l1
+                [_YPAIR + (-_YPAIR % L1_VEC_BF16)], bf16, memory_space=l1
             )
         rms_l1 = MemRefType.get([K], bf16, memory_space=l1)  # rms in/out/weight (2048)
         if BATCH > 1:

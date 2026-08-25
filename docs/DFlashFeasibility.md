@@ -13,20 +13,26 @@ tree) or **[estimated]** (derived from those). No untagged numbers.
 **DFlash is still worth building. The block size is 4-8, not 16, and the
 speedup is ~1.6-2.8x, not 4.9x.**
 
-**Build state, in one line: the batch-8 engine RUNS on device, and HALF ITS
-PROJECTION ROWS READ THE WRONG TOKEN.** A batch-8 llama-3.2-1b dispatch
-completes all 16 decode layers **[measured]** and its layer output matches a
-batch-1 dispatch to 0.67% rms — and that agreement means much less than it
-looks, because the gate that produced it dispatches B copies of ONE token, so a
-token permutation inside the projection is the identity. Feeding row `t` the
-constant `(t+1)/8` and reading the ratios out of the KV cache says what each row
-of the mmul actually saw **[measured]**:
+**Build state, in one line: the batch-8 engine RUNS on device and every gate on
+it is green.** A batch-8 llama-3.2-1b dispatch completes all 16 decode layers,
+its layer output matches a batch-1 dispatch to **0.67% rms**, all eight tokens'
+K and V land, and the row-map probe — which feeds row `t` the constant `(t+1)/8`
+and reads the ratios back out of the KV cache — now says every row of the mmul
+saw its own token **[measured]**:
 
-    role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000   exact
-    role 0:  1.000  1.500  2.000  2.498  3.000  3.500  4.000  0.000
+    role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000
+    role 0:  1.000  2.000  3.000  4.000  4.995  6.000  7.000  8.000
 
-Role 0 is the LEAD of every cascade pair — half the output rows of every
-projection — and its row `t` reads `(X[0] + X[t]) / 2`. See "Next step".
+The last fault was **not** a permutation and not a descriptor. mlir-aie aligns a
+compute-tile buffer to the tile's load/store bus width — 256 bits, **32 bytes**,
+on AIE2p — and `aie::mmul<8,8,8>`'s C tile is 64 floats that Peano moves in
+512-bit chunks, which need 64. One odd-sized buffer (the 528-bf16 shared egress
+block, 16.5 × 64) pushed the proj **lead** tiles' second accumulator to `…820`,
+and a misaligned 512-bit access on AIE2 does not fault — it masks the address.
+The whole accumulator landed 8 floats low with its tail never written. See "Next
+step"; `l1_align.py` is the gate.
+
+What remains is the host driver at batch > 1, and the block-size decision below.
 
 Section 5's roofline counted projection weight traffic and left attention out.
 Attention is the one term that does not amortize over a batch — every query
@@ -188,6 +194,8 @@ python3 xfeed_bd.py                                    # seconds; the X-feed BD
 python3 egress_bd.py                                   # seconds; egress BDs
 python3 kvappend_bd.py --overrun                       # seconds; KV append BD
 python3 batch_path_check.py                            # seconds; THE composition gate
+python3 l1_align.py                                    # seconds, needs a build;
+                                                       # 64-byte L1 alignment
 python3 dflash_blocksize.py                            # seconds; the block size
 python3 dflash_blocksize.py --attn-hoistable 1503      # with a perfect hoist
 python3 dflash_blocksize.py --overlap                  # the optimistic bound
@@ -204,8 +212,22 @@ cd ../qwen3_4b_q4nx && python3 qwen3_4b_q4nx_requant.py --check   # packer vs bu
 
 The first three need the NPU; the rest are static and run anywhere. **The gates are
 `q4k_mm_gate.py --mode exact`, `proj_qmm_gate.py`, `batch_attn_mask.py --check`,
-`check_kernels_inert.py`, the three `*_bd.py` checkers, `batch_path_check.py`
-and the `DECODE_HIDDEN_TAPS` no-op diff below** — the rest are measurements.
+`check_kernels_inert.py`, the three `*_bd.py` checkers, `batch_path_check.py`,
+`l1_align.py`, `batch_row_probe.py` and the `DECODE_HIDDEN_TAPS` no-op diff
+below** — the rest are measurements.
+
+The batched on-device pair, which needs the NPU and two templates each:
+
+```bash
+RMS_CHUNK_PROBE=1 UNI_WAVE_HI=1 ./build_template.sh 8 1   # -> rename to x2_*
+python3 batch_row_probe.py --batch 8 --L 1 --prefix x2    # does row t get token t?
+UNI_WAVE_HI=1 ./build_template.sh 1 1                     # -> w4_b1_L1
+UNI_WAVE_HI=1 ./build_template.sh 8 1                     # -> w4_b8_L1
+python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens 0
+```
+
+**Both halves of a `batch_equiv` pair must carry the same `UNI_WAVE_HI`** — see
+the warning under the stage table.
 
 **`--noperm` is the one that gives totals.** The default build reports the
 multiply as cycles and the unpack as a rolled static size, because the correct
@@ -241,7 +263,7 @@ touch.
 | attention token loop + per-token L | **done** |
 | a batch-8 template that COMPILES | **done** |
 | a batch-8 template that RUNS | **done**, all 16 layers, dispatch completes |
-| the answers | **two faults left**, both localised — see below |
+| the answers | **done** — every gate green, see below |
 | host driver at batch > 1 | **not done** |
 
 #### Where the layer is right and where it is not [measured]
@@ -260,17 +282,27 @@ a batch-1 dispatch:
 | `ACC_STOP=2` | + attention, the o gather, the o-projection, residual1 | **2.0% rms** |
 | full layer | + ph2 norm, gate-up, GLU, down, residual2 | **0.67% rms** |
 
-**Read that table with the row-map result above in hand.** Every row of it
-dispatches B copies of ONE token, so it says nothing about which token a
-projection row read — and half of them read the wrong one. What the table does
-establish is that the DATAFLOW is right end to end, which is exactly the
-question it was built to answer. The floor is the kernel swap and
-nothing else: `proj_qmm_gate.py --nblk 4 --batch 8` puts the GEMV and the
-batched mmul **1.65% rms** apart on device off the same weights, and says the
-batched one is the closer of the two to exact fp32 (bias 0.03% against the
-GEMV's 0.73%). The layer output lands *below* that floor.
+**Every row of that table dispatches B copies of ONE token**, so it says
+nothing about which token a projection row read — that is `batch_row_probe.py`'s
+job, below. What the table establishes is that the DATAFLOW is right end to end,
+which is exactly the question it was built to answer. The floor is the kernel
+swap and nothing else: `proj_qmm_gate.py --nblk 4 --batch 8` puts the GEMV and
+the batched mmul **1.65% rms** apart on device off the same weights, and says
+the batched one is the closer of the two to exact fp32 (bias 0.03% against the
+GEMV's 0.73%). The layer output lands *below* that floor, because the residual
+stream dominates it.
 
-**One fault is left**, and the KV readback found it rather than the layer
+**Compare only builds with the same `UNI_WAVE_HI`.** It is not a numerics knob
+and it changes the answer by 7x: the same source at `UNI_WAVE_HI=1` reads
+**0.67%** and unset reads **4.88%** (9,352-byte instruction stream against
+149,392). A stale template from an earlier build is the easy way to compare two
+different designs and read the difference as a regression — check
+`ls -l <prefix>_b8_L*.insts.bin` before believing an A/B. This cost an afternoon
+after the alignment fix landed, when the fix looked like a 7x regression and was
+not: at matched wave count, before and after are both 0.67%, and after is
+strictly better (token 7 goes from 5.98e-3 off token 0 to **bit-identical**).
+
+**The fault, as first seen.** The KV readback found it rather than the layer
 output. Every token in this gate gets the same X and the same rope LUT, and
 neither K nor V depends on position beyond the LUT, so all 8 tokens' K and all
 8 tokens' V have to be bit-identical to each other — they come out of ONE mmul
@@ -320,22 +352,81 @@ check, and it fails on its first run **[measured]**:
     role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000   exact
     role 0:  1.000  1.500  2.000  2.498  3.000  3.500  4.000  0.000
 
-`(1 + t/2)/8` is exactly `(X[0] + X[t]) / 2`. **Role 0's row `t` is the mean of
-true row 0 and true row `t`**, with row 7 zero-or-garbage on top. 128 of 128
-output rows agree on each ratio, so it is a clean structural map and not noise.
-Role 0 is the LEAD of every cascade pair, so this is half the output rows of
-every projection in the model.
+128 of 128 output rows agree on each ratio, so it is a clean structural map and
+not noise. Role 0 is the LEAD of every cascade pair, so this is half the output
+rows of every projection in the model.
 
 **Why nothing else could see it.** `batch_equiv.py` dispatches B copies of ONE
 token, because that is what makes token `t` comparable to a batch-1 run at
-position `P+t` — and permuting identical rows is the identity. `batch_path_check.py`
-models ONE core; `proj_qmm_gate.py` runs ONE core. The fault is in a cascade
-PAIR, and it only shows when the tokens differ. Three gates, one blind spot,
-and the engine passed all three.
+position `P+t` — and identical rows hide it. `batch_path_check.py` models ONE
+core; `proj_qmm_gate.py` runs ONE core. Three gates, one blind spot, and the
+engine passed all three.
 
-That also explains the previous section's loose end without a separate cause:
-the "last token's V" was this, seen through a fill where every token was the
-same, so only the row whose map is degenerate (`t = 7` → zero) stood out.
+`(1 + t/2)/8` reads like `(X[0] + X[t]) / 2`, and that reading is **wrong** —
+it cost most of a day of looking for a token permutation in the X feed, the
+descriptors and the L2 transpose, none of which had one. Two things kill it.
+First, a DMA does not average. Second, the ratio is uniform to bf16 on all 128
+elements, and a half-pitch *read* would mix two tokens within each 8-element
+run and show two distinct ratios, not one.
+
+#### What it actually was: a 32-byte misalignment [measured]
+
+Two more probes settle it, both behind `-D` guards so the shipping kernels stay
+inert (`check_kernels_inert.py`):
+
+| probe | what it does | result |
+|---|---|---|
+| `PROJ_FLUSH_PROBE=4` | skip the de-tiling and ship `y_acc` RAW, in `PROJ_MM_BATCH` contiguous `RB`-float chunks, read with SCALAR loads | role 1 is a textbook `mmul<8,8,8>` C — 4 tiles of 64, token `rr` at `rr*8`, scaling 1..8. Role 0 fits `observed[m] == correct[m+8]` on all 32 runs, with `y_acc[248:256]` zero |
+| `PROJ_MM_PROBE=1` | skip the multiply and ship the A OPERAND as delivered | **both roles byte-identical and correct** — `1..8` repeating every 64, zero within-run spread |
+
+So the X feed, the flush's store position, both gathers, the L2 transpose and
+the KV append are all correct on both cores, and role 0's accumulator is the
+correct accumulator **shifted left by exactly one 8-float vector**. The emitted
+`aie.air.mlir` says the two cores are otherwise identical — same `inX` and
+`wL2ToL1` BDs, same loop bounds, same buffers; the only differences are the
+flush's role constant and the lead's 2-element packet header store.
+
+The cause is in the linker script, and `l1_align.py` reads it straight off:
+
+    LEAD    tile 0,2   buf41 (yacc, _e=1)  @ 0x7D820   <-- 0x20 past a 64B line
+    PARTNER tile 0,3   buf57 (yacc, _e=1)  @ 0x63800
+
+mlir-aie aligns a compute-tile buffer to the tile's LOAD/STORE BUS width and
+packs the rest end to end (`AIEAssignBuffers.cpp`; `aligned` defaults true, the
+width is `getComputeTileLoadStoreBusWidth`). On AIE2p that width is 256 bits —
+**32 bytes**. `aie::mmul<8,8,8>`'s C tile is `size_C` = 64 floats = 256 bytes and
+Peano moves it in 512-bit chunks, which need 64. A misaligned 512-bit access on
+AIE2 does not fault; it masks the low address bits, so the whole accumulator
+lands 32 bytes low and its last 8 floats are never written.
+
+Four things follow from that, and all four are what was measured:
+
+- **`ypair_mm_l1` is the only odd-sized buffer on a proj core** — `16 + 2*32*8`
+  = 528 bf16 = 1056 bytes = 16.5 × 64 — so it misaligns whatever is packed next.
+- **Only LEAD tiles host it**, so only they misplaced an accumulator. That is
+  the entire role 0 / role 1 asymmetry; nothing about the cascade pairing or the
+  X feed was ever involved.
+- **Only the `_e=1` round** uses the misplaced accumulator (`_e=0` gets the
+  other, still aligned). The QKV phase's 6 rounds put K on round 4 and V on
+  round 5, which is exactly why K read correct and V did not.
+- **`y_acc[248:256]` is never written** — the loose end from the section above,
+  same cause, no second fault.
+
+And the ratios stop being mysterious: normalising against `observed[0]`, which
+holds `correct[8]` rather than `correct[0]`, turns a clean `t+1` into `(t+2)/2`.
+
+**The fix** is one line: round the shared egress buffer up to a multiple of 64
+bytes (528 → 544). It is inert on the wire — the egress BD is still
+`offset = 14 len = 514` and the instruction stream is byte-identical — it only
+moves `buf41` to `0x7D840`. `batch_row_probe.py` then passes, token 7's V stops
+being 93% wrong, and token 7's layer output goes from 5.98e-3 off token 0 to
+bit-identical.
+
+**The lesson worth keeping** is that the alignment a kernel needs is the
+*caller's* job here, and nothing in the toolchain says so: the allocator does
+what it documents, the kernel assumes what its intrinsics need, and the two
+numbers differ by a factor of two. `l1_align.py` is the check that closes it,
+and it checks the emitted ADDRESSES rather than restating the rule.
 
 #### A gate that measures floating point instead of the engine
 
@@ -430,10 +521,18 @@ Together those close off the obvious way to bisect a batched hang by phase. The
 signal that does work is the buffer readback on timeout, which is why
 `batch_equiv.py --smoke` does it.
 
-#### The two tools this needed
+#### The tools this needed
 
-Both were written mid-hunt and both found a real fault immediately.
+All were written mid-hunt and all found a real fault immediately.
 
+- **`l1_align.py`** — reads the buffer addresses aiecc actually assigned out of
+  `air_project/ldScripts_*.ld.script` and fails on any compute-tile buffer that
+  is not 64-byte aligned. Checks the emitted addresses rather than restating the
+  rule, so it stays true if the allocator changes. Costs one build.
+- **`batch_row_probe.py`** — asks, on device, whether row `t` of the batched
+  projection got token `t`. The other gates structurally cannot: `batch_equiv`
+  dispatches B copies of one token, `batch_path_check` and `proj_qmm_gate` model
+  a single core.
 - **`check_channel_balance.py`** — how each SIDE of each channel scaled from
   batch 1. Ratios, not totals: counting elements absolutely needs a model of
   `scf.parallel` fans, `index_switch` arms and herd multiplicity, and getting
@@ -443,7 +542,8 @@ Both were written mid-hunt and both found a real fault immediately.
   BD chains and lock counts changed. Found the two-chains-on-one-channel fault
   in seconds. Needs two AIE dumps, so it costs two builds (~9 min).
 
-What neither can see is ORDER, and four of the five faults above are ordering.
+What none of them can see is ORDER, and four of the seven faults above are
+ordering.
 For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
 
 #### The order to do the rest in
@@ -554,27 +654,20 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
    `GLU_ROW_PROBE=1` swaps the halves, `=2` is `up - gate` (antisymmetric and
    silu-free, and the one that proved the plumbing), `=3` is `up` alone. All
    behind `-DGLU_ROW_PROBE`, so `check_kernels_inert.py` stays green.
-7. **Role 0 reads `(X[0] + X[t]) / 2`.** The one fault left, and the only one
-   that matters: half of every projection's output rows are computed against the
-   wrong activations. `batch_row_probe.py` is the gate. The section above has
-   the map and why three existing gates are all blind to it.
+7. ~~**Role 0 reads `(X[0] + X[t]) / 2`.**~~ **Fixed — and it was never a token
+   permutation.** The proj lead tiles' `_e=1` accumulator was 32 bytes off a
+   64-byte line, because the one odd-sized buffer on a proj core (the 528-bf16
+   shared egress block) is packed just before it and mlir-aie only promises
+   32-byte alignment. Rounding that buffer to 544 fixes it; `batch_row_probe.py`
+   passes and `l1_align.py` is the standing check. Full account above.
 
-   Where to look, given what is already ruled out. The flush labels
-   (`PROJ_FLUSH_PROBE=3`) proved every descriptor BELOW the accumulator, and the
-   row map proves role 1's A operand is correct — so the two roles are fed
-   differently and only one of them is fed right. They differ in exactly one
-   thing at the AIR level: `_mm`'s `for _e in range(PAIR_ROWS)` is a PYTHON
-   loop, so both bodies are emitted, each with its own `AllocOp(xblk_mm_l1)` and
-   its own `ChannelGet("inX", ...)`, and each core then folds one of them away
-   per tile. `role 0's row t = (row 0 + row t)/2` is what an A operand looks like
-   when it is read with half the row pitch — the first and last rows of a pair
-   of adjacent true rows — so `_XFEED_BD`'s token stride reaching one of the two
-   `inX` gets and not the other is the first thing to check in the emitted AIE.
-
-   Note `xfeed_bd.py` cannot catch this: it checks the DESCRIPTOR against
-   `pack_A`, and the descriptor is shared. What differs is which core's get it
-   lands on.
-8. **Host driver.** B embeddings in, B logits out, **B rope LUTs** (per
+   Worth keeping from how it was found: the shape of a wrong answer is a weak
+   signal. `(1 + t/2)/8` looked exactly like an average of two rows, which is
+   not a thing a DMA can do, and a day went into the X feed and the descriptors
+   before the raw-accumulator dump (`PROJ_FLUSH_PROBE=4`) and the A-operand dump
+   (`PROJ_MM_PROBE=1`) said in one run each that both were fine. **Dump the
+   operand and dump the accumulator before theorising about either.**
+8. **Host driver.** The one thing left. B embeddings in, B logits out, **B rope LUTs** (per
    position — the builder now feeds B of them, one put per token), and
    `check_bounds` on the KV append before the dispatch.
 
@@ -679,6 +772,25 @@ diff /tmp/a.mlir /tmp/b.mlir && rm _fd_head.py
 
 ### Gotchas that cost time before
 
+- **A buffer's SIZE decides its neighbour's ALIGNMENT.** mlir-aie packs
+  compute-tile buffers end to end and only aligns them to the tile load/store
+  bus width — 32 bytes on AIE2p — while `aie::mmul`'s C tile is moved in 512-bit
+  chunks that need 64. So one odd-sized buffer silently misaligns the next one,
+  and a misaligned 512-bit access on AIE2 **does not fault, it shifts**: the
+  data lands 32 bytes low and the tail is never written. Keep L1 buffer sizes a
+  multiple of 64 bytes and run `l1_align.py`. This cost the most time of
+  anything in this document, because the symptom (`(1 + t/2)/8`) reads like a
+  token permutation and sends you into the DMA descriptors, which were fine.
+- **Dump the operand and dump the accumulator before theorising about either.**
+  `PROJ_MM_PROBE=1` ships the A operand instead of multiplying and
+  `PROJ_FLUSH_PROBE=4` ships `y_acc` raw with scalar loads. One run each said
+  "the feed is perfect, the accumulator is shifted by one vector" — which is
+  most of the answer, and neither took longer than a build.
+- **Two templates are only comparable if their `UNI_WAVE_HI` matches.** It is
+  not a numerics knob but it moves `batch_equiv`'s answer 7x. Check
+  `ls -l <prefix>_b8_L*.insts.bin`: 9,352 bytes is `UNI_WAVE_HI=1`, 149,392 is
+  unset. A stale template from a previous session is the easy way to A/B two
+  different designs and call the difference a regression.
 - **`sizeof(q4k_block_t)` is 9216 and a packed block is 5120** **[measured]**.
   `uint4` is byte-addressed, so `uint4 qs[8192]` reserves double. Never write
   `A + b` on a `q4k_block_t *`; step blocks on the `bf16` side with

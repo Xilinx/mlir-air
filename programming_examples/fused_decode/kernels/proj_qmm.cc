@@ -247,8 +247,21 @@ void proj_qmm_mm_zero(float *__restrict y_acc, int _arm) {
 //   ws     : ROW_BLOCK*COL_BLOCK bf16 unpack scratch, overwritten every call
 void proj_qmm_mm_acc(bf16 *__restrict x_tile, bf16 *__restrict w,
                      float *__restrict y_acc, bf16 *__restrict ws) {
+#if defined(PROJ_MM_PROBE) && PROJ_MM_PROBE == 1
+  // Diagnostic builds only: skip the mmul and ship the A OPERAND AS DELIVERED,
+  // so the accumulator dump (PROJ_FLUSH_PROBE=4) reads out what the X feed
+  // actually put in this core's L1 rather than what the arithmetic made of it.
+  // Under RMS_CHUNK_PROBE=1 the answer is known exactly: pack_A's order at
+  // BATCH 8 is x_tile[i*64 + rr*8 + ss] = X[token rr], so the dump must be
+  // 8-float runs scaling 1,2,...,8 and repeating every 64.
+  (void)w;
+  (void)ws;
+  for (int m = 0; m < PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE; m++)
+    y_acc[m] = (float)x_tile[m];
+#else
   q4k_mm_block<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE, PROJ_MM_BATCH>(
       (const q4k_block_t *)w, x_tile, y_acc, ws);
+#endif
 }
 
 // Batched proj_qmm_flush_row: f32 accumulator -> the bf16 payload of the egress
@@ -295,6 +308,19 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
   //   2  store a marker instead of the last vector. If the marker reaches the
   //      KV cache, the WRITE lands and the accumulator was zero; if the hole is
   //      still a hole, the write itself is being lost.
+  //      [measured: the marker LANDS, at exactly 24..31 of token 7's K.]
+  //   3  label every element with the token, the position and the role, and
+  //      read the labels out of the KV cache. Proves the addressing BELOW this
+  //      point -- both gathers, the id-demux, the L2 transpose, rope's slice,
+  //      the KV append. [measured: every label right, all 8 tokens.]
+  //   4  ship y_acc RAW instead of de-tiling it, split into PROJ_MM_BATCH
+  //      contiguous RB-float chunks and read with SCALAR loads so the dump
+  //      cannot inherit whatever the vector path is doing. This is the one that
+  //      ended the hunt: role 1's accumulator is a textbook mmul<8,8,8> C (4
+  //      tiles of 64, token rr at rr*8, scaling 1..8 under RMS_CHUNK_PROBE)
+  //      and role 0's is the same array SHIFTED LEFT BY ONE 8-FLOAT VECTOR with
+  //      y_acc[248:256] never written -- a 32-byte-misaligned 512-bit store,
+  //      not a token permutation. See l1_align.py and docs/DFlashFeasibility.md.
   for (int tt = 0; tt < PROJ_MM_BATCH; tt++) {
 #if defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 1
     const int t = PROJ_MM_BATCH - 1 - tt;
@@ -306,7 +332,18 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
     for (int j = 0; j < CB; j++)
       aie::store_v(tmp + j * 8,
                    aie::load_v<8>(y_acc + (j * RA + z) * 64 + rr * 8));
-#if defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 2
+#if defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 4
+    // Skip the de-tiling entirely and ship y_acc RAW, split into
+    // PROJ_MM_BATCH contiguous RB-float chunks. Under RMS_CHUNK_PROBE=1 the
+    // accumulator's true tile structure is known exactly -- tile j at j*64,
+    // token rr at rr*8 inside it, scaled by (rr+1) -- so a raw dump says
+    // whether the ACCUMULATOR is wrong or only the de-tiling that reads it.
+    // Emitted slot t therefore carries y_acc[t*RB .. t*RB+RB), which for
+    // RB=32 is half a C tile: slot 0 = tile 0 tokens 0-3, slot 1 = tile 0
+    // tokens 4-7, slot 2 = tile 1 tokens 0-3, and so on.
+    for (int p = 0; p < RB; p++)
+      tmp[p] = y_acc[t * RB + p];
+#elif defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 2
     if (t == PROJ_MM_BATCH - 1)
       aie::store_v(tmp + (CB - 1) * 8, aie::broadcast<float, 8>(0.125f));
 #elif defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 3

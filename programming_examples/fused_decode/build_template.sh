@@ -51,7 +51,7 @@ fi
 echo ">>> kernels (batch $BATCH)"
 for k in proj_qmm rms_residual glu rope; do
   echo "    $k.o"
-  EXTRA=""; [ "$k" = "proj_qmm" ] && EXTRA="$MMDEF ${PROJ_FLUSH_PROBE:+-DPROJ_FLUSH_PROBE=$PROJ_FLUSH_PROBE}"
+  EXTRA=""; [ "$k" = "proj_qmm" ] && EXTRA="$MMDEF ${PROJ_FLUSH_PROBE:+-DPROJ_FLUSH_PROBE=$PROJ_FLUSH_PROBE} ${PROJ_MM_PROBE:+-DPROJ_MM_PROBE=$PROJ_MM_PROBE}"
   [ "$k" = "rms_residual" ] && EXTRA="${RMS_CHUNK_PROBE:+-DRMS_CHUNK_PROBE}"
   # GLU_ROW_PROBE=<n>: diagnostic variants of the batched GLU row (see glu.cc).
   # Batch-only, so the shipping kernel stays inert either way.
