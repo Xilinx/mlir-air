@@ -187,17 +187,22 @@ void rms_scale_row_aie(float *restrict scales, bf16 *restrict x, int t,
 // built up across a band loop and closed out separately. Unused unless
 // fused_decode.py's band-streamed path calls them.
 
-/// Add row t's sum-of-squares over ONE band (width n, starting at x's base --
-/// x itself is the band buffer, already offset by the caller) into scales[t].
+/// Add row t's sum-of-squares over ONE band (width n, at `off` within the
+/// row) into scales[t]. `row_stride` is x's true per-token pitch -- MODEL_DIM
+/// if x is still the full resident row (the transitional, not-yet-DMA-banded
+/// caller), or n if x is a tightly-packed [BATCH][n] band buffer (the eventual
+/// one-band-resident caller), mirroring how residual_acc_row_aie's `acc`
+/// (MODEL_DIM stride) and `x` (n stride) already differ for the same reason.
 /// Call once per band, in band order; `first` nonzero on the first band of a
 /// row zeroes the accumulator instead of adding to whatever was there before
 /// (there is no separate zero-init call). Follow with ONE
 /// rms_scale_row_finalize_aie per row after the last band.
 void rms_scale_row_partial_aie(float *restrict scales, bf16 *restrict x,
-                               int t, int n, int first, int _arm) {
+                               int t, int row_stride, int off, int n,
+                               int first, int _arm) {
   (void)_arm;
   constexpr int vector_size = 16;
-  bf16 *it_x = const_cast<bf16 *>(x) + t * n;
+  bf16 *it_x = const_cast<bf16 *>(x) + t * row_stride + off;
   aie::accum<accfloat, vector_size> sum_squares = aie::zeros<accfloat>();
   for (int i = 0; i < n / vector_size; i++) {
     auto x_vec = aie::load_v<vector_size>(it_x);
