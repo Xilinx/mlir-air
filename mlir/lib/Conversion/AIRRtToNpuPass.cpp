@@ -3615,6 +3615,38 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (auto *def = st.getTask().getDefiningOp())
         startOf[def] = st;
     });
+
+    // A segment is one (block, launch wave): a rolled body is one block and one
+    // wave, a flattened multi-wave body is one block and several waves.
+    auto waveOf = [](AIEX::DMAConfigureTaskForOp ct) -> int64_t {
+      if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+        return a.getInt();
+      return -1;
+    };
+    // The last start among ALL paced channels in each segment. The tail drain
+    // anchors here rather than after the individual channel's own last start:
+    // both honour the fence (everything drained before the next segment
+    // begins), but the per-channel anchor also serializes channels that have to
+    // be in flight TOGETHER, and a one-task channel then awaits itself
+    // immediately after its own start -- a synchronous feed, which deadlocks
+    // when the transfer can only complete if its consumer runs and the consumer
+    // is waiting on a sibling channel that has not been issued yet. See the
+    // drain site below for the measured case.
+    llvm::DenseMap<std::pair<Block *, int64_t>, AIEX::DMAStartTaskOp>
+        segLastStart;
+    for (auto &kv : groups)
+      for (auto ct : kv.second) {
+        if (ct->hasAttr(air::attrs::CoalescedShimFeed))
+          continue;
+        auto st = startOf.lookup(ct.getOperation());
+        if (!st)
+          continue;
+        auto key = std::make_pair(st->getBlock(), waveOf(ct));
+        auto it = segLastStart.find(key);
+        if (it == segLastStart.end() ||
+            it->second->isBeforeInBlock(st.getOperation()))
+          segLastStart[key] = st;
+      }
     // `fenceEnd` forces the segment's in-flight tail to be fully drained after
     // its last start (a per-iteration fence) even when the segment fits in
     // flight; used for the per-iteration segments of a fused multi-iteration
@@ -3654,8 +3686,41 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             "dma_start_task; drain awaits were not inserted");
         return;
       }
-      OpBuilder b(lastStart);
-      b.setInsertionPointAfter(lastStart);
+      // Drain after the last start in the SEGMENT, not after this channel's own
+      // last start. Both honour the fence -- everything is drained before the
+      // next segment's first start, which for a rolled body is the back edge --
+      // but the per-channel anchor additionally serializes channels that have
+      // to be in flight TOGETHER.
+      //
+      // A one-task segment is the sharp case: drainStart == 0, so the task is
+      // awaited immediately after its own start, turning a fire-and-forget feed
+      // into a synchronous one. That deadlocks whenever the transfer can only
+      // complete if its consumer runs and the consumer needs a SIBLING channel
+      // that has not been issued yet.
+      //
+      // Measured: the LFM2 hybrid's KV read-back is four one-task channels
+      // (K/V for two CU pairs) consumed by four CU pairs in parallel. The
+      // per-channel anchor emitted
+      //     cfg K_0; start K_0; await K_0; cfg V_0; await V_0; cfg K_1; ...
+      // so CU0 could not drain K_0 until V_0 arrived, and V_0 was not issued
+      // until K_0 completed. It survived while a whole region still fit in the
+      // memtile ring plus the CUs' own buffering -- up to 5 blocks, ATTN_MAXL
+      // 80 -- and cold-deadlocked from 6 blocks (96) upward at every ring
+      // depth. Anchoring at the end of the segment puts all four in flight
+      // together, which is what this same design already did whenever the feeds
+      // happened to coalesce instead of being paced.
+      //
+      // The SEGMENT, not the block: a flattened multi-wave body is several
+      // segments in ONE block, and draining at the block end there would let an
+      // earlier wave's in-flight set straddle the next wave.
+      AIEX::DMAStartTaskOp anchor = lastStart;
+      auto segIt = segLastStart.find(
+          std::make_pair(lastStart->getBlock(), waveOf(tasks[0])));
+      if (segIt != segLastStart.end() &&
+          anchor->isBeforeInBlock(segIt->second.getOperation()))
+        anchor = segIt->second;
+      OpBuilder b(anchor);
+      b.setInsertionPointAfter(anchor);
       unsigned drainStart = (n > depth) ? n - depth : 0;
       for (unsigned j = drainStart; j < n; j++) {
         AIEX::DMAConfigureTaskForOp tj = tasks[j];
@@ -3762,12 +3827,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // block and one wave, so only the block boundary fires; an already
         // flattened multi-wave block is still paced and fenced per wave, so no
         // channel's in-flight set straddles an iteration boundary.
+        // waveOf is shared with the segment-anchor map built above, so the
+        // segmentation here and the drain anchor there cannot drift apart.
         int64_t segWave = -1;
-        auto waveOf = [](AIEX::DMAConfigureTaskForOp ct) -> int64_t {
-          if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
-            return a.getInt();
-          return -1;
-        };
         for (auto ct : tasks) {
           if (ct->getBlock() != segBlock || waveOf(ct) != segWave) {
             flush();

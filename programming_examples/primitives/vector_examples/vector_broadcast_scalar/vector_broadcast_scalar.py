@@ -1,181 +1,98 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-from ml_dtypes import bfloat16
+"""Broadcast one scalar per row across a whole row, on air.api.
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store, subview, collapse_shape
-from air.dialects.vector import (
-    transfer_read,
-    transfer_write,
-    reduction,
-    extract,
-    CombiningKind,
-    broadcast,
-)
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.dialects.math import exp
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+    c[:] = a[:]
+
+with ``a`` shaped ``[tile_m, 1]`` and ``c`` shaped ``[tile_m, n]``. That is the
+entire kernel. The right-hand side is a plain copy and the shapes are what make
+it a broadcast: numpy's rule, right-aligned, an operand axis either matches the
+destination's or is 1 and gets stretched.
+
+The predecessor said the same thing as a per-row ``scf.for`` containing two
+``memref.subview``s, two ``memref.collapse_shape``s with an explicit dynamic
+``StridedLayoutAttr``, a ``memref.load`` and a ``vector.broadcast``, plus a
+``vector.transfer_write``. The emitted arithmetic is unchanged -- when the
+broadcast axis is the *innermost* one there is no contiguous run to read, so the
+emitter loads the single element and splats it, which is exactly the
+``memref.load`` + ``vector.broadcast`` pair above.
+
+The subviews and collapse_shapes were only ever there to get a rank-1 view the
+vector ops would accept; indexing a rank-2 buffer at ``[j, 0]`` needs neither.
+
+Two differences from the predecessor worth naming, both shared with the
+``average_pool`` conversion this example is the mirror image of:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's, so each core gets a contiguous run of tiles where
+  the predecessor's hand-built AffineMap interleaved them. Every tile is still
+  written exactly once by exactly one core, and the rows are independent.
+
+``--target`` is new and defaults to detecting the installed part, which is what
+the predecessor did implicitly by having no device flag at all.
+"""
+
+import argparse
 
 import numpy as np
+from ml_dtypes import bfloat16
 
+from air import api as air
+from air.api.types import bf16
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
+
+# The rows checked against the reference are drawn at random, so the seed is
+# what makes a failure reproducible: without it a mismatch reports row indices
+# that the next run will not look at.
 np.random.seed(42)
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
-def build_module(m, n, tile_m, np_dtype_in):
-    a_size = [m]
-    out_size = [m, n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert m % (tile_m * num_tiles) == 0
-    VECTOR_SIZE = 16
-    index_type = IndexType.get()
+def build_module(m, n, tile_m):
+    assert m % (tile_m * NUM_TILES) == 0
 
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-    l3outputMemrefTy = MemRefType.get(out_size, xrt_dtype_in)
+    A = air.tensor([m], bf16)
+    C = air.tensor([m, n], bf16)
 
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_m, 1],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-    l1outputMemrefTy = MemRefType.get(
-        shape=[tile_m, n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    with air.launch(name="vector_broadcast_scalar") as launch:
 
-    @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
-    def vector_broadcast_scalar(arg0, arg2):
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg2],
-        )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1outputMemrefTy, [], [])
+        @launch.body
+        def _():
+            # The iteration space is every tile of rows; shape= pins the core
+            # count to what the predecessor asked for, and the DSL strip-mines
+            # the rest into a loop on each core.
+            with air.herd(
+                [range(0, m, tile_m)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-            for _l_ivx in range_(0, m, tile_m * num_tiles):
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not a row offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_m
+                    # One value per row. The trailing 1 is the axis that gets
+                    # stretched, and ops.load ignores it against the rank-1 L3
+                    # region -- both describe the same tile_m contiguous
+                    # elements.
+                    a = air.alloc([tile_m, 1], bf16, scope=h.private())
+                    # A whole row per value, so the vector width is the row
+                    # width -- the predecessor's vector<Nxbf16>.
+                    c = air.alloc([tile_m, n], bf16, scope=h.private(), vector=n)
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_m),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                    air.ops.load(a, A[i0 : i0 + tile_m])
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_m],
-                    src_strides=[1],
-                )
-                c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_m)
-                for j in range_(c0, cTileN, c1):
-                    sub_a_vec = subview(
-                        l1_a_data.result,
-                        [j, c0],
-                        [1, 1],
-                        [1, 1],
-                    )
-                    sub_c_vec = subview(
-                        l1_out_data.result,
-                        [j, c0],
-                        [1, n],
-                        [1, 1],
-                    )
-                    layout = StridedLayoutAttr.get(
-                        ShapedType.get_dynamic_size(),
-                        [
-                            1,
-                        ],
-                    )
-                    collapsed_type = MemRefType.get(
-                        (1,),
-                        xrt_dtype_in,
-                        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-                        layout=layout,
-                    )
-                    collapsed_type_2 = MemRefType.get(
-                        (n,),
-                        xrt_dtype_in,
-                        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-                        layout=layout,
-                    )
-                    collapse_dims = [[0, 1]]
-                    collapse_a = collapse_shape(
-                        collapsed_type, sub_a_vec, collapse_dims
-                    )
-                    collapse_c = collapse_shape(
-                        collapsed_type_2, sub_c_vec, collapse_dims
-                    )
-                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    scalar = load(collapse_a, [c0])
-                    # v_a = transfer_read(
-                    #     VectorType.get([n], xrt_dtype_in),
-                    #     collapse_a,
-                    #     [c0],
-                    #     AffineMapAttr.get(AffineMap.get_identity(1)),
-                    #     cst0,
-                    #     [True],
-                    # )
+                    # The whole example. [tile_m, 1] against [tile_m, n]: the
+                    # trailing axis is stretched, and because it is the
+                    # innermost one the read is a scalar load and a splat.
+                    c[:] = a[:]
 
-                    v_c_broadcast = broadcast(VectorType.get([n], xrt_dtype_in), scalar)
-                    # store(v_c_broadcast, collapse_c, [c0])
+                    air.ops.store(c, C[i0 : i0 + tile_m, :])
 
-                    transfer_write(
-                        None,
-                        v_c_broadcast,
-                        collapse_c,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        [True],
-                    )
-                    yield_([])
-
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[offset, 0],
-                    dst_sizes=[tile_m, n],
-                    dst_strides=[n, 1],
-                )
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
-
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -187,7 +104,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the vector_broadcast_scalar example",
     )
     parser.add_argument(
         "-v",
@@ -228,15 +145,18 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
-        args.m,
-        args.n,
-        args.tile_m,
-        INPUT_DATATYPE,
-    )
+    launch = build_module(args.m, args.n, args.tile_m)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -245,7 +165,8 @@ if __name__ == "__main__":
 
     if args.compile_mode == "compile-and-run":
 
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
+        # Stochastically sample num_sample results, and pass to XRTRunner backend
+        # for verification.
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
 
@@ -268,6 +189,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="vector_broadcast_scalar",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -284,6 +206,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

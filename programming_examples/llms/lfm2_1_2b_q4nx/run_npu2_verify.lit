@@ -1,0 +1,31 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// LFM2-1.2B Q4_0 verify gate: top-k token-level inclusion check, NPU q4_0 vs
+// HF bf16, 2 prompts x 32 greedy tokens, k=5 (use `make verify-full` for the
+// full sweep locally). Exercises the full production prefill + fused decode
+// path through the verify subsystem (verify/verify_runner.py); the NPU side is
+// Q4_0 quantized from the HF checkpoint on the host, and the reference is that
+// same checkpoint in bf16 -- LFM2 publishes one checkpoint, so a single
+// hfweights requirement covers both.
+//
+// This gate is what covers the HYBRID interleave end to end: the decode runs 32
+// fused dispatches per prompt, each one walking LFM2's irregular schedule of 6
+// attention and 10 ShortConv layers in a single binary, and each one continuing
+// from the two DIFFERENT device regions the prefill seeded (region-major K/V for
+// the attention layers, carried conv state for the rest).
+//
+// LBUILD=128 sizes the decode KV cache for CI only: the gate's longest prompt
+// plus 32 generated tokens fits well inside it, and the templates build far
+// faster than at the 2048 default.
+//
+// Skips cleanly when HF_TOKEN is unset (weight + tokenizer downloads need it).
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_liquidai_lfm2_1_2b
+//
+// RUN: mkdir -p test_peano_verify
+// RUN: cd test_peano_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode LBUILD=128 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify LBUILD=128 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS

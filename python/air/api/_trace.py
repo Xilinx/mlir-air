@@ -649,6 +649,8 @@ class SegmentContext:
     reason every hand-written staging example in the tree nests the two.
     """
 
+    _what = "air.segment"
+
     def __init__(self, grid=None, name=None):
         # A grid here is this segment's *own* iteration space -- air.segment's
         # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
@@ -680,7 +682,28 @@ class SegmentContext:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, exc_type, exc_val, tb):
+        # A body that was never registered is the one way to leave this block
+        # having emitted nothing at all -- the `with` is pure bookkeeping and
+        # every op comes from the decorator. Silently emitting nothing is the
+        # worst available outcome: the enclosing ops vanish, the kernel still
+        # builds, and on a small grid it still runs and still passes, so
+        # neither a hardware test nor an op-count diff notices.
+        #
+        # Not raised while another exception is propagating: the body itself
+        # failing is far more interesting than the body being absent, and
+        # replacing it here would bury the real error.
+        if exc_type is None and not self._registered:
+            raise RuntimeError(
+                f"{self._what} was opened but its body was never registered, so "
+                "nothing was emitted for this scope and the ops inside it were "
+                "traced into the enclosing one. The body is a function decorated "
+                "inside the `with`, which means the scope needs a name to "
+                f"decorate:\n\n    with {self._what}(...) as scope:\n"
+                "        @scope.body\n        def _():\n            ...\n\n"
+                "`as scope` is easy to leave off, and without it there is no "
+                "variable to hang the decorator on."
+            )
         return False
 
     def private(self):
@@ -821,6 +844,8 @@ def _needs(obj, kernel):
 class HerdContext:
     """A herd of compute cores over a (possibly strip-mined) tile grid."""
 
+    _what = "air.herd"
+
     def __init__(self, iterable, name=None, shape=None, target=None, link_with=None):
         self.dims = parse_grid(iterable)
         if len(self.dims) > 2:
@@ -909,7 +934,28 @@ class HerdContext:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, exc_type, exc_val, tb):
+        # A body that was never registered is the one way to leave this block
+        # having emitted nothing at all -- the `with` is pure bookkeeping and
+        # every op comes from the decorator. Silently emitting nothing is the
+        # worst available outcome: the enclosing ops vanish, the kernel still
+        # builds, and on a small grid it still runs and still passes, so
+        # neither a hardware test nor an op-count diff notices.
+        #
+        # Not raised while another exception is propagating: the body itself
+        # failing is far more interesting than the body being absent, and
+        # replacing it here would bury the real error.
+        if exc_type is None and not self._registered:
+            raise RuntimeError(
+                f"{self._what} was opened but its body was never registered, so "
+                "nothing was emitted for this scope and the ops inside it were "
+                "traced into the enclosing one. The body is a function decorated "
+                "inside the `with`, which means the scope needs a name to "
+                f"decorate:\n\n    with {self._what}(...) as scope:\n"
+                "        @scope.body\n        def _():\n            ...\n\n"
+                "`as scope` is easy to leave off, and without it there is no "
+                "variable to hang the decorator on."
+            )
         return False
 
     def private(self):
@@ -969,13 +1015,26 @@ class HerdContext:
         # The herd is the first thing that knows how many of a shared buffer's
         # leading dimensions are cores, so it is where their L1 charge is gated.
         _charge_shared_l1(enclosing, len(self.grid), self.name)
-        # An unrolled segment's own coordinates, threaded in for the same reason
-        # the L2 buffers are: air.herd is IsolatedFromAbove, so a body that
-        # indexes a channel by segment coordinate cannot simply reference it.
-        # Empty unless the segment carries a grid, which is what keeps this
-        # inert for every kernel that does not use one -- an unused herd operand
-        # is not free, it survives air-dependency as an async edge.
-        outer = list(enclosing.leaves) if enclosing is not None else []
+        # Every coordinate in scope, threaded in for the same reason the L2
+        # buffers are: air.herd is IsolatedFromAbove, so a body that offsets a
+        # transfer by an enclosing coordinate cannot simply reference it.
+        #
+        # Both the launch's and the enclosing segment's, and in that order --
+        # outermost first, matching how air.segment already receives the
+        # launch's. Passing only the segment's used to be enough by accident:
+        # the launch's coordinates were reachable from segment scope, so an
+        # example whose outer tiling stayed there worked, and one that carried
+        # a launch coordinate *into* the herd emitted an affine.apply on a value
+        # defined outside the region and failed verification.
+        #
+        # Every live one is passed, referenced or not, which is the policy
+        # already applied to tensors and to L2 buffers: the tracer cannot know
+        # what the body will touch until it has run it. That is not free -- an
+        # unused herd operand survives air-dependency as an async edge -- but a
+        # coordinate is one index, and correctness for the kernels that need it
+        # is worth the edge for the kernels that do not.
+        outer = list(current_launch().leaves)
+        outer += list(enclosing.leaves) if enclosing is not None else []
         operands = (
             [leaf.value for leaf in outer]
             + [t.value for t in tensors]

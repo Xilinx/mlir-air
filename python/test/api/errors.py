@@ -1836,3 +1836,145 @@ def _():
 @expect(TypeError, "herd_link_with_is_empty")
 def _():
     air.herd(range(0, 128, 64), link_with="")
+
+
+# CHECK-LABEL: TEST: segment_body_never_registered
+# `with air.segment(...)` is pure bookkeeping -- every op comes from the body
+# decorator -- so omitting it emits nothing at all for that scope and traces the
+# herd straight into the launch. That is the worst available failure: the IR is
+# structurally different, still builds, and on a small grid still runs and still
+# passes, so neither a hardware test nor an op-count diff catches it. It did
+# reach review once, in the data_transfer_transpose conversion.
+# CHECK: RuntimeError: air.segment was opened but its body was never registered
+@expect(RuntimeError, "segment_body_never_registered")
+def _():
+    A = air.tensor([64], bf16)
+    C = air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="s") as seg:
+                with air.herd(range(0, 64, 64), shape=(1,)) as h:
+
+                    @h.body
+                    def _(tx):
+                        t = air.alloc([64], bf16, scope=h.private())
+                        ops.load(t, A[:])
+                        ops.store(t, C[:])
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: herd_body_never_registered
+# The same hole, and it is a real one rather than a theoretical twin: a lone
+# body-less herd happens to trip "kernel writes no output", but that check is
+# satisfied by any *other* herd that stores. Two herds with the second one's
+# body forgotten built cleanly and dropped it silently.
+# CHECK: RuntimeError: air.herd was opened but its body was never registered
+@expect(RuntimeError, "herd_body_never_registered")
+def _():
+    A = air.tensor([64], bf16)
+    C = air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, 64, 64), name="h1", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    t = air.alloc([64], bf16, scope=h.private())
+                    ops.load(t, A[:])
+                    ops.store(t, C[:])
+
+            with air.herd(range(0, 64, 64), name="h2", shape=(1,)):
+                pass
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: a_failing_body_is_not_masked
+# The guard must stay quiet while another exception is propagating. A body that
+# raised is far more interesting than a body that is absent, and reporting the
+# absence here would bury the real error -- which, at that point, is the only
+# reason the body never registered.
+# CHECK: ValueError: the body's own problem
+@expect(ValueError, "a_failing_body_is_not_masked")
+def _():
+    air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="s"):
+                raise ValueError("the body's own problem")
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: broadcast_needs_an_extent_of_one
+# Broadcasting stretches an axis of extent 1 and nothing else. A [64, 32]
+# operand against a [64, 64] destination is not "half of each row", it is a
+# mistake, and numpy refuses it for the same reason.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "broadcast_needs_an_extent_of_one")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        b = air.alloc([64, 32], bf16, scope=h.private())
+        a[:] = a[:] + b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: an_operand_cannot_be_wider_than_the_destination
+# The rule is one-sided: operands broadcast *to* the destination, which already
+# exists. Stretching the other way would mean writing 16 values into 1, and
+# numpy's `out=` refuses this too rather than picking one of them.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "an_operand_cannot_be_wider_than_the_destination")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 1], bf16, scope=h.private())
+        b = air.alloc([64, 16], bf16, scope=h.private())
+        a[:] = b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: an_operand_cannot_have_more_axes_than_the_destination
+# Right-aligning a rank-2 operand against a rank-1 destination leaves an axis
+# with nowhere to go. Only the *operand* may be short of axes.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "an_operand_cannot_have_more_axes_than_the_destination")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([4, 64], bf16, scope=h.private())
+        a[:] = b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: a_reduction_does_not_broadcast_its_operands
+# Everywhere else an extent of 1 is stretched, but the innermost extent of a
+# reduction is the thing being collapsed: stretching it would decide how many
+# terms the sum has, which is the reduction's meaning rather than a fit.
+# CHECK: ValueError: shape mismatch inside a reduction
+# CHECK-SAME: does not broadcast its operands
+@expect(ValueError, "a_reduction_does_not_broadcast_its_operands")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        s = air.alloc([64, 1], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.reduce_add(a[:] * s[:])
+
+    _trace(body)

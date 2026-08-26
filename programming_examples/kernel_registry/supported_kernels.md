@@ -31,6 +31,8 @@ This is **documentation, not executable code** — it records results produced b
 | SiLU-and-Mul (BF16) | [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md) | **25.1 GB/s** (memory-bound, N=16777216, herd 8×1) | ✅ |
 | RoPE (BF16, half-split) | [`details/RoPE_bf16.md`](details/RoPE_bf16.md) | **56.6 GB/s** (memory-bound, 49152×128, herd 8×1) | ✅ |
 | GELU (BF16, tanh approx) | [`details/GELU_bf16.md`](details/GELU_bf16.md) | **27.0 GB/s** (memory-bound, N=8388608, herd 8×2) | ✅ |
+| Conv1D (BF16, causal depthwise, k=3) | [`details/Conv1D_bf16.md`](details/Conv1D_bf16.md) | **28.2 GB/s** (memory-bound, 2048×2048, herd 8×1) | ✅ |
+| Element-wise Multiply (BF16) | [`details/EltwiseMul_bf16.md`](details/EltwiseMul_bf16.md) | **55.7 GB/s** (memory-bound, N=4194304, herd 8×1) | ✅ |
 
 ---
 
@@ -151,7 +153,7 @@ This is **documentation, not executable code** — it records results produced b
 | 1536×8960 | 8/2/2 | 30.6 | 2.2e-6 | Qwen2.5-1.5B decode Down proj | ✅ |
 | 16384×1536 | 8/16/16 | 32.6 | 2.3e-8 | Qwen2.5-1.5B LM-head (per-partition) | ✅ |
 | 1024×2048 | 8/8/8 | 21.0 | 0.0 | Qwen3-1.7B decode K/V proj | ✅ |
-| 6144×2048 | 8/8/8 | 30.8 | 0.0 | Qwen3-1.7B decode Gate/Up proj | ✅ |
+| 6144×2048 | 8/8/8 | 30.8 | 0.0 | Qwen3-1.7B decode Gate/Up proj + LFM2-1.2B decode conv in_proj (3·conv_dim) | ✅ |
 | 2048×6144 | 8/4/4 | 31.4 | 0.0 | Qwen3-1.7B decode Down proj | ✅ |
 | 256×2048 | 8/8/8 | 10.1 | 0.0 | Qwen2.5-3B decode K/V proj | ✅ |
 | 11008×2048 | 8/8/8 | 31.9 | 7.9e-8 | Qwen2.5-3B decode Gate/Up proj | ✅ |
@@ -195,6 +197,7 @@ This is **documentation, not executable code** — it records results produced b
 | 2048×2048 | 8 | 911 µs | 18.4 GB/s | 4.2e-3 | llama-3.2-1B + Qwen3-1.7B + Qwen2.5-3B prefill RMSNorm | ✅ |
 | 2048×1024 | 8 | 407 µs | 20.6 GB/s | 4.3e-3 | Qwen3-0.6B prefill RMSNorm | ✅ |
 | 2048×128 | 8 | 155 µs | 6.8 GB/s | 4.6e-3 | Qwen3-0.6B + Qwen3-1.7B QK-norm (per-head, N=head_dim) | ✅ |
+| 2048×64 | 8 | 137 µs | 3.8 GB/s | 4.7e-3 | LFM2-1.2B QK-norm (per-head, N=head_dim=64) | ✅ |
 | 2048×896 | 8 | 398 µs | 18.4 GB/s | 4.2e-3 | Qwen2.5-0.5B prefill RMSNorm | ✅ |
 | 2048×1536 | 8 | 570 µs | 22.1 GB/s | 4.3e-3 | Qwen2.5-1.5B prefill RMSNorm | ✅ |
 | 2048×2560 | 8 | 867 µs | 24.2 GB/s | 4.2e-3 | Qwen3-4B prefill RMSNorm | ✅ |
@@ -202,6 +205,8 @@ This is **documentation, not executable code** — it records results produced b
 | 256×960 | 8 | 147 µs | 6.7 GB/s | 4.2e-3 | SmolVLA prefill RMSNorm (emb=960) | ✅ |
 
 > **Qwen3-0.6B QK-norm (2048×128)** is per-head RMSNorm over `head_dim=128` (Qwen3-specific q_norm/k_norm) — the same weighted-RMSNorm kernel with a small `N=128` reduction axis; verified PASS at 4.6e-3, confirming the kernel handles a 128-wide reduction. (Harness `eps = 1e-5`; Qwen3 `eps = 1e-6` — the difference is negligible vs the bf16 datapath error.)
+
+> **LFM2-1.2B QK-norm (2048×64)** is the same per-head construct at `head_dim = 64` — the first head_dim=64 QK-norm coverage (LFM2's attention layers carry `q_layernorm`/`k_layernorm` like Qwen3, but at llama's head dim). Verified PASS at 4.7e-3, marginally above the 2048×2048 row's 4.2e-3: a shorter reduction axis gives each rounding proportionally more weight. At 137 µs this shape is on the ~80–155 µs small-shape launch floor, so the 3.8 GB/s figure is launch-bound and not a bandwidth result — compare latency, not bandwidth, against the wider rows.
 
 > Follows the **GPU / HuggingFace standard**: the `sum(x²)` reduction is accumulated in **FP32** (matching PyTorch `rms_norm_composite` / HF `LlamaRMSNorm`), giving `mean_rel_L1 = 4.2e-3` — in line with the GEMM tier and passing the canonical bf16 `rtol = 1.6e-2`. (`atol = 5e-2` covers a few large-magnitude bf16 *output*-rounding ULPs, not a reduction relaxation.) The FP32 reduction costs essentially nothing on this memory-bound kernel. See [`details/RMSNorm_bf16.md`](details/RMSNorm_bf16.md).
 
@@ -273,6 +278,24 @@ Fused scaled-dot-product attention (online-softmax FlashAttention) with grouped-
 
 ---
 
+## Element-wise Multiply — tested shapes
+
+`c = a · b`, per-element, BF16. The two gates of LFM2's `Lfm2ShortConv` (`h = B·x`, then `y = C·h`). **Memory-bound** (O(N) streaming, zero arithmetic intensity), so throughput is bandwidth. Distinct from SiLU-and-Mul, which applies a transcendental to one operand before multiplying, and from Element-wise Add — a product carries more relative error than a sum. Harness `programming_examples/eltwise_mul` (the `air.api` DSL, mirroring `eltwise_add`). Full datapath and reproduce commands in [`details/EltwiseMul_bf16.md`](details/EltwiseMul_bf16.md).
+
+| N | (as 2-D) | config (hx/hy/tile_n) | latency | bandwidth | mean_rel_L1 | Used by | Status |
+|---|---|---|---|---|---|---|---|
+| 1048576 | 1024×1024 | default | 180.5 µs | 34.9 GB/s | 2.73e-3 | coverage | ✅ |
+| 4194304 | 2048×2048 (seq·conv_dim) | default | **451.6 µs** | **55.7 GB/s** | 2.74e-3 | LFM2-1.2B ShortConv gates (×2 per conv layer, 10 of 16 layers) | ✅ |
+
+> Measured on an **idle** NPU2. Element-wise Multiply lands within **2%** of Element-wise Add at the same N (451.6 vs 441.8 µs) — expected, since the two share a DSL body and differ only in the arithmetic op, and both are DMA-bound. An earlier attempt measured 17 ms for this kernel while an unrelated LLM server held the device; that number was discarded, not recorded. The `eltwise_add` control (441.8 µs vs its recorded 437 µs) is what certifies the box was clean.
+
+> `mean_rel_L1 = 2.7e-3` vs Element-wise Add's `1.9e-3` is the expected ordering: both are single-rounding ops in the cleanest tier, but a bf16 product carries more relative error than a bf16 sum. Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 5e-2`.
+
+> **Provenance check**: this kernel was derived from `eltwise_add`, so the emitted module was grepped to confirm it contains **1 `arith.mulf` and 0 `arith.addf`** — i.e. it is genuinely a multiply, not an add that survived the copy. Worth repeating for any kernel cloned from a sibling; a same-shaped decoy passes every shape test.
+
+---
+
+
 ## SiLU-and-Mul — tested shapes
 
 `out = SiLU(gate) · up`, `SiLU(x) = x·sigmoid(x)`, per-element, BF16. The SwiGLU activation of llama-3.2-1B prefill FFN (the standalone `silu_and_mul` is measured; llama runs the bit-identical 2-D `build_module_2d` variant). **Memory-bound** (O(N) streaming, ~1 op/byte), so throughput is bandwidth. sigmoid is computed via the hardware `aie::tanh` (`0.5·(1+tanh(g/2))`); the precision is the "bf16 + one transcendental" tier. Full datapath, sweep, and reproduce commands in [`details/SiLU_Mul_bf16.md`](details/SiLU_Mul_bf16.md).
@@ -342,3 +365,39 @@ Rotary Position Embedding applied to Q/K, **half-split** convention (HuggingFace
 > The 3145728 row is SmolVLA's SigLIP vision MLP activation scale (seq 1024 · intermediate 3072); the `fc1` GEMM that produces its input is the `1024×768×3072` GEMM row. The reference is the **tanh** approximation (GELUTanh), matching SmolVLA / HF SigLIP — not the exact erf-GELU (which would add a ~1e-3 systematic bias). All shapes use the same best config.
 
 > `mean_rel_L1 = 8.4e-3` is the "bf16 + one transcendental" tier — below SiLU-and-Mul (1.0e-2), above RMSNorm (4.2e-3): the hardware `tanh` LUT approximation plus a chain of bf16 roundings. Slightly cleaner than SiLU because the tanh argument is scaled down and there is no `0.5·g·u` amplification (GELU's `abs_err max = 0.0156` vs SiLU's 0.125). Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 5e-2` (tighter than SiLU's 8e-2). **Best config `herd_x=8, herd_y=2, tile_n=4096` (16 tiles) for every shape**: GELU's single input (2 DMAs/tile) lets the herd use a second row where the 3-DMA elementwise kernels (Element-wise Add, SiLU) cannot; `herd_x·herd_y=32` (8×4) still does not place. `herd_x` scales 7.6× (1→8), plus ~1.8× for the second row. See [`details/GELU_bf16.md`](details/GELU_bf16.md).
+
+---
+
+## Conv1D — tested shapes
+
+`y[t,c] = Σ_j w[j,c] · x[t+j, c]`, causal depthwise 1-D convolution with kernel size **k=3** — the convolution inside LFM2's `Lfm2ShortConv` operator. Depthwise (per-channel, no cross-channel mixing), so the channel axis is the vectorization axis. Shapes written `seq × channels`. **Memory-bound** (O(N) streaming, ~3 FMA per element), so throughput is bandwidth. Kernel = `conv1d_depthwise.o`, harness `programming_examples/conv1d_depthwise`. Full datapath, the pre-padding convention, the placement sweep, and reproduce commands in [`details/Conv1D_bf16.md`](details/Conv1D_bf16.md).
+
+| (seq×channels) | k | config (hx/hy/tile_s) | latency | bandwidth | mean_rel_L1 | Used by | Status |
+|---|---|---|---|---|---|---|---|
+| 2048×2048 | 3 | **8/1/8** | **594.6 µs** | **28.2 GB/s** | 2.8e-3 | LFM2-1.2B ShortConv (10 of 16 layers) | ✅ |
+| 2048×2048 | 3 | 8/1/4 | 599.5 µs | 28.0 GB/s | 2.8e-3 | tile_s sweep | ✅ |
+| 2048×2048 | 3 | 8/1/16 | 599.4 µs | 28.0 GB/s | 2.8e-3 | tile_s sweep | ✅ |
+| 2048×2048 | 3 | 8/1/32 | 621.4 µs | 27.0 GB/s | 2.8e-3 | tile_s sweep | ✅ |
+| 2048×2048 | 3 | 4/1/16 | 1355 µs | 12.4 GB/s | 2.8e-3 | herd_x scaling point | ✅ |
+| 2048×2048 | 3 | 1/1/4 | 4367 µs | 3.8 GB/s | 2.8e-3 | single-tile datapath | ✅ |
+| 8×2048 | 3 | 8/1/8 | — | — | 2.8e-3 | LFM2-1.2B short-sequence / decode-scale | ✅ |
+
+> Measured on an **idle** NPU2, validated by a control: `eltwise_add` at N=4194304 reproduced **441.8 µs** against its recorded 437 µs (1%). An earlier set of figures taken while an unrelated LLM server held the device was discarded rather than recorded — see "Measurement hazard" in the detail page.
+
+> **`tile_s` barely matters (594–621 µs, 4% spread); `herd_x` is everything.** `herd_x` scales **7.3×** from 1→8 (4367 → 597 µs), the signature of a memory-bound streaming kernel. Bandwidth at the best config: read `(2050+3)·2048` + write `2048·2048` elements × 2 B = 16.8 MB in 594.6 µs.
+
+> ⚠️ **`herd_x = 2` is MEASURED-BROKEN — and silently so.** At `tile_s=8` it compiles cleanly and returns **wrong results** (`mean_rel_L1 = 5.0e-1` vs the correct 2.8e-3); at `tile_s=4` it fails inside aircc. This is **not** the L1 budget: `2/1/8` needs only 42 KB of the 64 KB L1, while `herd_x=1` (52 KB) and `herd_x=4` (37 KB) are both correct — so the bad axis is `herd_x=2` itself, non-monotonically. `conv1d_depthwise.py` asserts `herd_x != 2`. Use `herd_x ∈ {1, 4, 8}`.
+
+> ⚠️ **`herd_y > 1` is SINGLE-SHOT ONLY — it passes `make run` and then deadlocks.** `8×2` places and a *single* invocation is numerically correct (2.813e-3, identical to `herd_y=1`), but the **second invocation times out** (`ERT_CMD_STATE_TIMEOUT`), reproduced with as few as 2 iterations. Any real deployment calls this kernel in a loop (10× per prefill for LFM2-1.2B), so `herd_y>1` is unusable. **A one-shot `make run` sweep would have concluded `herd_y=2` is fine and shipped a deadlock** — gate herd changes with a *repeated*-invocation run. Suspected cause is the loop-invariant weight DMA hoisted outside the sequence loop, whose producer does not re-fire for the extra herd row on re-invocation; that mechanism is **unproven**.
+
+> 📝 **History**: an earlier revision of this page claimed `herd_y=2` *hangs immediately* and inferred a 3-shim-DMA / one-8-column-row ceiling shared with Element-wise Add. That was wrong on both counts — it was measured under NPU contention, and `herd_y=2` in fact places and computes correctly once. The correct statement is the re-invocation deadlock above. Kept as a caution: a hardware-sounding ceiling is exactly the kind of claim that gets copied forward without re-measurement.
+
+> **Causality is expressed by pre-padding, not masking.** The input carries `seq + 2` rows and the output `seq`: input row `t` is the sample at original position `t − 2`, so it is the oldest sample feeding `y[t]` and pairs with tap 0 (oldest-first, matching `nn.Conv1d` cross-correlation over a left-padded input). The two leading rows are the **conv state** — zeros at sequence start (prefill), or the carried tail of the previous chunk (decode). **Prefill and decode are the same kernel with a different pad**; there is no separate decode variant. Weights are passed **tap-major `(3, C)`** so each tap's channel slice is contiguous for unit-stride vector loads (HF stores them channel-major as `(C, 1, 3)`; the host transposes once at load).
+
+> `mean_rel_L1 = 2.8e-3` is the **cleanest tier**, tied with RoPE and just above Element-wise Add (1.9e-3): three bf16 products accumulated in **FP32** (`aie::mul` + 2× `aie::mac` into an `accfloat` accumulator) with a single bf16 rounding on store — no transcendental, and a 3-term reduction too short to accumulate meaningful error. Verified element-wise over the full output (no cosine) at `rtol = 1.6e-2, atol = 5e-2`. Accuracy is bit-identical across every placeable config, as expected.
+
+> ⚠️ **L1 over-allocation is SILENT at `herd_x=4`.** The three live L1 buffers are `(tile_s+2)×tile_c` (halo window) + `3×tile_c` (weights) + `tile_s×tile_c` (output). `herd_x=4, tile_s=32` needs 70.6 KB against a 64 KB compute-tile L1 and **compiles cleanly, then returns wrong results**, while the larger `herd_x∈{1,2}` overflows fail inside aircc — so the failure mode is *non-monotonic* in overflow size. `conv1d_depthwise.py` carries an explicit `L1_BYTES` assert to reject these up front; do not remove it. This is the same "silent-corruption tile config the builder does not assert" class as the GEMM `N % (tile_n × herd_n)` trap.
+
+> ⚠️ **A hanging config can wedge the whole device, not just its own context.** During the placement sweep a config hit `ERT_CMD_STATE_TIMEOUT`, after which *every* NPU submission — including previously-passing configs of this kernel, untouched upstream examples, and `xrt-smi validate --run latency` itself — failed with `DRM_IOCTL_AMDXDNA_EXEC_CMD IOCTL failed (err=-5)`. A `modprobe -r amdxdna` reload did **not** recover it; the kernel log showed the failure was one layer lower (`aie2_smu_start: Access power failed` → `amdxdna_probe: Hardware init failed`), and only a reboot cleared it. **When sweeping a new kernel, re-run a known-good control after any TIMEOUT before trusting subsequent results**, or a wedged device will be misread as a long run of genuine placement failures — that is exactly what happened here.
+
+> ⚠️ **Before recording any perf number or diagnosing any hang, check who else holds the NPU.** This kernel's sweep was run against a device already owned by an unrelated LLM server, which produced both a spurious "herd_y hangs" conclusion and a full set of meaningless latencies. `for p in $(ls /proc | grep -E '^[0-9]+$'); do ls -l /proc/$p/fd 2>/dev/null | grep -q accel && echo "$p $(cat /proc/$p/comm)"; done`
