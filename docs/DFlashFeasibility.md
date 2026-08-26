@@ -1791,6 +1791,32 @@ residual2 (see "So the residual has to leave L1" above) -- still needs the
 same `_RMS_DMA_CHUNK`-not-`STG_W` discipline applied to every new transfer
 it adds, and remains unbuilt.
 
+**Level 3 scaffolding (inert, level 3 not reachable yet):** `x_l3`'s DDR
+buffer now grows by one extra `BATCH*K` slot when `RMS_BAND_STREAM>=3`
+(currently unreachable -- the flag still asserts to `(0, 1, 2)`), reusing the
+same per-layer-slot addressing style `HIDDEN_TAPS` already established
+rather than a new channel (the rms core's S2MM0 has no spare packet id).
+Verified byte-identical at batch 1 with the scaffolding present but inert.
+
+**What level 3 actually requires, scoped but not yet built**: `xb` shrinks
+to `[BATCH][STG_W]`, one band resident at a time, fetched fresh via DMA at
+each of several points instead of populated once. The scale pre-pass (level
+1) already has this band-major shape; it needs to generalize from "read a
+band out of a full resident `xb`" to "fetch a fresh band via DMA, at
+`STG_W`-granularity DMA ops built from `_RMS_DMA_CHUNK`-sized sub-dimensions
+(the level-2 lesson applies to every new transfer this adds, not just the
+one it already covers)." The chunk-regen loop (in `_rms_batched_norm`)
+operates at `XCHUNK` granularity, which need not equal `STG_W` -- when
+`XCHUNK < STG_W` a resident band serves more than one chunk emission without
+a re-fetch, which the restructured loop has to track rather than naively
+re-fetching per chunk. `residual1`/`residual2`'s accumulate has to read a
+band fresh (from the ORIGINAL `x` slot for residual1, from the scratch slot
+for residual2), add the projection's contribution, and write the updated
+band back out (`layerOut` to the scratch slot for residual1's `h`, to
+`_x_out()` for residual2's final result) -- new writes this file has not
+made before at band granularity. Left as the next session's starting point
+rather than rushed.
+
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
 never ran. DFlash's draft is a batched multi-head guess that has to produce
