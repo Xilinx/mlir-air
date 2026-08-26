@@ -370,6 +370,43 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
         UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
     ),
+    # Qwen3-4B: the DFlash target (see docs/DFlashFeasibility.md). Qwen3 QK-norm
+    # like qwen3-8b, but with the DECOUPLED q dim the bf16 llms/qwen3_4b example
+    # already handles: n_heads*head_dim = 4096 != hidden 2560, so the o-proj
+    # contracts 4096 -> 2560 and J2P[1] is DQ/512, not K/512.
+    #
+    # PAIR_ROWS=1 is forced, as it is for qwen2.5-7b: the paired egress needs
+    # every phase output divisible by ROW_BLOCK*NCX*NCY*PAIR_ROWS = 1024, and the
+    # o/down phases emit K=2560 -> 2.5. Non-paired (divisor 512) is exact.
+    #   I2P = [M, K, 2*INTER, K]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS)
+    #       = [6144, 2560, 19456, 2560]/512 = [12, 5, 38, 5]
+    #   J2P = [K, DQ, K, INTER]/(2*COL_BLOCK)
+    #       = [2560, 4096, 2560, 9728]/512 = [5, 8, 5, 19]
+    "qwen3-4b": dict(
+        K=2560,
+        M=6144,  # DQ+DK+DV = 4096+1024+1024
+        DH_A=128,
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[12, 5, 38, 5],  # blocks/tile per phase (non-paired)
+        J2P=[5, 8, 5, 19],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,  # 32 q / 8 kv = 4 per group, no padding needed
+        PAIR_ROWS=1,  # NON-PAIRED egress (K=2560 is odd in paired units)
+        N_NORMS=2,  # standard pre-norm (input, post_attention)
+        HAS_QK_NORM=True,  # Qwen3: rope_w = [cos/sin(DH), q_norm(DH), k_norm(DH)]
+        VOCAB_SIZE=151936,
+        UNI_DEC=36,  # 36 decoder layers
+        # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(151936/2560)*2560
+        # = 153600 -> 4800 rowblocks. VOCAB_ROWBLKS = 16*VOCAB_I2 (PAIR_ROWS=1)
+        # must divide 4800, so UNI_LM*VOCAB_CHUNK_I2 = 300. K/PAYLOAD = 2560/512
+        # = 5 must divide VOCAB_RNDS = VOCAB_I2, so VOCAB_I2 is a multiple of 5:
+        # {5,10,15,20,25,30} once the tested 2*VOCAB_I2 <= 63 envelope is applied.
+        # 30 is the largest, i.e. the fewest host-armed waves: 300/30 = 10.
+        # The driver MUST set VOCAB_CHUNK_I2=30 (env) to match this UNI_LM.
+        UNI_LM=10,  # vocab chunks per LM head (VOCAB_CHUNK_I2=30)
+    ),
     # Llama-3.1-8B: same attention topology as 1B/3B (2x4x1, 8 kv heads, DH=128),
     # so the per-CU KV geometry is unchanged; only the proj/FFN widths grow. Like
     # qwen3-8b this needs DECODE_WGROUP (32 layers of K=4096 weights are 3.6 GiB
