@@ -6,13 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie | FileCheck %s
+// RUN: air-opt %s -air-to-aie="device=npu1 row-offset=2 col-offset=0" | FileCheck %s
 // CHECK: aie.core({{.*}}) {
-// CHECK: aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK: aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK: aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK: scf.for {{.*}} = {{.*}} to {{.*}} step {{.*}} {
-// CHECK:   aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:   aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:   linalg.matmul ins({{.*}}, {{.*}} : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs({{.*}} : memref<32x32xi32, 2>)
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
