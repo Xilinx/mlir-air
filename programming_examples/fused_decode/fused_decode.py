@@ -118,7 +118,15 @@ from air.dialects.air import channel as channel_decl
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects import arith
-from air.dialects.scf import for_, yield_, index_switch, ParallelOp, ReduceOp, IfOp
+from air.dialects.scf import (
+    for_,
+    yield_,
+    index_switch,
+    ParallelOp,
+    ReduceOp,
+    IfOp,
+    ForOp,
+)
 from air.backend.xrt import XRTBackend
 
 # An AIE2/AIE2P lock counter is 6 bits (AIETargetModel getMaxLockValue() == 0x3F),
@@ -1260,6 +1268,41 @@ XCHUNK_MUL = int(_os.environ.get("XCHUNK_MUL", "2"))
 XCHUNK = XCHUNK_MUL * COL_BLOCK
 assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 
+# ---- proj core input ring depth ---------------------------------------------
+# How many physical L1 instances of the batched proj core's xblk/wblk buffers
+# exist. 2 (the default) is what `air-label-scf-for-to-ping-pong` produces
+# automatically from a single alloc-per-iteration loop -- see PROJ_MM_BATCH's
+# _mm below, whose depth-2 path is exactly that pattern, untouched.
+#
+# Exists to test whether ring depth is why the batched layer runs at 3.65x its
+# weight-streaming floor with the arithmetic deleted (PROJ_DELAY, see
+# docs/DFlashFeasibility.md "The pipeline has almost no slack"): even a small
+# injected per-block delay is 25-45% exposed in wall time, which is the
+# signature of thin buffering rather than one buffer with real spare capacity.
+# This is the direct test -- deepen the ring, re-run the same PROJ_DELAY sweep,
+# and see whether the exposed fraction drops.
+#
+# AIR hardens the labeling pass's unroll factor at 2
+# (AIRDependencyScheduleOpt.cpp: "Unroll factor hardened as 2. TODO: add
+# support for an arbitrary factor"), but `isPingPongCandidate` opens with
+# `if (forOp->hasAttr("unroll")) return false;` -- an already-labeled loop is
+# left alone. So depth > 2 pre-tags the ORIGINAL, unchanged alloc-per-iteration
+# loop with `unroll` = N before the standard pipeline runs (see
+# `_mm_ring_deeper`), and the SEPARATE downstream transform
+# (AIRPingPongTransformationPattern) reads that attribute generically -- this
+# borrows its own tested duplication/rotation machinery rather than replacing
+# it. Two designs that instead gave N buffers a persistent hoisted lifetime
+# (a loop-carried iter_arg phase, then a remui-selected index_switch) were
+# tried first and both failed identically in air-opt's `air-dependency` pass
+# ("operand #0 does not dominate this use"): a buffer written from inside a
+# runtime-selected branch has no single last-writer for the pass to hang a
+# token on. Pre-tagging the untouched loop sidesteps the question entirely.
+#
+# 2 is the default and reproduces the exact prior IR (check_batch1_noop and the
+# depth-2 disassembly are both unaffected by this knob's existence).
+PROJ_RING_DEPTH = int(_os.environ.get("PROJ_RING_DEPTH", "2"))
+assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist"
+
 # The X-feed tile-blocking descriptor, IMPORTED rather than restated:
 # xfeed_bd.py checks it elementwise against pack_A, which q4k_mm_gate.py proved
 # bit-exact on device. A copy here would be a second source of truth for the one
@@ -2206,6 +2249,49 @@ def build_module():
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
+
+        def _mm_ring_deeper(J2x2, xblk_ty, wblk_ty, mm_acc_fn, a_acc, a_ws, gcx, gcy):
+            """PROJ_RING_DEPTH > 2: the SAME alloc/get/compute/dealloc-per-
+            iteration shape `air-label-scf-for-to-ping-pong` looks for and
+            duplicates to depth 2 -- but pre-tagged with `unroll` = N so its
+            own hardcoded factor never gets the chance to fire.
+
+            `isPingPongCandidate` (AIRDependencyScheduleOpt.cpp) opens with
+            `if (forOp->hasAttr("unroll")) return false;` -- an already-
+            labeled loop is left alone. Setting the attribute here, before
+            the standard aircc pipeline runs, makes this loop already-
+            labeled, and the SEPARATE downstream transform
+            (AIRPingPongTransformationPattern) reads "unroll" generically as
+            an integer everywhere it is consumed, not hardcoded to 2. So this
+            is not new duplication/rotation logic -- it borrows the pass's
+            own, tested machinery for whatever N is asked for.
+
+            Two things were tried FIRST and rejected, both because they gave
+            each of N buffers a genuinely persistent lifetime across the
+            whole loop (hoisted alloc, one dealloc at the end): a loop-carried
+            phase (an iter_arg) and a remui-selected index_switch. Both
+            emitted valid IR from this Python layer, and both failed the SAME
+            way in air-opt's `air-dependency` pass -- "operand #0 does not
+            dominate this use" on the final dealloc, because a buffer written
+            from inside a conditional branch, on some iteration nobody can
+            resolve statically, has no single last-writer for the pass to
+            hang a token on. Tagging the ORIGINAL single-buffer-per-iteration
+            loop avoids the question entirely: the shape that already works
+            is unchanged, only how many physical instances back it changes.
+            """
+            for_op = ForOp(idx(0), J2x2, idx(1))
+            for_op.operation.attributes["unroll"] = IntegerAttr.get(
+                i32, PROJ_RING_DEPTH
+            )
+            with InsertionPoint(for_op.body):
+                a_x = AllocOp(xblk_ty, [], [])
+                ChannelGet("inX", a_x, indices=[gcx, gcy])
+                a_w = AllocOp(wblk_ty, [], [])
+                ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                CallOp(mm_acc_fn, [a_x, a_w, a_acc, a_ws])
+                DeallocOp(a_x)
+                DeallocOp(a_w)
+                yield_([])
 
         def _probe_put(name, chan, buf):
             """Emit one DECODE_PROBE tap, or nothing when its bit is off.
@@ -4893,15 +4979,27 @@ def build_module():
                                 a_acc = AllocOp(yacc_mm_l1, [], [])
                                 a_ws = AllocOp(wscr_mm_l1, [], [])
                                 CallOp(mm_zero, [a_acc, _arm])
-                                for _j in for_(idx(0), J2x2, idx(1)):
-                                    a_x = AllocOp(xblk_mm_l1, [], [])
-                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                    a_w = AllocOp(wblk_l1, [], [])
-                                    ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
-                                    CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
-                                    DeallocOp(a_x)
-                                    DeallocOp(a_w)
-                                    yield_([])
+                                if PROJ_RING_DEPTH <= 2:
+                                    for _j in for_(idx(0), J2x2, idx(1)):
+                                        a_x = AllocOp(xblk_mm_l1, [], [])
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                        a_w = AllocOp(wblk_l1, [], [])
+                                        ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                                        CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
+                                        DeallocOp(a_x)
+                                        DeallocOp(a_w)
+                                        yield_([])
+                                else:
+                                    _mm_ring_deeper(
+                                        J2x2,
+                                        xblk_mm_l1,
+                                        wblk_l1,
+                                        mm_acc,
+                                        a_acc,
+                                        a_ws,
+                                        gcx,
+                                        gcy,
+                                    )
                                 return a_acc
 
                             _proj = _mm if BATCH > 1 else _gemv
@@ -5083,15 +5181,27 @@ def build_module():
                                 a_acc = AllocOp(yacc_mm_l1, [], [])
                                 a_ws = _wscr()
                                 CallOp(mm_zero, [a_acc, _arm])
-                                for _j in for_(idx(0), J2x2, idx(1)):
-                                    a_x = AllocOp(xblk_mm_l1, [], [])
-                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                    a_w = AllocOp(wblk_l1, [], [])
-                                    ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
-                                    CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
-                                    DeallocOp(a_x)
-                                    DeallocOp(a_w)
-                                    yield_([])
+                                if PROJ_RING_DEPTH <= 2:
+                                    for _j in for_(idx(0), J2x2, idx(1)):
+                                        a_x = AllocOp(xblk_mm_l1, [], [])
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                        a_w = AllocOp(wblk_l1, [], [])
+                                        ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                                        CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
+                                        DeallocOp(a_x)
+                                        DeallocOp(a_w)
+                                        yield_([])
+                                else:
+                                    _mm_ring_deeper(
+                                        J2x2,
+                                        xblk_mm_l1,
+                                        wblk_l1,
+                                        mm_acc,
+                                        a_acc,
+                                        a_ws,
+                                        gcx,
+                                        gcy,
+                                    )
                                 return a_acc
 
                             _proj = _mm if BATCH > 1 else _gemv

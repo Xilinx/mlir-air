@@ -857,10 +857,16 @@ For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
     spare capacity — the array is not idle-with-slack, it is running close to
     its coupling limit.
 
-    **Next step: deepen a ring past 2 and re-run the `PROJ_DELAY` sweep.** If
-    the exposed fraction at fixed delay drops, buffer depth was the limiter —
-    which is a different fix from the memtile re-broadcast already scoped for
-    item 11, and the two should not be assumed to be the same change.
+    **Tried: deepen the compute-tile ring to 3.** It compiles, runs, and is
+    correct (8/8 accepted on device) — and the `PROJ_DELAY` exposed fraction at
+    depth 3 is statistically the same as at depth 2 (63% vs 60% at
+    `PROJ_DELAY=800`, 90% vs 89% at 2000). Compute-tile ring depth is closed as
+    the sole explanation. See "Depth 3 was tried" above for how (pre-tag the
+    unchanged loop with `unroll=3` so `air-label-scf-for-to-ping-pong`'s own
+    factor-2 default never fires, rather than hand-building a deeper ring —
+    two attempts at that failed the same way in `air-dependency`) and what it
+    does not rule out: the memtile-side producer, one level up, is subject to
+    the identical depth-2 default and was not touched by this change.
 
 Keep running the batch-1 no-op diff on **both** models after every step. It has
 already caught a leaked constant that folded away on qwen3-4b and did not on
@@ -1557,6 +1563,65 @@ re-run this same sweep. If a 3- or 4-deep `xblk`/`wblk` ring drops the exposed
 fraction at fixed `PROJ_DELAY`, depth was the limiter and the fix is
 buffer-depth, not the memtile re-broadcast scoped for item 11 -- those two
 fixes are not the same change and should not be assumed to be.
+
+#### Depth 3 was tried. It is not the limiter, or not the whole of it [measured]
+
+The proj core's `xblk`/`wblk` ring was rebuilt at depth 3, and it is a real,
+correct build -- 8 of 8 accepted on device against the batch-1 reference
+(`spec_accept.py`, swapped in for the shipping template and swapped back out,
+byte-verified after), not just a compile that happened to succeed. Getting
+there needed two failed attempts first, both worth recording because either
+would be proposed again otherwise:
+
+- **A loop-carried phase** (an `scf.for` `iter_arg` cycling 0/1/2, selecting
+  which of 3 hoisted buffers an `index_switch` fills) built valid IR from
+  Python but failed in `air-opt`'s `air-dependency` pass: *"operand #0 does
+  not dominate this use"*, on both templates. A buffer written from inside a
+  runtime-selected branch has no single last-writer for the pass to hang a
+  release token on.
+- **A `remui`-selected index_switch** with no loop-carried state hit the
+  identical failure, for the identical reason -- the runtime branch, not the
+  carried phase, was what the dependency pass couldn't resolve.
+
+**What worked:** leave the loop exactly as built -- the same single
+alloc/get/compute/dealloc per iteration the ping-pong pass already knows how to
+duplicate -- and pre-tag it with `unroll = 3` before the standard pipeline
+runs. `isPingPongCandidate` (`AIRDependencyScheduleOpt.cpp`) opens with
+`if (forOp->hasAttr("unroll")) return false;`, so an already-labeled loop is
+left alone; the labeling pass's own hardcoded factor-2 assignment never fires,
+and the SEPARATE downstream transform reads the attribute generically. No new
+duplication logic, no hand-built dependency edges -- the existing, tested
+machinery, asked for 3 instead of 2.
+
+Re-running the `PROJ_DELAY` sweep at depth 3, llama-3.2-1b, batch 8, ctx 8
+**[measured]**:
+
+| `PROJ_DELAY` | depth 2 exposed | depth 3 exposed |
+|---|---|---|
+| 50 | 25% | 52% |
+| 200 | 45% | 42% |
+| 800 | 60% | 63% |
+| 2000 | 89% | 90% |
+
+**No consistent reduction.** At 800 and 2000 -- the two points with enough
+signal to trust (7.5-32 ms of injected delay against ~1-2 ms of run-to-run
+noise, confirmed by a repeat at 800: 76.1 then 75.8 ms) -- depth 3 is
+statistically the same as depth 2, not better. At 50 it reads WORSE, which is
+noise (0.6-1.2 ms of signal on a 52 ms base) rather than a real regression, but
+it is certainly not an improvement either.
+
+**So compute-tile ring depth is not the (sole) answer.** It was the cheaper,
+better-scoped half of the hypothesis to test, and it is now closed. What it
+does not rule out: the `inX`/`wL2ToL1` producer side, one level up at the
+memtile, goes through the SAME `air-label-scf-for-to-ping-pong` pass and is
+subject to the identical hardcoded depth-2 default -- deepening the
+COMPUTE-tile destination while the MEMTILE source still only ever has 2
+transfers in flight would show exactly this null result even if depth is part
+of the real answer. That is the next thing to try if depth is still worth
+pursuing, and it is a materially bigger change: the memtile's feed loops
+(`_feed_inX` for X; the weight DMA-from-DDR path for W) are shared
+infrastructure, not a single core's private loop, and broadcast to 16
+destinations rather than serving one.
 
 **Attention does not amortize at all** -- 8.33x for 8 tokens, slightly worse
 than linear. The earlier "5.5x for 8 tokens" came from a slope fitted through
