@@ -1015,13 +1015,26 @@ class HerdContext:
         # The herd is the first thing that knows how many of a shared buffer's
         # leading dimensions are cores, so it is where their L1 charge is gated.
         _charge_shared_l1(enclosing, len(self.grid), self.name)
-        # An unrolled segment's own coordinates, threaded in for the same reason
-        # the L2 buffers are: air.herd is IsolatedFromAbove, so a body that
-        # indexes a channel by segment coordinate cannot simply reference it.
-        # Empty unless the segment carries a grid, which is what keeps this
-        # inert for every kernel that does not use one -- an unused herd operand
-        # is not free, it survives air-dependency as an async edge.
-        outer = list(enclosing.leaves) if enclosing is not None else []
+        # Every coordinate in scope, threaded in for the same reason the L2
+        # buffers are: air.herd is IsolatedFromAbove, so a body that offsets a
+        # transfer by an enclosing coordinate cannot simply reference it.
+        #
+        # Both the launch's and the enclosing segment's, and in that order --
+        # outermost first, matching how air.segment already receives the
+        # launch's. Passing only the segment's used to be enough by accident:
+        # the launch's coordinates were reachable from segment scope, so an
+        # example whose outer tiling stayed there worked, and one that carried
+        # a launch coordinate *into* the herd emitted an affine.apply on a value
+        # defined outside the region and failed verification.
+        #
+        # Every live one is passed, referenced or not, which is the policy
+        # already applied to tensors and to L2 buffers: the tracer cannot know
+        # what the body will touch until it has run it. That is not free -- an
+        # unused herd operand survives air-dependency as an async edge -- but a
+        # coordinate is one index, and correctness for the kernels that need it
+        # is worth the edge for the kernels that do not.
+        outer = list(current_launch().leaves)
+        outer += list(enclosing.leaves) if enclosing is not None else []
         operands = (
             [leaf.value for leaf in outer]
             + [t.value for t in tensors]
