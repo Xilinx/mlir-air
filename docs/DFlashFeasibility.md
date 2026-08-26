@@ -1791,31 +1791,69 @@ residual2 (see "So the residual has to leave L1" above) -- still needs the
 same `_RMS_DMA_CHUNK`-not-`STG_W` discipline applied to every new transfer
 it adds, and remains unbuilt.
 
-**Level 3 scaffolding (inert, level 3 not reachable yet):** `x_l3`'s DDR
-buffer now grows by one extra `BATCH*K` slot when `RMS_BAND_STREAM>=3`
-(currently unreachable -- the flag still asserts to `(0, 1, 2)`), reusing the
-same per-layer-slot addressing style `HIDDEN_TAPS` already established
-rather than a new channel (the rms core's S2MM0 has no spare packet id).
-Verified byte-identical at batch 1 with the scaffolding present but inert.
+**Kernel prerequisite, built and verified unused:**
+`rms_chunk_aie`/`residual_acc_row_aie` hardcode a `MODEL_DIM` stride for the
+side that's about to shrink (`x`/`acc` respectively) -- correct only while
+that buffer is the whole resident row. `rms_chunk_banded_aie`/
+`residual_acc_row_banded_aie` take an n-strided band instead (row_stride=n,
+offset 0 -- the caller's fetch already selected the band). `w` is unchanged
+in the chunk variant: the norm weight stays fully resident at every level.
+Existing symbols verified byte-identical; new ones unused so far.
 
-**What level 3 actually requires, scoped but not yet built**: `xb` shrinks
-to `[BATCH][STG_W]`, one band resident at a time, fetched fresh via DMA at
-each of several points instead of populated once. The scale pre-pass (level
-1) already has this band-major shape; it needs to generalize from "read a
-band out of a full resident `xb`" to "fetch a fresh band via DMA, at
-`STG_W`-granularity DMA ops built from `_RMS_DMA_CHUNK`-sized sub-dimensions
-(the level-2 lesson applies to every new transfer this adds, not just the
-one it already covers)." The chunk-regen loop (in `_rms_batched_norm`)
-operates at `XCHUNK` granularity, which need not equal `STG_W` -- when
-`XCHUNK < STG_W` a resident band serves more than one chunk emission without
-a re-fetch, which the restructured loop has to track rather than naively
-re-fetching per chunk. `residual1`/`residual2`'s accumulate has to read a
-band fresh (from the ORIGINAL `x` slot for residual1, from the scratch slot
-for residual2), add the projection's contribution, and write the updated
-band back out (`layerOut` to the scratch slot for residual1's `h`, to
-`_x_out()` for residual2's final result) -- new writes this file has not
-made before at band granularity. Left as the next session's starting point
-rather than rushed.
+**A scratch DDR slot turned out to be unnecessary.** The first plan for
+level 3 (scaffolded, then reverted -- see the commit history) added a
+second `BATCH*K` DDR slot for the intra-layer `h` round-trip. On reflection:
+without `HIDDEN_TAPS`, `_x_in() == _x_out()` (the in-place chain), so
+residual1's write of `h` can land at `_x_in()`'s own address, in place,
+exactly like the unbanded design's whole-buffer write already does -- one
+band at a time instead of all of them. ph2/residual2 then re-read/re-write
+that SAME address; the final residual2 write is the same op the unbanded
+design already does. No new DDR region, no new addressing scheme, and the
+rms core's already-full packet-id budget never enters into it.
+`RMS_BAND_STREAM>=3` refuses `DECODE_HIDDEN_TAPS` instead of silently
+corrupting a hidden-state tap -- the one case this doesn't cover.
+
+**The concrete visit sequence, worked out but not yet implemented.** `xb`
+shrinks to `[BATCH][STG_W]`, refetched fresh (from `_x_in()`, always -- see
+above) at each of six phases, in this order:
+
+1. **ph0 scale pre-pass**: `nband` (= `K/STG_W`) fetches, each a full band,
+   feeding `rms_scale_row_partial_aie`/`_finalize_aie` (already built, level
+   1) -- unchanged from level 1/2 except the source is now a fresh fetch
+   each time, not a read of an already-resident `xb`.
+2. **ph0 regen**: `XN_REFEED * nchunk` (`nchunk = K/XCHUNK`) fetches, one
+   per `_rms_batched_norm`'s existing chunk-loop visit -- a NEW get inside
+   that loop (today it only reads an already-resident `xb`; it will need its
+   own `ChannelGet` from `_x_in()` at that chunk's offset, matching the
+   pattern the level-2 scale-band fetch already established, generalized to
+   a dynamic loop-variable offset).
+3. **residual1**: `nband` visits (== `OPROJ_RNDS`, since `STG_W == PAYLOAD`
+   for both models in scope -- assert this rather than assume it, per the
+   band/round-alignment note above), each: fetch band `r` from `_x_in()`,
+   get the projection round from `outY` (unchanged), add via
+   `residual_acc_row_banded_aie`, write the band back to `_x_in()` (in
+   place -- see above).
+4. **ph2 scale pre-pass**: `nband` fetches, now reading the UPDATED `h` that
+   residual1 just wrote back to `_x_in()`.
+5. **ph2 regen**: `GATEUP_REFEED * nchunk` fetches, same shape as step 2.
+6. **residual2**: `nband` visits, same shape as step 3, but the final write
+   goes through `_layer_out`'s existing `_x_out()` address (equal to
+   `_x_in()` without `HIDDEN_TAPS`, so mechanically the same write).
+
+**Why this is the harder half, concretely, not just in general terms:**
+every fetch above needs a MATCHING launch-scope feed, in the SAME order,
+same count -- and per the level-2 lesson, every one of them needs
+`_RMS_DMA_CHUNK`-sized sub-dimensions, not `STG_W` or `XCHUNK` directly (a
+compute tile's BD wrap field is 8 bits regardless of which named width is
+used). The regen steps (2, 5) can't fold into a `for_` loop on the launch
+side (a launch-scope `scf.for` deadlocks the shim -- `_feed_wcols`), so they
+Python-unroll to `XN_REFEED*nchunk` (e.g. 6*8=48 for ph0) and
+`GATEUP_REFEED*nchunk` (e.g. 32*8=256 for ph2) separate static ops each --
+hundreds of new, individually small, order-sensitive launch-scope puts,
+which is exactly the class of change that has taken multiple device
+iterations to get right every other time this session touched `rmsX`. Left
+as the next session's starting point, with the sequence above as the
+blueprint, rather than rushed into a single large diff.
 
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
