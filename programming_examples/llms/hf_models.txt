@@ -54,6 +54,11 @@ unsloth/gemma-3-4b-it
 FastFlowLM/Qwen3-8B-NPU2
 Qwen/Qwen3-8B
 
+# Same Q4NX packaging of Qwen3-4B. Used by llms/qwen3_4b_q4nx (NPU weights);
+# Qwen/Qwen3-4B is already listed above for the bf16 llms/qwen3_4b example and
+# doubles as the reference `make verify` compares against.
+FastFlowLM/Qwen3-4B-NPU2
+
 # Qwen2.5-7B-Instruct is listed ONCE, not as a pair: FastFlowLM publishes no
 # Qwen2.5-7B bundle, so llms/qwen25_7b_q4nx quantizes this checkpoint to Q4NX on
 # load and `make verify` compares against the same repo in bf16. Ungated.
