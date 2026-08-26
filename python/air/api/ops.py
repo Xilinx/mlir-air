@@ -675,8 +675,6 @@ def select(cond, a, b):
             "them -- use air.api.ops.equal / not_equal for those, or one of "
             "the ordering operators <, <=, >, >= which do build a predicate"
         )
-    from ._cond import Condition
-
     if isinstance(cond, Condition):
         # The other conditional. Naming it is the whole point: the two are
         # indistinguishable from their names alone, so the one place a caller

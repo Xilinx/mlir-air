@@ -220,7 +220,7 @@ class _Region:
         # block with no terminator turns a diagnosable error into a verifier
         # crash somewhere unrelated.
         self.open = False
-        exit_region(aborted=exc_type is not None)
+        exit_region(aborted=exc_type is not None, what="ops.branch")
         if self._terminate:
             yield_([])
         self._ip.__exit__(exc_type, exc, tb)

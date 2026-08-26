@@ -219,14 +219,27 @@ class IndexExpr:
     def _compare(self, other, predicate, symbol):
         from ._cond import Condition
 
+        # A bool is the one non-index that must not fall through. Deferring on
+        # it would make `tx == True` a silent Python False -- a trace-time
+        # branch decision taken without the program saying so, which is exactly
+        # what Condition.__bool__ exists to prevent one line further on.
+        if isinstance(other, bool):
+            raise TypeError(
+                f"cannot compare a tile coordinate against the bool {other!r}. "
+                "A coordinate is an index, and a comparison against it builds a "
+                "condition for ops.branch; comparing it to True or False would "
+                "otherwise be answered at trace time, silently and the same way "
+                f"for every core. Compare against an integer instead: "
+                f"`{self} {symbol} {int(other)}`."
+            )
         try:
             other = coerce_index(other)
         except TypeError:
-            # Not an index at all -- an Ellipsis, a slice, a buffer. Deferring
-            # to Python rather than raising is what keeps `Ellipsis in key`
-            # working inside a subscript: `==` against something incomparable
-            # is False, not an error, and only the ordering operators (which
-            # have no such fallback) go on to raise.
+            # Not an index and not a bool -- an Ellipsis, a slice, a buffer.
+            # Deferring to Python rather than raising is what keeps
+            # `Ellipsis in key` working inside a subscript: `==` against
+            # something incomparable is False, not an error, and only the
+            # ordering operators (which have no such fallback) go on to raise.
             return NotImplemented
         return Condition(self, other, predicate, symbol)
 

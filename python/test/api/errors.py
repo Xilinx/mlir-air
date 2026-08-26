@@ -2122,3 +2122,39 @@ def _():
             pass
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: compare_a_coordinate_against_a_bool
+# `tx == True` would otherwise be answered by Python: coerce_index rejects bool,
+# the comparison returns NotImplemented, and the fallback makes it a silent
+# False -- a trace-time branch decision the program never asked for, which is
+# the exact thing Condition.__bool__ exists to stop one line later.
+# CHECK: TypeError: cannot compare a tile coordinate against the bool True
+# CHECK-SAME: Compare against an integer instead
+@expect(TypeError, "compare_a_coordinate_against_a_bool")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with air.ops.branch(tx == True):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: break_out_of_a_branch
+# ops.branch shares the region bookkeeping with air.sequential, so an abandoned
+# branch used to be reported as "left an air.sequential loop early" -- which
+# sends the reader to the wrong line, and offers loop-bound advice for something
+# that is not a loop.
+# CHECK: RuntimeError: a body left an ops.branch region early
+# CHECK-SAME: Let the `with` block run to its end
+@expect(RuntimeError, "break_out_of_a_branch")
+def _():
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([64], bf16, scope=h.private())
+        try:
+            with air.ops.branch(tx == 0):
+                raise ValueError("swallowed by the body")
+        except ValueError:
+            pass
+
+    _trace(body)

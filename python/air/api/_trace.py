@@ -1088,9 +1088,9 @@ class HerdContext:
         from air.dialects.air import herd as herd_region
         from air.dialects.scf import for_ as range_, yield_
 
-        from ._loop import aborted_loops, enter_body, exit_body
+        from ._loop import aborted_regions, enter_body, exit_body
 
-        aborted_before = aborted_loops()
+        aborted_before = len(aborted_regions())
 
         tensors = trace.tensors
         # air.herd is IsolatedFromAbove, so an L2 buffer allocated in the
@@ -1203,13 +1203,25 @@ class HerdContext:
                 next(iter(herd_self._objects))
             )
 
-        if aborted_loops() != aborted_before:
+        aborted = aborted_regions()[aborted_before:]
+        if aborted:
+            # Name the construct that was abandoned. ops.branch shares the
+            # region bookkeeping with air.sequential, and reporting a truncated
+            # branch as "left a loop early" sends the reader to the wrong line.
+            if "air.sequential" in aborted:
+                raise RuntimeError(
+                    "a body left an air.sequential loop early (break, return, or a "
+                    "swallowed exception). An air.sequential body is traced once and "
+                    "stands for every trip, so an early exit does not shorten the "
+                    "loop -- it truncates the body of all of them, and the kernel "
+                    "computes a partial result. Restructure the loop bounds instead."
+                )
             raise RuntimeError(
-                "a body left an air.sequential loop early (break, return, or a "
-                "swallowed exception). An air.sequential body is traced once and "
-                "stands for every trip, so an early exit does not shorten the "
-                "loop -- it truncates the body of all of them, and the kernel "
-                "computes a partial result. Restructure the loop bounds instead."
+                "a body left an ops.branch region early (break, return, or a "
+                "swallowed exception). The region is emitted either way, so the "
+                "ops written after the exit are simply missing from it, and the "
+                "cores that take that branch compute a partial result. Let the "
+                "`with` block run to its end."
             )
 
 
