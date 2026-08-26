@@ -170,7 +170,7 @@ def _zero_index_if(needed):
     return _result(arith.ConstantOp(IndexType.get(), 0)) if needed else None
 
 
-def _leaf_index(shape, dst_shape, ivs, zero):
+def _leaf_index(shape, dst_shape, ivs, zero, base=None):
     """The indices to read a leaf of ``shape`` at, inside a nest over ``dst_shape``.
 
     An axis that matches the destination's is walked with the destination's own
@@ -178,14 +178,36 @@ def _leaf_index(shape, dst_shape, ivs, zero):
     pinned at 0, which is what makes the read a broadcast. Axes the operand does
     not have contribute no index at all.
 
-    When the shapes are equal this returns ``ivs`` unchanged, which is what
-    keeps every existing kernel's IR byte-identical.
+    ``base`` is the leaf's own starting offset per axis, non-zero only when the
+    leaf is a *slice* of a buffer rather than the whole of it (``gu[1, :]``).
+    It shifts each axis: a pinned axis becomes the constant, and a walked one
+    becomes ``iv + base``.
+
+    When the shapes are equal and the base is all zeros this returns ``ivs``
+    unchanged, which is what keeps every existing kernel's IR byte-identical --
+    the two new branches are reachable only from a slice leaf.
     """
     offset = _broadcast_offset(shape, dst_shape)
-    return [
-        ivs[i + offset] if extent == dst_shape[i + offset] else zero
-        for i, extent in enumerate(shape)
-    ]
+    index = []
+    for i, extent in enumerate(shape):
+        walks = extent == dst_shape[i + offset]
+        start = 0 if base is None else base[i]
+        if start == 0:
+            index.append(ivs[i + offset] if walks else zero)
+        elif not walks:
+            index.append(_index_constant(start))
+        else:
+            index.append(_result(arith.AddIOp(ivs[i + offset], _index_constant(start))))
+    return index
+
+
+def _index_constant(value):
+    return _result(arith.ConstantOp(IndexType.get(), value))
+
+
+def _base_of(leaf):
+    """A slice leaf's starting offset per axis; None for a whole buffer."""
+    return getattr(leaf, "base", None)
 
 
 def _check_region(node, dst, dtype, expected=None):
@@ -488,7 +510,7 @@ def _emit_vector(dst, expr, width):
     )
 
     def load(buf, ivs, region):
-        index = _leaf_index(buf.shape, shape, ivs, zero)
+        index = _leaf_index(buf.shape, shape, ivs, zero, _base_of(buf))
         if buf.shape and buf.shape[-1] == shape[-1]:
             # The operand has the destination's innermost extent, so the vector
             # read is the ordinary one -- at the operand's own rank, which is
@@ -526,7 +548,11 @@ def _emit_scalar(dst, expr):
     )
 
     def load(buf, ivs, region):
-        return _result(memref_load(buf.value, _leaf_index(buf.shape, shape, ivs, zero)))
+        return _result(
+            memref_load(
+                buf.value, _leaf_index(buf.shape, shape, ivs, zero, _base_of(buf))
+            )
+        )
 
     def body(ivs):
         value = _eval(expr, ivs, regions[dst.dtype], regions, False, load, {})
@@ -575,7 +601,11 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
         # cast is the only thing that starts a new region. So a given buffer is
         # reachable from exactly one region and its cached value can only ever
         # have been read at that region's vector type.
-        key = id(node.buffer)
+        base = _base_of(node.buffer)
+        # Keyed on the region, not just the buffer: gu[0, :] and gu[1, :] are
+        # the same Buffer at different offsets, and keying on the buffer alone
+        # would serve the second one the first one's value.
+        key = (id(node.buffer), None if base is None else tuple(base))
         if reads is not None and key in reads:
             return reads[key]
         value = load(node.buffer, ivs, region)

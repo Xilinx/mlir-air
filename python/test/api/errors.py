@@ -795,9 +795,13 @@ def _():
 
 
 # CHECK-LABEL: TEST: buffer_slice_in_expression
-# A partial subscript names a DMA region, not a value.
-# CHECK: TypeError: cannot use BufferSlice
-@expect(TypeError, "buffer_slice_in_expression")
+# A plain region *is* readable elementwise now -- gu[0, :] is how a packed
+# buffer is unpacked without a copy -- so this is no longer refused for being a
+# region. It is refused for the reason numpy refuses it: half a tile does not
+# broadcast to a whole one.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: operand has shape (16, 32)
+@expect(ValueError, "buffer_slice_in_expression")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([32, 32], bf16, scope=h.private())
@@ -2181,5 +2185,37 @@ def _():
         row = air.alloc([1, 64], bf16, scope=h.private())
         acc = air.alloc([1, 1], f32, scope=h.private())
         acc[:] = ops.cast(ops.reduce_add(row[:]), f32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: elementwise_read_of_a_view
+# A plain region reads elementwise -- gu[0, :] is how a packed [2, N] buffer is
+# unpacked without a copy. A reshaped or transposed view does not: it
+# re-describes the same elements at another rank or order, so an index into it
+# is not an index into the buffer.
+# CHECK: TypeError: cannot read BufferSlice
+# CHECK-SAME: reshaped or transposed view
+@expect(TypeError, "elementwise_read_of_a_view")
+def _():
+    def body(h, tx, ty, A, B, C):
+        gu = air.alloc([2, 64], bf16, scope=h.private())
+        out = air.alloc([64, 2], bf16, scope=h.private())
+        out[:] = gu[0:2, :].transpose(1, 0) * 2.0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: elementwise_read_at_a_runtime_offset
+# The loop nest is built at trace time out of constant extents, so a region
+# whose offset is a coordinate has no constant to fold into the index.
+# CHECK: TypeError: cannot read BufferSlice
+# CHECK-SAME: depends on a coordinate or loop variable
+@expect(TypeError, "elementwise_read_at_a_runtime_offset")
+def _():
+    def body(h, tx, ty, A, B, C):
+        gu = air.alloc([2, 64], bf16, scope=h.private())
+        out = air.alloc([1, 64], bf16, scope=h.private())
+        out[:] = gu[tx, :] * 2.0
 
     _trace(body)

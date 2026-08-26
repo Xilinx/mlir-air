@@ -576,6 +576,88 @@ class BufferSlice(_StridedView):
     def value(self):
         return self.buffer.value
 
+    # -- reading a region elementwise ---------------------------------------
+    #
+    # A partial subscript is primarily a DMA access pattern, and that is still
+    # what ops.load/store see. But numpy spells "the gate half of the packed
+    # buffer" as `gu[0]`, and kernels pack precisely because DMA channels are
+    # scarce -- an AIE2P tile has two S2MM, so swiglu carries gate and up in one
+    # [2, N] buffer rather than two. Refusing to read a row of it forced a copy
+    # the packing existed to avoid.
+    #
+    # Only a *plain* region qualifies. A reshape/transpose view re-describes the
+    # elements at another rank or order, so an index into it is not an index
+    # into the buffer; a dynamic offset has no constant to fold into the loop
+    # nest. Both are rejected by name below rather than silently mis-indexed. A
+    # stepped subscript never reaches here -- __getitem__ refuses step != 1
+    # outright -- so a region built by subscripting always carries the buffer's
+    # own strides.
+
+    @property
+    def shape(self):
+        return tuple(self.sizes)
+
+    @property
+    def vector_width(self):
+        return self.buffer.vector_width
+
+    @property
+    def base(self):
+        """The region's starting index per axis, as Python ints."""
+        return [o.as_const() for o in self.offsets]
+
+    def _as_leaf(self):
+        """This region as an elementwise leaf, or a TypeError saying why not."""
+        self.buffer._require_compute("read")
+        if self.is_view:
+            raise TypeError(
+                f"cannot read {self!r} elementwise: it is a reshaped or "
+                "transposed view, which re-describes the same elements at a "
+                "different rank or order, so an index into it is not an index "
+                "into the buffer. Only a plain region -- buf[1, :] -- reads "
+                "elementwise."
+            )
+        if any(b is None for b in self.base):
+            raise TypeError(
+                f"cannot read {self!r} elementwise: its offset depends on a "
+                "coordinate or loop variable, and the loop nest is built at "
+                "trace time from constant extents. Subscript with a constant "
+                "-- gu[1, :] -- or move the region with air.api.ops.load."
+            )
+        return BufferExpr.leaf(self)
+
+    def _arith(self, other, op, reflected=False):
+        expr = self._as_leaf()
+        other = BufferExpr.coerce(other)
+        return op(other, expr) if reflected else op(expr, other)
+
+    def __add__(self, o):
+        return self._arith(o, lambda a, b: a + b)
+
+    def __radd__(self, o):
+        return self._arith(o, lambda a, b: a + b, reflected=True)
+
+    def __sub__(self, o):
+        return self._arith(o, lambda a, b: a - b)
+
+    def __rsub__(self, o):
+        return self._arith(o, lambda a, b: a - b, reflected=True)
+
+    def __mul__(self, o):
+        return self._arith(o, lambda a, b: a * b)
+
+    def __rmul__(self, o):
+        return self._arith(o, lambda a, b: a * b, reflected=True)
+
+    def __truediv__(self, o):
+        return self._arith(o, lambda a, b: a / b)
+
+    def __rtruediv__(self, o):
+        return self._arith(o, lambda a, b: a / b, reflected=True)
+
+    def __neg__(self):
+        return -self._as_leaf()
+
     def materialize_offsets(self):
         return [o.materialize() for o in self.offsets]
 
@@ -754,12 +836,9 @@ class BufferExpr:
             # examples spell as arith.index_cast(T.i32(), ty).
             return BufferExpr("scalar", scalar=value)
         if isinstance(value, BufferSlice):
-            raise TypeError(
-                f"cannot use {value!r} in an elementwise expression: a partial "
-                "subscript names a DMA region, not a value. Move the region into "
-                "an L1 buffer with air.api.ops.load(dst, src[...]) and compute on "
-                "that buffer"
-            )
+            # A plain region reads elementwise; a view, a strided region or a
+            # dynamic offset does not, and _as_leaf says which.
+            return value._as_leaf()
         raise TypeError(
             f"cannot use {value!r} ({type(value).__name__}) in an elementwise "
             "expression; expected a buffer slice or a numeric scalar"
