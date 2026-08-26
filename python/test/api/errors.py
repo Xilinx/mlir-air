@@ -2164,3 +2164,22 @@ def _():
             pass
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_under_a_cast
+# The nesting message lives at emission, but the shape check runs first and
+# reaches the reduction on the way down -- so this used to fail with "destination
+# has shape (1, 1) but operand has shape (1, 64), which does not broadcast to
+# it". True, and silent about the actual mistake. Found converting rms_norm,
+# where casting the row sum to f32 before the rsqrt is the obvious first thing
+# to write.
+# CHECK: NotImplementedError: air.api.ops.reduce_add cannot nest inside a larger expression
+# CHECK-SAME: Assign the reduction first
+@expect(NotImplementedError, "reduce_under_a_cast")
+def _():
+    def body(h, tx, ty, A, B, C):
+        row = air.alloc([1, 64], bf16, scope=h.private())
+        acc = air.alloc([1, 1], f32, scope=h.private())
+        acc[:] = ops.cast(ops.reduce_add(row[:]), f32)
+
+    _trace(body)

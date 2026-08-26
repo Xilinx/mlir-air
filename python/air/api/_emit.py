@@ -203,6 +203,13 @@ def _check_region(node, dst, dtype, expected=None):
     the element type and nothing else.
     """
     expected = expected or f"destination is {dtype}"
+    # A nested reduction is diagnosed here rather than at emission, because the
+    # shape check below reaches it first and reports the collapsed axis as an
+    # operand that does not broadcast -- which is true, and says nothing about
+    # the actual mistake. `ops.cast(ops.reduce_add(row[:]), f32)` used to fail
+    # with "destination has shape (1, 1) but operand has shape (1, 64)".
+    if node.kind == "reduce":
+        raise _nested_reduction(node)
     if node.kind == "cast":
         source = node.args[0].element_dtype()
         _check_region(
@@ -231,6 +238,19 @@ def _check_region(node, dst, dtype, expected=None):
         return
     for arg in node.args:
         _check_region(arg, dst, dtype, expected)
+
+
+def _nested_reduction(node):
+    """The error for a reduction used anywhere but as the whole right-hand side."""
+    spelling = "reduce_max" if node.op == "max" else "reduce_add"
+    return NotImplementedError(
+        f"air.api.ops.{spelling} cannot nest inside a larger expression: it "
+        "collapses the innermost axis, so its result has a different shape "
+        "from the operands around it, and one loop nest cannot span both. "
+        "Assign the reduction first, then use the result:\n"
+        f"    tmp[:] = ops.{spelling}(a[:])\n"
+        "    out[:] = tmp[:] + b[:]"
+    )
 
 
 def _regions_in(node, dtype, out):
@@ -719,14 +739,6 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
         # around it, and the surrounding loop nest is built over a single shape.
         # Without this the walk fell through to the AssertionError below, which
         # named an internal node kind rather than the mistake.
-        spelling = "reduce_max" if node.op == "max" else "reduce_add"
-        raise NotImplementedError(
-            f"air.api.ops.{spelling} cannot nest inside a larger expression: it "
-            "collapses the innermost axis, so its result has a different shape "
-            "from the operands around it, and one loop nest cannot span both. "
-            "Assign the reduction first, then use the result:\n"
-            f"    tmp[:] = ops.{spelling}(a[:])\n"
-            "    out[:] = tmp[:] + b[:]"
-        )
+        raise _nested_reduction(node)
 
     raise AssertionError(f"unknown expression node kind {node.kind!r}")
