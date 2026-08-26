@@ -2103,6 +2103,13 @@ private:
         for (auto adj_v : G.adjacentVertices(v))
           push_back_if_unique<Graph::VertexId>(
               this->latent_wavefront_candidates, adj_v);
+        // Drop it from the latent set as well. Latent candidates are copied
+        // into the candidate list on every scheduling step, so a filtered
+        // vertex left there is re-derived and re-filtered forever -- and in a
+        // broadcast design most vertices are filtered on most cores. Resetting
+        // the vertex for the next loop iteration puts it back, which is when
+        // it needs retiring again.
+        llvm::erase(this->latent_wavefront_candidates, v);
       }
       return true;
     });

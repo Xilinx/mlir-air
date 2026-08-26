@@ -571,7 +571,7 @@ public:
       diagnoseVerticesThatNeverRan(launch);
   }
 
-  // Report vertices that the simulation left untouched, deepest node first.
+  // Report vertices that the simulation left untouched, most numerous first.
   void diagnoseVerticesThatNeverRan(runnerNode &launch) {
     // Aggregate across runner nodes: every core of a herd reports the same
     // shape, and listing each separately buries the answer.
