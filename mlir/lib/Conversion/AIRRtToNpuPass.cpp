@@ -878,7 +878,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id=*/nullptr, pktAttr,
-          /*burst_length=*/nullptr, /*iteration=*/nullptr,
+          /*out_of_order_id=*/nullptr,
+          /*burst_length=*/nullptr, /*axcache=*/nullptr,
+          /*iteration=*/nullptr,
           /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
     } else if (dynOffsetI32) {
@@ -4453,7 +4455,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* d0_zero_before */ 0, /* d1_zero_before */ 0,
             /* d2_zero_before */ 0,
             /* d0_zero_after */ 0, /* d1_zero_after */ 0,
-            /* d2_zero_after */ 0);
+            /* d2_zero_after */ 0, /* burst_length */ 0,
+            /* axcache */ nullptr);
         uint32_t addr = (dstColIndex << target_model.getColumnShift()) |
                         (0x1D004 + bdID * 0x20);
         {
