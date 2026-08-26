@@ -322,6 +322,7 @@ public:
                                              uint64_t time) {
 
     Graph &G = c.ctrl_g->g;
+    c.current_time = time;
 
     // Get candidate vertices to be pushed to wavefront
     std::vector<Graph::VertexId> next_vertex_set_candidates =
@@ -555,6 +556,60 @@ public:
             "never satisfy its dispatch condition; the most common cause is a "
             "channel whose put and get disagree on how many spatial instances "
             "they represent, so the pair can never be matched.");
+
+    // Reaching the terminator is necessary but not sufficient. A vertex that
+    // was never scheduled and never retired just sits in the graph: the run
+    // walks past it, the terminator is reached along some other path, and the
+    // latency reported is the latency of whatever happened to run. That is the
+    // same silently-wrong answer the check above exists to prevent, arriving by
+    // a different route, so account for the graph as well as the exit.
+    //
+    // "Never ran" means never started and no entry in the execution log --
+    // vertices are reset between loop iterations, so an unstarted vertex that
+    // ran in an earlier iteration is ordinary.
+    if (!diagnosticEmitted)
+      diagnoseVerticesThatNeverRan(launch);
+  }
+
+  // Report vertices that the simulation left untouched, deepest node first.
+  void diagnoseVerticesThatNeverRan(runnerNode &launch) {
+    // Aggregate across runner nodes: every core of a herd reports the same
+    // shape, and listing each separately buries the answer.
+    std::map<std::string, unsigned> offenders;
+    unsigned total = 0;
+    std::function<void(runnerNode &)> visit = [&](runnerNode &n) {
+      Graph &G = n.ctrl_g->g;
+      for (auto v : G.getVertices())
+        if (G[v].op && !G[v].is_started() && G[v].start_end_time_log.empty()) {
+          offenders[n.runner_node_type + " " + G[v].asyncEventName]++;
+          total++;
+        }
+      for (auto &sub : n.sub_runner_nodes)
+        visit(sub);
+    };
+    visit(launch);
+    if (!total)
+      return;
+
+    std::vector<std::pair<std::string, unsigned>> ranked(offenders.begin(),
+                                                         offenders.end());
+    llvm::sort(ranked, [](auto &a, auto &b) { return a.second > b.second; });
+    std::string detail;
+    unsigned shown = 0;
+    for (auto &o : ranked) {
+      if (shown++ == 6) {
+        detail += ", ...";
+        break;
+      }
+      detail +=
+          (shown > 1 ? ", " : "") + o.first + " x" + std::to_string(o.second);
+    }
+    launch.runner_assertion(
+        false, "simulation reached the launch terminator but left " +
+                   std::to_string(total) +
+                   " ops that never ran and were never retired, so the "
+                   "reported latency covers only part of the design: " +
+                   detail);
   }
 
 private:

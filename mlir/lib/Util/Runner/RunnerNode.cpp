@@ -33,6 +33,9 @@ public:
   std::vector<Graph::VertexId> latent_wavefront_candidates;
   // Sub runner nodes to the current runner node
   std::vector<runnerNode> sub_runner_nodes;
+  // Simulation time as of the current scheduling step, for retiring ops that
+  // never enter the wavefront.
+  uint64_t current_time = 0;
   // Resource hierarchies which are allocated to this runner node
   std::vector<resourceHierarchy *> resource_hiers;
 
@@ -54,7 +57,8 @@ public:
     // Remove candidate vertices which are filtered out by an affine.if, if
     // showing cores
     if (this->sim_granularity == "core") {
-      this->removeOpsFilteredOutByAffineIf(next_vertex_set_candidates);
+      this->removeOpsFilteredOutByAffineIf(next_vertex_set_candidates,
+                                           this->current_time);
     }
 
     return next_vertex_set_candidates;
@@ -2065,23 +2069,43 @@ private:
     }
   }
 
-  // Remove ops in affine.if which aren't running on this core
-  void
-  removeOpsFilteredOutByAffineIf(std::vector<Graph::VertexId> &candidates) {
+  // Retire ops in an affine.if branch which this core does not take.
+  //
+  // Such an op represents no work here, so it must not be scheduled. But
+  // dropping it from the candidate list is not enough: it stays unstarted
+  // forever, and every vertex that lists it as a dependence -- the branch's own
+  // terminator first, then the enclosing loop's scf.yield -- blocks on it for
+  // the rest of the run. In a broadcast design each core sits outside most of
+  // the branches, so most terminators never close and the enclosing loop never
+  // advances past its first iteration.
+  //
+  // Retire them with zero duration instead, and make their successors
+  // candidates, so the branch closes and the loop can advance.
+  void removeOpsFilteredOutByAffineIf(std::vector<Graph::VertexId> &candidates,
+                                      uint64_t time) {
     Graph &G = this->ctrl_g->g;
-    for (auto it = candidates.begin(); it != candidates.end(); ++it) {
-      auto op = G[*it].op;
-      if (op->getParentOfType<affine::AffineIfOp>()) {
-        std::vector<Operation *> affine_if_nest;
-        Operation *spatial_loop = nullptr;
-        getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
-        if (!positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
-                                           this->ctrl_g->position)) {
-          candidates.erase(it);
-          it--;
-        }
+    llvm::erase_if(candidates, [&](Graph::VertexId v) {
+      auto op = G[v].op;
+      if (!op || !op->getParentOfType<affine::AffineIfOp>())
+        return false;
+      std::vector<Operation *> affine_if_nest;
+      Operation *spatial_loop = nullptr;
+      getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+      if (positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                        this->ctrl_g->position))
+        return false;
+      if (!G[v].is_started()) {
+        G[v].start_time = time;
+        G[v].release_time = time;
+        G[v].end_time = time;
+        G[v].resources_released = true;
+        push_back_if_unique<Graph::VertexId>(this->processed_vertices, v);
+        for (auto adj_v : G.adjacentVertices(v))
+          push_back_if_unique<Graph::VertexId>(
+              this->latent_wavefront_candidates, adj_v);
       }
-    }
+      return true;
+    });
   }
 
 }; // runnerNode
