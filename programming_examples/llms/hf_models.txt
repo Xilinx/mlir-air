@@ -74,3 +74,10 @@ microsoft/Phi-4-mini-instruct
 FastFlowLM/Llama-3.1-8B-NPU2
 NousResearch/Meta-Llama-3.1-8B-Instruct
 NousResearch/Meta-Llama-3.1-8B
+
+# LFM2-1.2B (llms/lfm2_1_2b_q4nx), the first HYBRID conv-attention model here.
+# Listed ONCE, not as a pair: LiquidAI publishes a single checkpoint with no
+# separate instruct variant, and there is no pre-quantized bundle for it -- the
+# example quantizes this checkpoint to Q4_0 on load and `make verify` compares
+# against the same repo in bf16, exactly as the qwen25_7b_q4nx entry does.
+LiquidAI/LFM2-1.2B
