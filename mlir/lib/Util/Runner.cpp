@@ -41,6 +41,7 @@
 #include <optional>
 #include <string>
 
+#include "./Runner/CostExpr.cpp"
 #include "./Runner/Resource.cpp"
 #include "./Runner/ResourceHierarchy.cpp"
 #include "./Runner/RunnerNode.cpp"
@@ -241,8 +242,11 @@ public:
         execution_time = std::max(compute_op_cost, compute_xfer_cost);
         // Entering the kernel. On AIE a linalg op becomes a call to an
         // external function and that call is not free; on a machine where the
-        // operator is the instruction, it is. Declared by the model.
-        execution_time += d.kernel_invocation_overhead;
+        // operator is the instruction, it is. Declared by the model -- except
+        // where the model gave a cycle expression, which is the whole cost by
+        // construction and has nothing to add to.
+        if (!kernelCycleExpr(d, child_op))
+          execution_time += d.kernel_invocation_overhead;
       } else if (auto custom_op =
                      dyn_cast_if_present<air::CustomOp>(child_op)) {
         execution_time = getComputeCostFromJSON(d, custom_op);
@@ -448,7 +452,17 @@ public:
       }
     }
 
-    // Simulation performance report
+    // Simulation performance report.
+    //
+    // Not if anything reported an error. A run that hit one has a hole in it --
+    // an op with no usable cost, a hierarchy that could not be allocated -- and
+    // the time it reaches is a number for a simulation that did not happen. It
+    // reads exactly like a real answer, which is worse than no answer.
+    if (anyErrorEmitted) {
+      std::cout << "No latency reported: the simulation reported errors, so "
+                   "the time it reached does not describe the design.\n";
+      return;
+    }
     std::string end_ts = convertToTimeStampInStr(time, device_resource_node);
     if (launch_iterations == "single" && iter_count > 1) {
       // In single-iteration mode, multiply by total iteration count
@@ -471,8 +485,10 @@ public:
     bool diagnosticEmitted = false;
     mlir::ScopedDiagnosticHandler diagHandler(
         launch.ctrl_g->hierarchyOp->getContext(), [&](mlir::Diagnostic &diag) {
-          if (diag.getSeverity() == mlir::DiagnosticSeverity::Error)
+          if (diag.getSeverity() == mlir::DiagnosticSeverity::Error) {
             diagnosticEmitted = true;
+            anyErrorEmitted = true;
+          }
           return mlir::failure();
         });
 
@@ -615,6 +631,10 @@ public:
   }
 
 private:
+  // Set when any op reported an error during a run, so the report at the end
+  // can decline to print a latency it cannot stand behind.
+  bool anyErrorEmitted = false;
+
   dependencyCanonicalizer canonicalizer;
   xilinx::air::dependencyContext dep_ctx;
 
@@ -806,17 +826,106 @@ private:
   // Bookkeeping entries getLinalgOpCounts adds alongside the op tally, and the
   // structural ops a linalg body always has. Neither is arithmetic.
   static bool isNotArithmetic(llvm::StringRef name) {
-    static constexpr llvm::StringLiteral ignored[] = {{"footprint"},
-                                                      {"reads"},
-                                                      {"writes"},
-                                                      {"linalg.yield"},
-                                                      {"arith.constant"}};
+    static constexpr llvm::StringLiteral ignored[] = {
+        {"footprint"},    {"reads"},          {"writes"},
+        {"linalg.yield"}, {"arith.constant"}, {"iters"}};
     return llvm::is_contained(ignored, name);
+  }
+
+  // The quantities a cost expression may refer to, taken from the op being
+  // costed. Per-operand values are suffixed with the operand number, and the
+  // unsuffixed names alias operand 0.
+  //
+  //   ops      scalar arithmetic the throughput model would have counted
+  //   iters    the linalg iteration space, or 0 for an op with no body
+  //   volumeN  elements in operand N
+  //   bitsN    element bit width of operand N
+  //   bytesN   bytes in operand N
+  //   rankN    rank of operand N
+  //   dN_K     extent of dimension K of operand N
+  static costExpr::VarMap costExprVariables(Operation *op, uint64_t ops,
+                                            uint64_t iters) {
+    costExpr::VarMap vars;
+    vars["ops"] = (double)ops;
+    vars["iters"] = (double)iters;
+    for (auto [i, ty] : llvm::enumerate(op->getOperandTypes())) {
+      auto shaped = llvm::dyn_cast<ShapedType>(ty);
+      if (!shaped)
+        continue;
+      unsigned bits = shaped.getElementType().getIntOrFloatBitWidth();
+      double volume = 1;
+      for (auto dim : shaped.getShape())
+        volume *= (double)dim;
+      auto n = std::to_string(i);
+      vars["volume" + n] = volume;
+      vars["bits" + n] = (double)bits;
+      vars["bytes" + n] = volume * bits / 8.0;
+      vars["rank" + n] = (double)shaped.getRank();
+      for (auto [k, dim] : llvm::enumerate(shaped.getShape()))
+        vars["d" + n + "_" + std::to_string(k)] = (double)dim;
+      if (i == 0) {
+        vars["volume"] = volume;
+        vars["bits"] = (double)bits;
+        vars["bytes"] = volume * bits / 8.0;
+        vars["rank"] = (double)shaped.getRank();
+      }
+    }
+    return vars;
+  }
+
+  // Evaluate a model-supplied cycle count, or report why it could not be.
+  std::optional<uint64_t> evaluateCostExpr(Operation *op, llvm::StringRef text,
+                                           uint64_t ops, uint64_t iters) {
+    auto vars = costExprVariables(op, ops, iters);
+    auto result = costExpr(text).evaluate(vars);
+    if (!result) {
+      op->emitOpError(llvm::toString(result.takeError()));
+      return std::nullopt;
+    }
+    if (*result < 0) {
+      op->emitOpError("cost expression \"")
+          << text << "\" evaluated to " << *result << "; cycles cannot be "
+          << "negative";
+      return std::nullopt;
+    }
+    return (uint64_t)std::llround(*result);
+  }
+
+  // A model-supplied cycle expression for this op and datatype, if any.
+  std::optional<std::string> kernelCycleExpr(device &d, Operation *op) {
+    auto name = air::to_string(op);
+    if (!d.kernels.count(name))
+      return std::nullopt;
+    auto dt = getElementTypeAsString(op->getOperandTypes()[0]);
+    auto &exprs = d.kernels[name]->cycle_exprs;
+    auto it = exprs.find(dt);
+    if (it == exprs.end())
+      return std::nullopt;
+    return it->second;
   }
 
   uint64_t getComputeCostFromCostModel(device &d, Operation *op) {
     uint64_t compute_op_cost = 0;
     auto opCounts = xilinx::air::CostModel().getOpCounts(op);
+    uint64_t iters = 0;
+    for (auto &p : opCounts.map)
+      if (std::get<0>(p) == "iters")
+        iters = std::get<1>(p);
+
+    // A model that supplies an expression has described the cost completely:
+    // it replaces the op count, the rate and the efficiency, and an op it
+    // prices is not one the throughput model is guessing at, so nothing is
+    // reported as unpriced either.
+    if (auto expr = kernelCycleExpr(d, op)) {
+      uint64_t ops = 0;
+      for (auto &p : opCounts.map)
+        if (isPricedScalarOp(std::get<0>(p)))
+          ops += std::get<1>(p);
+      if (auto cycles = evaluateCostExpr(op, *expr, ops, iters))
+        return *cycles;
+      return 0;
+    }
+
     uint64_t compute_op_count = 0;
     for (auto &p : opCounts.map) {
       auto name = std::get<0>(p);
@@ -879,7 +988,15 @@ private:
       auto kernel = kernels->getObject(op_sym_name);
       if (kernel) {
         auto kernel_ty = kernel->getObject("datatypes")->getObject(op_datatype);
-        if (kernel_ty && kernel_ty->getNumber("latency")) {
+        if (kernel_ty && kernel_ty->getString("cycles")) {
+          // An expression over the op's operands, for a cost that depends on
+          // the shape or the element width -- which a scalar latency cannot
+          // say, forcing the caller to work it out before the simulation and
+          // hand the runner an answer instead of a model.
+          if (auto v = evaluateCostExpr(op, *kernel_ty->getString("cycles"),
+                                        /*ops=*/0, /*iters=*/0))
+            cycles = (double)*v;
+        } else if (kernel_ty && kernel_ty->getNumber("latency")) {
           cycles = *kernel_ty->getNumber("latency");
         } else {
           op->emitOpError("unknown data type ")
