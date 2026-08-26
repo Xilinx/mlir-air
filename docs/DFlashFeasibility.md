@@ -1851,9 +1851,28 @@ Python-unroll to `XN_REFEED*nchunk` (e.g. 6*8=48 for ph0) and
 `GATEUP_REFEED*nchunk` (e.g. 32*8=256 for ph2) separate static ops each --
 hundreds of new, individually small, order-sensitive launch-scope puts,
 which is exactly the class of change that has taken multiple device
-iterations to get right every other time this session touched `rmsX`. Left
-as the next session's starting point, with the sequence above as the
-blueprint, rather than rushed into a single large diff.
+iterations to get right every other time this session touched `rmsX`.
+
+**Checked, not assumed: there is no way to fold the regen phases into fewer
+ops.** The tempting shortcut -- fetch the whole row (or whole band) ONCE per
+refeed via a bigger static op, instead of once per chunk -- does not reduce
+`xb`'s L1 footprint at all: L1 usage is set by the buffer's DECLARED size,
+not by how often it gets refilled, so refilling a `[BATCH][K]`-typed buffer
+`XN_REFEED` times costs exactly what it costs today. And folding the refeed
+count itself into a BD dimension (a stride-0 "repeat" dimension) has no room:
+covering one `_RMS_DMA_CHUNK`-safe sweep of `K` already spends all 3 of a
+core tile's BD dimensions (chunk-subdivision, batch, element) -- there is no
+4th slot for a repeat dimension, and batch/element can't merge with it (rows
+are `K`-strided apart in DDR, not contiguous with the chunk sub-tiling). The
+per-chunk-per-refeed fetch count is inherent to keeping `xb` genuinely small,
+not an implementation shortcut this session missed.
+
+Kernel prerequisites for all six phases are now built (`rms_chunk_banded_aie`,
+`residual_acc_row_banded_aie`, `rms_scale_row_partial_banded_aie` -- each a
+thin wrapper giving the shared logic a band-sized MLIR type, since
+`func.call` needs an exact type match and one symbol can't carry two
+declared signatures). Left as the next session's starting point, with the
+sequence above as the blueprint, rather than rushed into a single large diff.
 
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
