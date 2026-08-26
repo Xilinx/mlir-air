@@ -245,20 +245,33 @@ class Channel:
 
     def _emit(self, obj, indices, dependency, direction):
         from ._trace import current_herd, current_launch, current_segment
+        from ._value import Tensor, TensorSlice
         from .ops import _check_dependency, _endpoint
 
         _check_dependency(dependency)
         self._declare()
-        endpoint = _endpoint(obj, f"channel.{direction}", "argument")
+
+        # Decide placement from the type alone, and resolve the endpoint only
+        # once the insertion point is final. `_endpoint` materialises a tensor
+        # slice's offset arithmetic where it is called, so resolving it here
+        # would emit an affine.apply outside the launch on the re-entry path
+        # below, and then a second one inside -- leaving the first orphaned at
+        # func scope.
+        tensor = (
+            obj.tensor
+            if isinstance(obj, TensorSlice)
+            else obj if isinstance(obj, Tensor) else None
+        )
+        what = "tensor slice" if isinstance(obj, TensorSlice) else "tensor"
 
         # Where an L3 endpoint may sit, from three measurements rather than
         # one; see the module docstring.
-        if endpoint.tensor is not None:
+        if tensor is not None:
             try:
                 current_launch()
             except RuntimeError:
                 raise RuntimeError(
-                    f"air.channel.{direction} on an L3 {endpoint.what} has to be "
+                    f"air.channel.{direction} on an L3 {what} has to be "
                     "inside an air.launch: reaching L3 needs a shim DMA "
                     "allocation, and outside a launch the compiler has none to "
                     f"link to (it fails with \"'air.channel.{direction}' op failed "
@@ -270,7 +283,7 @@ class Channel:
                 and current_segment(required=False) is None
             ):
                 raise RuntimeError(
-                    f"air.channel.{direction} on an L3 {endpoint.what} inside a "
+                    f"air.channel.{direction} on an L3 {what} inside a "
                     "herd body needs an air.segment around that herd: the shim "
                     "DMA allocation is the segment's, and without one aircc does "
                     "not diagnose it but crashes, in air-dependency, on a "
@@ -280,39 +293,35 @@ class Channel:
                     "fine with no segment at all."
                 )
 
-        idx = self._indices(indices, direction)
-
-        if direction == "get" and endpoint.tensor is not None:
+        if direction == "get" and tensor is not None:
             # Same rule ops.store applies: being written from the device is what
             # makes a tensor an output, which fixes the calling convention.
-            endpoint.tensor.is_output = True
+            tensor.is_output = True
 
         from air.dialects.air import ChannelGet, ChannelPut
 
         op = ChannelGet if direction == "get" else ChannelPut
 
-        def build(ep=endpoint):
-            offsets, sizes, strides = ep.pattern or ([], [], [])
+        def build():
+            # Resolved here, not above, so that both the endpoint's offset
+            # arithmetic and the bundle indices are emitted at whichever
+            # insertion point this op ends up at. Opening or re-entering the
+            # launch's region also rebinds each tensor to that region's block
+            # argument, so an endpoint captured outside would still name the
+            # function's, and air.channel.put would fail to verify with "using
+            # value defined outside the region".
+            endpoint = _endpoint(obj, f"channel.{direction}", "argument")
+            offsets, sizes, strides = endpoint.pattern or ([], [], [])
             return op(
                 self.name,
-                ep.value,
+                endpoint.value,
                 offsets=offsets,
                 sizes=sizes,
                 strides=strides,
-                indices=idx,
+                indices=self._indices(indices, direction),
             )
 
-        def build_rebound():
-            # Re-resolved because opening or re-entering the launch's region
-            # rebinds each tensor to that region's block argument: an endpoint
-            # captured outside still names the function's, and air.channel.put
-            # then fails to verify with "using value defined outside the
-            # region". Only on that path -- resolving twice would also
-            # re-materialise the offset arithmetic, and every channel op that is
-            # already inside the region must keep emitting exactly what it did.
-            return build(_endpoint(obj, f"channel.{direction}", "argument"))
-
-        if endpoint.tensor is None:
+        if tensor is None:
             return Token(build())
 
         # An L3 endpoint has to sit inside the launch, which is what brings the
@@ -329,8 +338,26 @@ class Channel:
             # Already inside the region; nothing will be rebound.
             return Token(build())
 
+        # Stepping back into the launch moves the op, and with it the offset
+        # arithmetic, inside an IsolatedFromAbove region. A constant travels;
+        # anything derived from a coordinate or a loop variable does not,
+        # because that value was created out here. Emitting it anyway produces
+        # "'affine.apply' op using value defined outside the region", which
+        # reads as a DSL bug rather than as the shape of the program.
+        if isinstance(obj, TensorSlice) and any(o.terms for o in obj.offsets):
+            raise RuntimeError(
+                f"air.channel.{direction} on an L3 tensor slice whose offset is "
+                "computed from a coordinate or loop variable cannot sit after "
+                "an air.segment at launch scope: the op has to move inside "
+                "air.launch to reach a shim DMA allocation, and the value the "
+                "offset is built from was created outside it. Either move this "
+                f"{direction} inside the segment, where the offset and the "
+                "transfer are in the same region, or put it before the segment, "
+                "which opens the launch around both."
+            )
+
         built = []
-        in_launch_body(lambda: built.append(build_rebound()))
+        in_launch_body(lambda: built.append(build()))
         return Token(built[0])
 
     # -- public ------------------------------------------------------------
