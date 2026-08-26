@@ -1653,6 +1653,161 @@ const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
 const int AIE2_STRIDE_UPPER_BOUND = 1048576;
 const int AIE2_DIM_COUNT = 4;
 
+// Largest divisor of `n` that is at most `limit` (0 if none, i.e. limit < 1).
+static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
+  for (int64_t d = std::min(n, limit); d >= 1; d--)
+    if (n % d == 0)
+      return d;
+  return 0;
+}
+
+// Re-partition the outermost run of dims so that fewer shim BDs get unrolled
+// out of it.
+//
+// tileIllegalWrapDim splits an over-long dim into exactly two factors, then
+// hands everything past AIE2_DIM_COUNT to the affine.for unroller below, which
+// costs one shim BD per iteration. Splitting a single dim can leave a partition
+// that is legal but needlessly fine-grained, because it never reconsiders the
+// dims NEXT to the one it split. gelu_and_mul at 4096x10240 (Gemma-3-4B's GeGLU
+// at padded prefill 4096) is the case that motivated this: the airrt descriptor
+// [512, 2, 8, 640] x [81920, 40960, 640, 1] becomes [16, 32, 2, 8, 640], i.e.
+// sixteen BDs each covering only 32*2 = 64 of a 1024-step outer walk. Sixteen
+// is a shim tile's entire budget, so the design fails to compile.
+//
+// Adjacent dims where strides[j] == strides[j+1] * wraps[j+1] describe ONE
+// logical extent walked at the run's innermost stride, so the run can be
+// re-partitioned freely without changing which addresses are touched. Picking
+// the pair that MAXIMIZES the per-BD volume -- subject to the position-0 wrap
+// bound, the position-1 wrap bound, and the stride ceiling on the dim built out
+// of it -- turns the example into [2, 32, 16, 8, 640]: the same transfer in two
+// BDs instead of sixteen.
+//
+// Only ever applied when the list is already over AIE2_DIM_COUNT (so BDs were
+// going to be unrolled regardless) and only when it strictly reduces the unroll
+// count without lengthening the list, so it cannot make a working design worse.
+static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
+                                    SmallVector<OpFoldResult> &wraps,
+                                    SmallVector<OpFoldResult> &strides,
+                                    OpBuilder &builder) {
+  if (wraps.size() <= (size_t)AIE2_DIM_COUNT)
+    return;
+  SmallVector<int64_t> w, s;
+  for (auto [wrap, stride] : llvm::zip_equal(wraps, strides)) {
+    auto cw = getConstantIntValue(wrap);
+    auto cs = getConstantIntValue(stride);
+    if (!cw || !cs)
+      return;
+    w.push_back(*cw);
+    s.push_back(*cs);
+  }
+  // Maximal run of mergeable dims starting at the outermost.
+  unsigned runEnd = 0;
+  while (runEnd + 1 < w.size() && s[runEnd] == s[runEnd + 1] * w[runEnd + 1])
+    runEnd++;
+  unsigned runLen = runEnd + 1;
+  if (runLen < 2)
+    return;
+  // Every dim the run swallows must sit at a known offset 0; re-partitioning
+  // one that does not would move the base address. Offsets past the run are
+  // carried over untouched and so may be anything.
+  for (unsigned j = 0; j <= runEnd; j++) {
+    auto off = getConstantIntValue(offsets[j]);
+    if (!off || *off != 0)
+      return;
+  }
+
+  int64_t runStride = s[runEnd];
+  // A run reaching the contiguous innermost dim would need the shim's inner
+  // element-alignment rule applied to the re-split; leave those alone.
+  if (runStride <= 1)
+    return;
+  int64_t runExtent = 1;
+  for (unsigned j = 0; j <= runEnd; j++)
+    runExtent *= w[j];
+
+  // wraps[0] of the emitted BD must fit the position-0 bound; the dim built on
+  // top of the innermost factor must keep its stride under the ceiling.
+  const int64_t maxOuter = AIE2_WRAP_UPPER_BOUNDS[0] - 1;
+  const int64_t maxInner =
+      std::min<int64_t>(AIE2_WRAP_UPPER_BOUNDS[1] - 1,
+                        (int64_t)AIE2_STRIDE_UPPER_BOUND / runStride);
+  int64_t bestOuter = 0, bestInner = 0, bestVolume = 0;
+  for (int64_t inner = std::min(runExtent, maxInner); inner >= 1; inner--) {
+    if (inner * maxOuter <= bestVolume)
+      break; // cannot beat the incumbent from here down
+    if (runExtent % inner)
+      continue;
+    int64_t outer = largestDivisorUpTo(runExtent / inner, maxOuter);
+    if (outer * inner > bestVolume) {
+      bestVolume = outer * inner;
+      bestOuter = outer;
+      bestInner = inner;
+    }
+  }
+  if (!bestVolume)
+    return;
+
+  int64_t unrollCount = runExtent / bestVolume;
+
+  // Candidate leading dims: the unroll counter (dropped when it is 1) plus the
+  // pair, followed by whatever the run did not cover.
+  SmallVector<int64_t> newW, newS;
+  if (unrollCount > 1) {
+    newW.push_back(unrollCount);
+    newS.push_back(runStride * bestVolume);
+  }
+  newW.push_back(bestOuter);
+  newS.push_back(runStride * bestInner);
+  newW.push_back(bestInner);
+  newS.push_back(runStride);
+  for (unsigned j = runLen; j < w.size(); j++) {
+    newW.push_back(w[j]);
+    newS.push_back(s[j]);
+  }
+
+  // Validate the descriptor the unroller will actually emit. It peels leading
+  // dims until AIE2_DIM_COUNT remain, so the positional wrap bounds and the
+  // stride ceiling apply to the TAIL of the list -- the dim that ends up at BD
+  // position 0 is not necessarily the outer factor chosen above (with an unroll
+  // count of 1 the pair shifts left by one and the inner factor lands there).
+  auto bdStartOf = [](size_t n) -> unsigned {
+    return n > (size_t)AIE2_DIM_COUNT ? n - AIE2_DIM_COUNT : 0;
+  };
+  auto bdCount = [&](ArrayRef<int64_t> ws) {
+    int64_t bds = 1;
+    for (unsigned j = 0, e = bdStartOf(ws.size()); j < e; j++)
+      bds *= ws[j];
+    return bds;
+  };
+  auto isLegalBd = [&](ArrayRef<int64_t> ws, ArrayRef<int64_t> ss) {
+    unsigned bdStart = bdStartOf(ws.size());
+    for (unsigned j = bdStart; j < ws.size(); j++)
+      if (ws[j] >= AIE2_WRAP_UPPER_BOUNDS[j - bdStart] ||
+          ss[j] > AIE2_STRIDE_UPPER_BOUND)
+        return false;
+    return true;
+  };
+  if (!isLegalBd(newW, newS))
+    return; // candidate is not a legal descriptor
+  if (bdCount(newW) >= bdCount(w))
+    return; // no improvement over what the split already produced
+
+  // The run's own dims were all at offset 0 (checked above); the dims past it
+  // keep the offsets they had.
+  SmallVector<OpFoldResult> tailOffsets(offsets.begin() + runLen,
+                                        offsets.end());
+  unsigned newLeading = newW.size() - (w.size() - runLen);
+  wraps.clear();
+  strides.clear();
+  offsets.clear();
+  for (unsigned j = 0; j < newW.size(); j++) {
+    wraps.push_back(builder.getI64IntegerAttr(newW[j]));
+    strides.push_back(builder.getI64IntegerAttr(newS[j]));
+    offsets.push_back(j < newLeading ? builder.getI64IntegerAttr(0)
+                                     : tailOffsets[j - newLeading]);
+  }
+}
+
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   // Linear shim BDs (contiguous row-major + optional outer dummies/repeat)
   // use the wide buffer_length register and bypass the per-dim 10-bit limit.
@@ -1743,6 +1898,10 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       i++;
     }
   }
+
+  // The split above factors one dim at a time, which can leave more BDs to
+  // unroll below than the shim's descriptor limits actually require.
+  minimizeUnrolledBdCount(offsets, wraps, strides, builder);
 
   // Unroll highest dimensions of wrap and stride, if the new dimension count
   // goes beyond 4.
