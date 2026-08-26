@@ -1,0 +1,80 @@
+{
+  "clock": 1000000000,
+  "devicename": "bitserial",
+  "datatypes": [
+    {
+      "name": "i8",
+      "bytes": 1
+    },
+    {
+      "name": "i4",
+      "bytes": 1
+    }
+  ],
+  "compute_model": {
+    "kernel_invocation_overhead": 0
+  },
+  "kernels": {
+    "linalg.matmul": {
+      "name": "linalg.matmul",
+      "datatypes": {
+        "i8": {
+          "cycles": "ceildiv(volume1, 4096) * (4 + 12*bits1)"
+        },
+        "i4": {
+          "cycles": "ceildiv(volume1, 4096) * (4 + 12*bits1)"
+        }
+      }
+    }
+  },
+  "dus": {
+    "count": [
+      1,
+      1
+    ],
+    "memory": {
+      "memory_space": "L2",
+      "bytes": 1048576
+    },
+    "ports": {
+      "outbound": {
+        "count": 4,
+        "bytes_per_second": 4000000000
+      },
+      "inbound": {
+        "count": 4,
+        "bytes_per_second": 4000000000
+      }
+    },
+    "tiles": {
+      "count": [
+        1,
+        1
+      ],
+      "memory": {
+        "memory_space": "L1",
+        "bytes": 65536
+      },
+      "ports": {
+        "outbound": {
+          "count": 2,
+          "bytes_per_second": 4000000000
+        },
+        "inbound": {
+          "count": 2,
+          "bytes_per_second": 4000000000
+        }
+      }
+    }
+  },
+  "noc": {
+    "outbound": {
+      "count": 4,
+      "bytes_per_second": 4000000000
+    },
+    "inbound": {
+      "count": 4,
+      "bytes_per_second": 4000000000
+    }
+  }
+}

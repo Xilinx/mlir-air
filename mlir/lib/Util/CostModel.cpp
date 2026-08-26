@@ -111,6 +111,9 @@ void CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
     m.second = m.second * iters;
 
   map.map.insert({"footprint", footprint});
+  // The iteration space itself, for cost expressions that are a function of
+  // the op's shape rather than of its scalar op count.
+  map.map.insert({"iters", iters});
 
   return;
 }
