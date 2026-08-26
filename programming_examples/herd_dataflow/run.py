@@ -25,10 +25,12 @@ Three differences from the predecessor worth naming:
   ``memref.load``/``memref.store`` loop over all 4096 elements. The copy in
   herd_1 is now vectorised at the same 16 lanes as the add, where the
   predecessor moved one element per iteration.
-* The per-column L2 staging is a Python ``for`` rather than an ``scf.forall``
-  with two hand-built ``AffineMap``s per iteration. Both end up as
-  NUM_COLUMNS independent transfers; writing it out is what lets the offsets be
-  plain arithmetic on the loop variable.
+* The per-column L2 staging is ``air.parallel``, which emits the same
+  ``scf.forall`` the predecessor built by hand -- minus the two ``AffineMap``s
+  per iteration, since the offsets are plain arithmetic on the loop variable.
+  It is deliberately *not* a Python ``for``: that unrolls, and four independent
+  shim DMAs is a different design from one fan-out sharing a set of buffer
+  descriptors. It does not fit on npu1 at all.
 * The tile origin comes from the launch coordinates directly, instead of
   ``affine_apply``-ing ``mul_m_l2_map`` and ``mul_n_l2_map`` to them and
   threading the results down.
