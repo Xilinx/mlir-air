@@ -40,7 +40,6 @@ from air.ir import (
     AffineMapAttr,
     AffineSymbolExpr,
     BF16Type,
-    BoolAttr,
     F32Type,
     IntegerAttr,
     IntegerType,
@@ -133,10 +132,11 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8):
         l1_ms = IntegerAttr.get(T.i32(), MemorySpace.L1)
         l2_ms = IntegerAttr.get(T.i32(), MemorySpace.L2)
 
-        # Allocate the partial buffer as a 32-lane (CASCADE_WIDTH-style) buffer
-        # and pass a subview-cast to the M_TILE-shaped kernel — matches the
-        # matvec_int4_packed_add layout so air-shrink-memref-sizes-by-access
-        # rewrites the kernel signature consistently across all stitched calls.
+        # The partial buffer is declared 32 lanes wide to match the
+        # matvec_int4_packed_add layout, and a subview-cast is passed to the
+        # M_TILE-shaped kernel. There is no cascade here, so nothing reads past
+        # lane M_TILE and air-shrink-memref-sizes-by-access shrinks the buffer
+        # back down to M_TILE, folding the subview away.
         CASCADE_WIDTH = 32
         packed_l2 = MemRefType.get([tile_bytes], i8_ty, memory_space=l2_ms)
         packed_l1 = MemRefType.get([tile_bytes], i8_ty, memory_space=l1_ms)
@@ -373,9 +373,6 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8):
                         )
                         for outer in for_(M_div):
                             l1_partial_op = AllocOp(partial_full_ty, [], [])
-                            l1_partial_op.attributes["air.shrinkage"] = BoolAttr.get(
-                                False
-                            )
                             l1_partial_slice_strided = subview(
                                 l1_partial_op.result, [0], [M_TILE], [1]
                             )
