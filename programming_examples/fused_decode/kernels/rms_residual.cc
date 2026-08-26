@@ -317,6 +317,64 @@ void residual_acc_row_aie(bf16 *restrict acc, bf16 *restrict x, int t, int off,
   }
 }
 
+// ---- RMS_BAND_STREAM level 3 (not yet wired in) ---------------------------
+// rms_chunk / residual_acc_row above take a MODEL_DIM-strided `x`/`acc` --
+// correct only while the resident buffer is the whole row. Level 3 shrinks it
+// to one band, fetched fresh per call, so both need an n-strided variant
+// instead: the buffer passed in IS the band, already offset to start at 0, so
+// no MODEL_DIM stride and no extra `c*n`/`off` term on that side.
+
+/// rms_chunk, but `x` is a fresh [batch][n] band fetch (row_stride=n) instead
+/// of an offset into a MODEL_DIM-strided resident row. `w` is unchanged: the
+/// norm weight stays fully resident regardless of level, so its `c*n` offset
+/// into the whole K-wide weight is still correct.
+static inline void rms_chunk_banded(bf16 *restrict y, bf16 *restrict x,
+                                    const bf16 *restrict w,
+                                    const float *restrict scales, int batch,
+                                    int c, int n) {
+  constexpr int vector_size = 16;
+  const bf16 *w_base = w + c * n;
+  for (int t = 0; t < batch; t++) {
+    const bf16 *it_x = x + t * n;
+    const bf16 *it_w = w_base;
+    bf16 *it_y = y + t * n;
+    const float s = scales[t];
+    for (int i = 0; i < n / vector_size; i++) {
+      aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+      aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
+      aie::vector<float, vector_size> wx_vec = aie::mul(x_vec, w_vec);
+      aie::vector<bf16, vector_size> o_vec = aie::mul(wx_vec, s);
+      aie::store_v(it_y, o_vec);
+      it_x += vector_size;
+      it_w += vector_size;
+      it_y += vector_size;
+    }
+  }
+}
+
+void rms_chunk_banded_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                          float *restrict scales, int batch, int c, int n) {
+  rms_chunk_banded(y, x, w, scales, batch, c, n);
+}
+
+/// residual_acc_row_aie, but `acc` is the fresh [batch][n] band fetch being
+/// accumulated into (row_stride=n, offset 0 -- the caller's fetch already
+/// selected the right band, so there is no separate `off` term). `x` (the
+/// projection round data) is unchanged, already n-strided.
+void residual_acc_row_banded_aie(bf16 *restrict acc, bf16 *restrict x, int t,
+                                 int n) {
+  constexpr int vector_size = 16;
+  bf16 *it_a = acc + t * n;
+  bf16 *it_x = x + t * n;
+  for (int i = 0; i < n / vector_size; i++) {
+    aie::vector<bf16, vector_size> a_vec = aie::load_v<vector_size>(it_a);
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+    aie::store_v(it_a, aie::add(a_vec, x_vec));
+    it_a += vector_size;
+    it_x += vector_size;
+  }
+}
+
 // MLIR-managed-lock decode (q4nx_decode_repro): pure-compute leaves that let
 // the rms core's lock/control-flow live in the aie.core body (explicit
 // aie.use_lock) instead of inside rms_residual()'s in-kernel
