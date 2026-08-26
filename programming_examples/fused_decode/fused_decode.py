@@ -1588,19 +1588,24 @@ def build_module():
         # overwritten by the next one. See the HIDDEN_TAPS comment above.
         # DECODE_BATCH: B token embeddings in, token-major.
         #
-        # RMS_BAND_STREAM>=3 (not yet built as of this constant -- see the
-        # assert on RMS_BAND_STREAM above) appends ONE extra BATCH*K slot,
-        # reused every layer as scratch: the intra-layer round-trip for the
-        # post-residual1 hidden state `h`, needed again for ph2's norm once
-        # `xb` no longer stays resident across the attention gap. Not a new
-        # channel (the rms core's S2MM0 is already at its 4-packet-id limit
-        # -- see docs/DFlashFeasibility.md) -- `rmsX`/`layerOut` address this
-        # slot at a SECOND offset, the same way HIDDEN_TAPS's per-layer slots
-        # already work.
-        _X_SCRATCH_SLOTS = 1 if RMS_BAND_STREAM >= 3 else 0
-        x_l3 = MemRefType.get(
-            [(X_SLOTS + _X_SCRATCH_SLOTS) * BATCH * K], bf16
-        )  # RAW input activation
+        # RMS_BAND_STREAM>=3 (not yet built) does NOT need a separate scratch
+        # slot, on reflection: without HIDDEN_TAPS, _x_in() == _x_out() (the
+        # in-place chain), so residual1's intra-layer write of `h` can land
+        # at _x_in()'s own address, in place, exactly like the WHOLE-buffer
+        # write the unbanded design already does -- just one band at a time
+        # instead of all of them. ph2/residual2 then re-read/re-write that
+        # SAME address. No new DDR region, no new addressing scheme, and the
+        # rms core's already-full packet-id budget is never in question.
+        # Refuse the ONE case this doesn't cover instead of silently
+        # producing a design that corrupts a HIDDEN_TAPS tap.
+        if RMS_BAND_STREAM >= 3 and HIDDEN_TAPS:
+            raise SystemExit(
+                "RMS_BAND_STREAM>=3 with DECODE_HIDDEN_TAPS is not wired: "
+                "level 3 reuses _x_in()'s address as scratch for the "
+                "intra-layer h round-trip, which is only safe when "
+                "_x_in() == _x_out() (HIDDEN_TAPS off)."
+            )
+        x_l3 = MemRefType.get([X_SLOTS * BATCH * K], bf16)  # RAW input activation
         # LM_HEAD build carries the vocab weights (VOCAB_W_BLOCKS q4k blocks) instead
         # of the decode phase weights. Separate compile-time size -> decode IR is
         # byte-identical; the device (CDO) is unchanged (only this DDR memref size +
