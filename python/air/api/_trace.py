@@ -1273,11 +1273,12 @@ def alloc(shape, dtype, scope=None, vector=None):
         )
     if space == "L1" and loop_depth():
         raise NotImplementedError(
-            "air.alloc inside an air.sequential body is not supported: the herd "
-            "frees its buffers once the body is finished, which is outside the "
-            "loop, so the dealloc would not be dominated by its alloc. Hoist the "
-            "allocation above the loop -- the buffer is reused across trips, "
-            "which is what a loop is for."
+            "air.alloc inside an air.sequential or ops.branch body is not "
+            "supported: the herd frees its buffers once the body is finished, "
+            "which is outside the region, so the dealloc would not be dominated "
+            "by its alloc. Hoist the allocation above it -- a loop reuses the "
+            "buffer across trips, which is what a loop is for, and a buffer only "
+            "some cores read still costs the same L1 on every core."
         )
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since

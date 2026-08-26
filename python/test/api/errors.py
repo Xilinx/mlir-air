@@ -561,7 +561,7 @@ def _():
 # CHECK-LABEL: TEST: alloc_inside_sequential
 # The herd frees its buffers after the body, which is outside the loop, so the
 # dealloc would not be dominated by its alloc.
-# CHECK: NotImplementedError: air.alloc inside an air.sequential body is not supported
+# CHECK: NotImplementedError: air.alloc inside an air.sequential or ops.branch body
 @expect(NotImplementedError, "alloc_inside_sequential")
 def _():
     def body(h, tx, ty, A, B, C):
@@ -1998,5 +1998,127 @@ def _():
         s = air.alloc([64, 1], bf16, scope=h.private())
         out = air.alloc([64], bf16, scope=h.private())
         out[:] = ops.reduce_add(a[:] * s[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: a_condition_has_no_truth_value
+# `if tx == 0:` is the trap ops.branch exists to close. A herd body is traced
+# once for the whole herd, so Python has to pick one branch for every core --
+# and would, silently, if Condition let itself be coerced.
+# CHECK: TypeError: the truth of (t0 == 0) is not known at trace time
+# CHECK-SAME: with ops.branch(t0 == 0)
+@expect(TypeError, "a_condition_has_no_truth_value")
+def _():
+    def body(h, tx, ty, A, B, C):
+        if tx == 0:
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: conditions_have_no_and
+# `and` cannot be reached at all -- it coerces through __bool__ -- so the
+# bitwise operator is the one worth naming a replacement for.
+# CHECK: NotImplementedError: air.api has no `&` on a condition
+# CHECK-SAME: Conjunction is nesting
+@expect(NotImplementedError, "conditions_have_no_and")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch((tx == 0) & (ty == 0)):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: when_takes_a_comparison_not_a_bool
+# A Python bool decides at trace time whether the region exists at all, which
+# is what a plain `if` already does; accepting one here would make the two
+# spellings look interchangeable when they are not.
+# CHECK: TypeError: ops.branch takes a comparison between index expressions
+@expect(TypeError, "when_takes_a_comparison_not_a_bool")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch(True):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: elsewhere_before_the_where_body
+# otherwise() names the else of a region that has been opened. Reaching for it
+# first is a sign the two `with` blocks were written the wrong way round.
+# CHECK: RuntimeError: otherwise() on an ops.branch whose region was never opened
+@expect(RuntimeError, "elsewhere_before_the_where_body")
+def _():
+    def body(h, tx, ty, A, B, C):
+        branch = ops.branch(tx == 0)
+        with branch.otherwise():
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: two_elsewhere_regions
+# An scf.if has one else. A second would silently discard the first.
+# CHECK: RuntimeError: ops.branch(t0 == 0) already has an otherwise() region
+@expect(RuntimeError, "two_elsewhere_regions")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch(tx == 0) as branch:
+            pass
+        with branch.otherwise():
+            pass
+        with branch.otherwise():
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: alloc_inside_a_branch
+# The herd frees its buffers after the body, outside the region, so the dealloc
+# would not be dominated by the alloc. It is also the wrong instinct: L1 is
+# charged per core whether or not that core's branch runs.
+# CHECK: NotImplementedError: air.alloc inside an air.sequential or ops.branch body
+@expect(NotImplementedError, "alloc_inside_a_branch")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch(tx == 0):
+            air.alloc([64], bf16, scope=h.private())
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: select_with_a_branch_condition
+# The two conditionals cannot be told apart by name, so the one place a caller
+# can be told which they wanted is the moment they have picked. select decides
+# per element; a tile coordinate is the same for every element the core touches.
+# CHECK: TypeError: air.api.ops.select got (t0 == 0), a comparison between *index* expressions
+# CHECK-SAME: that is ops.branch's condition
+# CHECK-SAME: with ops.branch(t0 == 0)
+@expect(TypeError, "select_with_a_branch_condition")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.select(tx == 0, a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: branch_with_a_select_condition
+# And the reverse. A branch is taken once per core, so it cannot depend on what
+# is in the buffer -- different elements would need different branches.
+# CHECK: TypeError: ops.branch takes a comparison between index expressions
+# CHECK-SAME: elementwise comparison on buffer *data*
+# CHECK-SAME: ops.select(cond, a[:], b[:])
+@expect(TypeError, "branch_with_a_select_condition")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        with ops.branch(a[:] >= b[:]):
+            pass
 
     _trace(body)

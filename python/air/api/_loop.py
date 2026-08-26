@@ -25,7 +25,13 @@ here would only defer the failure into the IR.
 
 from ._index import IndexExpr
 
-__all__ = ["sequential", "loop_depth", "aborted_loops"]
+__all__ = [
+    "sequential",
+    "loop_depth",
+    "aborted_loops",
+    "enter_region",
+    "exit_region",
+]
 
 # Loops whose body exited early (break / return / an exception the caller
 # swallowed). Emission still closes the region so the IR stays well formed, but
@@ -65,6 +71,20 @@ def exit_body(previous):
 
 def aborted_loops():
     return _ABORTED
+
+
+def enter_region():
+    """Count one more open nested region (a loop body, or an ``ops.branch``)."""
+    global _DEPTH
+    _DEPTH += 1
+
+
+def exit_region(aborted):
+    """Close it, recording whether its body ran to the end."""
+    global _DEPTH, _ABORTED
+    _DEPTH -= 1
+    if aborted:
+        _ABORTED += 1
 
 
 def sequential(start, stop=None, step=None, name=None):

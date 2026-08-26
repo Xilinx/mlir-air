@@ -34,6 +34,12 @@ it is actually linear in, and it keeps the whole expression a single
 Genuinely non-affine combinations -- leaf * leaf, and floordiv/mod by a
 coordinate -- are rejected with an explicit error rather than silently
 degraded.
+
+The six comparison operators are *not* index arithmetic: they do not return an
+:class:`IndexExpr` but a :class:`Condition`, the operand of ``ops.branch``. That
+is the same trade numpy makes with ``a == b``, and it has the same consequence
+-- ``if tx == 0:`` is not a Python branch and must not silently behave like
+one, so :class:`Condition` refuses ``bool()``.
 """
 
 __all__ = ["IndexExpr", "Leaf", "DerivedLeaf", "coerce_index", "materialize_index"]
@@ -200,6 +206,47 @@ class IndexExpr:
 
     def __rmod__(self, other):
         return coerce_index(other)._divide(self, "mod")
+
+    # -- comparison ---------------------------------------------------------
+
+    # These return a Condition rather than a bool, so IndexExpr stops being
+    # hashable by the default rule. Nothing keys a dict on one -- the
+    # coefficient map is keyed on Leaf/DerivedLeaf, which have their own
+    # __hash__ -- but identity hashing is the pre-existing behaviour and there
+    # is no reason to take it away.
+    __hash__ = object.__hash__
+
+    def _compare(self, other, predicate, symbol):
+        from ._cond import Condition
+
+        try:
+            other = coerce_index(other)
+        except TypeError:
+            # Not an index at all -- an Ellipsis, a slice, a buffer. Deferring
+            # to Python rather than raising is what keeps `Ellipsis in key`
+            # working inside a subscript: `==` against something incomparable
+            # is False, not an error, and only the ordering operators (which
+            # have no such fallback) go on to raise.
+            return NotImplemented
+        return Condition(self, other, predicate, symbol)
+
+    def __eq__(self, other):
+        return self._compare(other, "eq", "==")
+
+    def __ne__(self, other):
+        return self._compare(other, "ne", "!=")
+
+    def __lt__(self, other):
+        return self._compare(other, "slt", "<")
+
+    def __le__(self, other):
+        return self._compare(other, "sle", "<=")
+
+    def __gt__(self, other):
+        return self._compare(other, "sgt", ">")
+
+    def __ge__(self, other):
+        return self._compare(other, "sge", ">=")
 
     # -- queries ------------------------------------------------------------
 

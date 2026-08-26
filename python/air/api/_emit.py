@@ -711,4 +711,22 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
             )
         return _result(op(recur(node.args[0]), recur(node.args[1])))
 
+    if node.kind == "reduce":
+        # Reached only when a reduction is *nested*: emit_elementwise dispatches
+        # a top-level one to _emit_reduce before the walk ever starts. It has no
+        # emission here because it cannot have one -- a reduction collapses the
+        # innermost axis, so its result has a different shape from the operands
+        # around it, and the surrounding loop nest is built over a single shape.
+        # Without this the walk fell through to the AssertionError below, which
+        # named an internal node kind rather than the mistake.
+        spelling = "reduce_max" if node.op == "max" else "reduce_add"
+        raise NotImplementedError(
+            f"air.api.ops.{spelling} cannot nest inside a larger expression: it "
+            "collapses the innermost axis, so its result has a different shape "
+            "from the operands around it, and one loop nest cannot span both. "
+            "Assign the reduction first, then use the result:\n"
+            f"    tmp[:] = ops.{spelling}(a[:])\n"
+            "    out[:] = tmp[:] + b[:]"
+        )
+
     raise AssertionError(f"unknown expression node kind {node.kind!r}")

@@ -48,6 +48,7 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       api/__init__.py
       api/_channel.py
       api/_compile.py
+      api/_cond.py
       api/_emit.py
       api/_extern.py
       api/_index.py
