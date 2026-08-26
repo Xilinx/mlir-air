@@ -5,39 +5,33 @@
 //
 //===----------------------------------------------------------------------===//
 
-// XFAIL: *
-// AIE1 only. mlir-aie has dropped AIE1 support, and this lowers a multi-pass
-// transfer, which needs a repeat count AIE1 has no register for -- rejected
-// since mlir-aie#3577 added verifyDMARepeatCount. Before that the count was
-// silently dropped by the AIE1 backend, so the transfer ran once instead of
-// twice; the verifier made an existing miscompile visible.
-// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
+// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=2 col-offset=0 device=npu1" %s | FileCheck %s
 
-// CHECK-LABEL:   aie.device(xcvc1902) @herd_0 {
-// CHECK-DAG:   %[[VAL_2:.*]] = aie.tile(5, 3)
-// CHECK-DAG:   %[[VAL_3:.*]] = aie.tile(6, 3)
-// CHECK-DAG:   %[[VAL_4:.*]] = aie.tile(5, 4)
-// CHECK-DAG:   %[[VAL_5:.*]] = aie.tile(6, 4)
-// CHECK-COUNT-6:    aie.lock(%[[VAL_2]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-6:    aie.lock(%[[VAL_3]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-6:    aie.lock(%[[VAL_4]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-6:    aie.lock(%[[VAL_5]], {{.*}}) {init = 0 : i32}
+// CHECK-LABEL:   aie.device(npu1) @herd_0 {
+// CHECK-DAG:   %[[VAL_2:.*]] = aie.tile(0, 2)
+// CHECK-DAG:   %[[VAL_3:.*]] = aie.tile(1, 2)
+// CHECK-DAG:   %[[VAL_4:.*]] = aie.tile(0, 3)
+// CHECK-DAG:   %[[VAL_5:.*]] = aie.tile(1, 3)
+// CHECK-COUNT-8:    aie.lock(%[[VAL_2]], {{.*}}) {init = {{[0-2]}} : i32}
+// CHECK-COUNT-8:    aie.lock(%[[VAL_3]], {{.*}}) {init = {{[0-2]}} : i32}
+// CHECK-COUNT-8:    aie.lock(%[[VAL_4]], {{.*}}) {init = {{[0-2]}} : i32}
+// CHECK-COUNT-8:    aie.lock(%[[VAL_5]], {{.*}}) {init = {{[0-2]}} : i32}
 // CHECK-COUNT-5:    aie.buffer(%[[VAL_5]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK-COUNT-5:    aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK-COUNT-5:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK-COUNT-5:    aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:   aie.mem(%[[VAL_5]])
 // CHECK:   aie.core(%[[VAL_5]]) {
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
@@ -47,16 +41,16 @@
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
@@ -66,16 +60,16 @@
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_3]])
 // CHECK:   aie.core(%[[VAL_3]])
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
@@ -85,16 +79,16 @@
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_2]])
 // CHECK:   aie.core(%[[VAL_2]])
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:     scf.for
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
-// CHECK:       aie.use_lock({{.*}}, Acquire, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       linalg.matmul
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
@@ -179,7 +173,7 @@ module {
         scf.reduce.return %12 : !air.async.token
       }
     }
-    %10 = air.herd @herd_0 async [%async_token_0]  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) attributes {id = 1 : i32, x_loc = 5 : i64, y_loc = 3 : i64} {
+    %10 = air.herd @herd_0 async [%async_token_0]  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) attributes {id = 1 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
       %c64_1 = arith.constant 64 : index
       %c0_2 = arith.constant 0 : index
       %c512_3 = arith.constant 512 : index
