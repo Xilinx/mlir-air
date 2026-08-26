@@ -144,15 +144,27 @@ def _broadcast_offset(shape, dst_shape):
     return offset
 
 
-def _is_broadcast(shape, dst_shape):
-    """Does reading ``shape`` as ``dst_shape`` actually stretch anything?"""
-    return tuple(shape) != tuple(dst_shape)
+def _pins_an_axis(shape, dst_shape):
+    """Does reading ``shape`` as ``dst_shape`` pin one of its axes to 0?
+
+    Deliberately narrower than "is this a broadcast". An operand short of
+    *leading* axes -- a [16] bias against an [8, 16] tile -- is stretched
+    without any axis it actually has being pinned, because a missing axis
+    contributes no index at all. Only an axis that exists and is 1 against a
+    wider destination needs the constant.
+
+    The condition is the negation of the one in ``_leaf_index``, and is written
+    that way on purpose: the two must agree, or a constant is emitted that
+    nothing uses, or -- worse -- used before it is emitted.
+    """
+    offset = _broadcast_offset(shape, dst_shape)
+    return any(extent != dst_shape[i + offset] for i, extent in enumerate(shape))
 
 
 def _zero_index_if(needed):
     """An index-typed 0 for the pinned axes of a broadcast, or None.
 
-    Conditional so that a kernel with no broadcast in it emits no constant, and
+    Conditional so that a kernel that pins nothing emits no constant, and
     therefore the same IR it emitted before broadcasting existed.
     """
     return _result(arith.ConstantOp(IndexType.get(), 0)) if needed else None
@@ -452,7 +464,7 @@ def _emit_vector(dst, expr, width):
     # Hoisted above the nest, like the padding constants, so a broadcast costs
     # one constant for the whole kernel rather than one per trip.
     zero = _zero_index_if(
-        any(_is_broadcast(leaf.shape, shape) for leaf in expr.leaves())
+        any(_pins_an_axis(leaf.shape, shape) for leaf in expr.leaves())
     )
 
     def load(buf, ivs, region):
@@ -490,7 +502,7 @@ def _emit_scalar(dst, expr):
     bounds = [(0, extent, 1) for extent in shape]
 
     zero = _zero_index_if(
-        any(_is_broadcast(leaf.shape, shape) for leaf in expr.leaves())
+        any(_pins_an_axis(leaf.shape, shape) for leaf in expr.leaves())
     )
 
     def load(buf, ivs, region):

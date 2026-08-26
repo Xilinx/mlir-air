@@ -95,7 +95,17 @@ def innermost_axis_is_a_scalar_load_and_a_splat():
 # read with an ordinary transfer_read -- but from a rank-1 memref, indexed by
 # the *inner* induction variable alone. That is the bias vector in
 # broadcast_bias_add, which the predecessor reached via a subview.
-# CHECK: scf.for %[[I:.*]] = %c0{{.*}} to %c8
+#
+# An operand short of *leading* axes is stretched without any axis it actually
+# has being pinned -- a missing axis contributes no index at all -- so this case
+# must emit no pinned-zero constant either. Same shape of check as
+# no_broadcast_emits_no_pinned_index below: the padding value is immediately
+# followed by the loop bounds.
+# CHECK: %[[PAD:.*]] = arith.constant 0.0{{.*}} : bf16
+# CHECK-NEXT: arith.constant 0 : index
+# CHECK-NEXT: arith.constant 8 : index
+# CHECK-NEXT: arith.constant 1 : index
+# CHECK-NEXT: scf.for %[[I:.*]] = %c0{{.*}} to %c8
 # CHECK: scf.for %[[J:.*]] = %c0{{.*}} to %c16
 # CHECK-DAG: vector.transfer_read %{{[a-z_0-9]+}}[%[[I]], %[[J]]]{{.*}}memref<8x16xbf16, 2 : i32>, vector<16xbf16>
 # CHECK-DAG: vector.transfer_read %{{[a-z_0-9]+}}[%[[J]]]{{.*}}memref<16xbf16, 2 : i32>, vector<16xbf16>
