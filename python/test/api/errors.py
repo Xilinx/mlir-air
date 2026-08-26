@@ -1109,12 +1109,25 @@ def _():
 
 
 # CHECK-LABEL: TEST: channel_type_unsupported
-# Accepting channel_type and ignoring it would compile a cascade request as a
-# DMA stream -- the silent-wrongness this package exists to avoid.
-# CHECK: NotImplementedError: air.api does not implement channel_type=
+# npu_cascade is implemented now, because it is the one type this package can
+# gate on hardware. The rest are still refused: accepting channel_type and
+# ignoring it would compile an mmio request as a DMA stream, which is the
+# silent-wrongness this package exists to avoid, and each of them has its own
+# lowering and verifier rules.
+# CHECK: NotImplementedError: air.channel(channel_type='npu_mmio') is not implemented
 @expect(NotImplementedError, "channel_type_unsupported")
 def _():
-    air.channel("C", channel_type="npu_cascade")
+    air.channel("C", channel_type="npu_mmio")
+
+
+# CHECK-LABEL: TEST: channel_type_with_broadcast
+# A cascade is a point-to-point link between neighbouring cores, so there is
+# nothing for a broadcast shape to describe and asking for both is a mistake
+# about what the channel is rather than a combination to resolve.
+# CHECK: ValueError: air.channel takes broadcast_shape= or channel_type=, not both
+@expect(ValueError, "channel_type_with_broadcast")
+def _():
+    air.channel("C", size=[2], broadcast_shape=[4], channel_type="npu_cascade")
 
 
 # CHECK-LABEL: TEST: channel_indices_without_size
@@ -1158,13 +1171,22 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: channel_l3_needs_segment
-# Reaching L3 needs a shim DMA allocation, which only a segment brings. Measured
-# on npu1: the same design with its put hoisted out of the segment fails in
-# air-to-aie with "failed to link to any shim dma allocation", so this raises at
-# the call site instead, naming the fix.
-# CHECK: RuntimeError: air.channel.put on an L3 tensor has to be inside an air.segment
-@expect(RuntimeError, "channel_l3_needs_segment")
+# CHECK-LABEL: TEST: channel_l3_in_a_herd_needs_segment
+# Where an L3 endpoint may sit is three separate facts, and this rule used to
+# state only one of them -- "it needs a segment" -- which was both too weak and
+# too strong. Measured:
+#
+#   * outside air.launch entirely: "failed to link to any shim dma allocation";
+#   * at launch scope with no segment: fine, and data_transfer_transpose/channel
+#     is written that way and passes on npu1;
+#   * inside a herd with no segment: aircc does not diagnose it, it *crashes*,
+#     on a dependencyGraph index assertion in air-dependency.
+#
+# This pins the third. Crashing the compiler is the worst of the three failure
+# modes to inherit, so it raises at the call site with both ways out.
+# CHECK: RuntimeError: air.channel.put on an L3 tensor inside a herd body needs an air.segment
+# CHECK-SAME: dependencyGraph index assertion
+@expect(RuntimeError, "channel_l3_in_a_herd_needs_segment")
 def _():
     ch = air.channel("C")
 

@@ -71,9 +71,11 @@ def _as_dims(value, what):
 class Channel:
     """A named channel; ``put`` and ``get`` move data through it."""
 
-    __slots__ = ("name", "size", "broadcast_shape", "_declared")
+    __slots__ = ("name", "size", "broadcast_shape", "channel_type", "_declared")
 
-    def __init__(self, name, size=None, broadcast_shape=None, **unsupported):
+    def __init__(
+        self, name, size=None, broadcast_shape=None, channel_type=None, **unsupported
+    ):
         if not isinstance(name, str) or not name:
             raise TypeError(
                 "air.channel(name) takes the channel's symbol name, e.g. "
@@ -109,6 +111,25 @@ class Channel:
                     )
 
         self.name = name
+        # Only the cascade type is implemented, because it is the only one this
+        # package can gate: matrix_vector_multiplication/bf16_cascade runs it on
+        # npu1. The others each have their own lowering and verifier rules --
+        # see _UNSUPPORTED -- and adding them blind would be a channel that
+        # compiles as something other than what was asked for.
+        if channel_type is not None and channel_type != "npu_cascade":
+            raise NotImplementedError(
+                f"air.channel(channel_type={channel_type!r}) is not implemented; "
+                f"{_UNSUPPORTED['channel_type']}. Only 'npu_cascade' is "
+                "available, and the default (npu_dma_stream) is what you get by "
+                "leaving channel_type off."
+            )
+        if channel_type is not None and broadcast_shape is not None:
+            raise ValueError(
+                "air.channel takes broadcast_shape= or channel_type=, not both: "
+                "a cascade is a point-to-point link between neighbouring cores, "
+                "so there is nothing for a broadcast shape to describe."
+            )
+        self.channel_type = channel_type
         self._declared = False
 
     def __repr__(self):
@@ -130,6 +151,7 @@ class Channel:
             return
         from air.ir import InsertionPoint
         from air.dialects.air import Channel as ChannelOp
+        from air.dialects.air import channel as channel_decl
 
         from ._trace import active_trace
 
@@ -151,11 +173,17 @@ class Channel:
             # The enclosing func always follows, so there is a next sibling.
             ip = InsertionPoint(ops[last + 1])
         with ip:
-            ChannelOp(
-                self.name,
-                size=self.size,
-                broadcast_shape=self.broadcast_shape,
-            )
+            if self.channel_type is None:
+                ChannelOp(
+                    self.name,
+                    size=self.size,
+                    broadcast_shape=self.broadcast_shape,
+                )
+            else:
+                # The generated builder rather than the extension class: only
+                # it carries channel_type, and only the extension class carries
+                # broadcast_shape, which a typed channel is not allowed anyway.
+                channel_decl(self.name, size=self.size, channel_type=self.channel_type)
         self._declared = True
 
     def _indices(self, indices, direction):
@@ -216,46 +244,121 @@ class Channel:
         return out
 
     def _emit(self, obj, indices, dependency, direction):
-        from ._trace import current_segment
+        from ._trace import current_herd, current_launch, current_segment
+        from ._value import Tensor, TensorSlice
         from .ops import _check_dependency, _endpoint
 
         _check_dependency(dependency)
         self._declare()
-        endpoint = _endpoint(obj, f"channel.{direction}", "argument")
 
-        # An L3 endpoint needs the shim DMA allocation that only a segment
-        # brings; see the module docstring for the measurement.
-        if endpoint.tensor is not None and current_segment(required=False) is None:
-            raise RuntimeError(
-                f"air.channel.{direction} on an L3 {endpoint.what} has to be inside "
-                "an air.segment: reaching L3 needs a shim DMA allocation, "
-                "and outside a segment the compiler has none to link to (it "
-                f"fails with \"'air.channel.{direction}' op failed to link to any "
-                'shim dma allocation"). Wrap the body in '
-                "`with air.segment(...) as seg:` and move it there."
-            )
+        # Decide placement from the type alone, and resolve the endpoint only
+        # once the insertion point is final. `_endpoint` materialises a tensor
+        # slice's offset arithmetic where it is called, so resolving it here
+        # would emit an affine.apply outside the launch on the re-entry path
+        # below, and then a second one inside -- leaving the first orphaned at
+        # func scope.
+        tensor = (
+            obj.tensor
+            if isinstance(obj, TensorSlice)
+            else obj if isinstance(obj, Tensor) else None
+        )
+        what = "tensor slice" if isinstance(obj, TensorSlice) else "tensor"
 
-        offsets, sizes, strides = endpoint.pattern or ([], [], [])
-        idx = self._indices(indices, direction)
+        # Where an L3 endpoint may sit, from three measurements rather than
+        # one; see the module docstring.
+        if tensor is not None:
+            try:
+                current_launch()
+            except RuntimeError:
+                raise RuntimeError(
+                    f"air.channel.{direction} on an L3 {what} has to be "
+                    "inside an air.launch: reaching L3 needs a shim DMA "
+                    "allocation, and outside a launch the compiler has none to "
+                    f"link to (it fails with \"'air.channel.{direction}' op failed "
+                    'to link to any shim dma allocation"). Open one with '
+                    "`with air.launch(...) as launch:` and move it there."
+                ) from None
+            if (
+                current_herd(required=False) is not None
+                and current_segment(required=False) is None
+            ):
+                raise RuntimeError(
+                    f"air.channel.{direction} on an L3 {what} inside a "
+                    "herd body needs an air.segment around that herd: the shim "
+                    "DMA allocation is the segment's, and without one aircc does "
+                    "not diagnose it but crashes, in air-dependency, on a "
+                    "dependencyGraph index assertion. Either wrap the herd in "
+                    "`with air.segment(...) as seg:`, or move this "
+                    f"{direction} out to launch scope, where an L3 endpoint is "
+                    "fine with no segment at all."
+                )
 
-        if direction == "get" and endpoint.tensor is not None:
+        if direction == "get" and tensor is not None:
             # Same rule ops.store applies: being written from the device is what
             # makes a tensor an output, which fixes the calling convention.
-            endpoint.tensor.is_output = True
+            tensor.is_output = True
 
         from air.dialects.air import ChannelGet, ChannelPut
 
         op = ChannelGet if direction == "get" else ChannelPut
-        return Token(
-            op(
+
+        def build():
+            # Resolved here, not above, so that both the endpoint's offset
+            # arithmetic and the bundle indices are emitted at whichever
+            # insertion point this op ends up at. Opening or re-entering the
+            # launch's region also rebinds each tensor to that region's block
+            # argument, so an endpoint captured outside would still name the
+            # function's, and air.channel.put would fail to verify with "using
+            # value defined outside the region".
+            endpoint = _endpoint(obj, f"channel.{direction}", "argument")
+            offsets, sizes, strides = endpoint.pattern or ([], [], [])
+            return op(
                 self.name,
                 endpoint.value,
                 offsets=offsets,
                 sizes=sizes,
                 strides=strides,
-                indices=idx,
+                indices=self._indices(indices, direction),
             )
-        )
+
+        if tensor is None:
+            return Token(build())
+
+        # An L3 endpoint has to sit inside the launch, which is what brings the
+        # shim DMA allocation. In a gridless launch that region is opened
+        # lazily, so a put that runs *before* the first segment is what opens
+        # it, and a get that drains the result afterwards has to step back in --
+        # data_transfer_transpose/channel does both, around the segment rather
+        # than within it. Without this they land at func scope and the compiler
+        # reports "failed to link to any shim dma allocation".
+        from ._trace import in_launch_body
+
+        launch = current_launch()
+        if launch.opened and launch.reentry is None:
+            # Already inside the region; nothing will be rebound.
+            return Token(build())
+
+        # Stepping back into the launch moves the op, and with it the offset
+        # arithmetic, inside an IsolatedFromAbove region. A constant travels;
+        # anything derived from a coordinate or a loop variable does not,
+        # because that value was created out here. Emitting it anyway produces
+        # "'affine.apply' op using value defined outside the region", which
+        # reads as a DSL bug rather than as the shape of the program.
+        if isinstance(obj, TensorSlice) and any(o.terms for o in obj.offsets):
+            raise RuntimeError(
+                f"air.channel.{direction} on an L3 tensor slice whose offset is "
+                "computed from a coordinate or loop variable cannot sit after "
+                "an air.segment at launch scope: the op has to move inside "
+                "air.launch to reach a shim DMA allocation, and the value the "
+                "offset is built from was created outside it. Either move this "
+                f"{direction} inside the segment, where the offset and the "
+                "transfer are in the same region, or put it before the segment, "
+                "which opens the launch around both."
+            )
+
+        built = []
+        in_launch_body(lambda: built.append(build()))
+        return Token(built[0])
 
     # -- public ------------------------------------------------------------
 
@@ -296,6 +399,12 @@ def _reject_unsupported(kwargs):
         raise NotImplementedError(f"air.api does not implement {key}=: {what}")
 
 
-def channel(name, size=None, broadcast_shape=None, **unsupported):
+def channel(name, size=None, broadcast_shape=None, channel_type=None, **unsupported):
     """Declare a named channel; ``put`` into it and ``get`` out of it."""
-    return Channel(name, size=size, broadcast_shape=broadcast_shape, **unsupported)
+    return Channel(
+        name,
+        size=size,
+        broadcast_shape=broadcast_shape,
+        channel_type=channel_type,
+        **unsupported,
+    )

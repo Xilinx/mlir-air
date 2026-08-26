@@ -177,8 +177,8 @@ def active_trace():
     return _ACTIVE_TRACE
 
 
-def current_herd():
-    if _CURRENT_HERD is None:
+def current_herd(required=True):
+    if _CURRENT_HERD is None and required:
         raise RuntimeError(
             "this operation must be used inside a herd body (@herd.body)"
         )
@@ -203,11 +203,19 @@ class LaunchState:
     at the plain `func` + `air.herd` shape its hand-written predecessors have.
     """
 
-    __slots__ = ("ctx", "opened", "coords", "leaves")
+    __slots__ = ("ctx", "opened", "coords", "leaves", "reentry")
 
     def __init__(self, ctx):
         self.ctx = ctx
         self.opened = False
+        # Where to put work traced *after* the region closed, for a gridless
+        # launch. Such a launch is opened lazily around the first thing that
+        # needs it, so everything after that -- a second segment, a channel get
+        # draining the result -- would otherwise be emitted at func scope, as a
+        # sibling of the launch instead of a child.
+        # (block, tensor block-argument values); None while the region is open,
+        # and for a launch with a grid, which stays open for the whole body.
+        self.reentry = None
         # This launch's coordinates, as expressions handed to the body, plus the
         # leaves behind them. A nested IsolatedFromAbove region rebinds each
         # leaf's .value to its own block argument.
@@ -236,6 +244,9 @@ def open_launch_region(launch, tensors, counts, body):
     operands start at index 4.
     """
     from air.dialects.air import launch as launch_region
+    from air.ir import InsertionPoint
+
+    closed = []
 
     @launch_region(sizes=counts, operands=[t.value for t in tensors])
     def launch_body(*largs):
@@ -247,11 +258,59 @@ def open_launch_region(launch, tensors, counts, body):
         saved = [t.value for t in tensors]
         for t, v in zip(tensors, largs[4:]):
             t.value = v
+        # Captured here, published only once this region closes: while it is
+        # open the ordinary insertion point is already right, and the block has
+        # no terminator to insert ahead of yet.
+        closed.append((InsertionPoint.current.block, list(largs[4:])))
         try:
             body()
         finally:
             for t, v in zip(tensors, saved):
                 t.value = v
+
+    if closed:
+        launch.reentry = closed[0]
+
+
+def in_launch_body(emit):
+    """Run ``emit()`` inside air.launch's region, opening or re-entering it.
+
+    Everything that has to live inside the launch goes through here: a segment,
+    and an L3 channel endpoint, which needs the shim DMA allocation the launch
+    brings. Three cases, and the third is the one that used to be missing:
+
+    * the launch carries a grid, so its region is open for the whole body and
+      the current insertion point is already right;
+    * it is gridless and nothing has needed it yet, so open it now, lazily --
+      which is what keeps a kernel that stages nothing at the plain ``func`` +
+      ``air.herd`` shape its hand-written predecessors have;
+    * it is gridless and was already opened *and closed* around something
+      earlier, so step back into its block, ahead of the terminator, with the
+      tensors rebound to its block arguments.
+    """
+    launch = current_launch()
+    if not launch.opened:
+        # One point, 2-D as air.launch requires.
+        open_launch_region(launch, active_trace().tensors, [1, 1], emit)
+        return
+    if launch.reentry is None:
+        emit()
+        return
+
+    from air.ir import InsertionPoint
+
+    block, arg_values = launch.reentry
+    terminator = block.operations[len(block.operations) - 1]
+    tensors = active_trace().tensors
+    saved = [t.value for t in tensors]
+    for t, v in zip(tensors, arg_values):
+        t.value = v
+    try:
+        with InsertionPoint(terminator):
+            emit()
+    finally:
+        for t, v in zip(tensors, saved):
+            t.value = v
 
 
 def infer_name(fallback, depth=2):
@@ -758,20 +817,11 @@ class SegmentContext:
                 )
             )
 
-        launch = current_launch()
-        if launch.opened:
-            # air.launch is already open -- either because it carries a grid, or
-            # because an earlier segment opened it.
-            self._emit_segment(fn, trace)
-        else:
-            # A gridless launch still has to exist for a segment to sit in:
-            # air-insert-launch-around-herd only wraps a *bare* herd, and skips
-            # one already inside a segment, so a segment with no launch above it
-            # compiles and silently computes zeros. One point, 2-D as air.launch
-            # requires.
-            open_launch_region(
-                launch, trace.tensors, [1, 1], lambda: self._emit_segment(fn, trace)
-            )
+        # A gridless launch still has to exist for a segment to sit in:
+        # air-insert-launch-around-herd only wraps a *bare* herd, and skips one
+        # already inside a segment, so a segment with no launch above it
+        # compiles and silently computes zeros.
+        in_launch_body(lambda: self._emit_segment(fn, trace))
 
     def _emit_segment(self, fn, trace):
         """Emit air.segment inside the already-open air.launch."""
