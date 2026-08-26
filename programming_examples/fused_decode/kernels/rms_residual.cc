@@ -240,6 +240,20 @@ void rms_scale_row_finalize_aie(float *restrict scales, int t, int _arm) {
   scales[t] = divrms;
 }
 
+/// rms_scale_row_partial_aie with row_stride == off == n -- i.e. `x` is a
+/// fresh, tightly-packed [batch][n] band fetch, not an offset into a
+/// MODEL_DIM-strided resident row. Its own symbol (not the same one called
+/// with row_stride=n, off=0) purely so the MLIR-level FuncOp declaration can
+/// give it a band-sized memref type distinct from rms_scale_row_partial_aie's
+/// whole-row one -- func.call requires the two to match exactly, and one
+/// symbol can't have two declared signatures. Mirrors
+/// rms_chunk_banded_aie/residual_acc_row_banded_aie's existing split.
+void rms_scale_row_partial_banded_aie(float *restrict scales,
+                                      bf16 *restrict x, int t, int n,
+                                      int first, int _arm) {
+  rms_scale_row_partial_aie(scales, x, t, n, 0, n, first, _arm);
+}
+
 /// One chunk of the normalized batch, for every row:
 ///   y[t*n + i] = x[t*MODEL_DIM + c*n + i] * w[c*n + i] * scales[t]
 /// Call once per chunk per re-broadcast round; `y` is then put on @xnorm whole.
