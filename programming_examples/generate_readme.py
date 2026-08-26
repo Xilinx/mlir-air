@@ -828,7 +828,11 @@ def render_llm_prefill_sweep(recs, base_url=""):
     legend = "\n\n".join(
         note
         for marker, note in (
-            ("—", "— not built at this length."),
+            # Both cases that produce a dash: a length this model was not swept
+            # at (no point at all), and one listed in --expect-fail, which
+            # sweep_prefill.py publishes as status "expected_fail" with the real
+            # cause in `detail`. Anything else that failed is ✗.
+            ("—", "— not swept at this length, or an expected failure."),
             ("✗", "✗ unexpected failure."),
         )
         if marker in markers

@@ -101,6 +101,7 @@ def run_point(args, length, logdir):
     cmd += list(args.make_var or ())
 
     pt = {"prefill_len": length}
+    timed_out = False
     try:
         r = subprocess.run(
             cmd, capture_output=True, text=True, timeout=args.timeout, env=env
@@ -111,10 +112,14 @@ def run_point(args, length, logdir):
         out = (e.stdout or "") + (e.stderr or "")
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
+        rc, timed_out = -1, True
+
+    # Write the log before any early return: a timeout is the failure mode most
+    # in need of its output, and it used to be the one mode that discarded it.
+    (logdir / f"prefill_L{length}.log").write_text(out)
+    if timed_out:
         pt["status"] = "timeout"
         return pt, out
-
-    (logdir / f"prefill_L{length}.log").write_text(out)
 
     # Guard the axis before reading any number off it: a driver that built its
     # engines at some other length still prints a perfectly parseable TTFT, and
@@ -176,10 +181,17 @@ def main():
     for length in lengths:
         print(f"[sweep_prefill] {args.model_name} L={length} ...", flush=True)
         pt, _ = run_point(args, length, logdir)
-        if pt["status"] != "ok" and length in expect_fail:
-            pt["expected"] = True
-        elif pt["status"] != "ok":
-            hard_fail = True
+        if pt["status"] != "ok":
+            if length in expect_fail:
+                # Mirror sweep_decode.py exactly: the published status becomes
+                # "expected_fail" and the real cause moves to `detail`. A
+                # separate boolean would not reach the dashboard -- both
+                # append_history.py and the renderer key off `status`, so an
+                # expected failure would have rendered as an unexpected one.
+                pt["detail"] = pt["status"]
+                pt["status"] = "expected_fail"
+            else:
+                hard_fail = True
         print(f"[sweep_prefill]   {json.dumps(pt)}", flush=True)
         points.append(pt)
 

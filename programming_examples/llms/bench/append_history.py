@@ -113,6 +113,10 @@ def _flat_prefill_sweep_rows(recs, run_id):
                 "prefill_tokens_per_sec": pt.get("prefill_tokens_per_sec"),
                 "first_token_gate": pt.get("first_token_gate", ""),
                 "status": pt.get("status", ""),
+                # An --expect-fail point publishes status "expected_fail"; its
+                # real cause lives here, so the durable series can still answer
+                # "why was this length expected to fail" after the fact.
+                "detail": pt.get("detail", ""),
                 "verify_status": d.get("verify_status", ""),
             }
 

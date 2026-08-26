@@ -103,9 +103,12 @@ def _rms_scratch_specs(seq_len, emb_dim, kv_dim):
     return arrays, inter
 
 
-def _o_ffn_scratch_specs(seq_len, emb_dim, hidden_dim):
-    """Registry-driven f32 C-scratch args for o_ffn's four GEMMs, in builder
-    order (O, Gate, Up, Down). Returns (list_of_scratch_arrays, set_of_indices).
+def _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim):
+    """Registry-driven f32 C-scratch PLAN for o_ffn's four GEMMs, in builder
+    order (O, Gate, Up, Down). Returns (list_of_shapes, set_of_indices) and
+    allocates nothing -- callers that only need the index set must not pay for
+    the arrays, which are up to seq_len*hidden_dim*4 bytes each (64 MB at
+    2048x8192) and would otherwise be built and dropped on every layer call.
 
     The o_ffn twin of _rms_scratch_specs, and it MUST mirror
     build_o_ffn_module's own alloc_gemm_scratch call (same shapes, same order,
@@ -121,7 +124,7 @@ def _o_ffn_scratch_specs(seq_len, emb_dim, hidden_dim):
     o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
     d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
-    arrays, inter = [], set()
+    shapes, inter = [], set()
     nxt = 15
     for spec, cols in (
         (o_spec, emb_dim),
@@ -130,10 +133,10 @@ def _o_ffn_scratch_specs(seq_len, emb_dim, hidden_dim):
         (d_spec, emb_dim),  # down
     ):
         if spec["needs_f32_scratch"]:
-            arrays.append(np.zeros((seq_len, cols), dtype=np.float32))
+            shapes.append((seq_len, cols))
             inter.add(nxt)
             nxt += 1
-    return arrays, inter
+    return shapes, inter
 
 
 # Each kernel config is defined as a dict with:
@@ -462,7 +465,7 @@ def run_transformer_block(
     _offn_key = f"o_ffn_L{layer_idx}"
     # o_ffn layout: all outward buffers bf16 (the fused-cast GEMM's own cast
     # launch writes bf16); output arg14; then one f32 C-scratch arg per
-    # fused-cast GEMM from arg15, per the registry (see _o_ffn_scratch_specs).
+    # fused-cast GEMM from arg15, per the registry (see _o_ffn_scratch_plan).
     if _offn_key not in _arg_cache:
         # First call: build all arrays and cache static/intermediate ones
         offn_args = [
@@ -487,8 +490,10 @@ def run_transformer_block(
             np.zeros(n_total, dtype=bfloat16),  # output_buf (arg14)
         ]
         # arg15..: per-GEMM f32 C-scratch, only for the fused-cast ones.
-        _offn_scratch, _ = _o_ffn_scratch_specs(seq_len, emb_dim, hidden_dim)
-        offn_args.extend(_offn_scratch)
+        offn_args.extend(
+            np.zeros(shape, dtype=np.float32)
+            for shape in _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim)[0]
+        )
         _arg_cache[_offn_key] = offn_args
     cached_args = _arg_cache[_offn_key]
     cached_args[0] = np.asarray(attn_out, dtype=bfloat16).reshape(seq_len, emb_dim)
@@ -500,8 +505,11 @@ def run_transformer_block(
     cached_args[3] = x_bf16.reshape(seq_len, emb_dim).astype(bfloat16, copy=False)
 
     _out_idx = 14
-    _, _offn_scratch_inter = _o_ffn_scratch_specs(seq_len, emb_dim, hidden_dim)
-    _inter = {2, 4, 6, 8, 10, 11, 13, 14} | _offn_scratch_inter
+    # Index set only -- _o_ffn_scratch_plan allocates nothing, so this stays a
+    # registry lookup (itself cached) rather than tens of MB of churn per call.
+    _inter = {2, 4, 6, 8, 10, 11, 13, 14} | _o_ffn_scratch_plan(
+        seq_len, emb_dim, hidden_dim
+    )[1]
     results = cache.load_and_run(
         "o_ffn",
         _o_ffn_run_backend(),
@@ -612,10 +620,13 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # arg13: down
             np.zeros(n_total, dtype=bfloat16),  # arg14: output
         ]
-        offn_scratch, offn_scratch_inter = _o_ffn_scratch_specs(
+        offn_scratch_shapes, offn_scratch_inter = _o_ffn_scratch_plan(
             seq_len, emb_dim, hidden_dim
         )
-        offn_args.extend(offn_scratch)  # arg15..: f32 C-scratch, fused-cast only
+        # arg15..: f32 C-scratch, fused-cast GEMMs only.
+        offn_args.extend(
+            np.zeros(shape, dtype=np.float32) for shape in offn_scratch_shapes
+        )
         _arg_cache[f"o_ffn_L{layer_idx}"] = offn_args
         cache.load_and_run(
             "o_ffn",
