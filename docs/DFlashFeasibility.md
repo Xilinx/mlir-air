@@ -1631,7 +1631,69 @@ points that also carried the per-layer term.
 the shape the block-size argument assumed. Every term above is measured at two
 batches only, so the batch-16 column below is an extrapolation and marked as one.
 
-#### The loop, with the LM head charged to the draft [measured + extrapolated]
+#### Item 11 started: the two-pass scale kernel is validated [measured]
+
+Item 13 (the 3.65x gap) and item 11 (qwen3-4b cannot batch at all) are
+independent; work moved to item 11 since qwen3-4b's ceiling is the harder
+constraint to leave unaddressed.
+
+**The plan (see "So the residual has to leave L1" above): stop holding the
+whole `[BATCH][K]` residual resident, round-trip it band by band through DDR
+on the existing `rmsX`/`layerOut` channels.** Two things had to be true for
+this to work, and only one is built so far.
+
+**Built and validated: the per-row scale can be computed a band at a time.**
+`rms_rsqrt` needs a sum-of-squares over the WHOLE row, which a banded design
+can't compute from one band alone. `rms_scale_row_partial_aie` (accumulates
+one band's contribution) + `rms_scale_row_finalize_aie` (closes it out with
+the existing fast-inverse-sqrt tail) replace that in two kernel calls instead
+of one. Landed behind `RMS_BAND_STREAM` (default off), with `xb` still the
+full resident buffer for now -- this validates the two-pass ARITHMETIC in
+isolation from the harder DMA change below. Gated:
+
+- Off, batch-1 AND batch-8/7 IR is byte-identical to before this work started
+  (checked by hand against the pre-item-11 commit; an unused FuncOp
+  declaration still prints a line, so the declarations themselves are gated
+  on the flag too, not just their call sites).
+- On, llama-3.2-1b batch 8 (below today's ceiling of 9, so this isolates "does
+  the new scale path work" from "does it unlock a new ceiling"): compiles
+  clean through `aircc`, no verifier errors. On device, `spec_accept.py
+  --batch 8 --blocks 3`: **8/8 accepted on every block, identical to the
+  unbanded baseline** -- the two-pass scale produces the same greedy
+  decisions as the one-pass `rms_scale_row_aie`. No hang; the lock-credit
+  signature this exact restructuring has hit four times before did not
+  reappear, because the new calls stayed inside the existing single-op-per-
+  loop shape (`_accumulate`'s and `_rms_batched_norm`'s established pattern)
+  rather than duplicating a channel op across `scf.if` arms.
+
+**Not built yet: shrinking `xb` itself.** This needs `xb` to become one
+`STG_W`-wide band, round-tripped through DDR at four points in the layer
+(ph0 read, residual1 write-back, ph2 read, residual2/layerOut write) instead
+of staying resident for the whole pass. The scale pre-pass above already
+shows the shape this takes: a full band sweep BEFORE the existing
+refeed-major chunk loop can start, because the consumer side (`@xnorm`'s
+projection cores) reads refeed-major/chunk-minor and can't be reordered to
+band-major without breaking their own sequential consumption -- so a band is
+re-fetched from DDR on every refeed visit, not cached across them (this is
+the "168 `@rmsX` band gets/layer" already priced in above; the scale pre-pass
+adds one more full sweep on top of that).
+
+**The blocker found this session: there is no spare packet id for a new
+channel.** The rms core's S2MM0 already carries 4 packet ids at its stated
+limit (`rmsX`, `rmsW`, `rmsW2`, the o-proj/down relay) -- a genuinely NEW
+channel for the intra-layer write-back-then-reread (the intermediate `h`
+after residual1, needed again for ph2's norm) can't be added there. The way
+through is what the earlier estimate called "per-band shim puts from two X
+slots": reuse `rmsX`/`layerOut` themselves, and give the launch-scope
+orchestration (`_x_in()`/`_x_out()`, currently one offset per layer) a SECOND
+offset within the same DDR `X` buffer for the intra-layer scratch round-trip,
+so `layerOut` mid-layer writes `h` to the scratch offset and `rmsX` later
+reads it back from there, while the FINAL write still goes to `_x_out()`
+exactly as today. This is new launch-scope choreography, not just a
+compute-tile change, and is the next thing to design -- with the ordering
+guarantee it needs (the scratch write must land before the later read of it)
+checked against how AIR's dependency pass treats two offsets into the same
+memref, not assumed.
 
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
