@@ -425,9 +425,15 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
         llvm::SetVector<SymbolRefAttr> result;
         auto opSymbolRefAccesses = getAllSymbolRefAccess(o);
         result.insert(opSymbolRefAccesses.begin(), opSymbolRefAccesses.end());
-        if (isa<air::AsyncOpInterface>(o))
+        // A region-holding op uses every symbol its body uses, whether or not
+        // it is itself async. air.herd, air.segment and air.execute all carry
+        // their channel traffic inside the region: the symbol never appears in
+        // the op's own attributes, so stopping at an async op hides it and the
+        // channel-mediated dependence looks like no dependence at all.
+        // Region-less async ops (channel put/get, dma) are unaffected -- their
+        // symbol is already in their attributes and there is nothing to walk.
+        if (o->getNumRegions() == 0)
           return result;
-        // If op isn't an air.async op, then collect symref uses in its regions.
         SmallVector<Region *> regions;
         for (auto &region : o->getRegions())
           regions.push_back(&region);
