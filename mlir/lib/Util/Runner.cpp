@@ -910,9 +910,29 @@ private:
     return (uint64_t)std::llround(*result);
   }
 
+  // Which entry of the model's `kernels` map prices this op.
+  //
+  // The op's name by default, which is enough when an op name identifies the
+  // work. It often does not: the projections of a transformer layer are all a
+  // matvec and cost differently, so keying on "linalg.matvec" gives all of them
+  // one cost and no way to tell them apart. An `air.kernel` attribute names the
+  // entry instead -- the same thing air.custom's symbol does, without giving up
+  // an op that says what it computes.
+  static std::string kernelKeyForOp(Operation *op) {
+    if (auto named = op->getAttrOfType<StringAttr>("air.kernel"))
+      return named.getValue().str();
+    return air::to_string(op);
+  }
+
+  // True when the op asked for a specific entry rather than defaulting to its
+  // name, so a missing entry is a mistake in the model and not silence.
+  static bool namesItsKernel(Operation *op) {
+    return (bool)op->getAttrOfType<StringAttr>("air.kernel");
+  }
+
   // A model-supplied cycle expression for this op and datatype, if any.
   std::optional<std::string> kernelCycleExpr(device &d, Operation *op) {
-    auto name = air::to_string(op);
+    auto name = kernelKeyForOp(op);
     if (!d.kernels.count(name))
       return std::nullopt;
     auto dt = getElementTypeAsString(op->getOperandTypes()[0]);
@@ -968,16 +988,24 @@ private:
 
     if (compute_op_count) {
       auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
+      auto key = kernelKeyForOp(op);
       double ops_per_core_per_cycle = d.default_ops_per_core_per_cycle;
       double efficiency = 1.0f;
-      if (d.kernels.count(air::to_string(op))) {
-        if (d.kernels[air::to_string(op)]->datatypes.count(op_datatype)) {
+      if (d.kernels.count(key)) {
+        if (d.kernels[key]->datatypes.count(op_datatype)) {
           ops_per_core_per_cycle =
-              d.kernels[air::to_string(op)]->datatypes[op_datatype].second;
-          efficiency =
-              d.kernels[air::to_string(op)]->datatypes[op_datatype].first;
-        }
-      }
+              d.kernels[key]->datatypes[op_datatype].second;
+          efficiency = d.kernels[key]->datatypes[op_datatype].first;
+        } else if (namesItsKernel(op))
+          op->emitOpError("names kernel '")
+              << key << "', which the model has, but not for datatype '"
+              << op_datatype << "'";
+      } else if (namesItsKernel(op))
+        // Falling back to the default rate here would price the op at a number
+        // the model never stated, which is the failure this attribute exists to
+        // avoid. An op that named an entry meant it.
+        op->emitOpError("names kernel '")
+            << key << "', which the model does not define";
 
       double ops_per_cycle =
           d.cores_per_kernel_instance * ops_per_core_per_cycle * efficiency;
