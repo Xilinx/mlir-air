@@ -1695,12 +1695,12 @@ guarantee it needs (the scratch write must land before the later read of it)
 checked against how AIR's dependency pass treats two offsets into the same
 memref, not assumed.
 
-#### Level 2 tried: two failures, not yet a fix [measured]
+#### Level 2 tried: three variants, two failure modes, neither a fix [measured]
 
 Level 2 bands the INITIAL `rmsX` read too (`xb` still full-size -- this only
 tests that the launch side's banded feed lands data correctly, before
-attempting the harder scratch round-trip above). Two variants, both compiled
-clean, both tested on device, both wrong in different ways:
+attempting the harder scratch round-trip above). Three variants, all compiled
+clean, all tested on device, none correct:
 
 - **Variant A**: compute-tile side wraps the 4 band gets in an `scf.for` with
   a static trip count. AIR folds this into ONE 3-D `air.channel.get` (`[4, 8,
@@ -1715,17 +1715,44 @@ clean, both tested on device, both wrong in different ways:
   (`ERT_CMD_STATE_TIMEOUT`). The device recovered cleanly afterward -- a
   known-good build ran correctly right after -- so this is the design, not a
   wedged rig.
+- **Variant C**: neither side loops. ONE static 3-D op on BOTH ends (`[4, 8,
+  512]` / `[512, 2048, 1]`, op count 1-vs-1, confirmed in placed.air.mlir) --
+  the same shape AIR folds A's consumer side into anyway, just written that
+  way on the producer side too instead of Python-unrolling to 4. **No hang,
+  WRONG DATA -- and BYTE-IDENTICAL wrong data to variant A**: the same
+  first-mismatch token values at every position, across two producer-side op
+  counts (1 and 4).
 
-Matching the launch side's op COUNT was necessary (variant A's mismatch is a
-real bug) but not sufficient (variant B still fails, differently). This
-doesn't fit the previously-documented lock-credit hazard cleanly: that one
-was about a channel op duplicated across `scf.if` arms, and neither variant
-here has any branch at all -- both sit in a single straight-line body. Left
-open: whether `rmsX` being a PACKET channel (packet-id demux, not a plain
-circuit channel) changes what "matching op count" even means for AIR's lock/
-BD generation. Reading `AIRToAIESchedulingUtils.cpp`'s actual packet-channel
-lowering is the next step before trying a third variant -- two blind guesses
-already cost two device cycles for two different failures.
+C's match to A rules out op-count/synchronization as the cause of the
+wrong-data failure mode: two different producer shapes produced the
+IDENTICAL wrong answer against the same consumer shape, so the bug is
+deterministic and specific to the 3-D descriptor itself, not a race or a
+credit mismatch. A prior theory (the previously-documented lock-credit
+hazard, `getLockValuePair`'s op-instance counting) is now DISPROVEN for this
+case by direct source reading: that mechanism applies to the overload used
+for MEMTILE buffers; `xb` is an L1 (compute-tile) buffer, which goes through
+a DIFFERENT overload that counts distinct buffer INSTANCES, not textual op
+count -- and `xb` is one `AllocOp` reused every way, so its lock credit is
+provably identical (1) whether the get is 1 op or 4. That mechanism does not
+explain variant B's hang either.
+
+**Current leads, unconfirmed:**
+- For the wrong-data failure (A and C): the 3-D `(offsets, sizes, strides)`
+  triple's dimension-order semantics -- whether dimension 0 is outermost or
+  innermost, and whether the L3 (launch/shim) and L1 (compute-tile) lowering
+  paths agree on that convention -- being wrong in the same way regardless of
+  producer op count would explain a deterministic, reproducible bug like this.
+  Reading `AIRToAIEPass.cpp`'s / `AIRRtToNpuPass.cpp`'s actual BD-generation
+  code for both lowering paths is the next step.
+- For variant B's hang: BD chains are grouped per PHYSICAL DMA channel,
+  shared with `rmsW`/`rmsW2`/the o-proj-down relay on `rmsX`'s S2MM0 port --
+  growing `rmsX` from 1 BD to 4 changes its position/length inside that
+  SHARED chain relative to the other three channels' BDs, which A and C
+  (both still 1 BD) do not. Not traced to a confirmed causal chain.
+
+Do not add a fourth variant without reading the BD-generation code first --
+three device cycles have gone to three distinct outcomes without one yet
+landing on the actual mechanism.
 
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they

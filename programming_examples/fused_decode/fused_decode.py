@@ -2708,18 +2708,19 @@ def build_module():
                             if RMS_BAND_STREAM >= 2 and BATCH > 1:
                                 # _rms_batched's compute-tile body is ONE
                                 # shared program for both arms (see its
-                                # docstring): its now-banded rmsX get runs
+                                # docstring): its banded rmsX get runs
                                 # identically whichever arm is active, so this
-                                # arm's feed has to match it band for band too.
+                                # arm's feed has to match it. One static 3-D
+                                # put, matching the compute tile's one 3-D get
+                                # op-for-op -- see the variant-C comment there.
                                 assert K % STG_W == 0
-                                for _c in range(K // STG_W):
-                                    ChannelPut(
-                                        "rmsX",
-                                        X,
-                                        offsets=[_x_final, _c * STG_W],
-                                        sizes=[BATCH, STG_W],
-                                        strides=[K, 1],
-                                    )
+                                ChannelPut(
+                                    "rmsX",
+                                    X,
+                                    offsets=[_x_final, 0, 0],
+                                    sizes=[K // STG_W, BATCH, STG_W],
+                                    strides=[STG_W, K, 1],
+                                )
                             else:
                                 ChannelPut(
                                     "rmsX",
@@ -2848,22 +2849,22 @@ def build_module():
                             # core takes the block in one get and keeps it as
                             # the residual stream for the whole layer.
                             if RMS_BAND_STREAM >= 2:
-                                # Python-unrolled, NOT an AIR for_ -- see
-                                # _feed_wcols: a launch-scope for_ deadlocks the
-                                # shim sequence. Matches the compute tile's
-                                # banded rmsX get band for band (same order,
-                                # same count); xb is still full-size on that
-                                # side too, so this only proves the two ends of
-                                # the banded transfer agree with each other.
+                                # Variant C: ONE static 3-D put, matching the
+                                # compute tile's own single 3-D get op-for-op
+                                # (see _rms_batched) instead of Python-unrolling
+                                # to 4 separate puts (variants A/B, both failed
+                                # on device -- see docs/DFlashFeasibility.md).
+                                # Not a loop either way, so the launch-scope
+                                # for_-deadlocks-the-shim rule (_feed_wcols)
+                                # doesn't enter into it.
                                 assert K % STG_W == 0
-                                for _c in range(K // STG_W):
-                                    ChannelPut(
-                                        "rmsX",
-                                        X,
-                                        offsets=[_x_in(), _c * STG_W],
-                                        sizes=[BATCH, STG_W],
-                                        strides=[K, 1],
-                                    )
+                                ChannelPut(
+                                    "rmsX",
+                                    X,
+                                    offsets=[_x_in(), 0, 0],
+                                    sizes=[K // STG_W, BATCH, STG_W],
+                                    strides=[STG_W, K, 1],
+                                )
                             else:
                                 ChannelPut(
                                     "rmsX",
@@ -5849,52 +5850,84 @@ def build_module():
 
                         xb = AllocOp(rmsb_l1, [], [])
                         if RMS_BAND_STREAM >= 2:
-                            # NOT WORKING YET -- two variants tried on device,
-                            # two distinct failures, neither diagnosed to a fix.
-                            # See "Level 2: two failures, not yet a fix" in
-                            # docs/DFlashFeasibility.md before touching this again.
+                            # NOT WORKING YET -- three variants tried, see "Level
+                            # 2: two failures, not yet a fix" in
+                            # docs/DFlashFeasibility.md before changing this again.
                             #
                             # xb is still full-size here -- this is ONLY meant to
                             # test that the launch side's matching sequence
                             # (_uni_dec) lands data at the right offsets, not
                             # shrinking anything yet.
                             #
-                            # Variant A (a scf.for of 1 get, kept for the record):
-                            # AIR folds a static-trip-count scf.for into ONE 3-D
-                            # BD (confirmed in air_project/placed.air.mlir: one
-                            # `air.channel.get ... [4, 8, 512] [512, 2048, 1]`
-                            # against the launch side's four separate
-                            # `air.channel.put`s). Compiled, ran, NO hang, WRONG
-                            # DATA (0/8 accepted, plausible-looking garbage) --
-                            # one packet-channel op on this end against four on
-                            # the other did not raise an error anywhere.
+                            # Variant A (a scf.for of 1 get): AIR folds a
+                            # static-trip-count scf.for into ONE 3-D BD (confirmed
+                            # in air_project/placed.air.mlir: one
+                            # `air.channel.get ... [4, 8, 512] [512, 2048, 1]`)
+                            # against the launch side's four separate, Python-
+                            # unrolled `air.channel.put`s. NO hang, WRONG DATA
+                            # (0/8 accepted instead of 8/8, plausible-looking
+                            # garbage) -- 1 op against 4 on a packet channel did
+                            # not raise an error anywhere.
                             #
-                            # Variant B (this one): Python-unrolled to match the
-                            # launch side's count 1:1 (4 gets against 4 puts,
-                            # confirmed in placed.air.mlir as 4 separate ops on
-                            # both ends). Compiled, HUNG on device
-                            # (ERT_CMD_STATE_TIMEOUT) -- device recovered cleanly
-                            # after restoring the shipping templates, so this is
-                            # not a corrupted rig, it is this design.
+                            # Variant B (Python-unrolled to 4 gets, matching the
+                            # launch side's op count 1:1): HUNG
+                            # (ERT_CMD_STATE_TIMEOUT); recovered cleanly after
+                            # restoring the shipping templates, so this is the
+                            # design, not a wedged rig.
                             #
-                            # Matching op-count is necessary but was not
-                            # sufficient; something about 4 textual ops naming
-                            # xb (rather than 1 op in a loop) changed the lock
-                            # accounting AIRToAIESchedulingUtils.cpp derives from
-                            # textual occurrence count (see _rms_batched's own
-                            # docstring above) in a way that mattered here even
-                            # though the launch side grew the same way. Reading
-                            # that pass's actual packet-channel BD/lock generation
-                            # is the next step, not another blind variant.
+                            # Read AIRToAIESchedulingUtils.cpp before trying B: the
+                            # `_rms_batched` docstring's lock-credit hazard
+                            # (op-instance counting, `getLockValuePair`'s
+                            # no-air::ChannelOp overload) applies to MEMTILE
+                            # buffers. `xb` is an L1 (compute-tile) buffer, which
+                            # goes through the OTHER overload (takes an
+                            # `air::ChannelOp`) -- that one counts DISTINCT
+                            # BUFFER INSTANCES touched, not textual op count, and
+                            # `xb` is one AllocOp reused by every band either way.
+                            # So B's credit is provably identical to A's (1, not
+                            # 4) -- going 1-op-to-4-op did NOT change xb's lock
+                            # value, and B's hang is not that mechanism. No
+                            # confirmed cause found for B; a real but unconfirmed
+                            # lead is that BD chains are grouped per PHYSICAL DMA
+                            # channel, shared with rmsW/rmsW2/the o-proj-down
+                            # relay on the same S2MM0 port -- growing rmsX from 1
+                            # BD to 4 changes its position/length inside that
+                            # SHARED chain relative to the other three channels'
+                            # BDs, which A (still 1 BD) does not.
+                            #
+                            # Variant C (this one): neither side loops. The
+                            # consumer already gets folded to ONE static 3-D op
+                            # by AIR regardless (that's A); this makes the
+                            # PRODUCER a single static 3-D op too, matching op
+                            # count 1-vs-1 instead of 1-vs-4 -- not a scf.for (so
+                            # the shim-deadlock rule doesn't apply), just one
+                            # ChannelGet call with a 3-D shape, the same pattern
+                            # _xnorm_put already uses with no loop at all.
+                            #
+                            # RESULT: WRONG DATA, and not just "also wrong" --
+                            # BYTE-IDENTICAL wrong logits to variant A's run (same
+                            # first-mismatch token values at every position). Two
+                            # producer-side op counts (1 and 4) against the same
+                            # consumer shape gave the IDENTICAL wrong answer, which
+                            # rules OUT op-count/synchronization as the cause of
+                            # the wrong-data failure mode entirely. The remaining
+                            # suspect is the 3-D (offsets, sizes, strides) triple's
+                            # dimension-order semantics itself -- whether dim 0 is
+                            # outermost or innermost, and whether the L3 (launch/
+                            # shim) and L1 (compute-tile) lowering paths agree on
+                            # that convention -- being wrong in the SAME way
+                            # regardless of op count. Under investigation; do not
+                            # add a variant D without reading
+                            # AIRToAIEPass.cpp's/AIRRtToNpuPass.cpp's actual BD
+                            # generation first.
                             assert K % STG_W == 0
-                            for _cx in range(K // STG_W):
-                                ChannelGet(
-                                    "rmsX",
-                                    xb,
-                                    offsets=[0, _cx * STG_W],
-                                    sizes=[BATCH, STG_W],
-                                    strides=[K, 1],
-                                )
+                            ChannelGet(
+                                "rmsX",
+                                xb,
+                                offsets=[0, 0, 0],
+                                sizes=[K // STG_W, BATCH, STG_W],
+                                strides=[STG_W, K, 1],
+                            )
                         else:
                             ChannelGet("rmsX", xb, indices=[idx(0)])
                         stg = AllocOp(rstg_l1, [], [])
