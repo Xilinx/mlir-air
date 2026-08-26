@@ -81,7 +81,17 @@ def build_module(num_heads, head_size, herd_n):
     # The kernels are specialised for head_size=48: the frequency table is
     # hardcoded and the symbol names carry the size.
     assert head_size == 48, f"Only head_size=48 is supported, got {head_size}"
-    assert (num_heads * head_size) % herd_n == 0
+    # The herd's iteration space is one point per head, strip-mined onto herd_n
+    # cores, so it is the *head count* that has to divide -- not the element
+    # count, which is what the predecessor checked because its herd was
+    # [1, herd_n] with the outer loop striding over every element. The weaker
+    # form lets head_size carry the divisibility: num_heads=6 with herd_n=4
+    # passes (6 * 48 is a multiple of 4) and then fails inside air.herd with
+    # "herd shape (4,) does not evenly divide the logical grid (6,)".
+    assert num_heads % herd_n == 0, (
+        f"num_heads ({num_heads}) must be a multiple of herd_n ({herd_n}): "
+        "each core takes a whole number of heads"
+    )
 
     head_stride = 3 * head_size
 
@@ -93,9 +103,10 @@ def build_module(num_heads, head_size, herd_n):
     )
     vector_copy = air.extern("vector_copy_bf16_144_16", link_with=EXTERN_OBJECT)
 
-    # [3 * num_heads, head_size] rather than one flat run: the same bytes,
-    # but a whole head is now a [3, head_size] region, which is exactly the
-    # L1 tile's shape, so both transfers are plain shape-matching ones.
+    # One flat run, as the predecessor declared it and as the host writes it:
+    # num_heads heads of Q, K and V concatenated. The L1 tiles are [3, head_size]
+    # instead, because that is rope.cc's shape, so the transfers go through a
+    # reshaped view rather than either side giving up its own shape.
     IN = air.tensor([num_heads * head_stride], bf16)
     OUT = air.tensor([num_heads * head_stride], bf16)
 
