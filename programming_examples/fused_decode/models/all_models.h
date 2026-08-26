@@ -28,6 +28,7 @@
 #define LLAMA_3_1_8B 6
 #define QWEN2_5_7B 7
 #define LFM2_1_2B 8
+#define QWEN3_4B 9
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
@@ -41,6 +42,7 @@
 #include "../models/phi4-4b.h"
 #include "../models/qwen2.5-3b.h"
 #include "../models/qwen2.5-7b.h"
+#include "../models/qwen3-4b.h"
 #include "../models/qwen3-8b.h"
 
 /// @brief RMSNorm epsilon, added to the MEAN square.
