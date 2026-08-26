@@ -166,11 +166,19 @@ public:
     s << "},\n";
   }
 
-  // Model each event's latency
-  uint64_t modelOp(device &d, dependencyNodeEntry &c) {
+  // Model each event's latency.
+  // Returns the event's *occupancy*: how long it holds the resources it
+  // reserved. For data movement events, any fixed link time-of-flight is
+  // reported separately through `link_latency` (in cycles) rather than folded
+  // into the return value, because flight time delays when data lands without
+  // occupying the link. Callers add the two to obtain the completion time.
+  uint64_t modelOp(device &d, dependencyNodeEntry &c,
+                   uint64_t *link_latency = nullptr) {
     auto type = c.asyncEventType;
     auto name = c.asyncEventName;
     uint64_t execution_time = 1;
+    if (link_latency)
+      *link_latency = 0;
 
     if (type == "wait_all") {
       execution_time = 1;
@@ -190,6 +198,8 @@ public:
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, srcTy);
       else
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
+      if (link_latency)
+        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast_if_present<xilinx::air::ChannelGetOp>(c.op);
@@ -215,6 +225,8 @@ public:
       else
         execution_time =
             getTransferCost(d, c.op, srcSpace, dstSpace, dstVolumn, dstTy);
+      if (link_latency)
+        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       if (!isa<air::ExecuteOp>(c.op))
         c.op->emitOpError("has mismatching event type").attachNote()
@@ -271,6 +283,10 @@ public:
             c.wavefront, i);
       }
     }
+    // Free links whose occupancy has ended but whose payload is still in
+    // flight, so the next transfer can claim them.
+    c.releaseCompletedLinkOccupancy(time);
+
     // Update wavefront
     for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it) {
       if (G[std::get<0>(*it)].is_started() &&
@@ -351,9 +367,15 @@ public:
                           canonicalizer.getIteratorFromPosition(
                               c.ctrl_g->position, c.ctrl_g->hierarchyOp));
 
+        uint64_t link_latency = 0;
+        uint64_t occupancy =
+            modelOp(device_resource_node, G[next_vertex], &link_latency);
         G[next_vertex].start_time = time;
-        G[next_vertex].end_time =
-            time + modelOp(device_resource_node, G[next_vertex]);
+        // Resources are held for the occupancy only; the event completes once
+        // the payload has also traversed the link.
+        G[next_vertex].release_time = time + occupancy;
+        G[next_vertex].end_time = time + occupancy + link_latency;
+        G[next_vertex].resources_released = false;
         // emit trace event begin
         auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
         auto tid = std::get<2>(c.wavefront.back());
@@ -460,6 +482,8 @@ public:
     bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
     launch.ctrl_g->g[start_v].end_time = 1;
+    launch.ctrl_g->g[start_v].release_time = 1;
+    launch.ctrl_g->g[start_v].resources_released = false;
     launch.pushStartToWavefront(start_v);
     // Consume devices upon launch
     // TODO: multi-device modelling
@@ -677,6 +701,15 @@ private:
       op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
+  }
+
+  // Fixed time-of-flight, in cycles, of the link between two memory spaces.
+  // Independent of payload size, and not part of the link's occupancy.
+  uint64_t getTransferLatency(device &d, unsigned srcSpace, unsigned dstSpace) {
+    auto it = d.interfaces.find({srcSpace, dstSpace});
+    if (it == d.interfaces.end() || !it->second)
+      return 0;
+    return (uint64_t)std::llround(it->second->latency);
   }
 
   uint64_t getTransferVolumn(air::ChannelInterface op) {

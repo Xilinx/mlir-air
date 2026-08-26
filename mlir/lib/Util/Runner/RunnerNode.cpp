@@ -137,7 +137,41 @@ public:
       auto command_node = this->ctrl_g->g[std::get<0>(*it)];
       if (command_node.is_started() && (command_node.end_time)) {
         next_times.push_back(command_node.end_time);
+        // A link whose occupancy ends before its payload lands frees its ports
+        // at release_time, so the simulator has to stop there too.
+        if (command_node.has_link_latency() &&
+            !command_node.resources_released) {
+          next_times.push_back(command_node.release_time);
+        }
       }
+    }
+  }
+
+  // Free link resources whose occupancy has ended but whose payload is still
+  // in flight. Ports model link bandwidth, not time-of-flight, so holding them
+  // until the data lands would cap link throughput at 1/(occupancy + latency)
+  // and stop a deep pipeline from filling.
+  //
+  // Only an arch model that gives the link a latency reaches this: that is
+  // what makes release_time < end_time, which is what has_link_latency()
+  // tests. Without one the two are equal, there is no window in which the
+  // ports are free but the payload has not landed, and this is inert.
+  void releaseCompletedLinkOccupancy(uint64_t time) {
+    Graph &G = this->ctrl_g->g;
+    for (auto &entry : this->wavefront) {
+      auto &node = G[std::get<0>(entry)];
+      if (!node.has_link_latency() || node.resources_released)
+        continue;
+      if (!node.is_started() || time < node.release_time)
+        continue;
+      // Driven from the get, which owns the pairing of both ends' ports. Only
+      // ports are released here; resource hierarchies reserved by segments and
+      // herds are released by their terminators instead.
+      auto getOp = dyn_cast_if_present<air::ChannelGetOp>(node.op);
+      if (!getOp)
+        continue;
+      this->releaseChannelPortsForGet(getOp);
+      node.resources_released = true;
     }
   }
 
@@ -1015,6 +1049,8 @@ private:
     // Start sub-runner node by pushing start node into its wavefront
     sub_runner_node->ctrl_g->g[sub_start_v].start_time = time;
     sub_runner_node->ctrl_g->g[sub_start_v].end_time = time;
+    sub_runner_node->ctrl_g->g[sub_start_v].release_time = time;
+    sub_runner_node->ctrl_g->g[sub_start_v].resources_released = false;
     this->runner_assertion(!sub_runner_node->wavefront.size(),
                            "sub runner node " + air::to_string(op) +
                                " is busy");
@@ -1161,7 +1197,11 @@ private:
       this->runner_assertion(false, "unknown channel.put op");
   }
 
-  void executeOp(air::ChannelGetOp op, Graph::VertexId it) {
+  // Release the ports held by a channel's matched put/get pairs. A put's
+  // outbound port and its get's inbound port are freed together, capped by
+  // whichever side has fewer reservations outstanding, so a get can never free
+  // more puts than have actually been dispatched to it.
+  void releaseChannelPortsForGet(air::ChannelGetOp op) {
 
     // Get launch runner node
     auto launch_runner = this;
@@ -1169,14 +1209,8 @@ private:
       launch_runner = launch_runner->parent;
     }
 
-    // Get op progress
-    auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
-        this->getChannelInstanceKey(op), "put");
-    auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
-        this->getChannelInstanceKey(op), "get");
     unsigned bcast_factor =
         launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
-    unsigned total_count = this->tokenSpatialFactorForResource(op);
 
     // Calculate how many src and dst ports to deallocate
     std::pair<std::string, std::string> put_key =
@@ -1227,6 +1261,35 @@ private:
         get_deallocate_count++;
       }
     }
+  }
+
+  void executeOp(air::ChannelGetOp op, Graph::VertexId it) {
+
+    // Get launch runner node
+    auto launch_runner = this;
+    while ((launch_runner->runner_node_type != "launch")) {
+      launch_runner = launch_runner->parent;
+    }
+
+    // Get op progress
+    auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
+        this->getChannelInstanceKey(op), "put");
+    auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
+        this->getChannelInstanceKey(op), "get");
+    unsigned bcast_factor =
+        launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
+
+    // Release the ports of matched put/get pairs. This may already have
+    // happened at the link's occupancy boundary if the link models a
+    // time-of-flight; in that case nothing is left reserved and this is a
+    // no-op.
+    this->releaseChannelPortsForGet(op);
+
+    std::pair<std::string, std::string> put_key =
+        std::make_pair(this->getChannelInstanceKey(op), "put");
+    std::pair<std::string, std::string> get_key =
+        std::make_pair(this->getChannelInstanceKey(op), "get");
 
     // If data movement is complete, clear put and get progresses
     if ((put_processed * bcast_factor == total_count) &&
@@ -1278,6 +1341,8 @@ private:
           std::make_pair(G[v].start_time, G[v].end_time));
       G[v].start_time = 0;
       G[v].end_time = 0;
+      G[v].release_time = 0;
+      G[v].resources_released = false;
     }
 
     // Push adj. vertices to latent wavefront candidates

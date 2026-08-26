@@ -54,6 +54,11 @@ protected:
 class port : public resource {
 public:
   double data_rate;
+  // Fixed time-of-flight of this link, in cycles. Independent of payload size;
+  // it delays when data lands but does not occupy the link, so it is accounted
+  // separately from data_rate. Defaults to zero, which reproduces the
+  // bandwidth-only cost model.
+  double latency = 0;
   std::map<std::string, port> connected_ports;
 
   port() {}
@@ -68,25 +73,30 @@ public:
   port(port *base) {
     name = base->name;
     data_rate = base->data_rate;
+    latency = base->latency;
     this->reset_reservation();
     // TODO: Copy port Connections as well
     // May be challenging due to hierarchy --
     // need to copy while copying regions/tiles etc.
   }
 
-  port(resource *parent, unsigned src, unsigned dst, double data_rate) {
+  port(resource *parent, unsigned src, unsigned dst, double data_rate,
+       double latency = 0) {
     this->set_name("L" + std::to_string(src) + "_to_" + "L" +
                    std::to_string(dst));
     this->set_data_rate(data_rate);
+    this->set_latency(latency);
     this->set_parent(parent);
     this->reset_reservation();
   }
 
   port(resource *parent, std::string ms_n_dir,
-       std::optional<double> bytes_per_second, unsigned idx) {
+       std::optional<double> bytes_per_second, unsigned idx,
+       std::optional<double> latency = std::nullopt) {
     if (bytes_per_second) {
       this->set_name(ms_n_dir + "_" + std::to_string(idx));
       this->set_data_rate(*bytes_per_second);
+      this->set_latency(latency ? *latency : 0);
       this->set_parent(parent);
       this->reset_reservation();
     }
@@ -99,6 +109,8 @@ public:
   void set_data_rate(long bytes_per_cycle) {
     this->data_rate = bytes_per_cycle;
   }
+
+  void set_latency(double cycles) { this->latency = cycles; }
 
 private:
 }; // port
