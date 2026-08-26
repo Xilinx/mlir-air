@@ -14,6 +14,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Any.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/JSON.h"
@@ -238,9 +239,10 @@ public:
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
         execution_time = std::max(compute_op_cost, compute_xfer_cost);
-        // Add extra cycles as base latency for linalg ops, to model the
-        // overhead of external function.
-        execution_time += 100;
+        // Entering the kernel. On AIE a linalg op becomes a call to an
+        // external function and that call is not free; on a machine where the
+        // operator is the instruction, it is. Declared by the model.
+        execution_time += d.kernel_invocation_overhead;
       } else if (auto custom_op =
                      dyn_cast_if_present<air::CustomOp>(child_op)) {
         execution_time = getComputeCostFromJSON(d, custom_op);
@@ -787,38 +789,59 @@ private:
     return output;
   }
 
+  // Scalar ops in a linalg body that the throughput model prices. Ops absent
+  // from this list are not free -- they are unpriced, which is reported.
+  static bool isPricedScalarOp(llvm::StringRef name) {
+    static constexpr llvm::StringLiteral priced[] = {
+        {"math.rsqrt"},     {"arith.mulf"}, {"arith.divf"},
+        {"arith.addf"},     {"arith.subf"}, {"arith.truncf"},
+        {"arith.cmpf"},     {"arith.maxf"}, {"arith.maximumf"},
+        {"arith.minimumf"}, {"arith.muli"}, {"arith.divsi"},
+        {"arith.addi"},     {"arith.subi"}, {"arith.trunci"},
+        {"arith.cmpi"},     {"arith.maxi"}, {"arith.select"},
+        {"std.select"}};
+    return llvm::is_contained(priced, name);
+  }
+
+  // Bookkeeping entries getLinalgOpCounts adds alongside the op tally, and the
+  // structural ops a linalg body always has. Neither is arithmetic.
+  static bool isNotArithmetic(llvm::StringRef name) {
+    static constexpr llvm::StringLiteral ignored[] = {{"footprint"},
+                                                      {"reads"},
+                                                      {"writes"},
+                                                      {"linalg.yield"},
+                                                      {"arith.constant"}};
+    return llvm::is_contained(ignored, name);
+  }
+
   uint64_t getComputeCostFromCostModel(device &d, Operation *op) {
     uint64_t compute_op_cost = 0;
     auto opCounts = xilinx::air::CostModel().getOpCounts(op);
-    std::string skip = "footprint";
-    std::string memops = "reads;writes;";
-    std::string cpuops = "math.rsqrt;";
-    cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
-              "arith.cmpf;arith.maxf;";
-    cpuops += "arith.muli;arith.divsi;arith.divsi;arith.addi;arith.subi;"
-              "arith.trunci;arith.cmpi;arith.maxi";
-    cpuops += "std.select";
     uint64_t compute_op_count = 0;
     for (auto &p : opCounts.map) {
       auto name = std::get<0>(p);
       auto count = std::get<1>(p);
-      if (memops.find(name) != std::string::npos) {
-      } else if (cpuops.find(name) != std::string::npos)
+      if (isNotArithmetic(name))
+        continue;
+      if (isPricedScalarOp(name)) {
         compute_op_count += count;
-      else if (skip.find(name) == std::string::npos)
-        LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
+        continue;
+      }
+      // Anything else contributes nothing to the cycle count. Say so: this
+      // model has a single rate for a whole linalg body, so there is no way to
+      // charge a transcendental more than an add, and an op it does not know
+      // is charged zero. A GELU's math.erf costing nothing is the difference
+      // between a cost model and a guess.
+      op->emitWarning("air-runner has no cost for '")
+          << name << "' (x" << count
+          << " here); it is being counted as free. Cycles for this op are an "
+             "underestimate.";
     }
 
     if (compute_op_count) {
-      // defaults
-      double num_cores = 1;              // one because the post-tiling code in
-                                         // air.herd's body is for each core
-      double ops_per_core_per_cycle = 8; // vector width for this type
-      double efficiency = 1.0f;
-
-      // if kernels exists, assume everthing else exists
-      // Get operation datatype as the first operand's datatype
       auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
+      double ops_per_core_per_cycle = d.default_ops_per_core_per_cycle;
+      double efficiency = 1.0f;
       if (d.kernels.count(air::to_string(op))) {
         if (d.kernels[air::to_string(op)]->datatypes.count(op_datatype)) {
           ops_per_core_per_cycle =
@@ -828,7 +851,8 @@ private:
         }
       }
 
-      double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
+      double ops_per_cycle =
+          d.cores_per_kernel_instance * ops_per_core_per_cycle * efficiency;
       if (ops_per_cycle <= 0)
         op->emitOpError("ops per cycle in model must be greater than zero");
 

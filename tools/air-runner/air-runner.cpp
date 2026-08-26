@@ -10,6 +10,7 @@
 #include "air/InitAll.h"
 #include "air/Util/Runner.h"
 
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/FileUtilities.h"
@@ -105,6 +106,11 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
 
     llvm::SourceMgr sourceMgr;
     sourceMgr.AddNewSourceBuffer(std::move(ownedBuffer), llvm::SMLoc());
+
+    // Without a handler, MLIR prints an unhandled diagnostic only when it is
+    // an error -- warnings and remarks are dropped. air-runner had none, so
+    // every warning it or the ops it walks emitted went nowhere.
+    SourceMgrDiagnosticHandler diagHandler(sourceMgr, &context);
 
     auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
     if (!module)
