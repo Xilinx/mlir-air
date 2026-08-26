@@ -1,173 +1,92 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""SwiGLU (Swish-Gated Linear Unit) on air.api.
 
-"""Vectorized SwiGLU (Swish-Gated Linear Unit) Example
+Element-wise, on 1-D inputs [N]:
 
-Implements element-wise SwiGLU on 1D inputs [N]:
-  SwiGLU(x, gate, up) = SiLU(x * gate) * (x * up)
+    SwiGLU(x, gate, up) = SiLU(x * gate) * (x * up)
 
-where SiLU(z) = z * sigmoid(z) = z * 0.5 * (tanh(z/2) + 1).
+where SiLU(z) = z * sigmoid(z). `ops.silu` is built from the tanh identity,
+z * 0.5 * (tanh(z/2) + 1), which is what the predecessor spelled by hand and
+what the kernel wants: it avoids exp and division, both of which have precision
+and correctness problems on AIE2P, and it lands on the hardware tanh intrinsic.
 
-Uses the tanh-based sigmoid identity to avoid exp and division, which
-have precision and correctness issues on AIE2P. The hardware tanh
-intrinsic (__builtin_aie2p_tanh) is used directly.
+**The gate and up weights share one buffer**, packed as [2, N] with row 0 gate
+and row 1 up, because an AIE2P tile has only 2 S2MM channels and x already
+claims one. Reading a row of that buffer is what the whole example turns on:
 
-The gate and up weights are packed into a single rank-2 buffer
-[2, N] to reduce the number of DMA channels needed (AIE2P tiles
-have only 2 S2MM channels). The L1 buffer is a flat [2*tile_n]
-to allow simple 1D subview/transfer_read operations.
+    out[:] = ops.silu(x[:] * gate_up[0, :]) * (x[:] * gate_up[1, :])
 
-Uses a single AIE tile with DMA transfers between L3 and L1 memory.
-Computation is vectorized using vector.transfer_read/write.
+A partial buffer subscript is normally a DMA access pattern -- the thing you
+hand to ops.load -- and until now that was all it could be, so packing to save a
+DMA channel cost you an unpack to read it. `gate_up[0, :]` is now also an
+elementwise operand, spelled the way numpy spells it, and the two rows lower to
+two `vector.transfer_read`s at different offsets into the same memref. The
+predecessor built the same two reads out of `memref.subview` with a hand-added
+`arith.addi(j, tile_n)` on the flat [2 * tile_n] copy.
+
+Because the rows carry their leading axis, the buffers here are [1, tile_n]
+rather than [tile_n]: [1, N] and [1, N] broadcast, [1, N] into [N] does not --
+numpy's rule, and the same one air.api already applied to reductions. The L3
+slices stay rank 1; ops.load and ops.store squeeze the leading unit dimension.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects import arith, math as math_dialect
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
 
-
-@module_builder
-def build_module(n, tile_n, np_dtype_in, vector_size=16):
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    assert n % tile_n == 0
-    assert tile_n % vector_size == 0
-    VECTOR_SIZE = vector_size
-    index_type = IndexType.get()
-
-    l3memrefTy = MemRefType.get([n], xrt_dtype_in)
-    # gate and up packed as [2, N]: row 0 = gate, row 1 = up
-    l3GateUpTy = MemRefType.get([2, n], xrt_dtype_in)
-
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    # L1 buffer for gate+up tile: flat [2*tile_n] for simple 1D indexing
-    l1GateUpTy = MemRefType.get(
-        shape=[2 * tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-
-    vecTy = VectorType.get([VECTOR_SIZE], xrt_dtype_in)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-    @FuncOp.from_py_func(l3memrefTy, l3GateUpTy, l3memrefTy)
-    def swiglu(arg0, arg1, arg2):
-        # arg0 = x [N], arg1 = gate_up [2, N], arg2 = output [N]
-
-        @herd(
-            name="herd_0",
-            sizes=[1, 1],
-            operands=[arg0, arg1, arg2],
+def build_module(n, tile_n, dtype=bf16, vector=16):
+    if n % tile_n:
+        raise ValueError(f"n ({n}) must be a multiple of tile_n ({tile_n})")
+    if vector and tile_n % vector:
+        raise ValueError(
+            f"tile_n ({tile_n}) must be a multiple of the vector width ({vector})"
         )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_x,
-            _l3_gate_up,
-            _l3_out,
-        ):
-            l1_x = AllocOp(l1MemrefTy, [], [])
-            l1_gate_up = AllocOp(l1GateUpTy, [], [])
-            l1_out = AllocOp(l1MemrefTy, [], [])
 
-            c0 = ConstantOp(index_type, 0)
+    x = air.tensor([n], dtype)
+    # Row 0 is gate, row 1 is up: one DMA, one shim channel.
+    gate_up = air.tensor([2, n], dtype)
+    out = air.tensor([n], dtype)
 
-            for _l_ivx in range_(0, n, tile_n):
-                # DMA: load x tile
-                dma_memcpy_nd(
-                    l1_x,
-                    _l3_x,
-                    src_offsets=[_l_ivx],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
-                # DMA: load gate and up tiles from [2, N] L3 buffer
-                # into flat [2*tile_n] L1 buffer
-                dma_memcpy_nd(
-                    l1_gate_up,
-                    _l3_gate_up,
-                    src_offsets=[0, _l_ivx],
-                    src_sizes=[2, tile_n],
-                    src_strides=[n, 1],
-                )
+    with air.launch(name="swiglu") as launch:
 
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
-                cTileNIdx = ConstantOp(index_type, tile_n)
-                cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                half_const = arith.ConstantOp(xrt_dtype_in, 0.5)
-                one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
-                v_half = BroadcastOp(vecTy, half_const)
-                v_one = BroadcastOp(vecTy, one_const)
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="herd_0", shape=(1,)) as herd:
 
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_x = subview(l1_x.result, [j], [VECTOR_SIZE], [1])
-                    # gate is at [0..tile_n-1], up is at [tile_n..2*tile_n-1]
-                    sub_gate = subview(l1_gate_up.result, [j], [VECTOR_SIZE], [1])
-                    up_offset = arith.addi(j, cTileNIdx)
-                    sub_up = subview(l1_gate_up.result, [up_offset], [VECTOR_SIZE], [1])
-                    sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
-
-                    v_x = transfer_read(vecTy, sub_x, [c0], identity_map, cst0, [True])
-                    v_gate = transfer_read(
-                        vecTy, sub_gate, [c0], identity_map, cst0, [True]
+                @herd.body
+                def _(tx):
+                    # Rank 2 with a leading 1, so a row of l1_gate_up -- which
+                    # is [1, tile_n] -- broadcasts against them.
+                    l1_x = air.alloc(
+                        [1, tile_n], dtype, scope=herd.private(), vector=vector
                     )
-                    v_up = transfer_read(
-                        vecTy, sub_up, [c0], identity_map, cst0, [True]
+                    l1_gate_up = air.alloc(
+                        [2, tile_n], dtype, scope=herd.private(), vector=vector
+                    )
+                    l1_out = air.alloc(
+                        [1, tile_n], dtype, scope=herd.private(), vector=vector
                     )
 
-                    # SwiGLU(x, gate, up) = SiLU(x * gate) * (x * up)
-                    # SiLU(z) = z * 0.5 * (tanh(z/2) + 1)
+                    for lo in air.sequential(0, n, tile_n):
+                        ops.load(l1_x, x[lo : lo + tile_n])
+                        ops.load(l1_gate_up, gate_up[:, lo : lo + tile_n])
 
-                    # Compute x * gate
-                    v_xg = arith.mulf(v_x, v_gate)
+                        l1_out[:] = ops.silu(l1_x[:] * l1_gate_up[0, :]) * (
+                            l1_x[:] * l1_gate_up[1, :]
+                        )
 
-                    # SiLU(x * gate)
-                    v_half_xg = arith.mulf(v_xg, v_half.result)
-                    v_tanh = math_dialect.tanh(v_half_xg)
-                    v_tanh_plus_one = arith.addf(v_tanh, v_one.result)
-                    v_sigmoid = arith.mulf(v_tanh_plus_one, v_half.result)
-                    v_silu_xg = arith.mulf(v_xg, v_sigmoid)
+                        ops.store(l1_out, out[lo : lo + tile_n])
 
-                    # Compute x * up
-                    v_xu = arith.mulf(v_x, v_up)
-
-                    # SwiGLU = SiLU(x * gate) * (x * up)
-                    v_result = arith.mulf(v_silu_xg, v_xu)
-
-                    transfer_write(None, v_result, sub_out, [c0], identity_map, [True])
-                    yield_([])
-
-                dma_memcpy_nd(
-                    _l3_out,
-                    l1_out,
-                    dst_offsets=[_l_ivx],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_x)
-                DeallocOp(l1_gate_up)
-                DeallocOp(l1_out)
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -200,9 +119,18 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(args.n, args.tile_n, INPUT_DATATYPE, args.vector_size)
+    launch = build_module(args.n, args.tile_n, bf16, args.vector_size)
+    # build() resolves --target auto, so it runs before launch.target is read.
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -247,6 +175,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="swiglu",
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
         exit(
             runner.run_test(
@@ -264,6 +193,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()
