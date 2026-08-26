@@ -882,10 +882,29 @@ private:
       op->emitOpError(llvm::toString(result.takeError()));
       return std::nullopt;
     }
+    // Validate before the cast, not after. A negative value wraps to an
+    // enormous unsigned, and an infinity or a NaN makes llround undefined; both
+    // would land in the schedule as a cycle count and quietly ruin every
+    // timestamp downstream of the op.
+    if (!std::isfinite(*result)) {
+      op->emitOpError("cost expression \"")
+          << text << "\" evaluated to " << *result << ", which is not a number";
+      return std::nullopt;
+    }
     if (*result < 0) {
       op->emitOpError("cost expression \"")
-          << text << "\" evaluated to " << *result << "; cycles cannot be "
-          << "negative";
+          << text << "\" evaluated to " << *result
+          << "; cycles cannot be negative";
+      return std::nullopt;
+    }
+    // 2^53 is where a double stops representing consecutive integers, so a
+    // result above it has already lost the precision a cycle count needs. No
+    // real op is anywhere near it.
+    constexpr double kMaxCycles = 9007199254740992.0;
+    if (*result > kMaxCycles) {
+      op->emitOpError("cost expression \"")
+          << text << "\" evaluated to " << *result
+          << ", too large to be a cycle count";
       return std::nullopt;
     }
     return (uint64_t)std::llround(*result);

@@ -10,6 +10,17 @@
 
 #include "air/Util/Runner.h"
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/Error.h"
+
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <string>
+
 namespace xilinx {
 namespace air {
 
@@ -144,11 +155,17 @@ private:
     }
     char c = st.s[st.pos];
     if (isdigit((unsigned char)c) || c == '.') {
-      size_t start = st.pos;
-      while (st.pos < st.s.size() &&
-             (isdigit((unsigned char)st.s[st.pos]) || st.s[st.pos] == '.'))
-        st.pos++;
-      return strtod(st.s.substr(start, st.pos - start).c_str(), nullptr);
+      // Hand the whole numeric literal to strtod, exponent and all, rather
+      // than stopping at the 'e' and leaving it to be read as a variable.
+      const char *begin = st.s.c_str() + st.pos;
+      char *end = nullptr;
+      double v = strtod(begin, &end);
+      if (end == begin) {
+        st.error = "malformed number";
+        return 0;
+      }
+      st.pos += (size_t)(end - begin);
+      return v;
     }
     if (isalpha((unsigned char)c) || c == '_') {
       size_t start = st.pos;
