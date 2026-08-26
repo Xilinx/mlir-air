@@ -249,14 +249,22 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
     L1; ``load(l2, A[i:i+n])`` is L3 to L2. The destination is always the buffer
     being filled. A bare tensor means the whole of it, so ``load(l2, A)`` and
     ``load(l2, A[:, :])`` are the same transfer.
+
+    A *view* of a buffer is a destination too -- ``load(l1.reshape(n), A[i:i+n])``
+    fills a rank-2 tile from a flat region. This is the mirror of ``store``,
+    which has always drained one (``store(t.transpose(1, 0), B[:, :])`` is the
+    whole of data_transfer_transpose). Filling was the direction that happened
+    not to have a caller yet, and the asymmetry read as a rule rather than an
+    omission: a kernel whose L1 tile is shaped for a hand-written kernel but
+    whose L3 region is flat has to reshape on the way *in*.
     """
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
 
-    if not isinstance(dst, Buffer):
+    if not isinstance(dst, (Buffer, BufferSlice)):
         raise TypeError(
             f"air.api.ops.load fills a buffer, so its first argument must be one "
-            f"from air.alloc(); got {type(dst).__name__}"
+            f"from air.alloc() or a region of one; got {type(dst).__name__}"
         )
     dst_ep = _endpoint(dst, "load", "destination")
     src_ep = _endpoint(src, "load", "source")
