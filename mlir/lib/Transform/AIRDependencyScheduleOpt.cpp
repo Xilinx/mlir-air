@@ -6552,11 +6552,27 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
   for (auto &[alloc, dealloc] : allocDeallocExecs) {
     SmallVector<air::ExecuteOp> execs({alloc});
     resolveDepFromAllocExec(alloc, block);
-    if (dealloc) {
-      resolveDepFromDeallocExec(dealloc, block);
+    if (dealloc)
       execs.push_back(dealloc);
-    }
+    // Leave the stand-ins behind before the deallocs are stripped, not after.
+    //
+    // resolveDepToExecs puts an air.wait_all where each exec used to be and
+    // points the exec's outside-the-block users at it; the wait_all inherits
+    // the exec's dependence list. resolveDepFromDeallocExec then erases the
+    // dependences that come from outside the block, because the dealloc is
+    // about to move inside it -- among them the enclosing loop's own token,
+    // which the dealloc cannot keep waiting on once it lives in that loop's
+    // body.
+    //
+    // Run the erasure first and the stand-in inherits nothing: an
+    // air.wait_all with no operands, ready the instant its region starts.
+    // Where the dealloc's token was the loop-carried value of an scf.for --
+    // it is the last thing to happen in an iteration, so it usually is -- the
+    // loop's yield stops depending on the body altogether, and the loop
+    // retires before a single transfer in it has completed.
     resolveDepToExecs(rewriter, execs, block);
+    if (dealloc)
+      resolveDepFromDeallocExec(dealloc, block);
     addDepToAllocUsersInBlock(alloc, block);
     if (dealloc) {
       addDepToDeallocInBlock(dealloc, alloc->getResult(1), block);

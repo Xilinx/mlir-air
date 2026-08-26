@@ -2,54 +2,32 @@
 // SPDX-License-Identifier: MIT
 //
 // REQUIRES: xrt
-// XFAIL: *
 // RUN: mkdir -p test_airrunner
 // RUN: cd test_airrunner
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run 2>&1 | FileCheck %s
 //
-// This design does not currently simulate to completion, so the test is
-// expected to fail: air-runner reports the stall and exits non-zero, and no
-// latency line is printed.
+// This design used to stall. It was marked XFAIL and carried a note asking
+// whoever fixed it to pin the real latency rather than re-pin whatever the
+// runner printed, so: 774.592us, from a run that reaches the launch
+// terminator.
 //
-// Marked XFAIL rather than rewritten to assert the stall, so the signal points
-// the right way. An expectation that matches the error would go green now and
-// red the day someone fixes it. As an XFAIL it turns into an XPASS instead,
-// which is the prompt to drop this marker and pin the real latency.
+// For context on the number that was here before, 423.824us: that was the
+// point at which the simulation gave up, not a latency. air-runner runs until
+// no runner node can make progress, which is also what an unsatisfiable
+// dispatch condition looks like, so a stalled run and a finished one printed
+// the same line. The run stalled at 26489 cycles over 16 launch iterations,
+// and 26489 * 16 = 423824 ns.
 //
-// It used to expect a line reading
-//   "Latency (single-iteration mode, estimated for 16 iterations): 423.824us".
-// That number was the point at which the simulation gave up. air-runner runs
-// until no runner node can make progress, which is also what an unsatisfiable
-// dispatch condition looks like, so a stalled run and a finished one used to
-// print the same thing. The run stalls at 26489 cycles and the test uses
-// single-iteration mode over 16 iterations: 26489 * 16 = 423824 ns, exactly
-// the figure above. It was the stall point, not a latency.
-//
-// What actually happens, on the 4x4 configuration this test uses: all sixteen
-// herds terminate, but the C write-back over @channel_10 completes one get out
-// of sixteen, no segment or launch terminator is ever reached, and the four
-// L3->L2 input channels are left with a put dispatched and no matching get.
-// So the number was "time to finish compute, with the output drain missing" --
-// an underestimate, which is why it looked plausible for so long.
-//
-// Notes for whoever picks this up:
-//   - It is not a scale problem. herd 1x1 stalls at 8057 cycles, 2x2 at 14201,
-//     4x4 at 26489. The 1x1 configuration is the smallest repro.
-//   - It is not the ping-pong transform. Dropping air-label-scf-for-to-ping-pong
-//     and air-ping-pong-transform from the pipeline still stalls, at 6362.
-//   - It is not simulation granularity. "herd" stalls identically to "core".
-//   - Nothing is ready-but-blocked at the stall: every unstarted op still has an
-//     incomplete predecessor, so this is an unsatisfiable dependency state
-//     rather than resource starvation.
-//   - test/airrunner/matmul, which builds its IR through the transform dialect
-//     instead of parsing the air.api example, reaches both terminators and is
-//     unaffected.
-//
-// Whether the generated IR is at fault or air-runner cannot model it is still
-// open. Restore a latency expectation once it simulates to completion; do not
-// just re-pin whatever number the runner prints.
+// The cause was in the compiler, not the runner. air-fuse-alloc-dealloc sinks
+// an alloc/dealloc pair into the innermost loop that uses the memref, and
+// leaves an air.wait_all where each one used to be for the benefit of users
+// outside that loop. It built those stand-ins after stripping the dealloc's
+// dependences rather than before, so they came out empty. Here the dealloc's
+// token was the herd's outer k-loop yield, which therefore stopped depending
+// on the loop body: the loop retired before a single get had run, the herd
+// consumed half the puts it should have, and the segment's remaining puts had
+// nothing left to match. See @func8 in
+// mlir/test/Transform/AIRDependencyScheduleOpt/fuse_alloc_dealloc.mlir.
 
-// Deliberately matches the line without its value: the old number was the
-// stall point, and the real one is not yet known.
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations):
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 774.592us
