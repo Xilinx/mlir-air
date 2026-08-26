@@ -1303,6 +1303,18 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 PROJ_RING_DEPTH = int(_os.environ.get("PROJ_RING_DEPTH", "2"))
 assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist"
 
+# RMS_BAND_STREAM: Stage 2 of the band-streamed residual (docs/DFlashFeasibility.md,
+# "So the residual has to leave L1"). Off by default and byte-identical to HEAD
+# when off -- see check_batch1_noop.py's batch-8 extension. On, it swaps
+# rms_scale_row_aie's one full-row reduction for a band loop of
+# rms_scale_row_partial_aie + one rms_scale_row_finalize_aie -- proving the
+# two-pass scale kernel is numerically right BEFORE the harder part (shrinking
+# xb itself and round-tripping bands through DDR on rmsX/layerOut, which needs
+# new launch-scope choreography this stage does not yet attempt). xb is still
+# the full resident [BATCH][K] buffer here; only the scale computation is
+# banded, at row_stride=K.
+RMS_BAND_STREAM = bool(int(_os.environ.get("RMS_BAND_STREAM", "0")))
+
 # The X-feed tile-blocking descriptor, IMPORTED rather than restated:
 # xfeed_bd.py checks it elementwise against pack_A, which q4k_mm_gate.py proved
 # bit-exact on device. A copy here would be a second source of truth for the one
@@ -1893,6 +1905,30 @@ def build_module():
             residual_acc_row_aie.attributes["link_with"] = StringAttr.get(
                 "rms_residual.o"
             )
+            if RMS_BAND_STREAM:
+                # Split rms_scale_row_aie's single full-row reduction across a
+                # band loop, closed out by a finalize call (see rms_residual.cc).
+                # Gated on the flag, not just unused-if-off: an mlir FuncOp decl
+                # prints even with no call sites, so declaring these
+                # unconditionally would cost check_batch1_noop's batch-8/
+                # flag-off byte-identical invariant two lines for nothing.
+                # (scales, x, row, row_stride, band_off, band_width, first, arm)
+                rms_scale_row_partial_aie = FuncOp(
+                    "rms_scale_row_partial_aie",
+                    ([rscl_l1, rmsb_l1, i32, i32, i32, i32, i32, i32], []),
+                    visibility="private",
+                )
+                rms_scale_row_partial_aie.attributes["link_with"] = StringAttr.get(
+                    "rms_residual.o"
+                )
+                rms_scale_row_finalize_aie = FuncOp(
+                    "rms_scale_row_finalize_aie",
+                    ([rscl_l1, i32, i32], []),
+                    visibility="private",
+                )
+                rms_scale_row_finalize_aie.attributes["link_with"] = StringAttr.get(
+                    "rms_residual.o"
+                )
         # #4 faithful residual stream (reproducer rms_residual.o): residual_add_aie
         # (y = x_buf + x) for residual1 (input + o-proj-out) and residual2 (h + down-out).
         residual_add_aie = FuncOp(
@@ -5611,8 +5647,35 @@ def build_module():
                                 IntegerAttr.get(i32, v), None
                             ).result
 
-                        for t in range(BATCH):
-                            CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
+                        if RMS_BAND_STREAM:
+                            # Transitional: xb is still the full resident row
+                            # (row_stride=K), only the REDUCTION is banded, to
+                            # prove the two-pass kernel matches rms_scale_row_aie
+                            # before xb itself shrinks (see the RMS_BAND_STREAM
+                            # comment above PROJ_RING_DEPTH).
+                            assert K % STG_W == 0
+                            _nband = K // STG_W
+                            for t in range(BATCH):
+                                for _b in range(_nband):
+                                    CallOp(
+                                        rms_scale_row_partial_aie,
+                                        [
+                                            scl,
+                                            xb,
+                                            _i32(t),
+                                            _i32(K),
+                                            _i32(_b * STG_W),
+                                            _i32(STG_W),
+                                            _i32(1 if _b == 0 else 0),
+                                            _arm,
+                                        ],
+                                    )
+                                CallOp(
+                                    rms_scale_row_finalize_aie, [scl, _i32(t), _arm]
+                                )
+                        else:
+                            for t in range(BATCH):
+                                CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
                         _n = nrefeed if isinstance(nrefeed, int) else None
                         for _r in for_(
                             idx(0), idx(_n) if _n is not None else nrefeed, idx(1)
