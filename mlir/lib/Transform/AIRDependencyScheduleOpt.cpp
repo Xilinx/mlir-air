@@ -2583,6 +2583,55 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       if (postFoldActiveDims > maxNumDims)
         return failure();
     }
+
+    // Outermost-dimension rebalance (shim only).
+    //
+    // canonicalizeWrapAndStrideList splits an oversized extent against a
+    // single `maxSize` (1023) for every dimension, but the outermost shim BD
+    // dimension is narrower than the rest -- a 6-bit count, so 64 on AIE2.
+    // A fold that lands 1024 iterations as [512, 2, ...] is therefore legal by
+    // maxSize and illegal in the slot it occupies, and airrt-to-npu has to
+    // split it again. The descriptor is already at the 4-dim limit by then, so
+    // that second split overflows to 5 dims and gets unrolled into a chain of
+    // one BD per outer iteration: 16 BDs for llama's SwiGLU drain at seq_len
+    // 4096, which alone exhausts a shim tile's 16 BD slots and fails the
+    // build.
+    //
+    // Whenever strides[0] == strides[1] * wraps[1] the two outermost dims
+    // describe one contiguous iteration space, so the same extent can be
+    // re-split as any factor pair. Pick the largest outer factor that fits the
+    // outermost bound while keeping strides[0] under the stride cap: [512, 2]
+    // becomes [32, 32], legal in place, and the descriptor stays a single BD.
+    // Only rebalances descriptors that would otherwise be split downstream, so
+    // anything already legal is emitted byte-for-byte as before.
+    if (!skipZeroStride && wraps.size() >= 2) {
+      // AIE2 shim BD limits, mirrored from AIE2_WRAP_UPPER_BOUNDS /
+      // AIE2_STRIDE_UPPER_BOUND in AIRRtToNpuPass.cpp.
+      constexpr int64_t kOutermostWrapMax = 63;
+      constexpr int64_t kStrideMax = 1048576;
+      auto w0 = getConstantIntValue(wraps[0]);
+      auto w1 = getConstantIntValue(wraps[1]);
+      auto s0 = getConstantIntValue(strides[0]);
+      auto s1 = getConstantIntValue(strides[1]);
+      if (w0 && w1 && s0 && s1 && *w0 > kOutermostWrapMax && *s1 != 0 &&
+          *s0 == *s1 * *w1) {
+        int64_t total = *w0 * *w1;
+        for (int64_t a = kOutermostWrapMax; a >= 1; a--) {
+          if (total % a)
+            continue;
+          int64_t b = total / a;
+          if (b > maxSize)
+            continue;
+          int64_t newS0 = *s1 * b;
+          if (newS0 > kStrideMax)
+            continue;
+          wraps[0] = arith::ConstantIndexOp::create(rewriter, loc, a);
+          wraps[1] = arith::ConstantIndexOp::create(rewriter, loc, b);
+          strides[0] = arith::ConstantIndexOp::create(rewriter, loc, newS0);
+          break;
+        }
+      }
+    }
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
       // Force bump up number of dims to maxNumDims.
