@@ -63,8 +63,35 @@ static unsigned traceFuncArgIdx(Value memref) {
 // through arith.index_cast chains, which the canonicalizer no longer folds
 // away after llvm/llvm-project#189042 (it used to incorrectly drop
 // index → iN → index round-trips even when iN is narrower than index).
+// True when `expr` is a linear combination: sums of dims, symbols and
+// constants, each scaled only by a constant. Everything else -- mod, floordiv,
+// ceildiv, or a product of two non-constants -- is rejected.
+static bool isLinearCombination(AffineExpr expr) {
+  switch (expr.getKind()) {
+  case AffineExprKind::Constant:
+  case AffineExprKind::DimId:
+  case AffineExprKind::SymbolId:
+    return true;
+  case AffineExprKind::Add: {
+    auto bin = cast<AffineBinaryOpExpr>(expr);
+    return isLinearCombination(bin.getLHS()) &&
+           isLinearCombination(bin.getRHS());
+  }
+  case AffineExprKind::Mul: {
+    auto bin = cast<AffineBinaryOpExpr>(expr);
+    if (!isa<AffineConstantExpr>(bin.getLHS()) &&
+        !isa<AffineConstantExpr>(bin.getRHS()))
+      return false;
+    return isLinearCombination(bin.getLHS()) &&
+           isLinearCombination(bin.getRHS());
+  }
+  default:
+    return false;
+  }
+}
+
 // The coefficient `v` is multiplied by inside an affine.apply, or 0 if the
-// expression is not linear in `v`.
+// map's expression is not a linear combination of its inputs.
 //
 // An offset written as a chain of arith ops keeps the multiplier as its own
 // op, which the arith::MulIOp case below reads directly. Built through an
@@ -72,11 +99,20 @@ static unsigned traceFuncArgIdx(Value memref) {
 // what folding a whole offset computation into one op produces -- the same
 // multiplier is a coefficient inside the map, and there is no muli to find.
 // Recover it by evaluating the map's difference between v=1 and v=0, with
-// every other input pinned to 0: for an affine expression that is exactly the
-// coefficient.
+// every other input pinned to 0: for a linear combination that difference is
+// exactly the coefficient.
+//
+// The linearity check is not a formality. That difference is well-defined for
+// any expression, and for a semi-affine one it is not a multiplier: `s0 mod 8`
+// gives 1 - 0 = 1, and since inferTileSize keeps the *smallest* candidate a
+// spurious 1 would beat every real tile size and mis-split the padding
+// silently. Refusing to answer makes the pass report that it could not infer
+// the tile sizes, which is the safe outcome.
 static int64_t affineCoefficient(affine::AffineApplyOp applyOp, Value v) {
   AffineMap map = applyOp.getAffineMap();
   if (map.getNumResults() != 1)
+    return 0;
+  if (!isLinearCombination(map.getResult(0)))
     return 0;
 
   auto positionOf = [&](Value operand) -> std::optional<unsigned> {
