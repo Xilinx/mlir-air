@@ -1871,8 +1871,99 @@ Kernel prerequisites for all six phases are now built (`rms_chunk_banded_aie`,
 `residual_acc_row_banded_aie`, `rms_scale_row_partial_banded_aie` -- each a
 thin wrapper giving the shared logic a band-sized MLIR type, since
 `func.call` needs an exact type match and one symbol can't carry two
-declared signatures). Left as the next session's starting point, with the
-sequence above as the blueprint, rather than rushed into a single large diff.
+declared signatures).
+
+#### Level 3 built and IR-correct, but does not compile: a port-sharing limit, not a bug in this session's code [measured]
+
+The full six-phase restructuring above was implemented: `xb` shrinks to
+`rstg_l1` (`[BATCH][STG_W]`), `_rms_batched_norm`'s scale pre-pass and regen
+loop both refetch it fresh (`_rms_band_get`), `_accumulate` round-trips each
+residual band through `layerOut`/`rmsX` in place (`_rms_band_put_back` +
+`_rms_band_get`), and the launch side (`_uni_dec`/`_uni_voc`) gained matching
+Python-unrolled feed/drain helpers (`_rms_x_put_band`, `_rms_x_feed_ph`,
+`_rms_layerout_drain_band`, `_rms_residual_roundtrip`). Emitted IR was checked
+directly (`FUSED_DECODE_EMIT_ONLY=1`) against the design: the band gets/puts
+carry exactly the intended `[STG_W/64, BATCH, 64]` / `[64, STG_W-or-K, 1]`
+shapes, band-outer/token-inner ordering for the scale pass, and one
+`residual_acc_row_banded_aie` call per token per round. Levels 0/1/2 were
+re-diffed against pre-session `HEAD` at `DECODE_BATCH=8` (all three flag
+values, not just the batch-1 `check_batch1_noop.py` gate) and are
+byte-identical -- the level-3 additions did not perturb the levels that
+already work.
+
+**It does not get past `air-to-aie`.** `aircc` (and a manual `air-opt
+-air-to-aie` reproduction on the exact pre-lowering IR, isolated via
+`XRTBackend(debug_ir=True)`'s `debug_ir/pass_047_after_air-verify-hierarchy-
+locality.mlir`) fails with `operand #0 does not dominate this use` on the
+**second** `air.channel.put` to `@rmsX`. This is not about repetition, chunk
+count, or the residual/ph2 additions specifically -- it reproduces with the
+regen counts forced to 0 (`_RMS_DEBUG_NREFEED` env override, tested then
+reverted), i.e. with nothing but ph0's 4 non-repeating band puts on the
+decode arm. **Two separate textual `air.channel.put` ops to the same packet
+channel within one launch invocation is enough to break the lowering**,
+regardless of level 3's other machinery.
+
+Immediately before the failure, the pass emits its own warning naming the
+actual mechanism:
+
+> compute-tile S2MM channel 0 multiplexes 2 flows over 13 transfers, but
+> control-flow paths deliver different BD sequences: the ring was built for
+> one path's transfers and will slip on the others... Equalize the paths so
+> each delivers the same transfers
+
+`rmsX` and `rmsW` (and, by the same construction, `layerOut`/`outY`) share a
+physical S2MM port on the rms compute tile -- there are only 2 S2MM ports and
+more than 2 logical `air.channel`s need one. `AIRToAIEPass` handles this by
+merging the sharers into one physical BD "ring," built on the assumption
+that every control-flow path through the tile's program delivers the **same
+number of transfers** on that ring. Levels 0-2 satisfy this trivially: `rmsX`
+is exactly one op (whole-row or one 3-D op), on both arms, unconditionally.
+Level 3 breaks it two ways at once:
+
+1. **Op count, not just transfer count, differs by arm.** `_rms_batched_norm`
+   (the shared body) contributes the same *textual* op count to both arms
+   regardless of level. But `_accumulate`'s new `_rms_band_get`/
+   `_rms_band_put_back` calls sit inside `_if_decode`'s `scf.if` -- decode
+   gets `2*nband` extra `rmsX`/`layerOut` ops (residual1 + residual2) that
+   vocab's control-flow path never executes, and, unlike level 0-2's single
+   `layerOut` put in that same `scf.if` (which the ring-merger already
+   tolerates as a 1-vs-0 op-count difference), level 3 puts **multiple**
+   band ops there -- 1-vs-0 compiles; N-vs-0 (or, per the reproduction
+   above, even 2-vs-anything on the *shared* portion) does not.
+2. **Two same-channel puts in one control path is already enough**, per the
+   minimal repro -- independent of the arm asymmetry in (1). Whatever
+   invariant the ring-builder relies on for `npu_dma_packet` channels breaks
+   the moment a second textual put to the same channel appears in one
+   invocation, which every level-3 phase (ph0's own `nband` scale-prepass
+   puts, before any regen or residual code runs at all) introduces.
+
+This sharpens, rather than repeats, the pre-existing lock-credit hazard
+`_rms_batched`'s own docstring already documents (`getLockValuePair` counting
+channel ops across `scf.if` arms): that mechanism is about **runtime
+semaphore credit** and was a **deadlock risk**. This is a **different**
+mechanism (BD-ring construction for tiles sharing physical DMA ports) and a
+**compile-time failure**, not a runtime one. Both point the same direction --
+`rmsX`/`layerOut`'s "one op per role" discipline is not a style preference,
+it is load-bearing for two independent reasons -- but this one is a hard
+wall: level 3's core design (per-band, per-phase separate channel ops)
+inherently multiplies the op count on a port `rmsW`/`outY` already share,
+and multiplying it is exactly what's disallowed.
+
+**What a fix would need, not yet attempted:** every arm's control-flow path
+through the rms tile's program would have to deliver the *same* number of
+`rmsX`/`layerOut` transfers, which likely means moving residual1/ph2/
+residual2 **out of** `_if_decode`'s `scf.if` entirely (unconditional for both
+arms, with vocab's copies reduced to zero-length no-ops -- the same
+`_n = _i32(PAYLOAD if _add else 0)` trick `_accumulate` already uses for
+`DECODE_ACC_STOP`). That collides with the OTHER documented constraint right
+next to it: `_accumulate`'s outer loop bound has to stay **static** ("the
+demux id analysis does need" it, per `_rms_batched`'s docstring), so making
+it unconditional means vocab's arm would need `nband` **static** `outY` gets
+too -- which requires the o-proj/down projection cores (a different herd
+entirely) to also deliver `nband` matching (dummy, zero-length) transfers on
+`outY` for the vocab arm, something they do not do today. This is a
+cascading, cross-herd redesign, not a local patch to `_rms_batched`, and it
+has not been scoped in the detail levels 1/2's fixes were.
 
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
