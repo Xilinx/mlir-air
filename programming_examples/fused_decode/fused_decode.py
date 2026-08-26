@@ -5849,25 +5849,52 @@ def build_module():
 
                         xb = AllocOp(rmsb_l1, [], [])
                         if RMS_BAND_STREAM >= 2:
-                            # Same single-op-per-role shape as everywhere else in
-                            # this function: one ChannelGet call, inside one
-                            # scf.for, landing each band into xb's own column
-                            # (row stride K) instead of one whole-buffer get.
-                            # xb is still full-size here -- this is ONLY testing
-                            # that the launch side's matching Python-unrolled
-                            # put sequence (_uni_dec) lands data at the right
-                            # offsets, not shrinking anything yet.
+                            # NOT WORKING YET -- two variants tried on device,
+                            # two distinct failures, neither diagnosed to a fix.
+                            # See "Level 2: two failures, not yet a fix" in
+                            # docs/DFlashFeasibility.md before touching this again.
+                            #
+                            # xb is still full-size here -- this is ONLY meant to
+                            # test that the launch side's matching sequence
+                            # (_uni_dec) lands data at the right offsets, not
+                            # shrinking anything yet.
+                            #
+                            # Variant A (a scf.for of 1 get, kept for the record):
+                            # AIR folds a static-trip-count scf.for into ONE 3-D
+                            # BD (confirmed in air_project/placed.air.mlir: one
+                            # `air.channel.get ... [4, 8, 512] [512, 2048, 1]`
+                            # against the launch side's four separate
+                            # `air.channel.put`s). Compiled, ran, NO hang, WRONG
+                            # DATA (0/8 accepted, plausible-looking garbage) --
+                            # one packet-channel op on this end against four on
+                            # the other did not raise an error anywhere.
+                            #
+                            # Variant B (this one): Python-unrolled to match the
+                            # launch side's count 1:1 (4 gets against 4 puts,
+                            # confirmed in placed.air.mlir as 4 separate ops on
+                            # both ends). Compiled, HUNG on device
+                            # (ERT_CMD_STATE_TIMEOUT) -- device recovered cleanly
+                            # after restoring the shipping templates, so this is
+                            # not a corrupted rig, it is this design.
+                            #
+                            # Matching op-count is necessary but was not
+                            # sufficient; something about 4 textual ops naming
+                            # xb (rather than 1 op in a loop) changed the lock
+                            # accounting AIRToAIESchedulingUtils.cpp derives from
+                            # textual occurrence count (see _rms_batched's own
+                            # docstring above) in a way that mattered here even
+                            # though the launch side grew the same way. Reading
+                            # that pass's actual packet-channel BD/lock generation
+                            # is the next step, not another blind variant.
                             assert K % STG_W == 0
-                            for _cx in for_(idx(0), idx(K // STG_W), idx(1)):
-                                _xoff = arith.muli(_cx, idx(STG_W))
+                            for _cx in range(K // STG_W):
                                 ChannelGet(
                                     "rmsX",
                                     xb,
-                                    offsets=[idx(0), _xoff],
-                                    sizes=[idx(BATCH), idx(STG_W)],
-                                    strides=[idx(K), idx(1)],
+                                    offsets=[0, _cx * STG_W],
+                                    sizes=[BATCH, STG_W],
+                                    strides=[K, 1],
                                 )
-                                yield_([])
                         else:
                             ChannelGet("rmsX", xb, indices=[idx(0)])
                         stg = AllocOp(rstg_l1, [], [])

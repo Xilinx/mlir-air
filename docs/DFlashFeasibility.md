@@ -1695,6 +1695,38 @@ guarantee it needs (the scratch write must land before the later read of it)
 checked against how AIR's dependency pass treats two offsets into the same
 memref, not assumed.
 
+#### Level 2 tried: two failures, not yet a fix [measured]
+
+Level 2 bands the INITIAL `rmsX` read too (`xb` still full-size -- this only
+tests that the launch side's banded feed lands data correctly, before
+attempting the harder scratch round-trip above). Two variants, both compiled
+clean, both tested on device, both wrong in different ways:
+
+- **Variant A**: compute-tile side wraps the 4 band gets in an `scf.for` with
+  a static trip count. AIR folds this into ONE 3-D `air.channel.get` (`[4, 8,
+  512]` / `[512, 2048, 1]`, confirmed in `air_project/placed.air.mlir`)
+  against the launch side's four separate, textually distinct
+  `air.channel.put`s (Python-unrolled -- a launch-scope `scf.for` deadlocks
+  the shim, see `_feed_wcols`). **No hang, WRONG DATA**: `spec_accept.py
+  --batch 8` went from 8/8 to 0/8 accepted, plausible-looking garbage rather
+  than NaN or a crash.
+- **Variant B**: Python-unroll the compute-tile side too, matching the launch
+  side 1:1 (4 gets against 4 puts, confirmed in placed.air.mlir). **Hung**
+  (`ERT_CMD_STATE_TIMEOUT`). The device recovered cleanly afterward -- a
+  known-good build ran correctly right after -- so this is the design, not a
+  wedged rig.
+
+Matching the launch side's op COUNT was necessary (variant A's mismatch is a
+real bug) but not sufficient (variant B still fails, differently). This
+doesn't fit the previously-documented lock-credit hazard cleanly: that one
+was about a channel op duplicated across `scf.if` arms, and neither variant
+here has any branch at all -- both sit in a single straight-line body. Left
+open: whether `rmsX` being a PACKET channel (packet-id demux, not a plain
+circuit channel) changes what "matching op count" even means for AIR's lock/
+BD generation. Reading `AIRToAIESchedulingUtils.cpp`'s actual packet-channel
+lowering is the next step before trying a third variant -- two blind guesses
+already cost two device cycles for two different failures.
+
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
 never ran. DFlash's draft is a batched multi-head guess that has to produce
