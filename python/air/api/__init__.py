@@ -84,6 +84,21 @@ and the trips share one set of buffer descriptors, so writing them out as a
 Python ``for`` turns one fan-out into that many independent DMAs. See
 ``herd_dataflow``, where the unrolled form does not fit on npu1 at all.
 
+The DSL has **two conditionals**, and they are not interchangeable.
+``ops.select(c, a, b)`` is branchless: ``c`` compares buffer *data*, the
+decision is per element, both sides are evaluated, and the arms are values.
+``ops.branch(c)`` is a real branch: ``c`` compares *index* expressions
+(``tx == 0``), the decision is per core, one side runs, and the arms are
+statements -- which is what a channel put or a DMA has to be. They are the two
+halves of if-conversion. Reaching for either with the other's condition raises
+and the message names the one you wanted; ``_cond.py`` has the full table.
+
+``ops.branch`` has to be a region rather than a Python ``if`` because the herd
+body is traced once for the whole herd: a comparison against a coordinate has no
+value at trace time, so ``bool()`` on one raises rather than picking a branch for
+every core. The else is ``with <branch>.otherwise():``. There is no
+``and``/``or``, and conjunction is nesting.
+
 One hardware caveat that the DSL cannot see and so cannot raise on: an
 *unstaged* K reduction on a 2-D herd is wrong past a single trip. Both operands
 are then broadcast, and the resulting packet flows share one shim channel whose

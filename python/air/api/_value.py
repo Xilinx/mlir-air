@@ -82,9 +82,9 @@ def _carries_offset(offset):
 
     A runtime offset counts as carrying one: it may well be non-zero, and a
     reshape has no way to prove otherwise. This has to go through as_const()
-    rather than comparing to 0 -- IndexExpr does not implement equality against
-    an int, so ``offset != 0`` is true for every offset, compile-time zero
-    included, which would make the two branches below unreachable in turn.
+    rather than comparing to 0 -- ``offset != 0`` on an IndexExpr builds a
+    Condition for ``ops.branch``, not a bool, and Condition refuses ``bool()``, so
+    the comparison would raise on every offset rather than answer the question.
     """
     value = offset.as_const() if hasattr(offset, "as_const") else offset
     return value != 0
@@ -636,9 +636,10 @@ def _check_shift_amount(amount, value, op):
     over herd coordinates is ordinary in a kernel body, and ``tx - tx + 32``
     reaches the emitter as a literal ``arith.constant 32`` -- indistinguishable,
     by the time it gets there, from having been written as ``32``. Reading it
-    back has to go through ``as_const()``: IndexExpr does not implement equality
-    or int conversion against a Python int, so an isinstance test alone sees
-    every index expression as "runtime" and lets the folded ones through.
+    back has to go through ``as_const()``: an isinstance test alone sees every
+    index expression as "runtime" and lets the folded ones through, and
+    comparing to an int instead builds a Condition for ``ops.branch`` rather than
+    answering.
     """
     if amount.kind != "scalar":
         return  # not a scalar operand at all: nothing to check

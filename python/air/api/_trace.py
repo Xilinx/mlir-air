@@ -399,6 +399,44 @@ class Symbol:
     def __repr__(self):
         return f"air.api.symbol({self.name}={self.value})"
 
+    # Comparisons do NOT fold, unlike the arithmetic below. The two have
+    # opposite requirements and both are honest: a symbol used as a tile size
+    # has to be a Python int, because it sizes a memref; a symbol used as a
+    # branch condition has to stay a value, because folding it would delete the
+    # scf.if. Which is the whole point of a symbol -- the prototype defines one
+    # as "known at dispatch time rather than compile time", and v1 resolving it
+    # early is an implementation detail, not licence to compile the branch away.
+    # `Condition.materialize()` emits arith.constant + arith.cmpi even when both
+    # sides are constant, and air-to-aie's SpecializeScfIfPattern folds it once
+    # the herd is unrolled -- so the branch costs nothing and still exists in
+    # the IR the compiler is handed.
+    def _compare(self, other, predicate, symbol):
+        from ._index import coerce_index
+
+        return coerce_index(self)._compare(other, predicate, symbol)
+
+    def __eq__(self, o):
+        return self._compare(o, "eq", "==")
+
+    def __ne__(self, o):
+        return self._compare(o, "ne", "!=")
+
+    def __lt__(self, o):
+        return self._compare(o, "slt", "<")
+
+    def __le__(self, o):
+        return self._compare(o, "sle", "<=")
+
+    def __gt__(self, o):
+        return self._compare(o, "sgt", ">")
+
+    def __ge__(self, o):
+        return self._compare(o, "sge", ">=")
+
+    # Defining __eq__ would otherwise drop the default hash, and a Symbol is
+    # kept in PENDING_SYMBOLS and looked up by identity.
+    __hash__ = object.__hash__
+
     # Arithmetic yields plain ints: a resolved symbol is just a constant.
     def __add__(self, o):
         return self.value + int(o)
@@ -1050,9 +1088,9 @@ class HerdContext:
         from air.dialects.air import herd as herd_region
         from air.dialects.scf import for_ as range_, yield_
 
-        from ._loop import aborted_loops, enter_body, exit_body
+        from ._loop import aborted_regions, enter_body, exit_body
 
-        aborted_before = aborted_loops()
+        aborted_before = len(aborted_regions())
 
         tensors = trace.tensors
         # air.herd is IsolatedFromAbove, so an L2 buffer allocated in the
@@ -1165,13 +1203,26 @@ class HerdContext:
                 next(iter(herd_self._objects))
             )
 
-        if aborted_loops() != aborted_before:
+        aborted = aborted_regions()[aborted_before:]
+        if aborted:
+            # Name the construct that was abandoned. ops.branch shares the
+            # region bookkeeping with air.sequential, and reporting a truncated
+            # branch as "left a loop early" sends the reader to the wrong line.
+            loops = [a for a in aborted if a in ("air.sequential", "air.parallel")]
+            if loops:
+                raise RuntimeError(
+                    f"a body left an {loops[0]} loop early (break, return, or a "
+                    "swallowed exception). An air.sequential body is traced once and "
+                    "stands for every trip, so an early exit does not shorten the "
+                    "loop -- it truncates the body of all of them, and the kernel "
+                    "computes a partial result. Restructure the loop bounds instead."
+                )
             raise RuntimeError(
-                "a body left an air.sequential loop early (break, return, or a "
-                "swallowed exception). An air.sequential body is traced once and "
-                "stands for every trip, so an early exit does not shorten the "
-                "loop -- it truncates the body of all of them, and the kernel "
-                "computes a partial result. Restructure the loop bounds instead."
+                "a body left an ops.branch region early (break, return, or a "
+                "swallowed exception). The region is emitted either way, so the "
+                "ops written after the exit are simply missing from it, and the "
+                "cores that take that branch compute a partial result. Let the "
+                "`with` block run to its end."
             )
 
 
@@ -1273,11 +1324,12 @@ def alloc(shape, dtype, scope=None, vector=None):
         )
     if space == "L1" and loop_depth():
         raise NotImplementedError(
-            "air.alloc inside an air.sequential body is not supported: the herd "
-            "frees its buffers once the body is finished, which is outside the "
-            "loop, so the dealloc would not be dominated by its alloc. Hoist the "
-            "allocation above the loop -- the buffer is reused across trips, "
-            "which is what a loop is for."
+            "air.alloc inside an air.sequential or ops.branch body is not "
+            "supported: the herd frees its buffers once the body is finished, "
+            "which is outside the region, so the dealloc would not be dominated "
+            "by its alloc. Hoist the allocation above it -- a loop reuses the "
+            "buffer across trips, which is what a loop is for, and a buffer only "
+            "some cores read still costs the same L1 on every core."
         )
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since

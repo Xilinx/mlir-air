@@ -25,13 +25,25 @@ here would only defer the failure into the IR.
 
 from ._index import IndexExpr
 
-__all__ = ["sequential", "parallel", "loop_depth", "aborted_loops"]
+__all__ = [
+    "sequential",
+    "parallel",
+    "loop_depth",
+    "aborted_regions",
+    "enter_region",
+    "exit_region",
+]
 
-# Loops whose body exited early (break / return / an exception the caller
-# swallowed). Emission still closes the region so the IR stays well formed, but
-# the body is short of trips and the herd would compute a partial reduction, so
-# the count is checked once the herd body is finished. See `aborted_loops`.
-_ABORTED = 0
+# Names of the regions whose body exited early (break / return / an exception
+# the caller swallowed). Emission still closes the region so the IR stays well
+# formed, but the body is short of what was written and the herd would compute
+# a partial result, so this is checked once the herd body is finished.
+#
+# It records the *construct*, not just a count, because ops.branch shares this
+# machinery with air.sequential and the two need different advice: a truncated
+# loop is fixed by restructuring the bounds, a truncated branch is not a loop
+# problem at all. A single counter reported both as "left a loop early".
+_ABORTED = []
 
 # How many air.sequential bodies are currently open. air.alloc consults this: an
 # allocation inside a loop is freed by the herd after the loop closes, and the
@@ -63,8 +75,22 @@ def exit_body(previous):
     _DEPTH = previous
 
 
-def aborted_loops():
-    return _ABORTED
+def aborted_regions():
+    return tuple(_ABORTED)
+
+
+def enter_region():
+    """Count one more open nested region (a loop body, or an ``ops.branch``)."""
+    global _DEPTH
+    _DEPTH += 1
+
+
+def exit_region(aborted, what="air.sequential"):
+    """Close it, recording ``what`` if its body did not run to the end."""
+    global _DEPTH
+    _DEPTH -= 1
+    if aborted:
+        _ABORTED.append(what)
 
 
 def sequential(start, stop=None, step=None, name=None):
@@ -108,7 +134,7 @@ def sequential(start, stop=None, step=None, name=None):
         finally:
             _DEPTH -= 1
             if not completed:
-                _ABORTED += 1
+                _ABORTED.append("air.sequential")
             # Terminate the region either way: leaving a block without a
             # terminator turns a diagnosable "you broke out of a loop" into an
             # MLIR verifier crash somewhere else entirely.
@@ -177,7 +203,7 @@ def parallel(start, stop=None, step=None, name=None):
     finally:
         _DEPTH -= 1
         if not completed:
-            _ABORTED += 1
+            _ABORTED.append("air.parallel")
             with InsertionPoint(op.body):
                 InParallelOp()
 

@@ -1,132 +1,111 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A cascade reduction across a row of cores, on air.api.
 
-"""Cascade Reduction Example
+Four cores in a row, chained by a cascade channel. Each adds one, so the
+result is ``input + 4``:
 
-Demonstrates a 4-tile cascade reduction pattern using AIR channels.
+    launch                      put   -> chan_in
+    tile 0    chan_in     -> get, +1, put -> chan_cascade[0]
+    tile 1    cascade[0]  -> get, +1, put -> chan_cascade[1]
+    tile 2    cascade[1]  -> get, +1, put -> chan_cascade[2]
+    tile 3    cascade[2]  -> get, +1, put -> chan_out
+    launch                      get   <- chan_out
 
-Data flows through a 1x4 herd in a pipeline:
-  1. Launch puts input data on @chan_in
-  2. Tile 0: gets from @chan_in, adds 1, puts on @chan_cascade[0]
-  3. Tile 1: gets from @chan_cascade[0], adds 1, puts on @chan_cascade[1]
-  4. Tile 2: gets from @chan_cascade[1], adds 1, puts on @chan_cascade[2]
-  5. Tile 3: gets from @chan_cascade[2], adds 1, puts on @chan_out
-  6. Launch gets output from @chan_out
+The point of the example is that the four cores are *not* interchangeable: the
+first reads from L3, the last writes to L3, and the middle two only forward. A
+herd body is traced once for the whole herd, so telling them apart is
+``ops.branch`` -- an ``scf.if`` on the tile coordinate -- and not a Python ``if``,
+which would have to pick one branch for every core. ``tx == 0`` builds the
+condition; the comparison is emitted as ``arith.cmpi`` where the region opens.
 
-Final result: output = input + 4
+``chan_cascade`` is ``channel_type="npu_cascade"``: a direct core-to-core
+connection between neighbouring tiles rather than a DMA stream. The herd is
+therefore a row -- ``NUM_TILES`` columns by one -- so the cascade flows
+west-to-east between adjacent columns.
+
+Two differences from the predecessor:
+
+* ``local[:] = recv[:] + local[:]`` replaces a ``linalg.add`` with the output
+  aliasing an input. Same accumulate, and the DSL vectorises it rather than
+  handing the pipeline a named op to fuse.
+* The neighbour index is ``tx - 1`` rather than a hand-built ``arith.subi``, so
+  it reaches the channel as one ``affine.apply`` like every other index
+  expression in the DSL.
 """
 
 import argparse
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects import arith, linalg, memref, scf
-from air.dialects.memref import AllocOp
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
-
 import numpy as np
+
+from air import api as air
+from air.api.types import i32
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
 
-range_ = for_
-
 NUM_TILES = 4
 DATA_SIZE = 2048
+SHAPE = [1, 1, DATA_SIZE]
 
 
-@module_builder
 def build_module():
-    xrt_dtype = T.i32()
-    data_shape = [1, 1, DATA_SIZE]
+    src = air.tensor(SHAPE, i32)
+    dst = air.tensor(SHAPE, i32)
 
-    # L3 types
-    l3MemrefTy = MemRefType.get(data_shape, xrt_dtype)
-    # L1 types
-    l1MemrefTy = MemRefType.get(
-        data_shape,
-        xrt_dtype,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
+    # chan_in / chan_out are ordinary DMA links to L3; chan_cascade is the
+    # core-to-core connection between adjacent columns.
+    chan_in = air.channel("chan_in", size=[1])
+    chan_cascade = air.channel(
+        "chan_cascade", size=[NUM_TILES], channel_type="npu_cascade"
     )
+    chan_out = air.channel("chan_out", size=[1])
 
-    # Channels: chan_in/chan_out use DMA (L3<->L1), chan_cascade uses
-    # direct core-to-core cascade connections between adjacent tiles.
-    channel("chan_in", size=[1])
-    channel("chan_cascade", size=[NUM_TILES], channel_type="npu_cascade")
-    channel("chan_out", size=[1])
+    with air.launch(name="cascade_reduce") as launch:
 
-    @FuncOp.from_py_func(l3MemrefTy, l3MemrefTy)
-    def cascade_reduce(arg0, arg1):
+        @launch.body
+        def _():
+            chan_in.put(src)
 
-        launch_size = [1, 1]
+            with air.segment(name="segment_0") as seg:
 
-        @launch(operands=[arg0, arg1], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_in,
-            l3_out,
-        ):
-            # Send input to tile 0
-            ChannelPut("chan_in", l3_in)
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(NUM_TILES)], name="herd_0", shape=(NUM_TILES,)
+                    ) as herd:
 
-            @segment(name="segment_0")
-            def segment_body():
+                        @herd.body
+                        def _(tx):
+                            # Every core contributes the same 1; the reduction
+                            # is the chain, not the operand.
+                            local = air.alloc(SHAPE, i32, scope=herd.private())
+                            air.ops.fill(local, 1)
+                            recv = air.alloc(SHAPE, i32, scope=herd.private())
 
-                # Herd oriented as NUM_TILES columns x 1 row so cascade flows
-                # go West-to-East between adjacent columns.
-                @herd(name="herd_0", sizes=[NUM_TILES, 1])
-                def herd_body(tx, ty, sx, sy):
-                    c0 = arith.ConstantOp.create_index(0)
-                    c1_i32 = arith.ConstantOp(IntegerAttr.get(T.i32(), 1), None)
-                    last_tile = arith.ConstantOp.create_index(NUM_TILES - 1)
+                            with air.ops.branch(tx == 0) as head:
+                                chan_in.get(recv)
+                                local[:] = recv[:] + local[:]
+                                chan_cascade.put(local, indices=[tx])
 
-                    # Each tile has a local buffer initialized to 1
-                    local_buf = AllocOp(l1MemrefTy, [], [])
-                    linalg.fill(c1_i32, outs=[local_buf])
+                            with head.otherwise():
+                                chan_cascade.get(recv, indices=[tx - 1])
+                                local[:] = recv[:] + local[:]
 
-                    # Receive buffer
-                    recv_buf = AllocOp(l1MemrefTy, [], [])
+                                with air.ops.branch(tx == NUM_TILES - 1) as tail:
+                                    chan_out.put(local)
+                                with tail.otherwise():
+                                    chan_cascade.put(local, indices=[tx])
 
-                    # Tile 0: read from chan_in
-                    cmp_first = arith.CmpIOp(arith.CmpIPredicate.eq, tx, c0)
-                    if_first = scf.IfOp(cmp_first, has_else=True)
-                    with InsertionPoint(if_first.then_block):
-                        ChannelGet("chan_in", recv_buf)
-                        linalg.add(recv_buf, local_buf, outs=[local_buf])
-                        ChannelPut("chan_cascade", local_buf, indices=[tx])
-                        yield_([])
+            chan_out.get(dst)
 
-                    # Tiles 1..N-1: read from previous tile's cascade channel
-                    with InsertionPoint(if_first.else_block):
-                        c1_idx = arith.ConstantOp.create_index(1)
-                        prev_tx = arith.SubIOp(tx, c1_idx)
-                        ChannelGet("chan_cascade", recv_buf, indices=[prev_tx])
-                        linalg.add(recv_buf, local_buf, outs=[local_buf])
-
-                        # Last tile: write to chan_out; others: write to chan_cascade
-                        cmp_last = arith.CmpIOp(arith.CmpIPredicate.eq, tx, last_tile)
-                        if_last = scf.IfOp(cmp_last, has_else=True)
-                        with InsertionPoint(if_last.then_block):
-                            ChannelPut("chan_out", local_buf)
-                            yield_([])
-                        with InsertionPoint(if_last.else_block):
-                            ChannelPut("chan_cascade", local_buf, indices=[tx])
-                            yield_([])
-
-                        yield_([])
-
-            # Receive output from last tile
-            ChannelGet("chan_out", l3_out)
+    return launch
 
 
-if __name__ == "__main__":
+def parse_args():
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="cascade_reduction.py",
         description="Builds, runs, and tests the cascade reduction example",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -145,57 +124,76 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+    return parser.parse_args()
 
-    mlir_module = build_module()
+
+def main():
+    args = parse_args()
+
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
-        exit(0)
+        return 0
 
-    input_a = np.arange(0, DATA_SIZE, dtype=np.int32).reshape(1, 1, DATA_SIZE)
+    input_a = np.arange(0, DATA_SIZE, dtype=np.int32).reshape(*SHAPE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.zeros(num_samples, dtype=int),
-                np.zeros(num_samples, dtype=int),
-                np.random.randint(0, DATA_SIZE, num_samples),
-            ]
-        )
-
-        sampled_values = np.array(
-            [input_a[i, j, k] + NUM_TILES for i, j, k in zip(*sampled_indices)],
-            dtype=np.int32,
-        )
-
-        sampled_data = {
-            "shape": (1, 1, DATA_SIZE),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="cascade_reduce",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
+    if args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
-        module_function = backend.compile(mlir_module)
+        backend.compile(mlir_module)
         backend.unload()
+        return 0
+
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="cascade_reduce",
+        runtime_loop_tiling_sizes=[4, 4],
+        target_device=launch.target,
+    )
+
+    # The output is 2048 elements of input + NUM_TILES; a sample of 100 of them
+    # is what the predecessor checked, and it is enough to catch a broken link
+    # in the chain (a missing +1 shifts every element).
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.zeros(num_samples, dtype=int),
+            np.zeros(num_samples, dtype=int),
+            np.random.randint(0, DATA_SIZE, num_samples),
+        ]
+    )
+    sampled_values = np.array(
+        [input_a[i, j, k] + NUM_TILES for i, j, k in zip(*sampled_indices)],
+        dtype=np.int32,
+    )
+
+    return runner.run_test(
+        mlir_module,
+        inputs=[input_a],
+        stochastic_expected_outputs=[
+            {
+                "shape": tuple(SHAPE),
+                "indices": sampled_indices,
+                "values": sampled_values,
+            }
+        ],
+    )
+
+
+if __name__ == "__main__":
+    exit(main())
