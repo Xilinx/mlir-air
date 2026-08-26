@@ -1470,6 +1470,20 @@ GLU_TILE = _tile_for(GLU_SLICE)
 # STG_W is the wider of the two things that staging buffer carries: one @xnorm
 # chunk out, or one projection round in (both [BATCH][w], token-major).
 STG_W = max(XCHUNK, PAYLOAD)
+
+# RMS_BAND_STREAM level 2's DMA transfer granularity for banding rmsX, kept
+# SEPARATE from STG_W. AIETargetModel::getBDMaxDims/getDmaBdWrapBits
+# (mlir-aie, AIETargetModel.h) give a core (compute) tile's DMA BD an 8-bit
+# wrap field per dimension -- max representable extent is well under STG_W's
+# 512, and the existing `_rms_batched_norm` comment about "the 3-D chunk-major
+# form the MEMTILE producers use would not be legal here" is this exact
+# limit, for a different channel. Three device-tested variants (A, B, C; see
+# docs/DFlashFeasibility.md) all used STG_W (512) as a BD dimension's extent
+# and all failed, two with the same wrong data and one with a hang --
+# consistent with a truncated/wrapped 8-bit size field producing a
+# deterministic but wrong hardware iteration count. 64 matches PAIR_PAY, an
+# extent already proven to work in a 3-D pattern elsewhere (outy_tokmajor).
+_RMS_DMA_CHUNK = 64
 # BOTH norm weights, because the batched body really does hold both. It allocs
 # `w` (input norm) and `w2` (post-attention norm) together at the top and frees
 # them together at the bottom -- not alloc-at-first-use/free-at-last-use, and
@@ -2712,14 +2726,17 @@ def build_module():
                                 # identically whichever arm is active, so this
                                 # arm's feed has to match it. One static 3-D
                                 # put, matching the compute tile's one 3-D get
-                                # op-for-op -- see the variant-C comment there.
-                                assert K % STG_W == 0
+                                # op-for-op -- see the variant-C/D comment there.
+                                # _RMS_DMA_CHUNK, not STG_W: a compute tile's
+                                # 8-bit-per-dimension BD wrap field can't hold
+                                # STG_W (512) as an extent (variant D).
+                                assert K % _RMS_DMA_CHUNK == 0
                                 ChannelPut(
                                     "rmsX",
                                     X,
                                     offsets=[_x_final, 0, 0],
-                                    sizes=[K // STG_W, BATCH, STG_W],
-                                    strides=[STG_W, K, 1],
+                                    sizes=[K // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
+                                    strides=[_RMS_DMA_CHUNK, K, 1],
                                 )
                             else:
                                 ChannelPut(
@@ -2849,21 +2866,21 @@ def build_module():
                             # core takes the block in one get and keeps it as
                             # the residual stream for the whole layer.
                             if RMS_BAND_STREAM >= 2:
-                                # Variant C: ONE static 3-D put, matching the
-                                # compute tile's own single 3-D get op-for-op
-                                # (see _rms_batched) instead of Python-unrolling
-                                # to 4 separate puts (variants A/B, both failed
-                                # on device -- see docs/DFlashFeasibility.md).
-                                # Not a loop either way, so the launch-scope
+                                # Variant D: one static 3-D put/get pair on
+                                # both ends (like variant C), but at
+                                # _RMS_DMA_CHUNK granularity, not STG_W -- see
+                                # the _RMS_DMA_CHUNK comment and the
+                                # variant-D note in _rms_batched. Not a loop
+                                # either way, so the launch-scope
                                 # for_-deadlocks-the-shim rule (_feed_wcols)
                                 # doesn't enter into it.
-                                assert K % STG_W == 0
+                                assert K % _RMS_DMA_CHUNK == 0
                                 ChannelPut(
                                     "rmsX",
                                     X,
                                     offsets=[_x_in(), 0, 0],
-                                    sizes=[K // STG_W, BATCH, STG_W],
-                                    strides=[STG_W, K, 1],
+                                    sizes=[K // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
+                                    strides=[_RMS_DMA_CHUNK, K, 1],
                                 )
                             else:
                                 ChannelPut(
@@ -5895,38 +5912,56 @@ def build_module():
                             # SHARED chain relative to the other three channels'
                             # BDs, which A (still 1 BD) does not.
                             #
-                            # Variant C (this one): neither side loops. The
-                            # consumer already gets folded to ONE static 3-D op
-                            # by AIR regardless (that's A); this makes the
-                            # PRODUCER a single static 3-D op too, matching op
-                            # count 1-vs-1 instead of 1-vs-4 -- not a scf.for (so
+                            # Variant C: neither side loops. The consumer
+                            # already gets folded to ONE static 3-D op by AIR
+                            # regardless (that's A); this makes the PRODUCER a
+                            # single static 3-D op too, matching op count
+                            # 1-vs-1 instead of 1-vs-4 -- not a scf.for (so
                             # the shim-deadlock rule doesn't apply), just one
-                            # ChannelGet call with a 3-D shape, the same pattern
-                            # _xnorm_put already uses with no loop at all.
+                            # ChannelGet call with a 3-D shape, the same
+                            # pattern _xnorm_put already uses with no loop at
+                            # all. RESULT: WRONG DATA, BYTE-IDENTICAL to
+                            # variant A's wrong logits (same first-mismatch
+                            # token values at every position) -- two producer
+                            # op counts (1 and 4) against the same consumer
+                            # shape gave the IDENTICAL wrong answer, which
+                            # rules OUT op-count/synchronization as the cause.
                             #
-                            # RESULT: WRONG DATA, and not just "also wrong" --
-                            # BYTE-IDENTICAL wrong logits to variant A's run (same
-                            # first-mismatch token values at every position). Two
-                            # producer-side op counts (1 and 4) against the same
-                            # consumer shape gave the IDENTICAL wrong answer, which
-                            # rules OUT op-count/synchronization as the cause of
-                            # the wrong-data failure mode entirely. The remaining
-                            # suspect is the 3-D (offsets, sizes, strides) triple's
-                            # dimension-order semantics itself -- whether dim 0 is
-                            # outermost or innermost, and whether the L3 (launch/
-                            # shim) and L1 (compute-tile) lowering paths agree on
-                            # that convention -- being wrong in the SAME way
-                            # regardless of op count. Under investigation; do not
-                            # add a variant D without reading
-                            # AIRToAIEPass.cpp's/AIRRtToNpuPass.cpp's actual BD
-                            # generation first.
-                            assert K % STG_W == 0
+                            # A follow-up investigation traced the actual
+                            # dimension-order semantics through both the L1
+                            # and L3 lowering paths (AIRToAIESchedulingUtils
+                            # .cpp's getWrapsAndStrides, AIRLoweringPass.cpp,
+                            # AIRRtToNpuPass.cpp, and mlir-aie's own dimension-
+                            # reversal code in AIERT.cpp/AIEDMATasksToNPU.cpp)
+                            # and found dim 0 = outermost consistently on BOTH
+                            # ends, matching this code's own assumption and
+                            # ruling that theory out too.
+                            #
+                            # THE ACTUAL CAUSE (variant D fixes it, below): a
+                            # core (compute) tile's DMA BD has an 8-BIT wrap
+                            # field PER DIMENSION (AIETargetModel.h,
+                            # getDmaBdWrapBits: 8 for core tiles, 10 for mem/
+                            # shim) once sizes/strides are given explicitly --
+                            # this is the SAME limit `_rms_batched_norm`'s own
+                            # comment already names for a different channel
+                            # ("a compute tile's wrap field is 8 bits, so the
+                            # 3-D chunk-major form the MEMTILE producers use
+                            # would not be legal here"). Every variant above
+                            # used STG_W (512) as a BD dimension's extent --
+                            # 512 does not fit in 8 bits. A truncated/wrapped
+                            # size field is silently accepted (no verifier
+                            # error) and produces a deterministic but wrong
+                            # hardware iteration count -- consistent with A
+                            # and C's identical wrong data, and plausibly with
+                            # B's hang too (B's 2-D per-op shape [BATCH,
+                            # STG_W] still has 512 as a wrap-encoded extent).
+                            assert K % _RMS_DMA_CHUNK == 0
                             ChannelGet(
                                 "rmsX",
                                 xb,
                                 offsets=[0, 0, 0],
-                                sizes=[K // STG_W, BATCH, STG_W],
-                                strides=[STG_W, K, 1],
+                                sizes=[K // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
+                                strides=[_RMS_DMA_CHUNK, K, 1],
                             )
                         else:
                             ChannelGet("rmsX", xb, indices=[idx(0)])

@@ -1695,7 +1695,7 @@ guarantee it needs (the scratch write must land before the later read of it)
 checked against how AIR's dependency pass treats two offsets into the same
 memref, not assumed.
 
-#### Level 2 tried: three variants, two failure modes, neither a fix [measured]
+#### Level 2: three failed variants, then the actual cause [measured, FIXED]
 
 Level 2 bands the INITIAL `rmsX` read too (`xb` still full-size -- this only
 tests that the launch side's banded feed lands data correctly, before
@@ -1750,9 +1750,46 @@ explain variant B's hang either.
   SHARED chain relative to the other three channels' BDs, which A and C
   (both still 1 BD) do not. Not traced to a confirmed causal chain.
 
-Do not add a fourth variant without reading the BD-generation code first --
-three device cycles have gone to three distinct outcomes without one yet
-landing on the actual mechanism.
+A follow-up investigation traced the actual dimension-order semantics through
+both the L1 and L3 lowering paths (`AIRToAIESchedulingUtils.cpp`'s
+`getWrapsAndStrides`, `AIRLoweringPass.cpp`, `AIRRtToNpuPass.cpp`, and
+mlir-aie's own dimension-reversal code in `AIERT.cpp`/`AIEDMATasksToNPU.cpp`)
+and found dimension 0 = outermost consistently on BOTH ends -- ruling that
+theory out too.
+
+**The actual cause: a core (compute) tile's DMA BD has an 8-BIT wrap field
+PER DIMENSION.** `AIETargetModel.h`'s `getDmaBdWrapBits` returns 8 for core
+tiles, 10 for mem/shim tiles, once `sizes`/`strides` are given explicitly
+(not the plain-length path a whole-buffer transfer with no explicit strides
+takes). This is the SAME limit `_rms_batched_norm`'s own pre-existing comment
+already named for a different channel: *"a compute tile's wrap field is 8
+bits, so the 3-D chunk-major form the MEMTILE producers use would not be
+legal here."* Every one of variants A/B/C used `STG_W` (512) as a BD
+dimension's extent -- 512 does not fit in 8 bits. A truncated/wrapped size
+field is silently accepted (no verifier error) and produces a deterministic
+but wrong hardware iteration count -- exactly matching A and C's identical
+wrong data, and plausibly B's hang too (B's 2-D per-op shape `[BATCH,
+STG_W]` still has 512 as a wrap-encoded extent).
+
+**Variant D fixes it**: keep the DMA transfer granularity separate from
+`STG_W` (which stays 512 for the scale/chunk kernels' own pointer
+arithmetic, unaffected since that's plain C, not a channel op). Introduce
+`_RMS_DMA_CHUNK = 64` -- matching `PAIR_PAY`, an extent already proven to
+work in a 3-D pattern elsewhere (`outy_tokmajor`) -- and do the SAME
+one-static-3-D-op-per-end shape as variant C, just shaped `[32, 8, 64]` /
+`[64, 2048, 1]` instead of `[4, 8, 512]` / `[512, 2048, 1]`. **Verified on
+device**: `spec_accept.py --batch 8 --blocks 3` -- 8/8 accepted on every
+block, identical to the unbanded baseline. `check_channel_balance.py` and
+`l1_align.py` both clean. Confirms the wrap-field theory outright: same
+logical transfer, same op count, only the per-dimension extent changed, and
+that alone took it from reproducibly wrong to correct.
+
+Level 2 (banding the initial `rmsX` read, `xb` still full-size) is now
+validated. The harder part -- shrinking `xb` to one resident band and
+round-tripping it through the DDR scratch slot across residual1/ph2/
+residual2 (see "So the residual has to leave L1" above) -- still needs the
+same `_RMS_DMA_CHUNK`-not-`STG_W` discipline applied to every new transfer
+it adds, and remains unbuilt.
 
 The draft templates the loop was measured on return **all-zero logits** -- they
 run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
