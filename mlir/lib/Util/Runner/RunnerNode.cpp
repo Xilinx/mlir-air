@@ -1511,23 +1511,49 @@ private:
   // falls back to the symbol alone, which is the behaviour that predates this.
   bool channelIsIndexable(air::ChannelInterface chan_op) {
     auto name = chan_op.getChanName();
-    auto it = channel_indexable.find(name.str());
-    if (it != channel_indexable.end())
+    // The verdict is a property of the module, so cache it on the root runner
+    // node. Otherwise every node re-walks the module for the same symbol and,
+    // worse, re-reports the same diagnostic once per node.
+    runnerNode *root = this;
+    while (root->parent)
+      root = root->parent;
+    auto it = root->channel_indexable.find(name.str());
+    if (it != root->channel_indexable.end())
       return it->second;
     bool indexable = true;
+    // A bundle whose users disagree -- some indices resolvable, some not -- is
+    // the case that silently loses information. The fallback below demotes the
+    // resolvable users too, so entries the runner could perfectly well tell
+    // apart are merged, and a get on one can be satisfied by a put on another.
+    // A bundle whose users are *uniformly* unresolvable is fine merged: nothing
+    // could be told apart in the first place, and dataflow orders the pairings.
+    air::ChannelInterface resolvableUser = nullptr, unresolvableUser = nullptr;
     if (auto mod = chan_op->getParentOfType<ModuleOp>()) {
       mod.walk([&](air::ChannelInterface user) {
         if (user.getChanName() != name)
           return;
-        if (user.getIndices().empty())
-          indexable = false;
+        bool userResolvable = !user.getIndices().empty();
         for (auto v : user.getIndices())
           if (!resolveConstantThroughHierarchy(v))
-            indexable = false;
+            userResolvable = false;
+        if (!userResolvable)
+          indexable = false;
+        auto &slot = userResolvable ? resolvableUser : unresolvableUser;
+        if (!slot)
+          slot = user;
       });
     } else
       indexable = false;
-    channel_indexable[name.str()] = indexable;
+    if (resolvableUser && unresolvableUser)
+      unresolvableUser->emitOpError()
+          << "channel bundle @" << name.str()
+          << " is indexed both by constants and by values the runner cannot "
+             "resolve, so every entry is merged and a get on one entry can be "
+             "satisfied by a put on another. The constant-indexed users of "
+             "this bundle lose an identity the runner would otherwise have; "
+             "make every index a constant, for instance by unrolling the loop "
+             "that produces this one";
+    root->channel_indexable[name.str()] = indexable;
     return indexable;
   }
   std::map<std::string, bool> channel_indexable;
