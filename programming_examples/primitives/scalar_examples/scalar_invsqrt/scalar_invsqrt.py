@@ -1,114 +1,100 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Scalar inverse square root (1/sqrt(x)) primitive, on air.api.
+
+    c[:] = air.ops.rsqrt(a[:])        with vector=0
+
+One line of compute, and the ``vector=0`` beside it is the whole point of this
+example. It is what sends air.api's emitter down its scalar path: a plain
+``scf.for`` over the tile in steps of one, ``memref.load``, ``math.rsqrt`` on an
+f32 scalar, ``memref.store`` -- precisely what the raw-bindings predecessor
+wrote by hand.
+
+**npu2 only, and that is inherited, not new.** ``math.rsqrt`` on a plain f32 is
+an instruction on npu2 and is not one on npu1, where the AIE lowering instead
+calls ``getRsqrtBf16`` out of an object file -- a bf16 entry point, with nothing
+to offer an f32 scalar. The predecessor's lit is already
+``REQUIRES: ryzen_ai_npu2`` for that reason. What is new is that building for
+npu1 now says so, rather than producing a module that fails several passes later
+in the backend. ``vector_examples/vector_rsqrt --version 2`` is the same
+computation and refuses npu1 the same way; ``--version 1`` there is the route
+that works on npu1, in bf16 and against that object file.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's, and it distributes differently. The predecessor
+  wrote the outer loop itself and gave core ``ty`` the tiles at
+  ``_l_ivx + ty * tile_n`` -- an interleaved assignment, every other tile. The
+  DSL hands each core a contiguous run of tiles instead. Every tile is still
+  computed exactly once by exactly one core, and the tiles are independent, so
+  the result is unchanged.
+* The L1 buffers are allocated and freed together. The predecessor allocated
+  both outside its temporal loop and called ``DeallocOp`` on them *inside* it,
+  which frees each buffer once per trip -- 32 times, at the default size. Here
+  the pair is scoped to the loop body and balances.
+
+``--target`` is new and defaults to detecting the installed part, which is what
+the predecessor did implicitly by having no device flag at all. Naming it makes
+``-p`` reproducible, and gives the npu1 refusal above something to key off.
+"""
+
 import argparse
+
 import numpy as np
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.math import rsqrt
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import f32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
-def build_module(n, tile_n, np_dtype_in):
-    a_size = [n]
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
-    index_type = IndexType.get()
-
-    # L3 MemRefTypes
-    l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def scalar_invsqrt(arg0, arg1):
-
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg1],
+def build_module(n, tile_n, target="auto"):
+    assert n % (tile_n * NUM_TILES) == 0
+    resolved = air.resolve_target(target)
+    if resolved == "npu1":
+        raise ValueError(
+            "scalar f32 rsqrt is npu2-only: on npu1 math.rsqrt lowers to a call "
+            "into getRsqrtBf16, which takes bf16 and has no f32 scalar form. "
+            "The predecessor's lit was REQUIRES: ryzen_ai_npu2 for the same "
+            "reason. For npu1, see vector_examples/vector_rsqrt --version 1."
         )
-        def herd_body(
-            _tx,
-            _ty,
-            _sx,
-            _sy,
-            _l3_a,
-            _l3_c,
-        ):
-            l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1MemrefTy, [], [])
+    dt = f32
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
+    A = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+    with air.launch(name="scalar_invsqrt") as launch:
 
-                dma_memcpy_nd(
-                    l1_a_data,
-                    _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
+        @launch.body
+        def _():
+            # The iteration space is every tile; shape= pins the core count to
+            # what the predecessor asked for, and the DSL strip-mines the rest
+            # into a loop on each core.
+            with air.herd(
+                [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-                c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
-                cTileN = ConstantOp(index_type, tile_n)
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not an element offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_n
+                    # vector=0 is the scalar path -- see the module docstring.
+                    a = air.alloc([tile_n], dt, scope=h.private(), vector=0)
+                    c = air.alloc([tile_n], dt, scope=h.private(), vector=0)
 
-                # Scalar loop: compute 1.0 / sqrt(x) for each element
-                for j in range_(c0, cTileN, c1):
-                    # Load scalar value from input
-                    scalar_a = load(l1_a_data.result, [j])
-                    # Compute inverse square root: 1.0 / sqrt(a)
-                    scalar_c = rsqrt(scalar_a)
-                    # Store result
-                    store(scalar_c, l1_out_data.result, [j])
-                    yield_([])
+                    air.ops.load(a, A[i0 : i0 + tile_n])
 
-                dma_memcpy_nd(
-                    _l3_c,
-                    l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
+                    c[:] = air.ops.rsqrt(a[:])
 
-                DeallocOp(l1_a_data)
-                DeallocOp(l1_out_data)
+                    air.ops.store(c, C[i0 : i0 + tile_n])
 
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -146,13 +132,17 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device) or npu2. This example is npu2-only -- see the module docstring",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(
-        args.n,
-        args.tile_n,
-        INPUT_DATATYPE,
-    )
+    launch = build_module(args.n, args.tile_n, args.target)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -189,6 +179,7 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -205,6 +196,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

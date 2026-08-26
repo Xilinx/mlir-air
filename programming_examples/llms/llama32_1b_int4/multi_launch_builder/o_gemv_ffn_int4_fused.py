@@ -57,7 +57,6 @@ from air.ir import (
     AffineMapAttr,
     AffineSymbolExpr,
     BF16Type,
-    BoolAttr,
     F32Type,
     InsertionPoint,
     IntegerAttr,
@@ -515,9 +514,6 @@ def build_module(
                                     l1_partial_full_la = AllocOp(
                                         partial_full_ty, [], []
                                     )
-                                    l1_partial_full_la.attributes["air.shrinkage"] = (
-                                        BoolAttr.get(False)
-                                    )
                                     l1_partial_strided_la = subview(
                                         l1_partial_full_la.result, [0], [M_TILE], [1]
                                     )
@@ -525,9 +521,6 @@ def build_module(
                                         D_la_l1, l1_partial_strided_la
                                     )
                                     l1_d_full_la = AllocOp(partial_full_ty, [], [])
-                                    l1_d_full_la.attributes["air.shrinkage"] = (
-                                        BoolAttr.get(False)
-                                    )
                                     l1_d_strided_la = subview(
                                         l1_d_full_la.result, [0], [M_TILE], [1]
                                     )
@@ -789,7 +782,6 @@ def build_module(
                         # ---- Hot int4 GEMV loop (ORIGINAL structure with
                         #      ping-pong on packed_l1 via per-iter alloc) ----
                         l1_partial_op = AllocOp(partial_full_ty, [], [])
-                        l1_partial_op.attributes["air.shrinkage"] = BoolAttr.get(False)
                         l1_partial_strided = subview(
                             l1_partial_op.result, [0], [M_TILE], [1]
                         )
@@ -997,15 +989,11 @@ def build_module(
 
                         for outer in for_(M_ld_div):
                             l1_partial_full = AllocOp(partial_full_ty, [], [])
-                            l1_partial_full.attributes["air.shrinkage"] = BoolAttr.get(
-                                False
-                            )
                             l1_partial_strided = subview(
                                 l1_partial_full.result, [0], [M_TILE], [1]
                             )
                             l1_partial = memref_cast(D_la_l1, l1_partial_strided)
                             l1_d_full = AllocOp(partial_full_ty, [], [])
-                            l1_d_full.attributes["air.shrinkage"] = BoolAttr.get(False)
                             l1_d_strided = subview(l1_d_full.result, [0], [M_TILE], [1])
                             l1_d = memref_cast(D_la_l1, l1_d_strided)
 

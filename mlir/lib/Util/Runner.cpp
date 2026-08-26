@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
 #include <string>
 
 #include "./Runner/Resource.cpp"
@@ -165,11 +166,19 @@ public:
     s << "},\n";
   }
 
-  // Model each event's latency
-  uint64_t modelOp(device &d, dependencyNodeEntry &c) {
+  // Model each event's latency.
+  // Returns the event's *occupancy*: how long it holds the resources it
+  // reserved. For data movement events, any fixed link time-of-flight is
+  // reported separately through `link_latency` (in cycles) rather than folded
+  // into the return value, because flight time delays when data lands without
+  // occupying the link. Callers add the two to obtain the completion time.
+  uint64_t modelOp(device &d, dependencyNodeEntry &c,
+                   uint64_t *link_latency = nullptr) {
     auto type = c.asyncEventType;
     auto name = c.asyncEventName;
     uint64_t execution_time = 1;
+    if (link_latency)
+      *link_latency = 0;
 
     if (type == "wait_all") {
       execution_time = 1;
@@ -189,6 +198,8 @@ public:
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, srcTy);
       else
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
+      if (link_latency)
+        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast_if_present<xilinx::air::ChannelGetOp>(c.op);
@@ -214,6 +225,8 @@ public:
       else
         execution_time =
             getTransferCost(d, c.op, srcSpace, dstSpace, dstVolumn, dstTy);
+      if (link_latency)
+        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       if (!isa<air::ExecuteOp>(c.op))
         c.op->emitOpError("has mismatching event type").attachNote()
@@ -270,6 +283,10 @@ public:
             c.wavefront, i);
       }
     }
+    // Free links whose occupancy has ended but whose payload is still in
+    // flight, so the next transfer can claim them.
+    c.releaseCompletedLinkOccupancy(time);
+
     // Update wavefront
     for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it) {
       if (G[std::get<0>(*it)].is_started() &&
@@ -350,9 +367,15 @@ public:
                           canonicalizer.getIteratorFromPosition(
                               c.ctrl_g->position, c.ctrl_g->hierarchyOp));
 
+        uint64_t link_latency = 0;
+        uint64_t occupancy =
+            modelOp(device_resource_node, G[next_vertex], &link_latency);
         G[next_vertex].start_time = time;
-        G[next_vertex].end_time =
-            time + modelOp(device_resource_node, G[next_vertex]);
+        // Resources are held for the occupancy only; the event completes once
+        // the payload has also traversed the link.
+        G[next_vertex].release_time = time + occupancy;
+        G[next_vertex].end_time = time + occupancy + link_latency;
+        G[next_vertex].resources_released = false;
         // emit trace event begin
         auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
         auto tid = std::get<2>(c.wavefront.back());
@@ -438,6 +461,18 @@ public:
   void scheduleLaunch(runnerNode &launch, device &device_resource_node,
                       uint64_t &time) {
 
+    // Note whether anything reported an error while this launch ran, so the
+    // stall check at the end can stay quiet when a more specific diagnostic
+    // has already been given. Returning failure leaves the diagnostic for the
+    // default handler to print.
+    bool diagnosticEmitted = false;
+    mlir::ScopedDiagnosticHandler diagHandler(
+        launch.ctrl_g->hierarchyOp->getContext(), [&](mlir::Diagnostic &diag) {
+          if (diag.getSeverity() == mlir::DiagnosticSeverity::Error)
+            diagnosticEmitted = true;
+          return mlir::failure();
+        });
+
     auto start_v = launch.ctrl_g->start_vertex;
     // Reset launch graph
     launch.processed_vertices.clear();
@@ -447,6 +482,8 @@ public:
     bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
     launch.ctrl_g->g[start_v].end_time = 1;
+    launch.ctrl_g->g[start_v].release_time = 1;
+    launch.ctrl_g->g[start_v].resources_released = false;
     launch.pushStartToWavefront(start_v);
     // Consume devices upon launch
     // TODO: multi-device modelling
@@ -498,6 +535,26 @@ public:
       if (time > 5000000000)
         running = false;
     }
+
+    // The loop stops as soon as no runner node can make progress. That is the
+    // normal end of a simulation, but it is also exactly what a stall looks
+    // like: an op that can never satisfy its dispatch condition -- a
+    // channel.get whose matching put count can never be reached, say -- simply
+    // stops being retried, and everything behind it is abandoned. The reported
+    // time is then a plausible-looking number for a run that never happened.
+    // Reaching the launch terminator is the check that the whole graph ran.
+    //
+    // Only diagnose it when nothing else already has: a run that stopped
+    // because a hierarchy could not be allocated has reported its own reason,
+    // and not reaching the terminator is the expected consequence.
+    auto terminator_v = launch.ctrl_g->terminator_vertex;
+    launch.runner_assertion(
+        launch.ctrl_g->g[terminator_v].is_started() || diagnosticEmitted,
+        "simulation stalled at " + std::to_string(time) +
+            " cycles without reaching the launch terminator. Some op could "
+            "never satisfy its dispatch condition; the most common cause is a "
+            "channel whose put and get disagree on how many spatial instances "
+            "they represent, so the pair can never be matched.");
   }
 
 private:
@@ -644,6 +701,15 @@ private:
       op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
+  }
+
+  // Fixed time-of-flight, in cycles, of the link between two memory spaces.
+  // Independent of payload size, and not part of the link's occupancy.
+  uint64_t getTransferLatency(device &d, unsigned srcSpace, unsigned dstSpace) {
+    auto it = d.interfaces.find({srcSpace, dstSpace});
+    if (it == d.interfaces.end() || !it->second)
+      return 0;
+    return (uint64_t)std::llround(it->second->latency);
   }
 
   uint64_t getTransferVolumn(air::ChannelInterface op) {

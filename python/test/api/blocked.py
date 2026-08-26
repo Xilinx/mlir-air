@@ -5,7 +5,7 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 
-"""Micro-tiled (packed) layouts: shapes, DMA patterns, and the contraction.
+"""Blocked layouts: shapes, DMA patterns, and the contraction.
 
 Every CHECK here is transcribed from the IR of the example this models:
 
@@ -28,7 +28,7 @@ HERD_M = HERD_N = 1
 
 
 def build():
-    mm = air.micro_tile(m=4, k=8, n=4)
+    MM_M, MM_K, MM_N = 4, 8, 4
 
     A = air.tensor([M, K], bf16)
     B = air.tensor([K, N], bf16)
@@ -56,7 +56,14 @@ def build():
                     )
                     l2_c = air.alloc([1, 1, TILE_M, TILE_N], bf16, scope=seg.private())
                     acc = air.alloc(
-                        mm.c(TILE_M, TILE_N, lead=(HERD_M, HERD_N)),
+                        [
+                            HERD_M,
+                            HERD_N,
+                            TILE_N // MM_N,
+                            TILE_M // MM_M,
+                            MM_M,
+                            MM_N,
+                        ],
                         bf16,
                         scope=seg.shared(),
                     )
@@ -65,7 +72,7 @@ def build():
 
                         @h0.body
                         def _(tx, ty):
-                            acc[:] = 0.0
+                            ops.fill(acc, 0.0)
 
                     for k2 in air.sequential(0, K, TILE_K_L2):
                         ops.load(l2_a, A[row : row + TILE_M, k2 : k2 + TILE_K_L2])
@@ -76,21 +83,66 @@ def build():
                             @h.body
                             def _(tx, ty):
                                 l1_a = air.alloc(
-                                    mm.a(TILE_M, TILE_K_L1), bf16, scope=h.private()
+                                    [
+                                        1,
+                                        1,
+                                        TILE_K_L1 // MM_K,
+                                        TILE_M // MM_M,
+                                        MM_M,
+                                        MM_K,
+                                    ],
+                                    bf16,
+                                    scope=h.private(),
                                 )
                                 l1_b = air.alloc(
-                                    mm.b(TILE_K_L1, TILE_N), bf16, scope=h.private()
+                                    [
+                                        1,
+                                        1,
+                                        TILE_N // MM_N,
+                                        TILE_K_L1 // MM_K,
+                                        MM_K,
+                                        MM_N,
+                                    ],
+                                    bf16,
+                                    scope=h.private(),
                                 )
                                 for k1 in air.sequential(0, TILE_K_L2, TILE_K_L1):
-                                    ops.load(l1_a, l2_a[tx, 0, :, k1 : k1 + TILE_K_L1])
-                                    ops.load(l1_b, l2_b[0, ty, k1 : k1 + TILE_K_L1, :])
+                                    ops.load(
+                                        l1_a,
+                                        l2_a[tx, 0, :, k1 : k1 + TILE_K_L1]
+                                        .reshape(
+                                            1,
+                                            1,
+                                            TILE_M // MM_M,
+                                            MM_M,
+                                            TILE_K_L1 // MM_K,
+                                            MM_K,
+                                        )
+                                        .transpose(0, 1, 4, 2, 3, 5),
+                                    )
+                                    ops.load(
+                                        l1_b,
+                                        l2_b[0, ty, k1 : k1 + TILE_K_L1, :]
+                                        .reshape(
+                                            1,
+                                            1,
+                                            TILE_K_L1 // MM_K,
+                                            MM_K,
+                                            TILE_N // MM_N,
+                                            MM_N,
+                                        )
+                                        .transpose(0, 1, 4, 2, 3, 5),
+                                    )
                                     ops.dot(l1_a, l1_b, acc=acc)
 
                     with air.herd([range(HERD_M), range(HERD_N)], name="drain") as h2:
 
                         @h2.body
                         def _(tx, ty):
-                            ops.store(acc[tx, ty, :, :], l2_c[tx, ty, :, :])
+                            ops.store(
+                                acc[tx, ty, :, :, :, :].transpose(0, 1, 3, 4, 2, 5),
+                                l2_c[tx, ty, :, :],
+                            )
 
                     ops.store(l2_c, C[row : row + TILE_M, col : col + TILE_N])
 
@@ -153,7 +205,7 @@ print(build().build(target="npu1"))
 # ---------------------------------------------------------------------------
 # ops.dot(kernel=...): naming the external function.
 #
-# Without it a micro-tiled contraction lowers to MLIR's
+# Without it a blocked contraction lowers to MLIR's
 # "op_has_no_registered_library_name" placeholder -- the OpDSL emitter hardcodes
 # library_call=None -- so every such contraction in the tree resolves to one
 # symbol. A kernel compiled for the wrong tile dimensions then links anyway and
@@ -162,7 +214,6 @@ print(build().build(target="npu1"))
 
 
 def build_named_kernel():
-    mm = air.micro_tile(m=4, k=8, n=4)
     A = air.tensor([32, 32], bf16)
     C = air.tensor([32, 32], bf16)
 
@@ -174,7 +225,7 @@ def build_named_kernel():
 
                 @seg.body
                 def _():
-                    acc = air.alloc(mm.c(32, 32), bf16, scope=seg.shared())
+                    acc = air.alloc([1, 1, 8, 8, 4, 4], bf16, scope=seg.shared())
                     l2 = air.alloc([32, 32], bf16, scope=seg.private())
                     air.ops.load(l2, A[0:32, 0:32])
 
@@ -182,15 +233,18 @@ def build_named_kernel():
 
                         @h.body
                         def _(tx, ty):
-                            a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-                            b = air.alloc(mm.b(16, 32), bf16, scope=h.private())
+                            a = air.alloc([1, 1, 2, 8, 4, 8], bf16, scope=h.private())
+                            b = air.alloc([1, 1, 8, 2, 8, 4], bf16, scope=h.private())
                             air.ops.dot(a, b, acc=acc, kernel="matmul_bf16_m32k16n32")
 
                     with air.herd([range(1), range(1)], name="drain") as h2:
 
                         @h2.body
                         def _(tx, ty):
-                            air.ops.store(acc[tx, ty, :, :], l2[0:32, 0:32])
+                            air.ops.store(
+                                acc[tx, ty, :, :, :, :].transpose(0, 1, 3, 4, 2, 5),
+                                l2[0:32, 0:32],
+                            )
 
                     air.ops.store(l2, C[0:32, 0:32])
 

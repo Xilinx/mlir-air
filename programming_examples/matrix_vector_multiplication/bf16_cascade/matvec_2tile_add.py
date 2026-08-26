@@ -24,7 +24,6 @@ from ml_dtypes import bfloat16
 
 from air.ir import (
     BF16Type,
-    BoolAttr,
     IntegerAttr,
     MemRefType,
     StringAttr,
@@ -172,7 +171,6 @@ def build_module(M, K, m=8, k=512, n_cores=8):
                             # matvec/zero kernels only touch the first
                             # `m` lanes (rest is unused padding).
                             l1_part_op = AllocOp(partial_l1, [], [])
-                            l1_part_op.attributes["air.shrinkage"] = BoolAttr.get(False)
                             l1_part = l1_part_op.result
                             l1_part_slice_strided = subview(
                                 l1_part,
@@ -221,7 +219,6 @@ def build_module(M, K, m=8, k=512, n_cores=8):
 
                         for outer in for_(M_div_m_per_core):
                             l1_part_op = AllocOp(partial_l1, [], [])
-                            l1_part_op.attributes["air.shrinkage"] = BoolAttr.get(False)
                             l1_d_op = AllocOp(D_l1, [], [])
                             l1_part = l1_part_op.result
                             l1_d = l1_d_op.result

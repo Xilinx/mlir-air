@@ -129,3 +129,51 @@ def gridless_launch_still_hosts_a_segment():
                     air.ops.store(l2, B[0:TILE, 0:N])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_launch_coordinate_reaches_into_the_herd
+# The same symmetry, one level further down. air.launch, air.segment and
+# air.herd are each IsolatedFromAbove, so a coordinate does not simply fall
+# through: it has to be passed as an operand at every boundary it crosses.
+#
+# The launch's coordinate was passed to the segment and stopped there, so a herd
+# body that offset a transfer by it emitted an affine.apply on a value defined
+# outside the region and the module failed verification. It went unnoticed
+# because outer tiling normally stays at segment scope, where the L2 staging is,
+# and only a kernel with no staging pushes it all the way in.
+#
+# The launch coordinate arrives as the herd's first argument, ahead of the
+# tensors, and the offset is computed from it *inside* the herd.
+# CHECK: air.launch (%[[LI:.*]], %{{.*}}) in (%{{.*}}=%c2{{.*}}
+# CHECK: air.segment @seg args(%[[SI:[^=]*]]=%[[LI]]
+# CHECK: air.herd @herd_0 tile (%[[TX:[^,]*]], %{{.*}}) in ({{.*}}) args(%[[HI:[^=]*]]=%[[SI]]
+# CHECK: affine.apply {{.*}}[%[[HI]], %[[TX]]]
+@run
+def a_launch_coordinate_reaches_into_the_herd():
+    A = air.tensor([M, N], i32)
+    B = air.tensor([M, N], i32)
+
+    with air.launch([range(0, M, TILE)], name="crossing", target="npu1") as launch:
+
+        @launch.body
+        def _(li):
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    base = li * TILE
+
+                    with air.herd([range(2)], name="herd_0", shape=(2,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            # Both coordinates in one expression: this is the
+                            # line that could not be written before.
+                            row = base + tx * (TILE // 2)
+                            buf = air.alloc(
+                                [TILE // 2, N], i32, scope=h.private(), vector=0
+                            )
+                            air.ops.load(buf, A[row : row + TILE // 2, 0:N])
+                            air.ops.store(buf, B[row : row + TILE // 2, 0:N])
+
+    print(launch.mlir())

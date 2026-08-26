@@ -440,9 +440,213 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=16 (env) to match this UNI_LM.
         UNI_LM=8,  # vocab chunks per LM head (VOCAB_CHUNK_I2=16)
     ),
+    # ===== LFM2-1.2B: a HYBRID conv-attention decoder, whole model ==========
+    #
+    # 16 layers in one wave loop, with the mixer chosen per wave by the arm
+    # (0=lm-head, 1=ShortConv, 2=attention). Only 6 of the 16 layers are
+    # attention; the other 10 are Lfm2ShortConv, a gated causal depthwise
+    # convolution. Both mixers are placed on two vertically adjacent tiles of
+    # the one design and the kernels branch on the arm internally.
+    #
+    # THE PHASE SCHEDULE IS UNIFORM. Both layer types run the same NPH=5 /
+    # I2P=[3,3,2,16,2], so the proj, rms and glu cores need no per-arm
+    # divergence at all and the weight/rms/Y slabs stay a plain `iv * SLAB`.
+    # An attention layer only needs 3072 of ph0+ph1's 6144 rows, so its second
+    # mixer phase is PADDING: +1,966,080 bf16 per attention layer, 23.6 MB per
+    # token, +3.6% of layer weight traffic. That is the whole price of the
+    # uniform schedule, and it buys back a per-arm phase count, per-arm trip
+    # counts and an irregular weight-offset lookup -- each of which would have
+    # to be threaded through every DMA in the launch.
+    #
+    # ATTN_LAYERS is the IRREGULAR schedule (gaps 2,2,1,1,1,0). Drive off the
+    # list, never a modulo.
+    "lfm2-1.2b": dict(
+        K=2048,
+        M=3072,  # PER MIXER PHASE: conv in_proj 6144 = 2x, attn QKV 3072 + pad
+        DH_A=64,
+        KV_PER_CU=2,
+        N_ATTN_CU=4,
+        NPH=5,
+        I2P=[3, 3, 2, 16, 2],
+        J2P=[4, 4, 4, 4, 16],
+        DEST=["mix", "mix", "rms", "glu", "rms"],
+        GQA_SEG=4,
+        PAIR_ROWS=2,
+        N_NORMS=2,
+        HAS_QK_NORM=True,  # the attention layers carry per-head QK-norm
+        VOCAB_SIZE=65536,
+        UNI_DEC=16,  # ALL 16 layers
+        UNI_LM=4,
+        ATTN_LAYERS=(2, 5, 8, 10, 12, 14),
+    ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = _MODELS[MODEL_NAME]
+
+# ph0 egress consumer. "rope" = attention (RoPE -> KV append -> block attention);
+# "conv" = LFM2 Lfm2ShortConv (gate -> causal depthwise k=3 -> gate), which needs
+# NO KV cache, NO attention CUs and NO append channels -- its mixer output feeds
+# out_proj directly. Anything else is unimplemented and must fail loudly rather
+# than silently emit rope_compute over the wrong width.
+CONV_MIXER = MODEL["DEST"][0].split("#")[0] in ("conv", "mix")
+# HYBRID: both mixers in one design, chosen per wave by the arm. The conv mixer
+# exists (CONV_MIXER) AND so does the whole attention subsystem (ATTN_SUBSYS) --
+# rope, the flash-attention CUs, the KV cache and the append/readback channels.
+# ATTN_LAYERS is the wave-index schedule; it is irregular, so it is a LIST.
+ATTN_LAYERS = tuple(MODEL.get("ATTN_LAYERS", ()))
+HYBRID_MIXER = bool(ATTN_LAYERS)
+# The mixer -> CU broadcast exists exactly when a hybrid has a mixer. A get with
+# no put is "channel op not in pairs" at emit time, so the decl, the put and the
+# four gets all key off this one predicate.
+#
+# NOT straight to the convergent @xnorm X ring: that would be a FOURTH same-id
+# producer on it, and four do not route (three is the budget -- see the @attnO
+# note at the put site). The o-gather memtile is the ph1 producer for both arms
+# and its only input is @attnO, so the mixer feeds the CUs and they choose.
+MIX_TO_CU = HYBRID_MIXER
+# Does this build have an attention subsystem at all? Previously this was
+# exactly `not CONV_MIXER`; a hybrid has both, so the two concepts split here.
+ATTN_SUBSYS = HYBRID_MIXER or not CONV_MIXER
+assert not HYBRID_MIXER or CONV_MIXER, "a hybrid needs the conv mixer too"
+# The single decode arm a NON-hybrid build has. A hybrid has both and picks per
+# wave; everyone else is one kind, decided at build time.
+DEC_ARM_KIND = 1 if CONV_MIXER else 2
+
+
+def _arm_only(arm_i, kinds, body, in_dec=False):
+    """Emit `body` only on the arm kinds listed; idle otherwise.
+
+    Arms mirror the reference's IS_ATTN RTP: 0 = lm-head wave, 1 = conv layer,
+    2 = attention layer.
+
+    The switch is always ONE case (idle) plus a default (run), never a list of
+    idle arms -- so the 3-valued arm is first reduced to a 0/1 predicate for
+    this gate. That shape is not cosmetic: an scf.index_switch with more than
+    one CASE region breaks air-to-aie's L2 receiver allocation, which then
+    reports the failure on the far side of the flow as "'air.channel.put' op
+    failed to get S2MM tile for L3 allocation" on a shim put that is itself
+    fine. Every gate in the shipped designs is single-case; measured directly
+    -- same design, two idle cases fails, one idle case builds.
+
+    `in_dec` says the caller is ALREADY inside the decode arm (e.g. within
+    _uni_dec, or a herd body's decode region), so arm 0 cannot reach here. It
+    only matters for a non-hybrid build: with one decode arm known at build
+    time the kind test is static, but the vocab gate is not, so outside the
+    decode arm the original decode-vs-vocab switch still has to be emitted --
+    dropping it is what silently ran the attention memtiles during the LM-head
+    waves.
+    """
+    if not HYBRID_MIXER:
+        if DEC_ARM_KIND not in kinds:
+            return
+        if in_dec:
+            body()
+            return
+
+        def _v(op, i, cv):
+            yield_([])
+
+        def _d(op):
+            body()
+            yield_([])
+
+        index_switch([], arm_i, [0], case_body_builder=_v, default_body_builder=_d)
+        return
+
+    _pred = None
+    for _k in sorted(kinds):
+        _c = arith.cmpi(
+            arith.CmpIPredicate.eq, arm_i, arith.ConstantOp.create_index(_k)
+        )
+        _pred = _c if _pred is None else arith.ori(_pred, _c)
+    _sel = arith.select(
+        _pred,
+        arith.ConstantOp.create_index(1),
+        arith.ConstantOp.create_index(0),
+    )
+
+    def _idle(op, i, cv):
+        yield_([])
+
+    def _run(op):
+        body()
+        yield_([])
+
+    index_switch([], _sel, [0], case_body_builder=_idle, default_body_builder=_run)
+
+
+# ShortConv channel count. in_proj emits [B | C | X], so CONV_DIM = in_proj/3.
+# in_proj is split over several mixer phases ("lfm2-1.2b" uses two), in which
+# case M is the PER-PHASE width and the full in_proj is their sum.
+# A mixer may occupy several phases. Naming them "<mixer>" and "<mixer>#<n>"
+# puts each on its OWN demux destination; naming them all "<mixer>" shares one.
+# Both are supported and both were measured -- neither on its own fixes the
+# full-width deadlock (the two adjacent tiles below are what does).
+MIXER_NAME = MODEL["DEST"][0]
+
+
+def _is_mixer_dest(name):
+    return name == MIXER_NAME or name.startswith(MIXER_NAME + "#")
+
+
+N_MIX_PH = sum(1 for d in MODEL["DEST"] if _is_mixer_dest(d))
+CONV_IN = MODEL["M"] * N_MIX_PH if CONV_MIXER else 0  # full in_proj width
+CONV_DIM = CONV_IN // 3 if CONV_MIXER else 0
+# ShortConv cores. The reference splits the mixer over FOUR cores at D/4 each,
+# and it has to: one core holding the whole layer needs
+#   [B|C|X] 3*D + [w0|w1|w2|BX(t-2)|BX(t-1)] 5*D + new state 2*D + out D = 11*D
+# elements of L1, which at D=2048 is 44 KB before AIR ping-pongs the
+# channel-attached buffers -- the linker scripts show the mixer tile left with
+# 4 KB for stack and locals, and the design deadlocks. At D/4 per core the same
+# footprint is 11 KB.
+#
+# The mixer runs on TWO VERTICALLY ADJACENT TILES, mirroring the reference.
+#
+#   stage tile  gets ph0's egress in CONV_WAVES landing-buffer-sized waves and
+#               writes each into the assembled [B|C|X]; also holds the taps
+#   conv  tile  owns the assembled [B|C|X] and the carried state, computes, and
+#               emits the mixer output plus the new state
+#
+# The two big buffers -- the assembled 3*D input and the 3*D taps -- are
+# SEGMENT-SCOPE L1 shared between the two herd tiles, so they cross the tile
+# boundary as ordinary neighbour-memory loads and stores with no DMA at all.
+# That is what the reference does (`conv_bcx_buffer` lives on its conv tile and
+# is written by its rope core; `rope_buffer` lives on its rope tile and is read
+# by its conv core), and it is the difference between the designs: every build
+# that DMA'd the whole 3*D into one tile deadlocked at full width. Our
+# attention path already uses the same mechanism for its shared scores buffer.
+#
+# The landing buffer is the ATTENTION ph0 width, so a conv layer's 3*D arrives
+# in CONV_WAVES of it -- the granularity the reference uses, and the one the
+# eventual single-binary IS_ATTN build needs.
+CONV_WAVES = int(_os.environ.get("CONV_WAVES", "2")) if CONV_MIXER else 1
+CONV_LAND = CONV_IN // CONV_WAVES if CONV_MIXER else 1  # D + DK + DV at waves=2
+# Where the mixer's two adjacent tiles go. A CONV-ONLY build has no attention,
+# so column 3 is free. A HYBRID does not: ATTN_CU_LOC puts flash-attention CU0
+# on column 3 rows 2-3, exactly on top of the mixer. Put the hybrid's mixer in
+# the rms column instead, with the STAGE tile on the row the rope core already
+# occupied -- so the attention path keeps the tile and the routing it was
+# validated with, and the conv tile is simply added above it.
+# The hybrid sits at column 5: its mixer has to reach the four flash-attention
+# CUs over @mixToCU, and from column 2 the pathfinder cannot route that on top of
+# the existing loop-close traffic ("packet flow source ... could not be routed to
+# destination (1, 1) DMA2"). Column 5 rows 4-5 are free -- only the GLU tile
+# (5,3) is occupied -- and are adjacent to both CU columns and the o memtile.
+MIX_PCOL = 5 if HYBRID_MIXER else 3
+MIX_PROW = 4 if HYBRID_MIXER else 2
+# "rope" = attention, "conv" = ShortConv only, "mix" = HYBRID (both, chosen per
+# wave by the arm). Anything else is unimplemented and must fail loudly rather
+# than silently emit one mixer's kernel over the other's width.
+if MODEL["DEST"][0].split("#")[0] not in ("rope", "conv", "mix"):
+    raise NotImplementedError(
+        f"DECODE_MODEL={MODEL_NAME} wants ph0 mixer '{MODEL['DEST'][0]}'; this "
+        "engine implements only 'rope', 'conv' and 'mix'."
+    )
+assert (
+    MODEL["DEST"][0].split("#")[0] == "mix"
+) == HYBRID_MIXER, (
+    "a 'mix' ph0 dest needs ATTN_LAYERS, and ATTN_LAYERS needs a 'mix' dest"
+)
 
 # Derived model geometry (attention head layout). All values are byte-identical to
 # the original hardcoded Llama literals; used to migrate the raw 64/512 attention
@@ -461,20 +665,35 @@ ROPE_DIM = MODEL.get("ROPE_DIM", DH)
 # [q(DQ)|k(DK)|v(DV)] slab it reads at rope_w+DH (rope.cc add_q_k_v_bias), so the
 # rope weight buffer carries the DH cos/sin LUT plus M = DQ+DK+DV bias elements.
 HAS_QKV_BIAS = MODEL.get("HAS_QKV_BIAS", False)
-ROPE_W_LEN = (
+# Attention's per-layer rope-weight payload: cos/sin LUT, plus q/k-norm or
+# q/k/v-bias where the model has them.
+ROPE_LUT_LEN = (
     (DH + MODEL["M"]) if HAS_QKV_BIAS else (3 * DH) if HAS_QK_NORM else ROPE_DIM
 )  # 64 / 768 / 96 / 4736
+# The conv mixer's per-layer payload: tap-major [3][CONV_DIM] depthwise taps.
+CONV_W_LEN = CONV_IN if CONV_MIXER else 0  # 6144
+# The per-layer STRIDE in the rms BO's rope region. A hybrid layer may be either
+# kind, so the slab has to hold the larger payload and each kind reads its own
+# prefix -- 16 x 6144 x 2B = 196 KB of DDR, which is nothing next to the 671 MB
+# of weights. Non-hybrid builds keep the exact previous expression.
+ROPE_W_LEN = (
+    max(CONV_W_LEN, ROPE_LUT_LEN)
+    if HYBRID_MIXER
+    else CONV_W_LEN if CONV_MIXER else ROPE_LUT_LEN
+)  # 64 / 768 / 96 / 4736 / 6144(conv, hybrid)
 # Does rope_w DIFFER PER LAYER? Llama's is a single per-position cos/sin LUT shared
 # by every layer, so one slab suffices; qk-norm (gemma/qwen3) and q/k/v-bias
 # (qwen2.5) both append per-layer weights, so the RMS BO needs UNI_DEC slabs and
 # the feed has to index the current wave's. Getting this wrong DEADLOCKS: the host
 # writes UNI_DEC slabs and puts final_norm after them, so a device that sized the
 # region for one slab reads final_norm from inside the rope region.
-ROPE_W_PER_LAYER = HAS_QK_NORM or HAS_QKV_BIAS
+ROPE_W_PER_LAYER = HAS_QK_NORM or HAS_QKV_BIAS or CONV_MIXER
 NUM_KV_HEADS = MODEL["N_ATTN_CU"] * MODEL["KV_PER_CU"]  # 8 / 4
 NUM_Q_HEADS = (MODEL["M"] - 2 * NUM_KV_HEADS * DH) // DH  # 32 / 8
 Q_HEADS_PER_CU = NUM_Q_HEADS // MODEL["N_ATTN_CU"]  # 8 / 2
-DQ = NUM_Q_HEADS * DH  # q width 2048 / 2048
+DQ = (
+    CONV_DIM if CONV_MIXER else NUM_Q_HEADS * DH
+)  # q width 2048 / 2048 (conv: mixer out)
 DK = NUM_KV_HEADS * DH  # k width 512 / 1024
 DV = DK  # v width
 DQ_PER_CU = Q_HEADS_PER_CU * DH  # per-CU q (=o) width 512 / 512
@@ -491,7 +710,9 @@ DQ_PADDED_PER_CU = Q_HEADS_PADDED_PER_CU * DH  # per-CU q/o/y buffer 512 / 1024
 # heads + ATTN_GROUPS_PADDING zero heads (GQA-segment alignment). llama pad=0 ->
 # DQ_PADDED==DQ; gemma pad=2 -> 2x DQ. The rope Q buffer + broadcast memtile must be
 # this size or the rope overflows them.
-DQ_PADDED = MODEL["N_ATTN_CU"] * DQ_PADDED_PER_CU  # 2048 / 4096
+DQ_PADDED = (
+    CONV_DIM if CONV_MIXER else MODEL["N_ATTN_CU"] * DQ_PADDED_PER_CU
+)  # 2048 / 4096
 SSZ_BLK = ((Q_HEADS_PADDED_PER_CU * 16 + 16 + 63) // 64) * 64  # score buffer 192 / 128
 
 # ============================ faithful config ===============================
@@ -866,7 +1087,11 @@ LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 # index_switch selecting decode vs vocab host feeds. Concatenated args for the
 # first folding test (separate ELF args come after folding is proven).
 UNIFIED = 1  # fixed config: single-launch unified decode + lm_head
-UNI_DEC = MODEL["UNI_DEC"]  # decode waves in the unified sequence
+# Decode waves in the unified sequence. Overridable so a build can be shortened
+# to N layers for a numerics BISECT -- the weight buffer is
+# [UNI_DEC layer slabs | UNI_LM vocab waves], so a short build is a prefix of the
+# full one and reuses its packed cache. Unset leaves every model's IR unchanged.
+UNI_DEC = int(_os.environ.get("DECODE_UNI_DEC", MODEL["UNI_DEC"]))
 # lm-head waves in the unified sequence. Overridable so the wave count can be varied
 # while the LM-head WORK is held constant: UNI_LM * VOCAB_I2 == VOCAB_FULL_ROWBLKS/32
 # (=126) always, so (UNI_LM=9,VOCAB_I2=14) and (UNI_LM=21,VOCAB_I2=6) stream the exact
@@ -878,6 +1103,22 @@ assert UNI_LM == N_VOCAB_CHUNKS, (
     f"(VOCAB_CHUNK_I2={VOCAB_I2}); their product covers the padded vocab"
 )
 UNI_WAVES = UNI_DEC + UNI_LM
+# ATTN_LAYERS indexes DECODE waves, and the unified sequence continues past them
+# into UNI_LM lm-head waves. A SHORT bisect build (DECODE_UNI_DEC below the
+# model's depth) therefore leaves schedule entries pointing at wave indices that
+# are no longer decode waves -- and _arm_of_wave would promote those to the
+# attention arm, so that vocab chunk computes a layer instead of logits and its
+# slice of Y is never written. Measured on device before this filter:
+# DECODE_UNI_DEC=2 wrote 32768/65536 logit words, losing exactly the vocab waves
+# at iv=2 and iv=5 (the two entries of (2,5,8,10,12,14) that fall in
+# [UNI_DEC, UNI_WAVES)); DECODE_UNI_DEC=1 lost iv=2 alone -- the long-unexplained
+# "fb_C writes 49152/65536". Every full-depth build has max(ATTN_LAYERS) <
+# UNI_DEC, so this is a no-op for them and their IR is unchanged.
+#
+# HYBRID_MIXER deliberately keeps its ORIGINAL value: a short all-ShortConv
+# reduction of a hybrid model still wants the hybrid machinery compiled in, it
+# just has no attention wave to run it on.
+ATTN_WAVES = tuple(_k for _k in ATTN_LAYERS if _k < UNI_DEC)
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
 # waves the fused launch loop drives). Used to split the fused sequence into a
 # decode-part [0,UNI_DEC) and a vocab-part [UNI_DEC,UNI_WAVES) that share ONE CDO,
@@ -910,6 +1151,13 @@ N_ROUNDS = sum(ROUNDS_PER_PH)  # total egress rounds (phase0 6 + phase1 4 = 10)
 ROUNDS_PER_DEST = [
     sum(ROUNDS_PER_PH[ph] for ph in range(NPH) if DEST[ph] == p) for p in range(NDEST)
 ]
+# How many of dest0's rounds carry the attention layer's QKV, and how many are
+# the PADDING a hybrid's uniform phase schedule produces. An attention layer
+# needs M = DQ+DK+DV of the mixer dest's total width; a conv layer needs all of
+# it (in_proj is exactly N_MIX_PH x M). Non-hybrid builds have no padding, so
+# MIX_RNDS_PAD is 0 and every expression below reduces to the previous one.
+MIX_RNDS_QKV = M // PAYLOAD
+MIX_RNDS_PAD = (ROUNDS_PER_DEST[0] - MIX_RNDS_QKV) if HYBRID_MIXER else 0
 
 # Per-phase weight slab dims (phase0 QKV 96 row-blocks, phase1 o-proj 64). Same K
 # -> same NBJ. The weight memtile fan + X memtile are PHASE-AGNOSTIC flat streams
@@ -940,12 +1188,31 @@ RMS_REFEED = sum(REFEED[p] for p in RMS_PHASES)  # rms-X whole-2048 re-reads (42
 DOWN_REFEED = REFEED[DOWN_PHASE] if DOWN_PHASE >= 0 else 0  # GLU-X 8192 re-reads (4)
 # LOOPCLOSE: ph1 (o-proj) X = attn-o (separate channel), so @xnorm/rms-X covers only
 # ph0 + ph2 (ph1 excluded). OPROJ_PHASE=1. XN_REFEED = REFEED[0]+REFEED[2].
-OPROJ_PHASE = 1
-GATEUP_PHASE = 2
+#
+# The phase indices are DERIVED from DEST_NAMES rather than hardcoded, so a model
+# may split one projection across more than one phase and still reach the right
+# o-proj / gate-up / down phases. "lfm2-1.2b" is the worked example (in_proj as
+# two mixer phases); every other shipped model has one phase per projection and
+# emits byte-identical IR either way.
+MIXER_PHASES = [p for p in range(NPH) if _is_mixer_dest(DEST_NAMES[p])]
+MIXER_DESTS = sorted({DEST[p] for p in MIXER_PHASES})  # one demux id per wave
+OPROJ_PHASE = next(
+    p
+    for p in range(NPH)
+    if p != DOWN_PHASE and p not in MIXER_PHASES and DEST_NAMES[p] == "rms"
+)
+GATEUP_PHASE = next((p for p in range(NPH) if DEST_NAMES[p] == "glu"), OPROJ_PHASE + 1)
 # LOOPCLOSE convergent @xnorm: rms (compute, channel refeed) emits ONLY ph0
 # (rmsnorm input); ph1 attn-o, ph2 a_xn, ph3 down are MEMTILE producers (mechanism-2
 # per-buffer refeed) converging on @xnorm in phase-time order, read by ONE loop.
-XN_REFEED = REFEED[0]
+XN_REFEED = sum(REFEED[p] for p in MIXER_PHASES)
+
+# Which proj phase carries the KV append + cache readback. It has to be the
+# LAST mixer phase (see the use site): the append feeds off rope's K/V, and rope
+# runs once the ph0 landings are in, so issuing the append earlier makes the
+# shim block on K/V it has not caused to be produced yet. For every model with a
+# single mixer phase that is phase 0, exactly as it was before the hybrid.
+KV_PHASE = MIXER_PHASES[-1] if MIXER_PHASES else 0
 OPROJ_REFEED = REFEED[OPROJ_PHASE]  # ph1 attn-o re-feeds (4)
 GATEUP_REFEED = REFEED[GATEUP_PHASE]  # ph2 X re-feeds (32)
 
@@ -957,7 +1224,7 @@ GATEUP_REFEED = REFEED[GATEUP_PHASE]  # ph2 X re-feeds (32)
 # whatever DEST assigns to that phase. Derive it rather than hardcoding a value --
 # the ids are routing labels, not semantics, and mlir-aie #3429 (exact subcube cover)
 # removed the constraint that they be one-hot.
-GLU_PHASE = 2 if NPH == 4 else -1
+GLU_PHASE = next((p for p in range(NPH) if DEST_NAMES[p] == "glu"), -1)
 GLU_DEST = DEST[GLU_PHASE] if GLU_PHASE >= 0 else -1
 # #4 faithful residual stream: o-proj + down (shared id4 -> RMS_DEST) are CONSUMED by
 # the rms core (residual1=input+o-proj -> h; residual2=h+down -> layer output), NOT
@@ -968,7 +1235,14 @@ GLU_DEST = DEST[GLU_PHASE] if GLU_PHASE >= 0 else -1
 # and down (ph3) SHARE a destination (their common id -> RMS_DEST) while QKV (ph0)
 # and gate-up (ph2) each get their own -- i.e. 4 phases over exactly 3 destinations.
 # Matching on the literal [1,4,8,4] silently disabled #4 on any valid id relabel.
-FULL4 = NPH == 4 and DOWN_PHASE == 3 and DEST[1] == DEST[3] and NDEST == 3
+FULL4 = (
+    GLU_PHASE >= 0
+    and DEST[OPROJ_PHASE] == DEST[DOWN_PHASE]
+    and DOWN_PHASE not in MIXER_PHASES
+    and DEST[GLU_PHASE] != DEST[OPROJ_PHASE]
+    and DEST[GLU_PHASE] not in MIXER_DESTS
+    and DEST[OPROJ_PHASE] not in MIXER_DESTS
+)
 RMS_DEST = DEST[DOWN_PHASE] if FULL4 else -1
 HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
 # A slice pair is one rotation of the GLU BD ring, and the core's slot sequence is
@@ -1005,7 +1279,17 @@ NLAYERS = int(_os.environ.get("NLAYERS", "1"))
 W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights / layer
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
-Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
+# ShortConv carried state [BX[t-2] | BX[t-1]] per layer, also in arg4.
+CONV_ST_LAYER = 2 * CONV_DIM if CONV_MIXER else 0
+# A HYBRID puts the state region AFTER the whole KV region so BOTH stay a plain
+# `iv * slab`. Each region then carries UNI_DEC slabs of which only its own layer
+# kind's are ever touched -- ~42 MB of arg4 that is allocated and never read at
+# ATTN_MAXL=2048. That is DDR footprint, not bandwidth, and it is the price of
+# keeping every offset affine in the wave index.
+CONV_ST_BASE = UNI_DEC * KV_LAYER if HYBRID_MIXER else 0
+Y_LAYER = sum(
+    ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p not in MIXER_DESTS
+)  # Y / layer
 
 
 def build_module():
@@ -1070,7 +1354,14 @@ def build_module():
         # [ATTN_MAXL][K: DK_TOT_A | V: DK_TOT_A]; rope appends this token at
         # APPEND_OFF, then the whole cache is streamed back per CU (_d2wip shapes).
         # NLAYERS per-layer caches concatenated (offset iv*KV_LAYER).
-        kvc_l3 = MemRefType.get([UNI_DEC * ATTN_MAXL * KVSZ_TOK], bf16)
+        kvc_l3 = MemRefType.get(
+            (
+                [CONV_ST_BASE + UNI_DEC * CONV_ST_LAYER]  # conv state, after any KV
+                if CONV_MIXER
+                else [UNI_DEC * KV_LAYER]
+            ),
+            bf16,
+        )
 
         # ---- L1 buffers ----
         xblk_l1 = MemRefType.get([COL_BLOCK], bf16, memory_space=l1)  # 256 X chunk
@@ -1091,12 +1382,31 @@ def build_module():
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
         # k(512), v(512) roped. tile_2_3.
-        qkv_l1 = MemRefType.get([M], bf16, memory_space=l1)
+        qkv_l1 = MemRefType.get([M if ATTN_SUBSYS else CONV_IN], bf16, memory_space=l1)
         ropeq_l1 = MemRefType.get(
             [DQ_PADDED], bf16, memory_space=l1
         )  # rope emits padded Q
         ropekv_l1 = MemRefType.get([DK], bf16, memory_space=l1)
-        ropelut_l1 = MemRefType.get([ROPE_W_LEN], bf16, memory_space=l1)
+        ropelut_l1 = MemRefType.get([ROPE_LUT_LEN], bf16, memory_space=l1)
+        # ShortConv L1: wbx = [w0|w1|w2|BX[t-2]|BX[t-1]] (taps + carried state,
+        # contiguous, as the reference kernel expects); convo = mixer out / new BX.
+        # SEGMENT-SCOPE, shared across the two mixer tiles with no DMA between
+        # them: [B | C | X | w0 | w1 | w2]. ONE allocation, so AIR places it once
+        # and both cores reach it as neighbour memory.
+        convmix_l1 = MemRefType.get(
+            [CONV_IN + CONV_W_LEN if CONV_MIXER else 1], bf16, memory_space=l1
+        )
+        # Per-tile. Landing buffer on the stage tile; output and the two state
+        # halves on the conv tile.
+        convland_l1 = MemRefType.get(
+            [CONV_LAND if CONV_MIXER else 1], bf16, memory_space=l1
+        )
+        convo_l1 = MemRefType.get(
+            [CONV_DIM if CONV_MIXER else 1], bf16, memory_space=l1
+        )
+        convst_l1 = MemRefType.get(
+            [2 * CONV_DIM if CONV_MIXER else 1], bf16, memory_space=l1
+        )
         # ATTN S3a flash-attn (1 CU; attn_iso proven shapes). DH=64, 8 Q heads,
         # 2 KV heads per CU -> DQ=OSZ=512, DK=128, k/v block 16x128, scores 192.
         aq_l1 = MemRefType.get([DQ_PADDED_PER_CU], bf16, memory_space=l1)  # q per CU
@@ -1108,6 +1418,8 @@ def build_module():
         )  # v block 16xKVPC_DH
         as_l1 = MemRefType.get([SSZ_BLK], bf16, memory_space=l1)  # shared scores
         ao_l1 = MemRefType.get([DQ_PADDED_PER_CU], bf16, memory_space=l1)  # o per CU
+        # HYBRID: this CU's slice of the ShortConv mixer output, landing in the kv
+        # core so it can take the place of the attention result on a conv layer.
         # KV block cache (attn_stream proven): SEPARATE K and V natural block
         # buffers [key16, kvh2, dh64] = 2048 each; memtile reorder -> pack_k/pack_v.
         ak_l2 = MemRefType.get([16 * KVPC_DH], bf16, memory_space=l2)
@@ -1152,7 +1464,9 @@ def build_module():
         down_l2 = MemRefType.get([GLU_OUT], bf16, memory_space=l2)  # GLU out accumulate
         # relay memtile columns for the id-demux dests (free cols, not proj/X/MT).
         # GLU dest (gate-up) goes DIRECT to the GLU tile (no relay).
-        RELAY_COLS = [3, 5, 4][:NDEST]
+        # Only HOST-DRAINED, non-mixer dests are relayed; under FULL4 there are
+        # none, so the tail entries are padding for a wider demux.
+        RELAY_COLS = ([3, 5, 4] + [3] * NDEST)[:NDEST]
 
         # ---- kernels ----
         zero = FuncOp("proj_qmm_zero", ([yacc_l1, i32], []), visibility="private")
@@ -1212,6 +1526,41 @@ def build_module():
             visibility="private",
         )
         rope_compute.attributes["link_with"] = StringAttr.get("rope.o")
+        if HYBRID_MIXER:
+            # The hybrid's rope shares its input buffer with the ShortConv
+            # staging call, and rope_compute rewrites that buffer in place (see
+            # rope.cc). rope_compute_hyb is rope_compute plus the reference's
+            # IS_ATTN branch. Declared only for a hybrid so every shipped
+            # model's IR stays byte-identical.
+            rope_compute_hyb = FuncOp(
+                "rope_compute_hyb",
+                ([ropeq_l1, ropekv_l1, ropekv_l1, qkv_l1, ropelut_l1, i32], []),
+                visibility="private",
+            )
+            rope_compute_hyb.attributes["link_with"] = StringAttr.get("rope.o")
+        if CONV_MIXER:
+            shortconv_compute = FuncOp(
+                "shortconv_compute",
+                # OPERAND ORDER IS LOAD-BEARING: AIR reads the LAST memref of an
+                # external call as the written one, and that is what decides
+                # whether @convmix is placed once and shared or cloned onto both
+                # tiles (air::herdBufferHasCrossCoreDependence). See shortconv.cc.
+                ([convmix_l1, convst_l1, convo_l1, convst_l1, i32], []),
+                visibility="private",
+            )
+            shortconv_compute.attributes["link_with"] = StringAttr.get("shortconv.o")
+            shortconv_stage = FuncOp(
+                "shortconv_stage",
+                ([convland_l1, convmix_l1, i32, i32], []),
+                visibility="private",
+            )
+            shortconv_stage2 = FuncOp(
+                "shortconv_stage2",
+                ([convland_l1, convland_l1, convmix_l1, i32], []),
+                visibility="private",
+            )
+            shortconv_stage2.attributes["link_with"] = StringAttr.get("shortconv.o")
+            shortconv_stage.attributes["link_with"] = StringAttr.get("shortconv.o")
         # Multi-block (ATTN_L>1) flash-attention: reproducer model A. The block
         # COMPUTE (attn_qk_blk/attn_kv_blk/attn_kv_fin) is proven (attn_iso PASS
         # L=16..128); online-softmax state lives in L1 and persists across the
@@ -1238,6 +1587,18 @@ def build_module():
             "attn_kv_fin", ([y_l1, lden_l1, ao_l1], []), visibility="private"
         )
         _set_attn_link(attn_kv_fin, "attn_kv")
+        if MIX_TO_CU:
+            # Hybrid only: overwrite this CU's o with its slice of the ShortConv
+            # mixer output when the wave's arm says ShortConv. The pick has to
+            # happen in a CORE, not at the o-gather memtile: a memtile is segment
+            # scope and cannot see the arm, so it cannot select between two
+            # sources per wave.
+            conv_o_pass = FuncOp(
+                "conv_o_pass",
+                ([convo_l1, ao_l1, i32, i32], []),
+                visibility="private",
+            )
+            _set_attn_link(conv_o_pass, "attn_kv")
 
         # ---- channels ----
         # Faithful X-feed: host raw X (@xy) + rms weight (@rmsin) -> rms core ->
@@ -1248,10 +1609,10 @@ def build_module():
         # both as packets into one 2-slot ping-pong (input, then o-proj, then down).
         # Debug configs keep the original circuit rmsX.
         if FULL4:
-            _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
+            channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
-            _rx = channel_decl("rmsX", size=[1])
-        _rw = channel_decl("rmsW", size=[1])
+            channel_decl("rmsX", size=[1])
+        channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
             # rmsW FIFO re-fed twice does NOT pair in AIR (both gets read the same
@@ -1272,17 +1633,14 @@ def build_module():
         # stale-rebroadcast deadlock). Two separate feed loops (the prior bug)
         # lowered to two repeat_count tasks. Packet (npu_dma_packet) so the two
         # producers (rms core L1 + down_buffer L2, time-disjoint, same id) converge.
-        _xn = channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
-        if KV_APPEND:
-            # Pin the rms core's two outputs (xnorm o-proj-X feedback -> mem_2_1 on
-            # MM2S1; layerOut -> shim on MM2S0) to their known-good split. Adding the
-            # append channels otherwise perturbs the global placer into packing BOTH
-            # onto rms MM2S0 (dual-fan packet), which flips layerOut circuit->packet
-            # and deadlocks. Only the rms core is a compute-tile endpoint of these
-            # channels (consumers are memtile/shim), so the pin is local to it.
-            _xn.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                T.i32(), 1
-            )
+        # The rms core's two outputs (this xnorm o-proj-X feedback -> mem_2_1, and
+        # layerOut -> shim) used to be pinned to a known-good split, because
+        # adding the append channels packed BOTH onto rms MM2S0 and deadlocked.
+        # AIRToAIE reaches the same split by itself now: that packing is a ring
+        # its own diagnoseBDChain calls out of step, and rather than only
+        # refusing it, spreadCollapsedPacketChannels peels one flow onto the
+        # channel that was sitting idle.
+        channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
         # (FAITHFUL ph2): no toBufP2 / buf_ph2 channel -- the rms core emits ph2 X
         # = rmsnorm(x+oproj) directly on @xnorm. Every re-feed on this channel is
         # written as an n-trip loop around the put (see refeed()); the counts are
@@ -1299,17 +1657,13 @@ def build_module():
         channel_decl("ropeLUT", size=[1])
         # S3a flash-attn dataflow: rope q -> qk tile (direct); rope k|v -> KV
         # staging memtile (rope's single k/v MM2S) which splits k->qk, v->kv.
-        _ropeQ = channel_decl(
-            "ropeQ", size=[1]
-        )  # rope q (whole 2048) -> q broadcast memtile
-        if KV_APPEND:
-            # Pin roped Q to rope MM2S0 so the K/V append (pinned to MM2S1
-            # below) does not steal it -- matches the reference (Q on 1st MM2S, K/V append
-            # on 2nd). Without this the placer puts the packet append on MM2S0
-            # (allocated first) and shoves Q to MM2S1, deadlocking the front-end.
-            _ropeQ.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                T.i32(), 0
-            )
+        channel_decl("ropeQ", size=[1])  # rope q (whole 2048) -> q broadcast memtile
+        # Q used to be pinned to rope MM2S0 here, to keep the packet K/V append
+        # off the channel carrying this circuit flow. The compiler derives that
+        # now: a DMA channel's port is either statically connected or packet-
+        # switched, never both, so AIRToAIE separates the two by itself
+        # (TileDMAAllocator::spreadCollapsedPacketChannels) and reproduces this
+        # exact placement.
         channel_decl("toAttnQ", size=[N_ATTN_CU])
         # rope k/v -> kv memtiles. PACKET so one rope MM2S can fan to memtiles on
         # MULTIPLE cols (mem_3_1 + mem_4_1) -- the reference routes rope k/v as
@@ -1338,14 +1692,11 @@ def build_module():
                 # independent packet readbacks over distinct shim tiles, keeping
                 # the append off rope's own col2 (whose congestion deadlocks the
                 # front-end) without air.shim_col.
-                _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-                _apK.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 1
-                )
-                _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-                _apV.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 1
-                )
+                channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
+                # Only appendK names a channel. It is what holds the pair on
+                # rope's second MM2S, clear of the circuit ropeQ; appendV joins
+                # it there on its own.
+                channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
             if KV_SPLIT:
                 # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
                 # col group of 2 CUs), so their memtile S2MM fills are independent.
@@ -1354,6 +1705,65 @@ def build_module():
             else:
                 channel_decl("inKV", size=[N_ATTN_CU])
         channel_decl("attnO", size=[N_ATTN_CU])
+        if MIX_TO_CU:
+            # ShortConv mixer -> all four CU kv cores, one BROADCAST put of the
+            # whole CONV_DIM (each CU keeps its own slice in C). A broadcast is
+            # ONE acquire, so it sidesteps rule 5 -- four puts of four DIFFERENT
+            # slices out of one L1 buffer would fold to four Acquire(1) against
+            # init=1 and block on the second. The extra 3x on the wire is 12 KB a
+            # token against ~42 MB of weights.
+            # broadcast_shape is what makes this ONE flow with four
+            # destinations. A plain size=[1] channel read by four tiles keeps
+            # only ONE of them in air-to-aie's channel specialization -- the
+            # other three are left with a complete DMA program and no aie.flow
+            # behind them, so they stall on their acquire forever (measured: one
+            # aie.flow, tile_5_5 -> tile_3_3, and nothing to the other three).
+            Channel("mixToCU", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
+        if CONV_MIXER:
+            # convO is the attnO analogue: ShortConv mixer -> o memtile -> o-proj X.
+            # A HYBRID has no convO. The o-gather memtile is segment scope, so it
+            # cannot choose its source per wave, and @attnO cannot simply take a
+            # second producer either: a channel with two producer TILES loses one
+            # of them in air-to-aie's channel specialization, and the dropped tile
+            # is left with a complete DMA program and no aie.flow behind it, so it
+            # stalls on its acquire forever (measured -- that is what hung the
+            # first hybrid, identically on both arms). So the mixer output goes to
+            # the CUs instead, over @mixToCU, and the four CU kv cores stay the
+            # SOLE producers of @attnO. Which of the two results a kv core puts is
+            # chosen inside the core from its RTP arm -- exactly the reference's
+            # IS_ATTN, and the only layer-type branch left in the whole design.
+            # convStIn/Out carry the per-layer [BX[t-2] | BX[t-1]] state to and from
+            # arg4 (the KV slot, which a conv layer does not otherwise use).
+            # One channel each; all four are plain shim/memtile <-> tile feeds.
+            # The two big buffers move by neighbour memory and have no channel.
+            if not HYBRID_MIXER:
+                channel_decl("convO", size=[1])
+            channel_decl("convW", size=[1])
+            channel_decl("convStIn", size=[1])
+            # Packet so it can converge with the KV append on the shim's arg4
+            # S2MM -- but CIRCUIT whenever the mixer core ALSO feeds @xnorm
+            # directly, because then both of its outputs would be packet flows on
+            # one tile and simpleDmaChannelAlloc multiplexes any two of those onto
+            # a single MM2S. That is fine at equal rates; these differ. The X is a
+            # refeed of OPROJ_REFEED and the state write-back fires once, so the
+            # chained BD ring interleaves them 1:1, the core's
+            # Acquire(OPROJ_REFEED) is never satisfied, and the design deadlocks
+            # with nothing written.
+            # A HYBRID cannot take the circuit escape: this has to converge with
+            # the KV append on the shim's arg4 S2MM, and the pass converts it to
+            # a packet flow regardless. `air.tile_dma_channel` does not help
+            # either -- the channel is fixed before the pin is consulted.
+            # Unblocking the hybrid's ShortConv arm needed a compiler fix: a
+            # rate-mismatch hazard in spreadCollapsedPacketChannels, keyed on
+            # air.refeed_count.
+            _stout_pkt = int(
+                _os.environ.get("CONV_STOUT_PKT", "0" if HYBRID_MIXER else "1")
+            )
+            channel_decl(
+                "convStOut",
+                size=[1],
+                **({"channel_type": "npu_dma_packet"} if _stout_pkt else {}),
+            )
         # W: host (per col) -> group memtile -> NCY cores.
         if W_DUAL_CHAN:
             # PER-COLUMN channels rather than one [NCX] bundle, so that both of a
@@ -1403,13 +1813,11 @@ def build_module():
         channel_decl("toShim", size=[NDEST])
         # #4: layer output (residual2 = h + down) drained to host from the rms core.
         if FULL4:
-            _lo = channel_decl("layerOut", size=[1])
-            if KV_APPEND:
-                # Keep layerOut on rms MM2S0 (circuit) so xnorm (pinned to MM2S1)
-                # does not share/flip it to packet. See xnorm pin above.
-                _lo.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
-                    T.i32(), 0
-                )
+            # layerOut and the xnorm above are the rms core's only two outputs,
+            # and AIRToAIE gives them a channel each: collapsed onto one they
+            # form a ring its diagnoseBDChain oracle calls out of step, and
+            # spreadCollapsedPacketChannels peels one onto the idle channel.
+            channel_decl("layerOut", size=[1])
         # GLU path: id-demux delivers gate-up DIRECTLY to the GLU herd (no relay);
         # GLU -> gluOut -> down memtile accumulate (8192). FAITHFUL: that 8192 is
         # fed back on-chip as the DOWN phase X by the down_buffer re-broadcasting it
@@ -1420,6 +1828,32 @@ def build_module():
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
+
+        def _arm_of_wave(iv, arm):
+            """Promote a decode arm to ATTN (2) on the attention waves.
+
+            The arm encoding mirrors the reference's IS_ATTN RTP: 0 = lm-head
+            wave, 1 = conv layer, 2 = attention layer. Non-hybrid builds never
+            reach the promotion, so their arm stays the original 1/0 select and
+            their IR is unchanged.
+
+            The LFM2 schedule is irregular, so this is a chain of equality
+            selects over ATTN_WAVES rather than any arithmetic predicate. The
+            wave loop is fully unrolled by the time it reaches the shim, so
+            every one of these folds to a constant.
+
+            ATTN_WAVES, not ATTN_LAYERS: an entry at or past UNI_DEC names an
+            lm-head wave, and promoting one to the attention arm silently drops
+            that vocab chunk's logits. See its definition.
+            """
+            if not HYBRID_MIXER or iv is None:
+                return arm
+            _a2 = arith.ConstantOp(IntegerAttr.get(i32, 2), None).result
+            for _k in ATTN_WAVES:
+                arm = arith.select(
+                    arith.cmpi(arith.CmpIPredicate.eq, iv, idx(_k)), _a2, arm
+                )
+            return arm
 
         def grp_leads(g):
             # the leads (cx,pp) of group g, header-bearer first (k==0). Group g owns
@@ -1684,8 +2118,44 @@ def build_module():
                             _ucmp = arith.cmpi(
                                 arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)
                             )
-                            _uarm = arith.select(_ucmp, _u1, _u0)
+                            _uarm = _arm_of_wave(a_iv, arith.select(_ucmp, _u1, _u0))
                         _uarm_i = arith.index_cast(idx_t, _uarm)
+
+                        def _mix_gate(
+                            attn_body,
+                            conv_body,
+                            attn_always=False,
+                            conv_always=False,
+                            conv_skip=False,
+                        ):
+                            """Per-layer-type feeds, inside the decode arm.
+
+                            A hybrid feeds different things for the two layer
+                            types: the rope LUT + the KV append/readback for an
+                            attention layer, the depthwise taps + the carried
+                            ShortConv state for a conv layer. Everything else --
+                            weights, both norms, X, the egress drain -- is
+                            identical, which is what the uniform phase schedule
+                            buys, so only these blocks are switched.
+
+                            Arm 0 cannot reach here (this is the decode arm), so
+                            the switch is case-2 / default. A non-hybrid build
+                            has one layer type and emits it directly, leaving
+                            its IR untouched.
+                            """
+                            # *_always: that side's consumer runs on every decode
+                            # wave -- a memtile, or a core that has to run every
+                            # wave to drain one -- so the feed cannot be armed.
+                            for _always, _body, _kind in (
+                                (attn_always, attn_body, 2),
+                                (conv_always, conv_body, 1),
+                            ):
+                                if conv_skip and _kind == 1:
+                                    continue
+                                if HYBRID_MIXER and _always:
+                                    _body()
+                                else:
+                                    _arm_only(_uarm_i, {_kind}, _body, in_dec=True)
 
                         def _uni_voc():
                             _wsel[0] = None  # lm-head buffer, statically known
@@ -1864,13 +2334,90 @@ def build_module():
                                 if (ROPE_W_PER_LAYER and MULTIBLK)
                                 else _lut_off
                             )
-                            ChannelPut(
-                                "ropeLUT",
-                                RMS,
-                                offsets=[_rope_off],
-                                sizes=[ROPE_W_LEN],
-                                strides=[1],
-                            )
+
+                            # Both layer types read their mixer weights from the
+                            # SAME per-layer rope_w slab, each taking its own prefix:
+                            # tap-major [w0|w1|w2] for conv, cos/sin + qk-norm for
+                            # attention. The slab is sized for the larger.
+                            # attn_always: rope runs on every decode wave in a
+                            # hybrid (its q-broadcast memtile is wave-invariant),
+                            # so its LUT has to arrive on every decode wave too.
+                            # On a ShortConv wave it reads the taps as a cos/sin
+                            # table and the result is discarded.
+
+                            # A HYBRID defers the whole mixer feed block into the
+                            # phase loop, to the LAST mixer phase -- same reason
+                            # KV_PHASE exists (see its use site). @convStOut is a
+                            # shim GET on the ShortConv core's output, and that
+                            # core cannot run until every mixer phase has landed;
+                            # issuing it here, before the phase loop that feeds
+                            # those phases' weights, deadlocks exactly as the KV
+                            # append did. Every other model emits it right here,
+                            # unchanged.
+                            def _emit_mixer_feeds():
+                                _mix_gate(
+                                    lambda: ChannelPut(
+                                        "ropeLUT",
+                                        RMS,
+                                        offsets=[_rope_off],
+                                        sizes=[ROPE_LUT_LEN],
+                                        strides=[1],
+                                    ),
+                                    lambda: ChannelPut(
+                                        "convW",
+                                        RMS,
+                                        offsets=[_rope_off],
+                                        sizes=[CONV_W_LEN],
+                                        strides=[1],
+                                    ),
+                                    # Rope AND the mixer both run on every decode
+                                    # wave, so both LUTs have to arrive on every
+                                    # decode wave. They read the same per-layer
+                                    # rope_w slab from either end, so this is two
+                                    # puts of one DDR region, not extra traffic.
+                                    attn_always=HYBRID_MIXER,
+                                    conv_always=HYBRID_MIXER,
+                                )
+                                if CONV_MIXER:
+                                    # Conv state lives in arg4 alongside the KV cache
+                                    # (a conv layer has no KV, an attention layer no
+                                    # state): [BX[t-2] | BX[t-1]] per layer. Read it
+                                    # out, and write the kernel's shifted state back
+                                    # over the SAME slot -- the RAW on this DDR region
+                                    # gives air-annotate-append-barrier the read->write
+                                    # order, exactly as it does for the KV cache.
+                                    _cst = _lo(_lb(CONV_ST_LAYER), CONV_ST_BASE)
+
+                                    def _conv_state():
+                                        ChannelPut(
+                                            "convStIn",
+                                            KVC,
+                                            offsets=[_cst],
+                                            sizes=[CONV_ST_LAYER],
+                                            strides=[1],
+                                        )
+                                        ChannelGet(
+                                            "convStOut",
+                                            KVC,
+                                            offsets=[_cst],
+                                            sizes=[CONV_ST_LAYER],
+                                            strides=[1],
+                                        )
+
+                                    # The mixer core runs unarmed, so its state
+                                    # read-back and write-back are issued on every
+                                    # decode wave. An attention layer reads and
+                                    # rewrites its own (unused) state slot with a
+                                    # value its kernel computed from garbage and
+                                    # nothing downstream ever reads.
+                                    _mix_gate(
+                                        lambda: None,
+                                        _conv_state,
+                                        conv_always=HYBRID_MIXER,
+                                    )
+
+                            if not HYBRID_MIXER:
+                                _emit_mixer_feeds()
 
                             # weights: per col, streamed in NCY-block (10240) steps matched
                             # with the memtile weight-fan gets (AIR does not auto-split a big
@@ -2073,16 +2620,62 @@ def build_module():
                                 _wcol0 = _lo(_wbase, woff)  # _wbase + woff (col 0 base)
                                 _feed_wcols(_wcol0, _colspan, per_col // NCY)
                                 woff += NCX * per_col * blk
-                                if MULTIBLK and p == 0:
-                                    _emit_append()
-                                    _emit_readback()
+                                # LAST mixer phase, not the first. The shim is a
+                                # sequential instruction stream: the append blocks
+                                # on rope's K/V, and rope cannot run until the
+                                # stage tile has landed every mixer phase, whose
+                                # weight feeds come LATER in that same stream. With
+                                # one mixer phase (every attention-only model) the
+                                # two coincide and it cannot be hit; with two it
+                                # deadlocks the whole design. Measured: the hybrid
+                                # machinery passes with one mixer phase and hangs
+                                # with two, everything else held fixed.
+                                if MULTIBLK and p == KV_PHASE and ATTN_SUBSYS:
+
+                                    def _kv_traffic():
+                                        _emit_append()
+                                        _emit_readback()
+
+                                    # Attention waves only. The KV memtile behind
+                                    # this cannot be armed (segment scope), but it
+                                    # does not need to be: with no traffic issued
+                                    # it simply waits, and so do the CUs. Nothing
+                                    # else is waiting on either of them -- which is
+                                    # how the reference behaves, and is why nothing
+                                    # here has to be made wave-invariant.
+                                    # In a hybrid the CUs run their block loop on
+                                    # a ShortConv wave too, so the cache read-back
+                                    # that loop consumes is issued on every decode
+                                    # wave. The append is part of the same ordered
+                                    # block; a conv layer appends rope's garbage
+                                    # K/V into its own (never-read) cache slot.
+                                    _mix_gate(
+                                        _kv_traffic,
+                                        lambda: None,
+                                        attn_always=HYBRID_MIXER,
+                                    )
+                                if HYBRID_MIXER and p == KV_PHASE:
+                                    # Deferred to here from before the phase loop
+                                    # (see _emit_mixer_feeds), and deliberately
+                                    # AFTER the KV traffic above.
+                                    #
+                                    # @convStOut is a shim GET on the ShortConv
+                                    # core, and that core blocks first on its four
+                                    # @mixToCU puts -- which the CUs only take once
+                                    # they are out of their block loop, which needs
+                                    # the cache readback. Issue the readback first
+                                    # and the chain runs; issue it second and the
+                                    # shim waits on a core that is waiting on the
+                                    # shim.
+                                    _emit_mixer_feeds()
                             # per-dest host drain: dest p drains ROUNDS_PER_DEST[p] rounds into
                             # this layer's Y region (diagnostic per-layer QKV observation).
                             roff = 0
                             for p in HOST_DRAIN:
-                                if p == 0:
-                                    # loop close: dest0 (QKV->rope->flash attention) o is
-                                    # consumed on-chip as the o-proj X (not drained to host).
+                                if p in MIXER_DESTS:
+                                    # loop close: the mixer dests (QKV->rope->flash
+                                    # attention, or in_proj->ShortConv) are consumed
+                                    # on-chip as the o-proj X, not drained to host.
                                     pass
                                 else:
                                     for rr in range(ROUNDS_PER_DEST[p]):
@@ -2126,8 +2719,32 @@ def build_module():
                 # (No GLU host drain: the GLU output is consumed on-chip by the down
                 # phase. The down output egresses via the rms layer output above.)
 
-                _seg_opers = ([a_iv] if a_iv is not None else []) + (
-                    [L_rt] if DYNSEQ else []
+                # HYBRID: the layer-type arm must reach the segment as an i32
+                # OPERAND computed out here, not be recomputed inside from the
+                # wave index. cloneL2AndL3MemcpysToDeviceOp pins INDEX-typed
+                # segment arguments to constant 0, so an arm derived inside the
+                # segment folds to the wave-0 arm and every other branch is
+                # erased -- in cores as much as in memtiles, which is why the
+                # all-attention and all-ShortConv hybrids compiled to literally
+                # identical flow sets, both of them the ShortConv one. An i32
+                # operand is left alone (this is how DYNSEQ's L already reaches
+                # the attention herd) and survives as a real per-dispatch RTP.
+                _seg_arm_rt = (
+                    _arm_of_wave(
+                        a_iv,
+                        arith.select(
+                            arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
+                            arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
+                            arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
+                        ),
+                    )
+                    if (HYBRID_MIXER and a_iv is not None)
+                    else None
+                )
+                _seg_opers = (
+                    ([a_iv] if a_iv is not None else [])
+                    + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
+                    + ([L_rt] if DYNSEQ else [])
                 )
 
                 @segment(name="seg", operands=_seg_opers)
@@ -2161,10 +2778,13 @@ def build_module():
                         _seg_cmp = arith.cmpi(
                             arith.CmpIPredicate.slt, _seg_iv, idx(UNI_DEC)
                         )
-                        _seg_arm = arith.select(
-                            _seg_cmp,
-                            arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
-                            arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
+                        _seg_arm = _arm_of_wave(
+                            _seg_iv,
+                            arith.select(
+                                _seg_cmp,
+                                arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
+                                arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
+                            ),
                         )
                         _seg_arm_i = arith.index_cast(idx_t, _seg_arm)
                     else:
@@ -2173,6 +2793,31 @@ def build_module():
                         _seg_arm = arith.ConstantOp(
                             IntegerAttr.get(i32, 0 if LM_HEAD else 1), None
                         ).result
+
+                    # TWO arms, and the distinction is load-bearing.
+                    #
+                    # _seg_arm is derived from the segment's wave index, which
+                    # cloneL2AndL3MemcpysToDeviceOp pins to constant 0 -- so every
+                    # gate written on it folds to the wave-0 arm. That is exactly
+                    # what the shipped models want from it (it is their
+                    # decode-vs-vocab gate, and it folds to "decode"), and it is
+                    # all a memtile can express anyway, since a memtile's DMA
+                    # program is static.
+                    #
+                    # _core_arm is the hybrid's per-layer IS_ATTN. It arrives as an
+                    # i32 segment OPERAND computed at launch scope, the same route
+                    # DYNSEQ's L already takes, so it is a real per-dispatch RTP
+                    # rather than something the folder can see through. Use it for
+                    # herd operands ONLY. Deriving the layer type inside the
+                    # segment instead compiled the all-attention and the
+                    # all-ShortConv hybrid to byte-identical flow sets -- both of
+                    # them the ShortConv one, with the CUs' @attnO puts erased.
+                    _core_arm = _sa[1] if _seg_arm_rt is not None else _seg_arm
+                    _core_arm_i = (
+                        arith.index_cast(idx_t, _core_arm)
+                        if _seg_arm_rt is not None
+                        else _seg_arm_i
+                    )
 
                     # ===== X memtile (the reference mem_1_1 x_buffer): 512 ring, re-fed =====
                     # The cores read X in phase order: phases 0..2 read the rmsnorm'd
@@ -2221,7 +2866,11 @@ def build_module():
                     # rms never produces. Mode-conditional bound (as the validated
                     # standalone). CDO-identity (single xclbin) needs this made
                     # genuinely count-free later; confirming the deadlock cause first.
-                    _xc_dec = (REFEED[0] + OPROJ_REFEED + GATEUP_REFEED) * (
+                    # XN_REFEED, not REFEED[0]: a mixer split over several
+                    # phases re-feeds the rms X once per phase, and this count
+                    # must match what the cores consume or the X memtile
+                    # starves them.
+                    _xc_dec = (XN_REFEED + OPROJ_REFEED + GATEUP_REFEED) * (
                         K // (2 * COL_BLOCK)
                     ) + (
                         DOWN_REFEED * (GLU_OUT // (2 * COL_BLOCK))
@@ -2396,8 +3045,8 @@ def build_module():
                     # -> host (strip demux already delivered pure 512). The gate-up dest
                     # (id8) is NOT here -- it goes DIRECTLY to the GLU tile (below).
                     for p in HOST_DRAIN:
-                        if p == 0:
-                            continue  # QKV (dest0) consumed by the rope herd (below)
+                        if p in MIXER_DESTS:
+                            continue  # consumed by the mixer herd (below)
                         for _rp in for_(idx(0), idx(ROUNDS_PER_DEST[p]), idx(1)):
                             rb = AllocOp(relay_l2, [], [])
                             rb.operation.attributes["air.memtile_col"] = (
@@ -2422,631 +3071,136 @@ def build_module():
                             DeallocOp(rb)
                             yield_([])
 
-                    # ===== ATTN S1: rope core (reference tile_2_3) =====
-                    # QKV (id1, dest0) -> rope_compute(qkv 3072, lut 64) -> q(2048),
-                    # k(512), v(512) roped. S1 drains roped q/k/v -> toShim[0] (the
-                    # freed QKV host drain) to verify the QKV->rope dataflow. S3 will
-                    # route q->attn and k/v->KV append instead.
-
-                    # the reference-faithful: NO QKV staging memtile. The QKV (id1/dest0) is
-                    # assembled directly in the rope COMPUTE core's L1 (see rope_h
-                    # below), mirroring layer.mlir mem_2_3 S2MM0 (tile_2_3 gathers the
-                    # 3072 qkv_buffer itself). Removing the col-2 memtile relay is the
-                    # fix for the fused vocab deadlock: in vocab mode id1 never flows,
-                    # and an idle compute-tile S2MM does NOT stall the col-2 memtile
-                    # that the vocab X-feed/rms share.
-
-                    # BUG FIX (later43c): rope arm MUST track the mode like proj/rms
-                    # (0 in vocab). Hardcoded 1 kept rope in _dec() during vocab -> it
-                    # stalled on the 6 id1 QKV gets (never produced in vocab) and never
-                    # emitted the appendK/appendV the LM launch waits on -> TIMEOUT.
-                    _arm_rope = _seg_arm
-
-                    @herd(name="rope", sizes=[1, 1], operands=[_arm_rope])
-                    def rope_h(tx, ty, _sx, _sy, _arm):
-                        def _dec():
+                    # ===== ATTN S1: the rope mixer (reference tile_2_3) =====
+                    # QKV (dest0) -> rope_compute(qkv M, lut) -> q/k/v roped, then
+                    # q -> the attention CUs and k/v -> the KV append.
+                    #
+                    # This is a FUNCTION, not a herd body, because a HYBRID build
+                    # runs it on the conv mixer's STAGE tile -- the reference does
+                    # the same, branching on IS_ATTN[0] inside one rope.cc.
+                    #
+                    # the reference-faithful: NO QKV staging memtile. The QKV
+                    # (dest0) is assembled directly in this core's L1, mirroring
+                    # layer.mlir mem_2_3 S2MM0. Removing the col-2 memtile relay is
+                    # the fix for the fused vocab deadlock: in vocab mode dest0
+                    # never flows, and an idle compute-tile S2MM does NOT stall the
+                    # col-2 memtile that the vocab X-feed/rms share.
+                    def _rope_body(_arm, a_qkv=None):
+                        # a_qkv given => the caller owns the buffer and has
+                        # already filled it (the hybrid hands rope the ph0
+                        # landing). None => rope allocates and fills its own.
+                        _own_qkv = a_qkv is None
+                        if _own_qkv:
                             a_qkv = AllocOp(qkv_l1, [], [])
-                            # the reference-faithful (layer.mlir mem_2_3 S2MM0): the rope COMPUTE
-                            # core assembles the 6 id1/dest0 demux rounds (512 each)
-                            # directly into its own L1 3072 buffer -- NO col-2 memtile
-                            # relay. Identical 6x512 offset gets as the old qkvmt (each
-                            # get consumes one stripped packet round), just landing in
-                            # L1. In vocab mode id1 never flows so this compute-tile
-                            # S2MM idles harmlessly.
-                            for _rq in range(ROUNDS_PER_DEST[0]):
-                                ChannelGet(
-                                    "outY",
-                                    a_qkv,
-                                    indices=[idx(0), idx(0)],
-                                    offsets=[idx(_rq * PAYLOAD)],
-                                    sizes=[idx(PAYLOAD)],
-                                    strides=[idx(1)],
-                                )
-                            a_lut = AllocOp(ropelut_l1, [], [])
-                            ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
-                            a_q = AllocOp(ropeq_l1, [], [])
-                            a_k = AllocOp(ropekv_l1, [], [])
-                            a_v = AllocOp(ropekv_l1, [], [])
-                            CallOp(rope_compute, [a_q, a_k, a_v, a_qkv, a_lut, _arm])
-                            # S3a: feed flash attention (1 CU = CU0). q[0:512] -> qk
-                            # tile directly (MM2S0). k[0:128]+v[0:128] (CU0's 2 KV
-                            # heads) -> KV staging memtile on ONE MM2S (rope's 2nd
-                            # MM2S, like reference rope k/v packets) which splits them.
-                            # q reorder = pack_q (reference mem_5_1 [8,8,8]/[8,64,1]):
-                            # natural [qh,dh] -> [dc,qh,de], the kernel's q layout.
-                            # q (whole 2048) -> q broadcast memtile (1 rope MM2S);
-                            # the memtile fans out per-CU reordered (reference mem_5_1).
-                            ChannelPut(
-                                "ropeQ",
-                                a_q,
-                                indices=[idx(0)],
-                                offsets=[idx(0)],
-                                sizes=[idx(DQ_PADDED)],
+                        # the reference-faithful (layer.mlir mem_2_3 S2MM0): the rope COMPUTE
+                        # core assembles the 6 id1/dest0 demux rounds (512 each)
+                        # directly into its own L1 3072 buffer -- NO col-2 memtile
+                        # relay. Identical 6x512 offset gets as the old qkvmt (each
+                        # get consumes one stripped packet round), just landing in
+                        # L1. In vocab mode id1 never flows so this compute-tile
+                        # S2MM idles harmlessly.
+                        for _rq in range(MIX_RNDS_QKV if _own_qkv else 0):
+                            _rn = PAYLOAD
+                            ChannelGet(
+                                "outY",
+                                a_qkv,
+                                indices=[idx(0), idx(0)],
+                                offsets=[idx(_rq * PAYLOAD)],
+                                sizes=[idx(_rn)],
                                 strides=[idx(1)],
                             )
-                            if MULTIBLK:
-                                # the reference append: this token's roped K (all heads) and
-                                # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
-                                # whole cache is then read back for the block loop.
-                                if KV_APPEND:
-                                    ChannelPut(
-                                        "appendK",
-                                        a_k,
-                                        indices=[idx(0)],
-                                        offsets=[idx(0)],
-                                        sizes=[idx(DK_TOT_A)],
-                                        strides=[idx(1)],
-                                    )
-                                    ChannelPut(
-                                        "appendV",
-                                        a_v,
-                                        indices=[idx(0)],
-                                        offsets=[idx(0)],
-                                        sizes=[idx(DK_TOT_A)],
-                                        strides=[idx(1)],
-                                    )
-                            else:
-                                # per COLUMN GROUP: that group's CUs' k then v on its
-                                # own packet channel (no cross-col FIFO interleave).
-                                for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
-                                    for c in cus:
-                                        ChannelPut(
-                                            "toAttnKV",
-                                            a_k,
-                                            indices=[idx(gi)],
-                                            offsets=[idx(c * KVPC_DH)],
-                                            sizes=[idx(KVPC_DH)],
-                                            strides=[idx(1)],
-                                        )
-                                    for c in cus:
-                                        ChannelPut(
-                                            "toAttnKV",
-                                            a_v,
-                                            indices=[idx(gi)],
-                                            offsets=[idx(c * KVPC_DH)],
-                                            sizes=[idx(KVPC_DH)],
-                                            strides=[idx(1)],
-                                        )
-                            DeallocOp(a_qkv)
-                            DeallocOp(a_lut)
-                            DeallocOp(a_q)
-                            DeallocOp(a_k)
-                            DeallocOp(a_v)
-
-                            yield_([])
-
-                        def _voc():
-                            # gate-off 2026-07-15b: attn fully idle in vocab -> rope emits
-                            # NOTHING (no dummy appendK/appendV; _uni_voc drains neither).
-                            yield_([])
-
-                        index_switch(
-                            [],
-                            arith.index_cast(idx_t, _arm),
-                            [0],
-                            case_body_builder=lambda op, i, cv: _voc(),
-                            default_body_builder=lambda op: _dec(),
+                        a_lut = AllocOp(ropelut_l1, [], [])
+                        ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
+                        a_q = AllocOp(ropeq_l1, [], [])
+                        a_k = AllocOp(ropekv_l1, [], [])
+                        a_v = AllocOp(ropekv_l1, [], [])
+                        CallOp(
+                            rope_compute_hyb if HYBRID_MIXER else rope_compute,
+                            [a_q, a_k, a_v, a_qkv, a_lut, _arm],
                         )
-
-                    rope_h.attributes["link_with"] = StringAttr.get("rope.o")
-                    rope_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), RMS_PCOL)
-                    rope_h.attributes["y_loc"] = IntegerAttr.get(T.i64(), 3)
-
-                    # ===== ATTN S3a: 1-CU flash attention (reference tile_3_2/3_3) =====
-                    # Proven attn_iso qk/kv herd pair: s_shared (segment-scope L1) is
-                    # shared cross-tile (qk writes scores, kv reads). q from rope (direct
-                    # to qk), k/v from rope via KV staging memtile (split). L=1 decode =>
-                    # 1 block; the 15 pad keys are masked by L inside the kernels. o ->
-                    # attnO host drain (S3a verification; S4 routes o -> o-proj X).
-                    # q broadcast memtile (reference mem_5_1): get rope q (2048),
-                    # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
-                    def _qmtb_dec():
-                        qmtb = AllocOp(qmt_l2, [], [])
-                        qmtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            T.i32(),
-                            5,  # reference mem_5_1; free for N<=2 (kv on col3).
-                            # N=4 needs attn cols 3,4 + GLU->tile_5_2 relayout (TODO).
+                        # S3a: feed flash attention (1 CU = CU0). q[0:512] -> qk
+                        # tile directly (MM2S0). k[0:128]+v[0:128] (CU0's 2 KV
+                        # heads) -> KV staging memtile on ONE MM2S (rope's 2nd
+                        # MM2S, like reference rope k/v packets) which splits them.
+                        # q reorder = pack_q (reference mem_5_1 [8,8,8]/[8,64,1]):
+                        # natural [qh,dh] -> [dc,qh,de], the kernel's q layout.
+                        # q (whole 2048) -> q broadcast memtile (1 rope MM2S);
+                        # the memtile fans out per-CU reordered (reference mem_5_1).
+                        ChannelPut(
+                            "ropeQ",
+                            a_q,
+                            indices=[idx(0)],
+                            offsets=[idx(0)],
+                            sizes=[idx(DQ_PADDED)],
+                            strides=[idx(1)],
                         )
-                        ChannelGet("ropeQ", qmtb, indices=[idx(0)])
-                        for c in range(N_ATTN_CU):
-                            ChannelPut(
-                                "toAttnQ",
-                                qmtb,
-                                # pack_q (reference mem_5_1): natural [qh, dh] -> the
-                                # kernel's [dc, qh, de] mmul layout, dh = dc*8 + de.
-                                # CU c reads its Q_HEADS_PER_CU heads starting at head
-                                # c*Q_HEADS_PER_CU (stride DH) -> linear base
-                                # c*Q_HEADS_PER_CU*DH = c*DQ_PER_CU. dc stride 8, de 1.
-                                indices=[idx(c)],
-                                # rope emits PADDED Q (each CU's block is
-                                # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
-                                # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU.
-                                # llama pad=0 -> ==Q_HEADS_PER_CU (byte-identical).
-                                offsets=[
-                                    idx(0),
-                                    idx(c * Q_HEADS_PADDED_PER_CU),
-                                    idx(0),
-                                ],
-                                sizes=[
-                                    idx(DH // 8),
-                                    idx(Q_HEADS_PADDED_PER_CU),
-                                    idx(8),
-                                ],
-                                strides=[idx(8), idx(DH), idx(1)],
-                            )
-                        DeallocOp(qmtb)
-
-                    # gate-off 2026-07-15b: q-broadcast is decode-only (vocab attn idle).
-                    if _seg_arm_i is not None:
-
-                        def _q_voc():
-                            yield_([])
-
-                        def _q_dec():
-                            _qmtb_dec()
-                            yield_([])
-
-                        index_switch(
-                            [],
-                            _seg_arm_i,
-                            [0],
-                            case_body_builder=lambda op, i, cv: _q_voc(),
-                            default_body_builder=lambda op: _q_dec(),
-                        )
-                    else:
-                        _qmtb_dec()
-                    # ===== N_ATTN_CU flash-attention CUs (reference 4-CU) =====
-                    # KV block cache memtile(s): per-CU SEPARATE K/V natural buffers
-                    # [key16,kvh2,dh64]; rope's token-0 K/V -> [0:128]; keys 1..15 pad
-                    # (masked by L=1). Reorders == attn_stream toK/toV (PROVEN):
-                    # nat -> pack_k/pack_v. The memtile gets rope's per-CU k then v
-                    # (FIFO: k0..k{N-1}, v0..v{N-1}) and fans out reordered to each CU.
-                    # L=1 (single-block) KV staging: rope's this-token k/v via
-                    # toAttnKV -> akbs/avbs memtiles -> 1 toK/toV block per CU.
-                    # MULTIBLK uses the DDR-cache l2_kv re-block in _make_cu instead
-                    # (these memtiles would collide with l2_kv on cols 3/4).
-                    if not MULTIBLK:
-                        akbs, avbs = [], []
-                        for c in range(N_ATTN_CU):
-                            col = ATTN_CU_LOC[c][0]
-                            akb = AllocOp(ak_l2, [], [])
-                            akb.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(T.i32(), col)
-                            )
-                            akbs.append(akb)
-                        for c in range(N_ATTN_CU):
-                            col = ATTN_CU_LOC[c][0]
-                            avb = AllocOp(av_l2, [], [])
-                            avb.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(T.i32(), col)
-                            )
-                            avbs.append(avb)
-                        # per col group: get its CUs' k then v from toAttnKV[gi]
-                        # (matches rope's per-group put order; no cross-col FIFO).
-                        for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
-                            for c in cus:
-                                ChannelGet(
-                                    "toAttnKV",
-                                    akbs[c],
-                                    indices=[idx(gi)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(KVPC_DH)],
-                                    strides=[idx(1)],
-                                )
-                            for c in cus:
-                                ChannelGet(
-                                    "toAttnKV",
-                                    avbs[c],
-                                    indices=[idx(gi)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(KVPC_DH)],
-                                    strides=[idx(1)],
-                                )
-                        for c in range(N_ATTN_CU):
-                            _pk = ChannelPut(
-                                "toK",
-                                akbs[c],
-                                indices=[idx(c)],
-                                offsets=[idx(0), idx(0), idx(0)],
-                                sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
-                                strides=[idx(8), idx(KVPC_DH), idx(1)],
-                            )
-                            _pv = ChannelPut(
-                                "toV",
-                                avbs[c],
-                                indices=[idx(c)],
-                                offsets=[idx(0), idx(0), idx(0), idx(0)],
-                                sizes=[idx(2), idx(KVPC_DH // 8), idx(8), idx(8)],
-                                strides=[
-                                    idx(8 * KVPC_DH),
-                                    idx(8),
-                                    idx(KVPC_DH),
-                                    idx(1),
-                                ],
-                            )
-                            # col-3 KV: reserve memtile MM2S 0 (the q-broadcast
-                            # transits this memtile's switchbox; KV on MM2S 0
-                            # deadlocks the route). col 4 already has GLU/down on
-                            # MM2S 0, so its KV naturally lands on 1-4. Gate on
-                            # LOOPCLOSE to keep GREEN's layout/PASS unchanged.
-                            if ATTN_CU_LOC[c][0] == 3:
-                                _pk.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = IntegerAttr.get(T.i32(), 1)
-                                _pv.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = IntegerAttr.get(T.i32(), 1)
-                        for c in range(N_ATTN_CU):
-                            DeallocOp(akbs[c])
-                            DeallocOp(avbs[c])
-
-                    def _make_cu(c):
-                        col, qk_row, kv_row = ATTN_CU_LOC[c]
-                        a_sh = AllocOp(as_l1, [], [])
-
                         if MULTIBLK:
-                            # ===== reproducer model A: online-softmax block loop
-                            # over ATTN_ROUNDS=(L+15)/16 KV blocks. Per-CU state
-                            # m/c (qk) and y/l (kv) persists across blocks (reset
-                            # on blk==0 in-kernel); attn_kv_fin normalizes after
-                            # the last block. Lh = RTP_L herd operand (kernel masks
-                            # the last partial block). Compute proven in attn_iso.
-                            L_c = (
-                                _seg_L
-                                if DYNSEQ_RTP
-                                else arith.ConstantOp(
-                                    IntegerAttr.get(i32, ATTN_L), None
-                                ).result
-                            )
-
-                            # per-block KV staging ring (attn_iso PASS): fresh kvb
-                            # per block -> count-free ping-pong ring (1 fill : 1
-                            # read). Each block: get this block's [K|V] from the
-                            # readback (inKV) then re-block to toK/toV. Strides
-                            # mirror attn_iso exactly.
-                            # gate-off 2026-07-15b: KV re-block (inKV get + toK/toV put)
-                            # is DECODE-ONLY. In vocab the attn cores are idle (empty
-                            # index_switch case) so they neither need toK/toV nor consume
-                            # the 4-slot count-free KV memtile ring (mem_tile_3_1/4_1) --
-                            # that ring drain was the 16dec+3voc-then-hang bug.
-                            def _reblock_dec():
-                                if KV_SPLIT:
-                                    # the reference mem_3_1: per col GROUP, separate K/V buffers each
-                                    # with its own count-free ring (independent S2MM fill from
-                                    # inKV_K / inKV_V). Emit ONCE per group (on the lead CU);
-                                    # the lead produces toK/toV for every CU in the group. This
-                                    # removes the shared-buffer backward edge (qk-K no longer
-                                    # lock-chained to kv-V drain).
-                                    _gi = ATTN_CU_GROUP[c]
-                                    _gcol, _cus = ATTN_COL_GROUPS[_gi]
-                                    if c != _cus[0]:
-                                        return
-                                    _gw = len(_cus) * KVPC_DH
-                                    for _blk in for_(idx(0), _seg_rounds(), idx(1)):
-                                        _kbuf = AllocOp(kvblk_l2, [], [])
-                                        _kbuf.operation.attributes[
-                                            "air.memtile_col"
-                                        ] = IntegerAttr.get(T.i32(), col)
-                                        _vbuf = AllocOp(kvblk_l2, [], [])
-                                        _vbuf.operation.attributes[
-                                            "air.memtile_col"
-                                        ] = IntegerAttr.get(T.i32(), col)
-                                        ChannelGet("inKV_K", _kbuf, indices=[idx(_gi)])
-                                        ChannelGet("inKV_V", _vbuf, indices=[idx(_gi)])
-                                        for _lc, _cc in enumerate(_cus):
-                                            _pk = ChannelPut(
-                                                "toK",
-                                                _kbuf,
-                                                indices=[idx(_cc)],
-                                                offsets=[
-                                                    idx(0),
-                                                    idx(0),
-                                                    idx(_lc * KVPC_DH),
-                                                ],
-                                                sizes=[
-                                                    idx(KVPC_DH // 8),
-                                                    idx(16),
-                                                    idx(8),
-                                                ],
-                                                strides=[idx(8), idx(_gw), idx(1)],
-                                            )
-                                            _pv = ChannelPut(
-                                                "toV",
-                                                _vbuf,
-                                                indices=[idx(_cc)],
-                                                offsets=[
-                                                    idx(0),
-                                                    idx(0),
-                                                    idx(0),
-                                                    idx(_lc * KVPC_DH),
-                                                ],
-                                                sizes=[
-                                                    idx(2),
-                                                    idx(KVPC_DH // 8),
-                                                    idx(8),
-                                                    idx(8),
-                                                ],
-                                                strides=[
-                                                    idx(_gw * 8),
-                                                    idx(8),
-                                                    idx(_gw),
-                                                    idx(1),
-                                                ],
-                                            )
-                                            if col == 3:
-                                                _pk.operation.attributes[
-                                                    "air.memtile_dma_channel_min"
-                                                ] = IntegerAttr.get(T.i32(), 1)
-                                                _pv.operation.attributes[
-                                                    "air.memtile_dma_channel_min"
-                                                ] = IntegerAttr.get(T.i32(), 1)
-                                        DeallocOp(_kbuf)
-                                        DeallocOp(_vbuf)
-                                        yield_([])
-                                    return
-                                # ROLLED (was Python for blk in range(ATTN_ROUNDS)): AIR for_
-                                # -> count-free 2-buffer ring on the memtile (mirror the
-                                # weight-fan) so large ATTN_L stays under the 16-BD limit.
-                                # Fresh kvb per iter (no_split, memtile_col) = the share-ring
-                                # pattern AIR lowers to next_bd rotation, not a repeat_count BD.
-                                for _blk in for_(idx(0), _seg_rounds(), idx(1)):
-                                    kvb = AllocOp(kvblk_l2, [], [])
-                                    kvb.operation.attributes["air.memtile_col"] = (
-                                        IntegerAttr.get(T.i32(), col)
-                                    )
-                                    ChannelGet("inKV", kvb, indices=[idx(c)])
-                                    _pk = ChannelPut(
-                                        "toK",
-                                        kvb,
-                                        indices=[idx(c)],
-                                        offsets=[idx(0), idx(0), idx(0)],
-                                        sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
-                                        strides=[idx(8), idx(KVPC_DH), idx(1)],
-                                    )
-                                    _pv = ChannelPut(
-                                        "toV",
-                                        kvb,
-                                        indices=[idx(c)],
-                                        offsets=[idx(2), idx(0), idx(0), idx(0)],
-                                        sizes=[
-                                            idx(2),
-                                            idx(KVPC_DH // 8),
-                                            idx(8),
-                                            idx(8),
-                                        ],
-                                        strides=[
-                                            idx(8 * KVPC_DH),
-                                            idx(8),
-                                            idx(KVPC_DH),
-                                            idx(1),
-                                        ],
-                                    )
-                                    # MULTIBLK KV re-block: same col-3 switchbox collision
-                                    # as the on-chip path (KV on memtile MM2S 0 deadlocks
-                                    # in LOOPCLOSE - the o-proj feedback + q-broadcast
-                                    # transit col-3's switchbox). Reserve MM2S 0 by steering
-                                    # col-3 KV onto channels 1-4. (col 4 already lands on
-                                    # 1-4 via GLU/down; gate on LOOPCLOSE to keep GREEN.)
-                                    if col == 3:
-                                        _pk.operation.attributes[
-                                            "air.memtile_dma_channel_min"
-                                        ] = IntegerAttr.get(T.i32(), 1)
-                                        _pv.operation.attributes[
-                                            "air.memtile_dma_channel_min"
-                                        ] = IntegerAttr.get(T.i32(), 1)
-                                    DeallocOp(kvb)
-                                    yield_([])
-
-                            _gated = _seg_arm_i is not None
-                            if _gated:
-
-                                def _rb_voc():
-                                    yield_([])
-
-                                def _rb_dec():
-                                    _reblock_dec()
-                                    yield_([])
-
-                                index_switch(
-                                    [],
-                                    _seg_arm_i,
-                                    [0],
-                                    case_body_builder=lambda op, i, cv: _rb_voc(),
-                                    default_body_builder=lambda op: _rb_dec(),
-                                )
-                            else:
-                                _reblock_dec()
-
-                            def _core_rounds(Lh):
-                                """ceil(Lh/16) as a core-side loop bound.
-
-                                Lh is the RTP-L herd block-arg, so this is opaque to
-                                folding and survives to core codegen as a real runtime
-                                trip count -- the same count the shim's readback BD
-                                pushes, which is what keeps the core off a channel get
-                                that never arrives.
-                                """
-                                if not DYNSEQ_RTP:
-                                    return idx(ATTN_ROUNDS)
-                                _s = arith.addi(
-                                    Lh,
-                                    arith.ConstantOp(
-                                        IntegerAttr.get(i32, 15), None
-                                    ).result,
-                                )
-                                _q = arith.divui(
-                                    _s,
-                                    arith.ConstantOp(
-                                        IntegerAttr.get(i32, 16), None
-                                    ).result,
-                                )
-                                return arith.index_cast(idx_t, _q)
-
-                            def _qk_body(sh, Lh, _c):
-                                a_q = AllocOp(aq_l1, [], [])
-                                ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
-                                a_m = AllocOp(m_l1, [], [])
-                                a_cc = AllocOp(c_l1, [], [])
-                                # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
-                                # block-arg (opaque region arg -> not const-folded -> stays a
-                                # runtime scf.for bound; the AIE core loops per the RTP-L the
-                                # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
-                                # unrollSCFFors only unrolls all-constant loops, so this
-                                # survives to core codegen as a real runtime loop.
-                                _nblk_qk = _core_rounds(Lh)
-                                for _blk in for_(idx(0), _nblk_qk, idx(1)):
-                                    # REQUIRED single-buffer: ping-pong would unroll-by-2 +
-                                    # 1-remainder over a 3-buffer toK ring whose remainder reads
-                                    # the wrong buffer vs the DMA rotation -> misaligned KV ->
-                                    # garbage chat. Single-buffer is aligned.
-                                    a_k = AllocOp(ak_l1, [], [])
-                                    ChannelGet("toK", a_k, indices=[idx(_c)])
-                                    blk_c = arith.index_cast(i32, _blk)
-                                    CallOp(
-                                        attn_qk_blk,
-                                        [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
-                                    )
-                                    DeallocOp(a_k)
-                                    yield_([])
-                                DeallocOp(a_q)
-                                DeallocOp(a_m)
-                                DeallocOp(a_cc)
-
-                            def _kv_body(sh, Lh, _c):
-                                a_y = AllocOp(y_l1, [], [])
-                                a_l = AllocOp(lden_l1, [], [])
-                                a_o = AllocOp(ao_l1, [], [])
-                                # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
-                                # loops per RTP-L; matched by the shim readback push count.
-                                _nblk_kv = _core_rounds(Lh)
-                                for _blk in for_(idx(0), _nblk_kv, idx(1)):
-                                    # REQUIRED single-buffer (see _qk_body): keeps toV/toK
-                                    # consumption aligned with the DMA rotation (no unroll-by-2
-                                    # remainder desync -> no misaligned KV).
-                                    a_v = AllocOp(av_l1, [], [])
-                                    ChannelGet("toV", a_v, indices=[idx(_c)])
-                                    blk_c = arith.index_cast(i32, _blk)
-                                    CallOp(
-                                        attn_kv_blk,
-                                        [sh, a_v, a_y, a_l, blk_c, Lh],
-                                    )
-                                    DeallocOp(a_v)
-                                    yield_([])
-                                CallOp(attn_kv_fin, [a_y, a_l, a_o])
+                            # the reference append: this token's roped K (all heads) and
+                            # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
+                            # whole cache is then read back for the block loop.
+                            if KV_APPEND:
                                 ChannelPut(
-                                    "attnO",
-                                    a_o,
-                                    indices=[idx(_c)],
-                                    # o un-interleave: kernel [q_head, dc, de] -> natural
-                                    # (q_head, dh). sizes=[Q_HEADS_PER_CU, DH//8, 8].
-                                    offsets=[idx(0), idx(0), idx(0)],
-                                    sizes=[
-                                        idx(Q_HEADS_PER_CU),
-                                        idx(DH // 8),
-                                        idx(8),
-                                    ],
-                                    strides=[idx(8), idx(Q_HEADS_PER_CU * 8), idx(1)],
+                                    "appendK",
+                                    a_k,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DK_TOT_A)],
+                                    strides=[idx(1)],
                                 )
-                                DeallocOp(a_o)
-                                DeallocOp(a_y)
-                                DeallocOp(a_l)
+                                ChannelPut(
+                                    "appendV",
+                                    a_v,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DK_TOT_A)],
+                                    strides=[idx(1)],
+                                )
+                        else:
+                            # per COLUMN GROUP: that group's CUs' k then v on its
+                            # own packet channel (no cross-col FIFO interleave).
+                            for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
+                                for c in cus:
+                                    ChannelPut(
+                                        "toAttnKV",
+                                        a_k,
+                                        indices=[idx(gi)],
+                                        offsets=[idx(c * KVPC_DH)],
+                                        sizes=[idx(KVPC_DH)],
+                                        strides=[idx(1)],
+                                    )
+                                for c in cus:
+                                    ChannelPut(
+                                        "toAttnKV",
+                                        a_v,
+                                        indices=[idx(gi)],
+                                        offsets=[idx(c * KVPC_DH)],
+                                        sizes=[idx(KVPC_DH)],
+                                        strides=[idx(1)],
+                                    )
+                        if _own_qkv:
+                            DeallocOp(a_qkv)
+                        DeallocOp(a_lut)
+                        DeallocOp(a_q)
+                        DeallocOp(a_k)
+                        DeallocOp(a_v)
 
-                            # Segment-level per-CU setup done (a_sh scores buffer, L_c,
-                            # the memtile KV reblock, and the qk/kv body closures). The
-                            # herd is NOT emitted here -- all 8 attn cores are fused into
-                            # ONE [2,4] block herd after the loop (see below).
-                            return (a_sh, col, qk_row, L_c, _qk_body, _kv_body)
+                    if ATTN_SUBSYS and not HYBRID_MIXER:
+                        # BUG FIX (later43c): the rope arm MUST track the mode like
+                        # proj/rms (0 in vocab). Hardcoded 1 kept rope in _dec()
+                        # during vocab -> it stalled on the dest0 QKV gets (never
+                        # produced in vocab) and never emitted the appendK/appendV
+                        # the LM launch waits on -> TIMEOUT.
+                        _arm_rope = _seg_arm
 
-                    _cus = [_make_cu(c) for c in range(N_ATTN_CU)]
-                    # Fuse ALL 8 attn cores into ONE [2,4] block over the contiguous
-                    # cols 3,4. tx=0 -> col3 (cu0 rows2,3; cu1 rows4,5), tx=1 -> col4
-                    # (cu2 rows2,3; cu3 rows4,5). Column by tx==0, pair by ty<2, role
-                    # (qk=even/kv=odd) by exact ty==const -- every selector is a direct
-                    # tile-IV guard so it folds per-tile at clone. Each CU's score buffer
-                    # is shared only across its 2 vertically-adjacent cores (qk writes via
-                    # attn_qk_blk, kv reads via attn_kv_blk; Gate-1 strict-subset infers
-                    # the cross-core RAW from the opaque calls). Per-core link files derive
-                    # from the kernel func each core calls (attn_qk.ll on qk rows,
-                    # attn_kv.ll on kv rows) -- no herd link_with. gate-off index_switch on
-                    # the per-wave arm keeps vocab idle. This is the attn floor: cols 3,4
-                    # are one contiguous block, so 8 -> 1.
-                    _sh = [t[0] for t in _cus]
-                    _Lc = _cus[0][3]
-                    _qkb = _cus[0][4]
-                    _kvb = _cus[0][5]
-
-                    def _attn_leaf(ty_arg, cu, sh, Lh, qk_ty):
-                        _isqk = arith.cmpi(arith.CmpIPredicate.eq, ty_arg, idx(qk_ty))
-                        _if = IfOp(_isqk, [], has_else=True)
-                        with InsertionPoint(_if.thenRegion.blocks[0]):
-                            _qkb(sh, Lh, cu)
-                            yield_([])
-                        with InsertionPoint(_if.elseRegion.blocks[0]):
-                            _kvb(sh, Lh, cu)
-                            yield_([])
-
-                    def _attn_pairsel(ty_arg, shs, Lh, cu_lo, cu_hi):
-                        _lo = arith.cmpi(arith.CmpIPredicate.slt, ty_arg, idx(2))
-                        _ifp = IfOp(_lo, [], has_else=True)
-                        with InsertionPoint(_ifp.thenRegion.blocks[0]):
-                            _attn_leaf(ty_arg, cu_lo, shs[cu_lo], Lh, 0)
-                            yield_([])
-                        with InsertionPoint(_ifp.elseRegion.blocks[0]):
-                            _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2)
-                            yield_([])
-
-                    def _attn_dec(tx_arg, ty_arg, shs, Lh):
-                        _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
-                        _ifc = IfOp(_isc0, [], has_else=True)
-                        with InsertionPoint(_ifc.thenRegion.blocks[0]):
-                            _attn_pairsel(ty_arg, shs, Lh, 0, 1)  # col3: cu0, cu1
-                            yield_([])
-                        with InsertionPoint(_ifc.elseRegion.blocks[0]):
-                            _attn_pairsel(ty_arg, shs, Lh, 2, 3)  # col4: cu2, cu3
-                            yield_([])
-
-                    if _seg_arm_i is not None:
-
-                        @herd(
-                            name="attn_blk",
-                            sizes=[2, 4],
-                            operands=[
-                                _sh[0].result,
-                                _sh[1].result,
-                                _sh[2].result,
-                                _sh[3].result,
-                                _Lc,
-                                _seg_arm,
-                            ],
-                        )
-                        def attn_blk(_tx, _ty, _sx, _sy, s0, s1, s2, s3, Lh, _arm):
-                            shs = [s0, s1, s2, s3]
-
-                            def _voc():
+                        @herd(name="rope", sizes=[1, 1], operands=[_arm_rope])
+                        def rope_h(tx, ty, _sx, _sy, _arm):
+                            def _dec():
+                                _rope_body(_arm)
                                 yield_([])
 
-                            def _dec():
-                                _attn_dec(_tx, _ty, shs, Lh)
+                            def _voc():
+                                # gate-off 2026-07-15b: attn fully idle in vocab -> rope emits
+                                # NOTHING (no dummy appendK/appendV; _uni_voc drains neither).
                                 yield_([])
 
                             index_switch(
@@ -3057,49 +3211,1013 @@ def build_module():
                                 default_body_builder=lambda op: _dec(),
                             )
 
-                    else:
+                        rope_h.attributes["link_with"] = StringAttr.get("rope.o")
+                        rope_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), RMS_PCOL)
+                        rope_h.attributes["y_loc"] = IntegerAttr.get(T.i64(), 3)
+
+                    if CONV_MIXER:
+                        # ===== CONV S1: ShortConv mixer, on TWO ADJACENT TILES =====
+                        # in_proj emits [B | C | X] (3*CONV_DIM, X LAST). The mixer
+                        # computes
+                        #   BX = B*X ; conv = w0*BX[t-2] + w1*BX[t-1] + w2*BX ; y = C*conv
+                        # and hands y (CONV_DIM) to the o-proj X, exactly where
+                        # attention hands its gathered o.
+                        #
+                        # Tile ty=0 (STAGE) receives ph0's egress in CONV_WAVES waves
+                        # of CONV_LAND and writes each into the assembled [B|C|X]; it
+                        # also receives the taps. Tile ty=1 (CONV) owns the assembled
+                        # input's storage and the carried state, computes, and emits.
+                        #
+                        # `a_bcx` and `a_w` are SEGMENT-SCOPE L1 handed to both tiles as
+                        # herd operands, so they cross the tile boundary as neighbour
+                        # memory rather than DMA -- the reference's dataflow, and the
+                        # thing every deadlocking full-width build was missing. The
+                        # attention path shares its scores buffer the same way.
+                        a_mix = AllocOp(convmix_l1, [], [])
+                        # _core_arm, not _seg_arm: this herd's arm IS the
+                        # per-layer IS_ATTN and has to survive to runtime.
+                        _arm_conv = _core_arm
 
                         @herd(
-                            name="attn_blk",
-                            sizes=[2, 4],
-                            operands=[
-                                _sh[0].result,
-                                _sh[1].result,
-                                _sh[2].result,
-                                _sh[3].result,
-                                _Lc,
-                            ],
+                            name="conv",
+                            # Two vertically adjacent tiles: ty=0 stages the ph0
+                            # landings into the shared [B|C|X], ty=1 owns that
+                            # buffer and computes. They hand it over as NEIGHBOUR
+                            # MEMORY, not DMA -- see shortconv.cc.
+                            sizes=[1, 2],
+                            operands=[a_mix.result, _arm_conv],
                         )
-                        def attn_blk(_tx, _ty, _sx, _sy, s0, s1, s2, s3, Lh):
-                            _attn_dec(_tx, _ty, [s0, s1, s2, s3], Lh)
+                        def conv_h(tx, ty, _sx, _sy, mix, _arm):
+                            def _stage_ingest():
+                                """Land ph0's whole egress, WHATEVER the layer type.
 
-                    attn_blk.attributes["x_loc"] = IntegerAttr.get(
-                        T.i64(), ATTN_CU_LOC[0][0]
-                    )
-                    attn_blk.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
+                                These gets stay OUT of the arm switch on purpose.
+                                air-annotate-packet-ids proves @outY is a demux by
+                                checking that its per-destination get volumes sum
+                                to the put volume; it cannot know that two
+                                index_switch arms are mutually exclusive, so one
+                                copy of the gets per arm doubles dest0's apparent
+                                volume, the partition check fails, and every proj
+                                core's `dest(...)` put is rejected with "its
+                                routing domain has no demux". Ingest once, branch
+                                after -- which is also what the reference does:
+                                its ph0 S2MM lands in qkv_buffer for both layer
+                                types and only the core code differs.
+
+                                Both waves reuse ONE landing buffer each, so only
+                                one is in flight (reference rope.cc).
+                                """
+                                _lands = [
+                                    AllocOp(convland_l1, [], [])
+                                    for _ in range(CONV_WAVES)
+                                ]
+                                _seq = [
+                                    _wd
+                                    for _wd in MIXER_DESTS
+                                    for _ in range(CONV_WAVES // len(MIXER_DESTS))
+                                ]
+
+                                def _land(_wv):
+                                    ChannelGet(
+                                        "outY",
+                                        _lands[_wv],
+                                        indices=[idx(0), idx(_seq[_wv])],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(CONV_LAND)],
+                                        strides=[idx(1)],
+                                    )
+
+                                return _lands, _land
+
+                            def _convw_get():
+                                # Taps land in the tail of the shared buffer.
+                                ChannelGet(
+                                    "convW",
+                                    mix,
+                                    indices=[idx(0)],
+                                    offsets=[idx(CONV_IN)],
+                                    sizes=[idx(CONV_W_LEN)],
+                                    strides=[idx(1)],
+                                )
+
+                            def _stage(_lands):
+                                # Taking the taps on THIS core also makes the stage
+                                # tile a visible writer of @convmix, which is half of
+                                # what tells AIR the buffer is a cross-core hand-off
+                                # (the other half is shortconv_stage's write below).
+                                #
+                                # The stage tile wants THREE S2MM inputs -- the rope
+                                # LUT, the taps, and the ph0 landings -- and a compute
+                                # tile has TWO, so @ropeLUT and @convW are COLLAPSED
+                                # onto one S2MM BD chain here. That chain fires in
+                                # CHAIN ORDER rather than by packet id, so it relies
+                                # on the shim delivering LUT-then-taps in strict
+                                # alternation, which it does.
+                                _convw_get()
+                                # ONE staging call for ALL waves. AIR wraps each
+                                # external call in its own acquire/release on the
+                                # shared buffer, so a call PER WAVE makes the stage
+                                # core signal CONV_WAVES times against a conv core
+                                # that waits once -- measured: 1 wave passes, 2
+                                # waves hang. The reference has the same split and
+                                # releases its cross-tile lock once, after both
+                                # copies.
+                                if CONV_WAVES == 1:
+                                    CallOp(
+                                        shortconv_stage,
+                                        [
+                                            _lands[0],
+                                            mix,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(i32, 0), None
+                                            ).result,
+                                            _arm,
+                                        ],
+                                    )
+                                else:
+                                    CallOp(
+                                        shortconv_stage2,
+                                        [_lands[0], _lands[1], mix, _arm],
+                                    )
+
+                            def _mix():
+                                a_st = AllocOp(convst_l1, [], [])
+                                ChannelGet(
+                                    "convStIn",
+                                    a_st,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(2 * CONV_DIM)],
+                                    strides=[idx(1)],
+                                )
+                                a_y = AllocOp(convo_l1, [], [])
+                                a_bx = AllocOp(convst_l1, [], [])
+                                CallOp(shortconv_compute, [mix, a_st, a_y, a_bx, _arm])
+
+                                # y -> o-proj X (the attnO slot); the shifted state ->
+                                # arg4 as the next token's [BX(t-2)|BX(t-1)].
+                                #
+                                # A hybrid has no @convO: it writes the CUs' own
+                                # four CU kv cores over @mixToCU, one slice each.
+                                # The CU decides there whether its @attnO put
+                                # carries this or the attention result, which
+                                # keeps @attnO down to ONE producer tile per
+                                # sub-channel -- the constraint that the first
+                                # hybrid violated and hung on.
+                                def _put_stout():
+                                    ChannelPut(
+                                        "convStOut",
+                                        a_bx,
+                                        indices=[idx(0)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(2 * CONV_DIM)],
+                                        strides=[idx(1)],
+                                    )
+
+                                if MIX_TO_CU:
+                                    # NOT straight to @xnorm: that would be a
+                                    # FOURTH same-id producer on the convergent X
+                                    # ring and four do not route (rule 7). The
+                                    # o-gather memtile is the ph1 producer for
+                                    # both arms; its only input is @attnO, so the
+                                    # mixer feeds the CUs and they choose. This
+                                    # put is UNGATED -- the mixer core runs every
+                                    # wave anyway (shortconv_compute branches on
+                                    # _arm internally), so gating it would only
+                                    # add an arm the CU's get would have to match.
+                                    ChannelPut(
+                                        "mixToCU",
+                                        a_y,
+                                        indices=[idx(0), idx(0)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(CONV_DIM)],
+                                        strides=[idx(1)],
+                                    )
+                                    _put_stout()
+                                else:
+                                    ChannelPut(
+                                        "convO",
+                                        a_y,
+                                        indices=[idx(0)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(CONV_DIM)],
+                                        strides=[idx(1)],
+                                    )
+                                    _put_stout()
+                                DeallocOp(a_st)
+                                DeallocOp(a_y)
+                                DeallocOp(a_bx)
+
+                            def _by_tile(_top, _bot):
+                                _is_stage = arith.cmpi(
+                                    arith.CmpIPredicate.eq, ty, idx(0)
+                                )
+                                _if = IfOp(_is_stage, [], has_else=True)
+                                with InsertionPoint(_if.thenRegion.blocks[0]):
+                                    _top()
+                                with InsertionPoint(_if.elseRegion.blocks[0]):
+                                    _bot()
+                                yield_([])
+
+                            def _stage_tile():
+                                # Ingest FIRST and unconditionally (see
+                                # _stage_ingest), then branch on the layer type.
+                                # arm 2 runs the attention mixer on this very
+                                # tile, taking the first landing buffer as its
+                                # QKV -- CONV_LAND == M, and the reference's
+                                # qkv_buffer is likewise the landing buffer. The
+                                # trailing landing buffers are the uniform
+                                # schedule's padding and are simply not read.
+                                _lands, _land = _stage_ingest()
+                                # Land ph0, run rope, and only THEN land the rest.
+                                #
+                                # Landing every mixer phase before rope deadlocks a
+                                # hybrid, and the failure is in the SHIM's
+                                # instruction order, not on chip: the KV
+                                # append/readback is issued at phase 0, so the shim
+                                # blocks there waiting for rope's K/V -- while rope
+                                # is waiting for phase 1's egress, whose weight feed
+                                # the shim has not reached yet. One mixer phase
+                                # (every attention-only model) cannot hit it, and a
+                                # ShortConv-only model has no append to block on.
+                                # This is also the reference's order: its ph0 S2MM
+                                # fills qkv_buffer and rope runs on that.
+                                _land(0)
+                                _ai = arith.index_cast(idx_t, _arm)
+                                # Rope is UNARMED: its consumer, the q-broadcast
+                                # memtile, is segment scope and so runs on every
+                                # decode wave. On a
+                                # ShortConv wave rope reads the conv in_proj as if
+                                # it were QKV and reads the conv taps as if they
+                                # were its cos/sin table; the q/k/v that come out
+                                # are meaningless and every consumer of them
+                                # discards them. It is a 2048-element kernel on a
+                                # tile whose wave is dominated by the ShortConv
+                                # stage, so the cost is noise.
+                                # UNARMED, as the comment above describes: the
+                                # CUs downstream run on every decode wave, so
+                                # q/k/v have to arrive on every decode wave too.
+                                # rope_compute_hyb's own IS_ATTN branch is where
+                                # the layer type is decided.
+                                _rope_body(_arm, _lands[0])
+                                for _w in range(1, CONV_WAVES):
+                                    _land(_w)
+                                # Same rule one level up: the mixer core runs
+                                # unarmed and waits on the shared [B|C|X] this
+                                # call fills. Gate the stage and the mixer waits
+                                # forever on an attention wave -- the cold
+                                # deadlock every conv-present build hit.
+                                _stage(_lands)
+                                for _l in _lands:
+                                    DeallocOp(_l)
+                                yield_([])
+
+                            def _conv_tile():
+                                # UNARMED, as the @mixToCU put's own comment
+                                # assumes: the four CUs take that broadcast on
+                                # every decode wave, so the core that produces it
+                                # has to run on every decode wave.
+                                # shortconv_compute and conv_o_pass branch on
+                                # _arm internally, so an attention wave's pass is
+                                # computed and discarded. The conv core is idle on
+                                # an attention layer and idle is free: it holds
+                                # the shared [B|C|X|taps] buffer either way, so
+                                # hosting both mixers costs no extra L1 and no
+                                # extra tile.
+                                _mix()
+                                yield_([])  # scf.if region terminator
+
+                            def _dec():
+                                _by_tile(_stage_tile, _conv_tile)
+
+                            def _voc():
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                arith.index_cast(idx_t, _arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: _voc(),
+                                default_body_builder=lambda op: _dec(),
+                            )
+
+                        if not HYBRID_MIXER:
+                            conv_h.attributes["link_with"] = StringAttr.get(
+                                "shortconv.o"
+                            )
+                        conv_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), MIX_PCOL)
+                        conv_h.attributes["y_loc"] = IntegerAttr.get(T.i64(), MIX_PROW)
+
+                    # A CONV-ONLY build has no attention at all: no KV cache, no
+                    # flash-attention CUs, no append channels and no block loop -- its
+                    # mixer output goes straight to the o-proj X. A HYBRID build has
+                    # the whole subsystem and gates it on the arm, layer by layer.
+                    if ATTN_SUBSYS:
+                        # ===== ATTN S3a: 1-CU flash attention (reference tile_3_2/3_3) =====
+                        # Proven attn_iso qk/kv herd pair: s_shared (segment-scope L1) is
+                        # shared cross-tile (qk writes scores, kv reads). q from rope (direct
+                        # to qk), k/v from rope via KV staging memtile (split). L=1 decode =>
+                        # 1 block; the 15 pad keys are masked by L inside the kernels. o ->
+                        # attnO host drain (S3a verification; S4 routes o -> o-proj X).
+                        # q broadcast memtile (reference mem_5_1): get rope q (2048),
+                        # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
+                        def _qmtb_dec():
+                            qmtb = AllocOp(qmt_l2, [], [])
+                            qmtb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(
+                                    T.i32(),
+                                    5,  # reference mem_5_1; free for N<=2 (kv on col3).
+                                    # N=4 needs attn cols 3,4 + GLU->tile_5_2 relayout (TODO).
+                                )
+                            )
+                            ChannelGet("ropeQ", qmtb, indices=[idx(0)])
+                            for c in range(N_ATTN_CU):
+                                ChannelPut(
+                                    "toAttnQ",
+                                    qmtb,
+                                    # pack_q (reference mem_5_1): natural [qh, dh] -> the
+                                    # kernel's [dc, qh, de] mmul layout, dh = dc*8 + de.
+                                    # CU c reads its Q_HEADS_PER_CU heads starting at head
+                                    # c*Q_HEADS_PER_CU (stride DH) -> linear base
+                                    # c*Q_HEADS_PER_CU*DH = c*DQ_PER_CU. dc stride 8, de 1.
+                                    indices=[idx(c)],
+                                    # rope emits PADDED Q (each CU's block is
+                                    # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
+                                    # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU.
+                                    # llama pad=0 -> ==Q_HEADS_PER_CU (byte-identical).
+                                    offsets=[
+                                        idx(0),
+                                        idx(c * Q_HEADS_PADDED_PER_CU),
+                                        idx(0),
+                                    ],
+                                    sizes=[
+                                        idx(DH // 8),
+                                        idx(Q_HEADS_PADDED_PER_CU),
+                                        idx(8),
+                                    ],
+                                    strides=[idx(8), idx(DH), idx(1)],
+                                )
+                            DeallocOp(qmtb)
+
+                        # gate-off 2026-07-15b: q-broadcast is decode-only (vocab attn idle).
+                        if _seg_arm_i is not None:
+
+                            def _q_voc():
+                                yield_([])
+
+                            def _q_dec():
+                                _qmtb_dec()
+                                yield_([])
+
+                            if HYBRID_MIXER:
+                                # Segment scope => wave-invariant (the arm folds
+                                # to wave 0 and the other branches are erased).
+                                # So the q broadcast runs on EVERY decode wave,
+                                # which in turn forces rope to run on every wave
+                                # to feed it. Rope is a 2048-element kernel and
+                                # an on-chip broadcast; on a ShortConv wave it
+                                # reads the conv in_proj as if it were QKV and
+                                # the result is dropped by the CUs.
+                                _qmtb_dec()
+                            else:
+                                _arm_only(_seg_arm_i, {2}, _qmtb_dec)
+                        else:
+                            _qmtb_dec()
+                        # ===== N_ATTN_CU flash-attention CUs (reference 4-CU) =====
+                        # KV block cache memtile(s): per-CU SEPARATE K/V natural buffers
+                        # [key16,kvh2,dh64]; rope's token-0 K/V -> [0:128]; keys 1..15 pad
+                        # (masked by L=1). Reorders == attn_stream toK/toV (PROVEN):
+                        # nat -> pack_k/pack_v. The memtile gets rope's per-CU k then v
+                        # (FIFO: k0..k{N-1}, v0..v{N-1}) and fans out reordered to each CU.
+                        # L=1 (single-block) KV staging: rope's this-token k/v via
+                        # toAttnKV -> akbs/avbs memtiles -> 1 toK/toV block per CU.
+                        # MULTIBLK uses the DDR-cache l2_kv re-block in _make_cu instead
+                        # (these memtiles would collide with l2_kv on cols 3/4).
+                        if not MULTIBLK:
+                            akbs, avbs = [], []
+                            for c in range(N_ATTN_CU):
+                                col = ATTN_CU_LOC[c][0]
+                                akb = AllocOp(ak_l2, [], [])
+                                akb.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), col)
+                                )
+                                akbs.append(akb)
+                            for c in range(N_ATTN_CU):
+                                col = ATTN_CU_LOC[c][0]
+                                avb = AllocOp(av_l2, [], [])
+                                avb.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), col)
+                                )
+                                avbs.append(avb)
+                            # per col group: get its CUs' k then v from toAttnKV[gi]
+                            # (matches rope's per-group put order; no cross-col FIFO).
+                            for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
+                                for c in cus:
+                                    ChannelGet(
+                                        "toAttnKV",
+                                        akbs[c],
+                                        indices=[idx(gi)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(KVPC_DH)],
+                                        strides=[idx(1)],
+                                    )
+                                for c in cus:
+                                    ChannelGet(
+                                        "toAttnKV",
+                                        avbs[c],
+                                        indices=[idx(gi)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(KVPC_DH)],
+                                        strides=[idx(1)],
+                                    )
+                            for c in range(N_ATTN_CU):
+                                _pk = ChannelPut(
+                                    "toK",
+                                    akbs[c],
+                                    indices=[idx(c)],
+                                    offsets=[idx(0), idx(0), idx(0)],
+                                    sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
+                                    strides=[idx(8), idx(KVPC_DH), idx(1)],
+                                )
+                                _pv = ChannelPut(
+                                    "toV",
+                                    avbs[c],
+                                    indices=[idx(c)],
+                                    offsets=[idx(0), idx(0), idx(0), idx(0)],
+                                    sizes=[idx(2), idx(KVPC_DH // 8), idx(8), idx(8)],
+                                    strides=[
+                                        idx(8 * KVPC_DH),
+                                        idx(8),
+                                        idx(KVPC_DH),
+                                        idx(1),
+                                    ],
+                                )
+                                # col-3 KV: reserve memtile MM2S 0 (the q-broadcast
+                                # transits this memtile's switchbox; KV on MM2S 0
+                                # deadlocks the route). col 4 already has GLU/down on
+                                # MM2S 0, so its KV naturally lands on 1-4. Gate on
+                                # LOOPCLOSE to keep GREEN's layout/PASS unchanged.
+                                if ATTN_CU_LOC[c][0] == 3:
+                                    _pk.operation.attributes[
+                                        "air.memtile_dma_channel_min"
+                                    ] = IntegerAttr.get(T.i32(), 1)
+                                    _pv.operation.attributes[
+                                        "air.memtile_dma_channel_min"
+                                    ] = IntegerAttr.get(T.i32(), 1)
+                            for c in range(N_ATTN_CU):
+                                DeallocOp(akbs[c])
+                                DeallocOp(avbs[c])
+
+                        def _make_cu(c):
+                            col, qk_row, kv_row = ATTN_CU_LOC[c]
+                            a_sh = AllocOp(as_l1, [], [])
+
+                            if MULTIBLK:
+                                # ===== reproducer model A: online-softmax block loop
+                                # over ATTN_ROUNDS=(L+15)/16 KV blocks. Per-CU state
+                                # m/c (qk) and y/l (kv) persists across blocks (reset
+                                # on blk==0 in-kernel); attn_kv_fin normalizes after
+                                # the last block. Lh = RTP_L herd operand (kernel masks
+                                # the last partial block). Compute proven in attn_iso.
+                                L_c = (
+                                    _seg_L
+                                    if DYNSEQ_RTP
+                                    else arith.ConstantOp(
+                                        IntegerAttr.get(i32, ATTN_L), None
+                                    ).result
+                                )
+
+                                # per-block KV staging ring (attn_iso PASS): fresh kvb
+                                # per block -> count-free ping-pong ring (1 fill : 1
+                                # read). Each block: get this block's [K|V] from the
+                                # readback (inKV) then re-block to toK/toV. Strides
+                                # mirror attn_iso exactly.
+                                # gate-off 2026-07-15b: KV re-block (inKV get + toK/toV put)
+                                # is DECODE-ONLY. In vocab the attn cores are idle (empty
+                                # index_switch case) so they neither need toK/toV nor consume
+                                # the 4-slot count-free KV memtile ring (mem_tile_3_1/4_1) --
+                                # that ring drain was the 16dec+3voc-then-hang bug.
+                                def _reblock_dec():
+                                    if KV_SPLIT:
+                                        # the reference mem_3_1: per col GROUP, separate K/V buffers each
+                                        # with its own count-free ring (independent S2MM fill from
+                                        # inKV_K / inKV_V). Emit ONCE per group (on the lead CU);
+                                        # the lead produces toK/toV for every CU in the group. This
+                                        # removes the shared-buffer backward edge (qk-K no longer
+                                        # lock-chained to kv-V drain).
+                                        _gi = ATTN_CU_GROUP[c]
+                                        _gcol, _cus = ATTN_COL_GROUPS[_gi]
+                                        if c != _cus[0]:
+                                            return
+                                        _gw = len(_cus) * KVPC_DH
+                                        for _blk in for_(idx(0), _seg_rounds(), idx(1)):
+                                            _kbuf = AllocOp(kvblk_l2, [], [])
+                                            _kbuf.operation.attributes[
+                                                "air.memtile_col"
+                                            ] = IntegerAttr.get(T.i32(), col)
+                                            _vbuf = AllocOp(kvblk_l2, [], [])
+                                            _vbuf.operation.attributes[
+                                                "air.memtile_col"
+                                            ] = IntegerAttr.get(T.i32(), col)
+                                            ChannelGet(
+                                                "inKV_K", _kbuf, indices=[idx(_gi)]
+                                            )
+                                            ChannelGet(
+                                                "inKV_V", _vbuf, indices=[idx(_gi)]
+                                            )
+                                            for _lc, _cc in enumerate(_cus):
+                                                _pk = ChannelPut(
+                                                    "toK",
+                                                    _kbuf,
+                                                    indices=[idx(_cc)],
+                                                    offsets=[
+                                                        idx(0),
+                                                        idx(0),
+                                                        idx(_lc * KVPC_DH),
+                                                    ],
+                                                    sizes=[
+                                                        idx(KVPC_DH // 8),
+                                                        idx(16),
+                                                        idx(8),
+                                                    ],
+                                                    strides=[idx(8), idx(_gw), idx(1)],
+                                                )
+                                                _pv = ChannelPut(
+                                                    "toV",
+                                                    _vbuf,
+                                                    indices=[idx(_cc)],
+                                                    offsets=[
+                                                        idx(0),
+                                                        idx(0),
+                                                        idx(0),
+                                                        idx(_lc * KVPC_DH),
+                                                    ],
+                                                    sizes=[
+                                                        idx(2),
+                                                        idx(KVPC_DH // 8),
+                                                        idx(8),
+                                                        idx(8),
+                                                    ],
+                                                    strides=[
+                                                        idx(_gw * 8),
+                                                        idx(8),
+                                                        idx(_gw),
+                                                        idx(1),
+                                                    ],
+                                                )
+                                                if col == 3:
+                                                    _pk.operation.attributes[
+                                                        "air.memtile_dma_channel_min"
+                                                    ] = IntegerAttr.get(T.i32(), 1)
+                                                    _pv.operation.attributes[
+                                                        "air.memtile_dma_channel_min"
+                                                    ] = IntegerAttr.get(T.i32(), 1)
+                                            DeallocOp(_kbuf)
+                                            DeallocOp(_vbuf)
+                                            yield_([])
+                                        return
+                                    # ROLLED (was Python for blk in range(ATTN_ROUNDS)): AIR for_
+                                    # -> count-free 2-buffer ring on the memtile (mirror the
+                                    # weight-fan) so large ATTN_L stays under the 16-BD limit.
+                                    # Fresh kvb per iter (no_split, memtile_col) = the share-ring
+                                    # pattern AIR lowers to next_bd rotation, not a repeat_count BD.
+                                    for _blk in for_(idx(0), _seg_rounds(), idx(1)):
+                                        kvb = AllocOp(kvblk_l2, [], [])
+                                        kvb.operation.attributes["air.memtile_col"] = (
+                                            IntegerAttr.get(T.i32(), col)
+                                        )
+                                        ChannelGet("inKV", kvb, indices=[idx(c)])
+                                        _pk = ChannelPut(
+                                            "toK",
+                                            kvb,
+                                            indices=[idx(c)],
+                                            offsets=[idx(0), idx(0), idx(0)],
+                                            sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
+                                            strides=[idx(8), idx(KVPC_DH), idx(1)],
+                                        )
+                                        _pv = ChannelPut(
+                                            "toV",
+                                            kvb,
+                                            indices=[idx(c)],
+                                            offsets=[idx(2), idx(0), idx(0), idx(0)],
+                                            sizes=[
+                                                idx(2),
+                                                idx(KVPC_DH // 8),
+                                                idx(8),
+                                                idx(8),
+                                            ],
+                                            strides=[
+                                                idx(8 * KVPC_DH),
+                                                idx(8),
+                                                idx(KVPC_DH),
+                                                idx(1),
+                                            ],
+                                        )
+                                        # MULTIBLK KV re-block: same col-3 switchbox collision
+                                        # as the on-chip path (KV on memtile MM2S 0 deadlocks
+                                        # in LOOPCLOSE - the o-proj feedback + q-broadcast
+                                        # transit col-3's switchbox). Reserve MM2S 0 by steering
+                                        # col-3 KV onto channels 1-4. (col 4 already lands on
+                                        # 1-4 via GLU/down; gate on LOOPCLOSE to keep GREEN.)
+                                        if col == 3:
+                                            _pk.operation.attributes[
+                                                "air.memtile_dma_channel_min"
+                                            ] = IntegerAttr.get(T.i32(), 1)
+                                            _pv.operation.attributes[
+                                                "air.memtile_dma_channel_min"
+                                            ] = IntegerAttr.get(T.i32(), 1)
+                                        DeallocOp(kvb)
+                                        yield_([])
+
+                                _gated = _seg_arm_i is not None
+                                if _gated:
+
+                                    def _rb_voc():
+                                        yield_([])
+
+                                    def _rb_dec():
+                                        _reblock_dec()
+                                        yield_([])
+
+                                    if HYBRID_MIXER:
+                                        # Segment scope => wave-invariant, so
+                                        # the KV readback runs on EVERY decode
+                                        # wave. That is the hybrid's one real
+                                        # cost (+40 MB/token at ctx 2048, ~6%).
+                                        # It only works because its producer
+                                        # (the shim inKV feed) and its consumer
+                                        # (the CUs) are ungated too -- an
+                                        # ungated memtile between a gated
+                                        # producer and a gated consumer is the
+                                        # configuration that deadlocked even
+                                        # with zero attention waves in the
+                                        # build.
+                                        _reblock_dec()
+                                    else:
+                                        _arm_only(_seg_arm_i, {2}, _reblock_dec)
+                                else:
+                                    _reblock_dec()
+
+                                def _core_rounds(Lh):
+                                    """ceil(Lh/16) as a core-side loop bound.
+
+                                    Lh is the RTP-L herd block-arg, so this is opaque to
+                                    folding and survives to core codegen as a real runtime
+                                    trip count -- the same count the shim's readback BD
+                                    pushes, which is what keeps the core off a channel get
+                                    that never arrives.
+                                    """
+                                    if not DYNSEQ_RTP:
+                                        return idx(ATTN_ROUNDS)
+                                    _s = arith.addi(
+                                        Lh,
+                                        arith.ConstantOp(
+                                            IntegerAttr.get(i32, 15), None
+                                        ).result,
+                                    )
+                                    _q = arith.divui(
+                                        _s,
+                                        arith.ConstantOp(
+                                            IntegerAttr.get(i32, 16), None
+                                        ).result,
+                                    )
+                                    return arith.index_cast(idx_t, _q)
+
+                                def _qk_body(sh, Lh, _c, _arm=None):
+                                    a_q = AllocOp(aq_l1, [], [])
+                                    ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                                    a_m = AllocOp(m_l1, [], [])
+                                    a_cc = AllocOp(c_l1, [], [])
+                                    # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
+                                    # block-arg (opaque region arg -> not const-folded -> stays a
+                                    # runtime scf.for bound; the AIE core loops per the RTP-L the
+                                    # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
+                                    # unrollSCFFors only unrolls all-constant loops, so this
+                                    # survives to core codegen as a real runtime loop.
+                                    _nblk_qk = _core_rounds(Lh)
+                                    for _blk in for_(idx(0), _nblk_qk, idx(1)):
+                                        # REQUIRED single-buffer: ping-pong would unroll-by-2 +
+                                        # 1-remainder over a 3-buffer toK ring whose remainder reads
+                                        # the wrong buffer vs the DMA rotation -> misaligned KV ->
+                                        # garbage chat. Single-buffer is aligned.
+                                        a_k = AllocOp(ak_l1, [], [])
+                                        ChannelGet("toK", a_k, indices=[idx(_c)])
+                                        blk_c = arith.index_cast(i32, _blk)
+                                        CallOp(
+                                            attn_qk_blk,
+                                            [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
+                                        )
+                                        DeallocOp(a_k)
+                                        yield_([])
+                                    DeallocOp(a_q)
+                                    DeallocOp(a_m)
+                                    DeallocOp(a_cc)
+
+                                def _kv_body(sh, Lh, _c, _arm=None):
+                                    a_y = AllocOp(y_l1, [], [])
+                                    a_l = AllocOp(lden_l1, [], [])
+                                    a_o = AllocOp(ao_l1, [], [])
+                                    # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
+                                    # block-arg (opaque region arg -> not const-folded -> stays a
+                                    # runtime scf.for bound; the AIE core loops per the RTP-L the
+                                    # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
+                                    # unrollSCFFors only unrolls all-constant loops, so this
+                                    # survives to core codegen as a real runtime loop.
+                                    _nblk_qk = _core_rounds(Lh)
+                                    for _blk in for_(idx(0), _nblk_qk, idx(1)):
+                                        # REQUIRED single-buffer: ping-pong would unroll-by-2 +
+                                        # 1-remainder over a 3-buffer toK ring whose remainder reads
+                                        # the wrong buffer vs the DMA rotation -> misaligned KV ->
+                                        # garbage chat. Single-buffer is aligned.
+                                        a_k = AllocOp(ak_l1, [], [])
+                                        ChannelGet("toK", a_k, indices=[idx(_c)])
+                                        blk_c = arith.index_cast(i32, _blk)
+                                        CallOp(
+                                            attn_qk_blk,
+                                            [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
+                                        )
+                                        DeallocOp(a_k)
+                                        yield_([])
+                                    DeallocOp(a_q)
+                                    DeallocOp(a_m)
+                                    DeallocOp(a_cc)
+
+                                def _kv_body(sh, Lh, _c, _arm=None):
+                                    a_y = AllocOp(y_l1, [], [])
+                                    a_l = AllocOp(lden_l1, [], [])
+                                    a_o = AllocOp(ao_l1, [], [])
+                                    # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
+                                    # loops per RTP-L; matched by the shim readback push count.
+                                    _nblk_kv = _core_rounds(Lh)
+                                    for _blk in for_(idx(0), _nblk_kv, idx(1)):
+                                        # REQUIRED single-buffer (see _qk_body): keeps toV/toK
+                                        # consumption aligned with the DMA rotation (no unroll-by-2
+                                        # remainder desync -> no misaligned KV).
+                                        a_v = AllocOp(av_l1, [], [])
+                                        ChannelGet("toV", a_v, indices=[idx(_c)])
+                                        blk_c = arith.index_cast(i32, _blk)
+                                        CallOp(
+                                            attn_kv_blk,
+                                            [sh, a_v, a_y, a_l, blk_c, Lh],
+                                        )
+                                        DeallocOp(a_v)
+                                        yield_([])
+                                    CallOp(attn_kv_fin, [a_y, a_l, a_o])
+                                    if MIX_TO_CU:
+                                        # Take the mixer's broadcast and, on a
+                                        # ShortConv wave, overwrite o with this
+                                        # CU's slice. The get is UNGATED to match
+                                        # the mixer's ungated put; the pick is the
+                                        # kernel's `arm != 1` early-out, which is
+                                        # the reference's IS_ATTN and the only
+                                        # layer-type branch left in a core.
+                                        a_mix = AllocOp(convo_l1, [], [])
+                                        ChannelGet(
+                                            "mixToCU",
+                                            a_mix,
+                                            # Broadcast POSITION, not a bundle
+                                            # index: every CU receives the whole
+                                            # CONV_DIM and keeps its own slice in
+                                            # C. Indexing by _c is what makes
+                                            # air-to-aie keep all four
+                                            # destinations on the one flow.
+                                            indices=[idx(0), idx(_c)],
+                                            offsets=[idx(0)],
+                                            sizes=[idx(CONV_DIM)],
+                                            strides=[idx(1)],
+                                        )
+                                        CallOp(
+                                            conv_o_pass,
+                                            [
+                                                a_mix,
+                                                a_o,
+                                                arith.ConstantOp(
+                                                    IntegerAttr.get(i32, _c), None
+                                                ).result,
+                                                _arm,
+                                            ],
+                                        )
+                                        DeallocOp(a_mix)
+
+                                    def _put_o():
+                                        ChannelPut(
+                                            "attnO",
+                                            a_o,
+                                            indices=[idx(_c)],
+                                            # o un-interleave: kernel [q_head, dc, de] ->
+                                            # natural (q_head, dh).
+                                            # sizes=[Q_HEADS_PER_CU, DH//8, 8].
+                                            offsets=[idx(0), idx(0), idx(0)],
+                                            sizes=[
+                                                idx(Q_HEADS_PER_CU),
+                                                idx(DH // 8),
+                                                idx(8),
+                                            ],
+                                            strides=[
+                                                idx(8),
+                                                idx(Q_HEADS_PER_CU * 8),
+                                                idx(1),
+                                            ],
+                                        )
+
+                                    # Unconditional on both decode arms: the CU is
+                                    # the sole @attnO producer, and running the
+                                    # block loop is also how it drains toAttnQ /
+                                    # toK / toV, which the (necessarily
+                                    # wave-invariant) KV memtile pushes every wave.
+                                    # The wasted attention compute on a ShortConv
+                                    # wave is largely free -- the CU is paced by
+                                    # the KV readback DMA, which we pay anyway.
+                                    _put_o()
+                                    DeallocOp(a_o)
+                                    DeallocOp(a_y)
+                                    DeallocOp(a_l)
+
+                                # Segment-level per-CU setup done (a_sh scores buffer, L_c,
+                                # the memtile KV reblock, and the qk/kv body closures). The
+                                # herd is NOT emitted here -- all 8 attn cores are fused into
+                                # ONE [2,4] block herd after the loop (see below).
+                                return (a_sh, col, qk_row, L_c, _qk_body, _kv_body)
+
+                        _cus = [_make_cu(c) for c in range(N_ATTN_CU)]
+                        # Fuse ALL 8 attn cores into ONE [2,4] block over the contiguous
+                        # cols 3,4. tx=0 -> col3 (cu0 rows2,3; cu1 rows4,5), tx=1 -> col4
+                        # (cu2 rows2,3; cu3 rows4,5). Column by tx==0, pair by ty<2, role
+                        # (qk=even/kv=odd) by exact ty==const -- every selector is a direct
+                        # tile-IV guard so it folds per-tile at clone. Each CU's score buffer
+                        # is shared only across its 2 vertically-adjacent cores (qk writes via
+                        # attn_qk_blk, kv reads via attn_kv_blk; Gate-1 strict-subset infers
+                        # the cross-core RAW from the opaque calls). Per-core link files derive
+                        # from the kernel func each core calls (attn_qk.ll on qk rows,
+                        # attn_kv.ll on kv rows) -- no herd link_with. gate-off index_switch on
+                        # the per-wave arm keeps vocab idle. This is the attn floor: cols 3,4
+                        # are one contiguous block, so 8 -> 1.
+                        _sh = [t[0] for t in _cus]
+                        _Lc = _cus[0][3]
+                        _qkb = _cus[0][4]
+                        _kvb = _cus[0][5]
+
+                        def _attn_leaf(ty_arg, cu, sh, Lh, qk_ty, _arm=None):
+                            _isqk = arith.cmpi(
+                                arith.CmpIPredicate.eq, ty_arg, idx(qk_ty)
+                            )
+                            _if = IfOp(_isqk, [], has_else=True)
+                            with InsertionPoint(_if.thenRegion.blocks[0]):
+                                _qkb(sh, Lh, cu, _arm)
+                                yield_([])
+                            with InsertionPoint(_if.elseRegion.blocks[0]):
+                                _kvb(sh, Lh, cu, _arm)
+                                yield_([])
+
+                        def _attn_pairsel(ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None):
+                            _lo = arith.cmpi(arith.CmpIPredicate.slt, ty_arg, idx(2))
+                            _ifp = IfOp(_lo, [], has_else=True)
+                            with InsertionPoint(_ifp.thenRegion.blocks[0]):
+                                _attn_leaf(ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm)
+                                yield_([])
+                            with InsertionPoint(_ifp.elseRegion.blocks[0]):
+                                _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm)
+                                yield_([])
+
+                        def _attn_dec(tx_arg, ty_arg, shs, Lh, _arm=None):
+                            _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
+                            _ifc = IfOp(_isc0, [], has_else=True)
+                            with InsertionPoint(_ifc.thenRegion.blocks[0]):
+                                _attn_pairsel(
+                                    ty_arg, shs, Lh, 0, 1, _arm
+                                )  # col3: cu0, cu1
+                                yield_([])
+                            with InsertionPoint(_ifc.elseRegion.blocks[0]):
+                                _attn_pairsel(
+                                    ty_arg, shs, Lh, 2, 3, _arm
+                                )  # col4: cu2, cu3
+                                yield_([])
+
+                        if _seg_arm_i is not None:
+
+                            @herd(
+                                name="attn_blk",
+                                sizes=[2, 4],
+                                operands=[
+                                    _sh[0].result,
+                                    _sh[1].result,
+                                    _sh[2].result,
+                                    _sh[3].result,
+                                    _Lc,
+                                    _core_arm,
+                                ],
+                            )
+                            def attn_blk(_tx, _ty, _sx, _sy, s0, s1, s2, s3, Lh, _arm):
+                                shs = [s0, s1, s2, s3]
+
+                                def _voc():
+                                    yield_([])
+
+                                def _dec():
+                                    _attn_dec(_tx, _ty, shs, Lh)
+                                    yield_([])
+
+                                # A hybrid WITH A MIXER runs the CUs on BOTH decode
+                                # arms. They
+                                # are the sole @attnO producers and the o-gather
+                                # memtile behind them is segment scope, so it
+                                # cannot skip its gather on a ShortConv wave --
+                                # gate the CUs off and it blocks, and @xnorm loses
+                                # a chunk. Running them is also how @toAttnQ/@toK/
+                                # @toV drain, which the (wave-invariant) KV
+                                # readback pushes every wave. The wasted attention
+                                # compute is largely free: the CU is paced by that
+                                # readback DMA either way.
+                                #
+                                # Without a mixer there is nothing to produce on a
+                                # ShortConv wave, so gate to attention only: a CU
+                                # with nothing to do blocks on its input lock, and
+                                # the KV memtile behind it blocks too --
+                                # harmlessly, because the shim issues no KV
+                                # traffic then and nothing else waits on either.
+                                _arm_only(
+                                    arith.index_cast(idx_t, _arm),
+                                    {1, 2} if MIX_TO_CU else {2},
+                                    lambda: _attn_dec(_tx, _ty, shs, Lh, _arm),
+                                )
+
+                        else:
+
+                            @herd(
+                                name="attn_blk",
+                                sizes=[2, 4],
+                                operands=[
+                                    _sh[0].result,
+                                    _sh[1].result,
+                                    _sh[2].result,
+                                    _sh[3].result,
+                                    _Lc,
+                                ],
+                            )
+                            def attn_blk(_tx, _ty, _sx, _sy, s0, s1, s2, s3, Lh):
+                                _attn_dec(_tx, _ty, [s0, s1, s2, s3], Lh)
+
+                        attn_blk.attributes["x_loc"] = IntegerAttr.get(
+                            T.i64(), ATTN_CU_LOC[0][0]
+                        )
+                        attn_blk.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
 
                     # o gather memtile (reference mem_5_1 o_buffer): gather the 4
                     # CUs' o (512 each, already natural [qh,dh] from the egress
                     # reorder) into 2048, then ONE egress -> host (oGathered). This
                     # is the reference o_buffer; the loop-close step routes it to
                     # mem_1_1 (id2) = o-proj X instead of host.
-                    def _omtb_dec():
+                    def _omtb_dec(_conv=CONV_MIXER):
                         omtb = AllocOp(omt_l2, [], [])
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), 5
                         )
+
                         # loop close: gathered o (2048) is ph1 o-proj X, re-broadcast
                         # OPROJ_REFEED times into the convergent @xnorm, AFTER ph0 (rms)
                         # and BEFORE ph2. Reference mem_5_1 o_buffer -> mem_1_1 x_buffer.
-                        for c in range(N_ATTN_CU):
+                        # Only the SOURCE get is switched; the OPROJ_REFEED onto
+                        # @xnorm below stays outside, emitted once. Duplicating it
+                        # per arm would double @xnorm's static put volume against an
+                        # X memtile that still gets it once -- the same volume-
+                        # accounting trap that breaks the @outY demux proof, and
+                        # here it would unbalance the xnorm convergence instead.
+                        def _src_conv():
+                            # The mixer emits its whole CONV_DIM output from one
+                            # core, into the same o buffer attention's 4 CUs
+                            # gather into.
                             ChannelGet(
-                                "attnO",
+                                "convO",
                                 omtb,
-                                indices=[idx(c)],
-                                offsets=[idx(c * DQ_PER_CU)],
-                                sizes=[idx(DQ_PER_CU)],
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(CONV_DIM)],
                                 strides=[idx(1)],
                             )
+
+                        def _src_attn():
+                            for c in range(N_ATTN_CU):
+                                ChannelGet(
+                                    "attnO",
+                                    omtb,
+                                    indices=[idx(c)],
+                                    offsets=[idx(c * DQ_PER_CU)],
+                                    sizes=[idx(DQ_PER_CU)],
+                                    strides=[idx(1)],
+                                )
+
+                        if HYBRID_MIXER:
+                            # WAVE-INVARIANT, and it must be: this is segment
+                            # scope, so an arm gate here would fold to the wave-0
+                            # arm and the other branch would be ERASED. It
+                            # costs nothing --
+                            # the four CU kv cores put @attnO on every decode
+                            # wave whichever mixer ran, so the gather is the
+                            # attention build's, unchanged.
+                            _src_attn()
+                        else:
+                            _arm_only(_seg_arm_i, {2}, _src_attn, in_dec=True)
+                            _arm_only(_seg_arm_i, {1}, _src_conv, in_dec=True)
                         refeed(
                             OPROJ_REFEED,
                             lambda: ChannelPut(
@@ -3113,10 +4231,13 @@ def build_module():
                         )
                         DeallocOp(omtb)
 
+                    _skip_omtb = False
                     # gate-off 2026-07-15b: o-gather (attnO get + xnorm o-proj put) is
                     # DECODE-ONLY. In vocab attn produces no attnO, and _xc_voc already
                     # excludes OPROJ_REFEED, so the xnorm convergence stays balanced.
-                    if _seg_arm_i is not None:
+                    if _skip_omtb:
+                        pass
+                    elif _seg_arm_i is not None:
 
                         def _o_voc():
                             yield_([])
@@ -3344,13 +4465,20 @@ def build_module():
 
                             nph_v = _sel(idx(1), lambda: idx(NPH), idx_t)
                             for ph in for_(idx(0), nph_v, idx(1)):
+                                _ephv = ph
                                 I2v = _sel(
-                                    idx(VOCAB_I2), lambda: _psw(ph, i2c, idx_t), idx_t
+                                    idx(VOCAB_I2),
+                                    lambda: _psw(_ephv, i2c, idx_t),
+                                    idx_t,
                                 )
                                 J2v = _sel(
-                                    idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
+                                    idx(VOCAB_J2),
+                                    lambda: _psw(_ephv, j2c, idx_t),
+                                    idx_t,
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
+                                pktv = _sel(
+                                    _id4, lambda: _psw(_ephv, pktc, idx_t), idx_t
+                                )
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
                                         _emit(_gemv(J2v), pktv)
@@ -3514,13 +4642,20 @@ def build_module():
 
                             nph_v = _sel(idx(1), lambda: idx(NPH), idx_t)
                             for ph in for_(idx(0), nph_v, idx(1)):
+                                _ephv = ph
                                 I2v = _sel(
-                                    idx(VOCAB_I2), lambda: _psw(ph, i2c, idx_t), idx_t
+                                    idx(VOCAB_I2),
+                                    lambda: _psw(_ephv, i2c, idx_t),
+                                    idx_t,
                                 )
                                 J2v = _sel(
-                                    idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
+                                    idx(VOCAB_J2),
+                                    lambda: _psw(_ephv, j2c, idx_t),
+                                    idx_t,
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
+                                pktv = _sel(
+                                    _id4, lambda: _psw(_ephv, pktc, idx_t), idx_t
+                                )
                                 # b_col_reduce_add cache: one per core, scoped to
                                 # the PROJECTION (x changes per phase, so it is
                                 # refilled on each phase's first row-block). The
@@ -3602,13 +4737,23 @@ def build_module():
                     # input-layernorm: raw X + rms weight -> normed X -> xnorm (re-fed
                     # on-chip REFEED times, see refeed() -> the X memtile).
 
-                    OPROJ_RNDS = PAIR_ROWS * I2P[1]  # 4 o-proj egress rounds
+                    OPROJ_RNDS = PAIR_ROWS * I2P[OPROJ_PHASE]  # 4 o-proj egress rounds
                     DOWN_RNDS = PAIR_ROWS * I2P[DOWN_PHASE]  # 4 down egress rounds
 
                     # per-token RTP ARM (the reference-faithful re-dispatch): scalar herd operand ->
                     # AIR emits __air_herd_rtp + __air_herd_lock acquired per token; the
                     # runtime re-arms it each dispatch so the core does 1 token/dispatch.
                     _arm_rms = _seg_arm
+
+                    def _xn_refeed(buf, arm):
+                        """Re-broadcast the normed X once per mixer phase."""
+
+                        def _put():
+                            ChannelPut(
+                                "xnorm", buf, offsets=[0], sizes=[K], strides=[1]
+                            )
+
+                        refeed(XN_REFEED, _put)
 
                     def _rms_body(tx, ty, _sx, _sy, _arm):
                         # DIAGNOSTIC (later43e): make rms SINGLE-mode in the LM_HEAD build
@@ -3810,12 +4955,7 @@ def build_module():
                             # Normalize once, then re-broadcast the resident result
                             # XN_REFEED times.
                             CallOp(rms_norm_lo_aie, [g_xn, g_x, g_wa, _arm])
-                            refeed(
-                                XN_REFEED,
-                                lambda: ChannelPut(
-                                    "xnorm", g_xn, offsets=[0], sizes=[K], strides=[1]
-                                ),
-                            )
+                            _xn_refeed(g_xn, _arm)
                             # step2 (residual1): h = x + post_attention_norm(o_proj) [g_wa hi]
                             ChannelGet(
                                 "outY",
@@ -3875,12 +5015,7 @@ def build_module():
                         # step1: input layernorm -> X feed (re-fed RMS_REFEED via xnorm)
                         a_xn = AllocOp(rms_l1, [], [])
                         CallOp(rms_norm_aie, [a_xn, a_x, a_w, _arm])
-                        refeed(
-                            XN_REFEED,
-                            lambda: ChannelPut(
-                                "xnorm", a_xn, offsets=[0], sizes=[K], strides=[1]
-                            ),
-                        )
+                        _xn_refeed(a_xn, _arm)
                         # a_w and a_xn are kept for the ph2 (gate-up) emission (step2).
                         if RMS_DEST < 0:
                             # debug configs: original single-step rms (no residual).

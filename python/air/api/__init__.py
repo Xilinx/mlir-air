@@ -36,6 +36,16 @@ elementwise arithmetic on whole L1 tiles, an ``air.sequential`` loop, and
 ``NotImplementedError`` at the point of use. Nothing degrades quietly into a
 kernel that runs and returns wrong numbers.
 
+Element types are ``bf16 f16 f32``, ``i8 i16 i32`` and ``ui8 ui16 ui32``. The
+unsigned three are *movable but not computable*: MLIR spells signedness in the
+operation rather than the type, so the whole ``arith`` dialect -- and every
+named ``linalg`` contraction built out of it -- takes signless operands, and a
+``ui8`` one does not verify. An unsigned tile can therefore be allocated, moved
+by ``ops.load``/``ops.store`` and ``air.channel``, copied elementwise, and
+handed to an ``air.extern`` kernel, which is what a ``uint8`` example in this
+tree needs; arithmetic on one raises at the call site naming the signed type to
+declare instead.
+
 ``launch``, ``segment`` and ``herd`` are independent levels: a kernel that needs
 no staging writes a herd on its own, and one that does wraps it in a segment.
 Giving ``air.segment`` an iteration space makes it the *launch* grid, one segment
@@ -45,26 +55,34 @@ subscript (``staged[tx, 0:n, :]``) names a DMA region for
 ``ops.load``/``ops.store``; ``buf[:]`` in an expression is an elementwise read,
 and is rejected on L2, which has no compute core.
 
-For the AIE2 matmul intrinsic a tile has to be laid out in micro-tile order.
-``air.micro_tile(m, k, n)`` builds those shapes, and the packing is *not* a
-memref layout -- the buffer stays contiguous and the reordering lives in the DMA
-access pattern, which is derived rather than spelled out::
+For the AIE2 matmul intrinsic a tile has to be laid out in blocks, so that the
+block the instruction consumes is contiguous. That is a *walk*, not a memref
+layout -- the buffer stays contiguous either way -- so it is written the way
+numpy writes one, with ``reshape`` and ``transpose`` on the region being moved::
 
-    mm = air.micro_tile(m=4, k=8, n=4)
-    a  = air.alloc(mm.a(tile_m, tile_k), bf16, scope=h.private())
-    acc = air.alloc(mm.c(tile_m, tile_n, lead=herd_shape), bf16,
-                    scope=seg.shared())
-    ops.load(a, l2_a[tx, 0, :, k : k + tile_k])   # the DMA performs the pack
+    m, k = 4, 8
+    a = air.alloc([1, 1, tile_k // k, tile_m // m, m, k], bf16, scope=h.private())
+    ops.load(a, l2_a[rows, cols]
+                 .reshape(1, 1, tile_m // m, m, tile_k // k, k)
+                 .transpose(0, 1, 4, 2, 3, 5))    # the DMA performs the pack
     ops.dot(a, b, acc=acc)                        # rank 6: block_matmul
 
-A packed buffer is subscripted in *logical* coordinates, so the program keeps
-thinking in ``[M, N]``. ``<segment>.shared()`` allocates L1 with the segment's
-lifetime, for an accumulator carried across a reduction loop at segment scope.
+``reshape`` re-describes a region at a different rank and ``transpose`` permutes
+its axes; both are views, and both raise rather than silently copying, since a
+copy here would be a hidden L2 transfer. ``<segment>.shared()`` allocates L1
+with the segment's lifetime, for an accumulator carried across a reduction loop
+at segment scope; its leading dimensions are the herd's, one per axis, which is
+what makes each core's slab well defined. Zero it with ``ops.fill(acc, 0.0)``.
 
 ``air.sequential`` is named for what ``scf.for`` guarantees -- its trips are
 ordered in time on one core -- as against the herd's grid, which is spatial.
-``air.parallel`` is its unordered counterpart (``scf.parallel``); it is declared
-below and raises, because nothing emits it yet.
+``air.parallel`` is its unordered counterpart, and the two are not
+interchangeable at segment scope. Staging that fans a memtile buffer out to a
+row of cores has to be parallel twice over: the trip index names one slot of a
+channel bundle, which ``air-place-herds`` refuses to take from a temporal loop,
+and the trips share one set of buffer descriptors, so writing them out as a
+Python ``for`` turns one fan-out into that many independent DMAs. See
+``herd_dataflow``, where the unrolled form does not fit on npu1 at all.
 
 One hardware caveat that the DSL cannot see and so cannot raise on: an
 *unstaged* K reduction on a 2-D herd is wrong past a single trip. Both operands
@@ -78,8 +96,7 @@ from . import ops
 from ._channel import Channel, channel
 from ._compile import CompiledKernel, LaunchContext, compile, launch
 from ._extern import ExternKernel, extern
-from ._loop import sequential
-from ._pack import MicroTile, PackedShape, micro_tile
+from ._loop import parallel, sequential
 from ._trace import (
     HerdContext,
     Scope,
@@ -88,13 +105,14 @@ from ._trace import (
     alloc,
     dealloc,
     herd,
+    resolve_target,
     segment,
     symbol,
     tensor,
     wait,
 )
 from ._value import Buffer, BufferSlice, Tensor, TensorSlice, Token
-from .types import DType, bf16, f16, f32, i8, i16, i32
+from .types import DType, bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32
 
 __all__ = [
     # operations
@@ -114,11 +132,11 @@ __all__ = [
     "sequential",
     "wait",
     # micro-tiled (packed) layouts
-    "micro_tile",
-    "MicroTile",
-    "PackedShape",
     # compilation
     "compile",
+    # the NPU generation --target resolves to, for a design that has to branch
+    # on it before tracing (an object file to link, or an element type)
+    "resolve_target",
     # types
     "DType",
     "bf16",
@@ -127,6 +145,9 @@ __all__ = [
     "i8",
     "i16",
     "i32",
+    "ui8",
+    "ui16",
+    "ui32",
     # objects surfaced for isinstance checks and typing
     "LaunchContext",
     "SegmentContext",
@@ -157,15 +178,6 @@ def _unimplemented(name, needs):
 # Names from the wider API proposal that this version does not lower. They are
 # present, and they raise -- an accepted-but-ignored capability gate is worse
 # than an absent one, because the kernel still compiles and still runs.
-# The unordered counterpart of air.sequential: an scf.parallel inside a herd
-# body, whose trips carry no ordering guarantee. Named here so that reaching for
-# it fails at the call site with this explanation rather than as an
-# AttributeError, and so the name cannot later be attached to the herd grid --
-# air.herd emits air.herd directly, and an scf.parallel reaches the spatial
-# hierarchy only when a conversion pass selects it, which in general it does not.
-parallel = _unimplemented(
-    "parallel", "scf.parallel emission; use air.sequential for an ordered loop"
-)
 BlockType = _unimplemented("BlockType", "block floating-point types")
 Field = _unimplemented("Field", "block floating-point types")
 Scratchpad = _unimplemented("Scratchpad", "fabric property gating")

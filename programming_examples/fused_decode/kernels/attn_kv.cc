@@ -771,4 +771,31 @@ void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                                                                  y_bf16);
   scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(y_bf16, o, l_state);
 }
+
+// Hybrid (LFM2) only: on a ShortConv wave this CU's slice of the mixer output
+// takes the place of the attention result, so the o-gather memtile keeps ONE
+// input channel and @xnorm keeps THREE producers. Four same-id producers on a
+// convergent ring do not route, and a memtile is segment scope so it cannot
+// pick between two sources per wave -- so the pick has to happen here, in a
+// core, off the herd RTP.
+//
+// Overwrites `o` AFTER attn_kv_fin rather than replacing it: the block loop
+// still has to run on both arms to drain the KV traffic the (wave-invariant)
+// cache readback pushes every wave, and leaving that path untouched keeps the
+// attention arm bit-identical.
+//
+// The permutation is the INVERSE of the un-interleave the @attnO put applies
+// (sizes [QH, DH/8, 8], strides [8, QH*8, 1]). The mixer's output is already
+// natural (q_head, dh), so writing it straight would come out scrambled by
+// exactly that pattern; undoing it here is a fixed 512-element shuffle.
+void conv_o_pass(bf16 *__restrict mix, bf16 *__restrict o, int cu, int arm) {
+  if (arm != 1)
+    return;
+  const int QH = Q_HEADS_PER_CU;
+  const bf16 *__restrict src = mix + cu * (QH * DH);
+  for (int h = 0; h < QH; h++)
+    for (int d = 0; d < DH / 8; d++)
+      for (int e = 0; e < 8; e++)
+        o[h * 8 + d * QH * 8 + e] = src[h * DH + d * 8 + e];
+}
 }

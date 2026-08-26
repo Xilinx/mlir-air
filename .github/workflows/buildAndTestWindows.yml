@@ -54,7 +54,12 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install lit PyYAML numpy nanobind
+          # -c, not a pin spelled out here: utils/requirements_dev.txt already
+          # pins nanobind, and a second copy of the version is a second thing to
+          # drift. A constraints file only bounds packages that are actually
+          # being installed, so the cmake/ninja entries in it are inert (both
+          # come from setup-cpp above).
+          pip install lit PyYAML numpy nanobind -c utils/requirements_dev.txt
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@v1.2

@@ -5,19 +5,29 @@
 // RUN: mkdir -p test_airrunner
 // RUN: cd test_airrunner
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run | FileCheck %s
-// Updated post-#1659: ping-pong restored for K-tiled L1 fills dispatched via
-// mutually-exclusive affine.if broadcast branches (only one branch fires per
-// outer iter, so multi-fill of the same alloc is safe).
-// Updated with the air.api port of matrix_multiplication/bf16: 423.808 ->
-// 423.824us, +0.016us on a 16-iteration estimate, i.e. about one cycle per
-// iteration. The port stages L2 flat -- each buffer is exactly the L3 region it
-// holds -- where the predecessor used a [herd_m, herd_n, tile_m, tile_n] grid.
-// For A the two are byte-identical, for B and C they differ, and this is that
-// difference as the simulator models it.
+// RUN: make -f %S/Makefile run 2>&1 | FileCheck %s
 //
-// Checked before touching the number, at this test's own configuration: the
-// output is bit-identical on npu1 (mean_rel_L1=4.011e-03, rel_err max=9.627e+02,
-// abs_err max=1.953e-03 for both), and the lowered design has identical
-// resource counts -- 16 aie.core, 196 aie.dma_bd, 424 aie.use_lock, 60 flows.
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 423.824us
+// This design used to stall. It was marked XFAIL and carried a note asking
+// whoever fixed it to pin the real latency rather than re-pin whatever the
+// runner printed, so: 774.592us, from a run that reaches the launch
+// terminator.
+//
+// For context on the number that was here before, 423.824us: that was the
+// point at which the simulation gave up, not a latency. air-runner runs until
+// no runner node can make progress, which is also what an unsatisfiable
+// dispatch condition looks like, so a stalled run and a finished one printed
+// the same line. The run stalled at 26489 cycles over 16 launch iterations,
+// and 26489 * 16 = 423824 ns.
+//
+// The cause was in the compiler, not the runner. air-fuse-alloc-dealloc sinks
+// an alloc/dealloc pair into the innermost loop that uses the memref, and
+// leaves an air.wait_all where each one used to be for the benefit of users
+// outside that loop. It built those stand-ins after stripping the dealloc's
+// dependences rather than before, so they came out empty. Here the dealloc's
+// token was the herd's outer k-loop yield, which therefore stopped depending
+// on the loop body: the loop retired before a single get had run, the herd
+// consumed half the puts it should have, and the segment's remaining puts had
+// nothing left to match. See @func8 in
+// mlir/test/Transform/AIRDependencyScheduleOpt/fuse_alloc_dealloc.mlir.
+
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 774.592us

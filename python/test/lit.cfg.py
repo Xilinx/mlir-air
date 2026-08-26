@@ -21,7 +21,17 @@ from lit.llvm import llvm_config
 # name: The name of this test suite.
 config.name = "AIRPYTHON"
 
-config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
+# The internal shell, unconditionally. `not llvm_config.use_lit_shell` was the
+# old LLVM idiom for "external shell except on Windows", and lit 23 removed the
+# external shell: ShTest(execute_external=True) now raises at config-parse time,
+# so the suite fails before a single test runs.
+#
+# Migrating rather than setting force_execute_external=True, which is an
+# explicit stay of execution that LLVM-24 removes anyway. The one incompatibility
+# in this repo was a bare `VAR=value` command prefix, which bash treats as an
+# environment assignment and lit's internal shell treats as a command name; see
+# the %ld_lib_path substitution in mlir/test/lit.cfg.py.
+config.test_format = lit.formats.ShTest()
 config.environment["PYTHONPATH"] = os.pathsep.join(
     [
         os.path.join(config.air_obj_root, "python"),

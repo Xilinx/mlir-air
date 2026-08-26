@@ -28,7 +28,6 @@ from air.ir import (
     AffineMap,
     AffineSymbolExpr,
     BF16Type,
-    BoolAttr,
     IntegerAttr,
     IntegerType,
     MemRefType,
@@ -213,7 +212,6 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
                     def matvec_herd(tx, ty, _sx, _sy):
                         for _outer in for_(M_div_m_per_core):
                             l1_part_op = AllocOp(partial_l1, [], [])
-                            l1_part_op.attributes["air.shrinkage"] = BoolAttr.get(False)
                             l1_part = l1_part_op.result
                             l1_part_slice_strided = subview(l1_part, [0], [M_TILE], [1])
                             l1_part_slice = memref_cast(
@@ -255,7 +253,6 @@ def build_module(M, K, GS=128, M_TILE=8, K_CHUNK=2048, N_CORES=8, M_PER_LAUNCH=N
 
                         for outer in for_(M_div_m_per_core):
                             l1_part_op = AllocOp(partial_l1, [], [])
-                            l1_part_op.attributes["air.shrinkage"] = BoolAttr.get(False)
                             l1_d_op = AllocOp(D_l1, [], [])
                             ChannelGet("partial_cas", l1_part_op, indices=[tx])
                             l1_part_slice_strided = subview(

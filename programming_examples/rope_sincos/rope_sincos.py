@@ -1,197 +1,172 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""RoPE (Rotary Position Embeddings) with On-Chip Sin/Cos Computation
+"""RoPE (Rotary Position Embeddings) with on-chip sin/cos, on air.api.
 
-Applies rotary position embeddings to Q and K vectors (V is passed through):
+Applies rotary position embeddings to Q and K vectors (V is passed through)::
+
   Q_out[2i]   = Q[2i] * cos(pos * freq_i) - Q[2i+1] * sin(pos * freq_i)
   Q_out[2i+1] = Q[2i] * sin(pos * freq_i) + Q[2i+1] * cos(pos * freq_i)
-  (same for K; V is unchanged)
 
-where freq_i = 1 / (theta ^ (2i / head_size)), theta = 10000.
+where ``freq_i = 1 / (theta ** (2i / head_size))`` and ``theta = 10000``.
 
-Unlike the LUT-based variant, sin/cos values are computed on-chip using
-Chebyshev polynomial approximation. The frequency table is hardcoded in
-the kernel (head_size=48). No external sin/cos input is needed.
+Unlike the LUT-based variant, sin/cos are computed on-chip by Chebyshev
+polynomial approximation, with the frequency table hardcoded in the kernel
+(head_size=48), so no sin/cos input is needed. The arithmetic all lives in
+``rope.cc``; what this file does is move one head into L1, call five kernels on
+it, and move it back.
 
-Input format: [num_heads * 3 * head_size] — Q, K, V concatenated per head.
-Uses external C++ kernels compiled from rope.cc.
+    air.ops.load(l1_in.reshape(3 * head_size), IN[o : o + 3 * head_size])
+    vector_copy(l1_in, l1_out)
+    freq_pos(1, l1_freq_pos)
+    sinf(l1_freq_pos, l1_sin)
+    cosf(l1_freq_pos, l1_cos)
+    shuffle_apply_rope(0,         l1_cos, l1_sin, l1_out)
+    shuffle_apply_rope(head_size, l1_cos, l1_sin, l1_out)
+    air.ops.store(l1_out.reshape(3 * head_size), OUT[o : o + 3 * head_size])
 
-Uses portable AIE API (filter_even/filter_odd/interleave_zip) for
-even/odd element shuffling, compatible with both Chess and Peano compilers.
+Five ``air.extern``s replace five hand-built ``FuncOp`` declarations plus the
+loop that stamped ``link_with`` and ``llvm.emit_c_interface`` on each. The
+declaration is derived from the call: buffer types come from the buffers, and
+only the scalar element types are stated, because a Python ``1`` cannot say
+whether the kernel wants ``i32`` or ``index``.
+
+**The reshape on the way in is the point of the shapes here.** The L1 tiles are
+``[3, head_size]`` because that is what ``rope.cc`` is compiled against -- Q, K
+and V as three rows -- while the L3 tensor is flat, one head's 3*head_size
+elements contiguous. ``ops.store`` has always drained a view; filling one is new
+(see ops.load), and it is what lets the buffer keep the kernel's shape while the
+transfer keeps the tensor's.
+
+Input format: ``[num_heads * 3 * head_size]``, Q/K/V concatenated per head.
+
+Two differences from the predecessor, both shared with the rest of the
+converted tree:
+
+* The herd is [herd_n, 1] rather than [1, herd_n]. A 1-D air.api herd is laid
+  out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's: the iteration space is one point per head and
+  ``shape=`` pins the core count, where the predecessor wrote the outer
+  ``scf.for`` and the ``AffineMap`` that combined it with the core coordinate by
+  hand. Every head is still processed exactly once by exactly one core.
+
+**The buffers are released explicitly**, all five at the end. Automatic
+placement frees each one after its last observed use, which for this kernel is
+wrong on hardware -- see the comment at the deallocs.
+
+``--target`` is new and defaults to detecting the installed part.
 """
 
 import argparse
-import numpy as np
 from math import cos, sin
+
+import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import bf16, i32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+# The object the Makefile compiles rope.cc into, in the build directory.
+EXTERN_OBJECT = "rope.o"
+
+# Padded to 32 elements (the next multiple of 16) so AIE2P can use native-width
+# vectors (n=16) for the sin/cos polynomial. On AIE2 the extra 8 elements are
+# computed and unused. This is the predecessor's constant, kept.
+SINCOS_BUF_SIZE = 32
 
 
-@module_builder
-def build_module(num_heads, head_size, herd_n, np_dtype_in):
-    assert (num_heads * head_size) % herd_n == 0
-    # Kernel functions are specialized for head_size=48 (hardcoded frequency
-    # table, shuffle_apply_rope_bf16_48, vector_copy_bf16_144_16).
+def build_module(num_heads, head_size, herd_n):
+    # The kernels are specialised for head_size=48: the frequency table is
+    # hardcoded and the symbol names carry the size.
     assert head_size == 48, f"Only head_size=48 is supported, got {head_size}"
-    inout_size = [3 * num_heads * head_size]  # Q, K, V concatenated
-    xrt_dtype_in = type_mapper(np_dtype_in)
-
-    # L3 MemRefTypes
-    memrefTyIn = MemRefType.get(inout_size, xrt_dtype_in)
-    memrefTyOut = MemRefType.get(inout_size, xrt_dtype_in)
-
-    # L1 MemRefTypes
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    # Padded to 32 elements (next multiple of 16) so AIE2P can use native-width
-    # vectors (n=16) for the sin/cos polynomial. On AIE2, the extra 8 elements
-    # are computed but unused.
-    sincos_buf_size = 32
-    l1MemrefTySinCosBuf = MemRefType.get(
-        shape=[sincos_buf_size],
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
-    l1MemrefTyThreeByHeadSize = MemRefType.get(
-        shape=[3, head_size],
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
+    # The herd's iteration space is one point per head, strip-mined onto herd_n
+    # cores, so it is the *head count* that has to divide -- not the element
+    # count, which is what the predecessor checked because its herd was
+    # [1, herd_n] with the outer loop striding over every element. The weaker
+    # form lets head_size carry the divisibility: num_heads=6 with herd_n=4
+    # passes (6 * 48 is a multiple of 4) and then fails inside air.herd with
+    # "herd shape (4,) does not evenly divide the logical grid (6,)".
+    assert num_heads % herd_n == 0, (
+        f"num_heads ({num_heads}) must be a multiple of herd_n ({herd_n}): "
+        "each core takes a whole number of heads"
     )
 
-    # External kernel functions
-    cosf_poly_func = FuncOp(
-        "cosf_bf16",
-        ([l1MemrefTySinCosBuf, l1MemrefTySinCosBuf], []),
-        visibility="private",
+    head_stride = 3 * head_size
+
+    cosf = air.extern("cosf_bf16", link_with=EXTERN_OBJECT)
+    sinf = air.extern("sinf_bf16", link_with=EXTERN_OBJECT)
+    freq_pos = air.extern("freq_pos_bf16", link_with=EXTERN_OBJECT, scalars=[i32])
+    shuffle_apply_rope = air.extern(
+        "shuffle_apply_rope_bf16_48", link_with=EXTERN_OBJECT, scalars=[i32]
     )
-    sinf_poly_func = FuncOp(
-        "sinf_bf16",
-        ([l1MemrefTySinCosBuf, l1MemrefTySinCosBuf], []),
-        visibility="private",
-    )
-    freq_pos_func = FuncOp(
-        "freq_pos_bf16",
-        ([T.i32(), l1MemrefTySinCosBuf], []),
-        visibility="private",
-    )
-    shuffle_apply_rope_func = FuncOp(
-        "shuffle_apply_rope_bf16_48",
-        (
-            [
-                T.i32(),
-                l1MemrefTySinCosBuf,
-                l1MemrefTySinCosBuf,
-                l1MemrefTyThreeByHeadSize,
-            ],
-            [],
-        ),
-        visibility="private",
-    )
-    vector_copy_func = FuncOp(
-        "vector_copy_bf16_144_16",
-        ([l1MemrefTyThreeByHeadSize, l1MemrefTyThreeByHeadSize], []),
-        visibility="private",
-    )
-    for func in [
-        freq_pos_func,
-        sinf_poly_func,
-        cosf_poly_func,
-        shuffle_apply_rope_func,
-        vector_copy_func,
-    ]:
-        func.attributes["link_with"] = StringAttr.get("rope.o")
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    vector_copy = air.extern("vector_copy_bf16_144_16", link_with=EXTERN_OBJECT)
 
-    @FuncOp.from_py_func(memrefTyIn, memrefTyOut)
-    def rope_sincos(arg0, arg1):
+    # One flat run, as the predecessor declared it and as the host writes it:
+    # num_heads heads of Q, K and V concatenated. The L1 tiles are [3, head_size]
+    # instead, because that is rope.cc's shape, so the transfers go through a
+    # reshaped view rather than either side giving up its own shape.
+    IN = air.tensor([num_heads * head_stride], bf16)
+    OUT = air.tensor([num_heads * head_stride], bf16)
 
-        @herd(
-            name="herd_0",
-            sizes=[1, herd_n],
-            operands=[arg0, arg1],
-        )
-        def herd_body(_tx, _ty, _sx, _sy, _l3_in, _l3_out):
+    with air.launch(name="rope") as launch:
 
-            one_const = ConstantOp(IntegerAttr.get(T.i32(), 1), None)
+        @launch.body
+        def _():
+            # One point per head; shape= pins the core count to what the
+            # predecessor asked for and the DSL strip-mines the rest.
+            with air.herd(
+                [range(0, num_heads * head_stride, head_stride)],
+                name="herd_0",
+                shape=(herd_n,),
+                link_with=EXTERN_OBJECT,
+            ) as h:
 
-            for t in range_(0, num_heads * 3 * head_size, herd_n * 3 * head_size):
-                l1_in_data = AllocOp(l1MemrefTyThreeByHeadSize, [], [])
-                l1_out_data = AllocOp(l1MemrefTyThreeByHeadSize, [], [])
-                l1_freq_pos_data = AllocOp(l1MemrefTySinCosBuf, [], [])
+                @h.body
+                def _(tx):
+                    o = tx * head_stride
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(3 * head_size),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [t, _ty])
+                    # [3, head_size] is rope.cc's shape -- Q, K and V as three
+                    # rows -- while the L3 region is flat, so the transfers go
+                    # through a reshaped view.
+                    l1_in = air.alloc([3, head_size], bf16, scope=h.private())
+                    l1_out = air.alloc([3, head_size], bf16, scope=h.private())
+                    l1_freq_pos = air.alloc([SINCOS_BUF_SIZE], bf16, scope=h.private())
+                    l1_sin = air.alloc([SINCOS_BUF_SIZE], bf16, scope=h.private())
+                    l1_cos = air.alloc([SINCOS_BUF_SIZE], bf16, scope=h.private())
 
-                dma_memcpy_nd(
-                    l1_in_data,
-                    _l3_in,
-                    src_offsets=[offset],
-                    src_sizes=[3 * head_size],
-                    src_strides=[1],
-                )
+                    air.ops.load(l1_in.reshape(head_stride), IN[o : o + head_stride])
 
-                # Copy input to output buffer (V passes through unchanged)
-                CallOp(vector_copy_func, [l1_in_data, l1_out_data])
+                    # V passes through unchanged, so the whole head is copied
+                    # and only Q and K are then rotated in place.
+                    vector_copy(l1_in, l1_out)
 
-                # Compute frequency * position on-chip
-                CallOp(freq_pos_func, [one_const, l1_freq_pos_data])
+                    # position = 1, as in the predecessor and its reference.
+                    freq_pos(1, l1_freq_pos)
+                    sinf(l1_freq_pos, l1_sin)
+                    cosf(l1_freq_pos, l1_cos)
 
-                # Compute sin/cos via Chebyshev polynomial
-                l1_sinf_vec = AllocOp(l1MemrefTySinCosBuf, [], [])
-                l1_cosf_vec = AllocOp(l1MemrefTySinCosBuf, [], [])
-                CallOp(sinf_poly_func, [l1_freq_pos_data, l1_sinf_vec])
-                CallOp(cosf_poly_func, [l1_freq_pos_data, l1_cosf_vec])
+                    # Q lives at offset 0 and K at head_size; V is left alone.
+                    shuffle_apply_rope(0, l1_cos, l1_sin, l1_out)
+                    shuffle_apply_rope(head_size, l1_cos, l1_sin, l1_out)
 
-                # Apply rotation to Q (offset 0) and K (offset head_size)
-                rope_offset_q = ConstantOp(IntegerAttr.get(T.i32(), 0), None)
-                CallOp(
-                    shuffle_apply_rope_func,
-                    [rope_offset_q, l1_cosf_vec, l1_sinf_vec, l1_out_data],
-                )
-                rope_offset_k = ConstantOp(IntegerAttr.get(T.i32(), head_size), None)
-                CallOp(
-                    shuffle_apply_rope_func,
-                    [rope_offset_k, l1_cosf_vec, l1_sinf_vec, l1_out_data],
-                )
+                    air.ops.store(l1_out.reshape(head_stride), OUT[o : o + head_stride])
 
-                dma_memcpy_nd(
-                    _l3_out,
-                    l1_out_data,
-                    dst_offsets=[offset],
-                    dst_sizes=[3 * head_size],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_sinf_vec)
-                DeallocOp(l1_cosf_vec)
-                DeallocOp(l1_freq_pos_data)
-                DeallocOp(l1_in_data)
-                DeallocOp(l1_out_data)
-                yield_([])
+                    # Released explicitly, all five together at the end, which
+                    # is where the predecessor's DeallocOps were. This is not
+                    # tidiness: left to place them itself the tracer frees each
+                    # buffer after the last use it observes, so l1_in goes right
+                    # after vector_copy while four more kernels are still
+                    # running on the others -- and the result is wrong on
+                    # hardware, a handful of Q/K rotation pairs coming back as
+                    # huge values or NaN. Measured, and measured both ways: the
+                    # only difference between the passing and failing runs is
+                    # these five lines. See the PR for the isolation.
+                    for buf in (l1_sin, l1_cos, l1_freq_pos, l1_in, l1_out):
+                        air.dealloc(buf)
 
-        herd_body.attributes["link_with"] = StringAttr.get("rope.o")
+    return launch
 
 
 if __name__ == "__main__":
@@ -230,11 +205,17 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(
-        args.num_heads, args.head_size, args.herd_n, INPUT_DATATYPE
-    )
+    launch = build_module(args.num_heads, args.head_size, args.herd_n)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -271,6 +252,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="rope",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -287,6 +269,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

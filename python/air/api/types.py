@@ -15,7 +15,23 @@ runner can never disagree about how a numpy dtype maps onto the device.
 import numpy as np
 from ml_dtypes import bfloat16
 
-__all__ = ["DType", "bf16", "f16", "f32", "i8", "i16", "i32", "dtype_of"]
+__all__ = [
+    "DType",
+    "bf16",
+    "f16",
+    "f32",
+    "i8",
+    "i16",
+    "i32",
+    "ui8",
+    "ui16",
+    "ui32",
+    "dtype_of",
+]
+# `require_signless` and `require_computable` are deliberately absent from
+# __all__: they are the guards the emission paths call, not something a kernel
+# author reaches for. All four callers import them by name, which __all__ does
+# not govern.
 
 
 class DType:
@@ -33,11 +49,38 @@ class DType:
     its npu1 config actually runs scalar (VECTOR_SIZE=0), so that advice is
     never exercised there.
 
-    Widths for f16, i8, i16 and i32 are extrapolated by element size and have
-    not been compiled; treat them as unverified.
+    i32 is 32-bit like f32 and behaves the same way: 8 lanes (256-bit) fails in
+    the AIE backend with "unable to legalize instruction: <8 x s32> G_ADD", so
+    it also defaults to 16. Measured on npu1 by segment_unroll, which was the
+    first example to vectorise an i32 elementwise body -- the previous value of
+    8 was an extrapolation by element size and was wrong.
+
+    Widths for i8 and i16 are still extrapolated that way and have not been
+    compiled; treat them as unverified.
+
+    The *unsigned* widths are genuinely dead: an unsigned buffer is forced onto
+    the scalar path even for a plain copy, because ``vector.transfer_read``
+    takes a padding value and that padding value is an ``arith.constant``. See
+    ``is_unsigned``.
+
+    f16 is not like that, and it would be wrong to lump the two together.
+    Arithmetic on f16 is refused (see ``computes``) but a plain copy is still
+    allowed and still vectorises, so f16's width *is* used -- an ``f16`` tile
+    copy emits ``vector<16xf16>``. That 16 is measured rather than
+    extrapolated: an f16 copy at 16 lanes is exact on 2048 of 2048 elements on
+    npu1, which is unsurprising, since a copy moves bit patterns and never asks
+    the core to interpret them as floats.
     """
 
-    def __init__(self, name, np_dtype, default_vector_width, is_float):
+    def __init__(
+        self,
+        name,
+        np_dtype,
+        default_vector_width,
+        is_float,
+        is_unsigned=False,
+        computes=True,
+    ):
         self.name = name
         self.np_dtype = np_dtype
         self.default_vector_width = default_vector_width
@@ -45,6 +88,19 @@ class DType:
         # for the ml_dtypes extension types, which would silently select the
         # integer arithmetic ops for a bf16 kernel.
         self.is_float = is_float
+        # MLIR's arith and linalg ops constrain their integer operands to be
+        # *signless* (`SignlessIntegerLike`), while `type_mapper` maps numpy's
+        # unsigned dtypes onto MLIR's signful `ui8`/`ui16`/`ui32`. So an
+        # unsigned buffer can be declared, allocated, moved and handed to an
+        # external kernel, but arithmetic on one does not verify -- see
+        # `require_signless`, which every emission path that builds an arith or
+        # linalg op calls.
+        self.is_unsigned = is_unsigned
+        # False when the AIE core has no instruction for this type, so a buffer
+        # of it can be declared, allocated and moved but not computed on. Same
+        # shape of restriction as `is_unsigned` above, enforced at the same four
+        # call sites -- see `require_computable`.
+        self.computes = computes
 
     @property
     def itemsize(self):
@@ -63,13 +119,40 @@ class DType:
 
 
 bf16 = DType("bf16", bfloat16, 16, is_float=True)
-f16 = DType("f16", np.float16, 16, is_float=True)
+# AIE2 and AIE2P have no fp16 instruction, scalar or vector -- bf16 is the
+# 16-bit float the hardware implements. Nothing in the toolchain refuses an f16
+# kernel, though: it compiles, runs, and returns the result of having read the
+# f16 bit patterns as bf16. Measured on npu1, `c[:] = a[:] + b[:]` over f16
+# buffers is wrong on 2048 of 2048 elements -- f16 512.5 is 0x6001, and 0x6001
+# read as bf16 is 1.0078125 x 2^65, which is what came back. Declared anyway so
+# the type can still describe f16 *data* being moved, which does work.
+f16 = DType("f16", np.float16, 16, is_float=True, computes=False)
 f32 = DType("f32", np.float32, 16, is_float=True)
 i8 = DType("i8", np.int8, 32, is_float=False)
 i16 = DType("i16", np.int16, 16, is_float=False)
-i32 = DType("i32", np.int32, 8, is_float=False)
+i32 = DType("i32", np.int32, 16, is_float=False)
 
-_BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32)}
+# Unsigned integers exist so that a kernel over `np.uint8` data can say so. The
+# alternative -- declaring i8 and passing uint8 arrays -- type-checks nowhere
+# and makes the emitted `func.func private @...` declaration disagree with the
+# C prototype the object file was compiled from.
+#
+# The vector width is *taken from* the signed counterpart rather than repeated,
+# so the two cannot drift. They were repeated as literals when these types
+# landed, and i32's 8 -> 16 correction in this PR immediately left ui32 holding
+# the width now known not to legalize -- which is the silent divergence that
+# stating them was meant to prevent. Unreachable while arithmetic on unsigned is
+# refused, and stated anyway so that relaxing that refusal does not also quietly
+# change the width.
+ui8 = DType("ui8", np.uint8, i8.default_vector_width, is_float=False, is_unsigned=True)
+ui16 = DType(
+    "ui16", np.uint16, i16.default_vector_width, is_float=False, is_unsigned=True
+)
+ui32 = DType(
+    "ui32", np.uint32, i32.default_vector_width, is_float=False, is_unsigned=True
+)
+
+_BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32)}
 
 
 def dtype_of(np_dtype):
@@ -79,3 +162,59 @@ def dtype_of(np_dtype):
     (``np.dtype("float32")``); the table is keyed by the former.
     """
     return _BY_NP.get(np_dtype) or _BY_NP.get(getattr(np_dtype, "type", None))
+
+
+def require_signless(dtype, what):
+    """Refuse ``what`` on an unsigned element type, naming why it cannot work.
+
+    MLIR spells signedness in the *operation*, not the type: ``arith.divsi`` and
+    ``arith.divui`` both take signless operands. So the whole ``arith`` dialect
+    -- and every named ``linalg`` contraction, whose region is built from it --
+    is constrained to signless integers, and a ``ui8`` operand fails
+    verification rather than being reinterpreted.
+
+    This is not a limitation air.api could paper over by bitcasting to the
+    signed sibling: that would silently change what ``max``, ``div`` and a
+    widening contraction compute. Refuse, and name the signed type to declare
+    instead.
+    """
+    if not dtype.is_unsigned:
+        return
+    raise NotImplementedError(
+        f"{what} is not supported for {dtype}: MLIR's arith and linalg ops "
+        f"require signless integer operands, and an unsigned numpy dtype maps "
+        f"onto the signful MLIR type '{dtype.name}'. An unsigned buffer can be "
+        f"allocated, moved with air.api.ops.load/store and air.channel, and "
+        f"passed to an air.extern kernel -- which is what the uint8 examples in "
+        f"this tree do. To compute on it in the DSL, declare it "
+        f"air.api.{dtype.name[1:]} instead and interpret the data yourself."
+    )
+
+
+def require_computable(dtype, what):
+    """Refuse ``what`` on an element type the AIE core cannot compute on.
+
+    The same shape of restriction as :func:`require_signless`, for a different
+    reason, and enforced at the same four call sites: a buffer of such a type
+    can be declared, allocated, moved with ``ops.load``/``store`` and
+    ``air.channel``, and handed to an ``air.extern`` kernel, but no arith or
+    linalg op may be built over it.
+
+    Today that is f16 alone. It matters because the failure it replaces is
+    silent: AIE2 has no fp16 instruction, and rather than refusing an f16
+    kernel the toolchain compiles one that reads the f16 bit patterns as bf16.
+    Nothing raises, nothing warns, and the numbers come back wrong -- which is
+    the failure mode this package exists to eliminate.
+    """
+    if dtype.computes:
+        return
+    raise NotImplementedError(
+        f"{what} is not supported for {dtype}: neither NPU generation has an "
+        f"fp16 instruction, scalar or vector, so there is nothing to lower it "
+        f"to. This is not caught downstream -- the backend reinterprets the "
+        f"f16 bits as bf16 and returns wrong numbers with no error at all, so "
+        f"it is refused here instead. Use air.api.bf16, which is the 16-bit "
+        f"float the hardware implements, or air.api.f32. An air.api.f16 buffer "
+        f"can still be declared and moved, so f16 *data* can be transferred "
+        f"and passed to an air.extern kernel."
+    )

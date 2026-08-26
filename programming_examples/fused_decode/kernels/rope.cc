@@ -238,4 +238,54 @@ void rope_compute(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
 #endif
   pseduo_rope(q, k, v, qkv, rope_w);
 }
+
+// Arm-switched entry for the HYBRID (one binary, two layer types). Identical to
+// rope_compute on an attention wave; a defined no-op on a ShortConv one.
+//
+// This is the reference's IS_ATTN branch, and it is load-bearing rather than an
+// optimisation. pseduo_rope normalises IN PLACE: qk_norm const_casts its input
+// and writes the normalised head back over it. On a ShortConv wave `qkv` is not
+// a QKV vector at all -- it is the first half of the assembled [B|C|X] that
+// shortconv_stage2 has still to copy across to the mixer tile -- so running
+// rope over it destroys B. Worse, a ShortConv layer's rope_w slab holds the
+// depthwise taps rather than a cos/sin/q-norm table, so B is overwritten with
+// noise rather than merely rescaled.
+//
+// Measured on device, 1-layer hybrid, layer 0 (ShortConv), against the packed
+// reference for B*X: rope enabled gave norm 0.81 vs 8.79 and cos 0.096; rope
+// pointed at a scratch buffer (ROPE_SCRATCH_QKV=1) gave cos 0.9999. That is the
+// whole of the hybrid's numerics failure.
+//
+// A separate symbol rather than a branch inside rope_compute: every shipped
+// model calls rope_compute with arm == 1 meaning "decode", so an `arm != 2`
+// test there would disable RoPE for all of them. Keeping the hybrid on its own
+// entry also leaves their emitted IR byte-identical.
+void rope_compute_hyb(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
+                      bf16 *restrict qkv, bf16 *restrict rope_w, int _arm) {
+  // arm: 0 = lm-head wave, 1 = ShortConv layer, 2 = attention layer.
+  if (_arm != 2) {
+    // The q/k/v channel puts still fire on every decode wave -- the CUs run
+    // every wave and starve otherwise -- so these buffers must be DEFINED even
+    // though every consumer discards them. Uninitialised L1 can hold NaN bit
+    // patterns, and a NaN through flash attention is harder to recognise than a
+    // zero. Zeroing is a few hundred cycles against a wave dominated by the
+    // ShortConv stage.
+    constexpr int VS = 16;
+    constexpr int Q_LEN =
+        NUM_KV_HEADS * (Q_HEADS_PER_GROUP + ATTN_GROUPS_PADDING) * DH;
+    constexpr int K_LEN = NUM_KV_HEADS * DH;
+    aie::vector<bf16, VS> z = aie::zeros<bf16, VS>();
+    AIE_PREPARE_FOR_PIPELINING for (int i = 0; i < Q_LEN; i += VS)
+        aie::store_v(q + i, z);
+    AIE_PREPARE_FOR_PIPELINING for (int i = 0; i < K_LEN; i += VS)
+        aie::store_v(k + i, z);
+    AIE_PREPARE_FOR_PIPELINING for (int i = 0; i < DV; i += VS)
+        aie::store_v(v + i, z);
+    return;
+  }
+#ifdef HAS_QKV_BIAS
+  add_q_k_v_bias(rope_w + DH, qkv);
+#endif
+  pseduo_rope(q, k, v, qkv, rope_w);
+}
 }

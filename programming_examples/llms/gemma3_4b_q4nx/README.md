@@ -1,5 +1,9 @@
 # GEMMA3-4B Q4NX prefill + decode on AMD NPU2
 
+This implementation reimplements the corresponding AMD NPU LLM design,
+originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM)
+team, using the higher-level abstractions of the MLIR-AIR dialect.
+
 Gemma3-4B (text) in MLIR-AIR, reproducing FastFlowLM's mechanism end to end on
 the NPU:
 

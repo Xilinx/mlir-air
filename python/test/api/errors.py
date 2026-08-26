@@ -16,7 +16,7 @@ from itertools import product
 
 from air import api as air
 from air.api import ops  # noqa: F401
-from air.api.types import bf16, f32
+from air.api.types import bf16, f16, f32, i8, i16, i32, ui8
 
 
 def expect(exc_types, label):
@@ -272,6 +272,37 @@ def _():
         v = air.alloc([64], bf16, scope=h.private())
         acc = air.alloc([32], f32, scope=h.private())
         ops.dot(m, v, acc=acc, transpose_b=True)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_transpose_b_wrong_axis
+# With transpose_b=True, B is [n, k] -- so the contracting axis is its *last*,
+# and passing an ordinary [k, n] operand is caught rather than contracted along
+# the wrong axis. The message says which convention is in force, because the
+# two spellings differ only in a keyword.
+# CHECK: ValueError: air.api.ops.dot shape mismatch for (m, k) @ (k, n) -> (m, n)
+# CHECK: with transpose_b=True, b is [n, k]
+@expect(ValueError, "dot_transpose_b_wrong_axis")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 64], bf16, scope=h.private())
+        b = air.alloc([64, 32], bf16, scope=h.private())  # [k, n], not [n, k]
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, b, acc=acc, transpose_b=True)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dot_transpose_b_acc_shape
+# CHECK: ValueError: air.api.ops.dot shape mismatch for (m, k) @ (k, n) -> (m, n): a . b is (32, 16) but acc is (32, 32)
+@expect(ValueError, "dot_transpose_b_acc_shape")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([32, 64], bf16, scope=h.private())
+        b = air.alloc([16, 64], bf16, scope=h.private())  # n = 16
+        acc = air.alloc([32, 32], f32, scope=h.private())
+        ops.dot(a, b, acc=acc, transpose_b=True)
 
     _trace(body)
 
@@ -568,13 +599,19 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: parallel_unimplemented
-# The unordered counterpart of air.sequential. Declared so that reaching for it
-# says what it would be, rather than raising AttributeError.
-# CHECK: NotImplementedError: air.api.parallel is not implemented yet
-@expect(NotImplementedError, "parallel_unimplemented")
+# CHECK-LABEL: TEST: a_parallel_loop_must_tile_its_extent
+# The same rule air.sequential applies, for the same reason: there are no
+# partial trips, so a step that does not divide the extent would send the last
+# one off the end of whatever it indexes. Worth pinning separately because the
+# trips of a parallel loop are slots of a spatial fan-out -- overrunning is a
+# put addressed to a destination that does not exist, not a short read.
+# CHECK: ValueError: air.parallel(0, 64, 24) does not tile its extent exactly
+@expect(ValueError, "a_parallel_loop_must_tile_its_extent")
 def _():
-    air.parallel(0, 64, 16)
+    # Generators are lazy: the bounds are checked when the first trip is
+    # requested, so the loop has to actually be entered.
+    for _ in air.parallel(0, 64, 24):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -658,18 +695,51 @@ def _():
     _staged(body)
 
 
-# air.launch, air.segment and air.herd each own an iteration space, and it is
-# written on the op that has it. A grid on air.segment is air.segment's own
-# `sizes` -- the unroll that copies the segment body across columns -- and is
-# not a way to spell the outer tiling. Saying so is the whole point: it used to
-# be silently redirected to the launch, which made air.segment's own iteration
-# space unreachable and taught the wrong model of the hierarchy.
-# CHECK-LABEL: TEST: segment_grid_is_not_the_launch_grid
-# CHECK: NotImplementedError: air.segment(<grid>) is the segment's own iteration space
-# CHECK: write air.launch(<grid>) and take the coordinates in the launch body
-@expect(NotImplementedError, "segment_grid_is_not_the_launch_grid")
+# The segment's iteration space is now emitted rather than refused, so the
+# positive cases live in hierarchy.py. What stays here is its arity rule, which
+# is the same one air.launch and air.herd follow: a body sees exactly as many
+# coordinates as the grid it was given, and a gridless segment sees none. The
+# message has to keep pointing at air.launch for the outer tiling, because
+# reaching for air.segment to spell that is the original conflation.
+# CHECK-LABEL: TEST: segment_body_arity
+# CHECK: TypeError: segment body takes 0 coordinate argument(s) but the segment iteration space is 1-D
+@expect(TypeError, "segment_body_arity")
 def _():
-    air.segment([range(0, 128, 64)])
+    A = air.tensor([128], bf16)
+    B = air.tensor([128], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment([range(2)], name="seg") as seg:
+
+                @seg.body
+                def _():
+                    pass
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: gridless_segment_body_arity
+# CHECK: TypeError: segment body takes 1 coordinate argument(s) but the segment iteration space is 0-D
+# CHECK-SAME: Outer tiling belongs on air.launch
+@expect(TypeError, "gridless_segment_body_arity")
+def _():
+    A = air.tensor([128], bf16)
+    B = air.tensor([128], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _(u0):
+                    pass
+
+    launch.mlir()
 
 
 # CHECK-LABEL: TEST: segment_grid_too_deep
@@ -748,9 +818,24 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: trailing_squeeze_does_not_excuse_a_real_extent
+# A trailing unit dimension is squeezed so a reduction's [m, 1] tile can reach
+# a rank-1 [m] slice. That is about *unit* axes only: a trailing axis with a
+# real extent still has to match, or the transfer would silently move a
+# different number of elements.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.store
+@expect(ValueError, "trailing_squeeze_does_not_excuse_a_real_extent")
+def _():
+    def body(h, tx, ty, A, B, C):
+        o = air.alloc([16, 4], bf16, scope=h.private())
+        ops.store(o, C[0:16, 0:1])
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: staged_transfer_shape_mismatch
-# Only *leading* unit dimensions are squeezed, so a genuine mismatch still
-# fails rather than being reshaped into something plausible.
+# Only *unit* dimensions are squeezed, and only from the ends, so a genuine
+# mismatch still fails rather than being reshaped into something plausible.
 # CHECK: ValueError: transfer shape mismatch in air.api.ops.load
 @expect(ValueError, "staged_transfer_shape_mismatch")
 def _():
@@ -779,118 +864,150 @@ def _():
 
 
 # ---------------------------------------------------------------------------
-# Micro-tiled (packed) layouts
+# Blocked layouts
 #
-# Every one of these is a case where guessing would produce a kernel that runs
-# and is silently wrong -- a mismatched micro-tile contracts the wrong elements,
-# and a whole-buffer drain copies a tile still in micro-tile order.
+# A tile is laid out block-first by reshaping and transposing the region being
+# moved, so the failures here are numpy's failures: a reshape with no view, a
+# permutation that is not one, a transfer whose two ends hold different numbers
+# of elements. Every one of them would otherwise produce a kernel that runs and
+# is silently wrong -- a mismatched block contracts the wrong elements, and a
+# whole-buffer drain copies a tile still in block order.
 # ---------------------------------------------------------------------------
 
 
-def _mm():
-    return air.micro_tile(m=4, k=8, n=4)
+# The AIE2 bf16 block is 4x8 by 8x4. Written out rather than generated, so the
+# shapes below say what they are.
+def _a(M, K, m=4, k=8):
+    return [1, 1, K // k, M // m, m, k]
 
 
-# CHECK-LABEL: TEST: micro_tile_does_not_divide
-# CHECK: ValueError: operand A's M extent 30 is not a multiple of the micro-tile m=4
-@expect(ValueError, "micro_tile_does_not_divide")
-def _():
-    _mm().a(30, 32)
+def _b(K, N, k=8, n=4):
+    return [1, 1, N // n, K // k, k, n]
 
 
-# CHECK-LABEL: TEST: packed_buffer_no_whole_drain
-# A whole-buffer store emits `[] [] []`, a contiguous read, which would copy the
-# tile still micro-tiled. The unpack *is* the access pattern.
-# CHECK: TypeError: air.api.ops.store cannot drain a micro-tiled buffer whole
-@expect(TypeError, "packed_buffer_no_whole_drain")
+def _c(M, N, m=4, n=4, lead=(1, 1)):
+    return list(lead) + [N // n, M // m, m, n]
+
+
+# CHECK-LABEL: TEST: reshape_element_count_must_match
+# numpy's rule: a reshape rearranges, it never adds or drops elements.
+# CHECK: ValueError: cannot reshape a (30, 32) view (960 elements)
+@expect(ValueError, "reshape_element_count_must_match")
 def _():
     def body(seg, A, C):
-        mm = _mm()
+        l2 = air.alloc([32, 32], bf16, scope=seg.private())
+        l2[0:30, 0:32].reshape(1, 1, 8, 4, 4, 8)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: reshape_must_be_a_view
+# A reshape that no stride can describe would need a copy, and a hidden copy
+# here is a hidden L2 transfer. numpy copies silently; this refuses.
+# CHECK: ValueError: cannot reshape a (4, 8) view with strides
+@expect(ValueError, "reshape_must_be_a_view")
+def _():
+    def body(seg, A, C):
+        l2 = air.alloc([32, 32], bf16, scope=seg.private())
+        # Rows 0:4 of a 32-wide buffer are not contiguous with each other, so
+        # the 32 elements they hold cannot be walked as one axis.
+        l2[0:4, 0:8].reshape(32)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: transpose_takes_a_full_permutation
+# As in numpy: transpose reorders every axis, so a partial list is an error
+# rather than an implied identity on the rest.
+# CHECK: ValueError: transpose(1, 0) is not a permutation of a rank-4 view
+@expect(ValueError, "transpose_takes_a_full_permutation")
+def _():
+    def body(seg, A, C):
+        l2 = air.alloc([32, 32], bf16, scope=seg.private())
+        l2[0:32, 0:32].reshape(8, 4, 4, 8).transpose(1, 0)
+
+    _staged(body)
+
+
+# CHECK-LABEL: TEST: blocked_buffer_no_whole_drain
+# A whole-buffer store emits `[] [] []`, a contiguous read, which would copy the
+# tile still in block order. The unpack *is* the access pattern, so the source
+# has to be subscripted and permuted for one to exist.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.store
+@expect(ValueError, "blocked_buffer_no_whole_drain")
+def _():
+    def body(seg, A, C):
         l2 = air.alloc([1, 1, 32, 32], bf16, scope=seg.private())
-        acc = air.alloc(mm.c(32, 32), bf16, scope=seg.shared())
+        acc = air.alloc(_c(32, 32), bf16, scope=seg.shared())
         ops.store(acc, l2[0, 0, :, :])
 
     _staged(body)
 
 
-# CHECK-LABEL: TEST: packed_load_needs_a_region
-# CHECK: TypeError: air.api.ops.load into a micro-tiled buffer needs a source *region*
-@expect(TypeError, "packed_load_needs_a_region")
+# CHECK-LABEL: TEST: blocked_load_shape_must_match
+# Filling a blocked tile from an unpermuted region moves the right number of
+# elements in the wrong order, so the shapes are what catch it.
+# CHECK: ValueError: transfer shape mismatch in air.api.ops.load
+@expect(ValueError, "blocked_load_shape_must_match")
 def _():
     def body(h, tx, ty, A, B, C):
-        l1 = air.alloc(_mm().a(32, 16), bf16, scope=h.private())
+        l1 = air.alloc(_a(32, 16), bf16, scope=h.private())
         other = air.alloc([1, 1, 32, 32], bf16, scope=h.private())
         ops.load(l1, other)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: packed_operands_must_share_a_micro_tile
-# CHECK: ValueError: air.api.ops.dot needs one micro-tile across all three operands
-@expect(ValueError, "packed_operands_must_share_a_micro_tile")
+# CHECK-LABEL: TEST: blocked_operands_must_share_a_block
+# CHECK: ValueError: air.api.ops.dot block mismatch: a x b is 4x8 per block
+@expect(ValueError, "blocked_operands_must_share_a_block")
 def _():
     def body(h, tx, ty, A, B, C):
-        a = air.alloc(air.micro_tile(4, 8, 4).a(32, 16), bf16, scope=h.private())
-        b = air.alloc(air.micro_tile(4, 8, 8).b(16, 32), bf16, scope=h.private())
-        c = air.alloc(air.micro_tile(4, 8, 4).c(32, 32), bf16, scope=h.private())
+        a = air.alloc(_a(32, 16), bf16, scope=h.private())
+        b = air.alloc(_b(16, 32, n=8), bf16, scope=h.private())
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
         ops.dot(a, b, acc=c)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: packed_operand_roles_must_match
-# CHECK: ValueError: air.api.ops.dot expects b to be a micro-tiled B operand
-@expect(ValueError, "packed_operand_roles_must_match")
+# CHECK-LABEL: TEST: blocked_operands_must_agree_on_k
+# Passing an A-shaped tile where B belongs: its last two axes read as (k, n),
+# so the k it offers is not the k a offers.
+# CHECK: ValueError: air.api.ops.dot block mismatch: a's trailing axes are 4x8, so it offers k=8
+@expect(ValueError, "blocked_operands_must_agree_on_k")
 def _():
     def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        b = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        a = air.alloc(_a(32, 16), bf16, scope=h.private())
+        b = air.alloc(_a(32, 16), bf16, scope=h.private())
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
         ops.dot(a, b, acc=c)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: packed_contraction_extents_must_agree
+# CHECK-LABEL: TEST: blocked_contraction_extents_must_agree
 # CHECK: ValueError: air.api.ops.dot shape mismatch: a is 32x16 and b is 32x32
-@expect(ValueError, "packed_contraction_extents_must_agree")
+@expect(ValueError, "blocked_contraction_extents_must_agree")
 def _():
     def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        b = air.alloc(mm.b(32, 32), bf16, scope=h.private())
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
+        a = air.alloc(_a(32, 16), bf16, scope=h.private())
+        b = air.alloc(_b(32, 32), bf16, scope=h.private())
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
         ops.dot(a, b, acc=c)
 
     _trace(body)
 
 
-# CHECK-LABEL: TEST: unpacked_operand_in_packed_dot
-# CHECK: TypeError: air.api.ops.dot got rank-6 operands
-@expect(TypeError, "unpacked_operand_in_packed_dot")
+# CHECK-LABEL: TEST: fill_takes_a_scalar
+# ops.fill exists so that zeroing an accumulator is one linalg.fill rather than
+# a six-deep scalar loop nest; an expression belongs in an assignment.
+# CHECK: TypeError: air.api.ops.fill takes a scalar
+@expect(TypeError, "fill_takes_a_scalar")
 def _():
     def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        a = air.alloc(mm.a(32, 16), bf16, scope=h.private())
-        b = air.alloc([1, 1, 8, 2, 8, 4], bf16, scope=h.private())
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
-        ops.dot(a, b, acc=c)
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: no_elementwise_expression_on_packed
-# The elements are not in row-major order, so an elementwise expression over a
-# packed buffer would not mean what it reads like.
-# CHECK: NotImplementedError: only a scalar fill is supported on a micro-tiled buffer
-@expect(NotImplementedError, "no_elementwise_expression_on_packed")
-def _():
-    def body(h, tx, ty, A, B, C):
-        mm = _mm()
-        c = air.alloc(mm.c(32, 32), bf16, scope=h.private())
-        d = air.alloc(mm.c(32, 32), bf16, scope=h.private())
-        c[:] = d[:]
+        c = air.alloc(_c(32, 32), bf16, scope=h.private())
+        ops.fill(c, [0.0])
 
     _trace(body)
 
@@ -918,15 +1035,21 @@ def _():
     _staged(body)
 
 
-# CHECK-LABEL: TEST: shared_alloc_needs_a_packed_shape
-# The per-core L1 charge depends on knowing which leading dimensions are the
-# herd; a plain shape does not say, and guessing either way misreports the
-# budget.
-# CHECK: NotImplementedError: <segment>.shared() currently requires a micro-tiled shape
-@expect(NotImplementedError, "shared_alloc_needs_a_packed_shape")
+# CHECK-LABEL: TEST: shared_alloc_leaves_room_for_a_tile
+# A shared buffer's leading dimensions are the cores, one per herd axis. The
+# check waits for a herd because nothing at segment scope knows how many that
+# is -- and here the 2-D herd would claim both of a rank-2 buffer's axes,
+# leaving each core a slab of nothing.
+# CHECK: ValueError: air.alloc([4, 4], air.api.bf16) is herd-shared and the herd
+@expect(ValueError, "shared_alloc_leaves_room_for_a_tile")
 def _():
     def body(seg, A, C):
-        air.alloc([1, 1, 32, 32], bf16, scope=seg.shared())
+        air.alloc([4, 4], bf16, scope=seg.shared())
+        with air.herd([range(2), range(2)], name="h") as h:
+
+            @h.body
+            def _(tx, ty):
+                pass
 
     _staged(body)
 
@@ -992,12 +1115,25 @@ def _():
 
 
 # CHECK-LABEL: TEST: channel_type_unsupported
-# Accepting channel_type and ignoring it would compile a cascade request as a
-# DMA stream -- the silent-wrongness this package exists to avoid.
-# CHECK: NotImplementedError: air.api does not implement channel_type=
+# npu_cascade is implemented now, because it is the one type this package can
+# gate on hardware. The rest are still refused: accepting channel_type and
+# ignoring it would compile an mmio request as a DMA stream, which is the
+# silent-wrongness this package exists to avoid, and each of them has its own
+# lowering and verifier rules.
+# CHECK: NotImplementedError: air.channel(channel_type='npu_mmio') is not implemented
 @expect(NotImplementedError, "channel_type_unsupported")
 def _():
-    air.channel("C", channel_type="npu_cascade")
+    air.channel("C", channel_type="npu_mmio")
+
+
+# CHECK-LABEL: TEST: channel_type_with_broadcast
+# A cascade is a point-to-point link between neighbouring cores, so there is
+# nothing for a broadcast shape to describe and asking for both is a mistake
+# about what the channel is rather than a combination to resolve.
+# CHECK: ValueError: air.channel takes broadcast_shape= or channel_type=, not both
+@expect(ValueError, "channel_type_with_broadcast")
+def _():
+    air.channel("C", size=[2], broadcast_shape=[4], channel_type="npu_cascade")
 
 
 # CHECK-LABEL: TEST: channel_indices_without_size
@@ -1041,13 +1177,22 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: channel_l3_needs_segment
-# Reaching L3 needs a shim DMA allocation, which only a segment brings. Measured
-# on npu1: the same design with its put hoisted out of the segment fails in
-# air-to-aie with "failed to link to any shim dma allocation", so this raises at
-# the call site instead, naming the fix.
-# CHECK: RuntimeError: air.channel.put on an L3 tensor has to be inside an air.segment
-@expect(RuntimeError, "channel_l3_needs_segment")
+# CHECK-LABEL: TEST: channel_l3_in_a_herd_needs_segment
+# Where an L3 endpoint may sit is three separate facts, and this rule used to
+# state only one of them -- "it needs a segment" -- which was both too weak and
+# too strong. Measured:
+#
+#   * outside air.launch entirely: "failed to link to any shim dma allocation";
+#   * at launch scope with no segment: fine, and data_transfer_transpose/channel
+#     is written that way and passes on npu1;
+#   * inside a herd with no segment: aircc does not diagnose it, it *crashes*,
+#     on a dependencyGraph index assertion in air-dependency.
+#
+# This pins the third. Crashing the compiler is the worst of the three failure
+# modes to inherit, so it raises at the call site with both ways out.
+# CHECK: RuntimeError: air.channel.put on an L3 tensor inside a herd body needs an air.segment
+# CHECK-SAME: dependencyGraph index assertion
+@expect(RuntimeError, "channel_l3_in_a_herd_needs_segment")
 def _():
     ch = air.channel("C")
 
@@ -1129,81 +1274,735 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: channel_pack_not_a_packed_shape
-# pack= takes a shape from air.micro_tile(...).a/.b, not a plain list: the
-# micro-tile is what the walk is derived from, and a bare list carries none.
-# CHECK: TypeError: air.channel.put(pack=...) takes a packed shape from air.micro_tile
-@expect(TypeError, "channel_pack_not_a_packed_shape")
-def _():
-    ch = air.channel("P")
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([16, 8], bf16, scope=h.private())
-        ch.put(buf[0:16, 0:8], pack=[2, 2, 8, 8])
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_needs_a_region
-# The pack reorders a *slice* of a flat staging buffer, so there has to be one
-# to reorder; a whole buffer carries no pattern to rewrite.
-# CHECK: TypeError: air.channel.put(pack=...) needs a *region* to walk
-@expect(TypeError, "channel_pack_needs_a_region")
-def _():
-    ch = air.channel("Q")
-    mm = air.micro_tile(1, 16, 8)
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([16, 8], bf16, scope=h.private())
-        ch.put(buf, pack=mm.b(16, 8, lead=()))
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_c_operand
-# A C accumulator unpacks the other way round -- the pattern belongs on the
-# packed buffer, not on the channel -- so asking a channel to pack one raises
-# instead of emitting a walk that would drain it in the wrong order.
-# CHECK: NotImplementedError: air.channel.put(pack=...) packs an A or B operand
-@expect(NotImplementedError, "channel_pack_c_operand")
-def _():
-    ch = air.channel("R")
-    mm = air.micro_tile(1, 16, 8)
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([16, 8], bf16, scope=h.private())
-        ch.put(buf[0:16, 0:8], pack=mm.c(16, 8, lead=()))
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_wrong_rank
-# The region has to end in the operand's two logical axes; a rank-1 slice has
-# only one, so there is nothing to split into micro-tiles.
-# CHECK: ValueError: air.channel.put(pack=...) needs a region of rank 2 for a B operand
-@expect(ValueError, "channel_pack_wrong_rank")
-def _():
-    ch = air.channel("S")
-    mm = air.micro_tile(1, 16, 8)
-
-    def body(h, tx, ty, A, B, C):
-        buf = air.alloc([128], bf16, scope=h.private())
-        ch.put(buf[0:128], pack=mm.b(16, 8, lead=()))
-
-    _trace(body)
-
-
-# CHECK-LABEL: TEST: channel_pack_indivisible
-# The region's extents must be whole micro-tiles: 20 is not a multiple of the
-# k=16 the buffer would be packed with.
-# CHECK: ValueError: operand B's K extent 20 is not a multiple of the micro-tile k=16
-@expect(ValueError, "channel_pack_indivisible")
+# CHECK-LABEL: TEST: transpose_axes_must_be_a_permutation
+# A repeated axis would visit some elements twice and others never, which is
+# not a view of anything -- numpy rejects it for the same reason.
+# CHECK: ValueError: transpose(0, 0, 2, 3) is not a permutation of a rank-4 view
+@expect(ValueError, "transpose_axes_must_be_a_permutation")
 def _():
     ch = air.channel("T")
-    mm = air.micro_tile(1, 16, 8)
+
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([16, 8], bf16, scope=h.private())
+        ch.put(buf[0:16, 0:8].reshape(2, 8, 1, 8).transpose(0, 0, 2, 3))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: channel_put_block_must_divide
+# The region's extents have to be whole blocks: 20 is not a multiple of the
+# k=16 it would be split into, so the split has no view.
+# CHECK: ValueError: cannot reshape a (20, 8) view (160 elements)
+@expect(ValueError, "channel_put_block_must_divide")
+def _():
+    ch = air.channel("T")
 
     def body(h, tx, ty, A, B, C):
         buf = air.alloc([20, 8], bf16, scope=h.private())
-        ch.put(buf[0:20, 0:8], pack=mm.b(20, 8, lead=()))
+        ch.put(buf[0:20, 0:8].reshape(20 // 16, 16, 1, 8).transpose(2, 0, 1, 3))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_elementwise_operator
+# An unsigned tile can be copied but not computed on: every arith op is
+# constrained to signless integer operands, so `a[:] + b[:]` on ui8 would build
+# an arith.addi that does not verify. Refused at the call site, naming i8.
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+# CHECK-SAME: declare it air.api.i8 instead
+@expect(NotImplementedError, "unsigned_elementwise_operator")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        b = air.alloc([64], ui8, scope=h.private())
+        a[:] = a[:] + b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_fill
+# A fill is not a copy either: the broadcast scalar is an arith.constant, which
+# has no signful form -- `arith.constant 0 : ui8` fails with "integer return
+# type must be signless".
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_fill")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        a[:] = 0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_dot
+# A named linalg contraction builds its region out of arith ops -- arith.extsi
+# then arith.muli for an integer operand -- so the verifier failure would land
+# inside the op rather than at this call.
+# CHECK: NotImplementedError: air.api.ops.dot's a operand is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_dot")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], ui8, scope=h.private())
+        b = air.alloc([16, 16], ui8, scope=h.private())
+        acc = air.alloc([16, 16], i32, scope=h.private())
+        ops.dot(a, b, acc=acc)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: unsigned_extern_scalar
+# The *buffer* arguments of an extern kernel may be unsigned -- that is the
+# whole point of the type -- but a scalar argument is materialised by
+# arith.constant, so it may not be. Caught at the declaration rather than at the
+# first call, which is where the constant would actually be built.
+# CHECK: NotImplementedError: an air.extern scalar argument is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_extern_scalar")
+def _():
+    air.extern("k", link_with="k.o", scalars=[ui8])
+
+
+# CHECK-LABEL: TEST: select_on_a_bool
+# The trap this message exists for. `==` and `!=` are NOT overloaded on buffer
+# expressions -- overloading __eq__ would make every expression unhashable and
+# would change what `expr == expr` means for ordinary Python -- so `a[:] ==
+# b[:]` is an identity comparison that evaluates to a plain bool long before
+# select is called. Refusing it by name is the only way that difference does not
+# pass silently as `select(False, ...)`.
+# CHECK: TypeError: air.api.ops.select got a plain bool as its condition.
+@expect(TypeError, "select_on_a_bool")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        ops.select(a[:] == b[:], a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: select_on_a_value
+# A value expression is not a predicate. Its result type is the element type,
+# not i1, so arith.select would fail to verify well downstream of the mistake.
+# CHECK: TypeError: air.api.ops.select expects a comparison as its condition
+@expect(TypeError, "select_on_a_value")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        ops.select(a[:] + b[:], a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: comparison_of_two_scalars
+# A comparison between two scalars has no shape for the emitter to give it, and
+# it is a Python-level constant the caller should have folded themselves.
+# CHECK: ValueError: air.api.ops.equal needs at least one buffer operand
+@expect(ValueError, "comparison_of_two_scalars")
+def _():
+    ops.equal(1.0, 2.0)
+
+
+# CHECK-LABEL: TEST: unsigned_select
+# Comparisons and select go through arith like every other operator, so an
+# unsigned buffer is refused for the same reason it is refused for `+`:
+# arith.cmpi takes signless operands.
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+@expect(NotImplementedError, "unsigned_select")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        a[:] = ops.select(a[:] >= 1, a[:], 1)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: bitwise_on_a_float_buffer
+# The bitwise operators are the DSL's first integer-only ones. MLIR has
+# arith.andi and no floating-point counterpart, so this cannot be coerced --
+# and the message says which operator and why rather than the generic
+# "not supported for dtype float", because & on a float buffer is usually a
+# dtype mistake upstream rather than a wrong choice of operator.
+# CHECK: NotImplementedError: the bitwise operator 'and' is integer-only
+@expect(NotImplementedError, "bitwise_on_a_float_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        a[:] = a[:] & b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: bitwise_on_an_unsigned_buffer
+# Unsigned is refused earlier and for a different reason: arith takes signless
+# operands, so no operator at all reaches the emitter for a ui8 buffer.
+# CHECK: NotImplementedError: an elementwise operator or broadcast scalar (a plain copy, dst[:] = src[:], is) is not supported for air.api.ui8
+@expect(NotImplementedError, "bitwise_on_an_unsigned_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], ui8, scope=h.private())
+        b = air.alloc([64], ui8, scope=h.private())
+        a[:] = a[:] ^ b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_narrowing_int
+# Refused on evidence, not on principle: measured on npu1, the vectorised
+# arith.trunci saturates while the scalar one wraps, and the emitter chooses
+# between them from the tile size. Accepting this would make the same source
+# compute two different things depending on a tile shape.
+# CHECK: NotImplementedError: air.api.ops.cast will not narrow air.api.i32 to air.api.i16
+@expect(NotImplementedError, "cast_narrowing_int")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i16, scope=h.private())
+        c[:] = ops.cast(a[:], i16)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_narrowing_int_clamped_to_wider_bounds
+# The clamped exception is about the bounds, not the presence of a clamp. These
+# bounds do not fit i8, so values the two trunci paths disagree about can still
+# reach the cast and the refusal stands.
+# CHECK: NotImplementedError: air.api.ops.cast will not narrow air.api.i32 to air.api.i8
+@expect(NotImplementedError, "cast_narrowing_int_clamped_to_wider_bounds")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i8, scope=h.private())
+        c[:] = ops.cast(ops.minimum(ops.maximum(a[:], -200), 127), i8)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_narrowing_int_clamped_on_one_side
+# A single-sided clamp leaves the other side unbounded, so it proves nothing.
+# CHECK: NotImplementedError: air.api.ops.cast will not narrow air.api.i32 to air.api.i8
+@expect(NotImplementedError, "cast_narrowing_int_clamped_on_one_side")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i8, scope=h.private())
+        c[:] = ops.cast(ops.minimum(a[:], 127), i8)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_on_a_float_buffer
+# Integer-only for the same reason as the bitwise operators, and named the same
+# way. The message also says what to write instead, because scaling a float by a
+# power of two is a thing people reach for << to express.
+# CHECK: NotImplementedError: the shift operator '>>' is integer-only
+@expect(NotImplementedError, "shift_on_a_float_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        a[:] = a[:] >> 2
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_by_a_negative_count
+# Python raises ValueError here. MLIR would make it poison instead, which is
+# silent and survives into the backend as a wrong answer rather than a
+# diagnostic, so this is refused where it is written.
+# CHECK: ValueError: negative shift count -1 in '>>'
+@expect(ValueError, "shift_by_a_negative_count")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        a[:] = a[:] >> -1
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_by_the_operand_width
+# The boundary, not an arbitrary large number: 32 is the first count an i32
+# cannot take. Python would give 0 or -1; LLVM says poison.
+# CHECK: ValueError: shift count 32 is not less than the width of air.api.i32
+@expect(ValueError, "shift_by_the_operand_width")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        a[:] = a[:] >> 32
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_by_a_folded_index_expression
+# "Constant" has to mean "folds to a constant", not "was typed as an int
+# literal". Index arithmetic over herd coordinates is ordinary in a kernel
+# body, and `tx - tx + 32` reaches the emitter as a literal arith.constant 32 --
+# by then indistinguishable from having been written as 32, and just as much
+# poison. Reading it back needs as_const(): IndexExpr implements neither
+# equality nor int conversion against a Python int, so an isinstance test alone
+# classifies every index expression as runtime and lets the folded ones past.
+# CHECK: ValueError: shift count 32 is not less than the width of air.api.i32
+@expect(ValueError, "shift_by_a_folded_index_expression")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        a[:] = a[:] >> (tx - tx + 32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: shift_width_is_per_dtype
+# i8 runs out eight times sooner, so the check reads the operand's own width
+# rather than assuming 32.
+# CHECK: ValueError: shift count 8 is not less than the width of air.api.i8
+@expect(ValueError, "shift_width_is_per_dtype")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i8, scope=h.private())
+        a[:] = a[:] << 8
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_same_width_float
+# bf16 and f16 are both two bytes, so the conversion is neither a widening nor
+# a narrowing and arith has no op for it.
+# CHECK: NotImplementedError: air.api.ops.cast cannot convert air.api.bf16 to air.api.f16 directly
+@expect(NotImplementedError, "cast_same_width_float")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], bf16, scope=h.private())
+        c = air.alloc([16, 16], f16, scope=h.private())
+        c[:] = ops.cast(a[:], f16)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_unsigned
+# A conversion is an arith op like any other, so the signless rule that governs
+# the operators governs it too.
+# CHECK: NotImplementedError: air.api.ops.cast is not supported for air.api.ui8
+@expect(NotImplementedError, "cast_unsigned")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], ui8, scope=h.private())
+        c = air.alloc([16, 16], i32, scope=h.private())
+        c[:] = ops.cast(a[:], i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_of_a_bare_scalar
+# There is no buffer under it, so there is no source type to convert from --
+# and the constant would have been built in the target type anyway.
+# CHECK: TypeError: air.api.ops.cast needs an expression containing at least one buffer
+@expect(TypeError, "cast_of_a_bare_scalar")
+def _():
+    ops.cast(1.0, i32)
+
+
+# CHECK-LABEL: TEST: cast_to_a_non_dtype
+# The second argument is an element type, not a string or a numpy dtype. Named
+# here rather than left to fail later inside the emitter.
+# CHECK: TypeError: air.api.ops.cast needs an air.api element type as its second argument
+@expect(TypeError, "cast_to_a_non_dtype")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], f32, scope=h.private())
+        ops.cast(a[:], "i32")
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dtype_mismatch_without_a_cast_still_raises
+# ops.cast is the *only* way to change element type in an expression; a bare
+# mismatch is still the error it always was, rather than an implicit
+# conversion. The message names the region's type, which without a cast in the
+# tree is the destination's.
+# CHECK: ValueError: dtype mismatch in elementwise assignment: destination is air.api.i32 but operand is air.api.f32
+@expect(ValueError, "dtype_mismatch_without_a_cast_still_raises")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], f32, scope=h.private())
+        c = air.alloc([16, 16], i32, scope=h.private())
+        c[:] = a[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: dtype_mismatch_below_a_cast
+# The leaves under a cast are checked against the cast's *source* type, not
+# against the destination of the assignment. Here the cast converts from f32,
+# so an i32 buffer sitting beside it in the same region is the mismatch.
+# CHECK: ValueError: dtype mismatch in elementwise assignment: the cast converts from air.api.f32 but operand is air.api.i32
+@expect(ValueError, "dtype_mismatch_below_a_cast")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([16, 16], f32, scope=h.private())
+        b = air.alloc([16, 16], i32, scope=h.private())
+        c = air.alloc([16, 16], i32, scope=h.private())
+        c[:] = ops.cast(a[:] + b[:], i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_of_a_comparison
+# A comparison evaluates to i1, not to an element type, so there is nothing to
+# convert from -- and a conversion op applied to a vector<Wxi1> would fail the
+# verifier well downstream of the mistake. This is the one interaction between
+# ops.select and ops.cast that needs naming.
+# CHECK: TypeError: air.api.ops.cast got a comparison, which is a predicate rather than a value
+@expect(TypeError, "cast_of_a_comparison")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        b = air.alloc([64], f32, scope=h.private())
+        c = air.alloc([64], i32, scope=h.private())
+        c[:] = ops.cast(a[:] > b[:], i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: cast_of_a_predicate_only_expression
+# ops.select allows every buffer to sit in the *predicate*, choosing between
+# two scalars -- so the expression has buffers but no element type of its own,
+# and takes one from whatever surrounds it. That is a different situation from
+# a bare scalar and gets a different message, because the fix is different:
+# cast the operands rather than the select.
+# CHECK: TypeError: air.api.ops.cast cannot convert this expression: its buffers appear only in a comparison
+@expect(TypeError, "cast_of_a_predicate_only_expression")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], f32, scope=h.private())
+        c = air.alloc([64], i32, scope=h.private())
+        c[:] = ops.cast(ops.select(a[:] > 0.0, 1, 2), i32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_on_an_integer_buffer
+# fma exists to avoid the intermediate rounding, and integer multiply-add has
+# none to avoid -- so this is not a gap to be filled later, and the message
+# says so and names the spelling that does work rather than implying that
+# an arith.fmai might arrive one day.
+# CHECK: NotImplementedError: air.api.ops.fma is float-only
+@expect(NotImplementedError, "fma_on_an_integer_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        b = air.alloc([64], i32, scope=h.private())
+        a[:] = ops.fma(2, a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: exp_on_an_integer_buffer
+# exp and rsqrt are float-only: there is no integer math.exp, and an integer
+# buffer reaching one is a mistake rather than something to coerce.
+# CHECK: NotImplementedError: elementwise operator 'exp' is not supported for integer buffers
+@expect(NotImplementedError, "exp_on_an_integer_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], i32, scope=h.private())
+        c = air.alloc([64], i32, scope=h.private())
+        c[:] = ops.exp(a[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_has_no_scalar_form
+# The emitter's usual fallback -- drop to a scalar loop when the innermost
+# dimension is not a multiple of the vector width -- is the *unsafe* direction
+# here, exactly as it is for math.tanh: AIE2 has no scalar fma instruction, so
+# math.fma reaches the backend and fails to legalize. Unlike tanh, which is
+# emitted anyway and fails hours later with an LLVM virtual register in the
+# message, this is refused at the point where the tile shape can be named.
+# CHECK: NotImplementedError: air.api.ops.fma has no scalar form on AIE2
+@expect(NotImplementedError, "fma_has_no_scalar_form")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([60], bf16, scope=h.private(), vector=16)
+        b = air.alloc([60], bf16, scope=h.private(), vector=16)
+        a[:] = ops.fma(2.0, a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_of_a_comparison
+# A comparison is i1, not a value, so it can be selected between but not
+# multiplied. Caught at the call site: letting it through would build an
+# arith op over a predicate and fail in the MLIR verifier, which names an SSA
+# value rather than the argument at fault.
+# CHECK: TypeError: air.api.ops.fma got a comparison as its second argument
+@expect(TypeError, "fma_of_a_comparison")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.fma(2.0, a[:] > b[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_of_a_scalar
+# Nothing supplies an axis to reduce over. Caught by the operand type check
+# rather than the leaf check -- a bare float never becomes a BufferExpr at all.
+# CHECK: TypeError: air.api.ops.reduce_add expects a buffer slice, got float
+@expect(TypeError, "reduce_of_a_scalar")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.reduce_add(2.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_of_a_comparison
+# A comparison is i1, a predicate rather than a value, so there is nothing
+# meaningful to sum or maximise.
+# CHECK: TypeError: air.api.ops.reduce_add got a comparison
+@expect(TypeError, "reduce_of_a_comparison")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        b[:] = ops.reduce_add(a[:] > 0.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_of_only_scalars
+# Nothing supplies a shape, so there is no loop to build.
+# CHECK: ValueError: air.api.ops.fma needs at least one buffer operand
+@expect(ValueError, "fma_of_only_scalars")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.fma(2.0, 3.0, 4.0)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_of_a_reduce
+# The inner reduction has already collapsed the innermost axis to 1, so the
+# outer one would reduce a single element. Reducing a second axis is a
+# different feature, and the message says so rather than silently no-opping.
+# CHECK: NotImplementedError: air.api.ops.reduce_add cannot reduce a reduction
+@expect(NotImplementedError, "reduce_of_a_reduce")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        b[:] = ops.reduce_add(ops.reduce_add(a[:]))
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: fma_of_a_tensor_slice
+# An L3 tensor slice names a DMA region, not a value. The message names the
+# argument position, which matters more for a ternary op than a binary one.
+# CHECK: TypeError: air.api.ops.fma expects a buffer slice or a numeric scalar as its third argument
+@expect(TypeError, "fma_of_a_tensor_slice")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        a[:] = ops.fma(2.0, a[:], A[0:64, 0])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_into_the_wrong_shape
+# The destination must be the operand with its innermost axis collapsed --
+# either kept as 1 or dropped. Anything else is named with both alternatives,
+# because which one the caller wanted is not inferable.
+# CHECK: ValueError: shape mismatch in a reduction
+@expect(ValueError, "reduce_into_the_wrong_shape")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        b = air.alloc([64, 16], bf16, scope=h.private())
+        b[:] = ops.reduce_add(a[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_on_an_unsigned_buffer
+# Same rule as every other arith-building path: vector.reduction's combining
+# kinds are signed, and a ui8 operand does not verify.
+# CHECK: NotImplementedError: air.api.ops.reduce_add / reduce_max is not supported for air.api.ui8
+@expect(NotImplementedError, "reduce_on_an_unsigned_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], ui8, scope=h.private())
+        b = air.alloc([64], ui8, scope=h.private())
+        b[:] = ops.reduce_add(a[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: rsqrt_of_a_scalar
+# A unary op needs something to be shaped by. A bare Python float has no shape,
+# and the emitter cannot invent one.
+# CHECK: TypeError: air.api.ops.rsqrt expects a buffer slice, got float
+@expect(TypeError, "rsqrt_of_a_scalar")
+def _():
+    ops.rsqrt(2.0)
+
+
+# CHECK-LABEL: TEST: herd_link_with_is_not_a_string
+# link_with= names a compiled object file. Anything else would reach the IR as a
+# StringAttr conversion failure with no mention of which herd.
+# CHECK: TypeError: air.herd(link_with=...) takes the name of a compiled object file
+@expect(TypeError, "herd_link_with_is_not_a_string")
+def _():
+    air.herd(range(0, 128, 64), link_with=17)
+
+
+# CHECK-LABEL: TEST: herd_link_with_is_empty
+# An empty string is the shape of a mistake that would otherwise emit
+# link_with = "" and fail much later, in the linker.
+# CHECK: TypeError: air.herd(link_with=...) takes the name of a compiled object file
+@expect(TypeError, "herd_link_with_is_empty")
+def _():
+    air.herd(range(0, 128, 64), link_with="")
+
+
+# CHECK-LABEL: TEST: segment_body_never_registered
+# `with air.segment(...)` is pure bookkeeping -- every op comes from the body
+# decorator -- so omitting it emits nothing at all for that scope and traces the
+# herd straight into the launch. That is the worst available failure: the IR is
+# structurally different, still builds, and on a small grid still runs and still
+# passes, so neither a hardware test nor an op-count diff catches it. It did
+# reach review once, in the data_transfer_transpose conversion.
+# CHECK: RuntimeError: air.segment was opened but its body was never registered
+@expect(RuntimeError, "segment_body_never_registered")
+def _():
+    A = air.tensor([64], bf16)
+    C = air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="s") as seg:
+                with air.herd(range(0, 64, 64), shape=(1,)) as h:
+
+                    @h.body
+                    def _(tx):
+                        t = air.alloc([64], bf16, scope=h.private())
+                        ops.load(t, A[:])
+                        ops.store(t, C[:])
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: herd_body_never_registered
+# The same hole, and it is a real one rather than a theoretical twin: a lone
+# body-less herd happens to trip "kernel writes no output", but that check is
+# satisfied by any *other* herd that stores. Two herds with the second one's
+# body forgotten built cleanly and dropped it silently.
+# CHECK: RuntimeError: air.herd was opened but its body was never registered
+@expect(RuntimeError, "herd_body_never_registered")
+def _():
+    A = air.tensor([64], bf16)
+    C = air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, 64, 64), name="h1", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    t = air.alloc([64], bf16, scope=h.private())
+                    ops.load(t, A[:])
+                    ops.store(t, C[:])
+
+            with air.herd(range(0, 64, 64), name="h2", shape=(1,)):
+                pass
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: a_failing_body_is_not_masked
+# The guard must stay quiet while another exception is propagating. A body that
+# raised is far more interesting than a body that is absent, and reporting the
+# absence here would bury the real error -- which, at that point, is the only
+# reason the body never registered.
+# CHECK: ValueError: the body's own problem
+@expect(ValueError, "a_failing_body_is_not_masked")
+def _():
+    air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="s"):
+                raise ValueError("the body's own problem")
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: broadcast_needs_an_extent_of_one
+# Broadcasting stretches an axis of extent 1 and nothing else. A [64, 32]
+# operand against a [64, 64] destination is not "half of each row", it is a
+# mistake, and numpy refuses it for the same reason.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "broadcast_needs_an_extent_of_one")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        b = air.alloc([64, 32], bf16, scope=h.private())
+        a[:] = a[:] + b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: an_operand_cannot_be_wider_than_the_destination
+# The rule is one-sided: operands broadcast *to* the destination, which already
+# exists. Stretching the other way would mean writing 16 values into 1, and
+# numpy's `out=` refuses this too rather than picking one of them.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "an_operand_cannot_be_wider_than_the_destination")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 1], bf16, scope=h.private())
+        b = air.alloc([64, 16], bf16, scope=h.private())
+        a[:] = b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: an_operand_cannot_have_more_axes_than_the_destination
+# Right-aligning a rank-2 operand against a rank-1 destination leaves an axis
+# with nowhere to go. Only the *operand* may be short of axes.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: does not broadcast to it
+@expect(ValueError, "an_operand_cannot_have_more_axes_than_the_destination")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([4, 64], bf16, scope=h.private())
+        a[:] = b[:]
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: a_reduction_does_not_broadcast_its_operands
+# Everywhere else an extent of 1 is stretched, but the innermost extent of a
+# reduction is the thing being collapsed: stretching it would decide how many
+# terms the sum has, which is the reduction's meaning rather than a fit.
+# CHECK: ValueError: shape mismatch inside a reduction
+# CHECK-SAME: does not broadcast its operands
+@expect(ValueError, "a_reduction_does_not_broadcast_its_operands")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        s = air.alloc([64, 1], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.reduce_add(a[:] * s[:])
 
     _trace(body)
