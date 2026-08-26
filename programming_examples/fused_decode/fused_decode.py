@@ -5094,6 +5094,15 @@ def build_module():
 
 
 def run():
+    # Print a module-level constant and stop, so a Makefile can hand the kernel
+    # compile the builder's own value (see glu.cc's GLU_SLICE_EXPECTED). Inert
+    # unless set, and deliberately before the import below: this must stay
+    # runnable without XRT.
+    _const = _os.environ.get("FUSED_DECODE_PRINT_CONST")
+    if _const:
+        print(globals()[_const])
+        return 0
+
     import pyxrt as xrt
 
     module = build_module()

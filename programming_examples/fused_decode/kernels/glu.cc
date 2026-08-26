@@ -30,6 +30,17 @@ constexpr int y_cons_lock = 3;
 // phase 3: up/gate proj, D -> D * 8 to MT_GLU
 // phase 4: down proj, D * 4 -> D, to rms_residual
 // phase 4 is special, do not clear y to zero
+// GLU_SLICE is DERIVED, not a model fact: fused_decode.py computes it from this
+// model's own egress-round parity, so a header that copies a neighbour's value
+// can disagree with the IR. Nothing catches that at runtime -- the DMA delivers
+// one width, the kernel below reads another, and the FFN output is silently
+// wrong. When the builder feeds its value in, hold the two to it.
+#ifdef GLU_SLICE_EXPECTED
+static_assert(GLU_SLICE == GLU_SLICE_EXPECTED,
+              "models/<model>.h GLU_SLICE disagrees with the GLU_SLICE "
+              "fused_decode.py derives for this DECODE_MODEL");
+#endif
+
 extern "C" {
 
 // AIR-friendly pure-compute GLU (no in-kernel locks; AIR owns sync),
