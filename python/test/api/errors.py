@@ -599,13 +599,19 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: parallel_unimplemented
-# The unordered counterpart of air.sequential. Declared so that reaching for it
-# says what it would be, rather than raising AttributeError.
-# CHECK: NotImplementedError: air.api.parallel is not implemented yet
-@expect(NotImplementedError, "parallel_unimplemented")
+# CHECK-LABEL: TEST: a_parallel_loop_must_tile_its_extent
+# The same rule air.sequential applies, for the same reason: there are no
+# partial trips, so a step that does not divide the extent would send the last
+# one off the end of whatever it indexes. Worth pinning separately because the
+# trips of a parallel loop are slots of a spatial fan-out -- overrunning is a
+# put addressed to a destination that does not exist, not a short read.
+# CHECK: ValueError: air.parallel(0, 64, 24) does not tile its extent exactly
+@expect(ValueError, "a_parallel_loop_must_tile_its_extent")
 def _():
-    air.parallel(0, 64, 16)
+    # Generators are lazy: the bounds are checked when the first trip is
+    # requested, so the loop has to actually be entered.
+    for _ in air.parallel(0, 64, 24):
+        pass
 
 
 # ---------------------------------------------------------------------------

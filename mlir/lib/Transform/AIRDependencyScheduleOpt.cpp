@@ -4577,6 +4577,12 @@ private:
   template <typename T>
   bool areConsistentMemoryAccessPattern(std::vector<T> a_vec,
                                         std::vector<T> b_vec) {
+    // a_vec[0] is the pattern every other op is compared against, so there is
+    // nothing to compare when it is empty -- and indexing it is out of bounds.
+    // A channel reaches here with no puts, or no gets, once an earlier fusion
+    // in this same pass has moved them onto another symbol.
+    if (a_vec.empty())
+      return false;
     Value memref = a_vec[0].getMemref();
     SmallVector<Value> offsets = air::getOffsetsAsValues(a_vec[0]);
     SmallVector<Value> sizes = air::getSizesAsValues(a_vec[0]);
@@ -5379,10 +5385,16 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
-    if (!b_puts[0]->getParentOfType<air::HerdOp>()) {
+    // Each side is merged only when both channels have one to merge. A channel
+    // whose puts or gets have already been moved onto another symbol earlier
+    // in this pass reaches here with an empty list, and there is simply
+    // nothing to do for that half -- indexing it is out of bounds.
+    if (!a_puts.empty() && !b_puts.empty() &&
+        !b_puts[0]->getParentOfType<air::HerdOp>()) {
       mergeChannelOpsTemporally(a_puts[0], b_puts[0], mergeByLBOrUB);
     }
-    if (!b_gets[0]->getParentOfType<air::HerdOp>()) {
+    if (!a_gets.empty() && !b_gets.empty() &&
+        !b_gets[0]->getParentOfType<air::HerdOp>()) {
       mergeChannelOpsTemporally(a_gets[0], b_gets[0], mergeByLBOrUB);
     }
   }
@@ -6572,11 +6584,27 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
   for (auto &[alloc, dealloc] : allocDeallocExecs) {
     SmallVector<air::ExecuteOp> execs({alloc});
     resolveDepFromAllocExec(alloc, block);
-    if (dealloc) {
-      resolveDepFromDeallocExec(dealloc, block);
+    if (dealloc)
       execs.push_back(dealloc);
-    }
+    // Leave the stand-ins behind before the deallocs are stripped, not after.
+    //
+    // resolveDepToExecs puts an air.wait_all where each exec used to be and
+    // points the exec's outside-the-block users at it; the wait_all inherits
+    // the exec's dependence list. resolveDepFromDeallocExec then erases the
+    // dependences that come from outside the block, because the dealloc is
+    // about to move inside it -- among them the enclosing loop's own token,
+    // which the dealloc cannot keep waiting on once it lives in that loop's
+    // body.
+    //
+    // Run the erasure first and the stand-in inherits nothing: an
+    // air.wait_all with no operands, ready the instant its region starts.
+    // Where the dealloc's token was the loop-carried value of an scf.for --
+    // it is the last thing to happen in an iteration, so it usually is -- the
+    // loop's yield stops depending on the body altogether, and the loop
+    // retires before a single transfer in it has completed.
     resolveDepToExecs(rewriter, execs, block);
+    if (dealloc)
+      resolveDepFromDeallocExec(dealloc, block);
     addDepToAllocUsersInBlock(alloc, block);
     if (dealloc) {
       addDepToDeallocInBlock(dealloc, alloc->getResult(1), block);

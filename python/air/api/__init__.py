@@ -76,8 +76,13 @@ what makes each core's slab well defined. Zero it with ``ops.fill(acc, 0.0)``.
 
 ``air.sequential`` is named for what ``scf.for`` guarantees -- its trips are
 ordered in time on one core -- as against the herd's grid, which is spatial.
-``air.parallel`` is its unordered counterpart (``scf.parallel``); it is declared
-below and raises, because nothing emits it yet.
+``air.parallel`` is its unordered counterpart, and the two are not
+interchangeable at segment scope. Staging that fans a memtile buffer out to a
+row of cores has to be parallel twice over: the trip index names one slot of a
+channel bundle, which ``air-place-herds`` refuses to take from a temporal loop,
+and the trips share one set of buffer descriptors, so writing them out as a
+Python ``for`` turns one fan-out into that many independent DMAs. See
+``herd_dataflow``, where the unrolled form does not fit on npu1 at all.
 
 The DSL has **two conditionals**, and they are not interchangeable.
 ``ops.select(c, a, b)`` is branchless: ``c`` compares buffer *data*, the
@@ -106,7 +111,7 @@ from . import ops
 from ._channel import Channel, channel
 from ._compile import CompiledKernel, LaunchContext, compile, launch
 from ._extern import ExternKernel, extern
-from ._loop import sequential
+from ._loop import parallel, sequential
 from ._trace import (
     HerdContext,
     Scope,
@@ -188,15 +193,6 @@ def _unimplemented(name, needs):
 # Names from the wider API proposal that this version does not lower. They are
 # present, and they raise -- an accepted-but-ignored capability gate is worse
 # than an absent one, because the kernel still compiles and still runs.
-# The unordered counterpart of air.sequential: an scf.parallel inside a herd
-# body, whose trips carry no ordering guarantee. Named here so that reaching for
-# it fails at the call site with this explanation rather than as an
-# AttributeError, and so the name cannot later be attached to the herd grid --
-# air.herd emits air.herd directly, and an scf.parallel reaches the spatial
-# hierarchy only when a conversion pass selects it, which in general it does not.
-parallel = _unimplemented(
-    "parallel", "scf.parallel emission; use air.sequential for an ordered loop"
-)
 BlockType = _unimplemented("BlockType", "block floating-point types")
 Field = _unimplemented("Field", "block floating-point types")
 Scratchpad = _unimplemented("Scratchpad", "fabric property gating")

@@ -1208,9 +1208,10 @@ class HerdContext:
             # Name the construct that was abandoned. ops.branch shares the
             # region bookkeeping with air.sequential, and reporting a truncated
             # branch as "left a loop early" sends the reader to the wrong line.
-            if "air.sequential" in aborted:
+            loops = [a for a in aborted if a in ("air.sequential", "air.parallel")]
+            if loops:
                 raise RuntimeError(
-                    "a body left an air.sequential loop early (break, return, or a "
+                    f"a body left an {loops[0]} loop early (break, return, or a "
                     "swallowed exception). An air.sequential body is traced once and "
                     "stands for every trip, so an early exit does not shorten the "
                     "loop -- it truncates the body of all of them, and the kernel "
