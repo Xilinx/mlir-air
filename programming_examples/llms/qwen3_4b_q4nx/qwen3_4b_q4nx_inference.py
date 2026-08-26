@@ -77,7 +77,8 @@ _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_qwen3_4b")
 
 def _ensure_requant_cache(fd, model):
     """Return the decode q4k-cascade cache path, building it from model.q4nx on first
-    use (one-time ~pack of 36 layers + tied lm-head). Honors Q4NX_QWEN3_4B_DECODE_NPZ."""
+    use (one-time ~pack of 36 layers + tied lm-head). Honors Q4NX_QWEN3_4B_DECODE_NPZ.
+    """
     rc = os.environ.get("Q4NX_QWEN3_4B_DECODE_NPZ")
     if rc and os.path.exists(rc):
         return rc
