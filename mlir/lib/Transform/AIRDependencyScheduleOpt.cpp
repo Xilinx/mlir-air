@@ -4577,6 +4577,12 @@ private:
   template <typename T>
   bool areConsistentMemoryAccessPattern(std::vector<T> a_vec,
                                         std::vector<T> b_vec) {
+    // a_vec[0] is the pattern every other op is compared against, so there is
+    // nothing to compare when it is empty -- and indexing it is out of bounds.
+    // A channel reaches here with no puts, or no gets, once an earlier fusion
+    // in this same pass has moved them onto another symbol.
+    if (a_vec.empty())
+      return false;
     Value memref = a_vec[0].getMemref();
     SmallVector<Value> offsets = air::getOffsetsAsValues(a_vec[0]);
     SmallVector<Value> sizes = air::getSizesAsValues(a_vec[0]);
@@ -5379,10 +5385,16 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
-    if (!b_puts[0]->getParentOfType<air::HerdOp>()) {
+    // Each side is merged only when both channels have one to merge. A channel
+    // whose puts or gets have already been moved onto another symbol earlier
+    // in this pass reaches here with an empty list, and there is simply
+    // nothing to do for that half -- indexing it is out of bounds.
+    if (!a_puts.empty() && !b_puts.empty() &&
+        !b_puts[0]->getParentOfType<air::HerdOp>()) {
       mergeChannelOpsTemporally(a_puts[0], b_puts[0], mergeByLBOrUB);
     }
-    if (!b_gets[0]->getParentOfType<air::HerdOp>()) {
+    if (!a_gets.empty() && !b_gets.empty() &&
+        !b_gets[0]->getParentOfType<air::HerdOp>()) {
       mergeChannelOpsTemporally(a_gets[0], b_gets[0], mergeByLBOrUB);
     }
   }

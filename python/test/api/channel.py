@@ -369,3 +369,56 @@ def a_computed_offset_cannot_follow_the_segment():
         print(f"RuntimeError: {e}")
     else:
         print("ERROR: no exception raised")
+
+
+# CHECK-LABEL: TEST: a_parallel_loop_indexes_a_channel_bundle
+# Staging that fans a memtile buffer out to a row of cores has to be parallel
+# twice over, and air.sequential is wrong on both counts. The trip index names
+# one slot of the bundle, which air-place-herds refuses to take from a temporal
+# loop ("channel bundle indices must not be temporal scf.for induction
+# variables"); and the trips share one set of buffer descriptors, where a Python
+# `for` would unroll into that many independent DMAs.
+#
+# Emitted as scf.forall, which the pipeline's scf-forall-to-parallel turns into
+# the scf.parallel the hand-written examples spell directly. One put, inside the
+# loop -- not four.
+# CHECK: scf.forall (%[[COL:.*]]) in (4) {
+# CHECK: air.channel.put @fan[%{{.*}}, %{{.*}}] (%{{.*}}[0, %{{.*}}] [8, 8] [32, 1])
+# CHECK: air.herd @h
+# CHECK: air.channel.get @fan[%{{.*}}, %{{.*}}]
+@run
+def a_parallel_loop_indexes_a_channel_bundle():
+    A = air.tensor([8, 32], i32)
+    Out = air.tensor([8, 32], i32)
+    fan = air.channel("fan", size=[4, 1])
+    back = air.channel("back", size=[4, 1])
+
+    with air.launch(name="fanout") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    staged = air.alloc([8, 32], i32, scope=seg.private())
+                    air.ops.load(staged, A)
+
+                    for col in air.parallel(4):
+                        lo = col * 8
+                        fan.put(staged[:, lo : lo + 8], indices=[col, 0])
+
+                    with air.herd([range(4)], name="h", shape=(4,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            tile = air.alloc([8, 8], i32, scope=h.private())
+                            fan.get(tile, indices=[tx, 0])
+                            back.put(tile, indices=[tx, 0])
+
+                    for col in air.parallel(4):
+                        lo = col * 8
+                        back.get(staged[:, lo : lo + 8], indices=[col, 0])
+                    air.ops.store(staged, Out)
+
+    print(launch.mlir())
