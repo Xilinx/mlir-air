@@ -2,22 +2,54 @@
 // SPDX-License-Identifier: MIT
 //
 // REQUIRES: xrt
+// XFAIL: *
 // RUN: mkdir -p test_airrunner
 // RUN: cd test_airrunner
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run | FileCheck %s
-// Updated post-#1659: ping-pong restored for K-tiled L1 fills dispatched via
-// mutually-exclusive affine.if broadcast branches (only one branch fires per
-// outer iter, so multi-fill of the same alloc is safe).
-// Updated with the air.api port of matrix_multiplication/bf16: 423.808 ->
-// 423.824us, +0.016us on a 16-iteration estimate, i.e. about one cycle per
-// iteration. The port stages L2 flat -- each buffer is exactly the L3 region it
-// holds -- where the predecessor used a [herd_m, herd_n, tile_m, tile_n] grid.
-// For A the two are byte-identical, for B and C they differ, and this is that
-// difference as the simulator models it.
+// RUN: make -f %S/Makefile run 2>&1 | FileCheck %s
 //
-// Checked before touching the number, at this test's own configuration: the
-// output is bit-identical on npu1 (mean_rel_L1=4.011e-03, rel_err max=9.627e+02,
-// abs_err max=1.953e-03 for both), and the lowered design has identical
-// resource counts -- 16 aie.core, 196 aie.dma_bd, 424 aie.use_lock, 60 flows.
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 423.824us
+// This design does not currently simulate to completion, so the test is
+// expected to fail: air-runner reports the stall and exits non-zero, and no
+// latency line is printed.
+//
+// Marked XFAIL rather than rewritten to assert the stall, so the signal points
+// the right way. An expectation that matches the error would go green now and
+// red the day someone fixes it. As an XFAIL it turns into an XPASS instead,
+// which is the prompt to drop this marker and pin the real latency.
+//
+// It used to expect a line reading
+//   "Latency (single-iteration mode, estimated for 16 iterations): 423.824us".
+// That number was the point at which the simulation gave up. air-runner runs
+// until no runner node can make progress, which is also what an unsatisfiable
+// dispatch condition looks like, so a stalled run and a finished one used to
+// print the same thing. The run stalls at 26489 cycles and the test uses
+// single-iteration mode over 16 iterations: 26489 * 16 = 423824 ns, exactly
+// the figure above. It was the stall point, not a latency.
+//
+// What actually happens, on the 4x4 configuration this test uses: all sixteen
+// herds terminate, but the C write-back over @channel_10 completes one get out
+// of sixteen, no segment or launch terminator is ever reached, and the four
+// L3->L2 input channels are left with a put dispatched and no matching get.
+// So the number was "time to finish compute, with the output drain missing" --
+// an underestimate, which is why it looked plausible for so long.
+//
+// Notes for whoever picks this up:
+//   - It is not a scale problem. herd 1x1 stalls at 8057 cycles, 2x2 at 14201,
+//     4x4 at 26489. The 1x1 configuration is the smallest repro.
+//   - It is not the ping-pong transform. Dropping air-label-scf-for-to-ping-pong
+//     and air-ping-pong-transform from the pipeline still stalls, at 6362.
+//   - It is not simulation granularity. "herd" stalls identically to "core".
+//   - Nothing is ready-but-blocked at the stall: every unstarted op still has an
+//     incomplete predecessor, so this is an unsatisfiable dependency state
+//     rather than resource starvation.
+//   - test/airrunner/matmul, which builds its IR through the transform dialect
+//     instead of parsing the air.api example, reaches both terminators and is
+//     unaffected.
+//
+// Whether the generated IR is at fault or air-runner cannot model it is still
+// open. Restore a latency expectation once it simulates to completion; do not
+// just re-pin whatever number the runner prints.
+
+// Deliberately matches the line without its value: the old number was the
+// stall point, and the real one is not yet known.
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations):
