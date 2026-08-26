@@ -5870,12 +5870,32 @@ struct UpdateSubViewOutputTypeAfterMemrefShrinkage
     : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
+  // Two memref types can spell the same layout differently: an identity
+  // layout and an explicit `strided<[1]>` describe the same walk over the
+  // same buffer. inferRankReducedResultType always produces the explicit
+  // form, so a plain `!=` reports a difference for a subview that shrinkage
+  // never touched -- and retyping it then invalidates any func.call into an
+  // extern kernel whose declaration is written in the identity form.
+  static bool layoutsAgree(MemRefType lhs, MemRefType rhs) {
+    if (lhs.getShape() != rhs.getShape() ||
+        lhs.getElementType() != rhs.getElementType() ||
+        lhs.getMemorySpace() != rhs.getMemorySpace())
+      return false;
+    SmallVector<int64_t> lhsStrides, rhsStrides;
+    int64_t lhsOffset = 0, rhsOffset = 0;
+    if (failed(lhs.getStridesAndOffset(lhsStrides, lhsOffset)) ||
+        failed(rhs.getStridesAndOffset(rhsStrides, rhsOffset)))
+      return false;
+    return lhsStrides == rhsStrides && lhsOffset == rhsOffset;
+  }
+
   LogicalResult matchAndRewrite(memref::SubViewOp op,
                                 PatternRewriter &rewriter) const override {
     MemRefType newResultType = memref::SubViewOp::inferRankReducedResultType(
         op.getType().getShape(), op.getSourceType(), op.getMixedOffsets(),
         op.getMixedSizes(), op.getMixedStrides());
-    if (newResultType != op.getType()) {
+    if (newResultType != op.getType() &&
+        !layoutsAgree(newResultType, op.getType())) {
       op.getResult().setType(newResultType);
       return success();
     } else

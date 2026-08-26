@@ -86,4 +86,45 @@ module {
     }
     return
   }
+
+  // A subview whose result type is already correct must be left alone.
+  //
+  // inferRankReducedResultType always spells the layout out --
+  // memref<8xbf16, strided<[1]>, 2> -- while the canonical form of the same
+  // walk is the identity layout, memref<8xbf16, 2>. Retyping on a bare `!=`
+  // therefore rewrites a subview that no shrinkage touched, and the func.call
+  // below, whose callee is an extern kernel declared with the identity form,
+  // stops verifying. Here the alloc is accessed in full by the channel.put,
+  // so nothing shrinks at all and there is nothing to update.
+  // CHECK-LABEL: func2
+  // CHECK: memref.subview %{{.*}}[0] [8] [1] : memref<32xbf16, 2 : i32> to memref<8xbf16, 2 : i32>
+  // CHECK: func.call @zero_bf16(%{{.*}}) : (memref<8xbf16, 2 : i32>) -> ()
+  air.channel @channel_2 [1, 1]
+  func.func private @zero_bf16(memref<8xbf16, 2 : i32>) attributes {link_with = "mv.o", llvm.emit_c_interface}
+  func.func @func2() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg0) in (%arg1=%c1) {
+      %1 = air.segment @segment_2 async {
+        %c1_0 = arith.constant 1 : index
+        %2 = air.herd @herd_2 async tile (%arg2, %arg3) in (%arg4=%c1_0, %arg5=%c1_0) attributes {link_with = "mv.o"} {
+          %c0 = arith.constant 0 : index
+          %c32 = arith.constant 32 : index
+          %c1_1 = arith.constant 1 : index
+          %async_token, %results = air.execute -> (memref<32xbf16, 2 : i32>) {
+            %alloc = memref.alloc() : memref<32xbf16, 2 : i32>
+            air.execute_terminator %alloc : memref<32xbf16, 2 : i32>
+          }
+          %subview = memref.subview %results[0] [8] [1] : memref<32xbf16, 2 : i32> to memref<8xbf16, 2 : i32>
+          %async_token_1 = air.execute [%async_token] {
+            func.call @zero_bf16(%subview) : (memref<8xbf16, 2 : i32>) -> ()
+          }
+          %3 = air.channel.put async [%async_token_1] @channel_2[%arg2, %arg3] (%results[%c0] [%c32] [%c1_1]) {id = 1 : i32} : (memref<32xbf16, 2 : i32>)
+          %async_token_2 = air.execute [%3] {
+            memref.dealloc %results : memref<32xbf16, 2 : i32>
+          }
+        }
+      }
+    }
+    return
+  }
 }
