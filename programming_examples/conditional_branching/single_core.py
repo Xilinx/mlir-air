@@ -65,7 +65,15 @@ def build_module(n, param):
                         def _(tx):
                             inp = air.alloc([n], i32, scope=herd.private())
                             ops.load(inp, staged_in)
-                            buf = air.alloc([n], i32, scope=herd.private())
+                            # Scalar, like the predecessor. A vectorised i32
+                            # multiply lowers to aievec.mul_elem, which AIE2p
+                            # does not implement -- `arith.muli %0, %cst :
+                            # vector<16xi32>` fails to legalize on the hx370
+                            # runner while compiling fine on AIE2. The width is
+                            # a property of the destination buffer, so this
+                            # makes both arms scalar; at n = 48 that is what the
+                            # raw-bindings version did anyway.
+                            buf = air.alloc([n], i32, scope=herd.private(), vector=0)
 
                             with ops.branch(mode != 0) as chosen:
                                 buf[:] = inp[:] + 100
