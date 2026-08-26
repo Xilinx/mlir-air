@@ -1,225 +1,150 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A kernel that branches on a parameter, on air.api.
+
+``out = in + 100`` or ``out = in * 100``, chosen by ``param``. The module is
+built twice, once per value, and both are run.
+
+This is the third shape of conditional in the tree, and the one that is *not*
+about tile coordinates: the predicate here is a **dispatch-time parameter**, so
+it is the same for every core. It is still a region and not a Python ``if``,
+because the branch is what the example exists to demonstrate -- writing
+``if param:`` in Python would pick a body at trace time and hand the compiler a
+kernel with no ``scf.if`` in it at all.
+
+``air.symbol`` is the DSL's name for a value of this kind ("known at dispatch
+time rather than compile time"). Its *arithmetic* folds to a Python int, because
+a symbol used as a tile size has to size a memref; its *comparisons* do not,
+because folding one would delete the branch. ``mode != 0`` therefore reaches the
+IR as ``arith.constant`` + ``arith.cmpi`` feeding the ``scf.if``, where the
+predecessor spelled the same thing as ``arith.index_cast(param) : i1``. Both are
+a constant driving a branch, and ``air-to-aie``'s ``SpecializeScfIfPattern``
+folds either one away once the herd is unrolled -- so the branch is present for
+the compiler to reason about and costs nothing at run time.
+
+The two arms are ``buf[:] = inp[:] + 100`` and ``buf[:] = inp[:] * 100``,
+replacing scalar ``memref.load``/``store`` loops over all 48 elements.
+"""
+
 import argparse
-from math import cos, sin
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp, CallOp
-from air.dialects import scf
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+import numpy as np
 
-range_ = for_
+from air import api as air
+from air.api import ops
+from air.api.types import i32
+from air.backend.xrt_runner import XRTRunner
+
+N = 48
+INOUT_DATATYPE = np.int32
 
 
-@module_builder
-def build_module(n, np_dtype_in, np_dtype_out, param):
+def build_module(n, param):
+    src = air.tensor([n], i32)
+    dst = air.tensor([n], i32)
 
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    xrt_dtype_out = type_mapper(np_dtype_out)
+    # Not a plain Python int: a comparison on one of those is answered at trace
+    # time, and there would be no scf.if left to compile.
+    mode = air.symbol(hint=param, name="param")
 
-    # L3 MemRefTypes
-    memrefTyIn = MemRefType.get([n], xrt_dtype_in)
-    memrefTyOut = MemRefType.get([n], xrt_dtype_in)
+    with air.launch(name="conditional_branch") as launch:
 
-    @FuncOp.from_py_func(memrefTyIn, memrefTyOut)
-    def conditional_branch(arg0, arg1):
+        @launch.body
+        def _():
+            with air.segment(name="segment_0") as seg:
 
-        launch_size = [1, 1]
+                @seg.body
+                def _():
+                    staged_in = air.alloc([n], i32, scope=seg.private())
+                    staged_out = air.alloc([n], i32, scope=seg.private())
+                    ops.load(staged_in, src)
 
-        @launch(operands=[arg0, arg1], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_in_data,
-            l3_out_data,
-        ):
+                    with air.herd([range(1)], name="herd_0", shape=(1,)) as herd:
 
-            @segment(name="segment_0", operands=[l3_in_data, l3_out_data])
-            def segment_body(
-                _l3_in_data,
-                _l3_out_data,
-            ):
-                # L2 MemRefTypes
-                l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-                l2MemrefTyIn = MemRefType.get(
-                    shape=[n],
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyOut = MemRefType.get(
-                    shape=[n],
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2_in_data = AllocOp(l2MemrefTyIn, [], [])
-                l2_out_data = AllocOp(l2MemrefTyOut, [], [])
-                dma_memcpy_nd(
-                    l2_in_data,
-                    _l3_in_data,
-                )
+                        @herd.body
+                        def _(tx):
+                            inp = air.alloc([n], i32, scope=herd.private())
+                            ops.load(inp, staged_in)
+                            buf = air.alloc([n], i32, scope=herd.private())
 
-                param_arg = arith.ConstantOp.create_index(param)
+                            with ops.branch(mode != 0) as chosen:
+                                buf[:] = inp[:] + 100
+                            with chosen.otherwise():
+                                buf[:] = inp[:] * 100
 
-                @herd(
-                    name="herd_0",
-                    sizes=[1, 1],
-                    operands=[l2_in_data, l2_out_data, param_arg],
-                )
-                def herd_body_0(
-                    _tx, _ty, _sx, _sy, _l2_in_data, _l2_out_data, _param_arg
-                ):
+                            ops.store(buf, staged_out)
 
-                    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-                    l1MemrefTyIn = MemRefType.get(
-                        shape=[n],
-                        element_type=xrt_dtype_in,
-                        memory_space=l1_mem_space,
-                    )
-                    l1MemrefTyOut = MemRefType.get(
-                        shape=[n],
-                        element_type=xrt_dtype_in,
-                        memory_space=l1_mem_space,
-                    )
+                    ops.store(staged_out, dst)
 
-                    l1_in_data = AllocOp(l1MemrefTyIn, [], [])
-                    dma_memcpy_nd(
-                        l1_in_data,
-                        _l2_in_data,
-                    )
-
-                    l1_buf = AllocOp(l1MemrefTyIn, [], [])
-
-                    # condition
-                    bool = IntegerType.get_signless(1)
-                    param_arg = arith.index_cast(bool, _param_arg)
-                    if_op = scf.IfOp(param_arg, has_else=True)
-                    with InsertionPoint(if_op.then_block):
-                        for i in range_(0, n):
-                            inval = load(l1_in_data, [i])
-                            add100 = arith.addi(
-                                inval, ConstantOp(IntegerAttr.get(T.i32(), 100), None)
-                            )
-                            store(add100, l1_buf, [i])
-                            yield_([])
-                        yield_([])
-                    with InsertionPoint(if_op.else_block):
-                        for i in range_(0, n):
-                            inval = load(l1_in_data, [i])
-                            mul100 = arith.muli(
-                                inval, ConstantOp(IntegerAttr.get(T.i32(), 100), None)
-                            )
-                            store(mul100, l1_buf, [i])
-                            yield_([])
-                        yield_([])
-
-                    dma_memcpy_nd(
-                        _l2_out_data,
-                        l1_buf,
-                    )
-                    DeallocOp(l1_in_data)
-
-                dma_memcpy_nd(
-                    _l3_out_data,
-                    l2_out_data,
-                )
-
-                DeallocOp(l2_in_data)
-                DeallocOp(l2_out_data)
+    return launch
 
 
-if __name__ == "__main__":
-    # Default values.
-    N = 48
-    param = 0
-    INPUT_DATATYPE = np.int32
-    OUTPUT_DATATYPE = np.int32
-
+def parse_args():
     parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        prog="single_core.py",
+        description="Builds, runs and tests a kernel that branches on a parameter",
     )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--n",
-        type=int,
-        default=N,
-        help="N dimension size in a (1xK) * (KxN) matmul",
-    )
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser.add_argument("--n", type=int, default=N, help="Vector length")
     parser.add_argument(
         "--output-format",
         type=str,
         choices=["xclbin", "elf"],
         default="xclbin",
         dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
-
-    args = parser.parse_args()
-
-    ###### Compile and test, param = 0
-    param = 0
-
-    mlir_module = build_module(
-        args.n,
-        INPUT_DATATYPE,
-        OUTPUT_DATATYPE,
-        param,
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
     )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
     if args.print_module_only:
-        print(mlir_module)
-        exit(0)
+        print(build_module(args.n, 0).build(target=args.target))
+        return 0
 
-    inputs = np.arange(0, args.n, dtype=INPUT_DATATYPE).reshape(args.n)
-    outputs = inputs * 100
+    inputs = np.arange(0, args.n, dtype=INOUT_DATATYPE)
+    results = []
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="conditional_branch",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    res0 = runner.run_test(
-        mlir_module,
-        inputs=[inputs],
-        expected_outputs=[outputs],
-    )
+    # param = 0 takes the else arm (* 100); param = 1 takes the then arm (+ 100).
+    for param, expected in ((0, inputs * 100), (1, inputs + 100)):
+        launch = build_module(args.n, param)
+        # build() is what resolves --target auto to the installed generation, so
+        # the module has to exist before launch.target is read. Reading it first
+        # passes None to the runner, and the compile fails with the unhelpful
+        # "'builtin.module' op Invalid aie.device option".
+        mlir_module = launch.build(target=args.target)
+        runner = XRTRunner(
+            verbose=args.verbose,
+            output_format=args.output_format,
+            instance_name="conditional_branch",
+            runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
+        )
+        results.append(
+            runner.run_test(
+                mlir_module,
+                inputs=[inputs],
+                expected_outputs=[expected.astype(INOUT_DATATYPE)],
+            )
+        )
 
-    ###### Compile and test, param = 1
-    param = 1
-
-    mlir_module = build_module(
-        args.n,
-        INPUT_DATATYPE,
-        OUTPUT_DATATYPE,
-        param,
-    )
-
-    outputs = inputs + 100
-    res1 = runner.run_test(
-        mlir_module,
-        inputs=[inputs],
-        expected_outputs=[outputs],
-    )
-    if res0 == 0 and res1 == 0:
+    if all(r == 0 for r in results):
         print("Both conditions PASS!")
-    else:
-        if res0 != 0:
-            print("Cond. 0 FAIL!")
-        if res1 != 0:
-            print("Cond. 1 FAIL!")
+        return 0
+    for i, r in enumerate(results):
+        if r != 0:
+            print(f"Cond. {i} FAIL!")
+    return 1
+
+
+if __name__ == "__main__":
+    exit(main())
