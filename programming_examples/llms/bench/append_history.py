@@ -20,6 +20,8 @@ partway through the series, which reads as a step change that never happened.
 Usage:
   python3 append_history.py --perf  perf.json  --history history.ndjson       --run-id 123
   python3 append_history.py --sweep sweep.json --history sweep_history.ndjson --run-id 123
+  python3 append_history.py --prefill-sweep prefill_sweep.json \
+                            --history prefill_sweep_history.ndjson --run-id 123
 """
 
 import argparse
@@ -83,6 +85,38 @@ def _flat_sweep_rows(recs, run_id):
             }
 
 
+def _flat_prefill_sweep_rows(recs, run_id):
+    """Yield one flat history row per (model, padded prefill length) point.
+
+    A third series, for the same reason the decode sweep is a second one: the
+    x-axis is the length the prefill ELFs were BUILT for, and ttft_ms means
+    something different against it than the single TTFT in history.ndjson does
+    (that one is one padded length -- whatever the model ships -- at the profile
+    prompt). Sharing a file would make the two indistinguishable after the fact.
+    """
+    for d in recs:
+        tc = d.get("toolchain", {}) or {}
+        ts = d.get("timestamp_utc", "") or ""
+        for pt in d.get("points", []) or []:
+            yield {
+                "date": ts[:10],
+                "timestamp_utc": ts,
+                "run_id": run_id,
+                "air_sha": tc.get("mlir_air_sha", ""),
+                "aie_hash": tc.get("mlir_aie_hash", ""),
+                "peano": tc.get("llvm_aie_version", ""),
+                "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
+                "prefill_len": pt.get("prefill_len"),
+                "ttft_ms": pt.get("ttft_ms"),
+                "npu_dispatch_ms": pt.get("npu_dispatch_ms"),
+                "prefill_tokens_per_sec": pt.get("prefill_tokens_per_sec"),
+                "first_token_gate": pt.get("first_token_gate", ""),
+                "status": pt.get("status", ""),
+                "verify_status": d.get("verify_status", ""),
+            }
+
+
 def _existing_run_ids(history_path):
     """Return the set of run_ids already recorded in history.ndjson.
 
@@ -109,6 +143,9 @@ def main():
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--perf", help="Path to the nightly perf.json")
     src.add_argument("--sweep", help="Path to the nightly sweep.json")
+    src.add_argument(
+        "--prefill-sweep", help="Path to the nightly prefill_sweep.json (TTFT curves)"
+    )
     ap.add_argument(
         "--history", required=True, help="Path to history.ndjson (created if absent)"
     )
@@ -124,8 +161,12 @@ def main():
     except ValueError:
         run_id = args.run_id
 
-    src_path = Path(args.perf or args.sweep)
-    flatten = _flat_rows if args.perf else _flat_sweep_rows
+    src_path = Path(args.perf or args.sweep or args.prefill_sweep)
+    flatten = (
+        _flat_rows
+        if args.perf
+        else _flat_sweep_rows if args.sweep else _flat_prefill_sweep_rows
+    )
     if not src_path.is_file():
         print(f"no {src_path.name}; nothing to append")
         return 0

@@ -734,6 +734,122 @@ abstractions of the MLIR-AIR dialect.
 """
 
 
+def load_llm_prefill_sweep_history(path):
+    """Newest point per (model, padded prefill length) from the TTFT series.
+
+    Same merge semantics as load_llm_sweep_history -- a run that swept nothing
+    must not empty the table -- against the prefill_len axis instead.
+    """
+    if not path or not Path(path).is_file():
+        return []
+    newest, verify = {}, {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        model, plen = r.get("model"), r.get("prefill_len")
+        if not model or plen is None:
+            continue
+        ts = r.get("timestamp_utc") or r.get("date") or ""
+        cur = newest.get((model, plen))
+        better = r.get("ttft_ms") is not None
+        if cur is None or (better, ts) >= (cur[0], cur[1]):
+            newest[(model, plen)] = (better, ts, r)
+        if model not in verify or ts >= verify[model][0]:
+            verify[model] = (ts, r.get("verify_status", ""))
+    curves = {}
+    for (model, plen), (_, _, r) in sorted(newest.items()):
+        curves.setdefault(
+            model,
+            {"model": model, "points": [], "verify_status": verify[model][1]},
+        )["points"].append(
+            {
+                "prefill_len": plen,
+                "ttft_ms": r.get("ttft_ms"),
+                "status": r.get("status", ""),
+            }
+        )
+    return [curves[m] for m in sorted(curves)]
+
+
+def _prefill_sweep_cell(pt):
+    """The point's TTFT in ms, or a marker: ✗ for a failure, — otherwise."""
+    ttft = pt.get("ttft_ms")
+    if isinstance(ttft, (int, float)):
+        return f"{ttft:.0f}"
+    return "—" if pt.get("status", "") in ("", "ok", "expected_fail") else "✗"
+
+
+def render_llm_prefill_sweep(recs, base_url=""):
+    """Render prefill TTFT against padded prefill length, one row per model.
+
+    The x-axis is the length the prefill ELFs were BUILT for, which is what TTFT
+    scales with. It is deliberately not "prompt length": these prefills pad the
+    prompt to the built length and read the last real token's row, so at a fixed
+    engine a 128-token prompt and a 2048-token one cost the same (measured on
+    llama32_1b_q4nx: 959 ms vs 983 ms). Each column here is a separate build.
+    """
+    if not recs:
+        return ""
+
+    lens = sorted(
+        {
+            pt.get("prefill_len")
+            for d in recs
+            for pt in d.get("points", []) or []
+            if pt.get("prefill_len")
+        }
+    )
+    if not lens:
+        return ""
+
+    head = "| Model | " + " | ".join(_ctx_label(l) for l in lens) + " | Verify |"
+    sep = "|:------|" + "".join("------:|" for _ in lens) + ":------:|"
+
+    rows, markers = [], set()
+    for d in sorted(recs, key=lambda r: r.get("model", "")):
+        by_len = {pt.get("prefill_len"): pt for pt in d.get("points", []) or []}
+        cells = []
+        for l in lens:
+            cell = _prefill_sweep_cell(by_len.get(l) or {})
+            if cell in ("—", "✗"):
+                markers.add(cell)
+            cells.append(cell)
+        verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        rows.append(
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
+            + " | ".join(cells)
+            + f" | {verify} |"
+        )
+
+    legend = "\n\n".join(
+        note
+        for marker, note in (
+            ("—", "— not built at this length."),
+            ("✗", "✗ unexpected failure."),
+        )
+        if marker in markers
+    )
+
+    return f"""
+
+### Prefill latency vs padded prefill length (TTFT, ms)
+
+Time to first token at increasing padded prefill length. Each column is a
+separate build of the prefill ELFs: the prompt is padded to the built length,
+so TTFT tracks that length rather than the number of real prompt tokens.
+
+{head}
+{sep}
+{chr(10).join(rows)}
+
+{legend}
+"""
+
+
 def load_llm_history(path):
     """Newest row per model from the append-only history, in perf.json shape.
 
@@ -791,6 +907,7 @@ def render_llm_benchmark(
     base_url="",
     perf_history_link="perf-history.html",
     sweep_recs=(),
+    prefill_sweep_recs=(),
     history_path=None,
 ):
     """Render the nightly LLM benchmark section.
@@ -864,6 +981,7 @@ def render_llm_benchmark(
     )
 
     _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
+    _prefill_table = render_llm_prefill_sweep(prefill_sweep_recs, base_url=base_url)
     table = "\n".join(rows)
     return f"""\
 
@@ -878,6 +996,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Poin
 Verify: \U0001f7e2 pass &nbsp; \U0001f534 fail &nbsp; ⚪ skipped. &nbsp; — not measured.
 
 {_sweep_table}
+{_prefill_table}
 \U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
@@ -942,6 +1061,8 @@ def generate_readme(
     llm_sweep_path=None,
     llm_history_path=None,
     llm_sweep_history_path=None,
+    llm_prefill_sweep_path=None,
+    llm_prefill_sweep_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -963,6 +1084,10 @@ def generate_readme(
             perf_history_link="perf-history.md",
             sweep_recs=load_llm_sweep_history(llm_sweep_history_path)
             or load_llm_sweeps(llm_sweep_path),
+            prefill_sweep_recs=load_llm_prefill_sweep_history(
+                llm_prefill_sweep_history_path
+            )
+            or load_llm_sweeps(llm_prefill_sweep_path),
             history_path=llm_history_path,
         )
         return f"""\
@@ -979,6 +1104,10 @@ End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped t
         base_url=base_url,
         sweep_recs=load_llm_sweep_history(llm_sweep_history_path)
         or load_llm_sweeps(llm_sweep_path),
+        prefill_sweep_recs=load_llm_prefill_sweep_history(
+            llm_prefill_sweep_history_path
+        )
+        or load_llm_sweeps(llm_prefill_sweep_path),
         history_path=llm_history_path,
     )
     return (
@@ -1028,6 +1157,18 @@ if __name__ == "__main__":
         "reason as --llm-history.",
     )
     parser.add_argument(
+        "--llm-prefill-sweep",
+        default=None,
+        help="Path to the nightly prefill_sweep.json (TTFT vs padded prefill "
+        "length). Rendered as its own curve table. Omitted when absent.",
+    )
+    parser.add_argument(
+        "--llm-prefill-sweep-history",
+        default=None,
+        help="Path to prefill_sweep_history.ndjson. Preferred over "
+        "--llm-prefill-sweep, same reason as --llm-history.",
+    )
+    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -1043,6 +1184,8 @@ if __name__ == "__main__":
         llm_sweep_path=args.llm_sweep,
         llm_history_path=args.llm_history,
         llm_sweep_history_path=args.llm_sweep_history,
+        llm_prefill_sweep_path=args.llm_prefill_sweep,
+        llm_prefill_sweep_history_path=args.llm_prefill_sweep_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Explicit encoding: the tables carry the verify/status emoji, and on a

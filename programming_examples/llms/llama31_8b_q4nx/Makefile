@@ -94,6 +94,11 @@ LREF   := $(shell echo $$(($(LBUILD) - 1)))
 PREFILL := $(srcdir)/llama31_8b_q4nx_prefill.py
 # Padded prefill length for profile-prefill.
 CTX ?= 2048
+# CTX sets the length the prefill ELFs are BUILT for, not just the length the
+# bench times. Without this export the driver defaults its seq_len to 2048 and
+# a CTX=512 run pads 512 real tokens into a 2048-row prefill -- a number that
+# parses fine and is ~4x too slow. bench/sweep_prefill.py guards against it too.
+export Q4NX_SEQ_LEN := $(CTX)
 
 .PHONY: help compile compile-decode compile-decode-dynseq compile-decode-windows _compile_decode_build run profile chat verify \
         verify-full ask gen verify-paris diagnosis profile-prefill clean

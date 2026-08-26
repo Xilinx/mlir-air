@@ -2047,6 +2047,1340 @@
         "high": "fused-cast"
       },
       "_note": "tile_k_l2=256 is the largest memtile-legal value at K=18944 (512 overflows), so it is also the fewest L2 steps and the cheapest compile."
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 512,
+      "used_by": "llama-3.2-1B K/V proj @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3481,
+          "mean_rel_L1": 0.01275,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4092,
+          "mean_rel_L1": 0.009288,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 1665,
+          "mean_rel_L1": 0.009718,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square) @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4574,
+          "mean_rel_L1": 0.01276,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5155,
+          "mean_rel_L1": 0.009282,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3970,
+          "mean_rel_L1": 0.009711,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 2560,
+      "used_by": "Gemma3-4B O proj (n_heads*head_dim=2048 -> emb=2560) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4035,
+          "mean_rel_L1": 0.009707,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 6144,
+      "used_by": "Qwen3-1.7B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4775,
+          "mean_rel_L1": 0.009711,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 8192,
+      "used_by": "llama-3.2-1B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4353,
+          "mean_rel_L1": 0.01276,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5537,
+          "mean_rel_L1": 0.00928,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5243,
+          "mean_rel_L1": 0.009711,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2560,
+      "N": 1024,
+      "used_by": "Qwen3-4B O proj (emb=2560) @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5173,
+          "mean_rel_L1": 0.009375,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3207,
+          "mean_rel_L1": 0.009792,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2560,
+      "N": 2048,
+      "used_by": "Gemma3-4B Q proj (emb=2560, n_heads*head_dim=8*256=2048) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3504,
+          "mean_rel_L1": 0.009778,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2560,
+      "N": 10240,
+      "used_by": "Gemma3-4B Gate/Up proj (emb=2560, ffn=10240) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5072,
+          "mean_rel_L1": 0.009796,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 3072,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3645,
+          "mean_rel_L1": 0.009853,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 3072,
+      "N": 3072,
+      "used_by": "Llama-3.2-3B Q/O proj (square) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4857,
+          "mean_rel_L1": 0.009845,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 3072,
+      "N": 8192,
+      "used_by": "Llama-3.2-3B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6110,
+          "mean_rel_L1": 0.009857,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 3584,
+      "N": 512,
+      "used_by": "Qwen2.5-7B K/V proj (emb=3584, kv_dim=4*128=512) @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3995,
+          "mean_rel_L1": 0.009444,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 3584,
+      "N": 3584,
+      "used_by": "Qwen2.5-7B Q/O proj (emb=3584, q_dim=28*128=3584 -> square o_proj) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4426,
+          "mean_rel_L1": 0.009875,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 3584,
+      "N": 18944,
+      "used_by": "Qwen2.5-7B Gate/Up proj (emb=3584, ffn=18944) @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 32,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3166,
+          "mean_rel_L1": 0.01485,
+          "tier": "low"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5312,
+          "mean_rel_L1": 0.009885,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 4096,
+      "N": 1024,
+      "used_by": "Qwen3-8B K/V proj (emb=4096, kv_dim=8*128=1024) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4331,
+          "mean_rel_L1": 0.009845,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 4096,
+      "N": 4096,
+      "used_by": "Qwen3-8B Q proj AND O proj (emb=4096, q_dim=32*128=4096 -> square o_proj, unlike Qwen3-4B's decoupled 4096->2560) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6252,
+          "mean_rel_L1": 0.009866,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 4096,
+      "N": 12288,
+      "used_by": "Qwen3-8B Gate/Up proj (emb=4096, ffn=12288) @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4289,
+          "mean_rel_L1": 0.01542,
+          "tier": "low"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5582,
+          "mean_rel_L1": 0.009869,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 4096,
+      "N": 14336,
+      "used_by": "Llama-3.1-8B Gate/Up proj (emb=4096, ffn=14336) @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4247,
+          "mean_rel_L1": 0.01542,
+          "tier": "low"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5994,
+          "mean_rel_L1": 0.009859,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 8192,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Down proj @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5075,
+          "mean_rel_L1": 0.01937,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5931,
+          "mean_rel_L1": 0.009274,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7050,
+          "mean_rel_L1": 0.009708,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 8192,
+      "N": 3072,
+      "used_by": "Llama-3.2-3B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7545,
+          "mean_rel_L1": 0.009711,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 10240,
+      "N": 2560,
+      "used_by": "Gemma3-4B Down proj (ffn=10240 -> emb=2560) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7950,
+          "mean_rel_L1": 0.009778,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 12288,
+      "N": 4096,
+      "used_by": "Qwen3-8B Down proj (ffn=12288, emb=4096) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8433,
+          "mean_rel_L1": 0.009859,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 14336,
+      "N": 4096,
+      "used_by": "Llama-3.1-8B Down proj (ffn=14336, emb=4096) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8451,
+          "mean_rel_L1": 0.009887,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 18944,
+      "N": 3584,
+      "used_by": "Qwen2.5-7B Down proj (ffn=18944 -> emb=3584) @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8851,
+          "mean_rel_L1": 0.009804,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 512,
+      "used_by": "llama-3.2-1B K/V proj @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4167,
+          "mean_rel_L1": 0.01275,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4866,
+          "mean_rel_L1": 0.009271,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2765,
+          "mean_rel_L1": 0.0097,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square) @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3996,
+          "mean_rel_L1": 0.01276,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4632,
+          "mean_rel_L1": 0.009288,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4412,
+          "mean_rel_L1": 0.009718,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 2560,
+      "used_by": "Gemma3-4B O proj (n_heads*head_dim=2048 -> emb=2560) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4422,
+          "mean_rel_L1": 0.009704,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 6144,
+      "used_by": "Qwen3-1.7B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5965,
+          "mean_rel_L1": 0.009709,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 8192,
+      "used_by": "llama-3.2-1B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4878,
+          "mean_rel_L1": 0.01276,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5385,
+          "mean_rel_L1": 0.009281,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5923,
+          "mean_rel_L1": 0.009715,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2560,
+      "N": 1024,
+      "used_by": "Qwen3-4B O proj (emb=2560) @L=1024 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5735,
+          "mean_rel_L1": 0.009371,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3980,
+          "mean_rel_L1": 0.009804,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2560,
+      "N": 2048,
+      "used_by": "Gemma3-4B Q proj (emb=2560, n_heads*head_dim=8*256=2048) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5128,
+          "mean_rel_L1": 0.009803,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2560,
+      "N": 10240,
+      "used_by": "Gemma3-4B Gate/Up proj (emb=2560, ffn=10240) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5627,
+          "mean_rel_L1": 0.009799,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 3072,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4058,
+          "mean_rel_L1": 0.00987,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 3072,
+      "N": 3072,
+      "used_by": "Llama-3.2-3B Q/O proj (square) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6360,
+          "mean_rel_L1": 0.009863,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 3072,
+      "N": 8192,
+      "used_by": "Llama-3.2-3B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7057,
+          "mean_rel_L1": 0.009859,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 3584,
+      "N": 512,
+      "used_by": "Qwen2.5-7B K/V proj (emb=3584, kv_dim=4*128=512) @L=1024 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4112,
+          "mean_rel_L1": 0.009463,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 3584,
+      "N": 3584,
+      "used_by": "Qwen2.5-7B Q/O proj (emb=3584, q_dim=28*128=3584 -> square o_proj) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5757,
+          "mean_rel_L1": 0.009883,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 3584,
+      "N": 18944,
+      "used_by": "Qwen2.5-7B Gate/Up proj (emb=3584, ffn=18944) @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 32,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3275,
+          "mean_rel_L1": 0.01485,
+          "tier": "low"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5594,
+          "mean_rel_L1": 0.009881,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 4096,
+      "N": 1024,
+      "used_by": "Qwen3-8B K/V proj (emb=4096, kv_dim=8*128=1024) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4496,
+          "mean_rel_L1": 0.009864,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 4096,
+      "N": 4096,
+      "used_by": "Qwen3-8B Q proj AND O proj (emb=4096, q_dim=32*128=4096 -> square o_proj, unlike Qwen3-4B's decoupled 4096->2560) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7659,
+          "mean_rel_L1": 0.009859,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 4096,
+      "N": 12288,
+      "used_by": "Qwen3-8B Gate/Up proj (emb=4096, ffn=12288) @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4378,
+          "mean_rel_L1": 0.01542,
+          "tier": "low"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5880,
+          "mean_rel_L1": 0.00986,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 4096,
+      "N": 14336,
+      "used_by": "Llama-3.1-8B Gate/Up proj (emb=4096, ffn=14336) @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4349,
+          "mean_rel_L1": 0.01542,
+          "tier": "low"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6412,
+          "mean_rel_L1": 0.00986,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 8192,
+      "N": 2048,
+      "used_by": "llama-3.2-1B Down proj @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5418,
+          "mean_rel_L1": 0.01938,
+          "tier": "low"
+        },
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6820,
+          "mean_rel_L1": 0.009284,
+          "tier": "high"
+        },
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7981,
+          "mean_rel_L1": 0.009722,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 8192,
+      "N": 3072,
+      "used_by": "Llama-3.2-3B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8562,
+          "mean_rel_L1": 0.009712,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 10240,
+      "N": 2560,
+      "used_by": "Gemma3-4B Down proj (ffn=10240 -> emb=2560) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8241,
+          "mean_rel_L1": 0.009805,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 12288,
+      "N": 4096,
+      "used_by": "Qwen3-8B Down proj (ffn=12288, emb=4096) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8974,
+          "mean_rel_L1": 0.009869,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 14336,
+      "N": 4096,
+      "used_by": "Llama-3.1-8B Down proj (ffn=14336, emb=4096) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 512,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9257,
+          "mean_rel_L1": 0.009886,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 18944,
+      "N": 3584,
+      "used_by": "Qwen2.5-7B Down proj (ffn=18944 -> emb=3584) @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 9281,
+          "mean_rel_L1": 0.009828,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
     }
   ]
 }

@@ -35,12 +35,13 @@ on:
     inputs:
       suites:
         description: >-
-          Comma-separated lit suites to run: verify, profile, sweep. Defaults to
-          all three, which is what the schedule runs. Narrow it to iterate on one
-          suite without paying for the others -- a full run is ~4h, sweep alone
-          well under an hour. A narrowed run does NOT publish (see below), because its
-          perf.json is partial by construction.
-        default: verify,profile,sweep
+          Comma-separated lit suites to run: verify, profile, sweep,
+          prefill-sweep. Defaults to all four, which is what the schedule runs.
+          Narrow it to iterate on one suite without paying for the others -- a full
+          run is ~6h, sweep alone well under an hour, prefill-sweep ~1.7h. A
+          narrowed run does NOT publish (see below), because its perf.json is
+          partial by construction.
+        default: verify,profile,sweep,prefill-sweep
         type: string
 
 defaults:
@@ -98,7 +99,7 @@ jobs:
     # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
     # dedicated runner indefinitely. Covers a full build + all models (each
     # model is also individually bounded by `timeout` in run_models.sh).
-    timeout-minutes: 300
+    timeout-minutes: 420
 
     steps:
 
@@ -390,6 +391,18 @@ jobs:
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-sweep || rc=1
           fi
+          # Prefill TTFT vs PADDED prefill length: writes <model>.prefill_sweep.json
+          # alongside. The other axis from the decode sweep above -- that one walks
+          # KV depth, this walks the length the prefill ELFs are built for, which is
+          # what TTFT scales with. Deliberately not the prompt length: the prompt is
+          # padded to the built length, so at a fixed engine TTFT is flat (measured
+          # on llama32_1b_q4nx: 959 ms at 128 tokens vs 983 ms at 2048). Each point
+          # is a fresh build, ~2 min for the small models and ~8 min for the 7B/8B,
+          # so the whole suite is ~1.7h -- the reason timeout-minutes went to 420.
+          if want prefill-sweep; then
+            LIT_OPTS="--timeout 3600" \
+              ninja check-programming-examples-llms-prefill-sweep || rc=1
+          fi
           popd
           exit $rc
 
@@ -518,6 +531,31 @@ jobs:
           json.dump(sweeps, open("sweep.json", "w"), indent=2)
           print(f"{len(sweeps)} sweep(s):",
                 ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in sweeps))
+
+          # Prefill TTFT curves, in a third file for the same reason sweep.json is
+          # a second one: a different x-axis (padded prefill length) and a
+          # different metric (ttft_ms), which neither of the other two rows can
+          # hold without changing what an existing row means.
+          pf = []
+          for f in sorted(glob.glob("build_assert/test/llms/**/*.prefill_sweep.json",
+                                    recursive=True)):
+              try:
+                  d = json.load(open(f))
+              except (json.JSONDecodeError, OSError) as e:
+                  print(f"WARNING: {f} unreadable ({e}); skipping", file=sys.stderr)
+                  continue
+              d["runner"] = "amdryzenai5pro340"
+              d["toolchain"] = {
+                  "mlir_air_sha": air_sha,
+                  "mlir_aie_hash": aie_hash,
+                  "llvm_aie_version": peano_ver,
+              }
+              d["verify_status"] = vstatus.get(d["model"], "")
+              pf.append(d)
+          pf.sort(key=lambda r: r["model"])
+          json.dump(pf, open("prefill_sweep.json", "w"), indent=2)
+          print(f"{len(pf)} prefill sweep(s):",
+                ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in pf))
           PY
 
       # Append this run's datapoints to the durable `perf-history` branch so the
@@ -534,7 +572,7 @@ jobs:
         # run cancelled mid-profile appended rows with null metrics but
         # verify_status "pass". A *failed* run must still publish -- its other
         # models' rows are good.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -570,10 +608,18 @@ jobs:
               --history "$workdir/sweep_history.ndjson" \
               --run-id "${{ github.run_id }}"
           fi
+          # Third series, same separation reasoning.
+          if [ -f prefill_sweep.json ]; then
+            python3 programming_examples/llms/bench/append_history.py \
+              --prefill-sweep prefill_sweep.json \
+              --history "$workdir/prefill_sweep_history.ndjson" \
+              --run-id "${{ github.run_id }}"
+          fi
           pushd "$workdir"
           if [ -n "$(git status --porcelain)" ]; then
             git add history.ndjson
             [ -f sweep_history.ndjson ] && git add sweep_history.ndjson
+            [ -f prefill_sweep_history.ndjson ] && git add prefill_sweep_history.ndjson
             git commit -m "perf-history: nightly ${{ github.sha }} run ${{ github.run_id }}"
             git push origin HEAD:perf-history
           else
@@ -611,25 +657,27 @@ jobs:
       # for `if:`. A cancelled full run is partial at an arbitrary point, so it
       # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.run_id }}
           path: |
             perf.json
             sweep.json
+            prefill_sweep.json
             perf_out/
             verify.xml
 
       # Same payload, name the publisher ignores: still there to download.
       - name: Upload perf artifact (partial run)
-        if: ${{ cancelled() || !(github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        if: ${{ cancelled() || !(github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-partial-${{ github.run_id }}
           path: |
             perf.json
             sweep.json
+            prefill_sweep.json
             perf_out/
             verify.xml
 
@@ -645,7 +693,7 @@ jobs:
         # Full, non-cancelled runs only -- same reasoning as the history append.
         # Note this gate alone never protected the page: the artifact naming
         # above is what actually decides, because generateDocs runs on push too.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep') }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
