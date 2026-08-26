@@ -131,10 +131,11 @@ def _endpoint(obj, direction, role):
         return _Endpoint(
             obj.tensor.value,
             obj.dtype,
-            tuple(obj.sizes),
+            tuple(obj.logical_sizes),
             (obj.materialize_offsets(), list(obj.sizes), list(obj.strides)),
             tensor=obj.tensor,
             what="tensor slice",
+            is_view=obj.is_view,
         )
     if isinstance(obj, Tensor):
         # A whole tensor, which channel put/get take routinely --

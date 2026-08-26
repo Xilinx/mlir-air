@@ -246,7 +246,102 @@ def _as_int(offset, what):
     return int(value)
 
 
-class Tensor:
+class _StridedView:
+    """``reshape`` and ``transpose`` over an (offsets, sizes, strides) triple.
+
+    Shared by :class:`TensorSlice` and :class:`BufferSlice`, which differ only
+    in what they are a region *of*. Neither constructor moves anything: a view
+    re-describes the same elements at a different rank or in a different order,
+    so all three lists are rewritten together and the walk is unchanged.
+    """
+
+    __slots__ = ()
+
+    def _respan(self, offsets, sizes, strides, logical_sizes):
+        """Build another region of the same thing. Implemented by each slice."""
+        raise NotImplementedError
+
+    def reshape(self, *shape):
+        """This region's elements at a different rank, as a view.
+
+        Splitting an axis is how a tile is laid out in the blocks a matmul
+        instruction consumes: a [32, 32] region becomes [8, 4, 4, 8] and the
+        walk is unchanged, only re-described. Raises rather than copying when
+        no view exists -- see :func:`_reshape_pattern`.
+        """
+        if len(shape) == 1 and not isinstance(shape[0], int):
+            shape = tuple(shape[0])
+        offsets, sizes, strides = _reshape_pattern(
+            self.sizes, self.strides, self.offsets, shape
+        )
+        return self._respan([coerce_index(o) for o in offsets], sizes, strides, sizes)
+
+    def __getitem__(self, key):
+        """A sub-region of this region, subscripted like the original array.
+
+        A view is a region like any other, so it subscripts like one -- which is
+        what lets an offset be chosen *after* the walk has been re-described.
+        conv2d_14x14's L2 gather is the case: the pattern it needs is a
+        reshape and a transpose of the whole memtile buffer, and only then a
+        pick of one (row, block) out of it.
+        """
+        key = _normalize_key(key, len(self.sizes), "region")
+        offsets, sizes = [], []
+        for dim, (sub, extent) in enumerate(zip(key, self.sizes)):
+            offset, size = _resolve_subscript(sub, extent, dim)
+            offsets.append(offset)
+            sizes.append(size)
+        # Added to this region's own offsets, not scaled: an offset is an index
+        # along its axis, which the transfer multiplies by that axis's stride --
+        # the same convention Tensor.__getitem__ and Buffer.__getitem__ use, and
+        # the reason this view keeps the strides it already had.
+        combined = [
+            coerce_index(base + off) for base, off in zip(self.offsets, offsets)
+        ]
+        return self._respan(combined, sizes, list(self.strides), sizes)
+
+    def transpose(self, *axes):
+        """This region walked with its axes permuted.
+
+        Nothing moves: offsets, sizes and strides are permuted together, so the
+        descriptor visits the same elements in a different order. Takes a full
+        permutation, as numpy does.
+        """
+        if len(axes) == 1 and not isinstance(axes[0], int):
+            axes = tuple(axes[0])
+        axes = [int(a) for a in axes]
+        _check_axes(axes, len(self.sizes))
+        return self._respan(
+            _permute(self.offsets, axes),
+            _permute(self.sizes, axes),
+            _permute(self.strides, axes),
+            _permute(self.logical_sizes, axes),
+        )
+
+
+class _Reshapable:
+    """``reshape``/``transpose`` on the whole of a Tensor or a Buffer.
+
+    Both are the same two lines -- take the whole thing as a region, then view
+    it -- and the region type is the only difference, which ``_whole_view``
+    supplies.
+    """
+
+    __slots__ = ()
+
+    def _whole_view(self):
+        raise NotImplementedError
+
+    def reshape(self, *shape):
+        """The whole array at a different rank, as a view. See _StridedView."""
+        return self._whole_view().reshape(*shape)
+
+    def transpose(self, *axes):
+        """The whole array with its axes permuted. See _StridedView."""
+        return self._whole_view().transpose(*axes)
+
+
+class Tensor(_Reshapable):
     """A host-visible array in L3. Becomes a ``func.func`` argument."""
 
     def __init__(self, shape, dtype, name=None):
@@ -267,6 +362,19 @@ class Tensor:
             offsets.append(offset)
             sizes.append(size)
         return TensorSlice(self, offsets, sizes, list(self.strides))
+
+    def _whole_view(self):
+        """The whole tensor as a region, for reshape/transpose to work on.
+
+        Built directly rather than through __getitem__ so that a rank-N tensor
+        does not need a rank-N full subscript written out first.
+        """
+        return TensorSlice(
+            self,
+            [coerce_index(0) for _ in self.shape],
+            list(self.shape),
+            list(self.strides),
+        )
 
     def __setitem__(self, key, value):
         raise TypeError(
@@ -300,16 +408,28 @@ def _resolve_subscript(sub, extent, dim):
     return coerce_index(sub), 1
 
 
-class TensorSlice:
+class TensorSlice(_StridedView):
     """An access pattern into a :class:`Tensor`: offsets, static sizes, strides."""
 
-    __slots__ = ("tensor", "offsets", "sizes", "strides")
+    __slots__ = ("tensor", "offsets", "sizes", "strides", "logical_sizes", "is_view")
 
-    def __init__(self, tensor, offsets, sizes, strides):
+    def __init__(
+        self, tensor, offsets, sizes, strides, logical_sizes=None, is_view=False
+    ):
         self.tensor = tensor
         self.offsets = offsets
         self.sizes = sizes
         self.strides = strides
+        # Same two fields, and the same meaning, as on BufferSlice: the region's
+        # element shape, and whether reshape/transpose produced it -- which is
+        # what tells a transfer to check element counts instead of axes.
+        self.logical_sizes = list(sizes if logical_sizes is None else logical_sizes)
+        self.is_view = is_view
+
+    def _respan(self, offsets, sizes, strides, logical_sizes):
+        return TensorSlice(
+            self.tensor, offsets, sizes, strides, logical_sizes, is_view=True
+        )
 
     @property
     def dtype(self):
@@ -322,7 +442,7 @@ class TensorSlice:
         return f"TensorSlice({self.tensor.name}, sizes={self.sizes})"
 
 
-class Buffer:
+class Buffer(_Reshapable):
     """A tile allocated in a hardware scope: L1 (a core) or L2 (a memtile).
 
     A subscript designates a *region* of the buffer, and what that means depends
@@ -371,14 +491,6 @@ class Buffer:
             offsets.append(offset)
             sizes.append(size)
         return BufferSlice(self, offsets, sizes, list(self.strides))
-
-    def reshape(self, *shape):
-        """The whole tile at a different rank, as a view. See BufferSlice."""
-        return self._whole_view().reshape(*shape)
-
-    def transpose(self, *axes):
-        """The whole tile with its axes permuted. See BufferSlice."""
-        return self._whole_view().transpose(*axes)
 
     def _whole_view(self):
         """The whole buffer as a region, for reshape/transpose to work on.
@@ -433,7 +545,7 @@ class Buffer:
         return f"Buffer(shape={self.shape}, dtype={self.dtype}, space={self.space})"
 
 
-class BufferSlice:
+class BufferSlice(_StridedView):
     """An access pattern into a :class:`Buffer`, for use as a DMA endpoint."""
 
     __slots__ = ("buffer", "offsets", "sizes", "strides", "logical_sizes", "is_view")
@@ -467,46 +579,9 @@ class BufferSlice:
     def materialize_offsets(self):
         return [o.materialize() for o in self.offsets]
 
-    def reshape(self, *shape):
-        """This region's elements at a different rank, as a view.
-
-        Splitting an axis is how a tile is laid out in the blocks a matmul
-        instruction consumes: a [32, 32] region becomes [8, 4, 4, 8] and the
-        walk is unchanged, only re-described. Raises rather than copying when
-        no view exists -- see :func:`_reshape_pattern`.
-        """
-        if len(shape) == 1 and not isinstance(shape[0], int):
-            shape = tuple(shape[0])
-        offsets, sizes, strides = _reshape_pattern(
-            self.sizes, self.strides, self.offsets, shape
-        )
+    def _respan(self, offsets, sizes, strides, logical_sizes):
         return BufferSlice(
-            self.buffer,
-            [coerce_index(o) for o in offsets],
-            sizes,
-            strides,
-            logical_sizes=sizes,
-            is_view=True,
-        )
-
-    def transpose(self, *axes):
-        """This region walked with its axes permuted.
-
-        Nothing moves: offsets, sizes and strides are permuted together, so the
-        descriptor visits the same elements in a different order. Takes a full
-        permutation, as numpy does.
-        """
-        if len(axes) == 1 and not isinstance(axes[0], int):
-            axes = tuple(axes[0])
-        axes = [int(a) for a in axes]
-        _check_axes(axes, len(self.sizes))
-        return BufferSlice(
-            self.buffer,
-            _permute(self.offsets, axes),
-            _permute(self.sizes, axes),
-            _permute(self.strides, axes),
-            logical_sizes=_permute(self.logical_sizes, axes),
-            is_view=True,
+            self.buffer, offsets, sizes, strides, logical_sizes, is_view=True
         )
 
     def __repr__(self):
