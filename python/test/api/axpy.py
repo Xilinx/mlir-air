@@ -69,6 +69,13 @@ def run(f):
 # CHECK: vector.transfer_write {{.*}} vector<16xbf16>
 # CHECK: air.dma_memcpy_nd
 # CHECK: memref.dealloc
+#
+# Note this is no longer op-for-op what programming_examples/axpy emits: that
+# example now spells the vectorised bf16 case air.ops.fma, which rounds once
+# instead of twice. What is pinned here is the DSL property the file is about
+# -- that a nested tree of operators lowers as one loop -- and `alpha * x + y`
+# is still exactly what axpy emits on its scalar paths. See api/fma.py for the
+# fused form.
 @run
 def axpy_vectorized():
     print(build(65536, 1024, 2.0, herd_shape=(4,)).mlir())

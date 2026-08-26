@@ -1,0 +1,15 @@
+# Additional Python packages for the LFM2-1.2B Q4_0 example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+
+# Download the bf16 checkpoint from the Hub (LFM2_MODEL_SOURCE). The NPU weights
+# are quantized to Q4_0 from it on load, and the same checkpoint is the bf16
+# reference `make verify` compares against.
+huggingface_hub
+safetensors
+
+# Tokenizer + chat template for the interactive chatbot (make chat / ask / gen),
+# and the bf16 reference model for `make verify`.
+transformers

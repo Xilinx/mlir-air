@@ -1,16 +1,41 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""A tile staged through L2 on its way to a core, on air.api.
+
+The sibling ``shim_dma_2d`` moves the same 8x16 tile straight from L3 into L1.
+This one puts a memtile in between, which is what ``air.segment`` is for:
+
+    l2 = air.alloc(TILE_SIZE, i32, scope=seg.private())   a memtile buffer
+      air.ops.load(l2, A[0:8, 0:16])                      L3 -> L2, strided
+      air.ops.load(tile_in, l2)                           L2 -> L1, contiguous
+      tile_out[:] = tile_in[:]
+      air.ops.store(tile_out, B[0:8, 0:16])               L1 -> L3, strided
+
+``seg.private()`` is the whole point of the example: it allocates in memory
+space 1, and the herd nested in the segment body carries that buffer in as an
+operand automatically. ``air.herd`` is ``IsolatedFromAbove``, so in the
+raw-bindings version this replaces, the L2 buffer had to be listed in
+``operands=[...]`` by hand and picked back up as a body parameter. Here the
+tracer knows which buffers are live in the enclosing segment and threads them
+itself.
+
+The strided L3 read is unchanged: the image is 16x32 and the tile 8x16, so the
+tile is not contiguous, and the transfer carries sizes [8, 16] strides [32, 1].
+Only the top-left tile is touched; the rest of B stays zero.
+
+Unchanged from the raw-bindings version except that the copy is written
+``tile_out[:] = tile_in[:]`` rather than a scalar loop nest over every (i, j).
+The tile's innermost dimension is 16, so that vectorises to a ``<16 x i32>``
+(512-bit) read and write.
+"""
+
 import argparse
 import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
@@ -26,91 +51,34 @@ assert IMAGE_WIDTH % TILE_WIDTH == 0
 INOUT_DATATYPE = np.int32
 
 
-@module_builder
 def build_module():
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+    A = air.tensor(IMAGE_SIZE, i32)
+    B = air.tensor(IMAGE_SIZE, i32)
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    with air.launch(name="copy") as launch:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-            # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
-                # We want to store our data in L1 memory
-                mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
+                @seg.body
+                def _():
+                    # L2: a memtile buffer, passed into the herd for us.
+                    l2_tile = air.alloc(TILE_SIZE, i32, scope=seg.private())
 
-                # This is the type definition of the tile
-                tile_type_l2 = MemRefType.get(
-                    shape=TILE_SIZE,
-                    element_type=xrt_dtype,
-                    memory_space=mem_space_l2,
-                )
+                    with air.herd([range(1)], name="copyherd", shape=(1,)) as h:
 
-                # We must allocate a buffer of tile size for the input/output
-                tile_in_l2 = AllocOp(tile_type_l2, [], [])
+                        @h.body
+                        def _(tx):
+                            tile_in = air.alloc(TILE_SIZE, i32, scope=h.private())
+                            tile_out = air.alloc(TILE_SIZE, i32, scope=h.private())
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3, tile_in_l2])
-                def herd_body(tx, ty, sx, sy, a, b, my_l2_tile):
+                            air.ops.load(l2_tile, A[0:TILE_HEIGHT, 0:TILE_WIDTH])
+                            air.ops.load(tile_in, l2_tile)
+                            tile_out[:] = tile_in[:]
+                            air.ops.store(tile_out, B[0:TILE_HEIGHT, 0:TILE_WIDTH])
 
-                    # We want to store our data in L1 memory
-                    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
-                    # This is the type definition of the tile
-                    tile_type_l1 = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=xrt_dtype,
-                        memory_space=mem_space_l1,
-                    )
-
-                    # We must allocate a buffer of tile size for the input/output
-                    tile_in_l1 = AllocOp(tile_type_l1, [], [])
-                    tile_out_l1 = AllocOp(tile_type_l1, [], [])
-
-                    dma_memcpy_nd(
-                        my_l2_tile,
-                        a,
-                        src_offsets=[0, 0],
-                        src_sizes=TILE_SIZE,
-                        src_strides=[IMAGE_WIDTH, 1],
-                    )
-
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                    dma_memcpy_nd(
-                        tile_in_l1,
-                        my_l2_tile,
-                    )
-
-                    # Access every value in the tile
-                    for i in range_(TILE_HEIGHT):
-                        for j in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
-                            val = load(tile_in_l1, [i, j])
-
-                            # Store the output value in tile_out
-                            store(val, tile_out_l1, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    # Copy the output tile into the output
-                    dma_memcpy_nd(
-                        b,
-                        tile_out_l1,
-                        dst_offsets=[0, 0],
-                        dst_sizes=TILE_SIZE,
-                        dst_strides=[IMAGE_WIDTH, 1],
-                    )
-
-                    # Deallocate our L1 buffers
-                    DeallocOp(tile_in_l1)
-                    DeallocOp(tile_out_l1)
+    return launch
 
 
 if __name__ == "__main__":
@@ -136,10 +104,17 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module()
+    mlir_module = build_module().build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)

@@ -235,14 +235,14 @@ def whole_tensor_transfer():
 
 
 # CHECK-LABEL: TEST: channel_pack
-# pack= walks a flat L2 region in micro-tile order, so the DMA performs the
-# pack and the consumer does a plain whole-buffer get. ops.load derives the
-# same walk from its destination buffer; a channel cannot see that far, because
-# put and get are separate ops with the packed side at the other end of the
-# stream, so the walk is named at the put.
+# A put walks a flat L2 region block-first, so the DMA performs the pack and the
+# consumer does a plain whole-buffer get. The walk is written where it happens,
+# with reshape and transpose on the region -- put and get are separate ops with
+# the blocked side at the other end of the stream, so there is nothing else the
+# channel could derive it from.
 #
-# The B pack of a [K, N] region with micro-tile (k, n) is
-# [N/n, K/k, k, n] over strides [n, k*N, N, 1] -- here [6, 6, 16, 8] over
+# Splitting a [K, N] region into (K/k, k, N/n, n) and permuting to
+# [N/n, K/k, k, n] gives strides [n, k*N, N, 1] -- here [6, 6, 16, 8] over
 # [8, 768, 48, 1] for a [96, 48] region, which is the same walk the
 # hand-written kernel spells collapsed as [6, 96, 8] over [8, 48, 1].
 # CHECK: air.channel.put @Bpack[] (%{{.*}}[0, 0, 0, 0] [6, 6, 16, 8] [8, 768, 48, 1])
@@ -250,7 +250,7 @@ def whole_tensor_transfer():
 @run
 def channel_pack():
     TILE_K, TILE_N = 96, 48
-    mm = air.micro_tile(1, 16, 8)
+    MM_K, MM_N = 16, 8
 
     A = air.tensor([TILE_K, TILE_N], i8)
     Out = air.tensor([TILE_K, TILE_N], i8)
@@ -267,8 +267,9 @@ def channel_pack():
                     l2_b = air.alloc([TILE_K, TILE_N], i8, scope=seg.private())
                     air.ops.load(l2_b, A)
                     pack.put(
-                        l2_b[0:TILE_K, 0:TILE_N],
-                        pack=mm.b(TILE_K, TILE_N, lead=()),
+                        l2_b[0:TILE_K, 0:TILE_N]
+                        .reshape(TILE_K // MM_K, MM_K, TILE_N // MM_N, MM_N)
+                        .transpose(2, 0, 1, 3)
                     )
 
                     with air.herd([range(1)], name="h", shape=(1,)) as h:
@@ -281,3 +282,90 @@ def channel_pack():
                     air.ops.store(l2_b, Out)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: l3_endpoint_after_a_segment_reenters_the_launch
+# A gridless launch opens its region lazily, so the segment is what opens it and
+# a get written afterwards is back out at trace scope. It has to step into the
+# region anyway, because reaching L3 needs the shim DMA allocation the launch
+# brings; without that it lands at func scope and aircc reports "failed to link
+# to any shim dma allocation".
+#
+# The endpoint is resolved inside that region rather than before choosing it.
+# Resolving early would materialise the slice's offset arithmetic out here and
+# then again inside, orphaning the first copy at func scope. With a constant
+# offset there is no arithmetic to orphan, which is why the pin is on the op's
+# position: the get is the last thing in the launch body, after air.segment.
+# CHECK: air.launch
+# CHECK: air.segment @seg
+# CHECK: air.channel.get @drain[] (%{{.*}}[32] [32] [1]) : (memref<64xi32>)
+@run
+def l3_endpoint_after_a_segment_reenters_the_launch():
+    A = air.tensor([64], i32)
+    B = air.tensor([64], i32)
+    feed = air.channel("feed")
+    drain = air.channel("drain")
+
+    with air.launch(name="reentry") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([32], i32, scope=h.private())
+                            air.ops.load(buf, A[0:32])
+                            feed.put(buf)
+                            drain.put(buf)
+
+                    l2 = air.alloc([32], i32, scope=seg.private())
+                    feed.get(l2)
+
+            drain.get(B[32:64])
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_computed_offset_cannot_follow_the_segment
+# Same position, but the offset is built from a loop variable that lives outside
+# the launch. Moving the op into the region cannot take that value with it --
+# air.launch is IsolatedFromAbove -- so this is refused by name rather than left
+# to fail as "'affine.apply' op using value defined outside the region", which
+# reads as a DSL bug instead of as the shape of the program.
+# CHECK: RuntimeError: air.channel.get on an L3 tensor slice whose offset is
+# CHECK-SAME: computed from a coordinate or loop variable
+@run
+def a_computed_offset_cannot_follow_the_segment():
+    B = air.tensor([64], i32)
+    drain = air.channel("drain2")
+
+    with air.launch(name="computed") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([32], i32, scope=h.private())
+                            buf[:] = 0
+                            drain.put(buf)
+
+            for i in air.sequential(2):
+                drain.get(B[i * 32 : i * 32 + 32])
+
+    try:
+        launch.mlir()
+    except RuntimeError as e:
+        print(f"RuntimeError: {e}")
+    else:
+        print("ERROR: no exception raised")

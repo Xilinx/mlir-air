@@ -32,6 +32,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 EXAMPLES = [
     {
+        "category": "Element-wise",
+        "name": "Element-wise Multiply",
+        "path": "eltwise_mul",
+        "datatypes": "bf16, f32",
+    },
+    {
+        "category": "Convolution",
+        "name": "Conv1D (causal depthwise, k=3)",
+        "path": "conv1d_depthwise",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Linear Algebra",
         "name": "Matrix Multiplication",
         "path": "matrix_multiplication",
@@ -520,6 +532,11 @@ _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 LLM_HF_MODELS = {
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
     "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
+    # Q4_0-quantized on load from an upstream bf16 checkpoint (LiquidAI
+    # publishes no pre-quantized bundle), so this points at the source repo
+    # rather than at an NPU2 bundle -- and that same repo is the bf16 verify
+    # reference, as in the qwen25_3b_q4 / qwen25_7b_q4nx rows.
+    "lfm2_1_2b_q4nx": "LiquidAI/LFM2-1.2B",
     "llama32_1b": "meta-llama/Llama-3.2-1B",
     "llama32_1b_int4": "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead",
     "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",

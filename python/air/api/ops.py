@@ -16,35 +16,51 @@ AIR builds its real asynchronous dependency graph from program order in the
 ``air-dependency`` pass, so a v1 token carries no SSA value -- it exists so that
 ``dependency=`` can be type-checked instead of silently ignored.
 
-Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, and the
-``sigmoid``/``silu``/``gelu`` compositions built on them) build lazy expression
-nodes instead, and return a :class:`~air.api._value.BufferExpr`.
+Elementwise compute ops (``maximum``, ``minimum``, ``relu``, ``tanh``, ``exp``,
+``rsqrt``, and the ``sigmoid``/``silu``/``gelu`` compositions built on them)
+build lazy expression nodes instead, and return a
+:class:`~air.api._value.BufferExpr`.
+
+``reduce_add`` and ``reduce_max`` build such a node too, but it is the one whose
+shape differs from its operand's: it collapses the innermost axis. That is why a
+reduction has to be the whole right-hand side rather than nesting inside a
+larger expression.
 
 ``dot`` is a statement rather than an expression: it accumulates into a buffer
 and returns a Token, matching the signature the API proposal specified. On rank-6
-(micro-tiled) operands it becomes the blocked contraction the AIE2 matmul
-intrinsic wants; see ``air.api._pack``.
+operands it becomes the blocked contraction the AIE2 matmul intrinsic wants,
+whose block layout the caller builds with ``reshape``/``transpose`` on the DMA.
 
-The remaining compute ops from the wider API proposal (``reduce``, ``exp``,
-``stack``, ``dequant``, ``atomic_add``) are not implemented. They raise rather
-than returning a plausible-looking placeholder: a DSL that accepts an op it
-cannot lower produces a kernel that runs and is silently wrong. ``exp`` is on
-that list by choice rather than by oversight -- the activations here are composed
-from ``tanh``, which has a checked lowering, so nothing has needed a vector
-``exp`` yet.
+The remaining compute ops from the wider API proposal (``stack``, ``dequant``,
+``atomic_add``) are not implemented. They raise rather than returning a
+plausible-looking placeholder: a DSL that accepts an op it cannot lower
+produces a kernel that runs and is silently wrong.
 """
 
 from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
-from .types import require_signless
+from .types import require_computable, require_signless
 
 __all__ = [
     "load",
     "store",
     "copy",
+    "fill",
+    "cast",
     "maximum",
     "minimum",
+    # equal/not_equal/select were added with the comparison operators and were
+    # never listed here, so `from air.api.ops import *` silently omitted them.
+    # Corrected while adding fma rather than left as a trap for the next entry.
+    "equal",
+    "not_equal",
+    "select",
+    "fma",
+    "reduce_add",
+    "reduce_max",
     "relu",
     "tanh",
+    "exp",
+    "rsqrt",
     "sigmoid",
     "silu",
     "gelu",
@@ -78,10 +94,10 @@ def _check_padding(pad_before, pad_after):
 # access pattern) so load and store can be written once for every level of the
 # memory hierarchy -- L3 to L2, L2 to L1, L1 to L2, L2 to L3.
 class _Endpoint:
-    __slots__ = ("value", "dtype", "sizes", "pattern", "tensor", "what", "raw")
+    __slots__ = ("value", "dtype", "sizes", "pattern", "tensor", "what", "is_view")
 
     def __init__(
-        self, value, dtype, sizes, pattern, tensor=None, what="buffer", raw=None
+        self, value, dtype, sizes, pattern, tensor=None, what="buffer", is_view=False
     ):
         self.value = value
         self.dtype = dtype
@@ -90,21 +106,16 @@ class _Endpoint:
         self.pattern = pattern
         self.tensor = tensor
         self.what = what
-        # The pattern before its offsets were materialised into SSA values, kept
-        # so a packed destination can re-derive the pattern from it (see
-        # _repack_source). Materialising is one-way.
-        self.raw = raw
+        # True when `sizes` describes a reshaped or transposed view, whose rank
+        # and axis order need not match the other endpoint's. See _check_pair.
+        self.is_view = is_view
 
 
 def _endpoint(obj, direction, role):
     if isinstance(obj, Buffer):
         if obj.value is None:
             raise RuntimeError("buffer used before allocation")
-        # A micro-tiled buffer is contiguous, so it still transfers as a whole
-        # memref; but it is *shaped* [.., N/n, M/m, m, n] while the other end
-        # thinks in [.., M, N], so it reports the logical extents.
-        sizes = obj.pack.lead + obj.pack.logical if obj.pack else obj.shape
-        return _Endpoint(obj.value, obj.dtype, sizes, None, what="buffer")
+        return _Endpoint(obj.value, obj.dtype, obj.shape, None, what="buffer")
     if isinstance(obj, BufferSlice):
         if obj.value is None:
             raise RuntimeError("buffer used before allocation")
@@ -114,17 +125,17 @@ def _endpoint(obj, direction, role):
             tuple(obj.logical_sizes),
             (obj.materialize_offsets(), list(obj.sizes), list(obj.strides)),
             what="buffer slice",
-            raw=(list(obj.offsets), list(obj.sizes), list(obj.strides)),
+            is_view=obj.is_view,
         )
     if isinstance(obj, TensorSlice):
         return _Endpoint(
             obj.tensor.value,
             obj.dtype,
-            tuple(obj.sizes),
+            tuple(obj.logical_sizes),
             (obj.materialize_offsets(), list(obj.sizes), list(obj.strides)),
             tensor=obj.tensor,
             what="tensor slice",
-            raw=(list(obj.offsets), list(obj.sizes), list(obj.strides)),
+            is_view=obj.is_view,
         )
     if isinstance(obj, Tensor):
         # A whole tensor, which channel put/get take routinely --
@@ -153,26 +164,60 @@ def _endpoint(obj, direction, role):
     )
 
 
-def _squeeze_leading_units(sizes, rank):
-    """Drop leading unit dimensions until ``sizes`` has rank ``rank``.
+def _squeeze_units(sizes, rank):
+    """Drop outer unit dimensions until ``sizes`` has rank ``rank``.
 
-    A staged L2 tile is indexed per core, so the natural access pattern carries
-    a leading 1 -- ``staged[tx, j:j+m, :]`` is ``[1, m, k]`` into an ``[m, k]``
-    L1 buffer, exactly as the hand-written matvec kernel writes it. Only leading
-    ones are dropped, so a genuine shape mismatch still fails.
+    Leading ones come from staging: an L2 tile is indexed per core, so the
+    natural access pattern carries one -- ``staged[tx, j:j+m, :]`` is
+    ``[1, m, k]`` into an ``[m, k]`` L1 buffer, exactly as the hand-written
+    matvec kernel writes it.
+
+    Trailing ones come from reducing. ``ops.reduce_add`` collapses the innermost
+    dimension to 1, so the result of reducing an ``[m, n]`` tile is an ``[m, 1]``
+    buffer -- a column of m values -- and the L3 array it belongs in is ``[m]``.
+    Both spellings describe the same m contiguous elements.
+
+    Only *unit* dimensions are dropped, and only from the ends, so a genuine
+    mismatch still fails: nothing here can turn ``[m, n]`` into ``[n, m]``, or
+    excuse a differing extent.
     """
     sizes = list(sizes)
     while len(sizes) > rank and sizes[0] == 1:
         sizes.pop(0)
+    while len(sizes) > rank and sizes[-1] == 1:
+        sizes.pop()
     return tuple(sizes)
 
 
+def _elements(sizes):
+    n = 1
+    for e in sizes:
+        n *= int(e)
+    return n
+
+
 def _check_pair(dst, src, direction):
-    """Shapes and dtypes must agree, up to leading unit dimensions."""
+    """Shapes and dtypes must agree, up to outer unit dimensions.
+
+    When either end is a reshaped or transposed view the axis-by-axis check is
+    dropped and the element count is checked instead. That is not a weakening
+    to taste: re-describing a walk is exactly what those two constructors do, so
+    a view's rank and axis order are deliberately not the other end's, and the
+    only things both ends still have to agree on are how many elements move and
+    of what type. Unviewed transfers keep the strict check, which tolerates a
+    leading or trailing unit axis -- see ``_squeeze_units``.
+    """
     d, s = tuple(dst.sizes), tuple(src.sizes)
-    if d != s:
+    if dst.is_view or src.is_view:
+        if _elements(d) != _elements(s):
+            raise ValueError(
+                f"transfer size mismatch in air.api.ops.{direction}: the "
+                f"destination {dst.what} holds {_elements(d)} elements {d} but "
+                f"the source {src.what} moves {_elements(s)} {s}"
+            )
+    elif d != s:
         rank = min(len(d), len(s))
-        if _squeeze_leading_units(d, rank) != _squeeze_leading_units(s, rank):
+        if _squeeze_units(d, rank) != _squeeze_units(s, rank):
             raise ValueError(
                 f"transfer shape mismatch in air.api.ops.{direction}: the "
                 f"destination {dst.what} is {d} but the source {src.what} is {s}"
@@ -205,78 +250,27 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
     L1; ``load(l2, A[i:i+n])`` is L3 to L2. The destination is always the buffer
     being filled. A bare tensor means the whole of it, so ``load(l2, A)`` and
     ``load(l2, A[:, :])`` are the same transfer.
+
+    A *view* of a buffer is a destination too -- ``load(l1.reshape(n), A[i:i+n])``
+    fills a rank-2 tile from a flat region. This is the mirror of ``store``,
+    which has always drained one (``store(t.transpose(1, 0), B[:, :])`` is the
+    whole of data_transfer_transpose). Filling was the direction that happened
+    not to have a caller yet, and the asymmetry read as a rule rather than an
+    omission: a kernel whose L1 tile is shaped for a hand-written kernel but
+    whose L3 region is flat has to reshape on the way *in*.
     """
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
 
-    if not isinstance(dst, Buffer):
+    if not isinstance(dst, (Buffer, BufferSlice)):
         raise TypeError(
             f"air.api.ops.load fills a buffer, so its first argument must be one "
-            f"from air.alloc(); got {type(dst).__name__}"
+            f"from air.alloc() or a region of one; got {type(dst).__name__}"
         )
     dst_ep = _endpoint(dst, "load", "destination")
     src_ep = _endpoint(src, "load", "source")
-    if dst.pack is not None:
-        src_ep = _repack_source(dst, src, src_ep)
     _check_pair(dst_ep, src_ep, "load")
     return Token(_emit_dma(dst_ep, src_ep))
-
-
-def _repack_source(dst, src, src_ep):
-    """Re-walk a flat source in micro-tile order, for a packed destination.
-
-    Filling a micro-tiled A or B tile is the one transfer where the access
-    pattern goes on the *other* side: the destination is contiguous (``[] [] []``
-    in the emitted IR) and the flat source is read out of order, so that the DMA
-    itself performs the pack. The pattern is derived from the destination's
-    micro-tile, so the call site writes an ordinary logical slice::
-
-        ops.load(l1_a, l2_a[tx, 0, :, kk : kk + tile_k])
-
-    A packed source, by contrast, already carries its own pattern -- it is an
-    unpack, and ``Buffer.__getitem__`` built it.
-    """
-    from ._pack import pack_pattern
-
-    # A packed source is already an unpack and carries its own pattern.
-    if _pack_of(src) is not None:
-        return src_ep
-    if dst.pack.role == "C":
-        raise NotImplementedError(
-            "air.api.ops.load into a micro-tiled C accumulator is not supported: "
-            "C is written by ops.dot and drained with ops.store. Zero it with "
-            "acc[:] = 0.0 rather than loading into it."
-        )
-    if src_ep.raw is None:
-        raise TypeError(
-            "air.api.ops.load into a micro-tiled buffer needs a source *region*, "
-            f"not a whole buffer, so that the {dst.pack.role} pack can be "
-            "derived; index the source, e.g. l2_a[tx, 0, :, k : k + tile_k]"
-        )
-    offsets, sizes, strides = src_ep.raw
-    nlead = len(dst.pack.lead)
-    # A rank-2 region is padded by pack_pattern when the destination's leading
-    # dimensions are all 1 -- they are structural, required by block_matmul's
-    # 6-D operands, and a flat staging buffer has no such axes to slice.
-    flat_ok = len(sizes) == 2 and all(e == 1 for e in dst.pack.lead)
-    if len(sizes) != nlead + 2 and not flat_ok:
-        raise ValueError(
-            f"air.api.ops.load into a micro-tiled {dst.pack.role} buffer needs a "
-            f"source region of rank {nlead + 2} (or rank 2 when its leading "
-            f"dimensions are all 1), with the two logical axes last; got rank "
-            f"{len(sizes)}, {tuple(sizes)}"
-        )
-    p_off, p_sizes, p_strides = pack_pattern(dst.pack, sizes, strides, offsets)
-    src_ep.pattern = ([o.materialize() for o in p_off], p_sizes, p_strides)
-    return src_ep
-
-
-def _pack_of(obj):
-    if isinstance(obj, Buffer):
-        return obj.pack
-    if isinstance(obj, BufferSlice):
-        return obj.buffer.pack
-    return None
 
 
 def store(src, dst, pad_before=None, pad_after=None, dependency=None):
@@ -289,18 +283,6 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
     _check_dependency(dependency)
     _check_padding(pad_before, pad_after)
 
-    if isinstance(src, Buffer) and src.pack is not None:
-        # Draining a micro-tiled buffer whole would emit `[] [] []` -- a
-        # contiguous read, which copies the tile still in micro-tile order and is
-        # silently wrong. The unpack lives in the access pattern, so the source
-        # has to be subscripted for one to exist.
-        raise TypeError(
-            "air.api.ops.store cannot drain a micro-tiled buffer whole: the "
-            "unpack back to row-major order is the access pattern, and a whole "
-            "buffer has none. Subscript it in logical coordinates, e.g. "
-            f"ops.store(acc[{', '.join(['0'] * len(src.pack.lead))}, :, :], "
-            "l2_c[...])."
-        )
     if not isinstance(src, (Buffer, BufferSlice)):
         raise TypeError(
             f"air.api.ops.store drains a buffer, so its first argument must be "
@@ -317,6 +299,45 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
         dst_ep.tensor.is_output = True
 
     return Token(_emit_dma(dst_ep, src_ep))
+
+
+def fill(buf, value):
+    """Set every element of a buffer to a scalar, as one ``linalg.fill``.
+
+    This is what zeroes an accumulator before a reduction loop. It is a separate
+    op rather than a spelling of ``buf[:] = 0.0`` because the two lower
+    differently and the difference matters: the elementwise path builds a loop
+    nest with a store per element, which for a blocked accumulator is tens of
+    thousands of scalar stores and a documented cause of NPU timeouts. Zeroing
+    has no elementwise structure worth preserving, and which of the two you get
+    should not depend on the buffer's shape.
+    """
+    from air.dialects.arith import ConstantOp
+    from air.dialects.linalg import fill as linalg_fill
+
+    if not isinstance(buf, Buffer):
+        raise TypeError(
+            f"air.api.ops.fill fills a buffer, so its first argument must be one "
+            f"from air.alloc(); got {type(buf).__name__}"
+        )
+    if buf.value is None:
+        raise RuntimeError("buffer used before allocation")
+    # linalg.fill's value comes from an arith.constant, which has no signful form.
+    require_signless(buf.dtype, "air.api.ops.fill")
+    require_computable(buf.dtype, "air.api.ops.fill")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError(
+            f"air.api.ops.fill takes a scalar, got {value!r}; for an elementwise "
+            "expression assign it, e.g. buf[:] = a[:] + b[:]"
+        )
+    scalar = float(value) if buf.dtype.is_float else int(value)
+    cst = ConstantOp(buf.dtype.mlir(), scalar)
+
+    # A herd-shared accumulator is one memref spanning every core, so a core
+    # must fill only its own slab -- the same subview ops.dot accumulates into.
+    shared = getattr(buf.scope, "kind", None) == "shared"
+    out = accumulator_subview(buf) if shared else buf.value
+    return Token(linalg_fill(cst, outs=[out]))
 
 
 def copy(src_slice, dst_slice, pad_before=None, pad_after=None, dependency=None):
@@ -353,6 +374,195 @@ def _elementwise(name, key, a, b):
     return BufferExpr("binary", op=key, args=(a, b))
 
 
+def cast(x, dtype):
+    """Convert an elementwise expression to another element type.
+
+        l1_out[:] = air.api.ops.cast(l1_in[:], air.api.i32)
+
+    This is the one node whose operand has a different element type from its
+    result, so everything below it is read, and computed on, in the source type:
+    ``cast(a[:] * 2.0, i32)`` doubles in f32 and converts once, while
+    ``cast(a[:], i32) * 2`` converts first and doubles in i32.
+
+    Which ``arith`` op it becomes follows from the two types -- ``sitofp``,
+    ``fptosi``, ``extf``, ``truncf`` or ``extsi``. Every one of those was run on
+    npu1 hardware against an exact numpy reference before being allowed here,
+    vectorised and scalar, because compiling is not the same claim as computing:
+    of the pairs probed, four compiled cleanly and returned wrong values.
+
+    Two results of that sweep are worth knowing before using this:
+
+    * **A float result is rounded toward negative infinity, not to nearest.**
+      Converting to bf16 differs from numpy's round-half-to-even by up to one
+      ULP (2^-7 relative). That is not a property of this op -- a plain
+      ``c[:] = a[:] + b[:]`` on bf16 buffers differs from numpy the same way --
+      but an exact comparison against a numpy reference will fail on roughly
+      half of all inputs, so compare with a tolerance.
+    * **Narrowing between integer types is refused**, not supported-with-caveats.
+      See ``_conversion_op`` below for the measurement.
+    """
+    from .types import DType
+
+    if not isinstance(dtype, DType):
+        raise TypeError(
+            f"air.api.ops.cast needs an air.api element type as its second "
+            f"argument (air.api.i32, air.api.f32, ...), got {dtype!r}"
+        )
+    expr = BufferExpr.coerce(x)
+    if expr.kind == "compare":
+        # A comparison evaluates to i1, not to an element type, so there is
+        # nothing to convert *from* -- and a conversion op applied to a
+        # vector<Wxi1> would be a verifier failure well downstream of the
+        # mistake. Say what to do instead.
+        raise TypeError(
+            "air.api.ops.cast got a comparison, which is a predicate rather "
+            "than a value: it evaluates to i1, not to an element type. Turn it "
+            "into values first with air.api.ops.select(cond, a, b), or write "
+            "the comparison against already-converted operands"
+        )
+    source = expr.element_dtype()
+    if source is None:
+        # Two different situations produce no source type, and they need
+        # different messages because they need different fixes.
+        if expr.leaves():
+            # `cast(ops.select(a[:] > 0, 1, 2), i32)`. There *are* buffers, but
+            # only in the predicate: ops.select allows that, and the values it
+            # chooses between are both scalars, so the expression takes its
+            # element type from whatever surrounds it. There is nothing to
+            # convert from, and it cannot simply be adopted into the target
+            # type either -- the predicate's own operands would then have to
+            # be i32 as well, which is not what was written.
+            raise TypeError(
+                "air.api.ops.cast cannot convert this expression: its buffers "
+                "appear only in a comparison, and the values it evaluates to "
+                "are all scalars, so it has no element type of its own to "
+                "convert from. Cast the operands instead -- for example "
+                "ops.select(a[:] > 0, ops.cast(x[:], t), ops.cast(y[:], t))"
+            )
+        # `cast(1.0, i32)` -- no buffer at all, so the constant would simply be
+        # built in the target type anyway. Write the constant you meant.
+        raise TypeError(
+            "air.api.ops.cast needs an expression containing at least one "
+            f"buffer; {x!r} is a bare scalar, which is already built in "
+            "whatever element type surrounds it"
+        )
+    if source is dtype:
+        # Converting to the type it already has. numpy's astype does this too,
+        # and it must not fall through to a builder: arith rejects a same-type
+        # extf with "operand type and result type are cast incompatible".
+        return expr
+    require_signless(source, "air.api.ops.cast")
+    require_signless(dtype, "air.api.ops.cast")
+    if not _clamped_into(expr, dtype):
+        # raises here, at the call site, not at emit
+        _conversion_op(source, dtype)
+    return BufferExpr("cast", args=(expr,), dtype=dtype)
+
+
+def _int_range(dtype):
+    """The inclusive [lo, hi] a signed integer dtype can represent."""
+    bits = dtype.itemsize * 8
+    return -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
+
+
+def _const_operand(node):
+    """The Python value of a scalar leaf, or ``None`` if it is not one."""
+    if node.kind == "scalar" and isinstance(node.scalar, (int, bool)):
+        return int(node.scalar)
+    return None
+
+
+def _clamped_into(expr, target):
+    """True if *expr* is a clamp whose bounds provably fit *target*.
+
+    This is the one narrowing int -> int cast that is allowed, and it is
+    allowed because the objection to the rest does not apply to it. That
+    objection -- see ``_conversion_op`` -- is that arith.trunci wraps on the
+    emitter's scalar path and saturates on its vector path, so the same source
+    would compute different things depending on the tile shape. The two
+    disagree only on values the target cannot hold. When the operand is
+    ``minimum(maximum(x, lo), hi)`` with constant lo and hi inside the target's
+    range, no such value can reach the cast, both paths agree, and the result
+    is a property of the program again.
+
+    That is a structural check, not a promise from the caller: the clamp has to
+    be *there*, in the expression tree, with constant bounds. ``_conversion_op``
+    ends by saying in-range values agree and nothing can check it -- this is
+    the case where something can.
+
+    Deliberately narrow. Either order of the pair is accepted, since clamping
+    is commutative here, but a runtime bound, a bound read from a buffer, or a
+    clamp one operation further away all fall through to the refusal.
+    """
+    if target.is_float:
+        return False
+    if not (expr.kind == "binary" and expr.op in ("min", "max")):
+        return False
+    inner = expr.args[0] if expr.args[0].kind == "binary" else None
+    outer_bound = _const_operand(expr.args[1]) if len(expr.args) == 2 else None
+    if inner is None or outer_bound is None:
+        return False
+    if not (inner.op in ("min", "max") and inner.op != expr.op):
+        return False
+    inner_bound = _const_operand(inner.args[1]) if len(inner.args) == 2 else None
+    if inner_bound is None:
+        return False
+    hi = outer_bound if expr.op == "min" else inner_bound
+    lo = inner_bound if expr.op == "min" else outer_bound
+    t_lo, t_hi = _int_range(target)
+    return lo >= t_lo and hi <= t_hi and lo <= hi
+
+
+def _conversion_op(source, target, narrowing_ok=False):
+    """The arith op converting ``source`` to ``target``, or a refusal.
+
+    Shared by ``cast`` (so a bad pair is rejected where the user wrote it) and
+    by the emitter (so it does not need a second copy of the rules).
+
+    ``narrowing_ok`` is set only for the int -> int narrowing that
+    ``_clamped_into`` has proven safe; see the comment on the refusal below.
+    """
+    from air.dialects import arith
+
+    if source.is_float and target.is_float:
+        if target.itemsize > source.itemsize:
+            return arith.ExtFOp
+        if target.itemsize < source.itemsize:
+            return arith.TruncFOp
+        # bf16 and f16 are both 2 bytes, so neither extf nor truncf applies:
+        # they have different exponent widths and MLIR has no direct op.
+        raise NotImplementedError(
+            f"air.api.ops.cast cannot convert {source} to {target} directly: "
+            f"they are the same width, so it is neither a widening nor a "
+            f"narrowing, and arith has no op for it. Convert through "
+            f"air.api.f32 in two steps"
+        )
+    if source.is_float:
+        return arith.FPToSIOp
+    if target.is_float:
+        return arith.SIToFPOp
+    if target.itemsize > source.itemsize:
+        return arith.ExtSIOp
+    # Narrowing int -> int. Refused on evidence rather than on principle:
+    # measured on npu1, arith.trunci wraps on the scalar path (matching both
+    # MLIR's own semantics and numpy) and *saturates* on the vector path --
+    # i32 933033 came back as 32767 rather than 15529. Which path the emitter
+    # takes depends on whether the tile is a multiple of the vector width,
+    # which is not something the author of the cast is thinking about, so the
+    # same source would compute two different things depending on the tile
+    # size. In-range values agree, and _clamped_into is the one case where
+    # that can be established from the expression tree rather than assumed.
+    if narrowing_ok:
+        return arith.TruncIOp
+    raise NotImplementedError(
+        f"air.api.ops.cast will not narrow {source} to {target}: on AIE the "
+        f"vectorised arith.trunci saturates while the scalar one wraps, and "
+        f"the emitter picks between them based on the tile size, so the result "
+        f"would depend on a tile shape rather than on the program. Mask "
+        f"explicitly if wrapping is what you want"
+    )
+
+
 def maximum(a, b):
     """Elementwise max. Lowers to arith.maximumf (float) / arith.maxsi (int)."""
     return _elementwise("maximum", "max", a, b)
@@ -371,10 +581,241 @@ def relu(x):
     a Python float fails with "expected floating point type".
     """
     expr = BufferExpr.coerce(x)
-    leaves = expr.leaves()
-    if not leaves:
-        raise ValueError("air.api.ops.relu needs a buffer operand, got a scalar")
-    return maximum(expr, 0.0 if leaves[0].dtype.is_float else 0)
+    # The expression's own element type, not the first buffer under it. Those
+    # agree everywhere except across a cast, where `relu(cast(a[:], i32))` has
+    # an f32 leaf and an i32 result -- and it is the result that decides which
+    # zero to build.
+    dtype = expr.element_dtype()
+    if dtype is None:
+        # No value type of its own. That is a bare scalar, which relu cannot
+        # shape -- or an expression whose buffers sit only in a predicate, as
+        # in `relu(ops.select(a[:] > 0, 1, 2))`, which ops.select allows and
+        # which the emitter shapes from those buffers. Fall back to a leaf,
+        # which is the type the surrounding region will be built in anyway,
+        # since every leaf in a region is required to match it.
+        leaves = expr.leaves()
+        if not leaves:
+            raise ValueError("air.api.ops.relu needs a buffer operand, got a scalar")
+        dtype = leaves[0].dtype
+    return maximum(expr, 0.0 if dtype.is_float else 0)
+
+
+# ---------------------------------------------------------------------------
+# Comparison and select
+# ---------------------------------------------------------------------------
+
+# Float comparisons are the *ordered* predicates (OGE, not UGE): ordered means
+# the result is false when either operand is NaN, which is what C's `>=` does
+# and what the hand-written vector_select kernel asked for by name.
+_COMPARISONS = {"lt", "le", "gt", "ge", "eq", "ne"}
+
+
+def _comparison(name, key, a, b):
+    for operand, pos in ((a, "first"), (b, "second")):
+        if isinstance(operand, bool) or not isinstance(
+            operand, (Buffer, BufferExpr, int, float)
+        ):
+            raise TypeError(
+                f"air.api.ops.{name} expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+    a, b = BufferExpr.coerce(a), BufferExpr.coerce(b)
+    if not a.leaves() and not b.leaves():
+        raise ValueError(
+            f"air.api.ops.{name} needs at least one buffer operand; both "
+            "arguments are scalars, which the emitter cannot shape"
+        )
+    return BufferExpr("compare", op=key, args=(a, b))
+
+
+def equal(a, b):
+    """Elementwise ==. Lowers to arith.cmpf OEQ (float) / arith.cmpi eq (int).
+
+    Spelled as a function rather than ``==`` on purpose -- see the note on
+    ``BufferExpr.__eq__`` in ``_value.py``. The ordering comparisons (``<``,
+    ``<=``, ``>``, ``>=``) *are* available as operators.
+    """
+    return _comparison("equal", "eq", a, b)
+
+
+def not_equal(a, b):
+    """Elementwise !=. Lowers to arith.cmpf ONE (float) / arith.cmpi ne (int)."""
+    return _comparison("not_equal", "ne", a, b)
+
+
+def select(cond, a, b):
+    """Elementwise ``cond ? a : b``. Lowers to arith.select.
+
+    ``cond`` must be a comparison -- ``x[:] >= y[:]``, or ``ops.equal(x, y)`` --
+    because that is the only thing in this expression language whose result type
+    is i1. The predicate is emitted as an arith.cmpf/cmpi feeding an
+    arith.select, which is the pair the hand-written kernel spells out.
+
+    Note that ``select(a >= b, a, b)`` is ``maximum(a, b)`` and lowers to two
+    ops where ``ops.maximum`` lowers to one. Both spellings exist because the
+    vector_select and vector_max examples exist to compare them; prefer
+    ``ops.maximum`` unless the point is the select itself.
+    """
+    if isinstance(cond, bool):
+        raise TypeError(
+            "air.api.ops.select got a plain bool as its condition. `==` and "
+            "`!=` on buffer expressions are Python identity comparisons, not "
+            "elementwise ones, and evaluate to a bool before select ever sees "
+            "them -- use air.api.ops.equal / not_equal for those, or one of "
+            "the ordering operators <, <=, >, >= which do build a predicate"
+        )
+    if not isinstance(cond, BufferExpr) or cond.kind != "compare":
+        raise TypeError(
+            "air.api.ops.select expects a comparison as its condition (for "
+            f"example x[:] >= y[:], or ops.equal(x[:], y[:])), got "
+            f"{type(cond).__name__}"
+        )
+    for operand, pos in ((a, "second"), (b, "third")):
+        if isinstance(operand, bool) or not isinstance(
+            operand, (Buffer, BufferExpr, int, float)
+        ):
+            raise TypeError(
+                f"air.api.ops.select expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+    a, b = BufferExpr.coerce(a), BufferExpr.coerce(b)
+    if not a.leaves() and not b.leaves() and not cond.leaves():
+        raise ValueError(
+            "air.api.ops.select needs at least one buffer operand; every "
+            "argument is a scalar, which the emitter cannot shape"
+        )
+    return BufferExpr("select", op="select", args=(cond, a, b))
+
+
+def fma(a, b, c):
+    """Elementwise ``a * b + c`` as one operation. Lowers to vector.fma.
+    Float only, and **vectorised only** -- see the constraints below.
+
+    This is not a shorthand for ``a * b + c``: it is a different computation.
+    Writing the product and the sum as two arith ops rounds twice, once when
+    ``a * b`` is stored into an intermediate of the buffer's element type and
+    again after the add. An fma rounds once, carrying the full-width product
+    into the addition. On bf16, whose 8-bit significand loses the low half of
+    nearly every product, that is a difference you can see in the output
+    rather than a last-ulp curiosity.
+
+    Two constraints, both measured rather than assumed, and both narrower than
+    they first appear:
+
+    * **There is no scalar form.** AIE2 has no scalar fma instruction, so
+      math.fma reaches the backend and fails to legalize -- on npu1 and npu2,
+      bf16 and f32, with and without bf16 emulation. The emitter refuses its
+      own scalar fallback here rather than emitting one that cannot compile.
+    * **f32 needs bf16 emulation.** ``vector.fma`` on ``vector<16xf32>`` is
+      *explicitly marked illegal* by the aievec conversion, so a native f32
+      kernel fails with "failed to legalize operation 'vector.fma'". Under
+      ``bf16_emulation=True`` it lowers through bf16 and compiles.
+
+    So this does **not** rescue f32 from the limitation the axpy conversion
+    documents -- a chained f32 multiply-then-add does not legalize either
+    (``<16 x s32> = G_FMUL``), and f32 has no vectorised route to a
+    multiply-add by any spelling. What ops.fma buys is the single rounding on
+    bf16, which is what the hand-written vector_fma kernel was written for.
+
+    The third argument is the addend, matching C's ``fma(x, y, z)`` and MLIR's
+    operand order; there is no operator spelling because Python has none.
+    """
+    for operand, pos in ((a, "first"), (b, "second"), (c, "third")):
+        if not isinstance(operand, (Buffer, BufferExpr, int, float)):
+            raise TypeError(
+                f"air.api.ops.fma expects a buffer slice or a numeric scalar "
+                f"as its {pos} argument, got {type(operand).__name__}"
+            )
+        # A comparison is the one BufferExpr whose result is i1 rather than the
+        # element type. Only ops.select can consume one; feeding it to an fma
+        # would build an arith op over a predicate and fail deep in the MLIR
+        # verifier, naming an SSA value rather than the argument at fault.
+        if isinstance(operand, BufferExpr) and operand.kind == "compare":
+            raise TypeError(
+                f"air.api.ops.fma got a comparison as its {pos} argument. A "
+                "comparison is a predicate (i1), not a value, so it cannot be "
+                "multiplied or added -- pass it through air.api.ops.select "
+                "first to choose between two values"
+            )
+    a, b, c = BufferExpr.coerce(a), BufferExpr.coerce(b), BufferExpr.coerce(c)
+    if not a.leaves() and not b.leaves() and not c.leaves():
+        raise ValueError(
+            "air.api.ops.fma needs at least one buffer operand; every argument "
+            "is a scalar, which the emitter cannot shape"
+        )
+    return BufferExpr("fma", op="fma", args=(a, b, c))
+
+
+def _reduce(name, key, x):
+    if not isinstance(x, (Buffer, BufferExpr)):
+        raise TypeError(
+            f"air.api.ops.{name} expects a buffer slice, got {type(x).__name__}"
+        )
+    expr = BufferExpr.coerce(x)
+    if expr.kind == "compare":
+        raise TypeError(
+            f"air.api.ops.{name} got a comparison, which is a predicate (i1) "
+            "rather than a value. Pass it through air.api.ops.select first"
+        )
+    if expr.kind == "reduce":
+        raise NotImplementedError(
+            f"air.api.ops.{name} cannot reduce a reduction: the inner one has "
+            "already collapsed the innermost dimension to 1, so the outer one "
+            "would be a no-op over a single element. Reducing a second axis is "
+            "not supported -- store the first result and reduce that"
+        )
+    if not expr.leaves():
+        raise ValueError(
+            f"air.api.ops.{name} needs a buffer operand, got a scalar; there "
+            "is no shape to reduce over"
+        )
+    return BufferExpr("reduce", op=key, args=(expr,))
+
+
+def reduce_add(x):
+    """Sum along the innermost axis. Lowers to vector.reduction <add>.
+
+    The destination is the operand with its innermost axis collapsed, spelled
+    either way -- keeping the axis as 1 (numpy's ``keepdims=True``) or
+    dropping it::
+
+        out = air.alloc([tile_m], bf16, scope=h.private())      # dropped
+        out[:] = air.ops.reduce_add(a[:])                       # a is [tile_m, n]
+
+        acc = air.alloc([tile_m, 1], bf16, scope=h.private())   # kept
+        acc[:] = air.ops.reduce_add(a[:])
+
+    Both exist because the hand-written kernels use both at once: their L1
+    tile is ``[tile_m, 1]`` while their L3 output is ``[m]``.
+
+    Prefer dropping the axis unless something downstream wants it. ``ops.store``
+    squeezes *leading* unit dimensions but not trailing ones, so a kept-axis
+    ``[tile_m, 1]`` tile cannot be stored into a rank-1 ``[m]`` slice -- which
+    is the DMA those kernels write. Dropping it keeps the L1 tile the same rank
+    as the L3 output and sidesteps that entirely.
+
+    This is the only shape-changing operation in the expression language, so
+    it has to be the whole right-hand side -- it cannot appear inside a larger
+    expression, because the surrounding elementwise ops would be operating on
+    two different shapes. Its *operand* may be any elementwise expression,
+    which is what makes ``reduce_add(a[:] * b[:])`` a row-wise dot product.
+
+    The whole innermost axis is read as a single vector, matching the
+    predecessor kernels: there is no accumulation loop, and therefore no
+    loop-carried vector accumulator, which is the construct ``ops.dot``
+    documents as unlegalizable on AIE2. The cost is that the axis length has
+    to be a vector width the target accepts.
+    """
+    return _reduce("reduce_add", "add", x)
+
+
+def reduce_max(x):
+    """Maximum along the innermost axis. Lowers to vector.reduction <maximumf>
+    (float) or <maxsi> (signed integer). See :func:`reduce_add` for the two
+    destination spellings and why the reduction must be the whole right-hand
+    side.
+    """
+    return _reduce("reduce_max", "max", x)
 
 
 def _unary(name, x):
@@ -393,10 +834,39 @@ def tanh(x):
     return _unary("tanh", x)
 
 
+# exp and rsqrt lower the same way tanh does -- one math dialect op on the
+# vector -- but with one difference the caller has to know about, because it is
+# not visible from the call site.
+#
+# On AIE2 (npu1) they are not instructions. math.exp on bf16 becomes a call to
+# getExpBf16, and math.rsqrt a call to getRsqrtBf16, both of which live in a
+# hand-written object file the example compiles: see the extern_func.cc beside
+# vector_exp and vector_rsqrt. The herd therefore has to carry link_with, which
+# is what air.herd(link_with=...) is for. Forgetting it is a link failure, not a
+# wrong answer. On AIE2P (npu2) both are native and no object is needed.
+
+
+def exp(x):
+    """Elementwise e**x. Lowers to math.exp. Float only.
+
+    On npu1 this needs air.herd(link_with="extern_func.o"); see above.
+    """
+    return _unary("exp", x)
+
+
+def rsqrt(x):
+    """Elementwise 1/sqrt(x). Lowers to math.rsqrt. Float only.
+
+    On npu1 this needs air.herd(link_with="extern_func.o"); see above.
+    """
+    return _unary("rsqrt", x)
+
+
 # The three activations below are compositions, not new primitives. Each is
 # written the way the hand-written kernel it replaces wrote it -- in particular
 # via tanh rather than exp, which keeps them clear of two AIE2 limitations at
-# once: there is no vector division on bf16, and exp would need one.
+# once: there is no vector division on bf16, and exp would need one. That reason
+# survives exp becoming available: it is about the division, not about exp.
 
 
 def sigmoid(x):
@@ -441,7 +911,7 @@ _CONTRACTIONS = {
 }
 
 
-# The micro-tiled contraction. `linalg` has no named op for it -- the reference
+# The blocked contraction. `linalg` has no named op for it -- the reference
 # example defines it with the OpDSL, and so does this, from the same index
 # expression. It is built lazily because the OpDSL decorator runs once and
 # importing linalg.opdsl at module scope would pull it in for every program
@@ -480,7 +950,7 @@ def _block_matmul_op():
 
 
 def accumulator_subview(acc):
-    """The calling core's slab of a micro-tiled accumulator.
+    """The calling core's slab of a blocked accumulator.
 
     A herd-shared accumulator is one memref with a leading dimension per herd
     axis, and a core may only touch its own slab -- there is no choice to make,
@@ -493,13 +963,17 @@ def accumulator_subview(acc):
 
     from ._trace import current_herd
 
-    nlead = len(acc.pack.lead)
     coords = current_herd()._coords
-    if len(coords) > nlead:
+    # One leading axis per herd axis; the rest is the tile. The herd is what
+    # says how many there are -- the accumulator cannot, since a plain shape
+    # carries no mark where the core axes stop.
+    nlead = len(coords)
+    if len(acc.shape) <= nlead:
         raise ValueError(
-            f"the accumulator has {nlead} leading dimension(s) but the herd is "
-            f"{len(coords)}-D; a herd-shared accumulator needs one leading "
-            "dimension per herd axis so that every core has its own slab"
+            f"the accumulator is rank {len(acc.shape)} but the herd is "
+            f"{nlead}-D; a herd-shared accumulator needs one leading dimension "
+            "per herd axis, so that every core has its own slab, and at least "
+            "one more for the tile itself"
         )
     offsets = [c.materialize() for c in coords]
     offsets += [0] * (len(acc.shape) - len(offsets))
@@ -509,48 +983,54 @@ def accumulator_subview(acc):
     )
 
 
-def _check_packed_operands(a, b, acc):
-    """The three micro-tiles have to agree on m, k, n and on their extents."""
-    packs = {"a": a.pack, "b": b.pack, "acc": acc.pack}
-    missing = [n for n, p in packs.items() if p is None]
-    if missing:
-        raise TypeError(
-            f"air.api.ops.dot got rank-6 operands, which means the micro-tiled "
-            f"contraction, but {', '.join(missing)} "
-            f"{'was' if len(missing) == 1 else 'were'} not allocated with a "
-            "micro-tiled shape. Allocate all three from the same air.micro_tile, "
-            "e.g. air.alloc(mm.a(tile_m, tile_k), bf16, scope=h.private())."
-        )
-    roles = {"a": "A", "b": "B", "acc": "C"}
-    for name, want in roles.items():
-        if packs[name].role != want:
-            raise ValueError(
-                f"air.api.ops.dot expects {name} to be a micro-tiled {want} "
-                f"operand (mm.{want.lower()}(...)), but it was built as "
-                f"{packs[name].role}"
-            )
-    micros = {n: p.micro for n, p in packs.items()}
-    if len(set(micros.values())) != 1:
-        raise ValueError(
-            "air.api.ops.dot needs one micro-tile across all three operands, "
-            f"got a={micros['a']!r}, b={micros['b']!r}, acc={micros['acc']!r}. "
-            "The micro-tile is the shape of the hardware intrinsic; mixing them "
-            "would silently contract the wrong elements."
-        )
+def _check_blocked_operands(a, b, acc):
+    """The three blocked operands have to agree on m, k, n and on their extents.
+
+    Nothing is declared: the block shape and the logical extents are read back
+    off the shapes, which are the only thing the buffers actually carry. For
+    ``a = [.., K/k, M/m, m, k]``, ``b = [.., N/n, K/k, k, n]`` and
+    ``c = [.., N/n, M/m, m, n]`` the last two axes are always the block,
+    and one formula recovers both logical extents of each operand:
+    ``shape[-3] * shape[-2]`` and ``shape[-4] * shape[-1]``.
+
+    What this cannot check is the triple against the hardware's actual
+    ``aievec.matmul`` shape -- a self-consistent but wrong (m, k, n) passes.
+    Closing that needs a target-by-dtype table and is not in scope; it is no
+    weaker than what it replaced.
+    """
     (m_a, k_a), (k_b, n_b), (m_c, n_c) = (
-        packs["a"].logical,
-        packs["b"].logical,
-        packs["acc"].logical,
+        tuple(a.shape[-2:]),
+        tuple(b.shape[-2:]),
+        tuple(acc.shape[-2:]),
     )
     if k_a != k_b:
         raise ValueError(
-            f"air.api.ops.dot shape mismatch: a is {m_a}x{k_a} and b is "
-            f"{k_b}x{n_b}; the contracting extents must agree"
+            f"air.api.ops.dot block mismatch: a's trailing axes are "
+            f"{m_a}x{k_a}, so it offers k={k_a}; b's are {k_b}x{n_b}, so it "
+            f"offers k={k_b}. The block is the shape of the hardware intrinsic "
+            "-- a is (m, k) and b is (k, n) in its last two axes -- and mixing "
+            "them would silently contract the wrong elements."
         )
     if (m_c, n_c) != (m_a, n_b):
         raise ValueError(
-            f"air.api.ops.dot shape mismatch: a @ b is {m_a}x{n_b} but acc is "
-            f"{m_c}x{n_c}"
+            f"air.api.ops.dot block mismatch: a x b is {m_a}x{n_b} per "
+            f"block but acc's is {m_c}x{n_c}"
+        )
+
+    def extents(shape):
+        return int(shape[-3]) * int(shape[-2]), int(shape[-4]) * int(shape[-1])
+
+    (log_m_a, log_k_a), (log_k_b, log_n_b) = extents(a.shape), extents(b.shape)
+    log_m_c, log_n_c = extents(acc.shape)
+    if log_k_a != log_k_b:
+        raise ValueError(
+            f"air.api.ops.dot shape mismatch: a is {log_m_a}x{log_k_a} and b is "
+            f"{log_k_b}x{log_n_b}; the contracting extents must agree"
+        )
+    if (log_m_c, log_n_c) != (log_m_a, log_n_b):
+        raise ValueError(
+            f"air.api.ops.dot shape mismatch: a @ b is {log_m_a}x{log_n_b} but "
+            f"acc is {log_m_c}x{log_n_c}"
         )
 
 
@@ -599,8 +1079,8 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
 
     Two limits worth stating. It is verified through the scalar path -- lowered
     by ``convert-linalg-to-loops`` and run on npu1 -- and *not* through the AIE2
-    matmul intrinsic, which wants micro-tiled operands whose layout the DMA pack
-    (``mm.b(...)``) already fixes. And under ``lower_linalg_to_func`` an external
+    matmul intrinsic, which wants blocked operands whose layout the DMA access
+    pattern already fixes. And under ``lower_linalg_to_func`` an external
     kernel built for ``[k, n]`` links happily against an ``[n, k]`` operand and
     computes silently wrong results, so pass ``kernel=`` to give the transposed
     form its own symbol.
@@ -610,7 +1090,7 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
     silently rebound a positionally-passed ``dependency`` to it. It names the
     external function this contraction should lower to
     under ``lower_linalg_to_func``, by setting linalg's ``library_call``
-    attribute. Without it a micro-tiled contraction lowers to
+    attribute. Without it a blocked contraction lowers to
     ``op_has_no_registered_library_name`` -- MLIR's placeholder for an op with no
     registered name, which the OpDSL emitter never overrides and which every
     hand-written kernel here therefore exports. Sharing one symbol means a
@@ -649,6 +1129,7 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
         # element type fails verification inside the op that was just emitted,
         # several frames from the call that caused it.
         require_signless(buf.dtype, f"air.api.ops.dot's {name} operand")
+        require_computable(buf.dtype, f"air.api.ops.dot's {name} operand")
 
     if alpha != 1.0:
         raise NotImplementedError(
@@ -661,9 +1142,9 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
         if transpose_b:
             raise NotImplementedError(
                 "air.api.ops.dot(transpose_b=True) is not implemented for "
-                "micro-tiled operands; pack B transposed instead"
+                "blocked operands; lay B out transposed instead"
             )
-        _check_packed_operands(a, b, acc)
+        _check_blocked_operands(a, b, acc)
         op = _block_matmul_op()(a.value, b.value, outs=[accumulator_subview(acc)])
         _set_library_call(kernel)
         return Token(op)
@@ -770,9 +1251,6 @@ def _unimplemented(name, needs):
 
 # Named so that a program using them fails loudly at the call site rather than
 # at compile time with a confusing IR error.
-# math.exp exists in the bindings, but nothing needs it yet and it has not
-# been checked for an aievec lowering -- untested surface is worse than none.
-exp = _unimplemented("exp", "a checked aievec lowering; use ops.tanh, which has one")
 reduce = _unimplemented("reduce", "a reduction emitter")
 stack = _unimplemented("stack", "multi-buffer concatenation")
 dequant = _unimplemented("dequant", "BlockType support")

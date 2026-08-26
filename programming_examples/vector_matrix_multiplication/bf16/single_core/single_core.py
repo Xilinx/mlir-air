@@ -63,18 +63,18 @@ def build_module(k, n, tile_k, tile_n, np_dtype_in, np_dtype_out, link_with="vm.
     c_l1_l2 = air.channel("cL1ToL2")
     c_l2_l3 = air.channel("cL2ToL3")
 
-    vecmat = air.extern("vecmat_bf16_bf16", object=link_with)
-    fill = air.extern("linalg_fill_bf16", object=link_with)
+    vecmat = air.extern("vecmat_bf16_bf16", link_with=link_with)
+    fill = air.extern("linalg_fill_bf16", link_with=link_with)
 
     with air.launch([range(0, n, tile_n)], name="vecmat_bf16") as launch:
 
         @launch.body
-        def _(sj):
-            with air.segment(name="vecmat_i8_0") as seg:
+        def _(lj):
+            with air.segment(name="vecmat_bf16_0") as seg:
 
                 @seg.body
                 def _():
-                    col = sj * tile_n
+                    col = lj * tile_n
 
                     l2_a = air.alloc([k], dt_in, scope=seg.private())
                     l2_b = air.alloc([k, tile_n], dt_in, scope=seg.private())

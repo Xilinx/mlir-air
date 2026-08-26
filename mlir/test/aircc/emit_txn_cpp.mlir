@@ -29,8 +29,13 @@
 // CHECK: [[BU:v[0-9]+]] = (uint32_t) [[B32]]
 // CHECK: [[WORDS:v[0-9]+]] = [[BU]] / v{{[0-9]+}}
 // CHECK: [[LEN:v[0-9]+]] = (int32_t) [[WORDS]]
+// mlir-aie #3559 packs the shim BD's register block into one blockwrite, so the
+// length is now word 0 of that block rather than its own write32. Same property:
+// the runtime-derived length reaches 0x1d000.
 // CHECK: [[ADDR:v[0-9]+]] = 118784u
-// CHECK-NEXT: txn_append_write32(txn, [[ADDR]], [[LEN]])
+// CHECK-NEXT: [[BD:v[0-9]+]]{{\[}}8] = {}
+// CHECK-NEXT: [[BD]]{{\[}}0] = [[LEN]]
+// CHECK: txn_append_blockwrite(txn, [[ADDR]], [[BD]]
 
 module {
   air.channel @rb [1]

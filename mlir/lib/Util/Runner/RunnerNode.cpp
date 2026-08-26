@@ -104,12 +104,19 @@ public:
     launchGraph.runner_node = this;
     launchGraph.runner_node->channel_token_counts_ptr =
         &(launchGraph.runner_node->channel_token_counts);
+    // Each herd runner node stores a raw pointer to its parent segment runner
+    // node, so the segment vector must not reallocate while herds are being
+    // attached to it -- otherwise every herd created before a later push_back
+    // is left pointing at freed storage, and its tile pool comes back empty.
+    this->sub_runner_nodes.reserve(launchGraph.subgraphs.size());
     for (auto &segmentGraph : launchGraph.subgraphs) {
       // Create segment runner node
       this->sub_runner_nodes.push_back(runnerNode(
           this, &segmentGraph, "segment", this->dep_ctx, this->sim_granularity,
           &(launchGraph.runner_node->channel_token_counts)));
       auto current_segment_node = &(this->sub_runner_nodes.back());
+      current_segment_node->sub_runner_nodes.reserve(
+          segmentGraph.subgraphs.size());
       for (auto &herdGraph : segmentGraph.subgraphs) {
         // Create herd runner node
         current_segment_node->sub_runner_nodes.push_back(
@@ -130,7 +137,41 @@ public:
       auto command_node = this->ctrl_g->g[std::get<0>(*it)];
       if (command_node.is_started() && (command_node.end_time)) {
         next_times.push_back(command_node.end_time);
+        // A link whose occupancy ends before its payload lands frees its ports
+        // at release_time, so the simulator has to stop there too.
+        if (command_node.has_link_latency() &&
+            !command_node.resources_released) {
+          next_times.push_back(command_node.release_time);
+        }
       }
+    }
+  }
+
+  // Free link resources whose occupancy has ended but whose payload is still
+  // in flight. Ports model link bandwidth, not time-of-flight, so holding them
+  // until the data lands would cap link throughput at 1/(occupancy + latency)
+  // and stop a deep pipeline from filling.
+  //
+  // Only an arch model that gives the link a latency reaches this: that is
+  // what makes release_time < end_time, which is what has_link_latency()
+  // tests. Without one the two are equal, there is no window in which the
+  // ports are free but the payload has not landed, and this is inert.
+  void releaseCompletedLinkOccupancy(uint64_t time) {
+    Graph &G = this->ctrl_g->g;
+    for (auto &entry : this->wavefront) {
+      auto &node = G[std::get<0>(entry)];
+      if (!node.has_link_latency() || node.resources_released)
+        continue;
+      if (!node.is_started() || time < node.release_time)
+        continue;
+      // Driven from the get, which owns the pairing of both ends' ports. Only
+      // ports are released here; resource hierarchies reserved by segments and
+      // herds are released by their terminators instead.
+      auto getOp = dyn_cast_if_present<air::ChannelGetOp>(node.op);
+      if (!getOp)
+        continue;
+      this->releaseChannelPortsForGet(getOp);
+      node.resources_released = true;
     }
   }
 
@@ -360,6 +401,15 @@ public:
     resource_hiers.clear();
   }
 
+  // Report a fatal modelling error and stop. Public so the driver can use the
+  // same reporting path for whole-simulation invariants.
+  void runner_assertion(bool cond, std::string msg = "") {
+    if (!cond) {
+      std::cerr << "Error: " + msg + "\n";
+      exit(EXIT_FAILURE);
+    }
+  }
+
 private:
   // Dependency graph helper functions.
   dependencyCanonicalizer canonicalizer;
@@ -514,6 +564,11 @@ private:
     if (num_rows && num_cols) {
       usage_count *= llvm::divideCeil(*num_rows, du_size_x);
       usage_count *= llvm::divideCeil(*num_cols, du_size_y);
+      // All instances of a segment's iteration space are co-resident for the
+      // lifetime of the segment, so their resource demands sum rather than
+      // alias. Without this a 2x1 segment is billed one DU and fits an arch
+      // that cannot hold it.
+      usage_count *= this->canonicalizer.getTripCountInHierarchyOp(op);
       return usage_count;
     } else {
       op->emitOpError("Segment has no placed AIE cores");
@@ -542,8 +597,11 @@ private:
                                     std::vector<resource *> &reserved_resources,
                                     unsigned usage_count) {
     // A previously emitted error should have captured this
-    this->runner_assertion(usage_count <= resource_pool.size(),
-                           "failed to reserve resources");
+    this->runner_assertion(
+        usage_count <= resource_pool.size(),
+        "failed to reserve resources for " + this->runner_node_type +
+            " runner node: need " + std::to_string(usage_count) + ", " +
+            std::to_string(resource_pool.size()) + " available");
     for (unsigned i = 0; i < usage_count; i++) {
       resource_pool[i]->isReserved = true;
       reserved_resources.push_back(resource_pool[i]);
@@ -791,9 +849,7 @@ private:
     unsigned dispatched = 0;
 
     // Check how many evnets need to be dispatched in this op
-    unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            Op.getOperation(), {});
+    unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "outbound", dispatched);
 
@@ -809,14 +865,14 @@ private:
     }
     bool found_entry = false;
     for (auto &entry : *channel_token_counts_ptr) {
-      if ((!found_entry) && entry.first == Op.getChanName().str()) {
+      if ((!found_entry) && entry.first == this->getChannelInstanceKey(Op)) {
         entry.second += spatial_factor;
         found_entry = true;
       }
     }
     if (!found_entry) {
       channel_token_counts_ptr->push_back(
-          std::make_pair(Op.getChanName().str(), spatial_factor));
+          std::make_pair(this->getChannelInstanceKey(Op), spatial_factor));
     }
   }
   void allocateEventToResources(air::ChannelGetOp Op,
@@ -825,9 +881,7 @@ private:
         dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
-    unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            Op.getOperation(), {});
+    unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
                                    "inbound", dispatched);
 
@@ -841,7 +895,7 @@ private:
 
     bool found_entry = false;
     for (auto &entry : *channel_token_counts_ptr) {
-      if ((!found_entry) && entry.first == Op.getChanName().str()) {
+      if ((!found_entry) && entry.first == this->getChannelInstanceKey(Op)) {
         entry.second -= spatial_factor;
         found_entry = true;
       }
@@ -895,7 +949,7 @@ private:
 
     // Keep track of how many remaining events to dispatch in this op
     std::pair<std::string, std::string> key =
-        std::make_pair(Op.getChanName().str(), put_or_get);
+        std::make_pair(this->getChannelInstanceKey(Op), put_or_get);
     if (launch_runner->channel_ops_in_progress.count(key)) {
       launch_runner->channel_ops_in_progress[key].first += dispatched;
       for (auto res : reserved_resources) {
@@ -956,11 +1010,9 @@ private:
     }
 
     // Check how many events in total
-    unsigned total =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(
-            putOp.getOperation(), {});
+    unsigned total = this->tokenSpatialFactorForResource(putOp.getOperation());
     unsigned already_dispatched = this->getAlreadyDispatchedForDynamicDispatch(
-        putOp.getChanName().str(), "put");
+        this->getChannelInstanceKey(putOp), "put");
 
     // Check how many remaining evnets need to be dispatched in this op
     unsigned remaining = total - already_dispatched;
@@ -975,9 +1027,9 @@ private:
     // Check how many remaining dispatches for get op, by checking the progress
     // difference to put op
     unsigned get_dispatched = this->getAlreadyDispatchedForDynamicDispatch(
-        getOp.getChanName().str(), "get");
+        this->getChannelInstanceKey(getOp), "get");
     unsigned put_dispatched = this->getAlreadyDispatchedForDynamicDispatch(
-        getOp.getChanName().str(), "put");
+        this->getChannelInstanceKey(getOp), "put");
 
     // Channel broadcast
     unsigned bcast_factor =
@@ -997,6 +1049,8 @@ private:
     // Start sub-runner node by pushing start node into its wavefront
     sub_runner_node->ctrl_g->g[sub_start_v].start_time = time;
     sub_runner_node->ctrl_g->g[sub_start_v].end_time = time;
+    sub_runner_node->ctrl_g->g[sub_start_v].release_time = time;
+    sub_runner_node->ctrl_g->g[sub_start_v].resources_released = false;
     this->runner_assertion(!sub_runner_node->wavefront.size(),
                            "sub runner node " + air::to_string(op) +
                                " is busy");
@@ -1132,9 +1186,8 @@ private:
 
     // Check if this op has been completely dispatched
     std::pair<std::string, std::string> key =
-        std::make_pair(op.getChanName().str(), "put");
-    unsigned total_count =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
+        std::make_pair(this->getChannelInstanceKey(op), "put");
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
     if (launch_runner->channel_ops_in_progress.count(key)) {
       unsigned processed = launch_runner->channel_ops_in_progress[key].first;
       if (processed == total_count) {
@@ -1144,7 +1197,11 @@ private:
       this->runner_assertion(false, "unknown channel.put op");
   }
 
-  void executeOp(air::ChannelGetOp op, Graph::VertexId it) {
+  // Release the ports held by a channel's matched put/get pairs. A put's
+  // outbound port and its get's inbound port are freed together, capped by
+  // whichever side has fewer reservations outstanding, so a get can never free
+  // more puts than have actually been dispatched to it.
+  void releaseChannelPortsForGet(air::ChannelGetOp op) {
 
     // Get launch runner node
     auto launch_runner = this;
@@ -1152,19 +1209,12 @@ private:
       launch_runner = launch_runner->parent;
     }
 
-    // Get op progress
-    auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
-        op.getChanName().str(), "put");
-    auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
-        op.getChanName().str(), "get");
     unsigned bcast_factor =
         launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
-    unsigned total_count =
-        this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
 
     // Calculate how many src and dst ports to deallocate
     std::pair<std::string, std::string> put_key =
-        std::make_pair(op.getChanName().str(), "put");
+        std::make_pair(this->getChannelInstanceKey(op), "put");
     unsigned put_reserved_count = 0;
     for (auto p : launch_runner->channel_ops_in_progress[put_key].second) {
       if (p->isReserved) {
@@ -1172,7 +1222,7 @@ private:
       }
     }
     std::pair<std::string, std::string> get_key =
-        std::make_pair(op.getChanName().str(), "get");
+        std::make_pair(this->getChannelInstanceKey(op), "get");
     unsigned get_reserved_count = 0;
     for (auto g : launch_runner->channel_ops_in_progress[get_key].second) {
       if (g->isReserved) {
@@ -1211,6 +1261,35 @@ private:
         get_deallocate_count++;
       }
     }
+  }
+
+  void executeOp(air::ChannelGetOp op, Graph::VertexId it) {
+
+    // Get launch runner node
+    auto launch_runner = this;
+    while ((launch_runner->runner_node_type != "launch")) {
+      launch_runner = launch_runner->parent;
+    }
+
+    // Get op progress
+    auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
+        this->getChannelInstanceKey(op), "put");
+    auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
+        this->getChannelInstanceKey(op), "get");
+    unsigned bcast_factor =
+        launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
+    unsigned total_count = this->tokenSpatialFactorForResource(op);
+
+    // Release the ports of matched put/get pairs. This may already have
+    // happened at the link's occupancy boundary if the link models a
+    // time-of-flight; in that case nothing is left reserved and this is a
+    // no-op.
+    this->releaseChannelPortsForGet(op);
+
+    std::pair<std::string, std::string> put_key =
+        std::make_pair(this->getChannelInstanceKey(op), "put");
+    std::pair<std::string, std::string> get_key =
+        std::make_pair(this->getChannelInstanceKey(op), "get");
 
     // If data movement is complete, clear put and get progresses
     if ((put_processed * bcast_factor == total_count) &&
@@ -1262,6 +1341,8 @@ private:
           std::make_pair(G[v].start_time, G[v].end_time));
       G[v].start_time = 0;
       G[v].end_time = 0;
+      G[v].release_time = 0;
+      G[v].resources_released = false;
     }
 
     // Push adj. vertices to latent wavefront candidates
@@ -1276,26 +1357,56 @@ private:
     }
   }
 
+  // Collect every vertex lying on some path from start_v to end_v.
+  //
+  // This enumerated paths and concatenated them, which is exponential in
+  // reconvergent branching rather than in graph size. One stage of a pipelined
+  // model is a wide diamond -- a token fanning out to N segments and rejoining
+  // at a barrier -- so L stages give N^L paths. At N=12 that is 20k paths for
+  // four layers and 10^12 for twelve, and the vector asked for 4.5 billion
+  // entries before aborting. A model whose segments are chained only through
+  // channels never hit it, because channels are not dependency edges and the
+  // launch graph stays shallow.
+  //
+  // The one caller only iterates the result to reset vertices, which is
+  // idempotent and order-independent, so the *set* is all that is needed. The
+  // vertices on some path from a to b are exactly those reachable from a that
+  // also reach b, which is two linear traversals.
   bool hasPath(Graph::VertexId start_v, Graph::VertexId end_v, Graph &G,
                SmallVector<Graph::VertexId, 1> &vec) {
+    llvm::DenseSet<Graph::VertexId> forward, backward;
+    SmallVector<Graph::VertexId> worklist;
+    // Forward-reachable vertices in traversal order. The result is built by
+    // filtering this rather than by iterating the set, so the order does not
+    // depend on the hash function: the caller may push reset vertices onto the
+    // wavefront candidate list, and that order reaches the trace.
+    SmallVector<Graph::VertexId> reached;
 
-    vec.push_back(start_v);
-    if (start_v == end_v)
-      return true;
-    int pathCount = 0;
-    auto adj_set = G.adjacentVertices(start_v);
-    for (auto adj_v : adj_set) {
-      SmallVector<Graph::VertexId, 1> tmp_vec;
-      if (this->hasPath(adj_v, end_v, G, tmp_vec)) {
-        pathCount++;
-        // Concatenate
-        vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
-      }
+    forward.insert(start_v);
+    worklist.push_back(start_v);
+    while (!worklist.empty()) {
+      auto v = worklist.pop_back_val();
+      reached.push_back(v);
+      for (auto adj_v : G.adjacentVertices(v))
+        if (forward.insert(adj_v).second)
+          worklist.push_back(adj_v);
     }
-    if (pathCount)
-      return true;
-    vec.pop_back();
-    return false;
+    if (!forward.contains(end_v))
+      return false;
+
+    backward.insert(end_v);
+    worklist.push_back(end_v);
+    while (!worklist.empty()) {
+      auto v = worklist.pop_back_val();
+      for (auto inv_v : G.inverseAdjacentVertices(v))
+        if (backward.insert(inv_v).second)
+          worklist.push_back(inv_v);
+    }
+
+    for (auto v : reached)
+      if (backward.contains(v))
+        vec.push_back(v);
+    return true;
   }
 
   // Get a vector of async tokens which are ready to advance to the next loop
@@ -1364,12 +1475,117 @@ private:
     return reset_vertices_end;
   }
 
+  // Resolve a value that may have arrived through one or more hierarchy
+  // boundaries. air.segment and air.herd are IsolatedFromAbove, so a constant
+  // defined outside reaches the body as a block argument bound to a kernel
+  // operand, and getConstantIntValue sees only the block argument and gives
+  // up. That is how an index looks after a loop over segments is unrolled:
+  // the trip constant is real, but it is one binding away. Walk back through
+  // the binding until the value is either a constant or genuinely dynamic.
+  std::optional<int64_t> resolveConstantThroughHierarchy(Value v) {
+    while (auto barg = dyn_cast<BlockArgument>(v)) {
+      auto hier = dyn_cast_if_present<air::HierarchyInterface>(
+          barg.getOwner()->getParentOp());
+      if (!hier)
+        break;
+      auto kargs = hier.getKernelArguments();
+      auto operands = hier.getKernelOperands();
+      auto it = llvm::find(kargs, barg);
+      if (it == kargs.end())
+        break;
+      unsigned idx = std::distance(kargs.begin(), it);
+      if (idx >= operands.size())
+        break;
+      v = operands[idx];
+    }
+    return getConstantIntValue(v);
+  }
+
+  // Whether the entries of a channel bundle can be told apart at all.
+  //
+  // The decision has to be taken per symbol rather than per op: if one user
+  // resolves to @c[0] while another on the same link cannot resolve its index,
+  // the two land in different key spaces and never pair, which stalls the run
+  // just as surely as merging them. So a bundle is keyed by index only when
+  // *every* user of the symbol has resolvable indices; otherwise every user
+  // falls back to the symbol alone, which is the behaviour that predates this.
+  bool channelIsIndexable(air::ChannelInterface chan_op) {
+    auto name = chan_op.getChanName();
+    // The verdict is a property of the module, so cache it on the root runner
+    // node. Otherwise every node re-walks the module for the same symbol and,
+    // worse, re-reports the same diagnostic once per node.
+    runnerNode *root = this;
+    while (root->parent)
+      root = root->parent;
+    auto it = root->channel_indexable.find(name.str());
+    if (it != root->channel_indexable.end())
+      return it->second;
+    bool indexable = true;
+    // A bundle whose users disagree -- some indices resolvable, some not -- is
+    // the case that silently loses information. The fallback below demotes the
+    // resolvable users too, so entries the runner could perfectly well tell
+    // apart are merged, and a get on one can be satisfied by a put on another.
+    // A bundle whose users are *uniformly* unresolvable is fine merged: nothing
+    // could be told apart in the first place, and dataflow orders the pairings.
+    air::ChannelInterface resolvableUser = nullptr, unresolvableUser = nullptr;
+    if (auto mod = chan_op->getParentOfType<ModuleOp>()) {
+      mod.walk([&](air::ChannelInterface user) {
+        if (user.getChanName() != name)
+          return;
+        bool userResolvable = !user.getIndices().empty();
+        for (auto v : user.getIndices())
+          if (!resolveConstantThroughHierarchy(v))
+            userResolvable = false;
+        if (!userResolvable)
+          indexable = false;
+        auto &slot = userResolvable ? resolvableUser : unresolvableUser;
+        if (!slot)
+          slot = user;
+      });
+    } else
+      indexable = false;
+    if (resolvableUser && unresolvableUser)
+      unresolvableUser->emitOpError()
+          << "channel bundle @" << name.str()
+          << " is indexed both by constants and by values the runner cannot "
+             "resolve, so every entry is merged and a get on one entry can be "
+             "satisfied by a put on another. The constant-indexed users of "
+             "this bundle lose an identity the runner would otherwise have; "
+             "make every index a constant, for instance by unrolling the loop "
+             "that produces this one";
+    root->channel_indexable[name.str()] = indexable;
+    return indexable;
+  }
+  std::map<std::string, bool> channel_indexable;
+
+  // Name one instance of a channel bundle: the symbol, plus its indices when
+  // they are resolvable.
+  //
+  // A bundle is an array of independent links. Keying progress on the symbol
+  // alone lets a get on one entry be satisfied by a put on another: in a
+  // pipeline seeded and drained on the same bundle, the drain's `get @io[L]`
+  // becomes ready immediately after the seed's `put @io[0]` and consumes it,
+  // leaving the real consumer with nothing and stalling the run.
+  std::string getChannelInstanceKey(air::ChannelInterface chan_op) {
+    std::string key = chan_op.getChanName().str();
+    if (!channelIsIndexable(chan_op))
+      return key;
+    std::string suffix;
+    for (auto v : chan_op.getIndices()) {
+      auto c = resolveConstantThroughHierarchy(v);
+      if (!c)
+        return key;
+      suffix += (suffix.empty() ? "" : ",") + std::to_string(*c);
+    }
+    return key + "[" + suffix + "]";
+  }
+
   // Check if a channel dependence has been fulfilled
   bool checkChannelDependenceFulfillment(dependencyNodeEntry dep_node,
                                          std::vector<unsigned> position) {
     auto channel_op = dyn_cast_if_present<air::ChannelInterface>(dep_node.op);
     this->runner_assertion(channel_op, "op being checked is not a channel op");
-    std::string chan_name = channel_op.getChanName().str();
+    std::string chan_name = this->getChannelInstanceKey(channel_op);
     unsigned th =
         (position.size())
             ? (this->tokenSpatialFactorForDependency(dep_node.op, position))
@@ -1603,14 +1819,28 @@ private:
     return output;
   }
 
-  // Get batch-dispatched count up until type
-  template <typename T>
-  unsigned tokenSpatialFactorForResource(Operation *op,
-                                         std::vector<unsigned> position) {
+  // The number of concurrent instances of an op: the product of every
+  // enclosing spatial factor -- herd and segment iteration spaces, and
+  // scf.parallel trip counts. air.launch is excluded, because the runner
+  // simulates launch iterations separately.
+  //
+  // The walk must not stop at the innermost enclosing hierarchy. Stopping
+  // there leaves a channel op inside a herd blind to the segment iteration
+  // space enclosing that herd, while its matching op at segment level still
+  // sees it. The put then dispatches N instances and its get expects one, so
+  // the pairing test in executeOp(ChannelGetOp) can never hold, the get never
+  // retires, and the herd is left hanging with its body unexecuted -- a
+  // silently truncated simulation that still exits 0.
+  //
+  // A hierarchy with no iteration space contributes a factor of one, so this
+  // is a no-op for IR that does not use one.
+  unsigned tokenSpatialFactorForResource(Operation *op) {
     unsigned output = 1;
     auto parent = op;
-    while ((!isa<T>(parent)) && !(isa<func::FuncOp>(parent))) {
+    while (parent && !isa<func::FuncOp>(parent)) {
       parent = parent->getParentOp();
+      if (!parent)
+        break;
       if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
           auto lbCstOp = scf_par.getLowerBound()[i]
@@ -1788,13 +2018,6 @@ private:
   }
 
   // Runner error assertion
-  void runner_assertion(bool cond, std::string msg = "") {
-    if (!cond) {
-      std::cerr << "Error: " + msg + "\n";
-      exit(EXIT_FAILURE);
-    }
-  }
-
   // Get a vector of first elements from a vector of tuples
   std::vector<Graph::VertexId> getVectorOfFirstFromVectorOfTuples(
       std::vector<

@@ -55,21 +55,24 @@ subscript (``staged[tx, 0:n, :]``) names a DMA region for
 ``ops.load``/``ops.store``; ``buf[:]`` in an expression is an elementwise read,
 and is rejected on L2, which has no compute core.
 
-For the AIE2 matmul intrinsic a tile has to be laid out in micro-tile order.
-``air.micro_tile(m, k, n)`` builds those shapes, and the packing is *not* a
-memref layout -- the buffer stays contiguous and the reordering lives in the DMA
-access pattern, which is derived rather than spelled out::
+For the AIE2 matmul intrinsic a tile has to be laid out in blocks, so that the
+block the instruction consumes is contiguous. That is a *walk*, not a memref
+layout -- the buffer stays contiguous either way -- so it is written the way
+numpy writes one, with ``reshape`` and ``transpose`` on the region being moved::
 
-    mm = air.micro_tile(m=4, k=8, n=4)
-    a  = air.alloc(mm.a(tile_m, tile_k), bf16, scope=h.private())
-    acc = air.alloc(mm.c(tile_m, tile_n, lead=herd_shape), bf16,
-                    scope=seg.shared())
-    ops.load(a, l2_a[tx, 0, :, k : k + tile_k])   # the DMA performs the pack
+    m, k = 4, 8
+    a = air.alloc([1, 1, tile_k // k, tile_m // m, m, k], bf16, scope=h.private())
+    ops.load(a, l2_a[rows, cols]
+                 .reshape(1, 1, tile_m // m, m, tile_k // k, k)
+                 .transpose(0, 1, 4, 2, 3, 5))    # the DMA performs the pack
     ops.dot(a, b, acc=acc)                        # rank 6: block_matmul
 
-A packed buffer is subscripted in *logical* coordinates, so the program keeps
-thinking in ``[M, N]``. ``<segment>.shared()`` allocates L1 with the segment's
-lifetime, for an accumulator carried across a reduction loop at segment scope.
+``reshape`` re-describes a region at a different rank and ``transpose`` permutes
+its axes; both are views, and both raise rather than silently copying, since a
+copy here would be a hidden L2 transfer. ``<segment>.shared()`` allocates L1
+with the segment's lifetime, for an accumulator carried across a reduction loop
+at segment scope; its leading dimensions are the herd's, one per axis, which is
+what makes each core's slab well defined. Zero it with ``ops.fill(acc, 0.0)``.
 
 ``air.sequential`` is named for what ``scf.for`` guarantees -- its trips are
 ordered in time on one core -- as against the herd's grid, which is spatial.
@@ -89,7 +92,6 @@ from ._channel import Channel, channel
 from ._compile import CompiledKernel, LaunchContext, compile, launch
 from ._extern import ExternKernel, extern
 from ._loop import sequential
-from ._pack import MicroTile, PackedShape, micro_tile
 from ._trace import (
     HerdContext,
     Scope,
@@ -98,6 +100,7 @@ from ._trace import (
     alloc,
     dealloc,
     herd,
+    resolve_target,
     segment,
     symbol,
     tensor,
@@ -124,11 +127,11 @@ __all__ = [
     "sequential",
     "wait",
     # micro-tiled (packed) layouts
-    "micro_tile",
-    "MicroTile",
-    "PackedShape",
     # compilation
     "compile",
+    # the NPU generation --target resolves to, for a design that has to branch
+    # on it before tracing (an object file to link, or an element type)
+    "resolve_target",
     # types
     "DType",
     "bf16",

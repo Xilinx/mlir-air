@@ -1,116 +1,100 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Add each tile's index to that tile, one core walking every tile, on air.api.
+
+The image is cut into tiles and a single core visits them in turn, adding the
+tile's row-major index to every element it holds:
+
+    for r in air.sequential(0, rows)
+      for c in air.sequential(0, cols)
+        air.ops.load(tile_in, A[r*th : ..., c*tw : ...])    L3 -> L1, strided
+        tile_out[:] = tile_in[:] + (r * cols + c)
+        air.ops.store(tile_out, B[r*th : ..., c*tw : ...])  L1 -> L3, strided
+
+This is the DMA counterpart of ``single_core_channel``, and the contrast is the
+reason both exist. The channel version puts one tile per trip from the segment
+and lets *arrival order* do the indexing, so the core never names a tile. Here
+the transfer is addressed, so the loop variables appear twice over: once as the
+L3 offset, and once as the value being added.
+
+Both uses go through the same machinery -- ``r`` and ``c`` are index
+expressions, so ``r * tile_height`` is a slice bound and ``r * cols + c``
+broadcasts into the elementwise expression as an ``index_cast``. The
+raw-bindings version this replaces spelled both by hand, with
+``arith.MulIOp``/``AddIOp`` for the offsets and an explicit ``arith.index_cast``
+for the addend.
+
+Unchanged otherwise, except that the per-tile add is written
+``tile_out[:] = tile_in[:] + n`` rather than a scalar loop nest over every
+(i, j). ``vector=0`` keeps the emitted loop scalar as the predecessor's was,
+whatever ``--tile-width`` is given: a <8 x i32> add is 256-bit and does not
+legalize on AIE2.
+"""
+
 import argparse
+import numpy as np
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+from air import api as air
+from air.api import i32
+
+DTYPE = {np.int32: i32}
 
 
-@module_builder
 def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
     assert image_height % tile_height == 0
     assert image_width % tile_width == 0
-    image_size = [image_height, image_width]
+    dt = DTYPE[np_dtype]
     tile_size = [tile_height, tile_width]
-    xrt_dtype = type_mapper(np_dtype)
+    rows = image_height // tile_height
+    cols = image_width // tile_width
 
-    memrefTyInOut = MemRefType.get(image_size, xrt_dtype)
+    A = air.tensor([image_height, image_width], dt)
+    B = air.tensor([image_height, image_width], dt)
 
-    # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    with air.launch(name="copy") as launch:
 
-        # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-            # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="xaddherd", shape=(1,)) as h:
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(_tx, _ty, _sx, _sy, a, b):
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
-                    # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=tile_size,
-                        element_type=T.i32(),
-                        memory_space=mem_space,
-                    )
-
-                    # Loop over columns and rows of tiles
-                    for tile_index0 in range_(image_height // tile_height):
-                        for tile_index1 in range_(image_width // tile_width):
-
-                            # We must allocate a buffer of tile size for the input/output
-                            tile_in = AllocOp(tile_type, [], [])
-                            tile_out = AllocOp(tile_type, [], [])
-
-                            # Convert the type of the tile size variable to the Index type
-                            tile_size0 = arith.ConstantOp.create_index(tile_height)
-                            tile_size1 = arith.ConstantOp.create_index(tile_width)
-
-                            # Calculate the offset into the channel data, which is based on our loop vars
-                            offset0 = arith.MulIOp(tile_size0, tile_index0)
-                            offset1 = arith.MulIOp(tile_size1, tile_index1)
-                            tile_num = arith.MulIOp(
-                                tile_index0,
-                                arith.ConstantOp.create_index(
-                                    image_width // tile_width
-                                ),
+                        @h.body
+                        def _(tx):
+                            # Hoisted above the loop and reused across trips;
+                            # the predecessor allocated a fresh pair per tile.
+                            tile_in = air.alloc(
+                                tile_size, dt, scope=h.private(), vector=0
                             )
-                            tile_num = arith.AddIOp(tile_num.results[0], tile_index1)
-
-                            # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                            dma_memcpy_nd(
-                                tile_in,
-                                a,
-                                src_offsets=[offset0, offset1],
-                                src_sizes=tile_size,
-                                src_strides=[image_width, 1],
+                            tile_out = air.alloc(
+                                tile_size, dt, scope=h.private(), vector=0
                             )
 
-                            # Access every value in the tile
-                            for i in range_(tile_height):
-                                for j in range_(tile_width):
-                                    # Load the input value from tile_in
-                                    val_in = load(tile_in, [i, j])
-
-                                    # Compute the output value
-                                    val_out = arith.addi(
-                                        val_in, arith.index_cast(xrt_dtype, tile_num)
+                            for r in air.sequential(0, rows):
+                                for c in air.sequential(0, cols):
+                                    i0 = r * tile_height
+                                    j0 = c * tile_width
+                                    air.ops.load(
+                                        tile_in,
+                                        A[
+                                            i0 : i0 + tile_height,
+                                            j0 : j0 + tile_width,
+                                        ],
+                                    )
+                                    tile_out[:] = tile_in[:] + (r * cols + c)
+                                    air.ops.store(
+                                        tile_out,
+                                        B[
+                                            i0 : i0 + tile_height,
+                                            j0 : j0 + tile_width,
+                                        ],
                                     )
 
-                                    # Store the output value in tile_out
-                                    store(val_out, tile_out, [i, j])
-                                    yield_([])
-                                yield_([])
-
-                            # Copy the output tile into the output
-                            dma_memcpy_nd(
-                                b,
-                                tile_out,
-                                dst_offsets=[offset0, offset1],
-                                dst_sizes=tile_size,
-                                dst_strides=[image_width, 1],
-                            )
-
-                            # Deallocate our L1 buffers
-                            DeallocOp(tile_in)
-                            DeallocOp(tile_out)
-
-                            yield_([])
-                        yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -123,7 +107,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the single_core_dma example",
     )
     parser.add_argument(
         "-v",
@@ -158,16 +142,24 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(
+    launch = build_module(
         args.image_height,
         args.image_width,
         args.tile_height,
         args.tile_width,
         INOUT_DATATYPE,
     )
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)

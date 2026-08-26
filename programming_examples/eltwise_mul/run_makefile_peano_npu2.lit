@@ -1,0 +1,27 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// npu2-only coverage for the bare element-wise multiply (`c = a * b`), the
+// gate of LFM2's Lfm2ShortConv operator: the flagship 2-D bf16 shape at the
+// registry's measured size (4194304 = 2048x2048 = seq*conv_dim), run for
+// correctness and again under profile.
+//
+// Deliberately NOT a mirror of eltwise_add's npu2 lit, which also covers 1-D
+// f32. MULTIPLY and ADD diverge on AIE2P: `aievec.add_elem` legalizes for
+// vector<16xf32>, `aievec.mul_elem` does not --
+//     aievec.mul_elem conversion is not supported for AIE2p
+//     error: failed to legalize operation 'aievec.mul_elem' ...
+//             (vector<16xf32>, vector<16xf32>) -> vector<16xf32>
+// so an f32 line here fails in aiecc before reaching the device. This says
+// nothing about npu1, which is untested for this op (there is no npu1 lit).
+// Restore the f32 coverage if AIE2P gains an f32 mul_elem lowering.
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_peano_npu2
+// RUN: cd test_peano_npu2
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=4194304 TILE=2048 | FileCheck %s
+// RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR SHAPE=4194304 TILE=2048 | FileCheck --check-prefix=PROFILE %s
+// CHECK: PASS!
+// PROFILE: PASS

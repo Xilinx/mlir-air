@@ -16,7 +16,14 @@ void rms_norm(bf16 *restrict y, const bf16 *restrict x,
   bf16 *it_y = const_cast<bf16 *>(y);
   bf16 *it_x = const_cast<bf16 *>(x);
   bf16 *it_w = const_cast<bf16 *>(w);
-  const float epsilon = 1e-6;
+  // Added to the MEAN square, so it is comparable to mean(x^2) -- which for
+  // most models is O(1) at every layer and makes the exact value irrelevant.
+  // It is NOT irrelevant for a model whose embeddings are small: LFM2's are
+  // ~0.6 in L2 over 2048 channels, so mean(x^2) ~ 1.8e-4 and layer 0's
+  // normalizer moves by several percent between 1e-6 and 1e-5. Models that
+  // care set RMS_NORM_EPS in their header; the default preserves the value
+  // every previously-shipped model was validated against.
+  const float epsilon = RMS_NORM_EPS;
 
   constexpr int vector_size = 16;
   constexpr float one_over_D = 1.0f / (float)MODEL_DIM;

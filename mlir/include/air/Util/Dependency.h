@@ -168,6 +168,15 @@ struct dependencyNodeEntry {
   std::vector<dependencyGraph *> nextDependencyGraphs;
   uint64_t start_time;
   uint64_t end_time;
+  // Time at which the event releases the hardware resources it reserved. For a
+  // data movement event this is the end of the link's *occupancy*
+  // (bytes/bandwidth), which can be earlier than end_time when the link model
+  // also carries a fixed time-of-flight latency. Ports model link bandwidth,
+  // not flight time, so holding them for the latency term would cap link
+  // throughput at 1/(occupancy + latency). When no latency is modelled this
+  // equals end_time and the early-release path is inert.
+  uint64_t release_time;
+  bool resources_released;
   std::vector<std::pair<uint64_t, uint64_t>> start_end_time_log;
   // Token count is used to synchronize operations which consumes/produces
   // multiple async tokens.
@@ -175,6 +184,9 @@ struct dependencyNodeEntry {
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }
   bool is_done(uint64_t t) { return t >= end_time; }
+  // True when this event models a link whose occupancy ends before its data
+  // lands, i.e. the early resource release is meaningful for it.
+  bool has_link_latency() { return release_time && release_time < end_time; }
 
   dependencyNodeEntry(std::string asyncEventName = "",
                       std::string asyncEventType = "", std::string color = "",
@@ -186,7 +198,8 @@ struct dependencyNodeEntry {
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), detailed_description(detailed_description),
         operationId(operationId), op(op), start_time(start_time),
-        end_time(end_time), token_count(token_count) {}
+        end_time(end_time), release_time(end_time), resources_released(false),
+        token_count(token_count) {}
 };
 
 // Dependency graph object

@@ -452,22 +452,26 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
   }
   return depList;
 }
-SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::IfOp op) {
-  // Collect async token values used inside the scf.if but defined outside.
-  // This allows areAsyncDependent to detect that an scf.if implicitly depends
-  // on async tokens consumed by ops in its then/else branches.
+// Collect async token values used inside a multi-region branch op but defined
+// outside it. This allows areAsyncDependent to detect that the branch op
+// implicitly depends on async tokens consumed by ops in any of its branches.
+//
+// Written against getRegions() rather than then/else so it serves scf.if and
+// scf.index_switch alike: an n-way branch differs from a 2-way one only in how
+// many regions it has, and nothing below reads a region's identity.
+SmallVector<Value> getAsyncDependenciesFromBranchRegions(Operation *op) {
   SmallVector<Value> depList;
   for (auto &region : op->getRegions()) {
     region.walk([&](Operation *innerOp) {
       for (auto operand : innerOp->getOperands()) {
         if (!isa<air::AsyncTokenType>(operand.getType()))
           continue;
-        // Check if defined outside the scf.if.
+        // Check if defined outside the branch op.
         if (auto *defOp = operand.getDefiningOp()) {
           if (op->isAncestor(defOp))
             continue;
         } else {
-          // Block argument: check if the owning block is inside the scf.if.
+          // Block argument: check if the owning block is inside the branch op.
           auto blockArg = cast<BlockArgument>(operand);
           if (auto *ownerOp = blockArg.getOwner()->getParentOp())
             if (op->isAncestor(ownerOp))
@@ -489,8 +493,8 @@ SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
     return getAsyncDependenciesFromOpImpl(par_op);
   else if (auto aif_op = dyn_cast_if_present<affine::AffineIfOp>(op))
     return getAsyncDependenciesFromOpImpl(aif_op);
-  else if (auto if_op = dyn_cast_if_present<scf::IfOp>(op))
-    return getAsyncDependenciesFromOpImpl(if_op);
+  else if (isa_and_present<scf::IfOp, scf::IndexSwitchOp>(op))
+    return getAsyncDependenciesFromBranchRegions(op);
   else
     return SmallVector<Value>();
 }
@@ -1958,6 +1962,21 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
   } else if (auto ifop = dyn_cast_if_present<scf::IfOp>(op)) {
     addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "ScfIfOp",
                     graphNodeProperties("control"), G, dep_ctx);
+  } else if (auto switchop = dyn_cast_if_present<scf::IndexSwitchOp>(op)) {
+    // Same control node as scf.if -- an n-way branch rather than a 2-way one.
+    // It shares IfOpID and the "if_branch" event type so vertex ids stay
+    // unique across both. Without this an scf.index_switch that air-dependency
+    // has given an async token falls through to the catch-all below and is
+    // rejected as "unknown op type producing async token", which is what
+    // happens as soon as one is nested inside another region op.
+    //
+    // This is one of five places the pass reasons about a branch op; the others
+    // are getAsyncDependenciesFromOp, getGraphNodeTypeFromOp, the scf.yield
+    // terminator vertex, and the token-source trace. scf.index_switch has to be
+    // known to ALL of them -- handling only this one silences the diagnostic
+    // while still building a graph with missing edges.
+    addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "ScfIndexSwitchOp",
+                    graphNodeProperties("control"), G, dep_ctx);
   } else if (auto affineifop = dyn_cast_if_present<affine::AffineIfOp>(op)) {
     addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "AffineIfOp",
                     graphNodeProperties("control"), G, dep_ctx);
@@ -2177,6 +2196,14 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromTerminatorOp(
       return addVertexFromOp(
           op, dep_ctx.TerminatorID, "terminator", "ScfIfYieldOp",
           graphNodeProperties("control", detailed_description), G, dep_ctx);
+    } else if (getScfParentOpFromYieldOp<scf::IndexSwitchOp>(op)) {
+      // Every case region of an scf.index_switch is terminated by an scf.yield,
+      // exactly as an scf.if's branches are. Without this the yield matches
+      // none of the parents above and gets no terminator vertex, so the edge
+      // that carries a case's last token out to the switch's result is missing.
+      return addVertexFromOp(
+          op, dep_ctx.TerminatorID, "terminator", "ScfIndexSwitchYieldOp",
+          graphNodeProperties("control", detailed_description), G, dep_ctx);
     }
   } else if (isa<affine::AffineYieldOp>(op)) {
     if (op->getParentOfType<affine::AffineIfOp>()) {
@@ -2310,6 +2337,8 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   } else if (isa<scf::ParallelOp>(op)) {
     return "parallel_loop";
   } else if (isa<scf::IfOp>(op)) {
+    return "if_branch";
+  } else if (isa<scf::IndexSwitchOp>(op)) {
     return "if_branch";
   } else if (isa<affine::AffineIfOp>(op)) {
     return "if_branch";
@@ -2488,24 +2517,25 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
       return output;
     }
   }
-  // Else if dependency token is from scf if (joint token from both branches)
+  // Else if dependency token is from an scf branch op (a joint token from every
+  // branch). Walking getRegions() covers scf.if (then + else) and
+  // scf.index_switch (n cases + default) with one rule: the token a branch op
+  // returns is joined from the terminator of EVERY branch, so each branch's
+  // last op is a source of it. Enumerating then/else by name would silently
+  // return an empty source list for an index_switch, dropping the dependency.
   else if (dep_token.getDefiningOp() &&
-           dyn_cast_if_present<scf::IfOp>(dep_token.getDefiningOp())) {
-    auto ifop = dyn_cast_if_present<scf::IfOp>(dep_token.getDefiningOp());
-    // Then block
-    auto then_terminator = ifop.thenBlock()->getTerminator();
-    for (auto operand : then_terminator->getOperands()) {
-      if (auto op = operand.getDefiningOp()) {
-        output.push_back(op);
-      }
-    }
-    // Else block
-    if (ifop.elseBlock()) {
-      auto else_terminator = ifop.elseBlock()->getTerminator();
-      for (auto operand : else_terminator->getOperands()) {
-        if (auto op = operand.getDefiningOp()) {
-          output.push_back(op);
-        }
+           isa<scf::IfOp, scf::IndexSwitchOp>(dep_token.getDefiningOp())) {
+    auto *branchop = dep_token.getDefiningOp();
+    for (auto &region : branchop->getRegions()) {
+      if (region.empty())
+        continue;
+      for (auto &block : region) {
+        if (!block.mightHaveTerminator())
+          continue;
+        auto *terminator = block.getTerminator();
+        for (auto operand : terminator->getOperands())
+          if (auto op = operand.getDefiningOp())
+            output.push_back(op);
       }
     }
     return output;
@@ -2778,8 +2808,9 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
                      dyn_cast_if_present<xilinx::air::AsyncOpInterface>(
                          src_op)) {
         // Elevate src token if src op is in affine.if or scf.if
-        while (isa_and_present<affine::AffineIfOp, scf::IfOp>(
-            src_op->getParentOp())) {
+        while (
+            isa_and_present<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(
+                src_op->getParentOp())) {
           DominanceInfo domInfo(src_op);
           if (domInfo.properlyDominates(src_op, async_op)) {
             // SSA dominance check passed. Jump to adding dependency edge.

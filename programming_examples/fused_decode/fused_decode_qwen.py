@@ -750,12 +750,7 @@ def build_module():
         # LOOPCLOSE build and the working host-toX one. spreadCollapsedPacketChannels
         # now partitions such a ring by producer, so each ring's arrival order is
         # fixed by the one producer feeding it.
-        _lut = channel_decl("ropeLUT", size=[1])  # host cos/sin LUT -> rope core
-        # Feed the LUT from a FREE shim column: the packetization above is triggered by
-        # shim col 1 being oversubscribed (ropeLUT + rmsIn + rmsW + layerOut + qDrain).
-        # Off col 1 the LUT feed stays circuit-switched, which cannot share the rope
-        # tile's packet S2MM at all.
-        _lut.operation.attributes["air.shim_col"] = IntegerAttr.get(i32, 0)
+        channel_decl("ropeLUT", size=[1])  # host cos/sin LUT -> rope core
         channel_decl(
             "gluDrain", size=[1]
         )  # glu out (down-X) -> shim (Step C; loopclose D)
@@ -775,41 +770,26 @@ def build_module():
             channel_decl("inKV_V", size=[NGRP])  # cache V [16,REGION_W] -> mem_7_1
             if KV_APPEND:
                 # reference-faithful on-chip KV-cache append (mirror fused_decode.py:762-775):
-                # rope's roped-K / raw-V leave on ONE dedicated rope MM2S as PACKET flows
-                # pinned to the attn shim col (7) -> DDR cache. Qwen has ONE col group
-                # (NGRP=1) so both K and V transit col 7 (Llama split cols 3/4).
+                # rope's roped-K / raw-V leave on ONE dedicated rope MM2S as PACKET
+                # flows -> DDR cache.
                 #
-                # Which rope MM2S they take is no longer stated. rope also emits ropeQ
-                # as a CIRCUIT flow (-> the col-6 q-broadcast memtile), and a physical
-                # output port cannot carry both a static circuit route and packet
-                # routes -- the packet BDs would be steered by the circuit connection
-                # instead of their packet dests. AIRToAIE separates them itself now
-                # (TileDMAAllocator::spreadCollapsedPacketChannels), reaching the same
-                # placement this used to name.
-                _apK = channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-                _apK.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                    i32, ATTN_COL
-                )
-                _apV = channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-                _apV.operation.attributes["air.shim_col"] = IntegerAttr.get(
-                    i32, ATTN_COL
-                )
+                # Neither the shim column nor the rope MM2S is stated. rope also emits
+                # ropeQ as a CIRCUIT flow (-> the col-6 q-broadcast memtile), and a
+                # physical output port cannot carry both a static circuit route and
+                # packet routes -- the packet BDs would be steered by the circuit
+                # connection instead of their packet dests. AIRToAIE separates them
+                # itself (TileDMAAllocator::spreadCollapsedPacketChannels), and steers
+                # the readbacks to their own shim tile, reaching the placement these
+                # used to name.
+                channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
+                channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
             channel_decl(
                 "toK", size=[N_ATTN_CU]
             )  # staging -> qk core (k block, reshaped)
             channel_decl(
                 "toV", size=[N_ATTN_CU]
             )  # staging -> kv core (v block, reshaped)
-            _ao = channel_decl(
-                "attnO", size=[N_ATTN_CU]
-            )  # kv o -> drain (o-proj X Step D2)
-            if DRAIN_ATTNO:
-                # Bisection path only (no on-chip oref consumer): send the o drain out a
-                # shim column away from col 7, which already carries appendK/appendV +
-                # inKV_K/inKV_V. Sharing col 7 makes two flows target the same shim
-                # dest -> "aie.masterset op targets same destination South: 2" at route
-                # time (this is why the earlier attn-alone bisect would not build).
-                _ao.operation.attributes["air.shim_col"] = IntegerAttr.get(i32, 6)
+            channel_decl("attnO", size=[N_ATTN_CU])  # kv o -> drain (o-proj X Step D2)
         else:
             channel_decl("qDrain", size=[1])  # bisection: rope q -> host
         if ATTN and ROPE_ECHO:
@@ -829,11 +809,9 @@ def build_module():
         if OREF_2HOP:
             channel_decl("oref2", size=[1], channel_type="npu_dma_packet")
         if OREF_HOSTSRC:
-            _oi = channel_decl("orefIn", size=[1])
-            _oi.operation.attributes["air.shim_col"] = IntegerAttr.get(i32, 0)
+            channel_decl("orefIn", size=[1])
         if OREF_DRAIN:
-            _od = channel_decl("orefDrain", size=[1])
-            _od.operation.attributes["air.shim_col"] = IntegerAttr.get(i32, 6)
+            channel_decl("orefDrain", size=[1])
         if OREF_VIA_RMS:
             # attn-o gather memtile -> rms core. This must not share a channel
             # with the shim-sourced rmsIn/rmsW, and AIRToAIE now derives that.
@@ -1983,7 +1961,7 @@ def build_module():
                             ChannelGet("inKV_K", kb, indices=[idx(gi)])
                             ChannelGet("inKV_V", vb, indices=[idx(gi)])
                             for _lc, _cc in enumerate(_cus):
-                                _pk = ChannelPut(
+                                ChannelPut(
                                     "toK",
                                     kb,
                                     indices=[idx(_cc)],
@@ -1991,7 +1969,7 @@ def build_module():
                                     sizes=[idx(16), idx(16), idx(8)],
                                     strides=[idx(8), idx(_gw), idx(1)],
                                 )
-                                _pv = ChannelPut(
+                                ChannelPut(
                                     "toV",
                                     vb,
                                     indices=[idx(_cc)],
@@ -2004,18 +1982,6 @@ def build_module():
                                     sizes=[idx(2), idx(16), idx(8), idx(8)],
                                     strides=[idx(_gw * 8), idx(8), idx(_gw), idx(1)],
                                 )
-                                # Reserve mem_7_1 MM2S 0 for the q-broadcast (mem_6_1->qk)
-                                # + attn-o feedback (kv->mem_6_1) that transit col-7's
-                                # switchbox: KV on MM2S 0 collides with that transit and
-                                # deadlocks once attn actively couples qk<->kv. Mirror the
-                                # proven Llama _reblock_dec fix (col-3 there) -> steer toK/
-                                # toV onto memtile MM2S channels 1+.
-                                _pk.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = IntegerAttr.get(T.i32(), 1)
-                                _pv.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = IntegerAttr.get(T.i32(), 1)
                             DeallocOp(kb)
                             DeallocOp(vb)
                             yield_([])

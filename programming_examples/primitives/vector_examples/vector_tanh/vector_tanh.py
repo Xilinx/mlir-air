@@ -1,116 +1,103 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Vectorized tanh primitive, on air.api.
 
-"""Vectorized Tanh Example
+    c[:] = air.ops.tanh(a[:])
 
-Computes element-wise tanh on a 1D bf16 input [N] using the AIE2P
-hardware tanh intrinsic (__builtin_aie2p_tanh).
+One line of compute, over a [n] bf16 vector cut into [tile_n] tiles across
+NUM_TILES cores. The predecessor built the same expression as a hand-rolled
+vector loop -- an ``scf.for`` over the tile in steps of VECTOR_SIZE, two
+``memref.subview``s per trip, a ``vector.transfer_read`` with an explicit
+identity permutation map and a padding constant, ``math.tanh``, and a
+``transfer_write``. Here the emitter builds that loop, and the subviews are not
+needed at all: air.api reads at an offset directly.
 
-Lowering chain: math.tanh -> aievec.tanh -> xllvm.intr.aie2p.tanh
+The emitted op is unchanged: ``math.tanh`` on ``vector<VECTOR_SIZExbf16>``,
+lowering ``math.tanh -> aievec.tanh -> xllvm.intr.aie2p.tanh``.
 
-Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
-Computation is vectorized using vector.transfer_read/write.
+Three constraints here are hardware, not style, and the example must not drift
+off them:
+
+* **npu2 only.** On npu1 ``math.tanh`` lowers to a C call via ``emitc.include``,
+  which the peano path cannot translate. Both lits are already
+  ``REQUIRES: ryzen_ai_npu2`` and the predecessor fails on npu1 identically --
+  an inherited limit, not a regression.
+* **bf16 only, and vector only.** Scalar bf16 tanh does not legalize either
+  (``s16 G_FTANH``), so the emitter's usual scalar fallback is the *unsafe*
+  direction here rather than a safety net. ``tile_n`` must stay a multiple of
+  the vector width or the fallback turns a working kernel into a build failure,
+  which is why that is asserted below rather than left to chance.
+* f32 tanh does not legalize at all, so ``np_dtype_in`` is checked rather than
+  honoured -- the opposite call from the arithmetic siblings in this directory,
+  and for a reason that is about the backend, not the object file.
+
+Two differences from the predecessor worth naming:
+
+* The herd is [NUM_TILES, 1] rather than [1, NUM_TILES]. A 1-D air.api herd is
+  laid out along x, which is the orientation that places on both generations.
+* The strip-mine is the DSL's. The predecessor asked for a [1, NUM_TILES] herd
+  and then wrote the outer loop itself, computing ``_l_ivx + _ty * tile_n``
+  through a hand-built AffineMap. Here the herd's iteration space is the whole
+  tile grid and air.api strip-mines it onto NUM_TILES cores.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith, math as math_dialect
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import bf16
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+NUM_TILES = 2
 
 
-@module_builder
 def build_module(n, tile_n, np_dtype_in, vector_size=16):
-    xrt_dtype_in = type_mapper(np_dtype_in)
-    num_tiles = 2
-    assert n % (tile_n * num_tiles) == 0
+    assert n % (tile_n * NUM_TILES) == 0
+    # Not a stylistic assert: a tile that is not a multiple of the width sends
+    # the emitter down its scalar fallback, and scalar bf16 tanh does not
+    # legalize -- so the fallback fails to build rather than running slowly.
     assert tile_n % vector_size == 0
-    VECTOR_SIZE = vector_size
-    index_type = IndexType.get()
+    if np_dtype_in is not bfloat16:
+        raise ValueError(
+            f"math.tanh legalizes only for bf16 vectors on AIE2P (f32 fails "
+            f"with G_FTANH), so np_dtype_in must be ml_dtypes.bfloat16, "
+            f"got {np_dtype_in!r}"
+        )
+    dt = bf16
 
-    l3memrefTy = MemRefType.get([n], xrt_dtype_in)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    A = air.tensor([n], dt)
+    C = air.tensor([n], dt)
 
-    vecTy = VectorType.get([VECTOR_SIZE], xrt_dtype_in)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    with air.launch(name="vector_tanh") as launch:
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def vector_tanh(arg0, arg1):
+        @launch.body
+        def _():
+            # The iteration space is every tile; shape= pins the core count to
+            # what the predecessor asked for, and the DSL strip-mines the rest
+            # into a loop on each core.
+            with air.herd(
+                [range(0, n, tile_n)], name="herd_0", shape=(NUM_TILES,)
+            ) as h:
 
-        @herd(name="herd_0", sizes=[1, num_tiles], operands=[arg0, arg1])
-        def herd_body(_tx, _ty, _sx, _sy, _l3_in, _l3_out):
-            l1_in = AllocOp(l1MemrefTy, [], [])
-            l1_out = AllocOp(l1MemrefTy, [], [])
+                @h.body
+                def _(tx):
+                    # tx is a tile *index*, not an element offset: the herd's
+                    # iteration space counts tiles, and h.tile_sizes carries the
+                    # step. Multiply to get the window into L3.
+                    i0 = tx * tile_n
+                    a = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
+                    c = air.alloc([tile_n], dt, scope=h.private(), vector=vector_size)
 
-            for _l_ivx in range_(0, n, tile_n * num_tiles):
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                    air.ops.load(a, A[i0 : i0 + tile_n])
 
-                dma_memcpy_nd(
-                    l1_in,
-                    _l3_in,
-                    src_offsets=[offset],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
+                    c[:] = air.ops.tanh(a[:])
 
-                c0 = ConstantOp(index_type, 0)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
-                cTileN = ConstantOp(index_type, tile_n)
-                cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
+                    air.ops.store(c, C[i0 : i0 + tile_n])
 
-                for j in range_(c0, cTileN, cVecSize):
-                    sub_in = subview(l1_in.result, [j], [VECTOR_SIZE], [1])
-                    sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
-
-                    v_in = transfer_read(
-                        vecTy, sub_in, [c0], identity_map, cst0, [True]
-                    )
-
-                    # Hardware tanh intrinsic on AIE2P
-                    v_out = math_dialect.tanh(v_in)
-
-                    transfer_write(None, v_out, sub_out, [c0], identity_map, [True])
-                    yield_([])
-
-                dma_memcpy_nd(
-                    _l3_out,
-                    l1_out,
-                    dst_offsets=[offset],
-                    dst_sizes=[tile_n],
-                    dst_strides=[1],
-                )
-                DeallocOp(l1_in)
-                DeallocOp(l1_out)
-                yield_([])
+    return launch
 
 
 if __name__ == "__main__":
@@ -138,7 +125,10 @@ if __name__ == "__main__":
         type=str,
         choices=["aie2", "aie2p"],
         default="aie2p",
-        help="Target AIE architecture (aie2 or aie2p)",
+        help="Accepted for Makefile compatibility and otherwise unused: the "
+        "vector width comes from --vector-size, which the lits always set, and "
+        "the device from --target. Inherited from the predecessor, which also "
+        "ignored it",
     )
     parser.add_argument(
         "--compile-mode",
@@ -154,10 +144,18 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
-    mlir_module = build_module(args.n, args.tile_n, INPUT_DATATYPE, args.vector_size)
+    launch = build_module(args.n, args.tile_n, INPUT_DATATYPE, args.vector_size)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -185,6 +183,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="vector_tanh",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -202,6 +201,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

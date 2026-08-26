@@ -6,13 +6,13 @@
 //===----------------------------------------------------------------------===//
 
 
-// RUN: air-opt -o %T/channel.async.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -convert-arith-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
-// RUN: air-translate --mlir-to-llvmir %T/channel.async.llvm.mlir -o %T/channel.async.ll
-// RUN: %OPT -O3 -o %T/channel.async.opt.bc < %T/channel.async.ll
-// RUN: %LLC %T/channel.async.opt.bc --relocation-model=pic -filetype=obj -o %T/channel.async.o
-// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %T/main.o
-// RUN: %CLANG %aircpu_lib %mlir_async_lib -o %T/test.exe %T/main.o %T/channel.async.o
-// RUN: %ld_lib_path %T/test.exe
+// RUN: air-opt -o %t.channel.async.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -convert-arith-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
+// RUN: air-translate --mlir-to-llvmir %t.channel.async.llvm.mlir -o %t.channel.async.ll
+// RUN: %OPT -O3 -o %t.channel.async.opt.bc < %t.channel.async.ll
+// RUN: %LLC %t.channel.async.opt.bc --relocation-model=pic -filetype=obj -o %t.channel.async.o
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %t.main.o
+// RUN: %CLANG %aircpu_lib %mlir_async_lib -o %t.test.exe %t.main.o %t.channel.async.o
+// RUN: %ld_lib_path %t.test.exe
 
 air.channel @channel_0 [1, 1]
 func.func @forward(%arg0 : memref<16x16xi32>, %arg1 : memref<16x16xi32>) -> () {
