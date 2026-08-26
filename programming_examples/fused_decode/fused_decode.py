@@ -3631,7 +3631,7 @@ def build_module():
                                         strides=[idx(1)],
                                     )
                             for c in range(N_ATTN_CU):
-                                _pk = ChannelPut(
+                                ChannelPut(
                                     "toK",
                                     akbs[c],
                                     indices=[idx(c)],
@@ -3639,7 +3639,7 @@ def build_module():
                                     sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
                                     strides=[idx(8), idx(KVPC_DH), idx(1)],
                                 )
-                                _pv = ChannelPut(
+                                ChannelPut(
                                     "toV",
                                     avbs[c],
                                     indices=[idx(c)],
@@ -3652,18 +3652,6 @@ def build_module():
                                         idx(1),
                                     ],
                                 )
-                                # col-3 KV: reserve memtile MM2S 0 (the q-broadcast
-                                # transits this memtile's switchbox; KV on MM2S 0
-                                # deadlocks the route). col 4 already has GLU/down on
-                                # MM2S 0, so its KV naturally lands on 1-4. Gate on
-                                # LOOPCLOSE to keep GREEN's layout/PASS unchanged.
-                                if ATTN_CU_LOC[c][0] == 3:
-                                    _pk.operation.attributes[
-                                        "air.memtile_dma_channel_min"
-                                    ] = IntegerAttr.get(T.i32(), 1)
-                                    _pv.operation.attributes[
-                                        "air.memtile_dma_channel_min"
-                                    ] = IntegerAttr.get(T.i32(), 1)
                             for c in range(N_ATTN_CU):
                                 DeallocOp(akbs[c])
                                 DeallocOp(avbs[c])
@@ -3726,7 +3714,7 @@ def build_module():
                                                 "inKV_V", _vbuf, indices=[idx(_gi)]
                                             )
                                             for _lc, _cc in enumerate(_cus):
-                                                _pk = ChannelPut(
+                                                ChannelPut(
                                                     "toK",
                                                     _kbuf,
                                                     indices=[idx(_cc)],
@@ -3742,7 +3730,7 @@ def build_module():
                                                     ],
                                                     strides=[idx(8), idx(_gw), idx(1)],
                                                 )
-                                                _pv = ChannelPut(
+                                                ChannelPut(
                                                     "toV",
                                                     _vbuf,
                                                     indices=[idx(_cc)],
@@ -3765,13 +3753,6 @@ def build_module():
                                                         idx(1),
                                                     ],
                                                 )
-                                                if col == 3:
-                                                    _pk.operation.attributes[
-                                                        "air.memtile_dma_channel_min"
-                                                    ] = IntegerAttr.get(T.i32(), 1)
-                                                    _pv.operation.attributes[
-                                                        "air.memtile_dma_channel_min"
-                                                    ] = IntegerAttr.get(T.i32(), 1)
                                             DeallocOp(_kbuf)
                                             DeallocOp(_vbuf)
                                             yield_([])
@@ -3787,7 +3768,7 @@ def build_module():
                                             IntegerAttr.get(T.i32(), col)
                                         )
                                         ChannelGet("inKV", kvb, indices=[idx(c)])
-                                        _pk = ChannelPut(
+                                        ChannelPut(
                                             "toK",
                                             kvb,
                                             indices=[idx(c)],
@@ -3795,7 +3776,7 @@ def build_module():
                                             sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
                                             strides=[idx(8), idx(KVPC_DH), idx(1)],
                                         )
-                                        _pv = ChannelPut(
+                                        ChannelPut(
                                             "toV",
                                             kvb,
                                             indices=[idx(c)],
@@ -3813,19 +3794,6 @@ def build_module():
                                                 idx(1),
                                             ],
                                         )
-                                        # MULTIBLK KV re-block: same col-3 switchbox collision
-                                        # as the on-chip path (KV on memtile MM2S 0 deadlocks
-                                        # in LOOPCLOSE - the o-proj feedback + q-broadcast
-                                        # transit col-3's switchbox). Reserve MM2S 0 by steering
-                                        # col-3 KV onto channels 1-4. (col 4 already lands on
-                                        # 1-4 via GLU/down; gate on LOOPCLOSE to keep GREEN.)
-                                        if col == 3:
-                                            _pk.operation.attributes[
-                                                "air.memtile_dma_channel_min"
-                                            ] = IntegerAttr.get(T.i32(), 1)
-                                            _pv.operation.attributes[
-                                                "air.memtile_dma_channel_min"
-                                            ] = IntegerAttr.get(T.i32(), 1)
                                         DeallocOp(kvb)
                                         yield_([])
 

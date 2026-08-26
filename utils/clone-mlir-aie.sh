@@ -14,8 +14,8 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=4c8b56f5db25a9a89582bffed3ad933dea5b1d15
-WHEEL_VERSION=1.4.3.dev17+g4c8b56f
+export HASH=a2f8daf6d47d1a4dfba3e57d31d32a237eb9427f
+WHEEL_VERSION=1.4.3.dev19+ga2f8daf
 
 if [ x"$1" == x--get-wheel-version ]; then
   echo $WHEEL_VERSION
