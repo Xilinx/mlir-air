@@ -180,6 +180,61 @@ void rms_scale_row_aie(float *restrict scales, bf16 *restrict x, int t,
   scales[t] = rms_rsqrt(x + t * MODEL_DIM);
 }
 
+// ---- band-streamed residual (RMS_BAND_STREAM) ------------------------------
+// rms_rsqrt needs the WHOLE MODEL_DIM row at once to sum its squares. Once the
+// raw residual is banded (one [BATCH][n] band resident at a time instead of
+// [BATCH][MODEL_DIM]), no single call sees the whole row, so the sum has to be
+// built up across a band loop and closed out separately. Unused unless
+// fused_decode.py's band-streamed path calls them.
+
+/// Add row t's sum-of-squares over ONE band (width n, starting at x's base --
+/// x itself is the band buffer, already offset by the caller) into scales[t].
+/// Call once per band, in band order; `first` nonzero on the first band of a
+/// row zeroes the accumulator instead of adding to whatever was there before
+/// (there is no separate zero-init call). Follow with ONE
+/// rms_scale_row_finalize_aie per row after the last band.
+void rms_scale_row_partial_aie(float *restrict scales, bf16 *restrict x,
+                               int t, int n, int first, int _arm) {
+  (void)_arm;
+  constexpr int vector_size = 16;
+  bf16 *it_x = const_cast<bf16 *>(x) + t * n;
+  aie::accum<accfloat, vector_size> sum_squares = aie::zeros<accfloat>();
+  for (int i = 0; i < n / vector_size; i++) {
+    auto x_vec = aie::load_v<vector_size>(it_x);
+    sum_squares = aie::mac_square(sum_squares, x_vec);
+    it_x += vector_size;
+  }
+  aie::vector<float, vector_size> mx_vec =
+      sum_squares.template to_vector<float>();
+  float sum = aie::reduce_add(mx_vec);
+  scales[t] = first ? sum : scales[t] + sum;
+}
+
+/// Turn row t's accumulated sum-of-squares (built up over every band by
+/// rms_scale_row_partial_aie) into 1/sqrt(mean(x^2)+eps) in place. This is
+/// rms_rsqrt's fast-inverse-sqrt tail, duplicated rather than shared: pulling
+/// it out from under rms_rsqrt would change that function's own codegen, and
+/// nothing else here is supposed to.
+void rms_scale_row_finalize_aie(float *restrict scales, int t, int _arm) {
+  (void)_arm;
+  const float epsilon = 1e-6f;
+  const float one_over_D = 1.0f / (float)MODEL_DIM;
+  float sum = scales[t] * one_over_D + epsilon;
+  float x2, divrms;
+  const float threehalfs = 1.5f;
+  uint32_t i_u32;
+  x2 = sum * 0.5f;
+  divrms = sum;
+  i_u32 = *(uint32_t *)&divrms;      // evil floating point bit level hacking
+  i_u32 = 0x5f3759df - (i_u32 >> 1); // what the fuck?
+  divrms = *(float *)&i_u32;
+  divrms = divrms * (threehalfs - (x2 * divrms * divrms)); // 1st iteration
+  divrms =
+      divrms * (threehalfs -
+                (x2 * divrms * divrms)); // 2nd iteration, this can be removed
+  scales[t] = divrms;
+}
+
 /// One chunk of the normalized batch, for every row:
 ///   y[t*n + i] = x[t*MODEL_DIM + c*n + i] * w[c*n + i] * scales[t]
 /// Call once per chunk per re-broadcast round; `y` is then put on @xnorm whole.
