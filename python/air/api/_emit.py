@@ -210,6 +210,21 @@ def _base_of(leaf):
     return getattr(leaf, "base", None)
 
 
+def _read_key(leaf):
+    """What makes two leaves the same read.
+
+    A buffer that appears twice in one expression is read once, and the same has
+    to hold for a region: `gu[0, :] * 2 + gu[0, :]` writes two BufferSlice
+    objects for one region, so keying on the slice's own identity would read it
+    twice. Keying on the underlying buffer alone is the opposite mistake -- it
+    would serve gu[1, :] the value already read for gu[0, :]. The region is what
+    identifies the read: which buffer, from where, how much.
+    """
+    base = _base_of(leaf)
+    buffer = getattr(leaf, "buffer", leaf)
+    return (id(buffer), None if base is None else tuple(base), tuple(leaf.shape))
+
+
 def _check_region(node, dst, dtype, expected=None):
     """Check every buffer leaf against the element type of *its* region.
 
@@ -601,11 +616,7 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
         # cast is the only thing that starts a new region. So a given buffer is
         # reachable from exactly one region and its cached value can only ever
         # have been read at that region's vector type.
-        base = _base_of(node.buffer)
-        # Keyed on the region, not just the buffer: gu[0, :] and gu[1, :] are
-        # the same Buffer at different offsets, and keying on the buffer alone
-        # would serve the second one the first one's value.
-        key = (id(node.buffer), None if base is None else tuple(base))
+        key = _read_key(node.buffer)
         if reads is not None and key in reads:
             return reads[key]
         value = load(node.buffer, ivs, region)

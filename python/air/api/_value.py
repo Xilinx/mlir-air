@@ -585,13 +585,12 @@ class BufferSlice(_StridedView):
     # [2, N] buffer rather than two. Refusing to read a row of it forced a copy
     # the packing existed to avoid.
     #
-    # Only a *plain* region qualifies. A reshape/transpose view re-describes the
-    # elements at another rank or order, so an index into it is not an index
-    # into the buffer; a dynamic offset has no constant to fold into the loop
-    # nest. Both are rejected by name below rather than silently mis-indexed. A
-    # stepped subscript never reaches here -- __getitem__ refuses step != 1
-    # outright -- so a region built by subscripting always carries the buffer's
-    # own strides.
+    # Only a region that walks the buffer the way the buffer is laid out
+    # qualifies. A reshape or transpose does not -- an index into it is not an
+    # index into the buffer -- and neither does a dynamic offset, which has no
+    # constant to fold into a loop nest built at trace time. Both are rejected
+    # by name below rather than silently mis-indexed. A stepped subscript never
+    # reaches here: __getitem__ refuses step != 1 outright.
 
     @property
     def shape(self):
@@ -609,13 +608,21 @@ class BufferSlice(_StridedView):
     def _as_leaf(self):
         """This region as an elementwise leaf, or a TypeError saying why not."""
         self.buffer._require_compute("read")
-        if self.is_view:
+        # The test is the strides, not the is_view flag. is_view is also set by
+        # subscripting a region -- gu[0:2, :][1, :] -- which is an ordinary
+        # region that reads perfectly well, and gating on the flag rejected it.
+        # What actually disqualifies a region is walking memory differently from
+        # the buffer: a reshape changes the rank, a transpose permutes the
+        # strides, and in either case an index into the region is not an index
+        # into the buffer.
+        if list(self.strides) != list(self.buffer.strides):
             raise TypeError(
                 f"cannot read {self!r} elementwise: it is a reshaped or "
-                "transposed view, which re-describes the same elements at a "
-                "different rank or order, so an index into it is not an index "
-                "into the buffer. Only a plain region -- buf[1, :] -- reads "
-                "elementwise."
+                "transposed view, so it walks the buffer with strides "
+                f"{list(self.strides)} rather than its own "
+                f"{list(self.buffer.strides)}, and an index into the view is "
+                "not an index into the buffer. A plain region -- gu[1, :], or a "
+                "subscript of one -- reads elementwise."
             )
         if any(b is None for b in self.base):
             raise TypeError(
