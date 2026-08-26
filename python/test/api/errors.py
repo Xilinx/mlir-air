@@ -1836,3 +1836,81 @@ def _():
 @expect(TypeError, "herd_link_with_is_empty")
 def _():
     air.herd(range(0, 128, 64), link_with="")
+
+
+# CHECK-LABEL: TEST: segment_body_never_registered
+# `with air.segment(...)` is pure bookkeeping -- every op comes from the body
+# decorator -- so omitting it emits nothing at all for that scope and traces the
+# herd straight into the launch. That is the worst available failure: the IR is
+# structurally different, still builds, and on a small grid still runs and still
+# passes, so neither a hardware test nor an op-count diff catches it. It did
+# reach review once, in the data_transfer_transpose conversion.
+# CHECK: RuntimeError: air.segment was opened but its body was never registered
+@expect(RuntimeError, "segment_body_never_registered")
+def _():
+    A = air.tensor([64], bf16)
+    C = air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="s") as seg:
+                with air.herd(range(0, 64, 64), shape=(1,)) as h:
+
+                    @h.body
+                    def _(tx):
+                        t = air.alloc([64], bf16, scope=h.private())
+                        ops.load(t, A[:])
+                        ops.store(t, C[:])
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: herd_body_never_registered
+# The same hole, and it is a real one rather than a theoretical twin: a lone
+# body-less herd happens to trip "kernel writes no output", but that check is
+# satisfied by any *other* herd that stores. Two herds with the second one's
+# body forgotten built cleanly and dropped it silently.
+# CHECK: RuntimeError: air.herd was opened but its body was never registered
+@expect(RuntimeError, "herd_body_never_registered")
+def _():
+    A = air.tensor([64], bf16)
+    C = air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, 64, 64), name="h1", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    t = air.alloc([64], bf16, scope=h.private())
+                    ops.load(t, A[:])
+                    ops.store(t, C[:])
+
+            with air.herd(range(0, 64, 64), name="h2", shape=(1,)):
+                pass
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: a_failing_body_is_not_masked
+# The guard must stay quiet while another exception is propagating. A body that
+# raised is far more interesting than a body that is absent, and reporting the
+# absence here would bury the real error -- which, at that point, is the only
+# reason the body never registered.
+# CHECK: ValueError: the body's own problem
+@expect(ValueError, "a_failing_body_is_not_masked")
+def _():
+    air.tensor([64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="s"):
+                raise ValueError("the body's own problem")
+
+    launch.mlir()

@@ -649,6 +649,8 @@ class SegmentContext:
     reason every hand-written staging example in the tree nests the two.
     """
 
+    _what = "air.segment"
+
     def __init__(self, grid=None, name=None):
         # A grid here is this segment's *own* iteration space -- air.segment's
         # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
@@ -680,7 +682,28 @@ class SegmentContext:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, exc_type, exc_val, tb):
+        # A body that was never registered is the one way to leave this block
+        # having emitted nothing at all -- the `with` is pure bookkeeping and
+        # every op comes from the decorator. Silently emitting nothing is the
+        # worst available outcome: the enclosing ops vanish, the kernel still
+        # builds, and on a small grid it still runs and still passes, so
+        # neither a hardware test nor an op-count diff notices.
+        #
+        # Not raised while another exception is propagating: the body itself
+        # failing is far more interesting than the body being absent, and
+        # replacing it here would bury the real error.
+        if exc_type is None and not self._registered:
+            raise RuntimeError(
+                f"{self._what} was opened but its body was never registered, so "
+                "nothing was emitted for this scope and the ops inside it were "
+                "traced into the enclosing one. The body is a function decorated "
+                "inside the `with`, which means the scope needs a name to "
+                f"decorate:\n\n    with {self._what}(...) as scope:\n"
+                "        @scope.body\n        def _():\n            ...\n\n"
+                "`as scope` is easy to leave off, and without it there is no "
+                "variable to hang the decorator on."
+            )
         return False
 
     def private(self):
@@ -821,6 +844,8 @@ def _needs(obj, kernel):
 class HerdContext:
     """A herd of compute cores over a (possibly strip-mined) tile grid."""
 
+    _what = "air.herd"
+
     def __init__(self, iterable, name=None, shape=None, target=None, link_with=None):
         self.dims = parse_grid(iterable)
         if len(self.dims) > 2:
@@ -909,7 +934,28 @@ class HerdContext:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, exc_type, exc_val, tb):
+        # A body that was never registered is the one way to leave this block
+        # having emitted nothing at all -- the `with` is pure bookkeeping and
+        # every op comes from the decorator. Silently emitting nothing is the
+        # worst available outcome: the enclosing ops vanish, the kernel still
+        # builds, and on a small grid it still runs and still passes, so
+        # neither a hardware test nor an op-count diff notices.
+        #
+        # Not raised while another exception is propagating: the body itself
+        # failing is far more interesting than the body being absent, and
+        # replacing it here would bury the real error.
+        if exc_type is None and not self._registered:
+            raise RuntimeError(
+                f"{self._what} was opened but its body was never registered, so "
+                "nothing was emitted for this scope and the ops inside it were "
+                "traced into the enclosing one. The body is a function decorated "
+                "inside the `with`, which means the scope needs a name to "
+                f"decorate:\n\n    with {self._what}(...) as scope:\n"
+                "        @scope.body\n        def _():\n            ...\n\n"
+                "`as scope` is easy to leave off, and without it there is no "
+                "variable to hang the decorator on."
+            )
         return False
 
     def private(self):
