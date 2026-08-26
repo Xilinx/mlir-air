@@ -2,262 +2,114 @@
 #
 # Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-#
-# 2D ReLU: C[i,j] = max(A[i,j], 0)
-# Element-wise ReLU on a 2D matrix [M,N]. All data is f32.
-#
-# MNIST context: op #3 in the GGML MNIST-FC pipeline.
-# Default dimensions: M=500, N=500 (hidden layer activation).
+"""2D ReLU on air.api: C[i, j] = max(A[i, j], 0).
+
+Element-wise ReLU on an [M, N] matrix. The host interface is f32; the compare
+and select run in bf16, because AIE2P has no f32 vector cmp/sel. That is one
+expression here:
+
+    tile_out[:] = ops.cast(ops.relu(ops.cast(tile_in[:], bf16)), f32)
+
+`ops.cast` opens a region: everything below it is read and computed in the
+source type, so the ReLU is bf16 and only the conversions cross. The
+predecessor spelled the same thing as truncf, a *round trip through an L1 bf16
+scratch buffer*, cmpf, select and extf. The scratch buffer is gone -- the value
+stays in registers between the two conversions -- which gives back
+`tile_m * tile_n * 2` bytes of L1.
+
+MNIST context: op #3 in the GGML MNIST-FC pipeline. Default dimensions are
+M=500, N=500 (the hidden layer activation), neither of which is tile-aligned,
+so `build_module` is given padded extents and `air.actual_sizes` is stamped on
+the launch afterwards -- exactly as the predecessor did it. `launch.build()`
+returns the module, so that poke is unchanged.
+
+Two levels of tiling: the launch grid walks [M, N] in `tile * herd` steps, and
+the herd covers `herd_m x herd_n` tiles within each step. The tile offset is
+plain arithmetic on the two sets of coordinates,
+
+    (lx * herd_m + tx) * tile_m
+
+where the predecessor built one arith.muli at segment scope and a two-symbol
+AffineMap in the herd.
+"""
 
 import argparse
 import math
-import numpy as np
 
+import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32
+from air.ir import DenseI64ArrayAttr
 from air.backend.xrt import XRTBackend
-from air.extras import types as extrasT
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
 
-range_ = for_
 
+def build_module(m, n, tile_m, tile_n, herd_m, herd_n, vector=16):
+    """Build the 2D ReLU launch over padded (tile-aligned) m, n."""
+    if m % (tile_m * herd_m) or n % (tile_n * herd_n):
+        raise ValueError(
+            f"padded shape ({m}, {n}) must be a multiple of tile x herd "
+            f"({tile_m * herd_m}, {tile_n * herd_n}): there is no partial-tile "
+            "path, so the caller pads and stamps air.actual_sizes."
+        )
+    if vector and tile_n % vector:
+        raise ValueError(
+            f"tile_n ({tile_n}) must be a multiple of the vector width " f"({vector})."
+        )
 
-@module_builder
-def build_module(m, n, tile_m, tile_n, herd_m, herd_n, vector_size=16):
-    """Build 2D ReLU module.
+    A = air.tensor([m, n], f32)
+    OUT = air.tensor([m, n], f32)
 
-    m, n are padded (tile-aligned) dimensions for the launch grid.
-    The air.actual_sizes attribute is added after building to handle
-    non-tile-aligned actual dimensions.
-    """
-    assert m % (tile_m * herd_m) == 0
-    assert n % (tile_n * herd_n) == 0
-    assert tile_n % vector_size == 0
+    with air.launch(
+        [range(m // (tile_m * herd_m)), range(n // (tile_n * herd_n))],
+        name="relu",
+    ) as launch:
 
-    xrt_dtype_f32 = type_mapper(np.float32)
-    xrt_dtype_bf16 = type_mapper(bfloat16)
-    index_type = IndexType.get()
-    l1_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L1)
+        @launch.body
+        def _(lx, ly):
+            with air.segment(name="relu_seg") as seg:
 
-    # L3 MemRefTypes (f32 for host interface)
-    memrefTyA = MemRefType.get([m, n], xrt_dtype_f32)
-    memrefTyOut = MemRefType.get([m, n], xrt_dtype_f32)
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
+                        name="herd_0",
+                        shape=(herd_m, herd_n),
+                    ) as herd:
 
-    # L1 MemRefTypes
-    l1TileTy_f32 = MemRefType.get(
-        shape=[tile_m, tile_n],
-        element_type=xrt_dtype_f32,
-        memory_space=l1_mem_space,
-    )
-    l1TileTy_bf16 = MemRefType.get(
-        shape=[tile_m, tile_n],
-        element_type=xrt_dtype_bf16,
-        memory_space=l1_mem_space,
-    )
-
-    vecTy_f32 = VectorType.get([vector_size], xrt_dtype_f32)
-    vecTy_bf16 = VectorType.get([vector_size], xrt_dtype_bf16)
-    # Rank-reduced subview types for vector transfer_read/write
-    l1SubviewTy_f32 = MemRefType.get(
-        [vector_size],
-        xrt_dtype_f32,
-        layout=StridedLayoutAttr.get(ShapedType.get_dynamic_size(), [1]),
-        memory_space=l1_mem_space,
-    )
-    l1SubviewTy_bf16 = MemRefType.get(
-        [vector_size],
-        xrt_dtype_bf16,
-        layout=StridedLayoutAttr.get(ShapedType.get_dynamic_size(), [1]),
-        memory_space=l1_mem_space,
-    )
-
-    @FuncOp.from_py_func(memrefTyA, memrefTyOut)
-    def relu(arg_a, arg_out):
-        launch_size = [m // tile_m // herd_m, n // tile_n // herd_n]
-
-        @launch(operands=[arg_a, arg_out], sizes=launch_size)
-        def launch_body(
-            launch_ivx, launch_ivy, launch_sizex, launch_sizey, l3_a, l3_out
-        ):
-
-            @segment(
-                name="relu_seg",
-                operands=[launch_ivx, launch_ivy, l3_a, l3_out],
-            )
-            def segment_body(launch_ivx_s, launch_ivy_s, l3_a_s, l3_out_s):
-                c_tile_m_herd_m = ConstantOp(
-                    IntegerAttr.get(IndexType.get(), tile_m * herd_m), None
-                )
-                c_tile_n_herd_n = ConstantOp(
-                    IntegerAttr.get(IndexType.get(), tile_n * herd_n), None
-                )
-                launch_offset_m = arith.MulIOp(launch_ivx_s, c_tile_m_herd_m)
-                launch_offset_n = arith.MulIOp(launch_ivy_s, c_tile_n_herd_n)
-
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[
-                        launch_offset_m,
-                        launch_offset_n,
-                        l3_a_s,
-                        l3_out_s,
-                    ],
-                )
-                def herd_body(tx, ty, _sx, _sy, _loff_m, _loff_n, _l3_a, _l3_out):
-                    l1_tile_in = AllocOp(l1TileTy_f32, [], [])
-                    l1_tile_out = AllocOp(l1TileTy_f32, [], [])
-                    l1_tile_bf16 = AllocOp(l1TileTy_bf16, [], [])
-
-                    # m_offset = launch_offset_m + tx * tile_m
-                    # n_offset = launch_offset_n + ty * tile_n
-                    m_offset_map = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(1),
-                                    AffineConstantExpr.get(tile_m),
-                                ),
+                        @herd.body
+                        def _(tx, ty):
+                            tile_in = air.alloc(
+                                [tile_m, tile_n],
+                                f32,
+                                scope=herd.private(),
+                                vector=vector,
                             )
-                        ],
-                    )
-                    n_offset_map = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(1),
-                                    AffineConstantExpr.get(tile_n),
-                                ),
-                            )
-                        ],
-                    )
-                    m_offset = affine_apply(m_offset_map, [_loff_m, tx])
-                    n_offset = affine_apply(n_offset_map, [_loff_n, ty])
-
-                    # DMA matrix tile in
-                    dma_memcpy_nd(
-                        l1_tile_in,
-                        _l3_a,
-                        src_offsets=[m_offset, n_offset],
-                        src_sizes=[tile_m, tile_n],
-                        src_strides=[n, 1],
-                    )
-
-                    # Compute: max(x, 0) via bf16 comparison + select.
-                    # AIE2P has no f32 vector cmp/sel; truncf to bf16,
-                    # do cmp/sel in bf16, extf result back to f32.
-                    c0 = ConstantOp(index_type, 0)
-                    c1 = ConstantOp(index_type, 1)
-                    c_vec_size = ConstantOp(index_type, vector_size)
-                    c_tile_m_cst = ConstantOp(index_type, tile_m)
-                    c_tile_n_cst = ConstantOp(index_type, tile_n)
-                    cst0_f32 = arith.ConstantOp(xrt_dtype_f32, 0.0)
-                    cst0_bf16 = arith.ConstantOp(xrt_dtype_bf16, 0.0)
-                    v_zero_bf16 = BroadcastOp(vecTy_bf16, cst0_bf16)
-                    identity_map_1d = AffineMapAttr.get(AffineMap.get_identity(1))
-
-                    for i in range_(c0, c_tile_m_cst, c1):
-                        for j in range_(c0, c_tile_n_cst, c_vec_size):
-                            sub_in_f32 = subview(
-                                l1_tile_in.result,
-                                [i, j],
-                                [1, vector_size],
-                                [1, 1],
-                                result_type=l1SubviewTy_f32,
-                            )
-                            sub_in_bf16 = subview(
-                                l1_tile_bf16.result,
-                                [i, j],
-                                [1, vector_size],
-                                [1, 1],
-                                result_type=l1SubviewTy_bf16,
-                            )
-                            sub_out_f32 = subview(
-                                l1_tile_out.result,
-                                [i, j],
-                                [1, vector_size],
-                                [1, 1],
-                                result_type=l1SubviewTy_f32,
+                            tile_out = air.alloc(
+                                [tile_m, tile_n],
+                                f32,
+                                scope=herd.private(),
+                                vector=vector,
                             )
 
-                            # Read f32, truncate to bf16
-                            v_f32 = transfer_read(
-                                vecTy_f32,
-                                sub_in_f32,
-                                [c0],
-                                identity_map_1d,
-                                cst0_f32,
-                                [True],
-                            )
-                            v_bf16 = arith.TruncFOp(vecTy_bf16, v_f32)
-                            # Write bf16 to L1 temp
-                            transfer_write(
-                                None,
-                                v_bf16,
-                                sub_in_bf16,
-                                [c0],
-                                identity_map_1d,
-                                [True],
-                            )
+                            mo = (lx * herd_m + tx) * tile_m
+                            no = (ly * herd_n + ty) * tile_n
+                            window = (slice(mo, mo + tile_m), slice(no, no + tile_n))
 
-                            # ReLU in bf16: x > 0 ? x : 0
-                            v_bf16_read = transfer_read(
-                                vecTy_bf16,
-                                sub_in_bf16,
-                                [c0],
-                                identity_map_1d,
-                                cst0_bf16,
-                                [True],
+                            ops.load(tile_in, A[window])
+                            # AIE2P has no f32 vector cmp/sel, so the max runs
+                            # in bf16 and only the conversions cross.
+                            tile_out[:] = ops.cast(
+                                ops.relu(ops.cast(tile_in[:], bf16)), f32
                             )
-                            cmp = arith.CmpFOp(
-                                arith.CmpFPredicate.OGT,
-                                v_bf16_read,
-                                v_zero_bf16,
-                            )
-                            v_relu_bf16 = arith.SelectOp(cmp, v_bf16_read, v_zero_bf16)
+                            ops.store(tile_out, OUT[window])
 
-                            # Extend back to f32 and write output
-                            v_relu_f32 = arith.ExtFOp(vecTy_f32, v_relu_bf16)
-                            transfer_write(
-                                None,
-                                v_relu_f32,
-                                sub_out_f32,
-                                [c0],
-                                identity_map_1d,
-                                [True],
-                            )
-                            yield_([])
-                        yield_([])
-
-                    # DMA output tile back to L3
-                    dma_memcpy_nd(
-                        _l3_out,
-                        l1_tile_out,
-                        dst_offsets=[m_offset, n_offset],
-                        dst_sizes=[tile_m, tile_n],
-                        dst_strides=[n, 1],
-                    )
-
-                    DeallocOp(l1_tile_in)
-                    DeallocOp(l1_tile_out)
-                    DeallocOp(l1_tile_bf16)
+    return launch
 
 
 if __name__ == "__main__":
@@ -289,6 +141,13 @@ if __name__ == "__main__":
         dest="compile_mode",
         default="compile-and-run",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
@@ -309,9 +168,12 @@ if __name__ == "__main__":
         print(f"M_padded={M_padded}, N_padded={N_padded}")
         print(f"TILE_M={TILE_M}, TILE_N={TILE_N}, HERD_M={HERD_M}, HERD_N={HERD_N}")
 
-    mlir_module = build_module(
+    launch = build_module(
         M_padded, N_padded, TILE_M, TILE_N, HERD_M, HERD_N, VECTOR_SIZE
     )
+    # build() resolves --target auto to the installed generation, so it has to
+    # run before launch.target is read below.
+    mlir_module = launch.build(target=args.target)
 
     # Add actual_sizes attribute for device-side padding
     needs_padding = (M_actual != M_padded) or (N_actual != N_padded)
@@ -387,6 +249,7 @@ if __name__ == "__main__":
             output_format="elf" if needs_padding else "xclbin",
             instance_name="relu",
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
         # bf16 truncation introduces rounding; use bf16-appropriate tolerance
         exit(
@@ -404,6 +267,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()
