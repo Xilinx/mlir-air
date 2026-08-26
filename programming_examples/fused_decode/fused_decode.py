@@ -1303,17 +1303,28 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 PROJ_RING_DEPTH = int(_os.environ.get("PROJ_RING_DEPTH", "2"))
 assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist"
 
-# RMS_BAND_STREAM: Stage 2 of the band-streamed residual (docs/DFlashFeasibility.md,
-# "So the residual has to leave L1"). Off by default and byte-identical to HEAD
-# when off -- see check_batch1_noop.py's batch-8 extension. On, it swaps
-# rms_scale_row_aie's one full-row reduction for a band loop of
-# rms_scale_row_partial_aie + one rms_scale_row_finalize_aie -- proving the
-# two-pass scale kernel is numerically right BEFORE the harder part (shrinking
-# xb itself and round-tripping bands through DDR on rmsX/layerOut, which needs
-# new launch-scope choreography this stage does not yet attempt). xb is still
-# the full resident [BATCH][K] buffer here; only the scale computation is
-# banded, at row_stride=K.
-RMS_BAND_STREAM = bool(int(_os.environ.get("RMS_BAND_STREAM", "0")))
+# RMS_BAND_STREAM: the band-streamed residual (docs/DFlashFeasibility.md, "So
+# the residual has to leave L1"), built in levels so each is gatable and
+# separately verifiable. 0 (default) is byte-identical to HEAD -- see
+# check_batch1_noop.py's batch-8 extension.
+#
+#   1: rms_scale_row_aie's one full-row reduction becomes a band loop of
+#      rms_scale_row_partial_aie + one rms_scale_row_finalize_aie. xb is STILL
+#      the full resident [BATCH][K] buffer (row_stride=K) -- this validates
+#      the two-pass kernel in isolation. Verified on device (spec_accept.py,
+#      llama-3.2-1b batch 8): identical acceptance to level 0, no hang.
+#   2: level 1, plus the INITIAL rmsX read (ph0's raw x) is banded too --
+#      nband ChannelGets landing into xb's band columns instead of one whole
+#      get, matched by a Python-unrolled (never scf.for -- see _feed_wcols'
+#      comment on why a launch-scope for_ deadlocks the shim) sequence of
+#      nband ChannelPuts at launch scope. xb is STILL full-size; this
+#      validates the launch<->compute banded-transfer plumbing in isolation
+#      from the harder part.
+#   (not yet built) 3: xb shrinks to one STG_W-wide band, round-tripped
+#      through a new DDR scratch slot on rmsX/layerOut across residual1/ph2/
+#      residual2 -- the part that actually moves the L1 ceiling.
+RMS_BAND_STREAM = int(_os.environ.get("RMS_BAND_STREAM", "0"))
+assert RMS_BAND_STREAM in (0, 1, 2), "level 3 (the ceiling-moving part) doesn't exist yet"
 
 # The X-feed tile-blocking descriptor, IMPORTED rather than restated:
 # xfeed_bd.py checks it elementwise against pack_A, which q4k_mm_gate.py proved
@@ -2694,13 +2705,29 @@ def build_module():
                             # @layerOut (VOCAB_DEST is the o-proj/down id, which that core
                             # already consumes); batched, they go to dest 0 and its memtile
                             # relays them on @toShim. See VOCAB_DEST.
-                            ChannelPut(
-                                "rmsX",
-                                X,
-                                offsets=[_x_final],
-                                sizes=[BATCH * K],
-                                strides=[1],
-                            )
+                            if RMS_BAND_STREAM >= 2 and BATCH > 1:
+                                # _rms_batched's compute-tile body is ONE
+                                # shared program for both arms (see its
+                                # docstring): its now-banded rmsX get runs
+                                # identically whichever arm is active, so this
+                                # arm's feed has to match it band for band too.
+                                assert K % STG_W == 0
+                                for _c in range(K // STG_W):
+                                    ChannelPut(
+                                        "rmsX",
+                                        X,
+                                        offsets=[_x_final, _c * STG_W],
+                                        sizes=[BATCH, STG_W],
+                                        strides=[K, 1],
+                                    )
+                            else:
+                                ChannelPut(
+                                    "rmsX",
+                                    X,
+                                    offsets=[_x_final],
+                                    sizes=[BATCH * K],
+                                    strides=[1],
+                                )
                             # real-lm-head final norm (model.norm.weight): a DEDICATED slot
                             # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
                             # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
@@ -2820,13 +2847,31 @@ def build_module():
                             # BATCH*K: B token embeddings, token-major. The rms
                             # core takes the block in one get and keeps it as
                             # the residual stream for the whole layer.
-                            ChannelPut(
-                                "rmsX",
-                                X,
-                                offsets=[_x_in()],
-                                sizes=[BATCH * K],
-                                strides=[1],
-                            )
+                            if RMS_BAND_STREAM >= 2:
+                                # Python-unrolled, NOT an AIR for_ -- see
+                                # _feed_wcols: a launch-scope for_ deadlocks the
+                                # shim sequence. Matches the compute tile's
+                                # banded rmsX get band for band (same order,
+                                # same count); xb is still full-size on that
+                                # side too, so this only proves the two ends of
+                                # the banded transfer agree with each other.
+                                assert K % STG_W == 0
+                                for _c in range(K // STG_W):
+                                    ChannelPut(
+                                        "rmsX",
+                                        X,
+                                        offsets=[_x_in(), _c * STG_W],
+                                        sizes=[BATCH, STG_W],
+                                        strides=[K, 1],
+                                    )
+                            else:
+                                ChannelPut(
+                                    "rmsX",
+                                    X,
+                                    offsets=[_x_in()],
+                                    sizes=[BATCH * K],
+                                    strides=[1],
+                                )
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
@@ -5803,7 +5848,28 @@ def build_module():
                                 yield_([])
 
                         xb = AllocOp(rmsb_l1, [], [])
-                        ChannelGet("rmsX", xb, indices=[idx(0)])
+                        if RMS_BAND_STREAM >= 2:
+                            # Same single-op-per-role shape as everywhere else in
+                            # this function: one ChannelGet call, inside one
+                            # scf.for, landing each band into xb's own column
+                            # (row stride K) instead of one whole-buffer get.
+                            # xb is still full-size here -- this is ONLY testing
+                            # that the launch side's matching Python-unrolled
+                            # put sequence (_uni_dec) lands data at the right
+                            # offsets, not shrinking anything yet.
+                            assert K % STG_W == 0
+                            for _cx in for_(idx(0), idx(K // STG_W), idx(1)):
+                                _xoff = arith.muli(_cx, idx(STG_W))
+                                ChannelGet(
+                                    "rmsX",
+                                    xb,
+                                    offsets=[idx(0), _xoff],
+                                    sizes=[idx(BATCH), idx(STG_W)],
+                                    strides=[idx(K), idx(1)],
+                                )
+                                yield_([])
+                        else:
+                            ChannelGet("rmsX", xb, indices=[idx(0)])
                         stg = AllocOp(rstg_l1, [], [])
                         scl = AllocOp(rscl_l1, [], [])
                         w = AllocOp(rms_l1, [], [])
