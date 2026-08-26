@@ -85,6 +85,14 @@ DECODE_ENV := DECODE_MODEL=llama-3.1-8b VOCAB_CHUNK_I2=16 UNIFIED=1 LM_HEAD=0 \
               NLAYERS=1 DECODE_GOLDEN=1 \
               DECODE_STACK=$(DECODE_STACK) DECODE_WGROUP=$(DECODE_WGROUP)
 
+# GLU_SLICE is derived from this model's own egress-round parity, not looked up,
+# so a header copied from another model can disagree with the IR -- silently, at
+# runtime. Hand the builder's value to the kernel compile; glu.cc asserts on it.
+# Empty (and the assert inert) if the query fails, so this cannot break a build
+# that works today.
+GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
+PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
+
 # ATTN_MAXL to build for. 2048 = production; a small value builds fast for a gate.
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))

@@ -101,6 +101,14 @@ ATTN_EXTRA    ?=
 # against UNI_LM=4 in the lfm2-1.2b _MODELS entry; fused_decode.py asserts it.
 DECODE_ENV := DECODE_MODEL=lfm2-1.2b VOCAB_CHUNK_I2=16 UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 
+# GLU_SLICE is derived from this model's own egress-round parity, not looked up,
+# so a header copied from another model can disagree with the IR -- silently, at
+# runtime. Hand the builder's value to the kernel compile; glu.cc asserts on it.
+# Empty (and the assert inert) if the query fails, so this cannot break a build
+# that works today.
+GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
+PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
+
 # Build only the first N model layers. The weight, rms and state slabs are all
 # per-layer prefixes, so a short build is a prefix of the full one and needs no
 # separate weight pack -- which makes this the bisect when the decode gate says

@@ -2292,6 +2292,14 @@ def build_module():
 
 
 def run():
+    # Const-print hook (mirrors fused_decode.py): print a module-level constant
+    # and stop, so a Makefile can hand the kernel compile the builder's own value
+    # (see glu.cc's GLU_SLICE_EXPECTED). Before build_module(): this is a query.
+    _const = _os.environ.get("FUSED_DECODE_PRINT_CONST")
+    if _const:
+        print(globals()[_const])
+        return 0
+
     module = build_module()
 
     # Emit-only hook (mirrors fused_decode.py): dump the built AIR MLIR and stop
