@@ -6,6 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL: *
+// AIE1 only, implicitly: no device= is given, so air-to-aie falls back to its
+// xcvc1902 default, and the CHECKs below assert AIE1 lock semantics (Acquire;
+// AIE2 emits AcquireGreaterEqual). mlir-aie has dropped AIE1 support.
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK: aie.core({{.*}}) {
 // CHECK: aie.use_lock({{.*}}, Acquire, %{{.*}})

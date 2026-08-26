@@ -5,6 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL: *
+// AIE1 only. mlir-aie has dropped AIE1 support, and this lowers a multi-pass
+// transfer, which needs a repeat count AIE1 has no register for -- rejected
+// since mlir-aie#3577 added verifyDMARepeatCount. Before that the count was
+// silently dropped by the AIE1 backend, so the transfer ran once instead of
+// twice; the verifier made an existing miscompile visible.
 // RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcvc1902) @herd_0 {
