@@ -282,3 +282,90 @@ def channel_pack():
                     air.ops.store(l2_b, Out)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: l3_endpoint_after_a_segment_reenters_the_launch
+# A gridless launch opens its region lazily, so the segment is what opens it and
+# a get written afterwards is back out at trace scope. It has to step into the
+# region anyway, because reaching L3 needs the shim DMA allocation the launch
+# brings; without that it lands at func scope and aircc reports "failed to link
+# to any shim dma allocation".
+#
+# The endpoint is resolved inside that region rather than before choosing it.
+# Resolving early would materialise the slice's offset arithmetic out here and
+# then again inside, orphaning the first copy at func scope. With a constant
+# offset there is no arithmetic to orphan, which is why the pin is on the op's
+# position: the get is the last thing in the launch body, after air.segment.
+# CHECK: air.launch
+# CHECK: air.segment @seg
+# CHECK: air.channel.get @drain[] (%{{.*}}[32] [32] [1]) : (memref<64xi32>)
+@run
+def l3_endpoint_after_a_segment_reenters_the_launch():
+    A = air.tensor([64], i32)
+    B = air.tensor([64], i32)
+    feed = air.channel("feed")
+    drain = air.channel("drain")
+
+    with air.launch(name="reentry") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([32], i32, scope=h.private())
+                            air.ops.load(buf, A[0:32])
+                            feed.put(buf)
+                            drain.put(buf)
+
+                    l2 = air.alloc([32], i32, scope=seg.private())
+                    feed.get(l2)
+
+            drain.get(B[32:64])
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_computed_offset_cannot_follow_the_segment
+# Same position, but the offset is built from a loop variable that lives outside
+# the launch. Moving the op into the region cannot take that value with it --
+# air.launch is IsolatedFromAbove -- so this is refused by name rather than left
+# to fail as "'affine.apply' op using value defined outside the region", which
+# reads as a DSL bug instead of as the shape of the program.
+# CHECK: RuntimeError: air.channel.get on an L3 tensor slice whose offset is
+# CHECK-SAME: computed from a coordinate or loop variable
+@run
+def a_computed_offset_cannot_follow_the_segment():
+    B = air.tensor([64], i32)
+    drain = air.channel("drain2")
+
+    with air.launch(name="computed") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([32], i32, scope=h.private())
+                            buf[:] = 0
+                            drain.put(buf)
+
+            for i in air.sequential(2):
+                drain.get(B[i * 32 : i * 32 + 32])
+
+    try:
+        launch.mlir()
+    except RuntimeError as e:
+        print(f"RuntimeError: {e}")
+    else:
+        print("ERROR: no exception raised")
