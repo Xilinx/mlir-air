@@ -1587,7 +1587,20 @@ def build_module():
         # slot iv+1, so every layer's hidden state stays readable instead of being
         # overwritten by the next one. See the HIDDEN_TAPS comment above.
         # DECODE_BATCH: B token embeddings in, token-major.
-        x_l3 = MemRefType.get([X_SLOTS * BATCH * K], bf16)  # RAW input activation
+        #
+        # RMS_BAND_STREAM>=3 (not yet built as of this constant -- see the
+        # assert on RMS_BAND_STREAM above) appends ONE extra BATCH*K slot,
+        # reused every layer as scratch: the intra-layer round-trip for the
+        # post-residual1 hidden state `h`, needed again for ph2's norm once
+        # `xb` no longer stays resident across the attention gap. Not a new
+        # channel (the rms core's S2MM0 is already at its 4-packet-id limit
+        # -- see docs/DFlashFeasibility.md) -- `rmsX`/`layerOut` address this
+        # slot at a SECOND offset, the same way HIDDEN_TAPS's per-layer slots
+        # already work.
+        _X_SCRATCH_SLOTS = 1 if RMS_BAND_STREAM >= 3 else 0
+        x_l3 = MemRefType.get(
+            [(X_SLOTS + _X_SCRATCH_SLOTS) * BATCH * K], bf16
+        )  # RAW input activation
         # LM_HEAD build carries the vocab weights (VOCAB_W_BLOCKS q4k blocks) instead
         # of the decode phase weights. Separate compile-time size -> decode IR is
         # byte-identical; the device (CDO) is unchanged (only this DDR memref size +
