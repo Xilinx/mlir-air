@@ -160,13 +160,15 @@ def allocated_in_a_loop_is_freed_in_that_loop():
 # free_buffers, rather than raise.
 #
 # The staging buffer is allocated and freed inside the loop, and the herd's
-# operand list names the two L3 tensors and nothing else -- in particular not
-# the memory-space-1 buffer the loop above it just finished with.
+# operand list names the one L3 tensor it stores to and nothing else -- in
+# particular not the memory-space-1 buffer the loop above it just finished
+# with. `A` is absent for the milder reason that this body never reads it, and
+# an operand no op in the body touches is dropped once the body has run.
 # CHECK: air.segment
 # CHECK: scf.for
 # CHECK: memref.alloc() : memref<8xi32, 1
 # CHECK: memref.dealloc
-# CHECK: air.herd{{.*}}args({{[^)]*}}) : memref<8x8xi32>, memref<8x8xi32> {
+# CHECK: air.herd{{.*}}args({{[^)]*}}) : memref<8x8xi32> {
 @run
 def an_l2_buffer_in_a_loop_is_not_a_herd_operand():
     A = air.tensor([N, N], i32)

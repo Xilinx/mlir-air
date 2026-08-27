@@ -92,10 +92,15 @@ def run(f):
 # core, not once per core.
 # CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %[[SA]][0, 0] [4, 64] [64, 1]) : (memref<4x64xi32, 1 : i32>, memref<4x64xi32>)
 #
-# The herd is nested inside, and carries the L2 buffers as operands after the
-# tensors -- it is IsolatedFromAbove too, so a memtile buffer cannot simply be
-# referenced from within it.
-# CHECK: air.herd @herd_0 tile (%[[TX:.*]], %{{.*}}) in ({{.*}}) args({{.*}}) : memref<4x64xi32>, memref<4x64xi32>, memref<4x64xi32, 1 : i32>, memref<4x64xi32, 1 : i32>
+# The herd is nested inside, and carries the L2 buffers as operands -- it is
+# IsolatedFromAbove too, so a memtile buffer cannot simply be referenced from
+# within it. It carries *only* those: this body never touches the two L3
+# tensors, and an operand it does not touch is not free. The tracer has to
+# name every candidate when it creates the op, because that is before the body
+# has run, but it drops the ones the body turned out not to use once it has --
+# air-dependency reads a dead operand as a data dependency and would serialise
+# this herd against every other one staged from the same segment.
+# CHECK: air.herd @herd_0 tile (%[[TX:.*]], %{{.*}}) in ({{.*}}) args({{.*}}) : memref<4x64xi32, 1 : i32>, memref<4x64xi32, 1 : i32>
 # CHECK: memref.alloc() : memref<64xi32, 2 : i32>
 #
 # L2 -> L1, one window per core: the tile coordinate becomes the offset, and

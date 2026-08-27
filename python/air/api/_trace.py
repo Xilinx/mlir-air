@@ -681,6 +681,81 @@ def _region_name(block):
     return owner.name if owner is not None else "region"
 
 
+def prune_unused_operands(op):
+    """Drop the kernel operands ``op``'s body turned out not to touch.
+
+    ``air.segment`` and ``air.herd`` are IsolatedFromAbove, so anything the
+    body reaches has to arrive as an operand -- and the operand list is fixed
+    when the op is created, which is *before* the body runs. The tracer
+    therefore cannot know what the body will touch at the one moment it has to
+    decide, and over-approximates: every tensor, every enclosing coordinate,
+    every L2 buffer still in scope. This is the same bind any builder of these
+    ops is in, which is why ``canonicalizeHierarchyOpArgs`` exists in
+    AIRDialect.cpp to clean up after it.
+
+    Leaving the cleanup to that canonicalization is too late. It runs at PASS
+    014, and ``air-dependency`` runs at 008 -- so the dead operands have
+    already been read as data dependencies by the time they are removed, and
+    the async edges they produced outlive them. In
+    ``flash_attention/dataflow_based`` that serialises three herds the
+    predecessor leaves independent; a loop body with three impure ops instead
+    of one fails ``hasNImpureOps(body, 1)`` in
+    ``HoistAIRHerdsToSharedRegionPattern``, so the herds never hoist out of
+    the loop, never merge, and their L1 accumulators are still herd operands
+    when ``air-verify-hierarchy-locality`` rejects them at 043.
+
+    So the over-approximation is undone here, while the body is fresh and its
+    uses are visible, rather than left for a pass that runs after the damage.
+    The op is rebuilt because an operand list is not resizable in place; the
+    traced block moves across unchanged.
+
+    ``air.launch`` is deliberately not pruned: its operands are the kernel
+    interface, and ``LaunchState.reentry`` holds its block arguments so a
+    later segment can step back into the region.
+    """
+    from air.ir import DenseI32ArrayAttr, InsertionPoint, Operation
+
+    op = op.operation if hasattr(op, "operation") else op
+    segments = op.attributes["operandSegmentSizes"]
+    n_async, n_sizes = segments[0], segments[1]
+    # Block arguments are ids + sizes + operands, so the operands start after
+    # twice the number of size operands.
+    ctrl = 2 * n_sizes
+    block = op.regions[0].blocks[0]
+    dead = [
+        i
+        for i in range(ctrl, len(block.arguments))
+        if not list(block.arguments[i].uses)
+    ]
+    if not dead:
+        return op
+
+    kept = [j for j in range(len(block.arguments) - ctrl) if j + ctrl not in dead]
+    base = n_async + n_sizes
+    operands = list(op.operands[:base]) + [op.operands[base + j] for j in kept]
+    attributes = {name: op.attributes[name] for name in op.attributes}
+    attributes["operandSegmentSizes"] = DenseI32ArrayAttr.get(
+        [n_async, n_sizes, len(kept)]
+    )
+    new = Operation.create(
+        op.name,
+        results=[r.type for r in op.results],
+        operands=operands,
+        attributes=attributes,
+        regions=1,
+        ip=InsertionPoint(op),
+        loc=op.location,
+    )
+    # Highest index first: erasing shifts everything after it down.
+    for i in reversed(dead):
+        block.erase_argument(i)
+    block.append_to(new.regions[0])
+    for old_result, new_result in zip(op.results, new.results):
+        old_result.replace_all_uses_with(new_result)
+    op.erase()
+    return new
+
+
 def free_buffers(buffers):
     """End the life of every buffer that ``air.dealloc`` did not already end.
 
@@ -985,6 +1060,11 @@ class SegmentContext:
                     leaf.value = v
                 _CURRENT_SEGMENT = previous
 
+        # The body has run, so what it touched is finally knowable. Herds
+        # nested inside pruned themselves as they closed, which is what makes
+        # an operand only they had a candidate here too.
+        prune_unused_operands(segment_body)
+
 
 def segment(grid=None, name=None):
     """A device segment with L2 scope; nest herds inside its body."""
@@ -1006,7 +1086,8 @@ def _staged_in_scope(segment):
 
     ``air.herd`` is IsolatedFromAbove, so an L2 buffer the body reaches has to
     be passed in as an operand, and the tracer cannot know which ones the body
-    touches until it has run it -- so it passes every one it can.
+    touches until it has run it -- so it passes every one it can, and drops the
+    unused ones afterwards (``prune_unused_operands``).
 
     "Can" is the point. A buffer allocated inside an ``air.sequential`` at
     segment scope dies with that loop: by the time a *later* herd is emitted,
@@ -1278,10 +1359,11 @@ class HerdContext:
         #
         # Every live one is passed, referenced or not, which is the policy
         # already applied to tensors and to L2 buffers: the tracer cannot know
-        # what the body will touch until it has run it. That is not free -- an
-        # unused herd operand survives air-dependency as an async edge -- but a
-        # coordinate is one index, and correctness for the kernels that need it
-        # is worth the edge for the kernels that do not.
+        # what the body will touch until it has run it. The ones it turns out
+        # not to touch are dropped once it has -- see prune_unused_operands,
+        # and note that leaving them in place is not merely untidy: they reach
+        # air-dependency as data dependencies and serialise herds that have
+        # nothing to do with each other.
         outer = list(current_launch().leaves)
         outer += list(enclosing.leaves) if enclosing is not None else []
         operands = (
@@ -1369,6 +1451,10 @@ class HerdContext:
             herd_body.attributes["link_with"] = StringAttr.get(
                 next(iter(herd_self._objects))
             )
+
+        # After link_with, because pruning rebuilds the op and carries its
+        # attributes across.
+        prune_unused_operands(herd_body)
 
         aborted = aborted_regions()[aborted_before:]
         if aborted:
