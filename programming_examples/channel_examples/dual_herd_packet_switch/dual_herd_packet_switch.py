@@ -25,6 +25,7 @@ scalarise.
 """
 
 import argparse
+import time
 
 import numpy as np
 from ml_dtypes import bfloat16
