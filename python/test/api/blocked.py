@@ -258,3 +258,78 @@ def build_named_kernel():
 # CHECK-SAME: library_call = "matmul_bf16_m32k16n32"
 
 print(build_named_kernel().build(target="npu1"))
+
+
+# ---------------------------------------------------------------------------
+# A hand-written kernel is the third way to write a shared accumulator.
+#
+# ops.fill zeroes one and ops.dot accumulates into one, and both narrow the
+# buffer to the calling core's slab first -- a shared buffer spans every core
+# and there is exactly one slab a given core may touch, so it is not a choice
+# the caller gets to make. air.extern reaches the same accumulator through
+# func.call, and does the same thing.
+#
+# Both directions are pinned here, because the failure modes are opposite: a
+# shared buffer passed whole would let every core write every slab, and a
+# private buffer narrowed anyway would index a herd coordinate into a memref
+# that has no axis for it. The two bfp16 matmuls are the callers this models.
+# ---------------------------------------------------------------------------
+
+
+def build_extern_accumulator():
+    A = air.tensor([32, 32], bf16)
+    C = air.tensor([32, 32], bf16)
+
+    zero = air.extern("zero_kernel", link_with="mm.o")
+    step = air.extern("step_kernel", link_with="mm.o")
+
+    with air.launch([range(0, 32, 32)], name="extern_acc", target="npu1") as launch:
+
+        @launch.body
+        def _(si):
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    acc = air.alloc([2, 2, 8, 8, 4, 4], bf16, scope=seg.shared())
+                    l2 = air.alloc([32, 32], bf16, scope=seg.private())
+                    air.ops.load(l2, A[0:32, 0:32])
+
+                    with air.herd([range(2), range(2)], name="mm") as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            local = air.alloc([4, 4], bf16, scope=h.private())
+                            zero(acc)
+                            step(local, acc)
+
+                    air.ops.store(l2, C[0:32, 0:32])
+
+    return launch
+
+
+# step_kernel is declared above zero_kernel because a declaration goes to the
+# top of the module as it is first called, so the order is the reverse of the
+# call order. Its first operand is the *private* buffer, passed whole -- no
+# subview and no coordinates -- and its second is the shared accumulator,
+# narrowed. Both in one signature, which is the pair this is here to pin.
+# CHECK-LABEL: func.func private @step_kernel
+# CHECK-SAME: memref<4x4xbf16, 2 : i32>
+# CHECK-SAME: memref<1x1x8x8x4x4xbf16, strided<[2048, 1024, 128, 16, 4, 1], offset: ?>, 2 : i32>
+#
+# The strided type is derived, not declared: [2, 2, 8, 8, 4, 4] row-major is
+# [2048, 1024, 128, 16, 4, 1], and the offset is dynamic because the core's
+# coordinates are.
+# CHECK-LABEL: func.func private @zero_kernel
+# CHECK-SAME: memref<1x1x8x8x4x4xbf16, strided<[2048, 1024, 128, 16, 4, 1], offset: ?>, 2 : i32>
+#
+# At the call sites: one subview per call, at the core's own coordinates, and
+# the private buffer reaching step_kernel as its bare alloc.
+# CHECK-LABEL: func.func @extern_acc
+# CHECK: %[[LOCAL:.*]] = memref.alloc() : memref<4x4xbf16, 2 : i32>
+# CHECK: %[[SV:.*]] = memref.subview %{{.*}}[%{{.*}}, %{{.*}}, 0, 0, 0, 0] [1, 1, 8, 8, 4, 4] [1, 1, 1, 1, 1, 1]
+# CHECK: func.call @zero_kernel(%[[SV]])
+# CHECK: %[[SV2:.*]] = memref.subview
+# CHECK: func.call @step_kernel(%[[LOCAL]], %[[SV2]])
+
+print(build_extern_accumulator().build(target="npu1"))
