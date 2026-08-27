@@ -1,249 +1,139 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""SiLU + elementwise multiply, on air.api.
 
-"""SiLU + Elementwise Multiply Kernel
+    output[i] = SiLU(gate[i]) * up[i]
 
-Element-wise SiLU and multiply: output[i] = SiLU(gate[i]) * up[i]
-where SiLU(x) = x * sigmoid(x)
+The activation stays in C++: `air.extern("silu_and_mul_bf16", link_with="silu_and_mul.o")`
+declares the microkernel and stamps link_with on both the declaration and the
+herd, so the body here is pure dataflow. This is the twin of `gelu_and_mul/` --
+same dataflow, same herd sizing, same argument layout, only the microkernel
+differs.
 
-Uses an external C++ kernel (silu_and_mul.cc) compiled with Peano.
-The kernel streams the data in tiles across a configurable `herd_x x herd_y`
-AIE grid (`--herd-x` / `--herd-y`). Each tile uses 3 independent shim DMAs
-(gate in, up in, out), and NPU2 has 8 shim DMA channels, so the herd is
-capped at `herd_x * herd_y <= 8` tiles (more exhausts the shim channels;
-e.g. 8x1 and 2x4 place, but 8x2 / 4x4 / 8x4 do not). The best config is
-`herd_x=8, herd_y=1` (full chip width, 8 tiles in one row).
+Each tile uses 3 independent shim DMAs (gate in, up in, out) and NPU2 has 8
+shim DMA channels, so the herd is capped at `herd_x * herd_y <= 8` tiles; 8x1
+and 2x4 place, 8x2 / 4x4 / 8x4 do not. The best config is herd_x=8, herd_y=1,
+the full chip width.
+
+**Two entry points over one body.** `build_module` takes a flat [n] interface
+and `build_module_2d` takes [rows, cols], which is what the FFN GEMMs produce.
+The predecessor wrote the second as a separate builder that inserted three
+`memref.collapse_shape` ops at launch scope; here the 2-D tensor region is
+reshaped to [n] where it is sliced, so one body serves both and the collapse is
+part of the access pattern rather than an op.
+
+Both return the **module**, not the launch, and keep their signatures: the
+llms/ FFN builders import them and stitch the result by positional operand
+index, so the argument order (gate, up, out) and the `@silu_and_mul_bf16` symbol
+are a contract.
+
+The tile offset is ordinary Python arithmetic on the coordinates,
+
+    loop_iv + (tx * herd_y + ty) * tile_n
+
+where the predecessor built the same expression as a three-symbol AffineMap.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.memref import collapse_shape as memref_collapse_shape
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, i32
 from air.backend.xrt import XRTBackend
-
-range_ = for_
-
-
-@module_builder
-def build_module(n, tile_n, np_dtype_in, herd_x=8, herd_y=None):
-    xrt_dtype = type_mapper(np_dtype_in)
-    if herd_y is None:
-        herd_y = 1  # NPU2: herd_x*herd_y <= 8 tiles (3 shim DMAs/tile, 8 shim channels)
-    total_tiles = herd_x * herd_y
-    assert (
-        n % (tile_n * total_tiles) == 0
-    ), f"n ({n}) must be divisible by tile_n * total_tiles ({tile_n * total_tiles})"
-
-    # L3 types
-    l3MemrefTy = MemRefType.get([n], xrt_dtype)
-
-    # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-
-    # External kernel declaration
-    silu_mul_func = FuncOp(
-        "silu_and_mul_bf16",
-        ([l1MemrefTy, l1MemrefTy, l1MemrefTy, T.i32()], []),
-        visibility="private",
-    )
-    silu_mul_func.attributes["link_with"] = StringAttr.get("silu_and_mul.o")
-    silu_mul_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    @FuncOp.from_py_func(l3MemrefTy, l3MemrefTy, l3MemrefTy)
-    def silu_and_mul(arg0, arg1, arg2):
-        # arg0 = gate [n], arg1 = up [n], arg2 = output [n]
-
-        @launch(operands=[arg0, arg1, arg2])
-        def silu_mul_launch(l_gate, l_up, l_out):
-
-            @segment(name="silu_mul_seg", operands=[l_gate, l_up, l_out])
-            def silu_mul_seg(s_gate, s_up, s_out):
-
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_gate, s_up, s_out],
-                )
-                def herd_body(_tx, _ty, _sx, _sy, l3_gate, l3_up, l3_out):
-                    l1_gate = AllocOp(l1MemrefTy, [], [])
-                    l1_up = AllocOp(l1MemrefTy, [], [])
-                    l1_out = AllocOp(l1MemrefTy, [], [])
-
-                    tile_n_i32 = ConstantOp(T.i32(), tile_n)
-
-                    for loop_iv in range_(0, n, tile_n * total_tiles):
-                        # Compute linear tile index: tx * herd_y + ty
-                        offset_map = AffineMap.get(
-                            0,
-                            3,
-                            [
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(0),
-                                    AffineExpr.get_mul(
-                                        AffineExpr.get_add(
-                                            AffineExpr.get_mul(
-                                                AffineSymbolExpr.get(1),
-                                                AffineConstantExpr.get(herd_y),
-                                            ),
-                                            AffineSymbolExpr.get(2),
-                                        ),
-                                        AffineConstantExpr.get(tile_n),
-                                    ),
-                                )
-                            ],
-                        )
-                        offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
-
-                        dma_memcpy_nd(
-                            l1_gate,
-                            l3_gate,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_up,
-                            l3_up,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-
-                        CallOp(silu_mul_func, [l1_gate, l1_up, l1_out, tile_n_i32])
-
-                        dma_memcpy_nd(
-                            l3_out,
-                            l1_out,
-                            dst_offsets=[offset],
-                            dst_sizes=[tile_n],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-
-                    DeallocOp(l1_gate)
-                    DeallocOp(l1_up)
-                    DeallocOp(l1_out)
-
-                herd_body.attributes["link_with"] = StringAttr.get("silu_and_mul.o")
+from air.backend.xrt_runner import XRTRunner
 
 
-@module_builder
-def build_module_2d(rows, cols, tile_n, np_dtype_in, herd_x=8, herd_y=1):
-    """Build SwiGLU module with 2D memref inputs: memref<rows x cols x bf16>.
+def build_launch(shape, tile_n, dtype=bf16, herd_x=8, herd_y=1, name=None):
+    """One body for both interfaces; `shape` is [n] or [rows, cols].
 
-    Same computation as build_module but accepts 2D memrefs for compatibility
-    with GEMM outputs. Collapses 2D → 1D at the segment level before
-    passing to the herd.
+    `name` is the emitted func's symbol. The two entry points keep the two names
+    the predecessor emitted, because the llms/ stitchers slice these modules by
+    symbol as well as by operand position.
     """
-    n = rows * cols
-    xrt_dtype = type_mapper(np_dtype_in)
+    n = 1
+    for extent in shape:
+        n *= int(extent)
     total_tiles = herd_x * herd_y
-    assert n % (tile_n * total_tiles) == 0
+    if n % (tile_n * total_tiles):
+        raise ValueError(
+            f"n ({n}) must be divisible by tile_n * herd tiles "
+            f"({tile_n * total_tiles}): every tile takes the same number of "
+            "elements, and there is no remainder path."
+        )
+    if total_tiles > 8:
+        raise ValueError(
+            f"herd_x * herd_y is {total_tiles}: each tile needs 3 shim DMAs "
+            "and NPU2 has 8 shim channels, so more than 8 tiles does not place."
+        )
 
-    l3_2d_ty = MemRefType.get([rows, cols], xrt_dtype)
-    l3_1d_ty = MemRefType.get([n], xrt_dtype)
-    l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1TileTy = MemRefType.get(
-        shape=[tile_n], element_type=xrt_dtype, memory_space=l1_space
+    gate = air.tensor(list(shape), dtype)
+    up = air.tensor(list(shape), dtype)
+    out = air.tensor(list(shape), dtype)
+
+    def flat(t):
+        """The tensor as one [n] run, whatever rank it was declared at.
+
+        A rank-2 region reshaped to [n] is the access pattern the predecessor
+        built with memref.collapse_shape -- the elements are already contiguous,
+        so this renames the walk rather than moving anything.
+        """
+        whole = t[tuple(slice(0, int(e)) for e in shape)]
+        return whole if len(shape) == 1 else whole.reshape(n)
+
+    activation = air.extern(
+        "silu_and_mul_bf16", link_with="silu_and_mul.o", scalars=[i32]
     )
 
-    silu_mul_func = FuncOp(
-        "silu_and_mul_bf16",
-        ([l1TileTy, l1TileTy, l1TileTy, T.i32()], []),
-        visibility="private",
-    )
-    silu_mul_func.attributes["link_with"] = StringAttr.get("silu_and_mul.o")
-    silu_mul_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    with air.launch(name=name or "silu_and_mul") as launch:
 
-    @FuncOp.from_py_func(l3_2d_ty, l3_2d_ty, l3_2d_ty)
-    def silu_and_mul_2d(arg0, arg1, arg2):
+        @launch.body
+        def _():
+            with air.segment(name="silu_mul_seg") as seg:
 
-        @launch(operands=[arg0, arg1, arg2])
-        def silu_mul_launch(l_gate, l_up, l_out):
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="herd_0",
+                        shape=(herd_x, herd_y),
+                    ) as herd:
 
-            # Collapse 2D → 1D at segment level
-            gate_1d = memref_collapse_shape(l3_1d_ty, l_gate, [[0, 1]])
-            up_1d = memref_collapse_shape(l3_1d_ty, l_up, [[0, 1]])
-            out_1d = memref_collapse_shape(l3_1d_ty, l_out, [[0, 1]])
+                        @herd.body
+                        def _(tx, ty):
+                            l1_gate = air.alloc([tile_n], dtype, scope=herd.private())
+                            l1_up = air.alloc([tile_n], dtype, scope=herd.private())
+                            l1_out = air.alloc([tile_n], dtype, scope=herd.private())
 
-            @segment(name="silu_mul_seg", operands=[gate_1d, up_1d, out_1d])
-            def silu_mul_seg(s_gate, s_up, s_out):
+                            for iv in air.sequential(0, n, tile_n * total_tiles):
+                                lo = iv + (tx * herd_y + ty) * tile_n
 
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_gate, s_up, s_out],
-                )
-                def herd_body(_tx, _ty, _sx, _sy, l3_gate, l3_up, l3_out):
-                    l1_gate = AllocOp(l1TileTy, [], [])
-                    l1_up = AllocOp(l1TileTy, [], [])
-                    l1_out = AllocOp(l1TileTy, [], [])
+                                ops.load(l1_gate, flat(gate)[lo : lo + tile_n])
+                                ops.load(l1_up, flat(up)[lo : lo + tile_n])
 
-                    tile_n_i32 = ConstantOp(T.i32(), tile_n)
+                                activation(l1_gate, l1_up, l1_out, tile_n)
 
-                    for loop_iv in range_(0, n, tile_n * total_tiles):
-                        offset_map = AffineMap.get(
-                            0,
-                            3,
-                            [
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(0),
-                                    AffineExpr.get_mul(
-                                        AffineExpr.get_add(
-                                            AffineExpr.get_mul(
-                                                AffineSymbolExpr.get(1),
-                                                AffineConstantExpr.get(herd_y),
-                                            ),
-                                            AffineSymbolExpr.get(2),
-                                        ),
-                                        AffineConstantExpr.get(tile_n),
-                                    ),
-                                )
-                            ],
-                        )
-                        offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
+                                ops.store(l1_out, flat(out)[lo : lo + tile_n])
 
-                        dma_memcpy_nd(
-                            l1_gate,
-                            l3_gate,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_up,
-                            l3_up,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        CallOp(silu_mul_func, [l1_gate, l1_up, l1_out, tile_n_i32])
-                        dma_memcpy_nd(
-                            l3_out,
-                            l1_out,
-                            dst_offsets=[offset],
-                            dst_sizes=[tile_n],
-                            dst_strides=[1],
-                        )
-                        yield_([])
+    return launch
 
-                    DeallocOp(l1_gate)
-                    DeallocOp(l1_up)
-                    DeallocOp(l1_out)
 
-                herd_body.attributes["link_with"] = StringAttr.get("silu_and_mul.o")
+def build_module(n, tile_n, np_dtype_in=bfloat16, herd_x=8, herd_y=None, target="npu2"):
+    """Flat [n] interface. Signature is the llms/ builders' contract."""
+    return build_launch(
+        [n], tile_n, bf16, herd_x, herd_y or 1, name="silu_and_mul"
+    ).build(target=target)
+
+
+def build_module_2d(
+    rows, cols, tile_n, np_dtype_in=bfloat16, herd_x=8, herd_y=1, target="npu2"
+):
+    """[rows, cols] interface, for gate/up straight out of the FFN GEMMs."""
+    return build_launch(
+        [rows, cols], tile_n, bf16, herd_x, herd_y, name="silu_and_mul_2d"
+    ).build(target=target)
 
 
 def silu_reference(x):
