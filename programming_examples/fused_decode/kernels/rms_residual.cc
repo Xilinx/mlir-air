@@ -177,6 +177,7 @@ void rms_residual(bf16 *restrict y, bf16 *restrict x_ping,
                   bf16 *restrict y_out_0, bf16 *restrict y_out_1,
                   bf16 *restrict x_buf, int *IS_ATTN) {
   aie_round_nearest_even();
+  aie_round_nearest_even();
   constexpr int w_prod_lock = 0;
   constexpr int w_cons_lock = 1;
   constexpr int y_prod_lock = 2;

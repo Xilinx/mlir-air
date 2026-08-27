@@ -8,6 +8,10 @@
 
 template <int L>
 void pseduo_glu(bf16 *y, const bf16 *x) {
+  // Set here rather than in each extern "C" entry point: all twelve of them
+  // bottom out in this function, so one call covers every slice variant and a
+  // new one cannot be added without it.
+  aie_round_nearest_even();
   bf16 *gate_ptr = const_cast<bf16 *>(x) + (L / 2);
   bf16 *hid_ptr = const_cast<bf16 *>(x);
   bf16 *y_ptr = y;
@@ -36,7 +40,6 @@ extern "C" {
 // proj_qmm.cc pattern. x = [up(GLU_SLICE/2) ++ gate(GLU_SLICE/2)]; y[i] =
 // silu(gate[i])*up[i] (GLU_SLICE/2 outputs). GLU_SLICE=1024 -> x[1024], y[512].
 void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
-  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
   pseduo_glu<GLU_SLICE>(y, x);

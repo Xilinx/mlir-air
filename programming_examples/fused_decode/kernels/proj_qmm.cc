@@ -33,6 +33,7 @@ void proj_qmm_zero(float *__restrict y_acc, int _arm) {
 // prove the deadlock is independent of the GEMV compute.
 void proj_qmm_pass256(bf16 *__restrict x_blk, bf16 *__restrict w,
                       float *__restrict y_acc) {
+  aie_round_nearest_even();
   volatile bf16 wkeep = w[0];
   (void)wkeep;
   for (int i = 0; i < Q4NX_ROW_BLOCK_SIZE; i++)

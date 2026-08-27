@@ -76,6 +76,7 @@ extern "C" {
 void attn_qk(bf16 *__restrict q_ping, bf16 *__restrict q_pong,
              bf16 *__restrict k_ping, bf16 *__restrict k_pong,
              bf16 *__restrict s_ping, bf16 *__restrict s_pong, int *L) {
+  aie_round_nearest_even();
   // Peano's CDO loader does not zero .bss; keep ping/pong selectors and
   // zero-init scratch in .data so they are actually zeroed at load.
   __attribute__((section(".data"))) static bool is_ql_ping = false;
