@@ -271,3 +271,52 @@ def operands_broadcast_against_each_other():
 @run
 def the_scratch_outlives_a_strip_mined_run():
     print(build(lambda a: air.ops.reduce_add(a[:]), M=1024, N=32, tile=256).mlir())
+
+
+def build_argmax(cols, reduced):
+    from air.api.types import f32, i32
+
+    A = air.tensor([32, cols], f32)
+    OUT = air.tensor([32], i32)
+
+    with air.launch(name="am") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([32, cols], f32, scope=h.private())
+                    o = air.alloc([32], i32, scope=h.private())
+                    air.ops.load(a, A[0:32, :])
+                    o[:] = air.ops.argmax(a[:, 0:reduced])
+                    air.ops.store(o, OUT[0:32])
+
+    return launch.mlir()
+
+
+# CHECK-LABEL: TEST: argmax_carries_the_index_in_iter_args
+# The one reduction that is a scalar loop: the running maximum and the index
+# that produced it travel together, and no vector reduction carries an index.
+# Scalars in iter_args are fine -- it is a loop-carried *vector* AIE2 refuses.
+# The comparison is a strict > so ties keep the lowest index, as numpy does.
+# CHECK: scf.for {{.*}} iter_args
+# CHECK: arith.cmpf ogt
+# CHECK: arith.index_cast
+# CHECK: arith.select
+# CHECK: arith.select
+@run
+def argmax_carries_the_index_in_iter_args():
+    print(build_argmax(cols=16, reduced=16))
+
+
+# CHECK-LABEL: TEST: argmax_over_part_of_an_axis
+# A padded classifier output: 10 real columns in a 16-wide tile. Reducing the
+# padded tail would let a zero outrank a negative logit, so the operand is a
+# region and the loop stops at 10.
+# CHECK: %[[N:.*]] = arith.constant 10 : index
+# CHECK: scf.for %{{.*}} to %[[N]] step
+@run
+def argmax_over_part_of_an_axis():
+    print(build_argmax(cols=16, reduced=10))

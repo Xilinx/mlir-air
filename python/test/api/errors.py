@@ -2219,3 +2219,19 @@ def _():
         out[:] = gu[tx, :] * 2.0
 
     _trace(body)
+
+
+# CHECK-LABEL: TEST: argmax_into_a_float_buffer
+# argmax answers "which one", not "how big", so its destination is an index.
+# Writing it into a float buffer is the reduce_max/argmax mix-up, and the
+# message names the other one.
+# CHECK: TypeError: air.api.ops.argmax writes an index
+# CHECK-SAME: air.api.ops.reduce_max for the value itself
+@expect(TypeError, "argmax_into_a_float_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.argmax(a[:])
+
+    _trace(body)
