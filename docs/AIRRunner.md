@@ -92,6 +92,27 @@ operand 0:
 An expression that cannot be evaluated is an error naming the op and quoting
 the expression; the run then reports no latency.
 
+### Naming the entry
+
+`kernels` is keyed by op name, which is enough only while an op name identifies
+the work. It often does not: the projections of a transformer layer are all a
+`linalg.matvec` over the same activation and cost differently. An `air.kernel`
+attribute names the entry instead, so an op can both say what it computes and
+carry its own cost.
+
+```mlir
+linalg.matvec {air.kernel = "o_proj"} ins(%w, %act : ...) outs(%act : ...)
+```
+
+An op that names an entry the model does not define, or defines only for
+another datatype, is an error rather than a silent fall back to the default
+rate -- it asked for something specific.
+
+Note that `linalg.softmax` is **not** costed. It implements
+`AggregatedOpInterface` rather than `LinalgStructuredInterface`, so the cost
+model does not see it and it runs in a single cycle. Write a softmax as
+`linalg.generic` if its time matters.
+
 ## Machine parameters
 
 How a `linalg` body is priced was once fixed in the runner and chosen for AIE.

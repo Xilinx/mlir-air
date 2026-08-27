@@ -910,9 +910,29 @@ private:
     return (uint64_t)std::llround(*result);
   }
 
+  // Which entry of the model's `kernels` map prices this op.
+  //
+  // The op's name by default, which is enough when an op name identifies the
+  // work. It often does not: the projections of a transformer layer are all a
+  // matvec and cost differently, so keying on "linalg.matvec" gives all of them
+  // one cost and no way to tell them apart. An `air.kernel` attribute names the
+  // entry instead -- the same thing air.custom's symbol does, without giving up
+  // an op that says what it computes.
+  static std::string kernelKeyForOp(Operation *op) {
+    if (auto named = op->getAttrOfType<StringAttr>("air.kernel"))
+      return named.getValue().str();
+    return air::to_string(op);
+  }
+
+  // True when the op asked for a specific entry rather than defaulting to its
+  // name, so a missing entry is a mistake in the model and not silence.
+  static bool namesItsKernel(Operation *op) {
+    return (bool)op->getAttrOfType<StringAttr>("air.kernel");
+  }
+
   // A model-supplied cycle expression for this op and datatype, if any.
   std::optional<std::string> kernelCycleExpr(device &d, Operation *op) {
-    auto name = air::to_string(op);
+    auto name = kernelKeyForOp(op);
     if (!d.kernels.count(name))
       return std::nullopt;
     auto dt = getElementTypeAsString(op->getOperandTypes()[0]);
@@ -945,6 +965,25 @@ private:
       return 0;
     }
 
+    // Check a named entry exists before looking at the body at all. An op that
+    // names one has asked for something specific whether or not its body holds
+    // any priced arithmetic -- a copy or a fill has none, and gating this on
+    // the op count would let those fall back to the default rate in silence,
+    // which is the case the attribute exists to rule out.
+    auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
+    auto key = kernelKeyForOp(op);
+    if (namesItsKernel(op)) {
+      // A cycles expression for this datatype has already been taken above, so
+      // reaching here means the entry must price it some other way.
+      if (!d.kernels.count(key))
+        op->emitOpError("names kernel '")
+            << key << "', which the model does not define";
+      else if (!d.kernels[key]->datatypes.count(op_datatype))
+        op->emitOpError("names kernel '")
+            << key << "', which the model has, but not for datatype '"
+            << op_datatype << "'";
+    }
+
     uint64_t compute_op_count = 0;
     for (auto &p : opCounts.map) {
       auto name = std::get<0>(p);
@@ -967,16 +1006,12 @@ private:
     }
 
     if (compute_op_count) {
-      auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
       double ops_per_core_per_cycle = d.default_ops_per_core_per_cycle;
       double efficiency = 1.0f;
-      if (d.kernels.count(air::to_string(op))) {
-        if (d.kernels[air::to_string(op)]->datatypes.count(op_datatype)) {
-          ops_per_core_per_cycle =
-              d.kernels[air::to_string(op)]->datatypes[op_datatype].second;
-          efficiency =
-              d.kernels[air::to_string(op)]->datatypes[op_datatype].first;
-        }
+      if (d.kernels.count(key) &&
+          d.kernels[key]->datatypes.count(op_datatype)) {
+        ops_per_core_per_cycle = d.kernels[key]->datatypes[op_datatype].second;
+        efficiency = d.kernels[key]->datatypes[op_datatype].first;
       }
 
       double ops_per_cycle =
