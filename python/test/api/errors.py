@@ -578,6 +578,27 @@ def _():
     _trace(body)
 
 
+# CHECK-LABEL: TEST: buffer_read_after_its_loop_closed
+# A buffer allocated in a loop does not reach past it. Placement walks each use
+# out to the block the alloc lives in, and a use that is not under that block
+# has no such ancestor -- which used to walk off the top of the IR and abort the
+# process inside MLIR rather than report anything. Both real instances were this
+# shape: an L2 staging buffer handed to a later herd, and an L1 buffer allocated
+# in one arm of an ops.branch and read after it.
+# CHECK: RuntimeError: a buffer is used outside the region it was allocated in
+@expect(RuntimeError, "buffer_read_after_its_loop_closed")
+def _():
+    def body(h, tx, ty, A, B, C):
+        escaped = None
+        for _ in air.sequential(0, 64, 32):
+            escaped = air.alloc([32, 32], bf16, scope=h.private())
+            escaped[:] = 1.0
+        # The loop has closed; the allocation does not reach this far.
+        escaped[:] = escaped[:] + 1.0
+
+    _trace(body)
+
+
 # CHECK-LABEL: TEST: dot_alpha_unimplemented
 # CHECK: NotImplementedError: air.api.ops.dot(alpha=...) is not implemented
 @expect(NotImplementedError, "dot_alpha_unimplemented")

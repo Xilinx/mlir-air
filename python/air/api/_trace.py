@@ -613,6 +613,26 @@ def _block_position(block, op):
     raise AssertionError("operation is not in the block it reports as its parent")
 
 
+def _lift_into(op, ops_in_home):
+    """``op``'s ancestor that sits directly in ``ops_in_home``, or None.
+
+    Walks outward by parent rather than by block, which matters: ``.block`` on
+    a top-level operation does not return None, it trips an assertion inside
+    MLIR and takes the process with it. Anything that walks past the op it was
+    looking for therefore has to notice by running out of parents, not by
+    asking each one where it lives.
+    """
+    while op is not None:
+        for i, other in enumerate(ops_in_home):
+            if other == op:
+                return i
+        try:
+            op = op.parent
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
 def _last_use_anchor(value, ignore=None):
     """The op in ``value``'s own block after which ``value`` is no longer read.
 
@@ -620,20 +640,41 @@ def _last_use_anchor(value, ignore=None):
     is finished, so each use is walked out to the ancestor that sits directly
     in the block the alloc was emitted into. ``ignore`` drops one op from the
     scan, so that a dealloc can ask where the last *other* use was.
+
+    A use that is *not* under that block has no such ancestor, and this is
+    where that has to be caught. The buffer would be read where its allocation
+    does not reach -- a loop or a branch arm it was declared in has closed --
+    and the walk would otherwise run off the top of the IR and abort. Both
+    known instances were real: an L2 buffer allocated in a staging loop and
+    handed to a later herd, and an L1 buffer allocated in one arm of an
+    ops.branch and read after the branch.
     """
     home = value.owner.operation.block
+    ops_in_home = [o.operation for o in home.operations]
     anchor = value.owner.operation
     best = _block_position(home, anchor)
     for use in value.uses:
         op = use.owner.operation
         if ignore is not None and op == ignore:
             continue
-        while op.block != home:
-            op = op.parent
-        position = _block_position(home, op)
+        position = _lift_into(op, ops_in_home)
+        if position is None:
+            raise RuntimeError(
+                f"a buffer is used outside the region it was allocated in: the "
+                f"allocation sits in a {_region_name(home)} that has already "
+                f"closed by the time {op.name} reads it, so it does not reach "
+                "that far. Allocate it in the scope where it is read -- above "
+                "the loop or the ops.branch rather than inside one."
+            )
         if position > best:
-            anchor, best = op, position
+            anchor, best = ops_in_home[position], position
     return home, anchor
+
+
+def _region_name(block):
+    """Name the construct owning ``block``, for a diagnostic."""
+    owner = block.owner
+    return owner.name if owner is not None else "region"
 
 
 def free_buffers(buffers):
