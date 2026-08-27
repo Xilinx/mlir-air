@@ -19,7 +19,16 @@ from air import api as air
 from air.api.types import bf16, i32
 
 
-def build(body, dtype=bf16, M=65536, N=16, tile=256, out_shape=None):
+def build(
+    body,
+    dtype=bf16,
+    M=65536,
+    N=16,
+    tile=256,
+    out_shape=None,
+    vector=None,
+    scalar=False,
+):
     A = air.tensor([M, N], dtype)
     OUT = air.tensor([M], dtype)
 
@@ -33,10 +42,17 @@ def build(body, dtype=bf16, M=65536, N=16, tile=256, out_shape=None):
                 def _(tx):
                     (tm,) = h.tile_sizes
                     row = tx * tm
-                    a = air.alloc([tm, N], dtype, scope=h.private())
+                    kw = {} if vector is None else {"vector": vector}
+                    a = air.alloc([tm, N], dtype, scope=h.private(), **kw)
                     o = air.alloc(out_shape or [tm], dtype, scope=h.private())
                     air.ops.load(a, A[row : row + tm, :])
-                    o[:] = body(a)
+                    if scalar:
+                        # A per-row scalar to broadcast across the reduced
+                        # axis, as a variance's mean is.
+                        m = air.alloc([tm, 1], dtype, scope=h.private())
+                        o[:] = air.ops.reduce_add((a[:] - m[:]) * (a[:] - m[:]))
+                    else:
+                        o[:] = body(a)
                     air.ops.store(o, OUT[row : row + tm])
 
     return launch
@@ -160,13 +176,53 @@ def reduce_over_an_expression_is_a_row_dot_product():
     print(build(lambda a: air.ops.reduce_add(a[:] * a[:])).mlir())
 
 
-# CHECK-LABEL: TEST: a_wider_axis_widens_the_vector_not_the_loop
-# N=32 is what vector_reduce_max defaults to. The reduced extent sets the
-# vector length directly, so a wider axis stays one read and one reduction
-# rather than becoming a loop.
+# CHECK-LABEL: TEST: a_wider_axis_is_read_in_vector_width_steps
+# N=32 is what vector_reduce_max defaults to. A reduction reads the axis the
+# same way an elementwise assignment would: in steps of the buffer's vector
+# width, accumulating the partials through a small L1 buffer.
+#
+# This used to widen the vector instead -- the whole axis in one read, however
+# long it was -- and that does not scale: a [.., 768] row dies in the backend
+# with `unable to legalize G_EXTRACT_VECTOR_ELT <768 x s16>`, which is exactly
+# the shape layer_norm needs. The accumulator is an L1 round-trip and not an
+# scf.for iter_arg because a loop-carried vector is what LLVM splits into
+# sub-512-bit pieces AIE2 will not legalize; every hand-written kernel this
+# models does the same round-trip.
+# CHECK: vector.transfer_read {{.*}} vector<16xbf16>
+# CHECK: scf.for
+# CHECK: arith.addf {{.*}} : vector<16xbf16>
+# CHECK: vector.reduction <add>, {{.*}} : vector<16xbf16> into bf16
+@run
+def a_wider_axis_is_read_in_vector_width_steps():
+    print(build(lambda a: air.ops.reduce_add(a[:]), N=32).mlir())
+
+
+# CHECK-LABEL: TEST: a_width_as_wide_as_the_axis_is_one_read
+# The width is the caller's knob, and it means here what it means everywhere
+# else: allocate the operand at the axis's own width and the reduction is a
+# single read and a single vector.reduction, with no loop and no accumulator.
 # CHECK: vector.transfer_read {{.*}} vector<32xbf16>
 # CHECK: vector.reduction <add>, {{.*}} : vector<32xbf16> into bf16
 # CHECK-NOT: vector.reduction
 @run
-def a_wider_axis_widens_the_vector_not_the_loop():
-    print(build(lambda a: air.ops.reduce_add(a[:]), N=32).mlir())
+def a_width_as_wide_as_the_axis_is_one_read():
+    print(build(lambda a: air.ops.reduce_add(a[:]), N=32, vector=32).mlir())
+
+
+# CHECK-LABEL: TEST: a_reduction_operand_may_broadcast
+# The variance idiom: sum((x - mean)^2) with mean a per-row scalar. numpy
+# stretches mean across the reduced axis and so does this -- the widest operand
+# fixes what the axis means, and a [.., 1] operand beside it is a scalar being
+# splatted into it, which is the memref.load + vector.broadcast below.
+# CHECK: memref.load
+# CHECK: vector.broadcast
+# CHECK: vector.reduction <add>
+@run
+def a_reduction_operand_may_broadcast():
+    print(
+        build(
+            lambda a: air.ops.reduce_add(a[:] * a[:]),
+            N=16,
+            scalar=True,
+        ).mlir()
+    )

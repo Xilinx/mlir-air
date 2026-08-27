@@ -954,6 +954,10 @@ class HerdContext:
         self._objects = {}
         # The core's position in the herd, bound while the body is traced.
         self._coords = []
+        # Reduction scratch buffers, one per (dtype, lanes), allocated at the
+        # top of the body and reused by every reduction under it. See scratch().
+        self._scratch = {}
+        self._entry_block = None
         if link_with is not None:
             if not isinstance(link_with, str) or not link_with:
                 raise TypeError(
@@ -1073,6 +1077,36 @@ class HerdContext:
     def register_buffer(self, buf):
         self._buffers.append(buf)
 
+    def scratch(self, dtype, lanes):
+        """An L1 vector the emitter accumulates a long reduction through.
+
+        A reduction longer than one vector has to accumulate across steps, and
+        the accumulator cannot be a loop-carried SSA vector: LLVM splits one
+        into sub-512-bit pieces the AIE2 backend will not legalize, which is the
+        failure ``ops.dot`` documents. Every hand-written kernel this models --
+        rms_norm, layer_norm, weighted_rms_norm -- round-trips its partial sums
+        through a small L1 buffer instead, so that is what this provides.
+
+        Allocated **at the top of the herd body**, not where the reduction is
+        written. A reduction normally sits inside a row loop, and allocating
+        there would emit one alloc per trip and leave the dealloc outside the
+        region that dominates it. One buffer per (dtype, lanes) serves every
+        reduction in the body, which is what the predecessors do by hand.
+        """
+        from air.ir import InsertionPoint
+
+        key = (dtype, int(lanes))
+        if key in self._scratch:
+            return self._scratch[key]
+        if self._entry_block is None:
+            raise RuntimeError(
+                "a reduction scratch buffer was requested outside a herd body"
+            )
+        with InsertionPoint.at_block_begin(self._entry_block):
+            buf = alloc([int(lanes)], dtype, scope=self.private(), _hoisted=True)
+        self._scratch[key] = buf
+        return buf
+
     # -- emission -----------------------------------------------------------
 
     def _emit(self, fn):
@@ -1165,6 +1199,10 @@ class HerdContext:
             herd_self._coords = [
                 IndexExpr.leaf(c, f"c{axis}") for axis, c in enumerate(phys_coords)
             ]
+            # Where a reduction's scratch accumulator is allocated, whatever
+            # loop or branch the reduction itself sits in. See scratch().
+            herd_self._entry_block = args[0].owner
+            herd_self._scratch.clear()
 
             def run(strip_ivs):
                 tile_ids = []
@@ -1270,7 +1308,7 @@ def tensor(shape, dtype, name=None):
     return t
 
 
-def alloc(shape, dtype, scope=None, vector=None):
+def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
     from air.ir import IntegerAttr, MemRefType
     from air.dialects.air import MemorySpace
@@ -1322,7 +1360,11 @@ def alloc(shape, dtype, scope=None, vector=None):
             "being traced; allocate inside the body of the scope you are asking "
             "for"
         )
-    if space == "L1" and loop_depth():
+    # _hoisted: the caller has already moved the insertion point to the top of
+    # the herd body, so the alloc does not land in the loop the caller is
+    # standing in and the dominance argument below does not apply. Only
+    # HerdContext.scratch sets it, and it is not part of the public signature.
+    if space == "L1" and loop_depth() and not _hoisted:
         raise NotImplementedError(
             "air.alloc inside an air.sequential or ops.branch body is not "
             "supported: the herd frees its buffers once the body is finished, "

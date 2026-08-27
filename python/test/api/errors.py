@@ -1995,17 +1995,17 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: a_reduction_does_not_broadcast_its_operands
-# Everywhere else an extent of 1 is stretched, but the innermost extent of a
-# reduction is the thing being collapsed: stretching it would decide how many
-# terms the sum has, which is the reduction's meaning rather than a fit.
+# CHECK-LABEL: TEST: a_reduction_operand_that_does_not_broadcast
+# A reduction's operands broadcast like any others -- a variance is
+# `reduce_add((x - mean) * (x - mean))` with a per-row scalar mean -- but the
+# rule is still numpy's, so a mismatched extent is refused rather than stretched.
 # CHECK: ValueError: shape mismatch inside a reduction
-# CHECK-SAME: does not broadcast its operands
-@expect(ValueError, "a_reduction_does_not_broadcast_its_operands")
+# CHECK-SAME: does not broadcast to the first
+@expect(ValueError, "a_reduction_operand_that_does_not_broadcast")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64, 16], bf16, scope=h.private())
-        s = air.alloc([64, 1], bf16, scope=h.private())
+        s = air.alloc([64, 8], bf16, scope=h.private())
         out = air.alloc([64], bf16, scope=h.private())
         out[:] = ops.reduce_add(a[:] * s[:])
 
