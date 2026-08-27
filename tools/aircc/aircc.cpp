@@ -966,14 +966,16 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   // Ping-pong transform
   if (omitPingpong.getValue().empty() || omitPingpong.getValue() == "L1" ||
       omitPingpong.getValue() == "L2") {
-    std::string labelPass = "air-label-scf-for-to-ping-pong";
-    std::string ppPass = "air-ping-pong-transform";
+    // Pass the device so the labeller can decline a candidate whose duplicated
+    // L1 buffers would not fit the tile.
+    std::string labelOpts = "device=" + deviceName.getValue();
+    std::string ppOpts;
     if (omitPingpong.getValue() == "L1" || omitPingpong.getValue() == "L2") {
-      labelPass = "air-label-scf-for-to-ping-pong{omit-memory-space=" +
-                  omitPingpong.getValue() + "}";
-      ppPass = "air-ping-pong-transform{omit-memory-space=" +
-               omitPingpong.getValue() + "}";
+      labelOpts += " omit-memory-space=" + omitPingpong.getValue();
+      ppOpts = "{omit-memory-space=" + omitPingpong.getValue() + "}";
     }
+    std::string labelPass = "air-label-scf-for-to-ping-pong{" + labelOpts + "}";
+    std::string ppPass = "air-ping-pong-transform" + ppOpts;
     os << "," << labelPass << "," << ppPass << ",canonicalize,cse";
   }
 

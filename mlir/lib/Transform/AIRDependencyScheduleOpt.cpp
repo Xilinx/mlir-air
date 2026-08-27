@@ -1605,8 +1605,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   LabelScfForLoopForPingPongPattern(MLIRContext *ctx,
-                                    std::string omitMemorySpace)
-      : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
+                                    std::string omitMemorySpace,
+                                    uint64_t l1Budget = 0)
+      : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace),
+        l1Budget(l1Budget) {}
 
   // Shared predicate for the rewriter and the nested-loop suppression check.
   // Rejects loops whose candidate alloc receives >1 channel.get per outer
@@ -1682,7 +1684,34 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     return unsafe;
   }
 
+  // Bytes an L1 memref.alloc occupies, or 0 if it is not L1 / not static.
+  static uint64_t l1AllocBytes(memref::AllocOp alloc) {
+    auto ty = llvm::dyn_cast<MemRefType>(alloc.getType());
+    if (!ty || !air::isL1(ty) || !ty.hasStaticShape())
+      return 0;
+    uint64_t elems = 1;
+    for (auto d : ty.getShape())
+      elems *= (uint64_t)d;
+    return elems * llvm::divideCeil(ty.getElementTypeBitWidth(), 8);
+  }
+
+  // Would labeling this loop push its tile's L1 over `budget`? The herd body's
+  // whole L1 footprint counts once; the allocs the unroll-by-2 duplicates
+  // count once more.
+  static bool exceedsL1Budget(scf::ForOp forOp, uint64_t budget) {
+    auto herd = forOp->getParentOfType<air::HerdOp>();
+    if (!herd)
+      return false;
+    uint64_t total = 0;
+    herd.getBody().walk([&](memref::AllocOp a) { total += l1AllocBytes(a); });
+    uint64_t duplicated = 0;
+    forOp.getBody()->walk(
+        [&](memref::AllocOp a) { duplicated += l1AllocBytes(a); });
+    return total + duplicated > budget;
+  }
+
   static bool isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
+                                  uint64_t l1Budget,
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
@@ -1705,6 +1734,15 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     });
     if (nestedUnsafe)
       return false;
+    // Labeling doubles every L1 buffer the candidate's region tree allocates,
+    // on top of whatever else the herd body already holds on that tile. If the
+    // result does not fit in local memory the design fails to compile far
+    // downstream, with nothing pointing back here -- so decline instead. This
+    // is what `air.disable_ping_pong` was supplying by hand for the bfp16
+    // matmuls (74 KiB against a 64 KiB tile).
+    if (l1Budget && exceedsL1Budget(forOp, l1Budget))
+      return false;
+
     // User-facing opt-out: an scf.for in the candidate's region tree
     // (including the candidate itself) carrying `air.disable_ping_pong`
     // disables PP labeling for the enclosing candidate. Used by designs
@@ -1832,7 +1870,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                 PatternRewriter &rewriter) const override {
 
     SmallVector<Operation *> alloc_ops;
-    if (!isPingPongCandidate(for_op, omitMemorySpace, &alloc_ops))
+    if (!isPingPongCandidate(for_op, omitMemorySpace, l1Budget, &alloc_ops))
       return failure();
 
     // Skip outer loop if any nested scf.for in the same async scope is itself
@@ -1854,7 +1892,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
           if (!innerFor)
             return WalkResult::advance();
           if (innerFor->hasAttr("unroll") ||
-              isPingPongCandidate(innerFor, omitMemorySpace,
+              isPingPongCandidate(innerFor, omitMemorySpace, l1Budget,
                                   /*allocsOut=*/nullptr)) {
             hasLabelableNestedFor = true;
             return WalkResult::interrupt();
@@ -1877,6 +1915,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
 private:
   std::string omitMemorySpace;
+  uint64_t l1Budget = 0;
 };
 
 struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
@@ -3977,8 +4016,20 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    // Use the clOmitMemorySpace option from the pass
-    patterns.insert<LabelScfForLoopForPingPongPattern>(ctx, clOmitMemorySpace);
+    // Use the clOmitMemorySpace option from the pass. The L1 budget comes from
+    // the target model when a device was named; 0 leaves the check off.
+    uint64_t l1Budget = 0;
+    if (!clDevice.empty()) {
+      if (auto dev = AIE::symbolizeAIEDevice(clDevice))
+        l1Budget = AIE::getTargetModel(*dev).getLocalMemorySize();
+      else {
+        funcOp.emitOpError("Invalid aie.device option: ") << clDevice;
+        signalPassFailure();
+        return;
+      }
+    }
+    patterns.insert<LabelScfForLoopForPingPongPattern>(ctx, clOmitMemorySpace,
+                                                       l1Budget);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
