@@ -109,8 +109,9 @@ class ExternKernel:
                     raise RuntimeError(
                         f"{self.name}: buffer argument {pos} used before allocation"
                     )
-                values.append(arg.value)
-                types.append(arg.value.type)
+                value = _core_slab(arg)
+                values.append(value)
+                types.append(value.type)
             else:
                 dtype = next(scalars)
                 values.append(_scalar_value(arg, dtype, self.name, pos, arith))
@@ -136,6 +137,28 @@ class ExternKernel:
         # aircc links one object per herd, so the attribute is a single string.
         herd.require_object(self.link_with, self.name)
         return CallOp(self._decl, values)
+
+
+def _core_slab(buffer):
+    """The value to pass for ``buffer``: its whole memref, or this core's slab.
+
+    A ``<segment>.shared()`` buffer is one allocation spanning every core, with
+    a leading dimension per herd axis, and a core may only touch its own slab.
+    That is not a choice the caller gets to make -- there is exactly one slab a
+    given core is allowed to write -- so the DSL narrows the argument itself
+    rather than asking for coordinates it could only re-check. ``ops.fill`` and
+    ``ops.dot`` already do this through the same helper, and a kernel reached by
+    ``air.extern`` is the third way to write an accumulator: the two bfp16
+    matmuls zero it, accumulate into it and narrow it, all through hand-written
+    kernels, and each call passed a ``memref.subview`` written out by hand.
+
+    Any other buffer is passed whole, which is every existing caller.
+    """
+    if getattr(buffer.scope, "kind", None) != "shared":
+        return buffer.value
+    from .ops import accumulator_subview
+
+    return accumulator_subview(buffer)
 
 
 def _scalar_value(arg, dtype, name, pos, arith):
