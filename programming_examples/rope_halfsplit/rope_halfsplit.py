@@ -1,7 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-
-"""RoPE (Rotary Position Embedding) — half-split, matching HuggingFace Llama
+"""RoPE (Rotary Position Embedding) -- half-split, matching HuggingFace Llama, on air.api
 
 Applies rotary position embeddings to a 2D input [rows, head_dim] using the
 *half-split* convention (HuggingFace Llama `rotate_half`), pairing
@@ -18,150 +17,107 @@ matching `llama32_1b_weights.py:generate_rope_lut` and the kernel
 compile_rope`). This is **NOT** the interleaved variant in `rope_lut/` or
 `rope_sincos/` (those are decoys; their math does not match llama).
 
-Uses the external C++ kernel rope_halfsplit.cc -> rope.o (`@rope`).
-Each row's RoPE is independent — no cross-row dependency — so rows are
-spread across an `herd_x x herd_y` AIE grid. Each tile uses 3 independent
-shim DMAs (input in, lut in, output out); NPU2 has 8 shim DMA channels, so
-the herd is capped at herd_x * herd_y <= 8 tiles (8x1 / 2x4 place, 8x2 /
-4x4 / 8x4 do not). The best config is herd_x=8, herd_y=1 (full chip width).
+The rotation itself stays in C++: `air.extern("rope", link_with="rope.o")`
+declares the microkernel and stamps `link_with` on both the declaration and the
+herd, so the body here is pure dataflow. That is the point of the example --
+the arithmetic is the kernel's, and what AIR contributes is getting one row to
+each core and the result back.
 
-Each tile streams its rows one head_dim row per DMA / per kernel call
-(matching rope_halfsplit.cc's single-row signature and the llama
-prefill/decode builders). `herd_x` (AIE columns) is the scaling knob; the
-rows are interleaved across the herd so tile t handles rows t, t+total_tiles,
-... A batched-DMA variant (multiple rows per L3<->L1 transfer with per-row
-subview kernel calls) was investigated but the air dependency pass
-mis-schedules the per-row subview writes under a single bulk output DMA
-(half the rows come back zero / NaN at rows_per_dma=2,4), so the faithful
-one-row-per-DMA structure is used — see the performance notes.
+Each row's RoPE is independent -- no cross-row dependency -- so rows are spread
+across an `herd_x x herd_y` AIE grid. Each tile uses 3 independent shim DMAs
+(input in, lut in, output out); NPU2 has 8 shim DMA channels, so the herd is
+capped at herd_x * herd_y <= 8 tiles (8x1 / 2x4 place, 8x2 / 4x4 / 8x4 do not).
+The best config is herd_x=8, herd_y=1 (full chip width).
+
+Each tile streams its rows one head_dim row per DMA / per kernel call (matching
+rope_halfsplit.cc's single-row signature and the llama prefill/decode
+builders). `herd_x` (AIE columns) is the scaling knob; the rows are interleaved
+across the herd so tile t handles rows t, t+total_tiles, ... A batched-DMA
+variant (multiple rows per L3<->L1 transfer with per-row subview kernel calls)
+was investigated but the air dependency pass mis-schedules the per-row subview
+writes under a single bulk output DMA (half the rows come back zero / NaN at
+rows_per_dma=2,4), so the faithful one-row-per-DMA structure is used -- see the
+performance notes.
+
+One difference from the raw-bindings version this replaces: the row offset is
+written as ordinary Python arithmetic on the coordinates,
+
+    (row + tx * herd_y + ty) * head_dim
+
+where the predecessor built the same expression as a three-symbol `AffineMap`
+by hand. It reaches the IR as one `affine.apply` either way.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, i32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
 
-
-@module_builder
-def build_module(rows, head_dim, np_dtype_in, herd_x=8, herd_y=1):
-    xrt_dtype = type_mapper(np_dtype_in)
+def build_module(rows, head_dim, herd_x=8, herd_y=1, dtype=bf16):
     total = rows * head_dim
-    assert (
-        head_dim % 16 == 0
-    ), "head_dim must be divisible by 16 (kernel vector width N=16)"
+    if head_dim % 16:
+        raise ValueError(
+            f"head_dim ({head_dim}) must be divisible by 16: that is the "
+            "kernel's vector width N."
+        )
     total_tiles = herd_x * herd_y
-    assert (
-        rows % total_tiles == 0
-    ), f"rows ({rows}) must be divisible by herd_x * herd_y ({total_tiles})"
+    if rows % total_tiles:
+        raise ValueError(
+            f"rows ({rows}) must be divisible by herd_x * herd_y "
+            f"({total_tiles}): every core takes the same number of rows, and "
+            "there is no remainder path."
+        )
 
-    # L3 types (flat)
-    l3DataTy = MemRefType.get([total], xrt_dtype)
+    src = air.tensor([total], dtype)
+    lut = air.tensor([total], dtype)
+    dst = air.tensor([total], dtype)
 
-    # L1 types: one head_dim row per DMA / per kernel call (matches the
-    # rope_halfsplit.cc signature and the llama prefill/decode builders).
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get(
-        shape=[head_dim], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
+    # rope(input_row, lut_row, output_row, dims) from rope.o. The trailing
+    # dims argument is a scalar, so its element type has to be stated: the
+    # buffer types come from the buffers, an i32 does not.
+    rope = air.extern("rope", link_with="rope.o", scalars=[i32])
 
-    # External kernel: rope(input_row, lut_row, output_row, dims)
-    rope_func = FuncOp(
-        "rope", ([l1RowTy, l1RowTy, l1RowTy, T.i32()], []), visibility="private"
-    )
-    rope_func.attributes["link_with"] = StringAttr.get("rope.o")
-    rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    with air.launch(name="rope_halfsplit") as launch:
 
-    # row_offset (in elements) = (local_row * total_tiles + tx*herd_y + ty) * head_dim
-    # i.e. tiles are interleaved over rows: tile t handles rows t, t+total_tiles, ...
-    row_offset_map = AffineMap.get(
-        0,
-        3,
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),  # loop_iv (already mult. of total_tiles)
-                    AffineExpr.get_add(
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(1),  # _tx
-                            AffineConstantExpr.get(herd_y),
-                        ),
-                        AffineSymbolExpr.get(2),  # _ty
-                    ),
-                ),
-                AffineConstantExpr.get(head_dim),
-            )
-        ],
-    )
+        @launch.body
+        def _():
+            with air.segment(name="rope_seg") as seg:
 
-    @FuncOp.from_py_func(l3DataTy, l3DataTy, l3DataTy)
-    def rope_halfsplit(arg0, arg1, arg2):
-        # arg0 = input [total], arg1 = lut [total], arg2 = output [total]
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="herd_0",
+                        shape=(herd_x, herd_y),
+                    ) as herd:
 
-        @launch(operands=[arg0, arg1, arg2])
-        def rope_launch(l_in, l_lut, l_out):
+                        @herd.body
+                        def _(tx, ty):
+                            l1_in = air.alloc([head_dim], dtype, scope=herd.private())
+                            l1_lut = air.alloc([head_dim], dtype, scope=herd.private())
+                            l1_out = air.alloc([head_dim], dtype, scope=herd.private())
 
-            @segment(name="rope_seg", operands=[l_in, l_lut, l_out])
-            def rope_seg(s_in, s_lut, s_out):
+                            # Strides by total_tiles rows; each core picks its
+                            # own row out of the group, so tile t handles rows
+                            # t, t + total_tiles, ...
+                            for row in air.sequential(0, rows, total_tiles):
+                                lo = (row + tx * herd_y + ty) * head_dim
 
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_in, s_lut, s_out],
-                )
-                def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_lut, l3_out):
-                    l1_in = AllocOp(l1RowTy, [], [])
-                    l1_lut = AllocOp(l1RowTy, [], [])
-                    l1_out = AllocOp(l1RowTy, [], [])
+                                ops.load(l1_in, src[lo : lo + head_dim])
+                                ops.load(l1_lut, lut[lo : lo + head_dim])
 
-                    dim_i32 = ConstantOp(T.i32(), head_dim)
+                                rope(l1_in, l1_lut, l1_out, head_dim)
 
-                    # Outer loop strides by total_tiles rows; each tile picks its
-                    # own row via (tx*herd_y+ty). One row per DMA per kernel call.
-                    for loop_iv in range_(0, rows, total_tiles):
-                        row_off = affine_apply(row_offset_map, [loop_iv, _tx, _ty])
+                                ops.store(l1_out, dst[lo : lo + head_dim])
 
-                        dma_memcpy_nd(
-                            l1_in,
-                            l3_in,
-                            src_offsets=[row_off],
-                            src_sizes=[head_dim],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_lut,
-                            l3_lut,
-                            src_offsets=[row_off],
-                            src_sizes=[head_dim],
-                            src_strides=[1],
-                        )
-
-                        CallOp(rope_func, [l1_in, l1_lut, l1_out, dim_i32])
-
-                        dma_memcpy_nd(
-                            l3_out,
-                            l1_out,
-                            dst_offsets=[row_off],
-                            dst_sizes=[head_dim],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_lut)
-                    DeallocOp(l1_out)
-
-                herd_body.attributes["link_with"] = StringAttr.get("rope.o")
+    return launch
 
 
 def rope_halfsplit_reference(input_flat, lut_flat, head_dim):
@@ -262,18 +218,27 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    mlir_module = build_module(
+    launch = build_module(
         args.rows,
         args.head_dim,
-        INPUT_DATATYPE,
         herd_x=args.herd_x,
         herd_y=args.herd_y,
     )
+    # build() resolves --target auto to the installed generation, so it has to
+    # run before launch.target is read.
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -302,6 +267,7 @@ if __name__ == "__main__":
             instance_name="rope_halfsplit",
             report_precision=True,
             n_perf_iters=args.perf_iters,
+            target_device=launch.target,
         )
         exit(
             runner.run_test(
@@ -318,6 +284,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            target_device=launch.target,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()
