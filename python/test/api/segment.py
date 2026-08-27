@@ -130,3 +130,54 @@ def staged_passthrough():
 @run
 def staged_f32():
     print(build(dtype=f32).mlir())
+
+
+# CHECK-LABEL: TEST: per_core_reaches_each_herd_whole
+# <segment>.shared() and <segment>.per_core() differ in what the cores see. A
+# shared buffer is one allocation the cores divide between them: it carries a
+# leading dimension per herd axis, and a kernel reached through air.extern is
+# handed a memref.subview of this core's slab. A per_core buffer is not
+# divided -- every core gets its own copy of the whole shape, and the kernel
+# receives it entire.
+#
+# The shape below is flash_attention/dataflow_based's: a [lq, 1] running
+# maximum carried across two separate herds of a 2-D herd grid. shared() cannot
+# express it at all -- both its dimensions would be cores, leaving nothing for
+# the tile -- which is the case checked in api/errors.py.
+# CHECK: %[[UP:.*]] = memref.alloc() : memref<64x1xbf16, 2 : i32>
+# CHECK: air.herd @h {{.*}}%[[A0:.*]]=%[[UP]]{{.*}} memref<64x1xbf16, 2 : i32>
+# CHECK: func.call @zero_fill_sp_bf16(%[[A0]]) : (memref<64x1xbf16, 2 : i32>)
+# CHECK: air.herd @h {{.*}}%[[A1:.*]]=%[[UP]]{{.*}} memref<64x1xbf16, 2 : i32>
+# CHECK: func.call @zero_fill_sp_bf16(%[[A1]]) : (memref<64x1xbf16, 2 : i32>)
+# CHECK-NOT: memref.subview
+@run
+def per_core_reaches_each_herd_whole():
+    from air.api.types import bf16
+
+    B = air.tensor([64, 1], bf16)
+    fill = air.extern("zero_fill_sp_bf16", link_with="attn.o")
+
+    with air.launch(name="carried") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    up = air.alloc([64, 1], bf16, scope=seg.per_core())
+
+                    with air.herd([range(1), range(4)], name="h", shape=(1, 4)) as h0:
+
+                        @h0.body
+                        def _(tx, ty):
+                            fill(up)
+
+                    with air.herd([range(1), range(4)], name="h", shape=(1, 4)) as h1:
+
+                        @h1.body
+                        def _(tx, ty):
+                            fill(up)
+                            air.ops.store(up, B)
+
+    print(launch.mlir())
