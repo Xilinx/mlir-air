@@ -614,7 +614,11 @@ def _block_position(block, op):
 
 
 def _lift_into(op, ops_in_home):
-    """``op``'s ancestor that sits directly in ``ops_in_home``, or None.
+    """The index in ``ops_in_home`` of ``op``'s ancestor there, or None.
+
+    An index rather than the op itself because the caller is comparing
+    positions -- it wants the latest use, and ``ops_in_home`` is in block
+    order, so the larger index wins.
 
     Walks outward by parent rather than by block, which matters: ``.block`` on
     a top-level operation does not return None, it trips an assertion inside
@@ -662,7 +666,7 @@ def _last_use_anchor(value, ignore=None):
             raise RuntimeError(
                 f"a buffer is used outside the region it was allocated in: the "
                 f"allocation sits in a {_region_name(home)} that has already "
-                f"closed by the time {op.name} reads it, so it does not reach "
+                f"closed by the time {op.name} uses it, so it does not reach "
                 "that far. Allocate it in the scope where it is read -- above "
                 "the loop or the ops.branch rather than inside one."
             )

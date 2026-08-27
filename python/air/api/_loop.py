@@ -96,8 +96,15 @@ def enter_region():
     _BRANCH_DEPTH += 1
 
 
-def exit_region(aborted, what="air.sequential"):
-    """Close it, recording ``what`` if its body did not run to the end."""
+def exit_region(aborted, what):
+    """Close it, recording ``what`` if its body did not run to the end.
+
+    ``what`` is required rather than defaulted. The two constructs are reported
+    differently on purpose -- a loop left early is fixed by restructuring its
+    bounds, a truncated branch arm is not a loop problem at all -- so a caller
+    that forgot to say which one it was would silently mislabel the diagnostic,
+    which is the failure this pair was split up to prevent.
+    """
     global _DEPTH, _BRANCH_DEPTH
     _DEPTH -= 1
     _BRANCH_DEPTH -= 1
