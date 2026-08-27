@@ -67,6 +67,7 @@ def build_module(
     causal=False,
     num_heads_per_unroll=2,
     fused_qkv=False,
+    n_images=1,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -83,6 +84,15 @@ def build_module(
         num_kv_heads: Number of key/value heads for grouped-query attention
             (GQA). If None, defaults to num_heads (standard MHA).
         causal: Whether to enable causal (autoregressive) masking.
+        n_images: independent self-attention problems stacked along ROWS of the
+            same L3 buffers, riding a third launch axis instead of a launch
+            each (a launch costs ~776 us of control-stream replay on NPU2, an
+            iteration ~74 us). NOTE: the caller must pass one
+            `runtime_loop_tiling_sizes` entry PER LAUNCH DIMENSION -- [1, 1, 1]
+            here, not [1, 1]. With too few, the extra axis survives as an
+            scf.for in the runtime sequence and mlir-aie cannot materialize its
+            induction variable ("Referenced value is not defined by an
+            operation").
         num_heads_per_unroll: Heads processed per segment instance (default: 2).
             Acts as the physical-column multiplier — physical columns =
             num_heads_per_unroll * num_q_tiles (must be <= 8 on NPU2). Requires
@@ -186,7 +196,7 @@ def build_module(
         q_col_base = 0
         k_col_base = num_heads * dk
         v_col_base = k_col_base + num_kv_heads * dk
-        q_l3_t = k_l3_t = v_l3_t = MemRefType.get([lq, qkv_cols], bf16)
+        q_l3_t = k_l3_t = v_l3_t = MemRefType.get([n_images * lq, qkv_cols], bf16)
         emb_dim_q = emb_dim_k = emb_dim_v = qkv_cols
     else:
         q_col_base = k_col_base = v_col_base = 0
@@ -196,7 +206,7 @@ def build_module(
         emb_dim_q = num_heads * dk
         emb_dim_k = num_kv_heads * dk
         emb_dim_v = num_kv_heads * dv
-    gp_l3_t = MemRefType.get([lq, num_heads * dv], bf16)
+    gp_l3_t = MemRefType.get([n_images * lq, num_heads * dv], bf16)
 
     # External function declarations
     def external_func(name, inputs, outputs=None, link_with=None, visibility="private"):
@@ -302,6 +312,12 @@ def build_module(
         if dv_chunks > 1:
             c_dv_chunks = ConstantOp(index_type, dv_chunks)
             launch_sizes = [c_lq_iters, c_num_head_groups, c_dv_chunks]
+        elif n_images > 1:
+            launch_sizes = [
+                c_lq_iters,
+                c_num_head_groups,
+                ConstantOp(index_type, n_images),
+            ]
         else:
             launch_sizes = [c_lq_iters, c_num_head_groups]
 
@@ -310,11 +326,12 @@ def build_module(
             sizes=launch_sizes,
         )
         def launch_body(*launch_args):
-            n_iv = 3 if dv_chunks > 1 else 2
+            n_iv = 3 if (dv_chunks > 1 or n_images > 1) else 2
             ivs = launch_args[:n_iv]
             operand_args = launch_args[2 * n_iv :]
             lx, ly = ivs[0], ivs[1]
             lz = ivs[2] if dv_chunks > 1 else ConstantOp(index_type, 0)
+            img_iv = ivs[2] if n_images > 1 else lz
             if fused_qkv:
                 qkv, gp = operand_args
                 q = k = v = qkv
@@ -334,10 +351,45 @@ def build_module(
                     )
                 ],
             )
-            q_launch_row = affine_apply(affine_map_q_launch_row, [lx])
+            q_launch_row = (
+                affine_apply(
+                    AffineMap.get(
+                        0,
+                        2,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0), AffineConstantExpr.get(lqp)
+                            )
+                            + AffineExpr.get_mul(
+                                AffineSymbolExpr.get(1), AffineConstantExpr.get(lq)
+                            )
+                        ],
+                    ),
+                    [lx, img_iv],
+                )
+                if n_images > 1
+                else affine_apply(affine_map_q_launch_row, [lx])
+            )
 
             # Output launch row offset
             out_launch_row = q_launch_row  # same row offset
+
+            def _stage_row(stage):
+                if n_images == 1:
+                    return ConstantOp(index_type, stage * lk_per_stage)
+                return affine_apply(
+                    AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0), AffineConstantExpr.get(lk)
+                            )
+                            + AffineConstantExpr.get(stage * lk_per_stage)
+                        ],
+                    ),
+                    [img_iv],
+                )
 
             # Compute head base from head group index (ly)
             # head_base = ly * num_heads_per_unroll
@@ -498,7 +550,7 @@ def build_module(
                 # K puts: SEQ-FIRST 2D memref [lk, num_kv_heads*dk]
                 # 2D offsets: [row=stage*lk_per_stage, col=head_k_off]
                 for stage in range(NS):
-                    k_stage_row = ConstantOp(index_type, stage * lk_per_stage)
+                    k_stage_row = _stage_row(stage)
                     ChannelPut(
                         f"QKIn_{stage}",
                         k,
@@ -511,7 +563,7 @@ def build_module(
                 # V puts: SEQ-FIRST 2D memref [lk, num_kv_heads*dv]
                 # 2D offsets: [row=stage*lk_per_stage, col=head_v_off]
                 for stage in range(NS):
-                    v_stage_row = ConstantOp(index_type, stage * lk_per_stage)
+                    v_stage_row = _stage_row(stage)
                     ChannelPut(
                         f"VIn_{stage}",
                         v,

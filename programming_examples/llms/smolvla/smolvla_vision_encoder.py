@@ -91,14 +91,23 @@ def _gelu_backend():
     }
 
 
-_ATTN_BACKEND_KWARGS = {
-    "verbose": False,
-    "omit_while_true_loop": False,
-    "omit_pingpong": "all",
-    "runtime_loop_tiling_sizes": [1, 1],
-    "output_format": "elf",
-    "instance_name": "attention_bf16",
-}
+def _attn_backend(n_images=1):
+    """FlashAttention ELF kwargs. `runtime_loop_tiling_sizes` needs ONE ENTRY
+    PER LAUNCH DIMENSION: batching images adds a third axis, and with only two
+    entries that axis survives as an scf.for in the runtime sequence, which
+    mlir-aie cannot materialize ("Referenced value is not defined by an
+    operation")."""
+    return {
+        "verbose": False,
+        "omit_while_true_loop": False,
+        "omit_pingpong": "all",
+        "runtime_loop_tiling_sizes": [1, 1, 1] if n_images > 1 else [1, 1],
+        "output_format": "elf",
+        "instance_name": "attention_bf16",
+    }
+
+
+_ATTN_BACKEND_KWARGS = _attn_backend()
 
 
 # --- A3-6b fused-ELF backends (Lever 2 + Lever 3) ---
@@ -182,7 +191,7 @@ _PIXEL_SHUFFLE_FACTOR = 4
 # ---------------------------------------------------------------------------
 
 
-def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False):
+def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_images=1):
     """Compile the non-causal FlashAttention ELF (shared by fused + unfused)."""
     from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as build_attn,
@@ -214,11 +223,14 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False):
         causal=False,
         num_heads_per_unroll=num_heads_per_unroll,
         fused_qkv=fused_qkv,
+        n_images=n_images,
     )
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
     print(f"    (FA microkernel BFP16={fa_bfp16})")
     cache.compile_and_cache(
-        "flash_attn", attn_mod, {**_ATTN_BACKEND_KWARGS, "verbose": cache.verbose}
+        "flash_attn",
+        attn_mod,
+        {**_attn_backend(n_images), "verbose": cache.verbose},
     )
 
 
@@ -360,7 +372,9 @@ def _compile_fused_kernels(
 
     # Fused path only: vit_ln_qkv emits Q|K|V column-concatenated, so FA reads
     # them out of that one buffer instead of three copied-apart ones.
-    _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=True)
+    _compile_flash_attn(
+        cache, config, seq_len, fa_bfp16, fused_qkv=True, n_images=n_images
+    )
 
     if with_connector:
         _compile_connector_gemm(cache)
@@ -439,6 +453,8 @@ def compile_all_kernels(
             n_images=n_images,
         )
         return
+
+    assert n_images == 1, "the unfused path encodes one image at a time"
 
     # --- 1. Projection / MLP GEMMs (one ELF per distinct shape) ---
     for name, s in _GEMM_SHAPES.items():
@@ -525,8 +541,11 @@ def compile_all_kernels(
 
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
     print(f"    (FA microkernel BFP16={fa_bfp16})")
+    # The unfused path builds a per-image FA, so its launch stays 2D.
     cache.compile_and_cache(
-        "flash_attn", attn_mod, {**_ATTN_BACKEND_KWARGS, "verbose": cache.verbose}
+        "flash_attn",
+        attn_mod,
+        {**_attn_backend(), "verbose": cache.verbose},
     )
 
     # --- 5. Connector projection GEMM (A3-5 Step 4) ---
@@ -627,24 +646,29 @@ def _run_connector(cache, post_ln, connector_w, config, bo_key="gemm_connector")
     return np.asarray(out, dtype=np.float32)
 
 
-def _run_flash_attention_fused(cache, qkv, config, seq_len, bo_key="flash_attn"):
+def _run_flash_attention_fused(
+    cache, qkv, config, seq_len, bo_key="flash_attn", n_images=1
+):
     """Non-causal MHA on NPU via FlashAttention, reading Q|K|V as column blocks
-    of ONE (seq, 3*emb) buffer -- vit_ln_qkv's fused output, uploaded as a single
-    BO. Head h of Q occupies columns [h*hd:(h+1)*hd], K and V the same within
-    their block. Returns (seq, emb)."""
+    of ONE (n_images*seq, 3*emb) buffer -- vit_ln_qkv's fused output, uploaded
+    as a single BO. Head h of Q occupies columns [h*hd:(h+1)*hd], K and V the
+    same within their block. `seq_len` is PER IMAGE; the images occupy
+    successive row blocks and are attended independently. Returns
+    (n_images*seq, emb)."""
     n_heads = config.n_heads
     head_dim = config.head_dim
-    out = np.zeros((seq_len, n_heads * head_dim), dtype=bfloat16)
+    rows = n_images * seq_len
+    out = np.zeros((rows, n_heads * head_dim), dtype=bfloat16)
     res = cache.load_and_run(
         "flash_attn",
-        _ATTN_BACKEND_KWARGS,
+        _attn_backend(n_images),
         np.ascontiguousarray(qkv),
         out,
         output_indices=[1],
         intermediate_indices={1},  # out is kernel-overwritten; skip host upload
         bo_key=bo_key,
     )
-    return res[1].reshape(seq_len, n_heads * head_dim)
+    return res[1].reshape(rows, n_heads * head_dim)
 
 
 def _run_flash_attention(cache, q, k, v, config, seq_len):
@@ -774,20 +798,12 @@ def run_vit_block_fused(
             config.attn_scale,
         ).astype(bfloat16)
     else:
-        # Attention is per-image (no cross-image attention), so it stays at the
-        # per-image sequence length while the GEMMs run batched. Row blocks of a
-        # C-contiguous (n_images*per_img, 3*emb) buffer are themselves
-        # contiguous, so each image's slice feeds FA with no repacking.
-        per_img = reg_len
-        attn = np.empty((seq_len, emb), dtype=bfloat16)
-        for i in range(n_images):
-            attn[i * per_img : (i + 1) * per_img] = _run_flash_attention_fused(
-                cache,
-                qkv[i * per_img : (i + 1) * per_img],
-                config,
-                per_img,
-                bo_key=f"flash_attn_{i}",
-            )
+        # Attention is per-image (no cross-image attention), but the images
+        # ride a third launch axis inside ONE dispatch rather than a dispatch
+        # each -- FA's per-launch cost is ~776 us, its per-iteration cost ~74.
+        attn = _run_flash_attention_fused(
+            cache, qkv, config, reg_len, n_images=n_images
+        )
 
     # ---- 3. vit_o_ffn: O + residual + LN2 + fc1 + GELU + fc2 + residual ----
     # O/fc1/fc2 each carry their bias on the weight stream, so the three
