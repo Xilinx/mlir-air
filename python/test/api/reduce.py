@@ -320,3 +320,34 @@ def argmax_carries_the_index_in_iter_args():
 @run
 def argmax_over_part_of_an_axis():
     print(build_argmax(cols=16, reduced=10))
+
+
+# CHECK-LABEL: TEST: argmax_compares_in_the_cast_type
+# `argmax(cast(x, f32))` compares in f32 even though its leaves are bf16. The
+# type the comparison happens in is the operand's *result* type, not its
+# leaves': reading it off a leaf would evaluate the walk in the wrong region and
+# compare at the wrong width, silently.
+# CHECK: arith.extf
+# CHECK: arith.cmpf ogt, %{{.*}}, %{{.*}} : f32
+@run
+def argmax_compares_in_the_cast_type():
+    from air.api.types import f32, i32
+
+    A = air.tensor([32, 16], bf16)
+    OUT = air.tensor([32], i32)
+
+    with air.launch(name="amc") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([32, 16], bf16, scope=h.private())
+                    o = air.alloc([32], i32, scope=h.private())
+                    air.ops.load(a, A[0:32, :])
+                    o[:] = air.ops.argmax(air.ops.cast(a[:], f32))
+                    air.ops.store(o, OUT[0:32])
+
+    print(launch.mlir())

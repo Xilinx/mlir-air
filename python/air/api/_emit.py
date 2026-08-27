@@ -657,7 +657,16 @@ def _emit_argmax(dst, expr):
             f"{[tuple(leaf.shape) for leaf in leaves]} and do not broadcast "
             f"together"
         )
-    value_dtype = leaves[0].dtype
+    # The type the comparison happens in, which is the operand's *result* type
+    # and not its leaves': `argmax(ops.cast(row[:], f32))` compares in f32 while
+    # its leaves are bf16, and taking the leaf type would both evaluate the
+    # walk in the wrong region and compare at the wrong width.
+    value_dtype = operand.element_dtype() or leaves[0].dtype
+    # Checked here for the same reason the other reductions check their
+    # destination: without it an f16 or unsigned operand reaches arith.cmpf /
+    # arith.cmpi, which have no form for either.
+    require_computable(value_dtype, "the operand of air.api.ops.argmax")
+    require_signless(value_dtype, "the operand of air.api.ops.argmax")
     _check_reduce_regions(operand, value_dtype)
 
     kept = tuple(list(src_shape[:-1]) + [1])
