@@ -965,6 +965,25 @@ private:
       return 0;
     }
 
+    // Check a named entry exists before looking at the body at all. An op that
+    // names one has asked for something specific whether or not its body holds
+    // any priced arithmetic -- a copy or a fill has none, and gating this on
+    // the op count would let those fall back to the default rate in silence,
+    // which is the case the attribute exists to rule out.
+    auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
+    auto key = kernelKeyForOp(op);
+    if (namesItsKernel(op)) {
+      // A cycles expression for this datatype has already been taken above, so
+      // reaching here means the entry must price it some other way.
+      if (!d.kernels.count(key))
+        op->emitOpError("names kernel '")
+            << key << "', which the model does not define";
+      else if (!d.kernels[key]->datatypes.count(op_datatype))
+        op->emitOpError("names kernel '")
+            << key << "', which the model has, but not for datatype '"
+            << op_datatype << "'";
+    }
+
     uint64_t compute_op_count = 0;
     for (auto &p : opCounts.map) {
       auto name = std::get<0>(p);
@@ -987,25 +1006,13 @@ private:
     }
 
     if (compute_op_count) {
-      auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
-      auto key = kernelKeyForOp(op);
       double ops_per_core_per_cycle = d.default_ops_per_core_per_cycle;
       double efficiency = 1.0f;
-      if (d.kernels.count(key)) {
-        if (d.kernels[key]->datatypes.count(op_datatype)) {
-          ops_per_core_per_cycle =
-              d.kernels[key]->datatypes[op_datatype].second;
-          efficiency = d.kernels[key]->datatypes[op_datatype].first;
-        } else if (namesItsKernel(op))
-          op->emitOpError("names kernel '")
-              << key << "', which the model has, but not for datatype '"
-              << op_datatype << "'";
-      } else if (namesItsKernel(op))
-        // Falling back to the default rate here would price the op at a number
-        // the model never stated, which is the failure this attribute exists to
-        // avoid. An op that named an entry meant it.
-        op->emitOpError("names kernel '")
-            << key << "', which the model does not define";
+      if (d.kernels.count(key) &&
+          d.kernels[key]->datatypes.count(op_datatype)) {
+        ops_per_core_per_cycle = d.kernels[key]->datatypes[op_datatype].second;
+        efficiency = d.kernels[key]->datatypes[op_datatype].first;
+      }
 
       double ops_per_cycle =
           d.cores_per_kernel_instance * ops_per_core_per_cycle * efficiency;
