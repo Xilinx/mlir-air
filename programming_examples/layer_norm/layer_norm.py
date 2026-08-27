@@ -154,6 +154,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--vector-size", type=int, default=16)
     parser.add_argument(
+        "--target",
+        type=str,
+        default="npu2",
+        help="NPU generation to build for (npu2; the epilogue is AIE2P bf16)",
+    )
+    parser.add_argument(
         "--herd-x",
         type=int,
         default=1,
@@ -187,7 +193,9 @@ if __name__ == "__main__":
     herd_x = args.herd_x
     print(f"LayerNorm (affine): M={M}, N={N}, herd=[{herd_x},1]")
 
-    mlir_module = build_module(M, N, bfloat16, args.vector_size, herd_x=herd_x)
+    mlir_module = build_module(
+        M, N, bfloat16, args.vector_size, herd_x=herd_x, target=args.target
+    )
     if args.print_module_only:
         print(mlir_module)
         exit(0)
