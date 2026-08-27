@@ -262,7 +262,9 @@ def _gemm_tiles(spec):
 # ===========================================================================
 
 
-def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_n=4):
+def build_vit_ln_qkv_module(
+    seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_n=4, registry_seq_len=None
+):
     """Fused LN1 + Q/K/V GEMM + per-channel Q/K/V bias-add for one SigLIP block.
 
     Func args (MHA, no GQA: q_dim == kv_dim == emb_dim):
@@ -284,7 +286,11 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
     FlashAttention reads Q/K/V straight out of the concatenated buffer
     (`fused_qkv=True`), so nothing is copied apart to feed it.
     """
-    spec = dict(gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high"))
+    # The registry is keyed by MEASURED shapes, and GEMM tiles do not depend on
+    # M, so a batched (multi-image) build looks the tiles up at the per-image
+    # sequence length it was actually swept at.
+    reg_len = registry_seq_len or seq_len
+    spec = dict(gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high"))
     assert spec["method"] == "drain", spec["method"]  # vision qkvo is drain
     # Force a tile_n-keyed suffix (`_m32_n96`) so this ELF links the SAME
     # correctly-compiled object as vit_o_ffn's O GEMM (both tile_n=96 drain),
@@ -353,7 +359,9 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
 # ===========================================================================
 
 
-def build_vit_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4):
+def build_vit_o_ffn_module(
+    seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4, registry_seq_len=None
+):
     """Fused O-proj + residual + LN2 + FFN(fc1/GELU/fc2) + residual for one block.
 
     Func args:
@@ -374,9 +382,10 @@ def build_vit_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4):
     its bias on the weight stream, and fc1 additionally applies GELU, all inside
     the drain herd's epilogue cast.
     """
-    o_spec = dict(gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high"))
-    g_spec = dict(gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high"))
-    d_spec = dict(gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high"))
+    reg_len = registry_seq_len or seq_len  # see build_vit_ln_qkv_module
+    o_spec = dict(gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high"))
+    g_spec = dict(gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high"))
+    d_spec = dict(gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high"))
     # O (tn96) + fc1 (tn128) + fc2 (tn96), all drain → disambiguate by tile_n.
     o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
     for s in (o_spec, g_spec, d_spec):

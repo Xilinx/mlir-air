@@ -268,7 +268,9 @@ def _compile_connector_gemm(cache):
     )
 
 
-def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True):
+def _compile_fused_kernels(
+    cache, config, seq_len, fa_bfp16, with_connector=True, n_images=1
+):
     """A3-6b Lever 2+3: compile the two fused ViT multi-launch ELFs + FA.
 
     vit_ln_qkv  : LN1 + one fused [Q|K|V] GEMM            (2 launches, 1 ELF)
@@ -299,6 +301,10 @@ def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True
     n_heads = config.n_heads
     head_dim = config.head_dim
 
+    # The two fused ELFs run all n_images images stacked along rows; attention,
+    # post_layernorm and the connector stay at the per-image length.
+    batch_len = seq_len * n_images
+
     # Compile every distinct tile_n-keyed drain mm.o the two ELFs link.
     o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
@@ -322,17 +328,21 @@ def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True
             out_name=s["obj"],
         )
 
-    print("  Compiling vit_ln_qkv (2-launch fused ELF)...")
+    print(f"  Compiling vit_ln_qkv (2-launch fused ELF, M={batch_len})...")
     cache.compile_and_cache(
         "vit_ln_qkv",
-        build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim),
+        build_vit_ln_qkv_module(
+            batch_len, emb_dim, n_heads, head_dim, registry_seq_len=seq_len
+        ),
         {"verbose": cache.verbose, **_vit_ln_qkv_backend()},
     )
 
-    print("  Compiling vit_o_ffn (6-launch fused ELF)...")
+    print(f"  Compiling vit_o_ffn (6-launch fused ELF, M={batch_len})...")
     cache.compile_and_cache(
         "vit_o_ffn",
-        build_vit_o_ffn_module(seq_len, emb_dim, hidden_dim),
+        build_vit_o_ffn_module(
+            batch_len, emb_dim, hidden_dim, registry_seq_len=seq_len
+        ),
         {"verbose": cache.verbose, **_vit_o_ffn_backend()},
     )
 
@@ -363,7 +373,13 @@ def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True
 
 
 def compile_all_kernels(
-    cache, config, seq_len=1024, fa_bfp16=True, fused=True, with_connector=True
+    cache,
+    config,
+    seq_len=1024,
+    fa_bfp16=True,
+    fused=True,
+    with_connector=True,
+    n_images=1,
 ):
     """Pre-compile every unique vision-encoder kernel config to the cache.
 
@@ -415,7 +431,12 @@ def compile_all_kernels(
 
     if fused:
         _compile_fused_kernels(
-            cache, config, seq_len, fa_bfp16, with_connector=with_connector
+            cache,
+            config,
+            seq_len,
+            fa_bfp16,
+            with_connector=with_connector,
+            n_images=n_images,
         )
         return
 
@@ -606,7 +627,7 @@ def _run_connector(cache, post_ln, connector_w, config, bo_key="gemm_connector")
     return np.asarray(out, dtype=np.float32)
 
 
-def _run_flash_attention_fused(cache, qkv, config, seq_len):
+def _run_flash_attention_fused(cache, qkv, config, seq_len, bo_key="flash_attn"):
     """Non-causal MHA on NPU via FlashAttention, reading Q|K|V as column blocks
     of ONE (seq, 3*emb) buffer -- vit_ln_qkv's fused output, uploaded as a single
     BO. Head h of Q occupies columns [h*hd:(h+1)*hd], K and V the same within
@@ -617,11 +638,11 @@ def _run_flash_attention_fused(cache, qkv, config, seq_len):
     res = cache.load_and_run(
         "flash_attn",
         _ATTN_BACKEND_KWARGS,
-        qkv,
+        np.ascontiguousarray(qkv),
         out,
         output_indices=[1],
         intermediate_indices={1},  # out is kernel-overwritten; skip host upload
-        bo_key="flash_attn",
+        bo_key=bo_key,
     )
     return res[1].reshape(seq_len, n_heads * head_dim)
 
@@ -655,7 +676,14 @@ def _run_flash_attention(cache, q, k, v, config, seq_len):
 
 
 def run_vit_block_fused(
-    x_bf16, lw, config, cache, layer_idx=0, verbose=False, attn_mode="flash"
+    x_bf16,
+    lw,
+    config,
+    cache,
+    layer_idx=0,
+    verbose=False,
+    attn_mode="flash",
+    n_images=1,
 ):
     """Execute one SigLIP encoder layer via the two fused ELFs + FA (A3-6b).
 
@@ -669,6 +697,8 @@ def run_vit_block_fused(
     attn_mode: "flash" (default) = FlashAttention ELF. "cpu" = host MHA (diag).
     """
     seq_len = x_bf16.shape[0]
+    assert seq_len % n_images == 0, (seq_len, n_images)
+    reg_len = seq_len // n_images
     emb = config.emb_dim
     hidden = config.hidden_dim
     n_heads = config.n_heads
@@ -695,7 +725,9 @@ def run_vit_block_fused(
             repack_gemm_b_with_bias,
         )
 
-        _tk1 = gemm_registry_config(seq_len, emb, emb, "bf16", "high")["tile_k_l1"]
+        # Registry lookups use the PER-IMAGE length (the measured shape); tiles
+        # do not depend on M, so they carry over to the batched build.
+        _tk1 = gemm_registry_config(reg_len, emb, emb, "bf16", "high")["tile_k_l1"]
 
         def _wb(w, b):
             return repack_gemm_b_with_bias(
@@ -742,7 +774,20 @@ def run_vit_block_fused(
             config.attn_scale,
         ).astype(bfloat16)
     else:
-        attn = _run_flash_attention_fused(cache, qkv, config, seq_len)
+        # Attention is per-image (no cross-image attention), so it stays at the
+        # per-image sequence length while the GEMMs run batched. Row blocks of a
+        # C-contiguous (n_images*per_img, 3*emb) buffer are themselves
+        # contiguous, so each image's slice feeds FA with no repacking.
+        per_img = reg_len
+        attn = np.empty((seq_len, emb), dtype=bfloat16)
+        for i in range(n_images):
+            attn[i * per_img : (i + 1) * per_img] = _run_flash_attention_fused(
+                cache,
+                qkv[i * per_img : (i + 1) * per_img],
+                config,
+                per_img,
+                bo_key=f"flash_attn_{i}",
+            )
 
     # ---- 3. vit_o_ffn: O + residual + LN2 + fc1 + GELU + fc2 + residual ----
     # O/fc1/fc2 each carry their bias on the weight stream, so the three
@@ -757,9 +802,9 @@ def run_vit_block_fused(
 
         _o, _g, _d = disambiguate_by_tile_n(
             [
-                dict(gemm_registry_config(seq_len, emb, emb, "bf16", "high")),
-                dict(gemm_registry_config(seq_len, emb, hidden, "bf16", "high")),
-                dict(gemm_registry_config(seq_len, hidden, emb, "bf16", "high")),
+                dict(gemm_registry_config(reg_len, emb, emb, "bf16", "high")),
+                dict(gemm_registry_config(reg_len, emb, hidden, "bf16", "high")),
+                dict(gemm_registry_config(reg_len, hidden, emb, "bf16", "high")),
             ]
         )
 
@@ -899,6 +944,7 @@ def run_vit_encoder(
     verbose=False,
     attn_mode="flash",
     fused=True,
+    n_images=1,
 ):
     """Run the full 12-layer SigLIP ViT encoder on NPU.
 
@@ -937,12 +983,18 @@ def run_vit_encoder(
         x = inp.astype(np.float32)
     x_bf16 = x.astype(bfloat16)
     seq_len, emb = x_bf16.shape
+    # n_images images stacked along rows. Everything except attention is
+    # row-independent, so batching them costs one launch's worth of
+    # control-stream replay instead of n_images'.
+    assert seq_len % n_images == 0, (seq_len, n_images)
+    per_img = seq_len // n_images
 
     _block = run_vit_block_fused if fused else run_vit_block
     per_layer = []
     for layer_idx, lw in enumerate(weights.layers):
         if verbose:
             print(f"\n--- ViT layer {layer_idx}/{len(weights.layers) - 1} ---")
+        kw = {"n_images": n_images} if fused else {}
         x_bf16 = _block(
             x_bf16,
             lw,
@@ -951,28 +1003,43 @@ def run_vit_encoder(
             layer_idx=layer_idx,
             verbose=verbose,
             attn_mode=attn_mode,
+            **kw,
         )
         if return_per_layer:
             per_layer.append(x_bf16)
 
-    # post_layernorm on NPU (affine LayerNorm, same ELF).
-    post_ln = _run_layer_norm(
-        cache,
-        x_bf16,
-        weights.post_ln_w,
-        weights.post_ln_b,
-        seq_len,
-        emb,
-        bo_key="post_ln",
-    ).astype(np.float32)
+    # post_layernorm and the connector run per image: the standalone
+    # `layer_norm` ELF and `gemm_connector` are compiled at per-image shapes
+    # (they are outside the hot 12-layer loop, so batching them buys little).
+    post_ln = np.empty((seq_len, emb), np.float32)
+    for i in range(n_images):
+        post_ln[i * per_img : (i + 1) * per_img] = _run_layer_norm(
+            cache,
+            x_bf16[i * per_img : (i + 1) * per_img],
+            weights.post_ln_w,
+            weights.post_ln_b,
+            per_img,
+            emb,
+            bo_key=f"post_ln_{i}",
+        )
 
     result = {"post_ln": post_ln}
     if return_per_layer:
         result["layer_hidden"] = per_layer
     if do_connector:
-        result["connector"] = _run_connector(
-            cache, post_ln, weights.connector_w, config
-        )
+        conn = [
+            _run_connector(
+                cache,
+                post_ln[i * per_img : (i + 1) * per_img],
+                weights.connector_w,
+                config,
+                bo_key=f"gemm_connector_{i}",
+            )
+            for i in range(n_images)
+        ]
+        # Single image keeps the historical (64, 960) shape; batched returns
+        # (n_images, 64, 960).
+        result["connector"] = conn[0] if n_images == 1 else np.stack(conn)
     return result
 
 
