@@ -563,19 +563,6 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: alloc_inside_sequential
-# The herd frees its buffers after the body, which is outside the loop, so the
-# dealloc would not be dominated by its alloc.
-# CHECK: NotImplementedError: air.alloc inside an air.sequential or ops.branch body
-@expect(NotImplementedError, "alloc_inside_sequential")
-def _():
-    def body(h, tx, ty, A, B, C):
-        for _ in air.sequential(0, 64, 32):
-            air.alloc([32, 32], bf16, scope=h.private())
-
-    _trace(body)
-
-
 # CHECK-LABEL: TEST: break_out_of_sequential
 # An air.sequential body is traced once and stands for every trip, so breaking out
 # truncates all of them rather than shortening the loop.
@@ -587,6 +574,27 @@ def _():
         for _ in air.sequential(0, 64, 32):
             buf[:] = buf[:] + 1.0
             break
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: buffer_read_after_its_loop_closed
+# A buffer allocated in a loop does not reach past it. Placement walks each use
+# out to the block the alloc lives in, and a use that is not under that block
+# has no such ancestor -- which used to walk off the top of the IR and abort the
+# process inside MLIR rather than report anything. Both real instances were this
+# shape: an L2 staging buffer handed to a later herd, and an L1 buffer allocated
+# in one arm of an ops.branch and read after it.
+# CHECK: RuntimeError: a buffer is used outside the region it was allocated in
+@expect(RuntimeError, "buffer_read_after_its_loop_closed")
+def _():
+    def body(h, tx, ty, A, B, C):
+        escaped = None
+        for _ in air.sequential(0, 64, 32):
+            escaped = air.alloc([32, 32], bf16, scope=h.private())
+            escaped[:] = 1.0
+        # The loop has closed; the allocation does not reach this far.
+        escaped[:] = escaped[:] + 1.0
 
     _trace(body)
 
@@ -2098,10 +2106,11 @@ def _():
 
 
 # CHECK-LABEL: TEST: alloc_inside_a_branch
-# The herd frees its buffers after the body, outside the region, so the dealloc
-# would not be dominated by the alloc. It is also the wrong instinct: L1 is
-# charged per core whether or not that core's branch runs.
-# CHECK: NotImplementedError: air.alloc inside an air.sequential or ops.branch body
+# The buffer cannot outlive the arm, so a use after the branch would not be
+# dominated by the alloc. It is also the wrong instinct: L1 is charged per core
+# whether or not that core's branch runs. A loop body, by contrast, is allowed:
+# its dealloc lands inside the loop beside the alloc.
+# CHECK: NotImplementedError: air.alloc inside an ops.branch body
 @expect(NotImplementedError, "alloc_inside_a_branch")
 def _():
     def body(h, tx, ty, A, B, C):
