@@ -26,7 +26,7 @@
 //
 // RUN: mkdir -p test_peano_prefill_sweep
 // RUN: cd test_peano_prefill_sweep
-// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen25_7b_q4nx --makefile %S/Makefile --lengths 512,1024,2048 --peano-dir %PEANO_INSTALL_DIR --out qwen25_7b_q4nx.prefill_sweep.json
+// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen25_7b_q4nx --makefile %S/Makefile --lengths 512,1024,2048,4096 --peano-dir %PEANO_INSTALL_DIR --out qwen25_7b_q4nx.prefill_sweep.json
 // RUN: FileCheck %s < qwen25_7b_q4nx.prefill_sweep.json
 // CHECK: "model": "qwen25_7b_q4nx"
 // CHECK: "axis": "prefill_len"

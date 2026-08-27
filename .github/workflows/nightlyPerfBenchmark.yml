@@ -38,7 +38,7 @@ on:
           Comma-separated lit suites to run: verify, profile, sweep,
           prefill-sweep. Defaults to all four, which is what the schedule runs.
           Narrow it to iterate on one suite without paying for the others -- a full
-          run is ~6h, sweep alone well under an hour, prefill-sweep ~1.7h. A
+          run is ~7h, sweep alone well under an hour, prefill-sweep ~2.7h. A
           narrowed run does NOT publish (see below), because its perf.json is
           partial by construction.
         default: verify,profile,sweep,prefill-sweep
@@ -99,7 +99,7 @@ jobs:
     # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
     # dedicated runner indefinitely. Covers a full build + all models (each
     # model is also individually bounded by `timeout` in run_models.sh).
-    timeout-minutes: 420
+    timeout-minutes: 480
 
     steps:
 
@@ -397,8 +397,15 @@ jobs:
           # what TTFT scales with. Deliberately not the prompt length: the prompt is
           # padded to the built length, so at a fixed engine TTFT is flat (measured
           # on llama32_1b_q4nx: 959 ms at 128 tokens vs 983 ms at 2048). Each point
-          # is a fresh build, ~2 min for the small models and ~8 min for the 7B/8B,
-          # so the whole suite is ~1.7h -- the reason timeout-minutes went to 420.
+          # is a fresh build, ~2 min for the small models and ~8 min for the 7B/8B.
+          #
+          # 4096 is the dearest column: a build scales with the padded length, so
+          # those eight points cost roughly what 512+1024+2048 cost together, and
+          # the suite goes ~1.7h -> ~2.7h. That is what took timeout-minutes to 480.
+          # It needs the M=4096 GEMM registry rows to configure an engine at that
+          # length, and the shim-BD / FlashAttention work to compile one; without
+          # either, every model reports no_registry_shape or bd_exhaustion at 4096
+          # and the column is a wall of red rather than a missing column.
           if want prefill-sweep; then
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
