@@ -42,6 +42,7 @@ from air.dialects.vector import (
     transfer_write,
 )
 
+from ._index import Leaf
 from .types import require_computable, require_signless
 
 __all__ = ["emit_elementwise"]
@@ -285,12 +286,17 @@ def _materialize_index(start):
     constant -- is passed straight through. ``IndexExpr.materialize`` would wrap
     it in an identity ``affine.apply``, which is correct but is one op per index
     per trip; a six-deep nest indexing three buffers is where that shows.
+
+    The shortcut tests for a :class:`Leaf` specifically, not for a single term.
+    A :class:`DerivedLeaf` -- ``x // k`` or ``x % k``, which is a leaf because
+    neither operation is linear -- has no SSA value of its own to pass through;
+    it exists precisely to be materialised, and goes the long way.
     """
     if isinstance(start, int):
         return _index_constant(start)
     if len(start.terms) == 1 and start.const == 0:
         ((leaf, coefficient),) = start.terms.items()
-        if coefficient == 1:
+        if coefficient == 1 and isinstance(leaf, Leaf):
             return leaf.value
     value = start.materialize()
     return _index_constant(value) if isinstance(value, int) else value
@@ -313,11 +319,16 @@ def _offset_key(offset):
     ``IndexExpr`` object instead would read ``gu[i, :]`` twice for one region,
     and keying on ``as_const()`` would collapse ``gu[i, :]`` and ``gu[j, :]``
     onto a shared ``None``, which is the dangerous direction.
+
+    The terms are taken as a ``frozenset`` of the mapping's own items, which
+    leaves each leaf to say what makes it itself: a :class:`Leaf` is one
+    coordinate and compares by identity, while a :class:`DerivedLeaf` compares
+    structurally, so two separately built copies of ``(i + 1) % 4`` are one
+    term. Substituting ``id()`` for that would split them and read twice.
     """
     if isinstance(offset, int):
         return ("k", offset)
-    terms = tuple(sorted((id(leaf), c) for leaf, c in offset.terms.items()))
-    return (terms, offset.const)
+    return (frozenset(offset.terms.items()), offset.const)
 
 
 def _read_key(leaf):

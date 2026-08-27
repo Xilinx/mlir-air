@@ -125,3 +125,31 @@ def one_row_named_twice_is_one_read():
             dst[i, 0, 0] = src[i, 0, 0] * 2 + src[i, 0, 0]
 
     build(body, (8, 8, 4), i32, vector=0)
+
+
+# CHECK-LABEL: TEST: a_wrapped_offset_is_one_leaf_and_one_read
+# `i % 4` is affine but not linear, so it is carried as a leaf of its own rather
+# than in the coefficient map. Two things follow, and neither is automatic.
+#
+# It has no SSA value to pass through -- it exists to be materialised -- so the
+# shortcut that hands a bare induction variable straight to the load has to test
+# for a real coordinate and not merely for "one term", or it reaches for an
+# attribute that is not there.
+#
+# And it compares *structurally*, not by identity: the two spellings below build
+# separate objects for the same expression. The read cache keys on the terms
+# themselves so that each leaf decides what makes it itself, which is what keeps
+# this one load and one affine.apply rather than two of each.
+# CHECK: affine.apply
+# CHECK-NOT: affine.apply
+# CHECK: %[[V:.*]] = memref.load
+# CHECK-NOT: memref.load
+# CHECK: arith.muli %[[V]]
+# CHECK: arith.addi %{{.*}}, %[[V]]
+@run
+def a_wrapped_offset_is_one_leaf_and_one_read():
+    def body(h, src, dst):
+        for i in air.sequential(4):
+            dst[i, 0, 0] = src[(i + 1) % 4, 0, 0] * 2 + src[(i + 1) % 4, 0, 0]
+
+    build(body, (8, 8, 4), i32, vector=0)

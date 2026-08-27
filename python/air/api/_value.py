@@ -307,8 +307,15 @@ class _StridedView:
         combined = [
             coerce_index(base + off) for base, off in zip(self.offsets, offsets)
         ]
-        # An axis this region had already dropped stays dropped: gu[0][2:6] is
-        # rank 1, as it is in numpy.
+        # An axis this region had already dropped stays dropped, whatever the
+        # second subscript spells it as: gu[0, :][0:1, 2:6] is rank 1, not
+        # rank 2, because the 0 in the first subscript already took that axis.
+        #
+        # This is where the analogy with numpy runs out, and deliberately so.
+        # numpy would have made gu[0, :] rank 1 outright, so there would be no
+        # second axis left to subscript; here a region keeps every axis in
+        # `sizes` -- a transfer is built from those -- so it is subscripted at
+        # its full rank and drops accumulate instead.
         merged = [was or now for was, now in zip(self.dropped, dropped)]
         return self._respan(combined, sizes, list(self.strides), sizes, merged)
 
