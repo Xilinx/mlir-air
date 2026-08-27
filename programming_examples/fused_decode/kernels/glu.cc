@@ -8,6 +8,10 @@
 
 template <int L>
 void pseduo_glu(bf16 *y, const bf16 *x) {
+  // Set here rather than in each extern "C" entry point: all twelve of them
+  // bottom out in this function, so one call covers every slice variant and a
+  // new one cannot be added without it.
+  aie_round_nearest_even();
   bf16 *gate_ptr = const_cast<bf16 *>(x) + (L / 2);
   bf16 *hid_ptr = const_cast<bf16 *>(x);
   bf16 *y_ptr = y;

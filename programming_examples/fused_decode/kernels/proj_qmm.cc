@@ -21,6 +21,7 @@ extern "C" {
 
 // Zero the row-block accumulator (call once before the col-block loop).
 void proj_qmm_zero(float *__restrict y_acc, int _arm) {
+  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
   zero_vectorized<float, Q4NX_ROW_BLOCK_SIZE>(y_acc);
@@ -32,6 +33,7 @@ void proj_qmm_zero(float *__restrict y_acc, int _arm) {
 // prove the deadlock is independent of the GEMV compute.
 void proj_qmm_pass256(bf16 *__restrict x_blk, bf16 *__restrict w,
                       float *__restrict y_acc) {
+  aie_round_nearest_even();
   volatile bf16 wkeep = w[0];
   (void)wkeep;
   for (int i = 0; i < Q4NX_ROW_BLOCK_SIZE; i++)
@@ -49,6 +51,7 @@ void proj_qmm_pass256(bf16 *__restrict x_blk, bf16 *__restrict w,
 //   accumulator (32), read-modify-written
 void proj_qmm_acc(bf16 *__restrict x_full, int j, bf16 *__restrict w,
                   float *__restrict y_acc) {
+  aie_round_nearest_even();
   constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
   constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
   bf16 *x = x_full + j * k;
@@ -80,6 +83,7 @@ void proj_qmm_acc(bf16 *__restrict x_full, int j, bf16 *__restrict w,
 //   y_acc : caller-provided float accumulator (32), read-modify-written
 void proj_qmm_acc256(bf16 *__restrict x_blk, bf16 *__restrict w,
                      float *__restrict y_acc) {
+  aie_round_nearest_even();
   constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
   constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
 #ifndef Q4_0
@@ -132,6 +136,7 @@ void proj_qmm_acc256(bf16 *__restrict x_blk, bf16 *__restrict w,
 void proj_qmm_acc256_c(bf16 *__restrict x_blk, bf16 *__restrict w,
                        float *__restrict y_acc, bf16 *__restrict rc, int j,
                        int fill) {
+  aie_round_nearest_even();
   constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
   constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
 #ifndef Q4_0
@@ -170,6 +175,7 @@ void proj_qmm_acc256_c(bf16 *__restrict x_blk, bf16 *__restrict w,
 // compiler must emit, and it never dereferences rc. (Inline asm is not an
 // option here: the Peano AIE2P backend fails to translate it.)
 void proj_qmm_rc_arm(bf16 *__restrict rc, int _arm) {
+  aie_round_nearest_even();
   bf16 *volatile keep = rc;
   (void)keep;
   (void)_arm;
@@ -177,6 +183,7 @@ void proj_qmm_rc_arm(bf16 *__restrict rc, int _arm) {
 
 // Flush the accumulator to bf16 output (call once after the col-block loop).
 void proj_qmm_flush(float *__restrict y_acc, bf16 *__restrict y_out) {
+  aie_round_nearest_even();
   copy_float_to_bf16<Q4NX_ROW_BLOCK_SIZE>(y_out, y_acc);
 }
 
@@ -198,6 +205,7 @@ void proj_qmm_flush(float *__restrict y_acc, bf16 *__restrict y_out) {
 // gone.
 void proj_qmm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
                         int i) {
+  aie_round_nearest_even();
   copy_float_to_bf16<Q4NX_ROW_BLOCK_SIZE>(y_out + 16 + i * Q4NX_ROW_BLOCK_SIZE,
                                           y_acc);
 }
@@ -207,6 +215,7 @@ void proj_qmm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
 // shim=weights-only dataflow). Used by MERGE_CONST_X to isolate the egress
 // deadlock from the X-feed / attention-feedback path.
 void proj_qmm_fill_x(bf16 *__restrict x, int n) {
+  aie_round_nearest_even();
   bf16 c = bf16(0.0625f);
   for (int i = 0; i < n; i++)
     x[i] = c;
