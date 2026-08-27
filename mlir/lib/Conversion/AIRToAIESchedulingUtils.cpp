@@ -1357,8 +1357,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
 
   // Compute-tile DMA channel pin: a channel decl carrying an
   // `air.tile_dma_channel` IntegerAttr forces this flow onto that physical DMA
-  // channel index (the compute-tile analogue of the memtile
-  // `air.memtile_dma_channel_min` floor). Used when two flows on the same tile
+  // channel index. Used when two flows on the same tile
   // must keep fixed, distinct physical channels because their routes would
   // otherwise collide. The pin is an explicit override: apply it even when a
   // channel index was already chosen by the flow-level allocation phase
@@ -3222,32 +3221,8 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
-  if (chan == -1) {
-    // Channel-floor steer: a memtile DMA buffer whose defining op carries
-    // `air.memtile_dma_channel_min = N` reserves physical channels [0, N) on
-    // this memtile, so its flows land on [N, ...). Used when a broadcast's
-    // route on a low physical channel collides with another column flow
-    // transiting this memtile's switchbox. The attr rides on the memcpy
-    // (air.channel.put/get) op itself, set by the front end and preserved
-    // through the AIR pipeline (copyPaddingAttributes /
-    // ComposeMemrefOpOnChannelOp), so it is available here regardless of how
-    // the underlying buffer was lowered.
-    int minCh = 0;
-    if (auto a = memcpyOp->getAttrOfType<IntegerAttr>(
-            air::attrs::MemtileDmaChannelMin)) {
-      minCh = static_cast<int>(a.getInt());
-      // Validate the floor: it must leave at least one usable channel
-      // [minCh, memtile_dma_channels). An out-of-range floor would otherwise be
-      // silently ignored (falling back to round-robin), defeating the steer.
-      if (minCh < 0 || minCh >= memtile_dma_channels)
-        return memcpyOp.emitOpError("air.memtile_dma_channel_min = ")
-               << minCh << " is out of range [0, " << memtile_dma_channels
-               << ") for the " << (isMM2S.value() ? "MM2S" : "S2MM")
-               << " DMA channels of this memtile";
-    }
-    int avail = memtile_dma_channels - minCh;
-    chan = minCh + (num_allocs % avail);
-  }
+  if (chan == -1)
+    chan = num_allocs % memtile_dma_channels;
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 
