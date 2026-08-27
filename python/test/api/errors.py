@@ -90,9 +90,14 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: partial_buffer_write
-# CHECK: NotImplementedError: partial assignment into a buffer is not supported
-@expect(NotImplementedError, "partial_buffer_write")
+# CHECK-LABEL: TEST: partial_buffer_write_of_the_wrong_shape
+# Writing into a region is ordinary now, so what is left to get wrong is the
+# shape: an [8, 64] window cannot be filled from the whole [64, 64] tile. The
+# message is the elementwise one, naming both shapes, because that is exactly
+# what the mistake is -- it stopped being "the DSL cannot do this".
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: destination has shape (8, 64) but operand has shape (64, 64)
+@expect(ValueError, "partial_buffer_write_of_the_wrong_shape")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64, 64], bf16, scope=h.private())
@@ -811,13 +816,20 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: partial_assignment_into_buffer
-# CHECK: NotImplementedError: partial assignment into a buffer is not supported
-@expect(NotImplementedError, "partial_assignment_into_buffer")
+# CHECK-LABEL: TEST: assignment_into_a_reshaped_view
+# Assigning into a region is ordinary now. What is still refused is assigning
+# through a *view*: a reshape walks the buffer with strides that are not the
+# buffer's, so an index into the view is not an index into the buffer and the
+# store would land somewhere else entirely. Same rule, and the same message,
+# as reading one.
+# CHECK: TypeError: cannot read BufferSlice
+# CHECK-SAME: reshaped or transposed view
+@expect(TypeError, "assignment_into_a_reshaped_view")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([32, 32], bf16, scope=h.private())
-        a[0:16, :] = 1.0
+        b = air.alloc([16, 64], bf16, scope=h.private())
+        b[:] = a.reshape(16, 64)[0:16, :] * 2.0
 
     _trace(body)
 
@@ -2206,17 +2218,19 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: elementwise_read_at_a_runtime_offset
-# The loop nest is built at trace time out of constant extents, so a region
-# whose offset is a coordinate has no constant to fold into the index.
-# CHECK: TypeError: cannot read BufferSlice
-# CHECK-SAME: depends on a coordinate or loop variable
-@expect(TypeError, "elementwise_read_at_a_runtime_offset")
+# CHECK-LABEL: TEST: elementwise_read_of_a_stepped_region
+# A region's *offset* may be a coordinate or a loop variable -- it is one more
+# term in the index, and materialises as the affine.apply every other index in
+# this DSL goes through. Its *step* may not: a stride other than 1 is a walk
+# the access pattern cannot describe, and it is refused at the subscript rather
+# than at the read.
+# CHECK: NotImplementedError: strided slicing (step=2) is not supported
+@expect(NotImplementedError, "elementwise_read_of_a_stepped_region")
 def _():
     def body(h, tx, ty, A, B, C):
         gu = air.alloc([2, 64], bf16, scope=h.private())
-        out = air.alloc([1, 64], bf16, scope=h.private())
-        out[:] = gu[tx, :] * 2.0
+        out = air.alloc([1, 32], bf16, scope=h.private())
+        out[:] = gu[tx, 0:64:2] * 2.0
 
     _trace(body)
 

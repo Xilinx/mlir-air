@@ -18,6 +18,12 @@ What a region reads as is decided by its strides. A region that walks the buffer
 the way the buffer is laid out is an ordinary operand at an offset; a reshape or
 a transpose walks it differently, and an index into one of those is not an index
 into the buffer.
+
+What *rank* it reads as is numpy's rule: an integer subscript selects one
+element and drops its axis, a slice keeps it. ``gu[1, :]`` is a row -- rank 1 --
+so the axis the ``1`` took is never walked and never needs an induction
+variable. The axis is still there in the DMA access pattern, where dropping it
+would change every transfer in the tree; only arithmetic sees the shorter shape.
 """
 
 from air import api as air
@@ -52,15 +58,18 @@ def build(body, out_shape=(1, 16)):
 
 
 # CHECK-LABEL: TEST: two_rows_of_one_buffer
-# The swiglu case. Row 0 is read at the loop's own index and row 1 one further
-# down the same memref -- two reads, not one, and no copy to separate them.
+# The swiglu case. Two reads of one memref, not one read and a copy to separate
+# the halves. Each row is addressed by the constant that named it: the integer
+# subscript dropped that axis, so the nest walks only the row, and neither read
+# needs index arithmetic to reach its own half.
 # CHECK: scf.for %[[I:.*]] = %{{.*}} to %{{.*}} step
 # CHECK: scf.for %[[J:.*]] = %{{.*}} to %{{.*}} step
-# CHECK: %[[R0:.*]] = vector.transfer_read %[[BUF:.*]][%[[I]], %[[J]]]
+# CHECK: %[[ZERO:.*]] = arith.constant 0 : index
+# CHECK: %[[R0:.*]] = vector.transfer_read %[[BUF:.*]][%[[ZERO]], %[[J]]]
 # CHECK: %[[ONE:.*]] = arith.constant 1 : index
-# CHECK: %[[SHIFTED:.*]] = arith.addi %[[I]], %[[ONE]] : index
-# CHECK: %[[R1:.*]] = vector.transfer_read %[[BUF]][%[[SHIFTED]], %[[J]]]
+# CHECK: %[[R1:.*]] = vector.transfer_read %[[BUF]][%[[ONE]], %[[J]]]
 # CHECK: arith.mulf %[[R0]], %[[R1]]
+# CHECK: vector.transfer_write %{{.*}}, %{{.*}}[%[[I]], %[[J]]]
 @run
 def two_rows_of_one_buffer():
     build(lambda packed: packed[0, :] * packed[1, :])
@@ -71,9 +80,15 @@ def two_rows_of_one_buffer():
 # worth pinning because such a region is flagged internally as a "view" -- the
 # same flag reshape and transpose set -- and gating on that flag rather than on
 # the strides rejected this outright.
+#
+# The two subscripts also compose the way numpy composes them: the outer one
+# kept the axis and the inner one took element 1 of it, so the result is row 1
+# of the buffer, read at the constant. Anchored inside the vector loop, because
+# the loop bounds above it are also `arith.constant 1 : index`.
+# CHECK: scf.for
+# CHECK: scf.for %[[J:.*]] = %{{.*}} to %{{.*}} step
 # CHECK: %[[ONE:.*]] = arith.constant 1 : index
-# CHECK: arith.addi %{{.*}}, %[[ONE]]
-# CHECK: vector.transfer_read
+# CHECK: vector.transfer_read %{{.*}}[%[[ONE]], %[[J]]]
 @run
 def a_region_of_a_region():
     build(lambda packed: packed[0:2, :][1, :] * 2.0)
