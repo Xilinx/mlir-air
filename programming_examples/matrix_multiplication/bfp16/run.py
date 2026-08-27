@@ -1,24 +1,65 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-#
-# bfp16ebs8 A x bfp16ebs8 B -> bf16/f32 C GEMM on NPU2, running the mlir-aie
-# reference kernel mm_bfp.cc unmodified.
-#
-# AIR has no bfp16ebs8 element type (mlir-aie's !aiex.bfp<> lowers to i72 only
-# inside aie.device, i.e. after every AIR pass, and AIR's BD lowering assumes an
-# int-or-float element type). So A and B cross the AIR boundary as plain i8 and
-# the kernel reinterprets via aie::block_vector<bfp16ebs8>, the same type-pun
-# bf16_x_bfp16 uses for its weights.
-#
-# Layout: bfp16ebs8 packs 8 scalars into 9 bytes, so a logical [H, W] matrix is
-# an [H, W*9//8] byte matrix. mlir-aie's host-side shuffleMatrixForBfp16ebs8()
-# reorders 8x8 sub-tiles WITHIN each tile box only, leaving the global matrix
-# row-major -- so A and B here are byte-for-byte what mlir-aie's own
-# bfp_test.cpp produces. B is consumed transposed, i.e. stored [N, K*9//8].
-#
-# C is accumulated in bfp16ebs8 by the kernel and converted to bf16 or f32 on
-# the way out (bfp_cvt.cc), so the output is an ordinary float tensor that
-# XRTRunner checks against a float reference exactly like the bf16 example.
+"""bfp16ebs8 A x bfp16ebs8 B -> bf16/f32 C GEMM on NPU2, on air.api.
+
+Runs the mlir-aie reference kernel ``mm_bfp.cc`` unmodified, so every bit of
+arithmetic is on the far side of an ``air.extern`` call and what moves onto the
+DSL is the schedule and the data movement.
+
+AIR has no bfp16ebs8 element type -- mlir-aie's ``!aiex.bfp<>`` lowers to i72
+only inside ``aie.device``, i.e. after every AIR pass, and AIR's BD lowering
+assumes an int-or-float element type. So A and B cross the AIR boundary as plain
+``i8`` and the kernel reinterprets them via ``aie::block_vector<bfp16ebs8>``, the
+same type-pun ``bf16_x_bfp16`` uses for its weights.
+
+Layout: bfp16ebs8 packs 8 scalars into 9 bytes, so a logical ``[H, W]`` matrix is
+an ``[H, W*9//8]`` byte matrix. mlir-aie's host-side
+``shuffleMatrixForBfp16ebs8()`` reorders 8x8 sub-tiles WITHIN each tile box only,
+leaving the global matrix row-major -- so A and B here are byte-for-byte what
+mlir-aie's own ``bfp_test.cpp`` produces. B is consumed transposed, i.e. stored
+``[N, K*9//8]``.
+
+C is accumulated in bfp16ebs8 by the kernel and converted to bf16 or f32 on the
+way out (``bfp_cvt.cc``), so the output is an ordinary float tensor that
+XRTRunner checks against a float reference exactly like the bf16 example::
+
+    air.launch (m_outer, n_outer)
+      air.segment
+        L2: A [herd_m, k_per_l2, a_l1_b]      (packed bytes)
+            B [herd_n, k_per_l2, b_l1_b]      (packed bytes, transposed)
+            C [herd_m, herd_n, tile_m, tile_n](bf16 or f32)
+        L1, segment lifetime, one slab per core:
+            acc [herd_m, herd_n, c_l1_b]      (bfp16ebs8 bytes)
+            out [herd_m, herd_n, c_elems]     (bf16 or f32)
+        herd            zero the accumulator
+        for k2 in air.sequential(k / tile_k_l2)
+            L3 -> L2 for A and B
+            herd
+                for j in air.sequential(k_per_l2)
+                    L2 -> L1, then one mmul into the accumulator
+        herd            convert bfp16 -> output dtype and drain to L2
+        L2 -> L3
+
+**The accumulator is shared, and a core is handed its own slab.** It has to
+survive the three separate herd invocations -- zero, compute, drain -- so it is
+allocated at segment scope with ``<segment>.shared()``, carrying one leading
+dimension per herd axis. The predecessor wrote a ``memref.subview`` at each of
+the four call sites to pick out the calling core's slab, and a
+``StridedLayoutAttr`` per kernel declaration to spell the resulting memref type;
+both are derivable, so ``zero_kernel(acc)`` is the whole of it.
+
+**Every access pattern here is a reshape or a transpose of a plain region.** The
+L3 operands are byte matrices and the L2 staging buffers are per-core tile
+boxes, so filling them splits the row axis into (core, within-tile) and brings
+the K-chunk axis outside -- ``reshape(...).transpose(0, 2, 1, 3)``. The drain is
+the inverse: the L1 side is one contiguous run in 8x8-block order, and only the
+L2 side needs the permute, which is why the reshape lands on the destination.
+
+The ping-pong opt-out is gone. This example used to carry
+``air.disable_ping_pong`` on the K-l1 fill loop purely to supply a fact the pass
+could not see; ``air-label-scf-for-to-ping-pong`` now derives the L1 budget
+itself (#1928).
+"""
 
 import argparse
 import os
@@ -27,35 +68,10 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import (
-    AffineConstantExpr,
-    AffineExpr,
-    AffineMap,
-    AffineSymbolExpr,
-    InsertionPoint,
-    IntegerAttr,
-    IntegerType,
-    MemRefType,
-    ShapedType,
-    StridedLayoutAttr,
-    StringAttr,
-    UnitAttr,
-)
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import (
-    MemorySpace,
-    T,
-    dma_memcpy_nd,
-    herd,
-    launch,
-    module_builder,
-    segment,
-)
-from air.dialects import arith
-from air.dialects.func import CallOp, FuncOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.scf import ForOp, for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32, i8
+from air.backend.xrt_runner import XRTRunner
 from air.backend.xrt import XRTBackend
 
 from bfp16_utils import float_to_bfp16ebs8, nbytes, shuffle_bfp16ebs8
@@ -68,17 +84,6 @@ KERNEL_OBJ_NAME = "mm_bfp.o"
 MMUL_R = MMUL_S = MMUL_T = 8
 
 
-def _scaled(iv, c):
-    """affine_apply of (s0 -> s0 * c)."""
-    m = AffineMap.get(
-        0,
-        1,
-        [AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(c))],
-    )
-    return affine_apply(m, [iv])
-
-
-@module_builder
 def build_module(
     m,
     k,
@@ -121,7 +126,7 @@ def build_module(
     assert tile_k_l2 % tile_k_l1 == 0
 
     k_per_l2 = tile_k_l2 // tile_k_l1
-    xrt_dtype_out = type_mapper(np_dtype_out)
+    dt_out = bf16 if np_dtype_out == bfloat16 else f32
 
     KB = nbytes(k)  # L3 A/B row stride, bytes
     a_row_b = nbytes(tile_k_l1)  # one L3 row of an A/B tile box
@@ -131,228 +136,139 @@ def build_module(
     c_elems = tile_m * tile_n  # converted output, elements
     MB, NB = tile_m // r, tile_n // t  # 8x8 blocks per tile
 
-    i8 = IntegerType.get_signless(8)
-    l1_ms = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l2_ms = IntegerAttr.get(T.i32(), MemorySpace.L2)
+    l2_m, l2_n = tile_m * herd_m, tile_n * herd_n
 
-    # ---- L3 (caller-facing). A/B are packed bytes; C is a real float tensor.
-    A_l3_ty = MemRefType.get([m, KB], i8)
-    B_l3_ty = MemRefType.get([n, KB], i8)  # B stored transposed
-    C_l3_ty = MemRefType.get([m, n], xrt_dtype_out)
+    # A and B are packed bytes; C is a real float tensor.
+    A = air.tensor([m, KB], i8)
+    B = air.tensor([n, KB], i8)  # B stored transposed
+    C = air.tensor([m, n], dt_out)
 
-    # ---- L1. A/B tile boxes are contiguous in sub-tile-major order, which is
-    # exactly what mm_bfp.cc's block_vector_input_buffer_stream .seek(z*colA)
-    # expects, so no strided views are needed.
-    l1TyA = MemRefType.get([a_l1_b], i8, memory_space=l1_ms)
-    l1TyB = MemRefType.get([b_l1_b], i8, memory_space=l1_ms)
-    l1TyAccHerd = MemRefType.get([herd_m, herd_n, c_l1_b], i8, memory_space=l1_ms)
-    l1TyOutHerd = MemRefType.get(
-        [herd_m, herd_n, c_elems], xrt_dtype_out, memory_space=l1_ms
-    )
-    acc_sv_layout = StridedLayoutAttr.get(
-        ShapedType.get_dynamic_size(), [herd_n * c_l1_b, c_l1_b, 1]
-    )
-    out_sv_layout = StridedLayoutAttr.get(
-        ShapedType.get_dynamic_size(), [herd_n * c_elems, c_elems, 1]
-    )
-    l1TyAccSub = MemRefType.get(
-        [1, 1, c_l1_b], i8, memory_space=l1_ms, layout=acc_sv_layout
-    )
-    l1TyOutSub = MemRefType.get(
-        [1, 1, c_elems], xrt_dtype_out, memory_space=l1_ms, layout=out_sv_layout
-    )
-
-    # ---- External kernel decls. mm_bfp.cc + bfp_cvt.cc are linked into one .o.
-    def _extern(name, arg_tys):
-        f = FuncOp(name, (arg_tys, []), visibility="private")
-        f.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-        f.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-        return f
-
-    zero_func = _extern("zero_kernel", [l1TyAccSub])
-    matmul_func = _extern("matmul_vectorized_bfp16", [l1TyA, l1TyB, l1TyAccSub])
+    zero_kernel = air.extern("zero_kernel", link_with=KERNEL_OBJ_NAME)
+    matmul = air.extern("matmul_vectorized_bfp16", link_with=KERNEL_OBJ_NAME)
     cvt_name = "bfp16_to_bf16_mn" if np_dtype_out == bfloat16 else "bfp16_to_f32_mn"
-    cvt_func = _extern(cvt_name, [l1TyAccSub, l1TyOutSub])
+    convert = air.extern(cvt_name, link_with=KERNEL_OBJ_NAME)
 
-    @FuncOp.from_py_func(A_l3_ty, B_l3_ty, C_l3_ty)
-    def matmul_bfp16(arg0, arg1, arg2):
-        launch_size = [m // (tile_m * herd_m), n // (tile_n * herd_n)]
+    with air.launch(
+        [range(m // l2_m), range(n // l2_n)], name="matmul_bfp16"
+    ) as launch_ctx:
 
-        @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
-        def launch_body(ivx, ivy, sx, sy, l3_a, l3_b, l3_c):
-            @segment(name="matmul_seg", operands=[ivx, ivy, l3_a, l3_b, l3_c])
-            def segment_body(ivx_s, ivy_s, l3_a_s, l3_b_s, l3_c_s):
-                l2TyA = MemRefType.get(
-                    [herd_m, k_per_l2, a_l1_b], i8, memory_space=l2_ms
-                )
-                l2TyB = MemRefType.get(
-                    [herd_n, k_per_l2, b_l1_b], i8, memory_space=l2_ms
-                )
-                l2TyC = MemRefType.get(
-                    [herd_m, herd_n, tile_m, tile_n], xrt_dtype_out, memory_space=l2_ms
-                )
+        @launch_ctx.body
+        def _(ivx, ivy):
+            with air.segment(name="matmul_seg") as seg:
 
-                l2_a = AllocOp(l2TyA, [], [])
-                l2_b = AllocOp(l2TyB, [], [])
-                l2_c = AllocOp(l2TyC, [], [])
-                # Segment-shared so the accumulator survives across the
-                # zero / compute / drain herd invocations.
-                l1_acc = AllocOp(l1TyAccHerd, [], [])
-                l1_out = AllocOp(l1TyOutHerd, [], [])
-
-                off_x_rows = _scaled(ivx_s, tile_m * herd_m)  # A/C row offset
-                off_y_rows = _scaled(ivy_s, tile_n * herd_n)  # B row offset
-                off_y_cols = _scaled(ivy_s, tile_n * herd_n)  # C column offset
-
-                # ---- Herd #1: zero the bfp16 L1 accumulator.
-                @herd(name="herd_0", sizes=[herd_m, herd_n], operands=[l1_acc])
-                def herd_init(tx, ty, _sx, _sy, acc):
-                    CallOp(
-                        zero_func,
-                        [
-                            subview(
-                                acc,
-                                offsets=[tx, ty, 0],
-                                sizes=[1, 1, c_l1_b],
-                                strides=[1, 1, 1],
-                            )
-                        ],
+                @seg.body
+                def _():
+                    l2_a = air.alloc(
+                        [herd_m, k_per_l2, a_l1_b], i8, scope=seg.private()
+                    )
+                    l2_b = air.alloc(
+                        [herd_n, k_per_l2, b_l1_b], i8, scope=seg.private()
+                    )
+                    l2_c = air.alloc(
+                        [herd_m, herd_n, tile_m, tile_n], dt_out, scope=seg.private()
+                    )
+                    # Segment-shared so the accumulator survives across the
+                    # zero / compute / drain herd invocations.
+                    acc = air.alloc([herd_m, herd_n, c_l1_b], i8, scope=seg.shared())
+                    out = air.alloc(
+                        [herd_m, herd_n, c_elems], dt_out, scope=seg.shared()
                     )
 
-                # ---- Segment-level K-l2 loop.
-                for i in for_(0, k // tile_k_l2):
-                    k_off_b = _scaled(i, nbytes(tile_k_l2))
+                    off_x_rows = ivx * l2_m  # A/C row offset
+                    off_y_rows = ivy * l2_n  # B row offset
+                    off_y_cols = ivy * l2_n  # C column offset
 
-                    # L3 -> L2: gather tile boxes. The two innermost dims
-                    # (tile_m, a_row_b) flatten into the contiguous destination.
-                    dma_memcpy_nd(
-                        l2_a,
-                        l3_a_s,
-                        src_offsets=[0, 0, off_x_rows, k_off_b],
-                        src_sizes=[herd_m, k_per_l2, tile_m, a_row_b],
-                        src_strides=[tile_m * KB, a_row_b, KB, 1],
-                    )
-                    dma_memcpy_nd(
-                        l2_b,
-                        l3_b_s,
-                        src_offsets=[0, 0, off_y_rows, k_off_b],
-                        src_sizes=[herd_n, k_per_l2, tile_n, a_row_b],
-                        src_strides=[tile_n * KB, a_row_b, KB, 1],
-                    )
-
-                    # ---- Herd #2: accumulate over the K-l1 chunks.
-                    @herd(
+                    # ---- Herd #1: zero the bfp16 L1 accumulator.
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
                         name="herd_0",
-                        sizes=[herd_m, herd_n],
-                        operands=[l1_acc, l2_a, l2_b],
-                    )
-                    def herd_compute(tx, ty, _sx, _sy, acc, a2, b2):
-                        a1 = AllocOp(l1TyA, [], [])
-                        b1 = AllocOp(l1TyB, [], [])
-                        loop = for_
-                        for j in loop(0, k_per_l2):
-                            dma_memcpy_nd(
-                                a1,
-                                a2,
-                                src_offsets=[tx, j, 0],
-                                src_sizes=[1, 1, a_l1_b],
-                                src_strides=[k_per_l2 * a_l1_b, a_l1_b, 1],
-                            )
-                            dma_memcpy_nd(
-                                b1,
-                                b2,
-                                src_offsets=[ty, j, 0],
-                                src_sizes=[1, 1, b_l1_b],
-                                src_strides=[k_per_l2 * b_l1_b, b_l1_b, 1],
-                            )
-                            CallOp(
-                                matmul_func,
-                                [
-                                    a1,
-                                    b1,
-                                    subview(
-                                        acc,
-                                        offsets=[tx, ty, 0],
-                                        sizes=[1, 1, c_l1_b],
-                                        strides=[1, 1, 1],
-                                    ),
-                                ],
-                            )
-                            yield_([])
-                        DeallocOp(a1)
-                        DeallocOp(b1)
+                        shape=(herd_m, herd_n),
+                    ) as zero_herd:
 
-                    yield_([])
+                        @zero_herd.body
+                        def _(tx, ty):
+                            zero_kernel(acc)
 
-                # ---- Herd #3: convert bfp16 -> output dtype, then drain.
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[l1_acc, l1_out, l2_c],
-                )
-                def herd_drain(tx, ty, _sx, _sy, acc, out, c2):
-                    CallOp(
-                        cvt_func,
-                        [
-                            subview(
-                                acc,
-                                offsets=[tx, ty, 0],
-                                sizes=[1, 1, c_l1_b],
-                                strides=[1, 1, 1],
-                            ),
-                            subview(
-                                out,
-                                offsets=[tx, ty, 0],
-                                sizes=[1, 1, c_elems],
-                                strides=[1, 1, 1],
-                            ),
-                        ],
-                    )
-                    # L1 (8x8-block order) -> L2 (row-major). Nesting is
-                    # [m_b, n_b, m_i, n_i] so the L1 side is a single
-                    # contiguous run and only the L2 side needs the permute.
-                    dma_memcpy_nd(
-                        c2,
-                        out,
-                        dst_offsets=[tx, ty, 0, 0, 0, 0],
-                        dst_sizes=[1, 1, MB, NB, r, t],
-                        dst_strides=[
-                            herd_n * c_elems,
-                            c_elems,
-                            r * tile_n,
-                            t,
-                            tile_n,
-                            1,
-                        ],
-                        src_offsets=[tx, ty, 0, 0, 0, 0],
-                        src_sizes=[1, 1, MB, NB, r, t],
-                        src_strides=[
-                            herd_n * c_elems,
-                            c_elems,
-                            NB * r * t,
-                            r * t,
-                            t,
-                            1,
-                        ],
+                    # ---- Segment-level K-l2 loop.
+                    for i in air.sequential(k // tile_k_l2):
+                        k_off_b = i * nbytes(tile_k_l2)
+
+                        # L3 -> L2: gather tile boxes. Split the row axis into
+                        # (core, within-tile) and the byte axis into
+                        # (K-chunk, within-chunk), then bring the K-chunk axis
+                        # outside the row one -- which is the order the per-core
+                        # tile boxes sit in.
+                        ops.load(
+                            l2_a,
+                            A[
+                                off_x_rows : off_x_rows + l2_m,
+                                k_off_b : k_off_b + k_per_l2 * a_row_b,
+                            ]
+                            .reshape(herd_m, tile_m, k_per_l2, a_row_b)
+                            .transpose(0, 2, 1, 3),
+                        )
+                        ops.load(
+                            l2_b,
+                            B[
+                                off_y_rows : off_y_rows + l2_n,
+                                k_off_b : k_off_b + k_per_l2 * a_row_b,
+                            ]
+                            .reshape(herd_n, tile_n, k_per_l2, a_row_b)
+                            .transpose(0, 2, 1, 3),
+                        )
+
+                        # ---- Herd #2: accumulate over the K-l1 chunks.
+                        with air.herd(
+                            [range(herd_m), range(herd_n)],
+                            name="herd_0",
+                            shape=(herd_m, herd_n),
+                        ) as h:
+
+                            @h.body
+                            def _(tx, ty):
+                                # A/B tile boxes are contiguous in
+                                # sub-tile-major order, which is exactly what
+                                # mm_bfp.cc's block_vector_input_buffer_stream
+                                # .seek(z*colA) expects -- no strided view here.
+                                a1 = air.alloc([a_l1_b], i8, scope=h.private())
+                                b1 = air.alloc([b_l1_b], i8, scope=h.private())
+                                for j in air.sequential(k_per_l2):
+                                    ops.load(a1, l2_a[tx, j, :])
+                                    ops.load(b1, l2_b[ty, j, :])
+                                    matmul(a1, b1, acc)
+
+                    # ---- Herd #3: convert bfp16 -> output dtype, then drain.
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
+                        name="herd_0",
+                        shape=(herd_m, herd_n),
+                    ) as drain_herd:
+
+                        @drain_herd.body
+                        def _(tx, ty):
+                            convert(acc, out)
+                            # L1 (8x8-block order) -> L2 (row-major). The L1
+                            # side is a single contiguous run, so only the L2
+                            # side needs the permute -- which is why the
+                            # transpose lands on the destination.
+                            ops.store(
+                                out[tx, ty, :].reshape(1, 1, MB, NB, r, t),
+                                l2_c[tx, ty, :, :]
+                                .reshape(1, 1, MB, r, NB, t)
+                                .transpose(0, 1, 2, 4, 3, 5),
+                            )
+
+                    # ---- L2 -> L3.
+                    ops.store(
+                        l2_c.transpose(0, 2, 1, 3),
+                        C[
+                            off_x_rows : off_x_rows + l2_m,
+                            off_y_cols : off_y_cols + l2_n,
+                        ].reshape(herd_m, tile_m, herd_n, tile_n),
                     )
 
-                # ---- L2 -> L3.
-                dma_memcpy_nd(
-                    l3_c_s,
-                    l2_c,
-                    dst_offsets=[0, off_x_rows, 0, off_y_cols],
-                    dst_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    dst_strides=[tile_m * n, n, tile_n, 1],
-                    src_offsets=[0, 0, 0, 0],
-                    src_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    src_strides=[herd_n * c_elems, tile_n, c_elems, 1],
-                )
-
-                DeallocOp(l2_a)
-                DeallocOp(l2_b)
-                DeallocOp(l2_c)
-                DeallocOp(l1_acc)
-                DeallocOp(l1_out)
+    # bfp16ebs8 is an AIE2P datatype and every lit is REQUIRES: ryzen_ai_npu2.
+    return launch_ctx.build(target="npu2")
 
 
 def pack_operands(A, B, tile_m, tile_k_l1, tile_n):

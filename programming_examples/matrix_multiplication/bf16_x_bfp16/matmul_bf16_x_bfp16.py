@@ -1,9 +1,67 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-#
-# bf16 A x bfp16ebs8 B -> bf16 C mixed-precision GEMM on NPU2.
-# B is uint8 at the AIR boundary (no MLIR bfp16ebs8 element type) and the
-# kernel reinterprets via aie::block_vector<bfp16ebs8>.
+"""bf16 A x bfp16ebs8 B -> bf16 C mixed-precision GEMM on NPU2, on air.api.
+
+B is ``uint8`` at the AIR boundary -- MLIR has no bfp16ebs8 element type -- and
+``mm_bf16_x_bfp16.cc`` reinterprets it through ``aie::block_vector<bfp16ebs8>``.
+So every bit of arithmetic here is in a hand-written kernel reached by
+``air.extern``, and what moves onto the DSL is the schedule and the data
+movement::
+
+    air.launch (m_outer, n_outer)
+      air.segment
+        L2: A [herd_m, tile_m, tile_k_l2]      (bf16)
+            B [herd_n, k_per_l2, tile_bytes]   (packed bfp16ebs8 bytes)
+            C [herd_m, herd_n, tile_m, tile_n] (bf16)
+        L1, segment lifetime, one slab per core:
+            acc   [herd_m, herd_n, tile_n/t, tile_m/r, r, t]  (f32)
+            drain [same shape]                                (bf16)
+        herd            zero the accumulator
+        for k2 in air.sequential(k / tile_k_l2)
+            L3 -> L2 for A and B
+            herd
+                for j in air.sequential(k_per_l2)
+                    L2 -> L1, then one mmul into the accumulator
+        herd            narrow f32 -> bf16 and drain to L2
+        L2 -> L3
+
+**The accumulator is shared, and a core is handed its own slab.** It is zeroed
+once, added into across every trip of a K loop that sits at *segment* scope --
+so the herd is entered once per trip -- and narrowed at the end. That is what
+``<segment>.shared()`` is for: L1, but with the segment's lifetime, carrying one
+leading dimension per herd axis. The predecessor wrote a ``memref.subview`` at
+each of the four call sites to pick out the calling core's slab; there is only
+ever one slab a given core may touch, so the DSL emits that subview itself and
+``zero_acc(acc)`` means what the six-line subview meant. It is the same helper
+``ops.fill`` and ``ops.dot`` already used -- a hand-written kernel is simply the
+third way to write an accumulator.
+
+**The micro-tiled L1 layouts are a walk, not a memref layout.** The mmul
+consumes ``[.., tile_m/r, tile_k_l1/s, r, s]`` blocks while the L2 staging
+buffer is plain row-major; the reordering is a ``reshape`` and a ``transpose``
+of the region being read, which costs nothing because both are views and what
+they produce is the DMA's access pattern. Note the A permutation is
+``(0, 1, 2, 4, 3, 5)``, not the ``(0, 1, 4, 2, 3, 5)`` its bf16 sibling uses:
+this kernel's L1 A is M-tile-outer where that one's is K-tile-outer, so the
+transpose follows the layout rather than a habit.
+
+**Only axes that mean something are declared.** The predecessor's L2 A and B
+each carried a unit axis whose stride was written by hand, and a size-1 axis is
+never stepped, so that stride says nothing -- but asking a reshape to reproduce
+one makes it *invent* a value, which downstream passes can then act on. The
+staging buffers here declare the per-core axis and the tile and nothing else. C
+keeps all four of its axes, because the drain out of it is a genuine transpose.
+
+The ping-pong opt-out is gone. Both bfp16 matmuls used to carry
+``air.disable_ping_pong`` on the K-l1 fill loop purely to supply a fact the pass
+could not see -- that unrolling by two would put 74 KiB of L1 buffers on a 64
+KiB tile. ``air-label-scf-for-to-ping-pong`` now does that arithmetic itself
+(#1928), so there is nothing left for the kernel to declare.
+
+``build_module`` returns the module rather than the launch, because the bfp16
+prefill stitchers under ``llms/llama32_1b_int4/`` call it for one and match its
+signature positionally.
+"""
 
 import argparse
 import sys
@@ -11,36 +69,9 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import (
-    AffineConstantExpr,
-    AffineExpr,
-    AffineMap,
-    AffineSymbolExpr,
-    BF16Type,
-    F32Type,
-    InsertionPoint,
-    IntegerAttr,
-    IntegerType,
-    MemRefType,
-    ShapedType,
-    StridedLayoutAttr,
-    StringAttr,
-    UnitAttr,
-)
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import (
-    MemorySpace,
-    T,
-    dma_memcpy_nd,
-    herd,
-    launch,
-    module_builder,
-    segment,
-)
-from air.dialects import arith
-from air.dialects.func import CallOp, FuncOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.scf import ForOp, for_, yield_
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32, i8
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 
@@ -50,21 +81,17 @@ BFP16_BYTES_PER_BLOCK = 9
 
 
 def bfp_tile_bytes(tile_n, tile_k_l1):
-    nelem = tile_n * tile_k_l1
-    assert nelem % BFP16_BLOCK == 0
-    return (nelem // BFP16_BLOCK) * BFP16_BYTES_PER_BLOCK
+    """Bytes in one (tile_n, tile_k_l1) B tile, packed bfp16ebs8."""
+    return (tile_n * tile_k_l1 // BFP16_BLOCK) * BFP16_BYTES_PER_BLOCK
 
 
 def _bf16_block_to_bfp16ebs8(block_f32):
     """Reference per-block scalar packer; use pack_b_bfp16ebs8 in production."""
-    assert block_f32.shape == (BFP16_BLOCK,)
-    bits = np.frombuffer(block_f32.astype(np.float32).tobytes(), dtype=np.uint32).copy()
+    bits = block_f32.astype(np.float32).view(np.uint32)
     sign = (bits & 0x80000000) != 0
-    exp = (bits >> 23) & 0xFF
-    mant_explicit = (bits & 0x007FFFFF) | np.where(exp != 0, 0x00800000, 0).astype(
-        np.uint32
-    )
-    max_exp = int(exp.max())
+    exp = ((bits >> 23) & 0xFF).astype(np.int32)
+    mant_explicit = (bits & 0x007FFFFF) | np.where(exp != 0, 0x00800000, 0)
+    max_exp = exp.max()
     signed_mant = np.where(
         sign, (~mant_explicit + 1) & 0xFFFFFFFF, mant_explicit
     ).astype(np.int64)
@@ -171,7 +198,6 @@ def cpu_reference_from_bfp_packed(B_packed, A_bf16, m, k, n, tile_n, tile_k_l1):
     return C.astype(bfloat16)
 
 
-@module_builder
 def build_module(
     m,
     k,
@@ -194,396 +220,153 @@ def build_module(
     assert tile_k_l1 % s == 0
 
     tile_bytes = bfp_tile_bytes(tile_n, tile_k_l1)
+    k_per_l2 = tile_k_l2 // tile_k_l1
     N_div = n // tile_n
     K_div = k // tile_k_l1
 
-    bf16_ty = BF16Type.get()
-    f32_ty = F32Type.get()
-    u8_ty = IntegerType.get_signless(8)
+    # The output block one segment covers: herd_m x herd_n L1 tiles.
+    l2_m, l2_n = tile_m * herd_m, tile_n * herd_n
 
-    # L3 (caller-facing)
-    A_l3_ty = MemRefType.get([m, k], bf16_ty)
-    B_l3_ty = MemRefType.get([N_div, K_div, tile_bytes], u8_ty)
-    C_l3_ty = MemRefType.get([m, n], bf16_ty)
+    A = air.tensor([m, k], bf16)
+    # bfp16ebs8 has no MLIR element type, so B is bytes on this side of the
+    # call: one contiguous run per (n_outer, k_outer) tile, unpacked inside
+    # mm_bf16_x_bfp16.cc as aie::block_vector<bfp16ebs8>.
+    B = air.tensor([N_div, K_div, tile_bytes], i8)
+    C = air.tensor([m, n], bf16)
 
-    # L1 MMUL block layouts. C is N-outer M-inner so the L1->L2 drain DMA
-    # fits in the AIE2P 3-dim BD step limit.
-    l1_ms = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    a_l1_size = [1, 1, tile_m // r, tile_k_l1 // s, r, s]
-    b_l1_size = [tile_bytes]
-    c_l1_size = [1, 1, tile_n // t, tile_m // r, r, t]
-    c_herd_l1_size = [herd_m, herd_n, tile_n // t, tile_m // r, r, t]
+    zero_acc = air.extern("zero_vectorized_f32_mn", link_with=KERNEL_OBJ_NAME)
+    matmul = air.extern("matmul_bf16_x_bfp16_packed_f32", link_with=KERNEL_OBJ_NAME)
+    to_bf16 = air.extern("f32_to_bf16_mn", link_with=KERNEL_OBJ_NAME)
 
-    l1MemrefTyA = MemRefType.get(a_l1_size, bf16_ty, memory_space=l1_ms)
-    l1MemrefTyB = MemRefType.get(b_l1_size, u8_ty, memory_space=l1_ms)
-    c_subview_layout = StridedLayoutAttr.get(
-        ShapedType.get_dynamic_size(),
-        [
-            tile_m * tile_n * herd_n,
-            tile_m * tile_n,
-            tile_m * t,  # n_b stride: skip full M-block column = tile_m * t
-            r * t,  # m_b stride: skip one M-block = r * t
-            t,  # m_i stride: skip one row within block
-            1,  # n_i stride
-        ],
-    )
-    l1MemrefTyC = MemRefType.get(
-        c_l1_size, f32_ty, memory_space=l1_ms, layout=c_subview_layout
-    )
-    l1MemrefTyCHerd = MemRefType.get(c_herd_l1_size, f32_ty, memory_space=l1_ms)
-    c_drain_l1_size = [herd_m, herd_n, tile_n // t, tile_m // r, r, t]
-    l1MemrefTyCDrainHerd = MemRefType.get(c_drain_l1_size, bf16_ty, memory_space=l1_ms)
+    with air.launch(
+        [range(m // tile_m // herd_m), range(N_div // herd_n)],
+        name="matmul_bf16_x_bfp16",
+    ) as launch:
 
-    # External funcs: matmul (block-layout I/O) + f32->bf16 row-major drain
-    # operating on the flattened tile (length tile_m*tile_n).
-    matmul_func = FuncOp(
-        "matmul_bf16_x_bfp16_packed_f32",
-        ([l1MemrefTyA, l1MemrefTyB, l1MemrefTyC], []),
-        visibility="private",
-    )
-    matmul_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-    matmul_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+        @launch.body
+        def _(li, lj):
+            with air.segment(name="matmul_seg") as seg:
 
-    # CallOp(zero_func) over linalg.fill: kernel writes contiguously, avoids
-    # affine-codegen edge cases on the strided 6D subview.
-    zero_func = FuncOp(
-        "zero_vectorized_f32_mn",
-        ([l1MemrefTyC], []),
-        visibility="private",
-    )
-    zero_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-    zero_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    # The drain kernel reads/writes flat tile_m*tile_n elements; pass per-PE
-    # subviews from the segment-level buffers.
-    drain_acc_ty = MemRefType.get(
-        c_l1_size, f32_ty, memory_space=l1_ms, layout=c_subview_layout
-    )
-    drain_dst_layout = StridedLayoutAttr.get(
-        ShapedType.get_dynamic_size(),
-        [
-            tile_m * tile_n * herd_n,
-            tile_m * tile_n,
-            tile_n * r,
-            r * t,
-            t,
-            1,
-        ],
-    )
-    drain_dst_ty = MemRefType.get(
-        c_l1_size, bf16_ty, memory_space=l1_ms, layout=drain_dst_layout
-    )
-    f32_to_bf16_func = FuncOp(
-        "f32_to_bf16_mn",
-        ([drain_acc_ty, drain_dst_ty], []),
-        visibility="private",
-    )
-    f32_to_bf16_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-    f32_to_bf16_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    @FuncOp.from_py_func(A_l3_ty, B_l3_ty, C_l3_ty)
-    def matmul_bf16_x_bfp16(arg0, arg1, arg2):
-        launch_size = [m // tile_m // herd_m, n // tile_n // herd_n]
-
-        @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
-        def launch_body(
-            launch_ivx,
-            launch_ivy,
-            launch_sizex,
-            launch_sizey,
-            l3_a_data,
-            l3_b_data,
-            l3_c_data,
-        ):
-            @segment(
-                name="matmul_seg",
-                operands=[launch_ivx, launch_ivy, l3_a_data, l3_b_data, l3_c_data],
-            )
-            def segment_body(
-                launch_ivx_s,
-                launch_ivy_s,
-                l3_a_data_s,
-                l3_b_data_s,
-                l3_c_data_s,
-            ):
-                k_per_l2 = tile_k_l2 // tile_k_l1
-                a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
-                b_size_l2 = [1, herd_n, k_per_l2, tile_bytes]
-                c_size_l2 = [herd_m, herd_n, tile_m, tile_n]
-                l2_ms = IntegerAttr.get(T.i32(), MemorySpace.L2)
-                l2MemrefTyA = MemRefType.get(a_size_l2, bf16_ty, memory_space=l2_ms)
-                l2MemrefTyB = MemRefType.get(b_size_l2, u8_ty, memory_space=l2_ms)
-                l2MemrefTyC = MemRefType.get(c_size_l2, bf16_ty, memory_space=l2_ms)
-
-                l2_a_data = AllocOp(l2MemrefTyA, [], [])
-                l2_b_data = AllocOp(l2MemrefTyB, [], [])
-                l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                # Segment-shared L1_C f32 accumulator persists across the
-                # three herd invocations; drain holds the bf16-narrowed result.
-                l1_c_data = AllocOp(l1MemrefTyCHerd, [], [])
-                l1_c_drain = AllocOp(l1MemrefTyCDrainHerd, [], [])
-
-                launch_ix_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m * herd_m),
-                        )
-                    ],
-                )
-                launch_iy_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_n * herd_n),
-                        )
-                    ],
-                )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
-
-                n_outer_off_map = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(herd_n),
-                        )
-                    ],
-                )
-                n_outer_off = affine_apply(n_outer_off_map, [launch_ivy_s])
-
-                # ---- Herd #1: zero-init L1 C f32 (segment-shared).
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[l1_c_data],
-                )
-                def herd_init(_tx, _ty, _sx, _sy, _l1_c):
-                    l1_c_subview = subview(
-                        _l1_c,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[1, 1, tile_n // t, tile_m // r, r, t],
-                        strides=[1, 1, 1, 1, 1, 1],
+                @seg.body
+                def _():
+                    l2_a = air.alloc(
+                        [herd_m, tile_m, tile_k_l2], bf16, scope=seg.private()
                     )
-                    CallOp(zero_func, [l1_c_subview])
-
-                # ---- Segment-level K-l2 loop (matches bf16).
-                for i in for_(0, k // tile_k_l2):
-                    reduction_l2_iv_map = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(tile_k_l2),
-                            )
-                        ],
+                    l2_b = air.alloc(
+                        [herd_n, k_per_l2, tile_bytes], i8, scope=seg.private()
                     )
-                    reduction_offset = affine_apply(reduction_l2_iv_map, [i])
-                    # K-l2 chunk offset in B (in units of K-l1 tile slots).
-                    k_l2_b_off_map = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(k_per_l2),
-                            )
-                        ],
+                    l2_c = air.alloc(
+                        [herd_m, herd_n, tile_m, tile_n], bf16, scope=seg.private()
                     )
-                    k_l2_b_off = affine_apply(k_l2_b_off_map, [i])
-                    dma_memcpy_nd(
-                        l2_a_data,
-                        l3_a_data_s,
-                        src_offsets=[0, 0, launch_offset_x, reduction_offset],
-                        src_sizes=[herd_m, 1, tile_m, tile_k_l2],
-                        src_strides=[k * tile_m, tile_k_l2, k, 1],
+                    # One slab per core, with the segment's lifetime: the K loop
+                    # below is at segment scope, so the herd is entered once per
+                    # trip and a herd-body buffer would not survive it.
+                    acc = air.alloc(
+                        [herd_m, herd_n, tile_n // t, tile_m // r, r, t],
+                        f32,
+                        scope=seg.shared(),
                     )
-                    dma_memcpy_nd(
-                        l2_b_data,
-                        l3_b_data_s,
-                        src_offsets=[0, n_outer_off, k_l2_b_off, 0],
-                        src_sizes=[1, herd_n, k_per_l2, tile_bytes],
-                        src_strides=[
-                            K_div * tile_bytes,
-                            K_div * tile_bytes,
-                            tile_bytes,
-                            1,
-                        ],
+                    drain = air.alloc(
+                        [herd_m, herd_n, tile_n // t, tile_m // r, r, t],
+                        bf16,
+                        scope=seg.shared(),
                     )
 
-                    # ---- Herd #2: compute (K-l1 loop inside).
-                    @herd(
+                    row, col = li * l2_m, lj * l2_n
+                    n_outer = lj * herd_n
+
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
                         name="herd_0",
-                        sizes=[herd_m, herd_n],
-                        operands=[l1_c_data, l2_a_data, l2_b_data],
-                    )
-                    def herd_compute(
-                        _tx,
-                        _ty,
-                        _sx,
-                        _sy,
-                        _l1_c,
-                        _l2_a,
-                        _l2_b,
-                    ):
-                        _l1_a = AllocOp(l1MemrefTyA, [], [])
-                        _l1_b = AllocOp(l1MemrefTyB, [], [])
-                        for j in for_(0, k_per_l2):
-                            reduction_l1_iv_map = AffineMap.get(
-                                0,
-                                1,
-                                [
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(0),
-                                        AffineConstantExpr.get(tile_k_l1),
+                        shape=(herd_m, herd_n),
+                    ) as zero_herd:
+
+                        @zero_herd.body
+                        def _(tx, ty):
+                            zero_acc(acc)
+
+                    for k2 in air.sequential(k // tile_k_l2):
+                        k_l2_off = k2 * tile_k_l2
+                        k_chunk_off = k2 * k_per_l2
+
+                        # Split the row axis of a plain [m, k] region into
+                        # (core, within-tile). The split is the access pattern.
+                        ops.load(
+                            l2_a,
+                            A[
+                                row : row + l2_m, k_l2_off : k_l2_off + tile_k_l2
+                            ].reshape(herd_m, tile_m, tile_k_l2),
+                        )
+                        ops.load(
+                            l2_b,
+                            B[
+                                n_outer : n_outer + herd_n,
+                                k_chunk_off : k_chunk_off + k_per_l2,
+                                :,
+                            ],
+                        )
+
+                        with air.herd(
+                            [range(herd_m), range(herd_n)],
+                            name="herd_0",
+                            shape=(herd_m, herd_n),
+                        ) as h:
+
+                            @h.body
+                            def _(tx, ty):
+                                l1_a = air.alloc(
+                                    [1, 1, tile_m // r, tile_k_l1 // s, r, s],
+                                    bf16,
+                                    scope=h.private(),
+                                )
+                                l1_b = air.alloc([tile_bytes], i8, scope=h.private())
+                                for j in air.sequential(k_per_l2):
+                                    k1 = j * tile_k_l1
+                                    # [M, K] read block-first: split each axis
+                                    # into (tiles, within-tile), then bring the
+                                    # M tile axis outside the K one.
+                                    ops.load(
+                                        l1_a,
+                                        l2_a[tx, :, k1 : k1 + tile_k_l1]
+                                        .reshape(
+                                            1,
+                                            1,
+                                            tile_m // r,
+                                            r,
+                                            tile_k_l1 // s,
+                                            s,
+                                        )
+                                        .transpose(0, 1, 2, 4, 3, 5),
                                     )
-                                ],
-                            )
-                            reduction_l1_offset = affine_apply(reduction_l1_iv_map, [j])
-                            dma_memcpy_nd(
-                                _l1_a,
-                                _l2_a,
-                                src_offsets=[_tx, 0, 0, 0, 0, reduction_l1_offset],
-                                src_sizes=[
-                                    1,
-                                    1,
-                                    tile_m // r,
-                                    tile_k_l1 // s,
-                                    r,
-                                    s,
-                                ],
-                                src_strides=[
-                                    tile_m * tile_k_l2,
-                                    tile_m * tile_k_l2,
-                                    tile_k_l2 * r,
-                                    s,
-                                    tile_k_l2,
-                                    1,
-                                ],
-                            )
-                            # L2->L1 B: per-PE per-K-l1-chunk byte tile.
-                            dma_memcpy_nd(
-                                _l1_b,
-                                _l2_b,
-                                src_offsets=[0, _ty, j, 0],
-                                src_sizes=[1, 1, 1, tile_bytes],
-                                src_strides=[
-                                    herd_n * k_per_l2 * tile_bytes,
-                                    k_per_l2 * tile_bytes,
-                                    tile_bytes,
-                                    1,
-                                ],
-                            )
-                            l1_c_subview = subview(
-                                _l1_c,
-                                offsets=[_tx, _ty, 0, 0, 0, 0],
-                                sizes=[
-                                    1,
-                                    1,
-                                    tile_n // t,
-                                    tile_m // r,
-                                    r,
-                                    t,
-                                ],
-                                strides=[1, 1, 1, 1, 1, 1],
-                            )
-                            CallOp(matmul_func, [_l1_a, _l1_b, l1_c_subview])
-                            yield_([])
+                                    ops.load(l1_b, l2_b[ty, j, :])
+                                    matmul(l1_a, l1_b, acc)
 
-                        DeallocOp(_l1_a)
-                        DeallocOp(_l1_b)
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
+                        name="herd_0",
+                        shape=(herd_m, herd_n),
+                    ) as drain_herd:
 
-                    yield_([])
+                        @drain_herd.body
+                        def _(tx, ty):
+                            to_bf16(acc, drain)
+                            # The inverse walk: put the M axes back outside the
+                            # N ones. The 6-D form is deliberate -- it lets the
+                            # BD optimizer collapse (m_b, m_i) into a single
+                            # dimension, which is what fits an AIE2P 3-dim BD.
+                            ops.store(
+                                drain[tx, ty, :, :, :, :].transpose(0, 1, 3, 4, 2, 5),
+                                l2_c[tx, ty, :, :],
+                            )
 
-                # ---- Herd #3: drain f32 L1 C -> bf16 L1 C drain -> L2.
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[l1_c_data, l1_c_drain, l2_c_data],
-                )
-                def herd_drain(
-                    _tx,
-                    _ty,
-                    _sx,
-                    _sy,
-                    _l1_c,
-                    _l1_c_drain,
-                    _l2_c,
-                ):
-                    l1_c_acc_sv = subview(
-                        _l1_c,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[1, 1, tile_n // t, tile_m // r, r, t],
-                        strides=[1, 1, 1, 1, 1, 1],
-                    )
-                    l1_c_drain_sv = subview(
-                        _l1_c_drain,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[1, 1, tile_n // t, tile_m // r, r, t],
-                        strides=[1, 1, 1, 1, 1, 1],
-                    )
-                    CallOp(f32_to_bf16_func, [l1_c_acc_sv, l1_c_drain_sv])
-                    # L1 (block) -> L2 (row-major), 6D src permute matches bf16.
-                    dma_memcpy_nd(
-                        _l2_c,
-                        _l1_c_drain,
-                        dst_offsets=[_tx, _ty, 0, 0],
-                        dst_sizes=[1, 1, tile_m, tile_n],
-                        dst_strides=[
-                            herd_n * tile_m * tile_n,
-                            tile_m * tile_n,
-                            tile_n,
-                            1,
-                        ],
-                        src_offsets=[_tx, _ty, 0, 0, 0, 0],
-                        src_sizes=[
-                            1,
-                            1,
-                            tile_m // r,
-                            r,
-                            tile_n // t,
-                            t,
-                        ],
-                        # 6D src strides chosen so the BD optimizer collapses
-                        # (m_b, m_i) into a single dim, fitting AIE2P 3-dim BDs.
-                        src_strides=[
-                            herd_n * tile_m * tile_n,
-                            tile_m * tile_n,
-                            r * t,  # m_b: skip one M-block
-                            t,  # m_i: next row within block
-                            tile_m * t,  # n_b: skip one M-block column
-                            1,  # n_i
-                        ],
+                    ops.store(
+                        l2_c.transpose(0, 2, 1, 3),
+                        C[row : row + l2_m, col : col + l2_n],
                     )
 
-                dma_memcpy_nd(
-                    l3_c_data_s,
-                    l2_c_data,
-                    dst_offsets=[launch_offset_x, launch_offset_y],
-                    dst_sizes=[herd_m * tile_m, herd_n * tile_n],
-                    dst_strides=[n, 1],
-                    src_offsets=[0, 0, 0, 0],
-                    src_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    src_strides=[
-                        tile_m * herd_n * tile_n,
-                        tile_n,
-                        tile_m * tile_n,
-                        1,
-                    ],
-                )
-
-                DeallocOp(l2_a_data)
-                DeallocOp(l2_b_data)
-                DeallocOp(l2_c_data)
-                DeallocOp(l1_c_data)
-                DeallocOp(l1_c_drain)
+    # bfp16ebs8 is an AIE2P datatype and both lits are REQUIRES: ryzen_ai_npu2,
+    # so the module is npu2-specific before the herd is even sized.
+    return launch.build(target="npu2")
 
 
 if __name__ == "__main__":
