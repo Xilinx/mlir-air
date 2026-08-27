@@ -226,3 +226,48 @@ def a_reduction_operand_may_broadcast():
             scalar=True,
         ).mlir()
     )
+
+
+# CHECK-LABEL: TEST: operands_broadcast_against_each_other
+# [tm, 1] and [1, N] reduce over [tm, N], and neither operand has that shape.
+# Taking the widest leaf instead of broadcasting them together would pick one of
+# the two and then reject the other, so this pins the two-sided rule.
+# CHECK: scf.for
+# CHECK: vector.reduction <add>
+@run
+def operands_broadcast_against_each_other():
+    A = air.tensor([256, 16], bf16)
+    OUT = air.tensor([256], bf16)
+
+    with air.launch(name="bc") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(0, 256, 256), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    col = air.alloc([256, 1], bf16, scope=h.private())
+                    row = air.alloc([1, 16], bf16, scope=h.private())
+                    o = air.alloc([256], bf16, scope=h.private())
+                    air.ops.load(col, A[0:256, 0:1])
+                    o[:] = air.ops.reduce_add(col[:] * row[:])
+                    air.ops.store(o, OUT[0:256])
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: the_scratch_outlives_a_strip_mined_run
+# Four tiles onto a two-wide herd, so the body is strip-mined and runs twice.
+# The scratch is allocated once above the strip loop, and its dealloc has to sit
+# once *below* it: freeing it inside the loop would leave the second trip
+# reading a dead buffer. The alloc, the whole strip loop, and only then the
+# dealloc.
+# CHECK: %[[S:.*]] = memref.alloc() : memref<16xbf16, 2 : i32>
+# CHECK: scf.for
+# CHECK: vector.reduction <add>
+# CHECK: memref.dealloc %[[S]] : memref<16xbf16, 2 : i32>
+# CHECK-NOT: memref.dealloc %[[S]]
+@run
+def the_scratch_outlives_a_strip_mined_run():
+    print(build(lambda a: air.ops.reduce_add(a[:]), M=1024, N=32, tile=256).mlir())

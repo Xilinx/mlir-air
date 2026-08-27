@@ -2000,7 +2000,7 @@ def _():
 # `reduce_add((x - mean) * (x - mean))` with a per-row scalar mean -- but the
 # rule is still numpy's, so a mismatched extent is refused rather than stretched.
 # CHECK: ValueError: shape mismatch inside a reduction
-# CHECK-SAME: does not broadcast to the first
+# CHECK-SAME: do not broadcast together
 @expect(ValueError, "a_reduction_operand_that_does_not_broadcast")
 def _():
     def body(h, tx, ty, A, B, C):

@@ -1104,8 +1104,19 @@ class HerdContext:
             )
         with InsertionPoint.at_block_begin(self._entry_block):
             buf = alloc([int(lanes)], dtype, scope=self.private(), _hoisted=True)
+        # Kept out of _buffers, which is freed at the end of every strip-mined
+        # run. A scratch buffer outlives those: it is allocated once above the
+        # strip loop and reused by every trip, so a dealloc inside the loop
+        # would free it after the first trip and leave the rest reading a dead
+        # buffer. It is freed once, after the strip nest, by _free_scratch.
+        self._buffers.remove(buf)
         self._scratch[key] = buf
         return buf
+
+    def _free_scratch(self):
+        """Dealloc the reduction scratch, once, after the strip-mined runs."""
+        free_buffers(list(self._scratch.values()))
+        self._scratch.clear()
 
     # -- emission -----------------------------------------------------------
 
@@ -1222,9 +1233,13 @@ class HerdContext:
             outer_depth = enter_body()
             try:
                 run_strip_mined(run, herd_self.repeats, range_, yield_)
+                # After the strip nest, not inside it: one alloc above the loop
+                # needs one dealloc below it.
+                herd_self._free_scratch()
             finally:
                 exit_body(outer_depth)
                 herd_self._buffers.clear()
+                herd_self._scratch.clear()
                 for t, v in zip(tensors, saved):
                     t.value = v
                 for b, v in zip(staged, saved_staged):

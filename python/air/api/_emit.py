@@ -144,6 +144,33 @@ def _broadcast_offset(shape, dst_shape):
     return offset
 
 
+def _broadcast_shape(shapes):
+    """numpy's broadcast of several shapes, or None if they do not agree.
+
+    Right-aligned, each axis is the one non-1 extent among the operands, or 1
+    when they are all 1. Unlike ``_broadcast_offset`` this is two-sided -- there
+    is no destination to broadcast *to* yet, which is the situation inside a
+    reduction, where the collapsed shape is whatever the operands together say
+    it is.
+    """
+    rank = max(len(s) for s in shapes)
+    out = []
+    for axis in range(rank):
+        extent = 1
+        for shape in shapes:
+            i = axis - (rank - len(shape))
+            if i < 0:
+                continue
+            e = shape[i]
+            if e == 1:
+                continue
+            if extent not in (1, e):
+                return None
+            extent = e
+        out.append(extent)
+    return tuple(out)
+
+
 def _pins_an_axis(shape, dst_shape):
     """Does reading ``shape`` as ``dst_shape`` pin one of its axes to 0?
 
@@ -433,13 +460,19 @@ def _emit_reduce(dst, expr):
     # from the operand's own leaves: that dimension is what gets collapsed, so
     # it is the one thing the destination cannot tell us.
     leaves = operand.leaves()
-    # The shape being reduced is the widest leaf's. The others broadcast to it,
-    # exactly as they would in an elementwise assignment: a variance is
+    # The shape being reduced is every leaf broadcast together, exactly as an
+    # elementwise assignment broadcasts them: a variance is
     # `reduce_add((x - mean) * (x - mean))` with mean a per-row scalar, and
-    # numpy stretches it the same way. What the collapsed axis means is fixed by
-    # the widest operand, so a leaf of extent 1 there is a scalar being
-    # stretched and not a different reduction.
-    src_shape = max((leaf.shape for leaf in leaves), key=len)
+    # numpy stretches it the same way. Taking the widest leaf instead would be
+    # right only when one leaf already covers every axis -- [tm, 1] with [1, N]
+    # broadcast to [tm, N] and neither operand is that shape.
+    src_shape = _broadcast_shape([leaf.shape for leaf in leaves])
+    if src_shape is None:
+        raise ValueError(
+            f"shape mismatch inside a reduction: operands have shapes "
+            f"{[tuple(leaf.shape) for leaf in leaves]} and do not broadcast "
+            f"together. Right-aligned, every axis must either agree or be 1"
+        )
     for leaf in leaves:
         if _broadcast_offset(leaf.shape, src_shape) is None:
             raise ValueError(
@@ -484,7 +517,11 @@ def _emit_reduce(dst, expr):
     # 768-lane vector, which is what the backend refuses
     # (`G_EXTRACT_VECTOR_ELT <768 x s16>`). When the axis is one step, this is
     # the whole-axis read the emitter has always done, unchanged.
-    lanes = _reduce_lanes(max(leaves, key=lambda l: len(l.shape)), axis)
+    # The step width comes from a leaf that actually spans the reduced axis. A
+    # leaf pinned at extent 1 there is splatted, not stepped, so its own width
+    # says nothing about how far each step should advance.
+    spanning = [leaf for leaf in leaves if leaf.shape and leaf.shape[-1] == axis]
+    lanes = _reduce_lanes(spanning[0], axis) if spanning else axis
     minor = _minor(len(src_shape))
     regions = {d: _Region(d, lanes, True) for d in _regions_in(operand, dtype, [])}
     kind = (_REDUCE_F if dtype.is_float else _REDUCE_I)[expr.op]
