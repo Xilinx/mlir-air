@@ -145,10 +145,12 @@ def run_one(harness, m, k, n, method, tile, herd, perf_iters, timeout, lock):
     # METHOD is a high-precision-only knob; the low-precision path rejects it.
     if _HIGH_PRECISION[method] == "true":
         cmd.append(f"METHOD={method}")
-    # Serialize on the shared NPU lock PER CONFIG, not around the whole sweep:
-    # a full run is hours, and most of each config is compilation that needs no
-    # device. Holding the lock throughout would block every other user of the
-    # box for the duration.
+    # Take the shared NPU lock PER CONFIG rather than around the whole sweep.
+    # The lock still spans this entire `make run`, compilation included -- the
+    # harness builds and runs in one invocation, so this does NOT let anyone
+    # else compile while we do. What it buys is a release point between every
+    # config: another user waits for the config in flight, not for the hours
+    # this sweep takes end to end.
     if lock:
         cmd = ["flock", "-x", "-w", str(timeout), lock] + cmd
     t0 = time.time()
@@ -167,19 +169,24 @@ def run_one(harness, m, k, n, method, tile, herd, perf_iters, timeout, lock):
         # A build that cannot fit L1 is an expected prune, not an error.
         why = "build/run failed" if g is None else "numerical mismatch"
         return False, None, None, dt, why
-    return (
-        True,
-        float(g.group(1)) if g else None,
-        float(r.group(1)) if r else None,
-        dt,
-        "",
-    )
+    if g is None or r is None:
+        # rc==0 but the harness printed no throughput or no precision line --
+        # usually --perf-iters 0, or its output format drifted. Recording this
+        # as a success would put a metric-less row in the results file, which
+        # resume would then treat as measured and emit would silently drop.
+        missing = " and ".join(
+            n for n, m in (("throughput", g), ("precision", r)) if m is None
+        )
+        return False, None, None, dt, f"no {missing} line in harness output"
+    return True, float(g.group(1)), float(r.group(1)), dt, ""
 
 
 def emit(results, target_m, reg):
     """Fold measured configs into registry-shaped shape entries."""
     by_shape = {}
     for rec in results:
+        # The gflops guard is redundant for rows this driver writes now, but a
+        # results file from before that fix can still hold ok-but-metric-less rows.
         if not rec["ok"] or rec["gflops"] is None:
             continue
         key = (rec["K"], rec["N"])
@@ -333,7 +340,8 @@ def main():
             out_path.write_text(json.dumps(results, indent=2))
         done_s = time.time() - t_start
         eta = done_s / i * (len(jobs) - i)
-        status = f"{g:8.0f} GFLOP/s rel={rel:.1e}" if ok and g else f"SKIP ({note})"
+        # ok now implies both metrics parsed, so neither format can see None.
+        status = f"{g:8.0f} GFLOP/s rel={rel:.1e}" if ok else f"SKIP ({note})"
         print(
             f"  [{i}/{len(jobs)}] K{k} N{n} {method:<11} {status}"
             f"  {dt:5.0f}s  eta {eta/60:.0f}m",
