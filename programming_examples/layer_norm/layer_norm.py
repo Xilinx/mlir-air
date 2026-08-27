@@ -1,273 +1,132 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Affine LayerNorm over [M, N], on air.api.
 
-"""Vectorized Layer Normalization Example (with affine weight + bias)
+Row by row, following the GPU/PyTorch standard:
 
-Implements affine layer normalization on a 2D input [M, N]:
-  1. mean = sum(x, axis=-1) / N                    (F32 reduction)
-  2. var  = sum((x - mean)^2, axis=-1) / N          (F32 reduction)
-  3. rstd = 1 / sqrt(var + eps)                      (F32)
-  4. y    = (x - mean) * rstd * weight + bias        (bf16 epilogue)
+    mean = sum(x) / N                       accumulated in f32
+    var  = sum((x - mean)^2) / N            accumulated in f32
+    rstd = rsqrt(var + eps)                 scalar, f32
+    y    = (x - mean) * rstd * weight + bias
 
-The affine parameters `weight` (gamma) and `bias` (beta) both have shape [N]
-and are shared across all M rows. This matches HuggingFace / PyTorch
-`nn.LayerNorm` — the accuracy-critical reductions (mean and variance) run in
-FP32; only the per-element epilogue runs in the bf16 vector unit.
+The two reductions and the rsqrt run in f32 because that is where LayerNorm's
+accuracy lives; the per-element epilogue runs in bf16 vectors, because the AIE
+vector unit does not legalize f32 vector elementwise ops. `ops.cast` marks that
+boundary, and everything below a cast is read and computed in the source type,
+so the region each step runs in is visible in the expression rather than left to
+a convention.
 
-Two herd modes share the same math:
-  * single-tile (herd_x=1): one AIE tile loops over all M rows.
-  * multi-tile  (herd_x=8): the M rows are split across `herd_x` AIE columns
-    (full NPU2 chip width) — LayerNorm is row-independent, so this is a pure
-    memory-bandwidth win. weight/bias [N] are broadcast to every column.
+**weight and bias share one flat [2N] buffer**, `[0:N]` weight and `[N:2N]`
+bias, because AIE per-tile routing caps at about three L3 streams and
+in + weight + bias + out is four. The halves are read straight out of it:
 
-Computation is vectorized using vector.transfer_read/write with a
-configurable VECTOR_SIZE (default 16 for AIE2/AIE2P).
+    out[:] = (row[:] - mean[:]) * rstd[:] * param[0:N] + param[N : 2 * N]
+
+Each half is a plain region of the packed buffer, which is an ordinary
+elementwise operand, so the packing costs nothing to read. The predecessor
+carved the same two halves out with `memref.subview` plus a hand-added
+`arith.addi(j, N)`.
+
+`mean` and `rstd` are [1, 1] buffers multiplied against a [1, N] row -- numpy
+broadcasting along the innermost axis, which the DSL lowers to `memref.load`
+plus `vector.broadcast` where the predecessor built the broadcast by hand and
+threaded it through three loop nests.
+
+N is 768 by default, far longer than one vector, so both reductions are read in
+vector-width steps with the partials accumulated through an L1 scratch buffer --
+the same structure the predecessor wrote by hand, and the reason it is not one
+768-lane `vector.reduction` (that does not legalize).
+
+`build_module` returns the **module**, not the launch, unlike the other
+converted examples: smolvla's vision builders do
+`str(build_layer_norm(seq_len, emb_dim, bfloat16, 16, herd_x=8))`, so the
+signature and the return type are a contract.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith, math as math_dialect
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import (
-    transfer_read,
-    transfer_write,
-    BroadcastOp,
-    reduction as vector_reduction,
-)
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
-
-# SigLIP LayerNorm uses eps=1e-6; the example default is 1e-5. The difference
-# is negligible versus the bf16 datapath error, so we keep 1e-5 here (record
-# the value used in the registry page).
 EPS = 1e-5
 
 
-@module_builder
-def build_module(M, N, np_dtype, vector_size=16, herd_x=1):
-    xrt_dtype = type_mapper(np_dtype)
-    assert (
-        N % vector_size == 0
-    ), f"N ({N}) must be divisible by vector_size ({vector_size})"
-
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-    # FP32 compute types. Following the GPU/PyTorch standard (torch LayerNorm /
-    # HF *LayerNorm), the accuracy-critical reductions (mean, then variance) are
-    # done in f32: bf16 inputs are upcast and both sums are accumulated in an f32
-    # buffer, with the scalar rsqrt also in f32. The per-element epilogue
-    # ((x-mean) * rstd * weight + bias) then runs in bf16 vectors — the aie
-    # vector unit does not legalize f32 vector elementwise ops — so the only
-    # remaining quantization is the single bf16 output rounding, as in a
-    # standard GPU LayerNorm.
-    f32 = F32Type.get()
-    vecTyF32 = VectorType.get([vector_size], f32)
-
-    # L3 types
-    l3MemrefTy = MemRefType.get([M, N], xrt_dtype)
-    # weight (gamma) and bias (beta) are packed into a single flat [2N] buffer
-    # ([0:N] = weight, [N:2N] = bias) so they cost ONE L3<->L1 DMA channel per
-    # tile instead of two — the AIE per-tile routing caps at ~3 L3 streams, and
-    # in + weight + bias + out = 4 exceeds that (aie.connect routing failure).
-    l3ParamTy = MemRefType.get([2 * N], xrt_dtype)
-
-    # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get([N], xrt_dtype, memory_space=l1_mem_space)
-    l1ParamTy = MemRefType.get([2 * N], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTyF32 = MemRefType.get([vector_size], f32, memory_space=l1_mem_space)
-    # Small bf16 scratch to break mulf->addf def-use chains (see Steps 2 & 4):
-    # aievec rejects an addf whose operand comes directly from a mulf, so we
-    # round-trip the product through a dedicated L1 scratch buffer.
-    l1SqTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
-
-    def emit_body(l3_in, l3_param, l3_out, row_iter, tx=None, row_map=None):
-        """Emit the per-tile LayerNorm body. `row_iter` yields the loop trip
-        count; the global row index is computed from row_map when multi-tile.
-        `l3_param` is the packed [2N] weight||bias buffer."""
-        l1_row = AllocOp(l1RowTy, [], [])
-        l1_out = AllocOp(l1RowTy, [], [])
-        l1_param = AllocOp(l1ParamTy, [], [])  # [0:N]=weight, [N:2N]=bias
-        l1_acc = AllocOp(l1VecTyF32, [], [])
-        l1_sq = AllocOp(l1SqTy, [], [])
-
-        c0 = arith.ConstantOp.create_index(0)
-        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-        cst0_f32 = arith.ConstantOp(f32, 0.0)
-        n_f = arith.ConstantOp(f32, float(N))
-        eps_f = arith.ConstantOp(f32, EPS)
-
-        v_zero_f32 = BroadcastOp(vecTyF32, cst0_f32)
-
-        # DMA the packed weight||bias [2N] buffer to L1 in one transfer (shared
-        # across all rows / broadcast to tiles). One DMA channel, not two — the
-        # AIE per-tile routing caps at ~3 L3 streams; in + weight + bias + out
-        # = 4 overflows it (aie.connect routing failure).
-        dma_memcpy_nd(
-            l1_param, l3_param, src_offsets=[0], src_sizes=[2 * N], src_strides=[1]
+def build_launch(M, N, dtype=bf16, vector=16, herd_x=1):
+    """The launch; `build_module` wraps this and returns the module."""
+    if vector and N % vector:
+        raise ValueError(f"N ({N}) must be divisible by the vector width ({vector})")
+    if M % herd_x:
+        raise ValueError(
+            f"M ({M}) must be divisible by herd_x ({herd_x}): every tile takes "
+            "the same number of rows, and there is no remainder path."
         )
+    rows_per_tile = M // herd_x
 
-        for it in range_(row_iter):
-            if row_map is not None:
-                row = affine_apply(row_map, [it, tx])
-            else:
-                row = it
-            # DMA: load one row from L3 to L1
-            dma_memcpy_nd(
-                l1_row,
-                l3_in,
-                src_offsets=[row, 0],
-                src_sizes=[1, N],
-                src_strides=[N, 1],
-            )
+    X = air.tensor([M, N], dtype)
+    # weight || bias, one DMA rather than two.
+    PARAM = air.tensor([2 * N], dtype)
+    Y = air.tensor([M, N], dtype)
 
-            # Step 1: sum(x) accumulated in F32 (for the mean).
-            transfer_write(None, v_zero_f32, l1_acc, [c0], identity_map, [True])
-            for j in range_(0, N, vector_size):
-                sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                v_x = transfer_read(vecTy, sub_row, [c0], identity_map, cst0, [True])
-                v_x_f32 = arith.extf(vecTyF32, v_x)
-                v_acc = transfer_read(
-                    vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
-                )
-                v_sum = arith.addf(v_acc, v_x_f32)
-                transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
-                yield_([])
+    with air.launch(name="layer_norm") as launch:
 
-            v_final = transfer_read(
-                vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
-            )
-            sum_x = vector_reduction(f32, "add", v_final)
-            mean_f32 = arith.divf(sum_x, n_f)
-            # bf16 mean for the vector subtraction (f32 vector elementwise not
-            # legalized); mean itself was computed in f32.
-            mean = arith.truncf(xrt_dtype, mean_f32)
-            v_mean = BroadcastOp(vecTy, mean)
+        @launch.body
+        def _():
+            with air.herd([range(herd_x)], name="herd_0", shape=(herd_x,)) as herd:
 
-            # Step 2: var = sum((x - mean)^2) / N, accumulated in F32.
-            transfer_write(None, v_zero_f32, l1_acc, [c0], identity_map, [True])
-            for j in range_(0, N, vector_size):
-                sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                v_x = transfer_read(vecTy, sub_row, [c0], identity_map, cst0, [True])
-                v_diff = arith.subf(v_x, v_mean)
-                v_sq = arith.mulf(v_diff, v_diff)
-                # break the mulf->addf chain via an L1 scratch round-trip.
-                transfer_write(None, v_sq, l1_sq, [c0], identity_map, [True])
-                v_sq_rd = transfer_read(vecTy, l1_sq, [c0], identity_map, cst0, [True])
-                v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
-                v_acc = transfer_read(
-                    vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
-                )
-                v_sum = arith.addf(v_acc, v_sq_f32)
-                transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
-                yield_([])
+                @herd.body
+                def _(tx):
+                    row = air.alloc([1, N], dtype, scope=herd.private(), vector=vector)
+                    out = air.alloc([1, N], dtype, scope=herd.private(), vector=vector)
+                    # Shared by every row of this tile, so it is fetched once,
+                    # above the loop.
+                    param = air.alloc(
+                        [2 * N], dtype, scope=herd.private(), vector=vector
+                    )
+                    acc = air.alloc([1, 1], f32, scope=herd.private(), vector=vector)
+                    mean = air.alloc([1, 1], dtype, scope=herd.private(), vector=vector)
+                    rstd = air.alloc([1, 1], dtype, scope=herd.private(), vector=vector)
 
-            v_var = transfer_read(
-                vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
-            )
-            var_sum = vector_reduction(f32, "add", v_var)
-            variance = arith.divf(var_sum, n_f)
+                    ops.load(param, PARAM[:])
 
-            # Step 3: rstd = rsqrt(var + eps) in f32, truncate scalar to bf16.
-            var_eps = arith.addf(variance, eps_f)
-            rstd_f32 = math_dialect.rsqrt(var_eps)
-            rstd = arith.truncf(xrt_dtype, rstd_f32)
-            v_rstd = BroadcastOp(vecTy, rstd)
+                    for it in air.sequential(rows_per_tile):
+                        r = it + tx * rows_per_tile
+                        ops.load(row, X[r : r + 1, :])
 
-            # Step 4: y = (x - mean) * rstd * weight + bias (bf16 vector).
-            # weight lives at l1_param[j], bias at l1_param[N + j].
-            for j in range_(0, N, vector_size):
-                jb = arith.addi(j, arith.ConstantOp.create_index(N))
-                sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                sub_w = subview(l1_param.result, [j], [vector_size], [1])
-                sub_b = subview(l1_param.result, [jb], [vector_size], [1])
-                sub_out = subview(l1_out.result, [j], [vector_size], [1])
-                v_x = transfer_read(vecTy, sub_row, [c0], identity_map, cst0, [True])
-                v_w = transfer_read(vecTy, sub_w, [c0], identity_map, cst0, [True])
-                v_b = transfer_read(vecTy, sub_b, [c0], identity_map, cst0, [True])
-                v_diff = arith.subf(v_x, v_mean)
-                v_normed = arith.mulf(v_diff, v_rstd)
-                v_weighted = arith.mulf(v_normed, v_w)
-                # break the mulf->addf chain before adding bias.
-                transfer_write(None, v_weighted, l1_sq, [c0], identity_map, [True])
-                v_weighted_rd = transfer_read(
-                    vecTy, l1_sq, [c0], identity_map, cst0, [True]
-                )
-                v_out = arith.addf(v_weighted_rd, v_b)
-                transfer_write(None, v_out, sub_out, [c0], identity_map, [True])
-                yield_([])
+                        # mean, accumulated in f32
+                        acc[:] = ops.reduce_add(ops.cast(row[:], f32))
+                        mean[:] = ops.cast(acc[:] * (1.0 / N), dtype)
 
-            # DMA: write result row from L1 to L3
-            dma_memcpy_nd(
-                l3_out,
-                l1_out,
-                dst_offsets=[row, 0],
-                dst_sizes=[1, N],
-                dst_strides=[N, 1],
-            )
+                        # variance: the difference and its square are bf16 and
+                        # the accumulation f32 -- the predecessor's split.
+                        acc[:] = ops.reduce_add(
+                            ops.cast((row[:] - mean[:]) * (row[:] - mean[:]), f32)
+                        )
+                        rstd[:] = ops.cast(ops.rsqrt(acc[:] * (1.0 / N) + EPS), dtype)
 
-            yield_([])
+                        out[:] = (row[:] - mean[:]) * rstd[:] * param[0:N] + param[
+                            N : 2 * N
+                        ]
 
-        DeallocOp(l1_row)
-        DeallocOp(l1_out)
-        DeallocOp(l1_param)
-        DeallocOp(l1_acc)
-        DeallocOp(l1_sq)
+                        ops.store(out, Y[r : r + 1, :])
 
-    if herd_x > 1:
-        assert M % herd_x == 0
-        rows_per_tile = M // herd_x
-        # Map: global_row = local_row + tx * rows_per_tile
-        row_map = AffineMap.get(
-            0,
-            2,
-            [
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(1), AffineConstantExpr.get(rows_per_tile)
-                    ),
-                )
-            ],
+    return launch
+
+
+def build_module(M, N, np_dtype=bfloat16, vector_size=16, herd_x=1, target="npu2"):
+    """The MLIR module. Signature and return type are smolvla's contract."""
+    if np_dtype is not bfloat16:
+        raise NotImplementedError(
+            f"layer_norm is bf16 only, got {np_dtype!r}: the epilogue runs in "
+            "bf16 vectors because the AIE vector unit does not legalize f32 "
+            "vector elementwise ops."
         )
-
-        @FuncOp.from_py_func(l3MemrefTy, l3ParamTy, l3MemrefTy)
-        def layer_norm(arg0, arg1, arg2):
-
-            @herd(
-                name="herd_0",
-                sizes=[herd_x, 1],
-                operands=[arg0, arg1, arg2],
-            )
-            def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_param, l3_out):
-                emit_body(
-                    l3_in,
-                    l3_param,
-                    l3_out,
-                    rows_per_tile,
-                    tx=_tx,
-                    row_map=row_map,
-                )
-
-        return  # end of herd_x > 1 path
-
-    # Single-tile path (herd_x == 1)
-    @FuncOp.from_py_func(l3MemrefTy, l3ParamTy, l3MemrefTy)
-    def layer_norm(arg0, arg1, arg2):
-
-        @herd(name="herd_0", sizes=[1, 1], operands=[arg0, arg1, arg2])
-        def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_param, l3_out):
-            emit_body(l3_in, l3_param, l3_out, M)
+    return build_launch(M, N, bf16, vector_size, herd_x).build(target=target)
 
 
 def layer_norm_reference(x, weight, bias, eps=EPS):
@@ -294,6 +153,12 @@ if __name__ == "__main__":
         "--N", type=int, default=768, help="Cols (default: SigLIP hidden dim)"
     )
     parser.add_argument("--vector-size", type=int, default=16)
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="npu2",
+        help="NPU generation to build for (npu2; the epilogue is AIE2P bf16)",
+    )
     parser.add_argument(
         "--herd-x",
         type=int,
@@ -328,7 +193,9 @@ if __name__ == "__main__":
     herd_x = args.herd_x
     print(f"LayerNorm (affine): M={M}, N={N}, herd=[{herd_x},1]")
 
-    mlir_module = build_module(M, N, bfloat16, args.vector_size, herd_x=herd_x)
+    mlir_module = build_module(
+        M, N, bfloat16, args.vector_size, herd_x=herd_x, target=args.target
+    )
     if args.print_module_only:
         print(mlir_module)
         exit(0)
