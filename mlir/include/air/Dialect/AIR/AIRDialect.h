@@ -49,7 +49,6 @@ constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // un-coalesced feed.
 constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
-constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
 // Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
 // buffer per production. Carried on the air.channel declaration, on a channel
 // put/get, or on the source memref.alloc of a memtile producer; read via

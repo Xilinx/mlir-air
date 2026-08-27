@@ -24,24 +24,6 @@
 
 using namespace mlir;
 
-namespace {
-// A channel declared with `air.dedicated_dma_channel` must get its OWN physical
-// DMA channel and never be time-multiplexed (packet-collapsed) with any other
-// flow on the same tile, in either direction. Used to keep a latency-critical
-// packet flow off a shared DMA channel that another (e.g. later-phase) flow
-// would otherwise collapse onto and BD-order ahead of -- starving the first
-// flow's consumer. Honored by the packet-reuse branches of both the shim and
-// MemTile DMA allocators.
-bool memcpyIsDedicatedChannel(xilinx::air::MemcpyInterface mc) {
-  auto chan = mlir::dyn_cast_if_present<xilinx::air::ChannelInterface>(
-      mc.getOperation());
-  if (!chan)
-    return false;
-  auto decl = xilinx::air::getChannelDeclarationThroughSymbol(chan);
-  return decl && decl->hasAttr(xilinx::air::attrs::DedicatedDmaChannel);
-}
-} // namespace
-
 namespace xilinx {
 
 FailureOr<bool> air::isTileInbound(air::MemcpyInterface memcpyOp,
@@ -980,15 +962,6 @@ bool xilinx::air::allocation_info_t::foundSameLogicalFlowInTile(
   return false;
 }
 
-bool xilinx::air::allocation_info_t::containsDedicatedChannel() {
-  for (auto o : memcpyOps) {
-    auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
-    if (existingMc && memcpyIsDedicatedChannel(existingMc))
-      return true;
-  }
-  return false;
-}
-
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -1601,8 +1574,7 @@ void air::TileDMAAllocator::repairS2MMChains(
     Operation *peelDecl = nullptr;
     std::vector<Operation *> moved, rest;
     for (auto *d : decls) {
-      if (d->hasAttr(air::attrs::TileDmaChannel) ||
-          d->hasAttr(air::attrs::DedicatedDmaChannel))
+      if (d->hasAttr(air::attrs::TileDmaChannel))
         continue;
       std::vector<Operation *> m, r;
       for (auto *o : ops)
@@ -1718,8 +1690,7 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
   // consulted: a broadcast constrains the SOURCE port it fans out from, which
   // says nothing about which channel each receiving core takes it in on.
   auto isImmovable = [](Operation *decl) {
-    return decl->hasAttr(air::attrs::TileDmaChannel) ||
-           decl->hasAttr(air::attrs::DedicatedDmaChannel);
+    return decl->hasAttr(air::attrs::TileDmaChannel);
   };
   // Whether the flow this transfer belongs to travels as packets. Read from the
   // memcpy op, the same way simpleDmaChannelAlloc decides whether to multiplex,
@@ -2560,14 +2531,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   // For packet flows: reuse the bucket's existing packet channel if any.
-  // EXCEPT `air.dedicated_dma_channel` (mirrors MemTileDMAAllocator), which is
-  // never collapsed in either direction: a dedicated flow does not reuse an
-  // existing packet channel (guarded here), and an unmarked flow does not reuse
-  // a channel that already hosts a dedicated flow (skipped in the walk below).
-  // This lets a column host BOTH a packet-multiplexed channel and a separate
-  // dedicated channel on the same column's other DMA channel, regardless of
-  // allocation order.
-  if (isPacketFlowOp && !memcpyIsDedicatedChannel(memcpyOp)) {
+  if (isPacketFlowOp) {
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
@@ -2601,8 +2565,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
             declOf(t.memcpyOps.empty() ? nullptr : t.memcpyOps.front()) !=
                 thisDecl)
           continue;
-        // Never collapse onto a channel that hosts a dedicated flow.
-        if (tPacket && !t.containsDedicatedChannel()) {
+        if (tPacket) {
           packetLT = lt;
           packetCh = (int)t.dma_channel.channel;
           return true;
@@ -2958,8 +2921,7 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
   // flow on the chain whose destination differs from the rest, and the column
   // lost the port diversity an unrelated convergent group needed.
   auto isImmovable = [](Operation *decl) {
-    return decl->hasAttr("broadcast_shape") ||
-           decl->hasAttr(air::attrs::DedicatedDmaChannel);
+    return decl->hasAttr("broadcast_shape");
   };
 
   for (auto *allocs : {&mm2s_allocs, &s2mm_allocs}) {
@@ -3144,7 +3106,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Reuse an existing DMA channel on this tile instead of allocating a new
-    // one. Never collapse a channel marked air.dedicated_dma_channel, nor
+    // one. Never collapse
     // collapse onto an allocation that already hosts one (either direction).
     //   - MM2S (source) side collapses promiscuously onto a packet-flow
     //     channel (broadcast fan-out / pkt_id multiplexing rely on it), and
@@ -3161,7 +3123,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     //     time-multiplex a single channel as sequential BD tasks. Collapsing
     //     circuit flows too keeps a memtile that also carries a wide broadcast
     //     from exhausting its S2MM channels on same-flow refills.
-    if (!memcpyIsDedicatedChannel(memcpyOp) && !t.containsDedicatedChannel()) {
+    {
       bool canCollapse =
           isMM2S.value()
               ? ((isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) ||
