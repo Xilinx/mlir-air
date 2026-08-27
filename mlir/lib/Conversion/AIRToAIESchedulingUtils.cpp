@@ -2488,7 +2488,6 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return -1;
   };
   int bucketCol = bucketColFor(col, otherSideOp);
-  // A shim-col pin forces the flow into its own bucket keyed on the pinned
   // Channel declaration behind a memcpy, or null. Sub-channels of one bundled
   // decl (e.g. @outD [2,2]) share it; independent channels do not.
   auto declOf = [](Operation *op) -> Operation * {
@@ -3106,8 +3105,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Reuse an existing DMA channel on this tile instead of allocating a new
-    // one. Never collapse
-    // collapse onto an allocation that already hosts one (either direction).
+    // one.
     //   - MM2S (source) side collapses promiscuously onto a packet-flow
     //     channel (broadcast fan-out / pkt_id multiplexing rely on it), and
     //     otherwise onto a proven-identical endpoint, same as S2MM: repeated
