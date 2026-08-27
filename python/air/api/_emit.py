@@ -197,35 +197,103 @@ def _zero_index_if(needed):
     return _result(arith.ConstantOp(IndexType.get(), 0)) if needed else None
 
 
-def _leaf_index(shape, dst_shape, ivs, zero, base=None):
-    """The indices to read a leaf of ``shape`` at, inside a nest over ``dst_shape``.
+def _axes_of(leaf):
+    """``(sizes, dropped, base)`` for a leaf, whole buffer or region alike.
+
+    A memref index has one entry per axis the *buffer* has, which is ``sizes``.
+    The elementwise shape -- what broadcasting works on -- is ``sizes`` minus
+    the axes an integer subscript took, and that is ``leaf.shape``. Keeping the
+    two apart is the whole of integer indexing: ``gu[i, j]`` reads a scalar and
+    still needs two indices to say which one.
+    """
+    sizes = getattr(leaf, "sizes", None)
+    if sizes is None:
+        # A whole buffer: every axis is walked, from zero.
+        return list(leaf.shape), [False] * len(leaf.shape), None
+    return list(sizes), list(leaf.dropped), leaf.base
+
+
+def _leaf_index(leaf, dst_shape, ivs, zero):
+    """The indices to read ``leaf`` at, inside a nest over ``dst_shape``.
 
     An axis that matches the destination's is walked with the destination's own
     induction variable; an axis of extent 1 against a wider destination is
     pinned at 0, which is what makes the read a broadcast. Axes the operand does
-    not have contribute no index at all.
+    not have contribute no index at all, and an axis an integer subscript took
+    is never walked -- it contributes its offset and nothing else.
 
-    ``base`` is the leaf's own starting offset per axis, non-zero only when the
-    leaf is a *slice* of a buffer rather than the whole of it (``gu[1, :]``).
-    It shifts each axis: a pinned axis becomes the constant, and a walked one
-    becomes ``iv + base``.
+    The offset may be a herd coordinate or a loop variable rather than a
+    constant. It materialises the same way every index in this DSL does: a
+    constant folds, anything else becomes one ``affine.apply``.
 
-    When the shapes are equal and the base is all zeros this returns ``ivs``
-    unchanged, which is what keeps every existing kernel's IR byte-identical --
-    the two new branches are reachable only from a slice leaf.
+    When the shapes are equal, nothing is dropped and the base is all zeros this
+    returns ``ivs`` unchanged, which is what keeps every kernel that predates
+    regions emitting byte-identical IR.
     """
+    sizes, dropped, base = _axes_of(leaf)
+    shape = [s for s, drop in zip(sizes, dropped) if not drop]
     offset = _broadcast_offset(shape, dst_shape)
     index = []
-    for i, extent in enumerate(shape):
-        walks = extent == dst_shape[i + offset]
+    kept = 0
+    for i, extent in enumerate(sizes):
         start = 0 if base is None else base[i]
-        if start == 0:
-            index.append(ivs[i + offset] if walks else zero)
+        if dropped[i]:
+            # An integer subscript: this axis is not part of the element shape,
+            # so no induction variable reaches it.
+            index.append(_materialize_index(start))
+            continue
+        walks = extent == dst_shape[kept + offset]
+        iv = ivs[kept + offset] if walks else None
+        kept += 1
+        if _is_zero(start):
+            index.append(iv if walks else zero)
         elif not walks:
-            index.append(_index_constant(start))
+            index.append(_materialize_index(start))
         else:
-            index.append(_result(arith.AddIOp(ivs[i + offset], _index_constant(start))))
+            index.append(_result(arith.AddIOp(iv, _materialize_index(start))))
     return index
+
+
+def _dst_index(dst, ivs):
+    """Where to write, inside a nest over the destination's element shape.
+
+    A whole buffer is written at the induction variables themselves, which is
+    what every kernel that predates region assignment emits. A region shifts
+    each axis by its own offset, and an axis an integer subscript took is
+    written at that offset alone -- so ``out[i, j, k] = ...`` nests over
+    nothing and stores at exactly ``[i, j, k]``.
+
+    The destination is not broadcast, so this is ``_leaf_index`` with the
+    element shape standing in for the destination's: every kept axis walks.
+    """
+    if getattr(dst, "sizes", None) is None:
+        return ivs
+    return _leaf_index(dst, dst.shape, ivs, None)
+
+
+def _is_zero(start):
+    """Is this offset the literal 0, needing no index arithmetic at all?"""
+    if isinstance(start, int):
+        return start == 0
+    return start.as_const() == 0
+
+
+def _materialize_index(start):
+    """An offset as an index Value: a constant folds, anything else applies.
+
+    A bare induction variable or coordinate -- one term, coefficient 1, no
+    constant -- is passed straight through. ``IndexExpr.materialize`` would wrap
+    it in an identity ``affine.apply``, which is correct but is one op per index
+    per trip; a six-deep nest indexing three buffers is where that shows.
+    """
+    if isinstance(start, int):
+        return _index_constant(start)
+    if len(start.terms) == 1 and start.const == 0:
+        ((leaf, coefficient),) = start.terms.items()
+        if coefficient == 1:
+            return leaf.value
+    value = start.materialize()
+    return _index_constant(value) if isinstance(value, int) else value
 
 
 def _index_constant(value):
@@ -235,6 +303,21 @@ def _index_constant(value):
 def _base_of(leaf):
     """A slice leaf's starting offset per axis; None for a whole buffer."""
     return getattr(leaf, "base", None)
+
+
+def _offset_key(offset):
+    """A hashable identity for one offset, constant or not.
+
+    An offset is an affine form ``sum(c_i * leaf_i) + k``, so two offsets are
+    the same index exactly when their terms and constant agree. Keying on the
+    ``IndexExpr`` object instead would read ``gu[i, :]`` twice for one region,
+    and keying on ``as_const()`` would collapse ``gu[i, :]`` and ``gu[j, :]``
+    onto a shared ``None``, which is the dangerous direction.
+    """
+    if isinstance(offset, int):
+        return ("k", offset)
+    terms = tuple(sorted((id(leaf), c) for leaf, c in offset.terms.items()))
+    return (terms, offset.const)
 
 
 def _read_key(leaf):
@@ -249,7 +332,8 @@ def _read_key(leaf):
     """
     base = _base_of(leaf)
     buffer = getattr(leaf, "buffer", leaf)
-    return (id(buffer), None if base is None else tuple(base), tuple(leaf.shape))
+    key = None if base is None else tuple(_offset_key(o) for o in base)
+    return (id(buffer), key, tuple(leaf.shape))
 
 
 def _check_region(node, dst, dtype, expected=None):
@@ -538,14 +622,14 @@ def _emit_reduce(dst, expr):
     # reduced axis's full extent is a vector read, and one of extent 1 there is
     # a single element splatted across the vector.
     def load(buf, at, region):
-        index = _leaf_index(buf.shape, src_shape, at, zero, _base_of(buf))
+        index = _leaf_index(buf, src_shape, at, zero)
         if buf.shape and buf.shape[-1] == src_shape[-1]:
             return _result(
                 transfer_read(
                     region.vec_ty,
                     buf.value,
                     index,
-                    _minor(len(buf.shape)),
+                    _minor(len(_axes_of(buf)[0])),
                     region.pad,
                     [True],
                 )
@@ -685,11 +769,7 @@ def _emit_argmax(dst, expr):
     bounds = [(0, extent, 1) for extent in src_shape[:-1]]
 
     def load(buf, ivs, region):
-        return _result(
-            memref_load(
-                buf.value, _leaf_index(buf.shape, src_shape, ivs, zero, _base_of(buf))
-            )
-        )
+        return _result(memref_load(buf.value, _leaf_index(buf, src_shape, ivs, zero)))
 
     def at(ivs, column):
         return _eval(
@@ -751,9 +831,11 @@ def _minor(rank):
 
 def _emit_vector(dst, expr, width):
     shape = dst.shape
-    rank = len(shape)
-    # Read a rank-1 vector out of a rank-N memref along the innermost dim.
-    minor = _minor(rank)
+    # Read a rank-1 vector out of a rank-N memref along the innermost dim. The
+    # rank is the *memref's*, which is the destination's element rank unless an
+    # integer subscript dropped an axis -- gu[0, :] writes into a rank-2 memref
+    # while its element shape is rank 1.
+    minor = _minor(len(_axes_of(dst)[0]))
     # One lane count for the whole nest, taken from the destination. A cast does
     # not change how many elements a trip covers, only how wide each one is, so
     # the source is read at the destination's lane count and not at its own
@@ -770,17 +852,19 @@ def _emit_vector(dst, expr, width):
     )
 
     def load(buf, ivs, region):
-        index = _leaf_index(buf.shape, shape, ivs, zero, _base_of(buf))
+        index = _leaf_index(buf, shape, ivs, zero)
         if buf.shape and buf.shape[-1] == shape[-1]:
             # The operand has the destination's innermost extent, so the vector
             # read is the ordinary one -- at the operand's own rank, which is
-            # the destination's unless leading axes were broadcast away.
+            # the destination's unless leading axes were broadcast away. The
+            # permutation map is over the *memref's* rank, which is wider than
+            # the element shape when an integer subscript dropped an axis.
             return _result(
                 transfer_read(
                     region.vec_ty,
                     buf.value,
                     index,
-                    _minor(len(buf.shape)),
+                    _minor(len(_axes_of(buf)[0])),
                     region.pad,
                     [True],
                 )
@@ -793,7 +877,7 @@ def _emit_vector(dst, expr, width):
 
     def body(ivs):
         value = _eval(expr, ivs, regions[dst.dtype], regions, True, load, {})
-        transfer_write(None, value, dst.value, ivs, minor, [True])
+        transfer_write(None, value, dst.value, _dst_index(dst, ivs), minor, [True])
 
     _nest(bounds, body)
 
@@ -808,15 +892,11 @@ def _emit_scalar(dst, expr):
     )
 
     def load(buf, ivs, region):
-        return _result(
-            memref_load(
-                buf.value, _leaf_index(buf.shape, shape, ivs, zero, _base_of(buf))
-            )
-        )
+        return _result(memref_load(buf.value, _leaf_index(buf, shape, ivs, zero)))
 
     def body(ivs):
         value = _eval(expr, ivs, regions[dst.dtype], regions, False, load, {})
-        memref_store(value, dst.value, ivs)
+        memref_store(value, dst.value, _dst_index(dst, ivs))
 
     _nest(bounds, body)
 

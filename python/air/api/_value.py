@@ -257,7 +257,7 @@ class _StridedView:
 
     __slots__ = ()
 
-    def _respan(self, offsets, sizes, strides, logical_sizes):
+    def _respan(self, offsets, sizes, strides, logical_sizes, dropped=None):
         """Build another region of the same thing. Implemented by each slice."""
         raise NotImplementedError
 
@@ -274,7 +274,15 @@ class _StridedView:
         offsets, sizes, strides = _reshape_pattern(
             self.sizes, self.strides, self.offsets, shape
         )
-        return self._respan([coerce_index(o) for o in offsets], sizes, strides, sizes)
+        # A reshaped view has no integer-subscript provenance: its axes are not
+        # the axes that were subscripted, so none of them is dropped.
+        return self._respan(
+            [coerce_index(o) for o in offsets],
+            sizes,
+            strides,
+            sizes,
+            [False] * len(sizes),
+        )
 
     def __getitem__(self, key):
         """A sub-region of this region, subscripted like the original array.
@@ -286,11 +294,12 @@ class _StridedView:
         pick of one (row, block) out of it.
         """
         key = _normalize_key(key, len(self.sizes), "region")
-        offsets, sizes = [], []
+        offsets, sizes, dropped = [], [], []
         for dim, (sub, extent) in enumerate(zip(key, self.sizes)):
-            offset, size = _resolve_subscript(sub, extent, dim)
+            offset, size, drop = _resolve_subscript(sub, extent, dim)
             offsets.append(offset)
             sizes.append(size)
+            dropped.append(drop)
         # Added to this region's own offsets, not scaled: an offset is an index
         # along its axis, which the transfer multiplies by that axis's stride --
         # the same convention Tensor.__getitem__ and Buffer.__getitem__ use, and
@@ -298,7 +307,10 @@ class _StridedView:
         combined = [
             coerce_index(base + off) for base, off in zip(self.offsets, offsets)
         ]
-        return self._respan(combined, sizes, list(self.strides), sizes)
+        # An axis this region had already dropped stays dropped: gu[0][2:6] is
+        # rank 1, as it is in numpy.
+        merged = [was or now for was, now in zip(self.dropped, dropped)]
+        return self._respan(combined, sizes, list(self.strides), sizes, merged)
 
     def transpose(self, *axes):
         """This region walked with its axes permuted.
@@ -316,6 +328,8 @@ class _StridedView:
             _permute(self.sizes, axes),
             _permute(self.strides, axes),
             _permute(self.logical_sizes, axes),
+            # A permutation moves each axis whole, so provenance travels with it.
+            _permute(self.dropped, axes),
         )
 
 
@@ -356,12 +370,13 @@ class Tensor(_Reshapable):
 
     def __getitem__(self, key):
         key = _normalize_key(key, len(self.shape), "tensor")
-        offsets, sizes = [], []
+        offsets, sizes, dropped = [], [], []
         for dim, (sub, extent) in enumerate(zip(key, self.shape)):
-            offset, size = _resolve_subscript(sub, extent, dim)
+            offset, size, drop = _resolve_subscript(sub, extent, dim)
             offsets.append(offset)
             sizes.append(size)
-        return TensorSlice(self, offsets, sizes, list(self.strides))
+            dropped.append(drop)
+        return TensorSlice(self, offsets, sizes, list(self.strides), dropped=dropped)
 
     def _whole_view(self):
         """The whole tensor as a region, for reshape/transpose to work on.
@@ -387,7 +402,15 @@ class Tensor(_Reshapable):
 
 
 def _resolve_subscript(sub, extent, dim):
-    """Turn one subscript into an (offset, static size) pair."""
+    """Turn one subscript into an ``(offset, static size, dropped)`` triple.
+
+    ``dropped`` records that the subscript was a bare integer rather than a
+    slice. numpy's rule: ``a[1, :]`` is rank 1 and ``a[1:2, :]`` is rank 2, both
+    naming the same elements. The axis is *kept* in ``sizes`` either way --
+    dropping it there would change every DMA access pattern in the tree -- so
+    the distinction is carried alongside and consulted only when the region is
+    read or written elementwise. See :attr:`BufferSlice.shape`.
+    """
     if isinstance(sub, slice):
         if sub.step not in (None, 1):
             raise NotImplementedError(
@@ -403,32 +426,57 @@ def _resolve_subscript(sub, extent, dim):
             )
         if size <= 0:
             raise ValueError(f"empty slice along dim {dim} (size {size})")
-        return start, size
+        return start, size, False
     # A bare integer index selects one element and keeps the dimension at 1.
-    return coerce_index(sub), 1
+    return coerce_index(sub), 1, True
 
 
 class TensorSlice(_StridedView):
     """An access pattern into a :class:`Tensor`: offsets, static sizes, strides."""
 
-    __slots__ = ("tensor", "offsets", "sizes", "strides", "logical_sizes", "is_view")
+    __slots__ = (
+        "tensor",
+        "offsets",
+        "sizes",
+        "strides",
+        "logical_sizes",
+        "is_view",
+        "dropped",
+    )
 
     def __init__(
-        self, tensor, offsets, sizes, strides, logical_sizes=None, is_view=False
+        self,
+        tensor,
+        offsets,
+        sizes,
+        strides,
+        logical_sizes=None,
+        is_view=False,
+        dropped=None,
     ):
         self.tensor = tensor
         self.offsets = offsets
         self.sizes = sizes
         self.strides = strides
+        # Per axis: did it come from a bare integer subscript? Carried for
+        # symmetry with BufferSlice -- a tensor is L3 and never read
+        # elementwise, so nothing consults it here.
+        self.dropped = list(dropped) if dropped is not None else [False] * len(sizes)
         # Same two fields, and the same meaning, as on BufferSlice: the region's
         # element shape, and whether reshape/transpose produced it -- which is
         # what tells a transfer to check element counts instead of axes.
         self.logical_sizes = list(sizes if logical_sizes is None else logical_sizes)
         self.is_view = is_view
 
-    def _respan(self, offsets, sizes, strides, logical_sizes):
+    def _respan(self, offsets, sizes, strides, logical_sizes, dropped=None):
         return TensorSlice(
-            self.tensor, offsets, sizes, strides, logical_sizes, is_view=True
+            self.tensor,
+            offsets,
+            sizes,
+            strides,
+            logical_sizes,
+            is_view=True,
+            dropped=dropped,
         )
 
     @property
@@ -484,13 +532,18 @@ class Buffer(_Reshapable):
         if self._is_whole(key):
             self._require_compute("read")
             return BufferExpr.leaf(self)
-        key = _normalize_key(key, len(self.shape), "buffer")
-        offsets, sizes = [], []
+        return self._region(key, "buffer")
+
+    def _region(self, key, what):
+        """The region this subscript names, keeping every axis in ``sizes``."""
+        key = _normalize_key(key, len(self.shape), what)
+        offsets, sizes, dropped = [], [], []
         for dim, (sub, extent) in enumerate(zip(key, self.shape)):
-            offset, size = _resolve_subscript(sub, extent, dim)
+            offset, size, drop = _resolve_subscript(sub, extent, dim)
             offsets.append(offset)
             sizes.append(size)
-        return BufferSlice(self, offsets, sizes, list(self.strides))
+            dropped.append(drop)
+        return BufferSlice(self, offsets, sizes, list(self.strides), dropped=dropped)
 
     def _whole_view(self):
         """The whole buffer as a region, for reshape/transpose to work on.
@@ -508,17 +561,16 @@ class Buffer(_Reshapable):
     # -- writing: this is what triggers emission ----------------------------
 
     def __setitem__(self, key, value):
-        if not self._is_whole(key):
-            raise NotImplementedError(
-                "partial assignment into a buffer is not supported yet; a "
-                "partial subscript names a DMA region, so use "
-                "air.api.ops.load(dst, src[...]) to fill one. air.api handles "
-                "whole-tile elementwise assignment (buf[:] = ...) only"
-            )
         self._require_compute("write")
         from ._emit import emit_elementwise
 
-        emit_elementwise(self, BufferExpr.coerce(value))
+        if self._is_whole(key):
+            emit_elementwise(self, BufferExpr.coerce(value))
+            return
+        # A region of the buffer. numpy's rule decides the shape being written:
+        # out[0:8, :] is a rank-2 block and out[i, j, k] is one element, so a
+        # fully-integer subscript writes a scalar and emits no loop at all.
+        emit_elementwise(self._region(key, "buffer"), BufferExpr.coerce(value))
 
     @staticmethod
     def _is_whole(key):
@@ -548,15 +600,36 @@ class Buffer(_Reshapable):
 class BufferSlice(_StridedView):
     """An access pattern into a :class:`Buffer`, for use as a DMA endpoint."""
 
-    __slots__ = ("buffer", "offsets", "sizes", "strides", "logical_sizes", "is_view")
+    __slots__ = (
+        "buffer",
+        "offsets",
+        "sizes",
+        "strides",
+        "logical_sizes",
+        "is_view",
+        "dropped",
+    )
 
     def __init__(
-        self, buffer, offsets, sizes, strides, logical_sizes=None, is_view=False
+        self,
+        buffer,
+        offsets,
+        sizes,
+        strides,
+        logical_sizes=None,
+        is_view=False,
+        dropped=None,
     ):
         self.buffer = buffer
         self.offsets = offsets
         self.sizes = sizes
         self.strides = strides
+        # Per axis: did it come from a bare integer subscript? An integer
+        # selects one element and numpy drops the axis, so this is what makes
+        # gu[1, :] rank 1 and gu[i, j, k] a scalar. The axis stays in `sizes`
+        # -- transfers are built from those, and a DMA pattern must not move --
+        # so only `shape`, which is the elementwise view, consults it.
+        self.dropped = list(dropped) if dropped is not None else [False] * len(sizes)
         # For a micro-tiled buffer the access pattern's rank and the region's
         # rank differ -- a [1, 1, 32, 32] logical region is walked as a
         # [1, 1, 8, 4, 8, 4] pattern. Transfers are shape-checked against the
@@ -587,14 +660,28 @@ class BufferSlice(_StridedView):
     #
     # Only a region that walks the buffer the way the buffer is laid out
     # qualifies. A reshape or transpose does not -- an index into it is not an
-    # index into the buffer -- and neither does a dynamic offset, which has no
-    # constant to fold into a loop nest built at trace time. Both are rejected
-    # by name below rather than silently mis-indexed. A stepped subscript never
-    # reaches here: __getitem__ refuses step != 1 outright.
+    # index into the buffer -- and it is rejected by name below rather than
+    # silently mis-indexed. A stepped subscript never reaches here:
+    # __getitem__ refuses step != 1 outright.
+    #
+    # A *dynamic* offset does qualify. It did not once: the loop nest is built
+    # at trace time from constant extents, and an offset with no constant had
+    # nothing to fold into the index. But an offset is not an extent -- it is
+    # one more term in the index expression, and `iv + coord` materialises as
+    # the same affine.apply every other index in this DSL goes through. Lifting
+    # it is what lets a kernel walk a window with a loop variable, which is the
+    # shape a convolution has.
 
     @property
     def shape(self):
-        return tuple(self.sizes)
+        """The region's *element* shape: sizes, minus the axes an integer took.
+
+        This is the shape arithmetic sees, and it is numpy's: ``gu[1, :]`` is
+        rank 1, ``gu[1:2, :]`` is rank 2, and ``gu[i, j, k]`` is rank 0 -- a
+        scalar. ``sizes`` keeps every axis, so ``ops.load``/``store`` and the
+        channels are untouched by the distinction.
+        """
+        return tuple(s for s, drop in zip(self.sizes, self.dropped) if not drop)
 
     @property
     def vector_width(self):
@@ -602,8 +689,13 @@ class BufferSlice(_StridedView):
 
     @property
     def base(self):
-        """The region's starting index per axis, as Python ints."""
-        return [o.as_const() for o in self.offsets]
+        """The region's starting index per axis, one per axis of ``sizes``.
+
+        Left as :class:`IndexExpr`, not folded to ints: an offset may be a herd
+        coordinate or a loop variable, which has no constant until it is
+        materialised inside the nest that uses it.
+        """
+        return list(self.offsets)
 
     def _as_leaf(self):
         """This region as an elementwise leaf, or a TypeError saying why not."""
@@ -623,13 +715,6 @@ class BufferSlice(_StridedView):
                 f"{list(self.buffer.strides)}, and an index into the view is "
                 "not an index into the buffer. A plain region -- gu[1, :], or a "
                 "subscript of one -- reads elementwise."
-            )
-        if any(b is None for b in self.base):
-            raise TypeError(
-                f"cannot read {self!r} elementwise: its offset depends on a "
-                "coordinate or loop variable, and the loop nest is built at "
-                "trace time from constant extents. Subscript with a constant "
-                "-- gu[1, :] -- or move the region with air.api.ops.load."
             )
         return BufferExpr.leaf(self)
 
@@ -668,9 +753,15 @@ class BufferSlice(_StridedView):
     def materialize_offsets(self):
         return [o.materialize() for o in self.offsets]
 
-    def _respan(self, offsets, sizes, strides, logical_sizes):
+    def _respan(self, offsets, sizes, strides, logical_sizes, dropped=None):
         return BufferSlice(
-            self.buffer, offsets, sizes, strides, logical_sizes, is_view=True
+            self.buffer,
+            offsets,
+            sizes,
+            strides,
+            logical_sizes,
+            is_view=True,
+            dropped=dropped,
         )
 
     def __repr__(self):
