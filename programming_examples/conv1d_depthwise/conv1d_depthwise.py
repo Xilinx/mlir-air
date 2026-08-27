@@ -1,62 +1,50 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Causal depthwise 1-D convolution, on air.api.
 
-"""Causal Depthwise 1-D Convolution Kernel (kernel size 3)
+    y[s, c] = sum over t of x_pad[s + t, c] * w[t, c]        t = 0, 1, 2
 
-The convolution inside LFM2's `Lfm2ShortConv` operator:
+Depthwise, so every channel has its own 3-tap filter and there is no reduction
+across channels. The convolution itself stays in C++:
+`air.extern("conv1d_depthwise_bf16", link_with="conv1d_depthwise.o")` declares
+the microkernel and stamps link_with on both the declaration and the herd, so
+the body here is dataflow only.
 
-    y[t, c] = w[0, c]*x[t+0, c] + w[1, c]*x[t+1, c] + w[2, c]*x[t+2, c]
+The input is **pre-padded** by HALO rows on the host, so `x_pad[row]` is already
+the oldest sample feeding `y[row]`: no negative indexing and no masking, just a
+read of `tile_s + HALO` rows where the output is `tile_s`. That overlap is the
+whole reason the two slices differ.
 
-Depthwise — each channel has its own 3 taps, no cross-channel mixing — so the
-channel axis is the vectorization axis and is contiguous in memory.
+Weights are sequence-independent, so this tile's channel slice is loaded once
+above the sequence loop rather than per trip.
 
-**Causality is expressed by pre-padding, not by masking.** The input `x` has
-`seq + 2` rows and the output `y` has `seq`: row `t` of `x` is the sample at
-original position `t - 2`, so `x` row `t` is the oldest sample feeding `y[t]`
-and pairs with tap 0 (oldest-first, matching `nn.Conv1d` cross-correlation
-over a left-padded input). The two leading rows are the **conv state**: zeros
-at the start of a sequence (prefill) or the carried tail of the previous chunk
-(decode). Prefill and decode are therefore the same kernel with a different
-pad — no separate decode variant.
+The herd tiles both axes: `tx` picks a channel block and `ty` a slice of the
+sequence, with the sequence loop striding by `tile_s * herd_y`. Both offsets are
+ordinary Python arithmetic on the coordinates,
 
-`w` is passed TAP-MAJOR, shape `(3, C)`, so each tap's channel slice is
-contiguous (HF stores it channel-major as `(C, 1, 3)`; the host transposes
-once at load).
+    chan = tx * tile_c
+    row  = iv + ty * tile_s
 
-Decomposition: the herd splits the **channel** axis across `herd_x` columns
-(each column owns a contiguous `C/herd_x` channel slice) and the **sequence**
-axis across `herd_y` rows (each row owns every `herd_y`-th `tile_s` block).
-Each tile issues 3 independent shim DMAs (x in, w in, y out).
-
-Note the halo: a tile producing `tile_s` output rows must read `tile_s + 2`
-input rows, so small `tile_s` pays a `2/tile_s` read-amplification.
+where the predecessor built each as its own AffineMap.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, i32
 from air.backend.xrt import XRTBackend
-
-range_ = for_
+from air.backend.xrt_runner import XRTRunner
 
 K_TAPS = 3
 HALO = K_TAPS - 1  # 2 rows of left context
 L1_BYTES = 65536  # per-compute-tile L1 on AIE2P
 
 
-@module_builder
-def build_module(seq, channels, tile_s, np_dtype_in, herd_x=8, herd_y=1):
-    xrt_dtype = type_mapper(np_dtype_in)
-
+def build_module(seq, channels, tile_s, np_dtype_in=bfloat16, herd_x=8, herd_y=1):
     assert (
         channels % herd_x == 0
     ), f"channels ({channels}) must be divisible by herd_x ({herd_x})"
@@ -117,116 +105,68 @@ def build_module(seq, channels, tile_s, np_dtype_in, herd_x=8, herd_y=1):
         f"silently wrong results -- do not remove this assert."
     )
 
-    # L3 types. x is pre-padded with HALO rows; y is not.
-    l3XTy = MemRefType.get([seq + HALO, channels], xrt_dtype)
-    l3WTy = MemRefType.get([K_TAPS, channels], xrt_dtype)
-    l3YTy = MemRefType.get([seq, channels], xrt_dtype)
+    dtype = bf16
 
-    # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1XTy = MemRefType.get(
-        shape=[tile_s + HALO, tile_c], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-    l1WTy = MemRefType.get(
-        shape=[K_TAPS, tile_c], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-    l1YTy = MemRefType.get(
-        shape=[tile_s, tile_c], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
+    # x is pre-padded by HALO rows; w is tap-major.
+    X = air.tensor([seq + HALO, channels], dtype)
+    W = air.tensor([K_TAPS, channels], dtype)
+    Y = air.tensor([seq, channels], dtype)
 
-    conv_func = FuncOp(
+    conv = air.extern(
         "conv1d_depthwise_bf16",
-        ([l1XTy, l1WTy, l1YTy, T.i32(), T.i32()], []),
-        visibility="private",
-    )
-    conv_func.attributes["link_with"] = StringAttr.get("conv1d_depthwise.o")
-    conv_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    # global_channel = tx * tile_c
-    chan_map = AffineMap.get(
-        0,
-        1,
-        [AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(tile_c))],
-    )
-    # global_row = loop_iv + ty * tile_s
-    row_map = AffineMap.get(
-        0,
-        2,
-        [
-            AffineExpr.get_add(
-                AffineSymbolExpr.get(0),
-                AffineExpr.get_mul(
-                    AffineSymbolExpr.get(1), AffineConstantExpr.get(tile_s)
-                ),
-            )
-        ],
+        link_with="conv1d_depthwise.o",
+        scalars=[i32, i32],
     )
 
-    @FuncOp.from_py_func(l3XTy, l3WTy, l3YTy)
-    def conv1d_depthwise(arg0, arg1, arg2):
-        # arg0 = x padded [seq+2, C], arg1 = w tap-major [3, C], arg2 = y [seq, C]
+    with air.launch(name="conv1d_depthwise") as launch:
 
-        @launch(operands=[arg0, arg1, arg2])
-        def conv_launch(l_x, l_w, l_y):
+        @launch.body
+        def _():
+            with air.segment(name="conv1d_seg") as seg:
 
-            @segment(name="conv1d_seg", operands=[l_x, l_w, l_y])
-            def conv_seg(s_x, s_w, s_y):
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="herd_0",
+                        shape=(herd_x, herd_y),
+                    ) as herd:
 
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_x, s_w, s_y],
-                )
-                def herd_body(_tx, _ty, _sx, _sy, l3_x, l3_w, l3_y):
-                    l1_x = AllocOp(l1XTy, [], [])
-                    l1_w = AllocOp(l1WTy, [], [])
-                    l1_y = AllocOp(l1YTy, [], [])
+                        @herd.body
+                        def _(tx, ty):
+                            l1_x = air.alloc(
+                                [tile_s + HALO, tile_c], dtype, scope=herd.private()
+                            )
+                            l1_w = air.alloc(
+                                [K_TAPS, tile_c], dtype, scope=herd.private()
+                            )
+                            l1_y = air.alloc(
+                                [tile_s, tile_c], dtype, scope=herd.private()
+                            )
 
-                    ts_i32 = ConstantOp(T.i32(), tile_s)
-                    tc_i32 = ConstantOp(T.i32(), tile_c)
+                            chan = tx * tile_c
 
-                    chan = affine_apply(chan_map, [_tx])
+                            # Sequence-independent, so once per tile rather
+                            # than once per trip.
+                            ops.load(l1_w, W[:, chan : chan + tile_c])
 
-                    # Weights are seq-independent: load this tile's channel
-                    # slice once, outside the sequence loop.
-                    dma_memcpy_nd(
-                        l1_w,
-                        l3_w,
-                        src_offsets=[0, chan],
-                        src_sizes=[K_TAPS, tile_c],
-                        src_strides=[channels, 1],
-                    )
+                            for iv in air.sequential(0, seq, tile_s * herd_y):
+                                row = iv + ty * tile_s
 
-                    for loop_iv in range_(0, seq, tile_s * herd_y):
-                        row = affine_apply(row_map, [loop_iv, _ty])
+                                # tile_s + HALO in, tile_s out: the overlap is
+                                # the taps' history.
+                                ops.load(
+                                    l1_x,
+                                    X[row : row + tile_s + HALO, chan : chan + tile_c],
+                                )
 
-                        # Read tile_s + HALO rows starting at `row`. Because x
-                        # is pre-padded, x[row] is already the oldest sample
-                        # feeding y[row] — no negative indexing, no masking.
-                        dma_memcpy_nd(
-                            l1_x,
-                            l3_x,
-                            src_offsets=[row, chan],
-                            src_sizes=[tile_s + HALO, tile_c],
-                            src_strides=[channels, 1],
-                        )
+                                conv(l1_x, l1_w, l1_y, tile_s, tile_c)
 
-                        CallOp(conv_func, [l1_x, l1_w, l1_y, ts_i32, tc_i32])
+                                ops.store(
+                                    l1_y, Y[row : row + tile_s, chan : chan + tile_c]
+                                )
 
-                        dma_memcpy_nd(
-                            l3_y,
-                            l1_y,
-                            dst_offsets=[row, chan],
-                            dst_sizes=[tile_s, tile_c],
-                            dst_strides=[channels, 1],
-                        )
-                        yield_([])
-
-                    DeallocOp(l1_x)
-                    DeallocOp(l1_w)
-                    DeallocOp(l1_y)
-
-                herd_body.attributes["link_with"] = StringAttr.get("conv1d_depthwise.o")
+    return launch
 
 
 def conv1d_reference(x_pad, w_tapmajor, seq, channels):
@@ -316,12 +256,19 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    mlir_module = build_module(
+    launch = build_module(
         args.seq,
         args.channels,
         args.tile_s,
@@ -329,6 +276,8 @@ if __name__ == "__main__":
         herd_x=args.herd_x,
         herd_y=args.herd_y,
     )
+    # build() resolves --target auto, so it runs before launch.target is read.
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -362,6 +311,7 @@ if __name__ == "__main__":
         # bf16 output rounding, the cleanest tier, so it needs no SiLU-style
         # transcendental slack.
         runner = XRTRunner(
+            target_device=launch.target,
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
@@ -381,6 +331,7 @@ if __name__ == "__main__":
 
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(
+            target_device=launch.target,
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,

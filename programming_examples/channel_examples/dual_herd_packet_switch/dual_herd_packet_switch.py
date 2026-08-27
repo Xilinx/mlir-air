@@ -1,186 +1,95 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Two herds sharing the shim, on air.api.
 
-# Dual-herd example demonstrating automatic packet-switched shim DMA sharing.
-#
-# Two 8x1 herds coexist on the same NPU2 device:
-#   - add_herd: element-wise add (C_add = A0 + B0)
-#   - mul_herd: element-wise mul (C_mul = A1 * B1)
-#
-# Data movement is expressed via air.dma_memcpy_nd (no explicit channels).
-# The compiler automatically:
-#   1. Converts DMAs to channels (air-dma-to-channel)
-#   2. Detects that 4 input channels exceed the 2-per-column shim DMA limit
-#   3. Upgrades input channels to channel_type="npu_dma_packet" for packet-switched
-#      time-multiplexing of shim DMA MM2S ports
+One segment holding two independent herds -- an element-wise add and an
+element-wise multiply, on separate inputs and separate outputs:
+
+    c_add = a0 + b0        add_herd
+    c_mul = a1 * b1        mul_herd
+
+Six L3 tensors and two herds means more shim DMA traffic than there are
+dedicated channels, which is the point: `air-dma-to-channel` infers the channels
+from the transfers and the shim shares them, packet-switched. Nothing here
+declares a channel, and nothing needs to -- the two herds are written exactly as
+they would be alone, and the sharing is the compiler's business.
+
+Each core takes one tile: `tx * tile_size` is ordinary Python arithmetic on the
+coordinate where the predecessor built an `arith.muli` per transfer, three times
+per herd.
+
+The compute is `tile_c[:] = tile_a[:] + tile_b[:]` and `* tile_b[:]`, replacing
+`linalg.elemwise_binary` with an explicit BinaryFn and a cast attribute. Same
+values, and the DSL vectorises rather than handing the pipeline a named op to
+scalarise.
+"""
 
 import argparse
 import time
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16
 from air.backend.xrt import XRTBackend
-import air.dialects.linalg.opdsl.lang as linalg_lang
+from air.backend.xrt_runner import XRTRunner
 
 HERD_SIZE = 8
 INOUT_DATATYPE = bfloat16
 
 
-# elemwise_binary is deprecated from upstream; define as custom linalg op.
-@linalg_lang.linalg_structured_op
-def elemwise_binary(
-    lhs=linalg_lang.TensorDef(linalg_lang.TV.T1),
-    rhs=linalg_lang.TensorDef(linalg_lang.TV.T2),
-    O=linalg_lang.TensorDef(linalg_lang.U, output=True),
-    fun=linalg_lang.BinaryFnAttrDef(default=linalg_lang.BinaryFn.add),
-    cast=linalg_lang.TypeFnAttrDef(default=linalg_lang.TypeFn.cast_signed),
-):
-    O[None] = fun(cast(linalg_lang.U, lhs[None]), cast(linalg_lang.U, rhs[None]))
+def build_module(tile_size, dtype=bf16):
+    total = tile_size * HERD_SIZE
 
+    # Inputs first, then outputs: the XRT invocation passes them in that order.
+    a0 = air.tensor([total], dtype)
+    b0 = air.tensor([total], dtype)
+    a1 = air.tensor([total], dtype)
+    b1 = air.tensor([total], dtype)
+    c_add = air.tensor([total], dtype)
+    c_mul = air.tensor([total], dtype)
 
-def build_module(tile_size):
-    total_size = tile_size * HERD_SIZE
+    with air.launch(name="dual_herd_elemwise") as launch:
 
-    @module_builder
-    def build():
-        xrt_dtype = type_mapper(INOUT_DATATYPE)
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
 
-        # L3 memref types
-        l3_type = MemRefType.get([total_size], xrt_dtype)
+                @seg.body
+                def _():
 
-        # L1 tile memref types
-        mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-        l1_type = MemRefType.get(
-            shape=[tile_size],
-            element_type=xrt_dtype,
-            memory_space=mem_space_l1,
-        )
+                    def elementwise(name, x, y, out, combine):
+                        """One herd: every core does one tile of one operator."""
+                        with air.herd(
+                            [range(HERD_SIZE)], name=name, shape=(HERD_SIZE,)
+                        ) as herd:
 
-        # No explicit channel declarations — air-dma-to-channel will infer
-        # them from the dma_memcpy_nd ops inside the herds.
+                            @herd.body
+                            def _(tx):
+                                tile_x = air.alloc(
+                                    [tile_size], dtype, scope=herd.private()
+                                )
+                                tile_y = air.alloc(
+                                    [tile_size], dtype, scope=herd.private()
+                                )
+                                tile_out = air.alloc(
+                                    [tile_size], dtype, scope=herd.private()
+                                )
 
-        @FuncOp.from_py_func(l3_type, l3_type, l3_type, l3_type, l3_type, l3_type)
-        def dual_herd_elemwise(a0, b0, a1, b1, c_add, c_mul):
+                                lo = tx * tile_size
+                                ops.load(tile_x, x[lo : lo + tile_size])
+                                ops.load(tile_y, y[lo : lo + tile_size])
 
-            @launch(operands=[a0, b0, a1, b1, c_add, c_mul])
-            def launch_body(a0_, b0_, a1_, b1_, c_add_, c_mul_):
+                                tile_out[:] = combine(tile_x[:], tile_y[:])
 
-                @segment(name="seg", operands=[a0_, b0_, a1_, b1_, c_add_, c_mul_])
-                def segment_body(a0_s, b0_s, a1_s, b1_s, c_add_s, c_mul_s):
+                                ops.store(tile_out, out[lo : lo + tile_size])
 
-                    # --- Herd 0: element-wise add ---
-                    @herd(
-                        name="add_herd",
-                        sizes=[HERD_SIZE, 1],
-                        operands=[a0_s, b0_s, c_add_s],
-                    )
-                    def add_herd_body(tx, ty, sx, sy, a0_h, b0_h, c_add_h):
-                        tile_a = AllocOp(l1_type, [], [])
-                        tile_b = AllocOp(l1_type, [], [])
-                        tile_c = AllocOp(l1_type, [], [])
+                    elementwise("add_herd", a0, b0, c_add, lambda p, q: p + q)
+                    elementwise("mul_herd", a1, b1, c_mul, lambda p, q: p * q)
 
-                        # L3 -> L1 via dma_memcpy_nd
-                        dma_memcpy_nd(
-                            tile_a,
-                            a0_h,
-                            src_offsets=[
-                                arith.MulIOp(tx, arith.ConstantOp(T.index(), tile_size))
-                            ],
-                            src_sizes=[tile_size],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            tile_b,
-                            b0_h,
-                            src_offsets=[
-                                arith.MulIOp(tx, arith.ConstantOp(T.index(), tile_size))
-                            ],
-                            src_sizes=[tile_size],
-                            src_strides=[1],
-                        )
-
-                        elemwise_binary(
-                            tile_a,
-                            tile_b,
-                            outs=[tile_c],
-                            fun=linalg_lang.BinaryFn.add,
-                            cast=linalg_lang.TypeFn.cast_signed,
-                        )
-
-                        # L1 -> L3 via dma_memcpy_nd
-                        dma_memcpy_nd(
-                            c_add_h,
-                            tile_c,
-                            dst_offsets=[
-                                arith.MulIOp(tx, arith.ConstantOp(T.index(), tile_size))
-                            ],
-                            dst_sizes=[tile_size],
-                            dst_strides=[1],
-                        )
-
-                        DeallocOp(tile_a)
-                        DeallocOp(tile_b)
-                        DeallocOp(tile_c)
-
-                    # --- Herd 1: element-wise mul ---
-                    @herd(
-                        name="mul_herd",
-                        sizes=[HERD_SIZE, 1],
-                        operands=[a1_s, b1_s, c_mul_s],
-                    )
-                    def mul_herd_body(tx, ty, sx, sy, a1_h, b1_h, c_mul_h):
-                        tile_a = AllocOp(l1_type, [], [])
-                        tile_b = AllocOp(l1_type, [], [])
-                        tile_c = AllocOp(l1_type, [], [])
-
-                        dma_memcpy_nd(
-                            tile_a,
-                            a1_h,
-                            src_offsets=[
-                                arith.MulIOp(tx, arith.ConstantOp(T.index(), tile_size))
-                            ],
-                            src_sizes=[tile_size],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            tile_b,
-                            b1_h,
-                            src_offsets=[
-                                arith.MulIOp(tx, arith.ConstantOp(T.index(), tile_size))
-                            ],
-                            src_sizes=[tile_size],
-                            src_strides=[1],
-                        )
-
-                        elemwise_binary(
-                            tile_a,
-                            tile_b,
-                            outs=[tile_c],
-                            fun=linalg_lang.BinaryFn.mul,
-                            cast=linalg_lang.TypeFn.cast_signed,
-                        )
-
-                        dma_memcpy_nd(
-                            c_mul_h,
-                            tile_c,
-                            dst_offsets=[
-                                arith.MulIOp(tx, arith.ConstantOp(T.index(), tile_size))
-                            ],
-                            dst_sizes=[tile_size],
-                            dst_strides=[1],
-                        )
-
-                        DeallocOp(tile_a)
-                        DeallocOp(tile_b)
-                        DeallocOp(tile_c)
-
-    return build()
+    return launch
 
 
 if __name__ == "__main__":
@@ -216,12 +125,21 @@ if __name__ == "__main__":
         default=1,
         help="Number of measurement iterations (default: 1)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
     tile_size = args.tile_size
     total_size = tile_size * HERD_SIZE
 
-    mlir_module = build_module(tile_size)
+    launch = build_module(tile_size)
+    # build() resolves --target auto, so it runs before launch.target is read.
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -244,6 +162,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             output_format=args.output_format,
             instance_name="dual_herd_elemwise",
+            target_device=launch.target,
         )
 
         compiled_module = backend.compile(mlir_module)
@@ -304,6 +223,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             output_format=args.output_format,
             instance_name="dual_herd_elemwise",
+            target_device=launch.target,
         )
         exit(
             runner.run_test(
