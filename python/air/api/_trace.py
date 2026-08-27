@@ -1114,6 +1114,15 @@ def _staged_in_scope(segment):
     # to the segment body. The walk stops there rather than running to the
     # module, because `block.owner.operation.block` on the top-level block
     # aborts the process instead of returning None.
+    # Ancestry, not dominance -- and those are only the same thing because the
+    # tracer appends. A buffer is in segment._buffers here only if its alloc has
+    # already been emitted, and a herd is created at the end of its block or
+    # ahead of the terminator, so anything sitting in an ancestor block also
+    # precedes this point. Checked against an exact dominance test over all 72
+    # converted examples: they agree on every buffer. A construct that stepped
+    # back into a closed region to allocate would break that, and this check
+    # would have to compare positions (Operation.is_before_in_block) rather than
+    # just block membership.
     visible, block = set(), InsertionPoint.current.block
     while True:
         visible.add(block)
