@@ -59,6 +59,7 @@ __all__ = [
     "fma",
     "reduce_add",
     "reduce_max",
+    "argmax",
     "relu",
     "tanh",
     "exp",
@@ -773,7 +774,9 @@ def fma(a, b, c):
 
 
 def _reduce(name, key, x):
-    if not isinstance(x, (Buffer, BufferExpr)):
+    from ._value import BufferSlice
+
+    if not isinstance(x, (Buffer, BufferExpr, BufferSlice)):
         raise TypeError(
             f"air.api.ops.{name} expects a buffer slice, got {type(x).__name__}"
         )
@@ -842,6 +845,30 @@ def reduce_max(x):
     side.
     """
     return _reduce("reduce_max", "max", x)
+
+
+def argmax(x):
+    """The *index* of the maximum along the innermost axis.
+
+        out[:] = air.api.ops.argmax(logits[:])      # out is an integer buffer
+
+    The odd one out among the reductions: `reduce_max` answers "how big" and
+    this answers "which one", so its destination is an integer buffer whatever
+    the operand's type is. Ties go to the lowest index, which is numpy's rule
+    and the classifier convention -- the comparison is a strict `>`, so a later
+    equal element does not displace an earlier one.
+
+    Reduce only part of an axis by handing it a region: `argmax(a[:, 0:k])`
+    looks at the first k columns, which is what a padded classifier output
+    needs.
+
+    Unlike the other reductions this is a scalar loop rather than a
+    `vector.reduction`: the running maximum and its index have to travel
+    together, and there is no vector reduction that carries an index. The pair
+    rides in the loop's `iter_args`, which is fine precisely because they are
+    scalars -- it is a loop-carried *vector* that AIE2 will not legalize.
+    """
+    return _reduce("argmax", "argmax", x)
 
 
 def _unary(name, x):

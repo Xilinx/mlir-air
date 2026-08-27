@@ -340,7 +340,10 @@ def emit_elementwise(dst, expr):
     # destination's, so it is dispatched before the elementwise shape check
     # rather than being taught to it.
     if expr.kind == "reduce":
-        _emit_reduce(dst, expr)
+        if expr.op == "argmax":
+            _emit_argmax(dst, expr)
+        else:
+            _emit_reduce(dst, expr)
         return
 
     # A bare scalar on the right-hand side is a fill (`acc[:] = 0.0`), which is
@@ -620,6 +623,100 @@ def _reduce_lanes(leaf, axis):
     if not width or width >= axis or axis % width:
         return axis
     return width
+
+
+def _emit_argmax(dst, expr):
+    """``dst[:] = ops.argmax(x[:])`` -- the index of the innermost maximum.
+
+    A scalar loop, not a ``vector.reduction``: the running maximum and the index
+    that produced it have to travel together, and no vector reduction carries an
+    index. They ride in the loop's ``iter_args``, which is safe because they are
+    scalars -- it is a loop-carried *vector* AIE2 refuses.
+
+    The first element seeds the pair rather than an identity, for the same
+    reason the stepped reduction peels its first step: the identity for a
+    maximum is the type's minimum, and there is no need to name it.
+    """
+    from air.dialects.arith import CmpFOp, CmpIOp, IndexCastOp, SelectOp
+
+    operand = expr.args[0]
+    index_dtype = dst.dtype
+    require_signless(index_dtype, "the destination of air.api.ops.argmax")
+    if index_dtype.is_float:
+        raise TypeError(
+            f"air.api.ops.argmax writes an index, so its destination has to be "
+            f"an integer buffer; this one is {index_dtype}. Use "
+            "air.api.ops.reduce_max for the value itself."
+        )
+
+    leaves = operand.leaves()
+    src_shape = _broadcast_shape([leaf.shape for leaf in leaves])
+    if src_shape is None:
+        raise ValueError(
+            f"shape mismatch inside a reduction: operands have shapes "
+            f"{[tuple(leaf.shape) for leaf in leaves]} and do not broadcast "
+            f"together"
+        )
+    # The type the comparison happens in, which is the operand's *result* type
+    # and not its leaves': `argmax(ops.cast(row[:], f32))` compares in f32 while
+    # its leaves are bf16, and taking the leaf type would both evaluate the
+    # walk in the wrong region and compare at the wrong width.
+    value_dtype = operand.element_dtype() or leaves[0].dtype
+    # Checked here for the same reason the other reductions check their
+    # destination: without it an f16 or unsigned operand reaches arith.cmpf /
+    # arith.cmpi, which have no form for either.
+    require_computable(value_dtype, "the operand of air.api.ops.argmax")
+    require_signless(value_dtype, "the operand of air.api.ops.argmax")
+    _check_reduce_regions(operand, value_dtype)
+
+    kept = tuple(list(src_shape[:-1]) + [1])
+    dropped = tuple(src_shape[:-1])
+    keepdims = tuple(dst.shape) == kept
+    if not keepdims and tuple(dst.shape) != dropped:
+        raise ValueError(
+            f"shape mismatch in a reduction: reducing {src_shape} along its "
+            f"innermost axis gives {kept} (keeping the axis) or {dropped} "
+            f"(dropping it), but the destination is {tuple(dst.shape)}"
+        )
+
+    axis = src_shape[-1]
+    regions = {d: _Region(d, 0, False) for d in _regions_in(operand, value_dtype, [])}
+    zero = _result(arith.ConstantOp(IndexType.get(), 0))
+    bounds = [(0, extent, 1) for extent in src_shape[:-1]]
+
+    def load(buf, ivs, region):
+        return _result(
+            memref_load(
+                buf.value, _leaf_index(buf.shape, src_shape, ivs, zero, _base_of(buf))
+            )
+        )
+
+    def at(ivs, column):
+        return _eval(
+            operand, ivs + [column], regions[value_dtype], regions, False, load, {}
+        )
+
+    greater = CmpFOp if value_dtype.is_float else CmpIOp
+    predicate = _CMP_F["gt"] if value_dtype.is_float else _CMP_I["gt"]
+
+    def body(ivs):
+        best = at(ivs, zero)
+        first = _result(arith.ConstantOp(index_dtype.mlir(), 0))
+        for column, (running, chosen), results in range_(
+            1, axis, 1, iter_args=[best, first]
+        ):
+            candidate = at(ivs, column)
+            wins = _result(greater(predicate, candidate, running))
+            as_index = _result(IndexCastOp(index_dtype.mlir(), column))
+            yield_(
+                [
+                    _result(SelectOp(wins, candidate, running)),
+                    _result(SelectOp(wins, as_index, chosen)),
+                ]
+            )
+        memref_store(results[1], dst.value, ivs + [zero] if keepdims else ivs)
+
+    _nest(bounds, body)
 
 
 def _check_reduce_regions(node, dtype):
