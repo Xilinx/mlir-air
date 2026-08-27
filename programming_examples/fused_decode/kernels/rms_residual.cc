@@ -112,6 +112,7 @@ extern "C" {
 //   residual_add_aie: y = x_buf + x ; x_buf = y    (MODEL_DIM bf16)
 void rms_norm_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                   int _arm) {
+  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
   rms_norm(y, x, w);
@@ -122,11 +123,13 @@ void rms_norm_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 // norms so the Gemma 4-norm rms tile keeps <=4 packet ids per S2MM port.
 void rms_norm_lo_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                      int _arm) {
+  aie_round_nearest_even();
   (void)_arm;
   rms_norm(y, x, w);
 }
 void rms_norm_hi_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                      int _arm) {
+  aie_round_nearest_even();
   (void)_arm;
   rms_norm(y, x, w + MODEL_DIM);
 }
@@ -138,12 +141,14 @@ void rms_norm_hi_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 // route it.
 void rms_norm_aie_hdr(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                       unsigned int pkt_id) {
+  aie_round_nearest_even();
   *reinterpret_cast<unsigned int *>(y + 14) = pkt_id;
   rms_norm(y + 16, x, w);
 }
 
 void residual_add_aie(bf16 *restrict y, bf16 *restrict x_buf,
                       bf16 *restrict x) {
+  aie_round_nearest_even();
   residual_add(y, x_buf, x);
 }
 
@@ -155,12 +160,14 @@ void residual_add_aie(bf16 *restrict y, bf16 *restrict x_buf,
 //   residual_add_aie_hdr: pkt_id@y+14; y+16 = x_buf + x ; x_buf = y+16  (step
 //   3)
 void rms_copy_aie(bf16 *restrict dst, bf16 *restrict src) {
+  aie_round_nearest_even();
   for (int i = 0; i < MODEL_DIM; i++)
     dst[i] = src[i];
 }
 
 void residual_add_aie_hdr(bf16 *restrict y, bf16 *restrict x_buf,
                           bf16 *restrict x, unsigned int pkt_id) {
+  aie_round_nearest_even();
   *reinterpret_cast<unsigned int *>(y + 14) = pkt_id;
   residual_add(y + 16, x_buf, x);
 }
@@ -169,6 +176,7 @@ void rms_residual(bf16 *restrict y, bf16 *restrict x_ping,
                   bf16 *restrict x_pong, bf16 *restrict w,
                   bf16 *restrict y_out_0, bf16 *restrict y_out_1,
                   bf16 *restrict x_buf, int *IS_ATTN) {
+  aie_round_nearest_even();
   constexpr int w_prod_lock = 0;
   constexpr int w_cons_lock = 1;
   constexpr int y_prod_lock = 2;

@@ -745,6 +745,7 @@ ATTN_ENTRY
 void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
                  float *__restrict y_state, float *__restrict l_state, int blk,
                  int L) {
+  aie_round_nearest_even();
   if (blk == 0) {
     zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
@@ -766,6 +767,7 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
 
 void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                  bf16 *__restrict o) {
+  aie_round_nearest_even();
   alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
   passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
                                                                  y_bf16);
@@ -789,6 +791,7 @@ void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
 // natural (q_head, dh), so writing it straight would come out scrambled by
 // exactly that pattern; undoing it here is a fixed 512-element shuffle.
 void conv_o_pass(bf16 *__restrict mix, bf16 *__restrict o, int cu, int arm) {
+  aie_round_nearest_even();
   if (arm != 1)
     return;
   const int QH = Q_HEADS_PER_CU;

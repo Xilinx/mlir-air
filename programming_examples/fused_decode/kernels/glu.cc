@@ -36,6 +36,7 @@ extern "C" {
 // proj_qmm.cc pattern. x = [up(GLU_SLICE/2) ++ gate(GLU_SLICE/2)]; y[i] =
 // silu(gate[i])*up[i] (GLU_SLICE/2 outputs). GLU_SLICE=1024 -> x[1024], y[512].
 void glu_aie(bf16 *restrict y, bf16 *restrict x, int _arm) {
+  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
   pseduo_glu<GLU_SLICE>(y, x);
