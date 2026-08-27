@@ -1227,7 +1227,7 @@ class HerdContext:
         from air.dialects.air import herd as herd_region
         from air.dialects.scf import for_ as range_, yield_
 
-        from ._loop import aborted_regions, enter_body, exit_body
+        from ._loop import aborted_regions
 
         aborted_before = len(aborted_regions())
 
@@ -1324,14 +1324,12 @@ class HerdContext:
                 free_buffers(herd_self._buffers)
                 herd_self._buffers.clear()
 
-            outer_depth = enter_body()
             try:
                 run_strip_mined(run, herd_self.repeats, range_, yield_)
                 # After the strip nest, not inside it: one alloc above the loop
                 # needs one dealloc below it.
                 herd_self._free_scratch()
             finally:
-                exit_body(outer_depth)
                 herd_self._buffers.clear()
                 herd_self._scratch.clear()
                 for t, v in zip(tensors, saved):
@@ -1424,8 +1422,6 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     from air.dialects.memref import AllocOp
     from air.extras import types as T
 
-    from ._loop import branch_depth
-
     if scope is None:
         raise ValueError(
             "air.alloc requires scope=<herd>.private() (L1) or "
@@ -1483,20 +1479,17 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     # gives the pipeline one buffer to rotate instead of a fresh one per trip,
     # which is the ping-pong the kernel is built around.
     #
-    # A branch arm is still refused. Both arms of an ops.branch write to the
-    # same enclosing scope, so which alloc a later use refers to is a question
-    # the tracer cannot answer, and the failure would be a silently wrong
-    # buffer rather than a verifier error.
-    if space == "L1" and branch_depth() and not _hoisted:
-        raise NotImplementedError(
-            "air.alloc inside an ops.branch body is not supported: the arm is a "
-            "region the buffer cannot outlive, so a use after the branch would "
-            "not be dominated by its alloc. Hoist the allocation above the "
-            "branch -- both arms then name the same buffer, which is what a "
-            "branch that fills a tile two different ways means. Allocating "
-            "inside an air.sequential is fine: the buffer is freed inside that "
-            "loop."
-        )
+    # A branch arm allocates on the same terms. The arm is a region like the
+    # loop body is, and placement treats it the same way: the dealloc lands in
+    # the arm beside its alloc, so a tile that only one kind of core needs is
+    # written where it is needed rather than hoisted above the branch and paid
+    # for by every core. flash_attention/dataflow_based does this twelve times,
+    # once per scratch tile in each arm of its cascade-stage select.
+    #
+    # What used to make this unsafe was not the allocation but the diagnosis: a
+    # buffer read *after* the arm closed walked off the top of the IR and
+    # aborted the process. _last_use_anchor now reports that as an error naming
+    # the region, so the bad case is caught and the good case is allowed.
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since
     # Python's modulo is 0 for any divisor of the tile regardless of sign.

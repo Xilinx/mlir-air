@@ -28,11 +28,9 @@ from ._index import IndexExpr
 __all__ = [
     "sequential",
     "parallel",
-    "loop_depth",
     "aborted_regions",
     "enter_region",
     "exit_region",
-    "branch_depth",
 ]
 
 # Names of the regions whose body exited early (break / return / an exception
@@ -46,54 +44,13 @@ __all__ = [
 # problem at all. A single counter reported both as "left a loop early".
 _ABORTED = []
 
-# How many nested bodies -- loop or branch -- are currently open.
-_DEPTH = 0
-
-# Of those, how many are ops.branch arms. An allocation inside a loop is fine:
-# free_buffers anchors each dealloc in the block its alloc lives in, so both
-# land inside the loop body, which is what the hand-written kernels write and
-# what lets the pipeline rotate the buffer between trips. A branch arm is the
-# case that is still refused -- see air.alloc.
-_BRANCH_DEPTH = 0
-
-
-def loop_depth():
-    return _DEPTH
-
-
-def branch_depth():
-    return _BRANCH_DEPTH
-
-
-def enter_body():
-    """Start a fresh loop-depth frame, returning the one to restore.
-
-    Depth exists to catch an ``air.alloc`` nested inside a loop *in the same
-    body*, where the dealloc would be emitted after the loop and so would not be
-    dominated by its alloc. A loop further out is a different matter entirely: a
-    herd inside a segment-scope reduction is re-entered once per trip, and its
-    body's allocs and deallocs are both inside that trip. Counting the outer loop
-    would reject the shape every staged matmul in the tree uses.
-    """
-    global _DEPTH
-    previous, _DEPTH = _DEPTH, 0
-    return previous
-
-
-def exit_body(previous):
-    global _DEPTH
-    _DEPTH = previous
-
 
 def aborted_regions():
     return tuple(_ABORTED)
 
 
 def enter_region():
-    """Count one more open ``ops.branch`` arm."""
-    global _DEPTH, _BRANCH_DEPTH
-    _DEPTH += 1
-    _BRANCH_DEPTH += 1
+    """Open one ``ops.branch`` arm, for early-exit bookkeeping."""
 
 
 def exit_region(aborted, what):
@@ -105,9 +62,6 @@ def exit_region(aborted, what):
     that forgot to say which one it was would silently mislabel the diagnostic,
     which is the failure this pair was split up to prevent.
     """
-    global _DEPTH, _BRANCH_DEPTH
-    _DEPTH -= 1
-    _BRANCH_DEPTH -= 1
     if aborted:
         _ABORTED.append(what)
 
@@ -118,7 +72,7 @@ def sequential(start, stop=None, step=None, name=None):
     Yields the induction variable as an :class:`IndexExpr`, so it composes with
     tile coordinates and tensor slices exactly like a herd coordinate does.
     """
-    global _ABORTED, _DEPTH
+    global _ABORTED
 
     if stop is None:
         start, stop = 0, start
@@ -145,13 +99,11 @@ def sequential(start, stop=None, step=None, name=None):
     from air.dialects.scf import for_ as scf_for, yield_
 
     for iv in scf_for(lo, hi, st):
-        _DEPTH += 1
         completed = False
         try:
             yield IndexExpr.leaf(iv, name or "k")
             completed = True
         finally:
-            _DEPTH -= 1
             if not completed:
                 _ABORTED.append("air.sequential")
             # Terminate the region either way: leaving a block without a
@@ -182,7 +134,7 @@ def parallel(start, stop=None, step=None, name=None):
     Emitted as ``scf.forall``; the pipeline's ``scf-forall-to-parallel`` turns
     it into the ``scf.parallel`` that the hand-written examples spell directly.
     """
-    global _ABORTED, _DEPTH
+    global _ABORTED
 
     if stop is None:
         start, stop = 0, start
@@ -211,7 +163,6 @@ def parallel(start, stop=None, step=None, name=None):
     from air.dialects.scf import ForallOp, InParallelOp
 
     op = ForallOp(lower_bounds=[lo], upper_bounds=[hi], steps=[st])
-    _DEPTH += 1
     completed = False
     try:
         with InsertionPoint(op.body):
@@ -220,7 +171,6 @@ def parallel(start, stop=None, step=None, name=None):
             # scf.forall's terminator, emitted inside the body region.
             InParallelOp()
     finally:
-        _DEPTH -= 1
         if not completed:
             _ABORTED.append("air.parallel")
             with InsertionPoint(op.body):

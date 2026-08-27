@@ -2105,17 +2105,19 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: alloc_inside_a_branch
-# The buffer cannot outlive the arm, so a use after the branch would not be
-# dominated by the alloc. It is also the wrong instinct: L1 is charged per core
-# whether or not that core's branch runs. A loop body, by contrast, is allowed:
-# its dealloc lands inside the loop beside the alloc.
-# CHECK: NotImplementedError: air.alloc inside an ops.branch body
-@expect(NotImplementedError, "alloc_inside_a_branch")
+# CHECK-LABEL: TEST: buffer_read_after_its_branch_closed
+# Allocating inside a branch arm is allowed -- see api/lifetime.py -- but the
+# buffer does not reach past the arm, and this is the shape that used to abort
+# the process instead of saying so.
+# CHECK: RuntimeError: a buffer is used outside the region it was allocated in
+@expect(RuntimeError, "buffer_read_after_its_branch_closed")
 def _():
     def body(h, tx, ty, A, B, C):
+        escaped = None
         with ops.branch(tx == 0):
-            air.alloc([64], bf16, scope=h.private())
+            escaped = air.alloc([64], bf16, scope=h.private())
+            escaped[:] = 1.0
+        escaped[:] = escaped[:] + 1.0
 
     _trace(body)
 

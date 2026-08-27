@@ -201,3 +201,43 @@ def an_l2_buffer_in_a_loop_is_not_a_herd_operand():
                                 air.ops.store(l1, B[0:1, 0:N])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: allocated_in_a_branch_is_freed_in_that_arm
+# A branch arm allocates on the same terms as a loop body: the dealloc lands in
+# the arm beside its alloc. That matters for a herd whose cores are not
+# interchangeable -- a scratch tile only one kind of core needs is written where
+# it is needed, rather than hoisted above the branch and charged to every core's
+# L1. flash_attention/dataflow_based does this twelve times.
+# Each arm carries its own alloc/dealloc pair, and neither escapes.
+# CHECK: scf.if
+# CHECK: memref.alloc
+# CHECK: memref.dealloc
+# CHECK: } else {
+# CHECK: memref.alloc
+# CHECK: memref.dealloc
+@run
+def allocated_in_a_branch_is_freed_in_that_arm():
+    A = air.tensor([N, N], i32)
+    B = air.tensor([N, N], i32)
+
+    with air.launch(name="armed") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(2)], name="h", shape=(2,)) as h:
+
+                @h.body
+                def _(tx):
+                    out = air.alloc([N], i32, scope=h.private(), vector=0)
+                    with air.ops.branch(tx == 0) as first:
+                        scratch = air.alloc([N], i32, scope=h.private(), vector=0)
+                        air.ops.load(scratch, A[0:1, 0:N])
+                        out[:] = scratch[:] + 1
+                    with first.otherwise():
+                        other = air.alloc([N], i32, scope=h.private(), vector=0)
+                        air.ops.load(other, A[1:2, 0:N])
+                        out[:] = other[:] + 2
+                    air.ops.store(out, B[0:1, 0:N])
+
+    print(launch.mlir())
