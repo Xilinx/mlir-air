@@ -10,10 +10,11 @@ NO RoPE). Building these two ELFs collapses the unfused 10-dispatch/layer path
 (LN1, q, k, v, +host bias×3, +host residual, LN2, fc1, +host bias, gelu, fc2,
 +host bias, +host residual) into 3 on-device dispatches/layer:
 
-  vit_ln_qkv  (7 launches): LN1 + Q/K/V GEMM + Q/K/V bias-add  -> q_b, k_b, v_b
+  vit_ln_qkv  (2 launches): LN1 + one fused [Q|K|V] GEMM (bias on the
+                            weight stream)              -> qkv (seq, 3*emb)
   flash_attn  (1 launch,  unchanged registry ELF)
-  vit_o_ffn  (10 launches): O GEMM + O bias + residual + LN2 + fc1 GEMM +
-                            fc1 bias + GELU + fc2 GEMM + fc2 bias + residual
+  vit_o_ffn   (6 launches): O GEMM + residual + LN2 + fc1 GEMM (bias+GELU
+                            in the epilogue) + fc2 GEMM + residual
 
 All the per-Linear bias-adds and the two residual adds — host f32 glue in the
 unfused driver — move on-device here (Lever 3, folded into the fusion). They are
@@ -257,7 +258,7 @@ def _gemm_tiles(spec):
 
 
 # ===========================================================================
-# Group A: vit_ln_qkv — LN1 + Q/K/V GEMM + Q/K/V bias-add (7 launches)
+# Group A: vit_ln_qkv — LN1 + one fused [Q|K|V] GEMM (2 launches)
 # ===========================================================================
 
 
@@ -265,21 +266,23 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
     """Fused LN1 + Q/K/V GEMM + per-channel Q/K/V bias-add for one SigLIP block.
 
     Func args (MHA, no GQA: q_dim == kv_dim == emb_dim):
-      %arg0  x_in     (seq, emb)          block input (bf16)
-      %arg1  ln_param (2*emb,)            LN1 gamma||beta packed
-      %arg2  normed   (seq, emb)          LN1 out (intermediate)
-      %arg3  wq       (emb, emb)          Q weight
-      %arg4  q_raw    (seq, emb)          Q GEMM out (intermediate)
-      %arg5  wk       (emb, emb)
-      %arg6  k_raw    (seq, emb)          (intermediate)
-      %arg7  wv       (emb, emb)
-      %arg8  v_raw    (seq, emb)          (intermediate)
-      %arg4  q_b      (seq, emb)          Q, bias already folded in — OUTPUT
-      %arg6  k_b      (seq, emb)          K — OUTPUT
-      %arg8  v_b      (seq, emb)          V — OUTPUT
+      %arg0  x_in     (seq, emb)            block input (bf16)
+      %arg1  ln_param (2*emb,)              LN1 gamma||beta packed
+      %arg2  normed   (seq, emb)            LN1 out (intermediate)
+      %arg3  wqkv     (packed_k, 3*emb)     [Wq|Wk|Wv], bias-packed
+      %arg4  qkv      (seq, 3*emb)          [Q|K|V], bias folded in — OUTPUT
 
-    The Q/K/V weights are the BIAS-PACKED form (repack_gemm_b_with_bias), so
-    there are no separate bias args or bias-add launches.
+    Two mechanisms collapse this from 7 launches to 2:
+      - the Q/K/V weights are the BIAS-PACKED form (repack_gemm_b_with_bias), so
+        the drain herd folds the bias into the epilogue cast and the three
+        bias-add launches are gone;
+      - [X.Wq | X.Wk | X.Wv] == X . [Wq|Wk|Wv], so the three GEMMs become ONE
+        wide GEMM. They share A, so the group axis just rides the existing N
+        launch axis — no builder change. This matters because a launch costs
+        ~337 us of control-stream replay (the whole device configuration is
+        cloned inline at every launch) while a launch ITERATION costs ~13 us.
+    FlashAttention reads Q/K/V straight out of the concatenated buffer
+    (`fused_qkv=True`), so nothing is copied apart to feed it.
     """
     spec = dict(gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high"))
     assert spec["method"] == "drain", spec["method"]  # vision qkvo is drain
@@ -289,46 +292,40 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
     # model's build). Mirrors disambiguate_by_tile_n's naming.
     spec = _force_tile_n_suffix(spec)
 
-    print("  [ln_qkv 1/7] LN1 (affine)...")
+    print("  [ln_qkv 1/2] LN1 (affine)...")
     ln_ir = _wrap_ir_in_launch(
         str(build_layer_norm(seq_len, emb_dim, bfloat16, 16, herd_x=8))
     )
 
     kw, tm, tk2, tk1, tn = _gemm_tiles(spec)
-    print(f"  [ln_qkv 2-4/4] Q/K/V GEMM ({spec['method']} tile_n={tn}, bias fused)...")
-    # The per-channel bias rides the weight stream (see BIAS_PAD_ROWS): the host
-    # repacks W so each L1 sub-chunk is followed by a pad block, and the drain
-    # herd folds the bias into the epilogue cast it already performs. This
-    # deletes the three separate bias-add launches.
-    q_ir, k_ir, v_ir = (
-        str(
-            _build_gemm_module(
-                seq_len,
-                emb_dim,
-                emb_dim,
-                tm,
-                tk2,
-                tk1,
-                tn,
-                herd_m,
-                herd_n,
-                b_pad_rows=BIAS_PAD_ROWS,
-                **kw,
-            )
+    qkv_dim = 3 * emb_dim
+    assert qkv_dim % (tn * herd_n) == 0, (qkv_dim, tn, herd_n)
+    print(
+        f"  [ln_qkv 2/2] fused QKV GEMM ({spec['method']} tile_n={tn}, "
+        f"N={qkv_dim}, bias fused)..."
+    )
+    qkv_ir = str(
+        _build_gemm_module(
+            seq_len,
+            emb_dim,
+            qkv_dim,
+            tm,
+            tk2,
+            tk1,
+            tn,
+            herd_m,
+            herd_n,
+            b_pad_rows=BIAS_PAD_ROWS,
+            **kw,
         )
-        for _ in range(3)
     )
 
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{2*emb_dim}xbf16>"),
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg3", f"memref<{packed_k(emb_dim, tk1)}x{emb_dim}xbf16>"),
-        FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg5", f"memref<{packed_k(emb_dim, tk1)}x{emb_dim}xbf16>"),
-        FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg7", f"memref<{packed_k(emb_dim, tk1)}x{emb_dim}xbf16>"),
-        FuncArg("%arg8", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{packed_k(emb_dim, tk1)}x{qkv_dim}xbf16>"),
+        FuncArg("%arg4", f"memref<{seq_len}x{qkv_dim}xbf16>"),
     ]
 
     slices = [
@@ -336,21 +333,7 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
             ln_ir, "ln", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}
         ),
         KernelSlice(
-            q_ir, "q", {0: 2, 1: 3, 2: 4}, extern_syms=_gemm_externs(spec, True)
-        ),
-        KernelSlice(
-            k_ir,
-            "k",
-            {0: 2, 1: 5, 2: 6},
-            extern_syms=_gemm_externs(spec, True),
-            private_from=False,
-        ),
-        KernelSlice(
-            v_ir,
-            "v",
-            {0: 2, 1: 7, 2: 8},
-            extern_syms=_gemm_externs(spec, True),
-            private_from=False,
+            qkv_ir, "qkv", {0: 2, 1: 3, 2: 4}, extern_syms=_gemm_externs(spec, True)
         ),
     ]
 
@@ -366,7 +349,7 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
 
 # ===========================================================================
 # Group B: vit_o_ffn — O GEMM + bias + residual + LN2 + fc1 + bias + GELU
-#          + fc2 + bias + residual (10 launches)
+#          + fc2 + bias + residual (6 launches)
 # ===========================================================================
 
 

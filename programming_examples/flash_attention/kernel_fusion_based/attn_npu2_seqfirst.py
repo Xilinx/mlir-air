@@ -66,6 +66,7 @@ def build_module(
     num_kv_heads=None,
     causal=False,
     num_heads_per_unroll=2,
+    fused_qkv=False,
 ):
     """Build flash attention module with selective Q capture pattern.
 
@@ -175,9 +176,26 @@ def build_module(
     # K: [lk, num_kv_heads * dk] — all KV heads interleaved per position
     # V: [lk, num_kv_heads * dv] — all KV heads interleaved per position
     # Output: [lq, num_heads * dv] — all heads interleaved per position
-    q_l3_t = MemRefType.get([lq, num_heads * dk], bf16)
-    k_l3_t = MemRefType.get([lk, num_kv_heads * dk], bf16)
-    v_l3_t = MemRefType.get([lk, num_kv_heads * dv], bf16)
+    # fused_qkv: Q|K|V arrive column-concatenated in ONE L3 buffer, because the
+    # producing GEMM computes them as one wide GEMM (one launch instead of three
+    # — a launch costs ~337us of control-stream replay). Only the row stride and
+    # a constant column base change; the per-head offsets are already columns.
+    if fused_qkv:
+        assert lk == lq, "fused_qkv needs self-attention (K/V rows == Q rows)"
+        qkv_cols = num_heads * dk + num_kv_heads * dk + num_kv_heads * dv
+        q_col_base = 0
+        k_col_base = num_heads * dk
+        v_col_base = k_col_base + num_kv_heads * dk
+        q_l3_t = k_l3_t = v_l3_t = MemRefType.get([lq, qkv_cols], bf16)
+        emb_dim_q = emb_dim_k = emb_dim_v = qkv_cols
+    else:
+        q_col_base = k_col_base = v_col_base = 0
+        q_l3_t = MemRefType.get([lq, num_heads * dk], bf16)
+        k_l3_t = MemRefType.get([lk, num_kv_heads * dk], bf16)
+        v_l3_t = MemRefType.get([lk, num_kv_heads * dv], bf16)
+        emb_dim_q = num_heads * dk
+        emb_dim_k = num_kv_heads * dk
+        emb_dim_v = num_kv_heads * dv
     gp_l3_t = MemRefType.get([lq, num_heads * dv], bf16)
 
     # External function declarations
@@ -266,8 +284,17 @@ def build_module(
     # ----------------------------------------------------------------
     # Main attention function
     # ----------------------------------------------------------------
-    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
-    def attention_bf16(q_in, k_in, v_in, gp_out):
+    _func_arg_types = (
+        (q_l3_t, gp_l3_t) if fused_qkv else (q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    )
+
+    @FuncOp.from_py_func(*_func_arg_types)
+    def attention_bf16(*func_args):
+        if fused_qkv:
+            q_in, gp_out = func_args
+            k_in = v_in = q_in
+        else:
+            q_in, k_in, v_in, gp_out = func_args
         c1 = ConstantOp(index_type, 1)
         c_lq_iters = ConstantOp(index_type, num_lq_iters)
         c_num_head_groups = ConstantOp(index_type, num_head_groups)
@@ -279,15 +306,20 @@ def build_module(
             launch_sizes = [c_lq_iters, c_num_head_groups]
 
         @launch(
-            operands=[q_in, k_in, v_in, gp_out],
+            operands=([q_in, gp_out] if fused_qkv else [q_in, k_in, v_in, gp_out]),
             sizes=launch_sizes,
         )
         def launch_body(*launch_args):
-            if dv_chunks > 1:
-                lx, ly, lz, lsx, lsy, lsz, q, k, v, gp = launch_args
+            n_iv = 3 if dv_chunks > 1 else 2
+            ivs = launch_args[:n_iv]
+            operand_args = launch_args[2 * n_iv :]
+            lx, ly = ivs[0], ivs[1]
+            lz = ivs[2] if dv_chunks > 1 else ConstantOp(index_type, 0)
+            if fused_qkv:
+                qkv, gp = operand_args
+                q = k = v = qkv
             else:
-                lx, ly, lsx, lsy, q, k, v, gp = launch_args
-                lz = ConstantOp(index_type, 0)
+                q, k, v, gp = operand_args
 
             # Compute Q offset from launch iteration index
             # SEQ-FIRST launch offsets: ROW offset only (not flat)
@@ -332,6 +364,7 @@ def build_module(
                         AffineSymbolExpr.get(0),
                         AffineConstantExpr.get(dk),
                     )
+                    + AffineConstantExpr.get(q_col_base)
                 ],
             )
             # head_k_off = kv_head * dk
@@ -343,6 +376,7 @@ def build_module(
                         AffineSymbolExpr.get(0),
                         AffineConstantExpr.get(dk),
                     )
+                    + AffineConstantExpr.get(k_col_base)
                 ],
             )
             # head_v_off = kv_head * dv (column offset in seq-first V)
@@ -360,6 +394,7 @@ def build_module(
                             AffineConstantExpr.get(dv_tile),
                         ),
                     )
+                    + AffineConstantExpr.get(v_col_base)
                 ],
             )
             # head_out_off = head * dv (column offset in seq-first output)
@@ -450,7 +485,6 @@ def build_module(
                 # Q puts: SEQ-FIRST 2D memref [lq, num_heads*dk]
                 # Use 2D offsets: [row=q_launch_row, col=q_col_off]
                 # Read NQ tiles of (tile_size_q, dk_tile) with proper strides
-                emb_dim_q = num_heads * dk
                 for stage in range(NS):
                     ChannelPut(
                         f"QKIn_{stage}",
@@ -463,7 +497,6 @@ def build_module(
 
                 # K puts: SEQ-FIRST 2D memref [lk, num_kv_heads*dk]
                 # 2D offsets: [row=stage*lk_per_stage, col=head_k_off]
-                emb_dim_k = num_kv_heads * dk
                 for stage in range(NS):
                     k_stage_row = ConstantOp(index_type, stage * lk_per_stage)
                     ChannelPut(
@@ -477,7 +510,6 @@ def build_module(
 
                 # V puts: SEQ-FIRST 2D memref [lk, num_kv_heads*dv]
                 # 2D offsets: [row=stage*lk_per_stage, col=head_v_off]
-                emb_dim_v = num_kv_heads * dv
                 for stage in range(NS):
                     v_stage_row = ConstantOp(index_type, stage * lk_per_stage)
                     ChannelPut(

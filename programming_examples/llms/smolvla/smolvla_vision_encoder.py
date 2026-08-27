@@ -182,7 +182,7 @@ _PIXEL_SHUFFLE_FACTOR = 4
 # ---------------------------------------------------------------------------
 
 
-def _compile_flash_attn(cache, config, seq_len, fa_bfp16):
+def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False):
     """Compile the non-causal FlashAttention ELF (shared by fused + unfused)."""
     from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as build_attn,
@@ -213,6 +213,7 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16):
         num_kv_heads=n_kv_heads,
         causal=False,
         num_heads_per_unroll=num_heads_per_unroll,
+        fused_qkv=fused_qkv,
     )
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
     print(f"    (FA microkernel BFP16={fa_bfp16})")
@@ -270,10 +271,10 @@ def _compile_connector_gemm(cache):
 def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True):
     """A3-6b Lever 2+3: compile the two fused ViT multi-launch ELFs + FA.
 
-    vit_ln_qkv  : LN1 + Q/K/V GEMM + Q/K/V bias-add       (7 launches, 1 ELF)
+    vit_ln_qkv  : LN1 + one fused [Q|K|V] GEMM            (2 launches, 1 ELF)
     flash_attn  : non-causal MHA                          (1 launch,  registry ELF)
     vit_o_ffn   : O GEMM + O bias + residual + LN2 + fc1 + fc1 bias + GELU
-                  + fc2 + fc2 bias + residual             (10 launches, 1 ELF)
+                  + fc2 + residual                       (6 launches, 1 ELF)
 
     All the per-Linear bias-adds and both residual adds — host f32 glue in the
     unfused driver — run on-device inside these two ELFs. => 3 NPU dispatches per
@@ -321,7 +322,7 @@ def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True
             out_name=s["obj"],
         )
 
-    print("  Compiling vit_ln_qkv (4-launch fused ELF)...")
+    print("  Compiling vit_ln_qkv (2-launch fused ELF)...")
     cache.compile_and_cache(
         "vit_ln_qkv",
         build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim),
@@ -347,7 +348,9 @@ def _compile_fused_kernels(cache, config, seq_len, fa_bfp16, with_connector=True
         {"verbose": cache.verbose, **_ln_backend()},
     )
 
-    _compile_flash_attn(cache, config, seq_len, fa_bfp16)
+    # Fused path only: vit_ln_qkv emits Q|K|V column-concatenated, so FA reads
+    # them out of that one buffer instead of three copied-apart ones.
+    _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=True)
 
     if with_connector:
         _compile_connector_gemm(cache)
@@ -603,6 +606,26 @@ def _run_connector(cache, post_ln, connector_w, config, bo_key="gemm_connector")
     return np.asarray(out, dtype=np.float32)
 
 
+def _run_flash_attention_fused(cache, qkv, config, seq_len):
+    """Non-causal MHA on NPU via FlashAttention, reading Q|K|V as column blocks
+    of ONE (seq, 3*emb) buffer -- vit_ln_qkv's fused output, uploaded as a single
+    BO. Head h of Q occupies columns [h*hd:(h+1)*hd], K and V the same within
+    their block. Returns (seq, emb)."""
+    n_heads = config.n_heads
+    head_dim = config.head_dim
+    out = np.zeros((seq_len, n_heads * head_dim), dtype=bfloat16)
+    res = cache.load_and_run(
+        "flash_attn",
+        _ATTN_BACKEND_KWARGS,
+        qkv,
+        out,
+        output_indices=[1],
+        intermediate_indices={1},  # out is kernel-overwritten; skip host upload
+        bo_key="flash_attn",
+    )
+    return res[1].reshape(seq_len, n_heads * head_dim)
+
+
 def _run_flash_attention(cache, q, k, v, config, seq_len):
     """Non-causal MHA on NPU via FlashAttention. q/k/v:(seq, n_heads*head_dim)
     seq-first (head h occupies columns [h*hd:(h+1)*hd]). Returns (seq, emb)."""
@@ -681,16 +704,17 @@ def run_vit_block_fused(
                 _tk1,
             )
 
+        # [Wq|Wk|Wv] column-concatenated: the three GEMMs are one wide GEMM.
+        # Packing pads along K-rows, so hstacking already-packed blocks keeps
+        # every block's pad rows aligned.
         _cache[ln_key] = [
             None,  # arg0 x_in (dynamic)
             _pack(lw.ln1_w, lw.ln1_b),  # arg1 LN1 param
             z2(emb),  # arg2 normed
-            _wb(lw.wq, lw.bq),  # arg3 Q weight+bias packed
-            z2(emb),  # arg4 q_b (out)
-            _wb(lw.wk, lw.bk),  # arg5
-            z2(emb),  # arg6 k_b (out)
-            _wb(lw.wv, lw.bv),  # arg7
-            z2(emb),  # arg8 v_b (out)
+            np.ascontiguousarray(  # arg3 [Wq|Wk|Wv] weight+bias packed
+                np.hstack([_wb(lw.wq, lw.bq), _wb(lw.wk, lw.bk), _wb(lw.wv, lw.bv)])
+            ),
+            z2(3 * emb),  # arg4 [Q|K|V] (out)
         ]
     ln_args = _cache[ln_key]
     ln_args[0] = np.ascontiguousarray(np.asarray(x_bf16, dtype=bfloat16)).reshape(-1)
@@ -698,29 +722,27 @@ def run_vit_block_fused(
         "vit_ln_qkv",
         _vit_ln_qkv_backend(),
         *ln_args,
-        output_indices=[4, 6, 8],
-        static_input_indices={1, 3, 5, 7},  # LN param + bias-packed weights
-        intermediate_indices={2, 4, 6, 8},  # scratch + outputs
+        output_indices=[4],
+        static_input_indices={1, 3},  # LN param + bias-packed weights
+        intermediate_indices={2, 4},  # scratch + output
         bo_key=ln_key,
     )
-    q = res[4].reshape(seq_len, emb)
-    k = res[6].reshape(seq_len, emb)
-    v = res[8].reshape(seq_len, emb)
+    qkv = res[4].reshape(seq_len, 3 * emb)
 
     # ---- 2. Attention ----
     if attn_mode == "cpu":
         from smolvla_cpu_helpers import mha_bidirectional
 
         attn = mha_bidirectional(
-            q.astype(np.float32),
-            k.astype(np.float32),
-            v.astype(np.float32),
+            qkv[:, :emb].astype(np.float32),
+            qkv[:, emb : 2 * emb].astype(np.float32),
+            qkv[:, 2 * emb :].astype(np.float32),
             n_heads,
             head_dim,
             config.attn_scale,
         ).astype(bfloat16)
     else:
-        attn = _run_flash_attention(cache, q, k, v, config, seq_len)
+        attn = _run_flash_attention_fused(cache, qkv, config, seq_len)
 
     # ---- 3. vit_o_ffn: O + residual + LN2 + fc1 + GELU + fc2 + residual ----
     # O/fc1/fc2 each carry their bias on the weight stream, so the three
