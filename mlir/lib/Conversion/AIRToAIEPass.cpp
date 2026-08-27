@@ -2509,7 +2509,7 @@ void L2MemrefToMemTileMap(
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
-  // `air.memtile_col` is the memtile-level analogue of `air.shim_col` (see
+  // `air.memtile_col` pins an L2 buffer to a physical memtile column (see
   // AIRToAIESchedulingUtils.cpp). Two deliberate differences: (1) it is carried
   // on the memref.alloc rather than the channel decl, because L2 placement
   // buckets are keyed by alloc; (2) it is hint-only (an invalid column warns

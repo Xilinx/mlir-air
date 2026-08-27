@@ -974,7 +974,9 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
   }];
   let options = [
     Option<"clOmitMemorySpace", "omit-memory-space", "std::string", /*default=*/"\"\"",
-            "Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).">
+            "Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).">,
+    Option<"clDevice", "device", "std::string", /*default=*/"\"\"",
+            "Target AIE device. When given, a candidate whose duplicated L1 buffers would exceed the tile's local memory is declined. Empty string skips the check.">
   ];
 }
 

@@ -3523,13 +3523,9 @@ def build_module():
                         # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
                         def _qmtb_dec():
                             qmtb = AllocOp(qmt_l2, [], [])
-                            qmtb.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(
-                                    T.i32(),
-                                    5,  # reference mem_5_1; free for N<=2 (kv on col3).
-                                    # N=4 needs attn cols 3,4 + GLU->tile_5_2 relayout (TODO).
-                                )
-                            )
+                            # Column is compiler-derived (lands on the reference
+                            # mem_5_1); only the split opt-out is load-bearing.
+                            qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet("ropeQ", qmtb, indices=[idx(0)])
                             for c in range(N_ATTN_CU):
                                 ChannelPut(
@@ -3596,17 +3592,15 @@ def build_module():
                         if not MULTIBLK:
                             akbs, avbs = [], []
                             for c in range(N_ATTN_CU):
-                                col = ATTN_CU_LOC[c][0]
                                 akb = AllocOp(ak_l2, [], [])
-                                akb.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), col)
+                                akb.operation.attributes["air.no_split"] = (
+                                    UnitAttr.get()
                                 )
                                 akbs.append(akb)
                             for c in range(N_ATTN_CU):
-                                col = ATTN_CU_LOC[c][0]
                                 avb = AllocOp(av_l2, [], [])
-                                avb.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), col)
+                                avb.operation.attributes["air.no_split"] = (
+                                    UnitAttr.get()
                                 )
                                 avbs.append(avb)
                             # per col group: get its CUs' k then v from toAttnKV[gi]
@@ -4137,6 +4131,8 @@ def build_module():
                     # mem_1_1 (id2) = o-proj X instead of host.
                     def _omtb_dec(_conv=CONV_MIXER):
                         omtb = AllocOp(omt_l2, [], [])
+                        # Stays pinned: gemma3-4b fails to place without it
+                        # ('aie.masterset' op targets same destination DMA: 0).
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), 5
                         )

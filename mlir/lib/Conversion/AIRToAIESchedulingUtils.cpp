@@ -24,24 +24,6 @@
 
 using namespace mlir;
 
-namespace {
-// A channel declared with `air.dedicated_dma_channel` must get its OWN physical
-// DMA channel and never be time-multiplexed (packet-collapsed) with any other
-// flow on the same tile, in either direction. Used to keep a latency-critical
-// packet flow off a shared DMA channel that another (e.g. later-phase) flow
-// would otherwise collapse onto and BD-order ahead of -- starving the first
-// flow's consumer. Honored by the packet-reuse branches of both the shim and
-// MemTile DMA allocators.
-bool memcpyIsDedicatedChannel(xilinx::air::MemcpyInterface mc) {
-  auto chan = mlir::dyn_cast_if_present<xilinx::air::ChannelInterface>(
-      mc.getOperation());
-  if (!chan)
-    return false;
-  auto decl = xilinx::air::getChannelDeclarationThroughSymbol(chan);
-  return decl && decl->hasAttr(xilinx::air::attrs::DedicatedDmaChannel);
-}
-} // namespace
-
 namespace xilinx {
 
 FailureOr<bool> air::isTileInbound(air::MemcpyInterface memcpyOp,
@@ -980,15 +962,6 @@ bool xilinx::air::allocation_info_t::foundSameLogicalFlowInTile(
   return false;
 }
 
-bool xilinx::air::allocation_info_t::containsDedicatedChannel() {
-  for (auto o : memcpyOps) {
-    auto existingMc = dyn_cast_if_present<air::MemcpyInterface>(o);
-    if (existingMc && memcpyIsDedicatedChannel(existingMc))
-      return true;
-  }
-  return false;
-}
-
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -1357,8 +1330,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
 
   // Compute-tile DMA channel pin: a channel decl carrying an
   // `air.tile_dma_channel` IntegerAttr forces this flow onto that physical DMA
-  // channel index (the compute-tile analogue of the memtile
-  // `air.memtile_dma_channel_min` floor). Used when two flows on the same tile
+  // channel index. Used when two flows on the same tile
   // must keep fixed, distinct physical channels because their routes would
   // otherwise collide. The pin is an explicit override: apply it even when a
   // channel index was already chosen by the flow-level allocation phase
@@ -1602,8 +1574,7 @@ void air::TileDMAAllocator::repairS2MMChains(
     Operation *peelDecl = nullptr;
     std::vector<Operation *> moved, rest;
     for (auto *d : decls) {
-      if (d->hasAttr(air::attrs::TileDmaChannel) ||
-          d->hasAttr(air::attrs::DedicatedDmaChannel))
+      if (d->hasAttr(air::attrs::TileDmaChannel))
         continue;
       std::vector<Operation *> m, r;
       for (auto *o : ops)
@@ -1719,8 +1690,7 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
   // consulted: a broadcast constrains the SOURCE port it fans out from, which
   // says nothing about which channel each receiving core takes it in on.
   auto isImmovable = [](Operation *decl) {
-    return decl->hasAttr(air::attrs::TileDmaChannel) ||
-           decl->hasAttr(air::attrs::DedicatedDmaChannel);
+    return decl->hasAttr(air::attrs::TileDmaChannel);
   };
   // Whether the flow this transfer belongs to travels as packets. Read from the
   // memcpy op, the same way simpleDmaChannelAlloc decides whether to multiplex,
@@ -2489,29 +2459,15 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
 
   std::vector<int> dma_ops_get_id = collectDmaIds(dma_ops);
 
-  // Single channel-decl lookup for the two attrs that steer shim bucketing:
-  //   `broadcast_shape`: L3-direct broadcasts bucket by their first-dest's
-  //     incidental col/Op, giving each broadcast its own shim LTO and
-  //     overflowing the ShimNOC col count; spread them across existing shim
-  //     LTOs instead (see fallback below).
-  //   `air.shim_col`: pin this flow's shim LogicalTileOp to a physical column
-  //     (applied to bucketCol below, after it is derived).
+  // `broadcast_shape`: L3-direct broadcasts bucket by their first-dest's
+  // incidental col/Op, giving each broadcast its own shim LTO and overflowing
+  // the ShimNOC col count; spread them across existing shim LTOs instead (see
+  // fallback below).
   bool isBroadcastL3Put = false;
-  int shimColPin = -1;
   if (auto chanIf =
-          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
-    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf)) {
+          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation()))
+    if (auto chanDecl = getChannelDeclarationThroughSymbol(chanIf))
       isBroadcastL3Put = chanDecl->hasAttr("broadcast_shape");
-      if (auto a = chanDecl->getAttrOfType<mlir::IntegerAttr>("air.shim_col")) {
-        int pin = (int)a.getInt();
-        int numCols = device.getTargetModel().columns();
-        if (pin < 0 || pin >= numCols)
-          return memcpyOp.emitOpError("air.shim_col column ")
-                 << pin << " is out of range [0, " << numCols << ")";
-        shimColPin = pin;
-      }
-    }
-  }
 
   // Bucket key: the far-side col when known, else derive it from a memtile
   // LTO's downstream cores (Path B: memtiles are emitted column-less but
@@ -2532,13 +2488,6 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return -1;
   };
   int bucketCol = bucketColFor(col, otherSideOp);
-  // A shim-col pin forces the flow into its own bucket keyed on the pinned
-  // column and pins the opened shim LogicalTileOp there (the placer honors the
-  // col attr via tryGetCol). Same-pin flows share that bucket/column; without
-  // the pin a separate bucket alone yields a col-less LTO whose centroid falls
-  // on the (saturated) producer column.
-  if (shimColPin >= 0)
-    bucketCol = shimColPin;
   // Channel declaration behind a memcpy, or null. Sub-channels of one bundled
   // decl (e.g. @outD [2,2]) share it; independent channels do not.
   auto declOf = [](Operation *op) -> Operation * {
@@ -2581,26 +2530,10 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   // For packet flows: reuse the bucket's existing packet channel if any.
-  // EXCEPT `air.dedicated_dma_channel` (mirrors MemTileDMAAllocator), which is
-  // never collapsed in either direction: a dedicated flow does not reuse an
-  // existing packet channel (guarded here), and an unmarked flow does not reuse
-  // a channel that already hosts a dedicated flow (skipped in the walk below).
-  // This lets a column host BOTH a packet-multiplexed channel and a separate
-  // dedicated channel on the same column's other DMA channel, regardless of
-  // allocation order.
-  if (isPacketFlowOp && !memcpyIsDedicatedChannel(memcpyOp)) {
+  if (isPacketFlowOp) {
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
-      // When this flow is shim-col-pinned, only reuse a packet channel whose
-      // LogicalTileOp sits on the pinned column -- otherwise a previously
-      // opened (unpinned, off-column) packet LTO would capture this flow and
-      // silently ignore the pin.
-      if (shimColPin >= 0) {
-        auto ltCol = lt.tryGetCol();
-        if (!ltCol || (int)*ltCol != shimColPin)
-          return false;
-      }
       for (auto &t :
            llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
         if (t.dma_tile.getOperation() != lt.getOperation())
@@ -2624,15 +2557,14 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         // leave the array, and lands every readback out of a herd in the same
         // bucket. Packet reuse then puts them on one channel: llama-1b's
         // appendK, appendV and layerOut all became (2,0) S2MM 0, which the
-        // pathfinder cannot route, and which air.shim_col was pinning apart by
-        // hand. Sub-channels of ONE bundled decl still multiplex -- that is a
+        // pathfinder cannot route. Sub-channels of ONE bundled decl still
+        // multiplex -- that is a
         // single logical transfer and is what the packing exists for.
         if (isHostReadback && t.isHostReadback &&
             declOf(t.memcpyOps.empty() ? nullptr : t.memcpyOps.front()) !=
                 thisDecl)
           continue;
-        // Never collapse onto a channel that hosts a dedicated flow.
-        if (tPacket && !t.containsDedicatedChannel()) {
+        if (tPacket) {
           packetLT = lt;
           packetCh = (int)t.dma_channel.channel;
           return true;
@@ -2687,8 +2619,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // A readback ends off-chip, so it has no column affinity at all: its bucket
   // key is the PRODUCER's column, which only says where the data came from.
   // Restricting it to that bucket puts every readback out of a herd on one
-  // shim tile -- llama-1b's appendK/appendV/layerOut -- which does not route,
-  // and is what air.shim_col was pinning apart by hand. Give it the SPARSEST
+  // shim tile -- llama-1b's appendK/appendV/layerOut -- which does not route.
+  // Give it the SPARSEST
   // existing shim LTO with a free channel instead, so readbacks spread over
   // tiles the design already owns.
   //
@@ -2696,8 +2628,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // deliberate: the AIR pipeline runs aie-place-tiles with
   // merge-logical-tiles=false, so every LTO costs a whole shim tile and NPU2
   // only has 8. One-LTO-per-readback needs 9 for this design and fails to
-  // place. Joining another column's existing bucket is exactly what a
-  // shim_col pin achieves (appendK pinned to col 3 shares the inKV LTO).
+  // place.
   // Bucket column of an LTO, from any allocation that owns it, or -1.
   auto ltoBucketCol = [&](AIE::LogicalTileOp lt) {
     for (auto &t : llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs))
@@ -2742,15 +2673,10 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   AIE::LogicalTileOp tileLT = nullptr;
-  if (shimColPin < 0 && isPacketFlowOp && isHostReadback)
+  if (isPacketFlowOp && isHostReadback)
     tileLT = spreadShimLTO();
   if (!tileLT)
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
-      if (shimColPin >= 0) {
-        auto ltCol = lt.tryGetCol();
-        if (!ltCol || (int)*ltCol != shimColPin)
-          return false;
-      }
       if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
         tileLT = lt;
         return true;
@@ -2834,12 +2760,11 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         }
       }
     }
-    tileLT = AIE::LogicalTileOp::create(
-        b, device.getLoc(), AIE::AIETileType::ShimNOCTile,
-        /*col=*/shimColPin >= 0 ? b.getI32IntegerAttr(shimColPin)
-                                : IntegerAttr(),
-        /*row=*/IntegerAttr(),
-        /*allocation_scheme=*/StringAttr());
+    tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
+                                        AIE::AIETileType::ShimNOCTile,
+                                        /*col=*/IntegerAttr(),
+                                        /*row=*/IntegerAttr(),
+                                        /*allocation_scheme=*/StringAttr());
   }
 
   auto usedChans = channelsUsedOn(tileLT);
@@ -2853,13 +2778,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   if (dma_channel < 0)
     return memcpyOp.emitOpError("out of shim DMA channels");
 
-  // When shim-col-pinned, record the pinned col as this entry's col so
-  // sameBucket (which keys on t.col) groups same-pin packet flows together --
-  // letting two pinned packet channels packet-multiplex onto ONE shim
-  // LTO/channel at the pinned column instead of each opening its own LTO there.
-  int baseCol = shimColPin >= 0 ? shimColPin : col;
   auto baseRes = air::DMAAllocator::allocNewDmaChannel(
-      memcpyOp, tileLT, dma_channel, baseCol, row, dma_ops_get_id);
+      memcpyOp, tileLT, dma_channel, col, row, dma_ops_get_id);
   if (failed(baseRes))
     return baseRes;
   // Stamp the bucket key on the record the base allocator just pushed.
@@ -3000,8 +2920,7 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
   // flow on the chain whose destination differs from the rest, and the column
   // lost the port diversity an unrelated convergent group needed.
   auto isImmovable = [](Operation *decl) {
-    return decl->hasAttr("broadcast_shape") ||
-           decl->hasAttr(air::attrs::DedicatedDmaChannel);
+    return decl->hasAttr("broadcast_shape");
   };
 
   for (auto *allocs : {&mm2s_allocs, &s2mm_allocs}) {
@@ -3186,8 +3105,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Reuse an existing DMA channel on this tile instead of allocating a new
-    // one. Never collapse a channel marked air.dedicated_dma_channel, nor
-    // collapse onto an allocation that already hosts one (either direction).
+    // one.
     //   - MM2S (source) side collapses promiscuously onto a packet-flow
     //     channel (broadcast fan-out / pkt_id multiplexing rely on it), and
     //     otherwise onto a proven-identical endpoint, same as S2MM: repeated
@@ -3203,7 +3121,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     //     time-multiplex a single channel as sequential BD tasks. Collapsing
     //     circuit flows too keeps a memtile that also carries a wide broadcast
     //     from exhausting its S2MM channels on same-flow refills.
-    if (!memcpyIsDedicatedChannel(memcpyOp) && !t.containsDedicatedChannel()) {
+    {
       bool canCollapse =
           isMM2S.value()
               ? ((isPacketFlowOp && t.foundPacketFlowAllocInTile(tile)) ||
@@ -3222,32 +3140,8 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
-  if (chan == -1) {
-    // Channel-floor steer: a memtile DMA buffer whose defining op carries
-    // `air.memtile_dma_channel_min = N` reserves physical channels [0, N) on
-    // this memtile, so its flows land on [N, ...). Used when a broadcast's
-    // route on a low physical channel collides with another column flow
-    // transiting this memtile's switchbox. The attr rides on the memcpy
-    // (air.channel.put/get) op itself, set by the front end and preserved
-    // through the AIR pipeline (copyPaddingAttributes /
-    // ComposeMemrefOpOnChannelOp), so it is available here regardless of how
-    // the underlying buffer was lowered.
-    int minCh = 0;
-    if (auto a = memcpyOp->getAttrOfType<IntegerAttr>(
-            air::attrs::MemtileDmaChannelMin)) {
-      minCh = static_cast<int>(a.getInt());
-      // Validate the floor: it must leave at least one usable channel
-      // [minCh, memtile_dma_channels). An out-of-range floor would otherwise be
-      // silently ignored (falling back to round-robin), defeating the steer.
-      if (minCh < 0 || minCh >= memtile_dma_channels)
-        return memcpyOp.emitOpError("air.memtile_dma_channel_min = ")
-               << minCh << " is out of range [0, " << memtile_dma_channels
-               << ") for the " << (isMM2S.value() ? "MM2S" : "S2MM")
-               << " DMA channels of this memtile";
-    }
-    int avail = memtile_dma_channels - minCh;
-    chan = minCh + (num_allocs % avail);
-  }
+  if (chan == -1)
+    chan = num_allocs % memtile_dma_channels;
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 

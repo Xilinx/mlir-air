@@ -68,26 +68,6 @@ KERNEL_OBJ_NAME = "mm_bfp.o"
 MMUL_R = MMUL_S = MMUL_T = 8
 
 
-def for_disable_pp(start, stop=None, step=None):
-    """`for_` variant tagging the scf.for with `air.disable_ping_pong`.
-
-    Only needed when the K-l1 fill loop's 2x ping-pong buffers would blow the
-    64 KiB L1 budget; see bf16_x_bfp16 for the case that forced it.
-    """
-    if step is None:
-        step = 1
-    if stop is None:
-        stop, start = start, 0
-    params = [start, stop, step]
-    for i, p in enumerate(params):
-        if isinstance(p, int):
-            params[i] = arith.ConstantOp.create_index(p)
-    for_op = ForOp(*params, [])
-    for_op.operation.attributes["air.disable_ping_pong"] = UnitAttr.get()
-    with InsertionPoint(for_op.body):
-        yield for_op.induction_variable
-
-
 def _scaled(iv, c):
     """affine_apply of (s0 -> s0 * c)."""
     m = AffineMap.get(
@@ -111,7 +91,6 @@ def build_module(
     herd_n,
     np_dtype_out,
     arch="aie2p",
-    disable_pingpong=False,
 ):
     r, s, t = MMUL_R, MMUL_S, MMUL_T
 
@@ -270,7 +249,7 @@ def build_module(
                     def herd_compute(tx, ty, _sx, _sy, acc, a2, b2):
                         a1 = AllocOp(l1TyA, [], [])
                         b1 = AllocOp(l1TyB, [], [])
-                        loop = for_disable_pp if disable_pingpong else for_
+                        loop = for_
                         for j in loop(0, k_per_l2):
                             dma_memcpy_nd(
                                 a1,
@@ -483,13 +462,6 @@ if __name__ == "__main__":
         help="Override output data type (default: f32 for aie2p)",
     )
     parser.add_argument(
-        "--disable-pingpong",
-        action="store_true",
-        dest="disable_pingpong",
-        help="Tag the K-l1 fill loop with air.disable_ping_pong when the 2x "
-        "ping-pong buffers would exceed the 64 KiB L1 budget",
-    )
-    parser.add_argument(
         "--runtime-loop-tiling",
         type=int,
         default=None,
@@ -603,7 +575,6 @@ if __name__ == "__main__":
         args.herd_n,
         OUTPUT_DATATYPE,
         args.arch,
-        args.disable_pingpong,
     )
 
     if args.print_module_only:
