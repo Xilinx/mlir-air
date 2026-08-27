@@ -32,6 +32,7 @@ __all__ = [
     "aborted_regions",
     "enter_region",
     "exit_region",
+    "branch_depth",
 ]
 
 # Names of the regions whose body exited early (break / return / an exception
@@ -45,14 +46,23 @@ __all__ = [
 # problem at all. A single counter reported both as "left a loop early".
 _ABORTED = []
 
-# How many air.sequential bodies are currently open. air.alloc consults this: an
-# allocation inside a loop is freed by the herd after the loop closes, and the
-# dealloc would not be dominated by its alloc.
+# How many nested bodies -- loop or branch -- are currently open.
 _DEPTH = 0
+
+# Of those, how many are ops.branch arms. An allocation inside a loop is fine:
+# free_buffers anchors each dealloc in the block its alloc lives in, so both
+# land inside the loop body, which is what the hand-written kernels write and
+# what lets the pipeline rotate the buffer between trips. A branch arm is the
+# case that is still refused -- see air.alloc.
+_BRANCH_DEPTH = 0
 
 
 def loop_depth():
     return _DEPTH
+
+
+def branch_depth():
+    return _BRANCH_DEPTH
 
 
 def enter_body():
@@ -80,15 +90,17 @@ def aborted_regions():
 
 
 def enter_region():
-    """Count one more open nested region (a loop body, or an ``ops.branch``)."""
-    global _DEPTH
+    """Count one more open ``ops.branch`` arm."""
+    global _DEPTH, _BRANCH_DEPTH
     _DEPTH += 1
+    _BRANCH_DEPTH += 1
 
 
 def exit_region(aborted, what="air.sequential"):
     """Close it, recording ``what`` if its body did not run to the end."""
-    global _DEPTH
+    global _DEPTH, _BRANCH_DEPTH
     _DEPTH -= 1
+    _BRANCH_DEPTH -= 1
     if aborted:
         _ABORTED.append(what)
 

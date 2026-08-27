@@ -563,19 +563,6 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: alloc_inside_sequential
-# The herd frees its buffers after the body, which is outside the loop, so the
-# dealloc would not be dominated by its alloc.
-# CHECK: NotImplementedError: air.alloc inside an air.sequential or ops.branch body
-@expect(NotImplementedError, "alloc_inside_sequential")
-def _():
-    def body(h, tx, ty, A, B, C):
-        for _ in air.sequential(0, 64, 32):
-            air.alloc([32, 32], bf16, scope=h.private())
-
-    _trace(body)
-
-
 # CHECK-LABEL: TEST: break_out_of_sequential
 # An air.sequential body is traced once and stands for every trip, so breaking out
 # truncates all of them rather than shortening the loop.
@@ -2098,10 +2085,11 @@ def _():
 
 
 # CHECK-LABEL: TEST: alloc_inside_a_branch
-# The herd frees its buffers after the body, outside the region, so the dealloc
-# would not be dominated by the alloc. It is also the wrong instinct: L1 is
-# charged per core whether or not that core's branch runs.
-# CHECK: NotImplementedError: air.alloc inside an air.sequential or ops.branch body
+# The buffer cannot outlive the arm, so a use after the branch would not be
+# dominated by the alloc. It is also the wrong instinct: L1 is charged per core
+# whether or not that core's branch runs. A loop body, by contrast, is allowed:
+# its dealloc lands inside the loop beside the alloc.
+# CHECK: NotImplementedError: air.alloc inside an ops.branch body
 @expect(NotImplementedError, "alloc_inside_a_branch")
 def _():
     def body(h, tx, ty, A, B, C):

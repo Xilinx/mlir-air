@@ -775,6 +775,10 @@ class SegmentContext:
         # segment, which is what keeps every existing example's operand list
         # byte-identical.
         self.leaves = []
+        # The segment body's own block, bound while the body is traced. It is
+        # the top of the scope a nested herd is emitted into, and so the place
+        # a walk up the block chain has to stop -- see _staged_in_scope.
+        self._entry_block = None
 
     def __enter__(self):
         return self
@@ -902,6 +906,7 @@ class SegmentContext:
             for t, v in zip(tensors, bound[len(outer_leaves) :]):
                 t.value = v
             previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
+            segment_self._entry_block = args[0].owner
             try:
                 fn(*coords)
                 free_buffers(segment_self._buffers)
@@ -927,6 +932,50 @@ def segment(grid=None, name=None):
 def _needs(obj, kernel):
     """Phrase one claim on a herd's single link_with slot, for a conflict."""
     return f"calls {kernel} from {obj!r}" if kernel else f"declares link_with={obj!r}"
+
+
+def _staged_in_scope(segment):
+    """The segment's L2 buffers that are still live where a herd is going.
+
+    ``air.herd`` is IsolatedFromAbove, so an L2 buffer the body reaches has to
+    be passed in as an operand, and the tracer cannot know which ones the body
+    touches until it has run it -- so it passes every one it can.
+
+    "Can" is the point. A buffer allocated inside an ``air.sequential`` at
+    segment scope dies with that loop: by the time a *later* herd is emitted,
+    its ``memref.alloc`` sits in a region that has already been closed, and
+    naming it as an operand is not merely wasteful but ill-formed -- it does not
+    dominate the use. The staging loop in the int4 GEMV is exactly this shape:
+    an L2 tile allocated per trip, filled from L3 and forwarded to L1 over a
+    channel, with a herd beside it that never touches the buffer at all.
+
+    Left unfiltered that operand reaches ``free_buffers``, which walks the
+    buffer's uses out to the block its alloc lives in, finds an ``air.herd``
+    that is not under that block, and walks off the top of the IR -- aborting
+    the process inside MLIR rather than raising. So the filter is what the
+    surrounding comment always claimed: only the ones in scope here.
+    """
+    if segment is None:
+        return []
+    from air.ir import InsertionPoint
+
+    top = segment._entry_block
+    if top is None:
+        return list(segment._buffers)
+    # The blocks whose values are visible here: this one and its ancestors, up
+    # to the segment body. The walk stops there rather than running to the
+    # module, because `block.owner.operation.block` on the top-level block
+    # aborts the process instead of returning None.
+    visible, block = set(), InsertionPoint.current.block
+    while True:
+        visible.add(block)
+        if block == top:
+            break
+        owner = block.owner
+        if owner is None:
+            break
+        block = owner.operation.block
+    return [b for b in segment._buffers if b.value.owner.operation.block in visible]
 
 
 class HerdContext:
@@ -1144,7 +1193,7 @@ class HerdContext:
         # tensors, and the tracer cannot know what the body will touch until it
         # has run it.
         enclosing = current_segment(required=False)
-        staged = list(enclosing._buffers) if enclosing is not None else []
+        staged = _staged_in_scope(enclosing)
         # The herd is the first thing that knows how many of a shared buffer's
         # leading dimensions are cores, so it is where their L1 charge is gated.
         _charge_shared_l1(enclosing, len(self.grid), self.name)
@@ -1330,7 +1379,7 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     from air.dialects.memref import AllocOp
     from air.extras import types as T
 
-    from ._loop import loop_depth
+    from ._loop import branch_depth
 
     if scope is None:
         raise ValueError(
@@ -1379,14 +1428,29 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     # the herd body, so the alloc does not land in the loop the caller is
     # standing in and the dominance argument below does not apply. Only
     # HerdContext.scratch sets it, and it is not part of the public signature.
-    if space == "L1" and loop_depth() and not _hoisted:
+    #
+    # A loop body used to be refused here too, on the grounds that the herd
+    # frees its buffers after the loop has closed. That was not so:
+    # free_buffers anchors each dealloc in the block the *alloc* lives in, so a
+    # buffer allocated in a loop is already released inside that loop, which is
+    # both dominated and what the hand-written kernels write. The refusal cost
+    # real IR -- hoisting the int4 GEMV's per-trip L1 tiles above their loop
+    # gives the pipeline one buffer to rotate instead of a fresh one per trip,
+    # which is the ping-pong the kernel is built around.
+    #
+    # A branch arm is still refused. Both arms of an ops.branch write to the
+    # same enclosing scope, so which alloc a later use refers to is a question
+    # the tracer cannot answer, and the failure would be a silently wrong
+    # buffer rather than a verifier error.
+    if space == "L1" and branch_depth() and not _hoisted:
         raise NotImplementedError(
-            "air.alloc inside an air.sequential or ops.branch body is not "
-            "supported: the herd frees its buffers once the body is finished, "
-            "which is outside the region, so the dealloc would not be dominated "
-            "by its alloc. Hoist the allocation above it -- a loop reuses the "
-            "buffer across trips, which is what a loop is for, and a buffer only "
-            "some cores read still costs the same L1 on every core."
+            "air.alloc inside an ops.branch body is not supported: the arm is a "
+            "region the buffer cannot outlive, so a use after the branch would "
+            "not be dominated by its alloc. Hoist the allocation above the "
+            "branch -- both arms then name the same buffer, which is what a "
+            "branch that fills a tile two different ways means. Allocating "
+            "inside an air.sequential is fine: the buffer is freed inside that "
+            "loop."
         )
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since
