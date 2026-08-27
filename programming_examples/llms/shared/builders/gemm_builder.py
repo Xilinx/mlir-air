@@ -26,6 +26,39 @@ _DRAIN_OBJ = "mm_m32.o"
 _DRAIN_TILE_M = 32
 
 
+# Bias-on-the-weight-stream. An AIE2P core tile has only 2 inbound DMA
+# channels and A/B already hold both, so a per-channel bias cannot arrive on a
+# DMA of its own. Instead B is repacked with an 8-row pad block after every L1
+# sub-chunk of tile_k_l1 weight rows; only the FINAL sub-chunk's pad carries the
+# bias (replicated down its rows), the rest are zero. The mmul skips pad rows
+# via DIM_K_PAD, and the drain herd folds the bias into the epilogue cast it
+# already performs. 8 = the mmul k granularity, the smallest legal block.
+BIAS_PAD_ROWS = 8
+
+
+def packed_k(k, tile_k_l1):
+    """Row count of the bias-packed B for a (k, tile_k_l1) GEMM."""
+    return (k // tile_k_l1) * (tile_k_l1 + BIAS_PAD_ROWS)
+
+
+def repack_gemm_b_with_bias(w, bias, tile_k_l1):
+    """(K,N) weights + (N,) bias -> packed_k(K,tile_k_l1) x N, bias in the last pad.
+
+    Mirrors the access pattern build_module emits for b_pad_rows=BIAS_PAD_ROWS.
+    """
+    import numpy as np
+
+    k, n = w.shape
+    tk1p = tile_k_l1 + BIAS_PAD_ROWS
+    nsub = k // tile_k_l1
+    out = np.zeros((nsub * tk1p, n), dtype=w.dtype)
+    for j in range(nsub):
+        out[j * tk1p : j * tk1p + tile_k_l1] = w[j * tile_k_l1 : (j + 1) * tile_k_l1]
+    last = (nsub - 1) * tk1p + tile_k_l1
+    out[last : last + BIAS_PAD_ROWS] = bias[None, :].astype(w.dtype)
+    return out
+
+
 def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
     """Full per-shape build recipe from the registry: the chosen method's spec
     (build_kwargs / suffix / launches) MERGED with the registry tile sizes. This is
@@ -164,6 +197,8 @@ def _build_gemm_module(
     external_bf16_out=False,
     sym_suffix="",
     link_with_name="mm.o",
+    b_pad_rows=0,
+    epilogue_gelu=False,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -217,6 +252,8 @@ def _build_gemm_module(
             emit_external_call=True,
             sym_suffix=sym_suffix,
             link_with_name=link_with_name,
+            b_pad_rows=b_pad_rows,
+            epilogue_gelu=epilogue_gelu,
         )
 
     raise ValueError(

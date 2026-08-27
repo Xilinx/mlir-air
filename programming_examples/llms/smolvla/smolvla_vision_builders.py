@@ -74,6 +74,8 @@ from shared.infra.stitching import (
 )
 from shared.builders.gemm_builder import (
     _build_gemm_module,
+    BIAS_PAD_ROWS,
+    packed_k,
     gemm_registry_config,
     disambiguate_by_tile_n,
 )
@@ -224,14 +226,24 @@ def _force_tile_n_suffix(spec):
     return s
 
 
-def _gemm_externs(spec):
+def _gemm_externs(spec, bias_fused=False, gelu=False):
     sfx = spec["sym_suffix"]
-    return {
+    syms = {
         "@matmul_bf16",
         "@op_has_no_registered_library_name" + sfx,
         "@zero_f32_mn" + sfx,
-        "@f32_to_bf16_mn" + sfx,
     }
+    # The bias-fused GEMM folds the per-channel bias into the drain herd's
+    # epilogue cast, so it links a different cast symbol plus the extractor
+    # that lifts the bias out of B's trailing k-block.
+    if bias_fused:
+        syms.add("@extract_bias_from_b" + sfx)
+        syms.add(
+            ("@f32_to_bf16_bias_gelu_mn" if gelu else "@f32_to_bf16_bias_mn") + sfx
+        )
+    else:
+        syms.add("@f32_to_bf16_mn" + sfx)
+    return syms
 
 
 def _gemm_tiles(spec):
@@ -262,12 +274,12 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
       %arg6  k_raw    (seq, emb)          (intermediate)
       %arg7  wv       (emb, emb)
       %arg8  v_raw    (seq, emb)          (intermediate)
-      %arg9  bq       (emb,)              Q bias
-      %arg10 bk       (emb,)
-      %arg11 bv       (emb,)
-      %arg12 q_b      (seq, emb)          Q after bias (FA input) — OUTPUT
-      %arg13 k_b      (seq, emb)          K after bias (FA input) — OUTPUT
-      %arg14 v_b      (seq, emb)          V after bias (FA input) — OUTPUT
+      %arg4  q_b      (seq, emb)          Q, bias already folded in — OUTPUT
+      %arg6  k_b      (seq, emb)          K — OUTPUT
+      %arg8  v_b      (seq, emb)          V — OUTPUT
+
+    The Q/K/V weights are the BIAS-PACKED form (repack_gemm_b_with_bias), so
+    there are no separate bias args or bias-add launches.
     """
     spec = dict(gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high"))
     assert spec["method"] == "drain", spec["method"]  # vision qkvo is drain
@@ -283,69 +295,63 @@ def build_vit_ln_qkv_module(seq_len, emb_dim, n_heads, head_dim, herd_m=8, herd_
     )
 
     kw, tm, tk2, tk1, tn = _gemm_tiles(spec)
-    print(f"  [ln_qkv 2-4/7] Q/K/V GEMM ({spec['method']} tile_n={tn})...")
-    q_ir = str(
-        _build_gemm_module(
-            seq_len, emb_dim, emb_dim, tm, tk2, tk1, tn, herd_m, herd_n, **kw
+    print(f"  [ln_qkv 2-4/4] Q/K/V GEMM ({spec['method']} tile_n={tn}, bias fused)...")
+    # The per-channel bias rides the weight stream (see BIAS_PAD_ROWS): the host
+    # repacks W so each L1 sub-chunk is followed by a pad block, and the drain
+    # herd folds the bias into the epilogue cast it already performs. This
+    # deletes the three separate bias-add launches.
+    q_ir, k_ir, v_ir = (
+        str(
+            _build_gemm_module(
+                seq_len,
+                emb_dim,
+                emb_dim,
+                tm,
+                tk2,
+                tk1,
+                tn,
+                herd_m,
+                herd_n,
+                b_pad_rows=BIAS_PAD_ROWS,
+                **kw,
+            )
         )
+        for _ in range(3)
     )
-    k_ir = str(
-        _build_gemm_module(
-            seq_len, emb_dim, emb_dim, tm, tk2, tk1, tn, herd_m, herd_n, **kw
-        )
-    )
-    v_ir = str(
-        _build_gemm_module(
-            seq_len, emb_dim, emb_dim, tm, tk2, tk1, tn, herd_m, herd_n, **kw
-        )
-    )
-
-    print("  [ln_qkv 5-7/7] Q/K/V bias-add (broadcast)...")
-    # in_cols == real_cols == emb_dim (drain tile_n=96 divides 768, no N padding).
-    bias_q_ir = str(_build_bias_add_2d(seq_len, emb_dim, emb_dim, bfloat16, 8))
-    bias_k_ir = str(_build_bias_add_2d(seq_len, emb_dim, emb_dim, bfloat16, 8))
-    bias_v_ir = str(_build_bias_add_2d(seq_len, emb_dim, emb_dim, bfloat16, 8))
 
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{2*emb_dim}xbf16>"),
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg3", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{packed_k(emb_dim, tk1)}x{emb_dim}xbf16>"),
         FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg5", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg5", f"memref<{packed_k(emb_dim, tk1)}x{emb_dim}xbf16>"),
         FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg7", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg7", f"memref<{packed_k(emb_dim, tk1)}x{emb_dim}xbf16>"),
         FuncArg("%arg8", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg9", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg10", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg11", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg12", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg13", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg14", f"memref<{seq_len}x{emb_dim}xbf16>"),
     ]
 
     slices = [
         KernelSlice(
             ln_ir, "ln", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}
         ),
-        KernelSlice(q_ir, "q", {0: 2, 1: 3, 2: 4}, extern_syms=_gemm_externs(spec)),
+        KernelSlice(
+            q_ir, "q", {0: 2, 1: 3, 2: 4}, extern_syms=_gemm_externs(spec, True)
+        ),
         KernelSlice(
             k_ir,
             "k",
             {0: 2, 1: 5, 2: 6},
-            extern_syms=_gemm_externs(spec),
+            extern_syms=_gemm_externs(spec, True),
             private_from=False,
         ),
         KernelSlice(
             v_ir,
             "v",
             {0: 2, 1: 7, 2: 8},
-            extern_syms=_gemm_externs(spec),
+            extern_syms=_gemm_externs(spec, True),
             private_from=False,
         ),
-        KernelSlice(bias_q_ir, "bq", {0: 4, 1: 9, 2: 12}, private_from=False),
-        KernelSlice(bias_k_ir, "bk", {0: 6, 1: 10, 2: 13}, private_from=False),
-        KernelSlice(bias_v_ir, "bv", {0: 8, 1: 11, 2: 14}, private_from=False),
     ]
 
     module = stitch_elf(
@@ -369,24 +375,21 @@ def build_vit_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4):
 
     Func args:
       %arg0  attn     (seq, emb)          FA output (block-local input)
-      %arg1  wo       (emb, emb)          O weight
-      %arg2  o_raw    (seq, emb)          O GEMM out (intermediate)
-      %arg3  bo       (emb,)              O bias
-      %arg4  o_b      (seq, emb)          O after bias (intermediate)
-      %arg5  x_res    (seq, emb)          residual (block input x)
-      %arg6  res1     (seq, emb)          o_b + x_res (intermediate; +FFN residual)
-      %arg7  ln2_param(2*emb,)            LN2 gamma||beta packed
-      %arg8  normed2  (seq, emb)          LN2 out (intermediate)
-      %arg9  w_fc1    (emb, hidden)       fc1 weight
-      %arg10 fc1_raw  (seq, hidden)       fc1 GEMM out (intermediate)
-      %arg11 b_fc1    (hidden,)           fc1 bias
-      %arg12 fc1_b    (seq, hidden)       fc1 after bias (intermediate)
-      %arg13 gelu_out (seq, hidden)       GELU out (intermediate)
-      %arg14 w_fc2    (hidden, emb)       fc2 weight
-      %arg15 fc2_raw  (seq, emb)          fc2 GEMM out (intermediate)
-      %arg16 b_fc2    (emb,)              fc2 bias
-      %arg17 fc2_b    (seq, emb)          fc2 after bias (intermediate)
-      %arg18 output   (seq, emb)          fc2_b + res1 — OUTPUT
+      %arg1  wo       (packed_k, emb)     O weight, bias-packed
+      %arg2  o_b      (seq, emb)          O incl. bias (intermediate)
+      %arg3  x_res    (seq, emb)          residual (block input x)
+      %arg4  res1     (seq, emb)          o_b + x_res (intermediate; +FFN residual)
+      %arg5  ln2_param(2*emb,)            LN2 gamma||beta packed
+      %arg6  normed2  (seq, emb)          LN2 out (intermediate)
+      %arg7  w_fc1    (packed_k, hidden)  fc1 weight, bias-packed
+      %arg8  gelu_out (seq, hidden)       fc1 incl. bias AND GELU (intermediate)
+      %arg9  w_fc2    (packed_k, emb)     fc2 weight, bias-packed
+      %arg10 fc2_b    (seq, emb)          fc2 incl. bias (intermediate)
+      %arg11 output   (seq, emb)          fc2_b + res1 — OUTPUT
+
+    The three bias-add launches AND the GELU launch are gone: each GEMM carries
+    its bias on the weight stream, and fc1 additionally applies GELU, all inside
+    the drain herd's epilogue cast.
     """
     o_spec = dict(gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high"))
     g_spec = dict(gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high"))
@@ -400,63 +403,77 @@ def build_vit_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4):
     gk, gtm, gk2, gk1, gtn = _gemm_tiles(g_spec)
     dk, dtm, dk2, dk1, dtn = _gemm_tiles(d_spec)
 
-    print(f"  [o_ffn 1/10] O GEMM (drain tn={otn})...")
+    print(f"  [o_ffn 1/6] O GEMM (drain tn={otn}, bias fused)...")
     o_ir = str(
         _build_gemm_module(
-            seq_len, emb_dim, emb_dim, otm, ok2, ok1, otn, herd_m, herd_n, **ok
+            seq_len,
+            emb_dim,
+            emb_dim,
+            otm,
+            ok2,
+            ok1,
+            otn,
+            herd_m,
+            herd_n,
+            b_pad_rows=BIAS_PAD_ROWS,
+            **ok,
         )
     )
-    print("  [o_ffn 2/10] O bias-add...")
-    bias_o_ir = str(_build_bias_add_2d(seq_len, emb_dim, emb_dim, bfloat16, 8))
-    print("  [o_ffn 3/10] residual add (o_b + x_res)...")
+    print("  [o_ffn 2/6] residual add (o_b + x_res)...")
     res1_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
-    print("  [o_ffn 4/10] LN2 (affine)...")
+    print("  [o_ffn 3/6] LN2 (affine)...")
     ln2_ir = _wrap_ir_in_launch(
         str(build_layer_norm(seq_len, emb_dim, bfloat16, 16, herd_x=8))
     )
-    print(f"  [o_ffn 5/10] fc1 GEMM (drain tn={gtn})...")
+    print(f"  [o_ffn 4/6] fc1 GEMM (drain tn={gtn}, bias+GELU fused)...")
     fc1_ir = str(
         _build_gemm_module(
-            seq_len, emb_dim, hidden_dim, gtm, gk2, gk1, gtn, herd_m, herd_n, **gk
+            seq_len,
+            emb_dim,
+            hidden_dim,
+            gtm,
+            gk2,
+            gk1,
+            gtn,
+            herd_m,
+            herd_n,
+            b_pad_rows=BIAS_PAD_ROWS,
+            epilogue_gelu=True,
+            **gk,
         )
     )
-    print("  [o_ffn 6/10] fc1 bias-add...")
-    bias_fc1_ir = str(_build_bias_add_2d(seq_len, hidden_dim, hidden_dim, bfloat16, 8))
-    print("  [o_ffn 7/10] GELU-tanh (2D)...")
-    gelu_ir = str(
-        _build_gelu_2d(seq_len, hidden_dim, 4096, bfloat16, herd_x=8, herd_y=2)
-    )
-    print(f"  [o_ffn 8/10] fc2 GEMM (drain tn={dtn})...")
+    print(f"  [o_ffn 5/6] fc2 GEMM (drain tn={dtn}, bias fused)...")
     fc2_ir = str(
         _build_gemm_module(
-            seq_len, hidden_dim, emb_dim, dtm, dk2, dk1, dtn, herd_m, herd_n, **dk
+            seq_len,
+            hidden_dim,
+            emb_dim,
+            dtm,
+            dk2,
+            dk1,
+            dtn,
+            herd_m,
+            herd_n,
+            b_pad_rows=BIAS_PAD_ROWS,
+            **dk,
         )
     )
-    print("  [o_ffn 9/10] fc2 bias-add...")
-    bias_fc2_ir = str(_build_bias_add_2d(seq_len, emb_dim, emb_dim, bfloat16, 8))
-    print("  [o_ffn 10/10] residual add (fc2_b + res1)...")
+    print("  [o_ffn 6/6] residual add (fc2_b + res1)...")
     res2_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
 
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg1", f"memref<{emb_dim}x{emb_dim}xbf16>"),
+        FuncArg("%arg1", f"memref<{packed_k(emb_dim, ok1)}x{emb_dim}xbf16>"),
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg3", f"memref<{emb_dim}xbf16>"),
+        FuncArg("%arg3", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg5", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg5", f"memref<{2*emb_dim}xbf16>"),
         FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg7", f"memref<{2*emb_dim}xbf16>"),
-        FuncArg("%arg8", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg9", f"memref<{emb_dim}x{hidden_dim}xbf16>"),
-        FuncArg("%arg10", f"memref<{seq_len}x{hidden_dim}xbf16>"),
-        FuncArg("%arg11", f"memref<{hidden_dim}xbf16>"),
-        FuncArg("%arg12", f"memref<{seq_len}x{hidden_dim}xbf16>"),
-        FuncArg("%arg13", f"memref<{seq_len}x{hidden_dim}xbf16>"),
-        FuncArg("%arg14", f"memref<{hidden_dim}x{emb_dim}xbf16>"),
-        FuncArg("%arg15", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg16", f"memref<{emb_dim}xbf16>"),
-        FuncArg("%arg17", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg18", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg7", f"memref<{packed_k(emb_dim, gk1)}x{hidden_dim}xbf16>"),
+        FuncArg("%arg8", f"memref<{seq_len}x{hidden_dim}xbf16>"),
+        FuncArg("%arg9", f"memref<{packed_k(hidden_dim, dk1)}x{emb_dim}xbf16>"),
+        FuncArg("%arg10", f"memref<{seq_len}x{emb_dim}xbf16>"),
+        FuncArg("%arg11", f"memref<{seq_len}x{emb_dim}xbf16>"),
     ]
 
     # GEMM privates: emit each distinct sym_suffix's decls exactly once.
@@ -472,36 +489,32 @@ def build_vit_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4):
             o_ir,
             "o",
             {0: 0, 1: 1, 2: 2},
-            extern_syms=_gemm_externs(o_spec),
+            extern_syms=_gemm_externs(o_spec, True),
             private_from=_pf(o_spec),
         ),
-        KernelSlice(bias_o_ir, "bo", {0: 2, 1: 3, 2: 4}, private_from=False),
-        KernelSlice(res1_ir, "r1", {0: 4, 1: 5, 2: 6}, private_from=False),
+        KernelSlice(res1_ir, "r1", {0: 2, 1: 3, 2: 4}, private_from=False),
         KernelSlice(
             ln2_ir,
             "ln2",
-            {0: 6, 1: 7, 2: 8},
+            {0: 4, 1: 5, 2: 6},
             extern_syms={"@zero_vectorized_bf16"},
             private_from=False,
         ),
         KernelSlice(
             fc1_ir,
             "g",
-            {0: 8, 1: 9, 2: 10},
-            extern_syms=_gemm_externs(g_spec),
+            {0: 6, 1: 7, 2: 8},
+            extern_syms=_gemm_externs(g_spec, True, gelu=True),
             private_from=_pf(g_spec),
         ),
-        KernelSlice(bias_fc1_ir, "bg", {0: 10, 1: 11, 2: 12}, private_from=False),
-        KernelSlice(gelu_ir, "ge", {0: 12, 1: 13}, private_from=False),
         KernelSlice(
             fc2_ir,
             "d",
-            {0: 13, 1: 14, 2: 15},
-            extern_syms=_gemm_externs(d_spec),
+            {0: 8, 1: 9, 2: 10},
+            extern_syms=_gemm_externs(d_spec, True),
             private_from=_pf(d_spec),
         ),
-        KernelSlice(bias_fc2_ir, "bd", {0: 15, 1: 16, 2: 17}, private_from=False),
-        KernelSlice(res2_ir, "r2", {0: 17, 1: 6, 2: 18}, private_from=False),
+        KernelSlice(res2_ir, "r2", {0: 10, 1: 4, 2: 11}, private_from=False),
     ]
 
     module = stitch_elf(
