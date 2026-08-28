@@ -370,6 +370,43 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
         UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
     ),
+    # Qwen3-4B: the DFlash target (see docs/DFlashFeasibility.md). Qwen3 QK-norm
+    # like qwen3-8b, but with the DECOUPLED q dim the bf16 llms/qwen3_4b example
+    # already handles: n_heads*head_dim = 4096 != hidden 2560, so the o-proj
+    # contracts 4096 -> 2560 and J2P[1] is DQ/512, not K/512.
+    #
+    # PAIR_ROWS=1 is forced, as it is for qwen2.5-7b: the paired egress needs
+    # every phase output divisible by ROW_BLOCK*NCX*NCY*PAIR_ROWS = 1024, and the
+    # o/down phases emit K=2560 -> 2.5. Non-paired (divisor 512) is exact.
+    #   I2P = [M, K, 2*INTER, K]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS)
+    #       = [6144, 2560, 19456, 2560]/512 = [12, 5, 38, 5]
+    #   J2P = [K, DQ, K, INTER]/(2*COL_BLOCK)
+    #       = [2560, 4096, 2560, 9728]/512 = [5, 8, 5, 19]
+    "qwen3-4b": dict(
+        K=2560,
+        M=6144,  # DQ+DK+DV = 4096+1024+1024
+        DH_A=128,
+        KV_PER_CU=2,  # 8 kv / 4 CU
+        N_ATTN_CU=4,
+        NPH=4,
+        I2P=[12, 5, 38, 5],  # blocks/tile per phase (non-paired)
+        J2P=[5, 8, 5, 19],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=4,  # 32 q / 8 kv = 4 per group, no padding needed
+        PAIR_ROWS=1,  # NON-PAIRED egress (K=2560 is odd in paired units)
+        N_NORMS=2,  # standard pre-norm (input, post_attention)
+        HAS_QK_NORM=True,  # Qwen3: rope_w = [cos/sin(DH), q_norm(DH), k_norm(DH)]
+        VOCAB_SIZE=151936,
+        UNI_DEC=36,  # 36 decoder layers
+        # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(151936/2560)*2560
+        # = 153600 -> 4800 rowblocks. VOCAB_ROWBLKS = 16*VOCAB_I2 (PAIR_ROWS=1)
+        # must divide 4800, so UNI_LM*VOCAB_CHUNK_I2 = 300. K/PAYLOAD = 2560/512
+        # = 5 must divide VOCAB_RNDS = VOCAB_I2, so VOCAB_I2 is a multiple of 5:
+        # {5,10,15,20,25,30} once the tested 2*VOCAB_I2 <= 63 envelope is applied.
+        # 30 is the largest, i.e. the fewest host-armed waves: 300/30 = 10.
+        # The driver MUST set VOCAB_CHUNK_I2=30 (env) to match this UNI_LM.
+        UNI_LM=10,  # vocab chunks per LM head (VOCAB_CHUNK_I2=30)
+    ),
     # Llama-3.1-8B: same attention topology as 1B/3B (2x4x1, 8 kv heads, DH=128),
     # so the per-CU KV geometry is unchanged; only the proj/FFN widths grow. Like
     # qwen3-8b this needs DECODE_WGROUP (32 layers of K=4096 weights are 3.6 GiB
@@ -3486,13 +3523,9 @@ def build_module():
                         # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
                         def _qmtb_dec():
                             qmtb = AllocOp(qmt_l2, [], [])
-                            qmtb.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(
-                                    T.i32(),
-                                    5,  # reference mem_5_1; free for N<=2 (kv on col3).
-                                    # N=4 needs attn cols 3,4 + GLU->tile_5_2 relayout (TODO).
-                                )
-                            )
+                            # Column is compiler-derived (lands on the reference
+                            # mem_5_1); only the split opt-out is load-bearing.
+                            qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet("ropeQ", qmtb, indices=[idx(0)])
                             for c in range(N_ATTN_CU):
                                 ChannelPut(
@@ -3559,17 +3592,15 @@ def build_module():
                         if not MULTIBLK:
                             akbs, avbs = [], []
                             for c in range(N_ATTN_CU):
-                                col = ATTN_CU_LOC[c][0]
                                 akb = AllocOp(ak_l2, [], [])
-                                akb.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), col)
+                                akb.operation.attributes["air.no_split"] = (
+                                    UnitAttr.get()
                                 )
                                 akbs.append(akb)
                             for c in range(N_ATTN_CU):
-                                col = ATTN_CU_LOC[c][0]
                                 avb = AllocOp(av_l2, [], [])
-                                avb.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), col)
+                                avb.operation.attributes["air.no_split"] = (
+                                    UnitAttr.get()
                                 )
                                 avbs.append(avb)
                             # per col group: get its CUs' k then v from toAttnKV[gi]
@@ -3594,7 +3625,7 @@ def build_module():
                                         strides=[idx(1)],
                                     )
                             for c in range(N_ATTN_CU):
-                                _pk = ChannelPut(
+                                ChannelPut(
                                     "toK",
                                     akbs[c],
                                     indices=[idx(c)],
@@ -3602,7 +3633,7 @@ def build_module():
                                     sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
                                     strides=[idx(8), idx(KVPC_DH), idx(1)],
                                 )
-                                _pv = ChannelPut(
+                                ChannelPut(
                                     "toV",
                                     avbs[c],
                                     indices=[idx(c)],
@@ -3615,18 +3646,6 @@ def build_module():
                                         idx(1),
                                     ],
                                 )
-                                # col-3 KV: reserve memtile MM2S 0 (the q-broadcast
-                                # transits this memtile's switchbox; KV on MM2S 0
-                                # deadlocks the route). col 4 already has GLU/down on
-                                # MM2S 0, so its KV naturally lands on 1-4. Gate on
-                                # LOOPCLOSE to keep GREEN's layout/PASS unchanged.
-                                if ATTN_CU_LOC[c][0] == 3:
-                                    _pk.operation.attributes[
-                                        "air.memtile_dma_channel_min"
-                                    ] = IntegerAttr.get(T.i32(), 1)
-                                    _pv.operation.attributes[
-                                        "air.memtile_dma_channel_min"
-                                    ] = IntegerAttr.get(T.i32(), 1)
                             for c in range(N_ATTN_CU):
                                 DeallocOp(akbs[c])
                                 DeallocOp(avbs[c])
@@ -3689,7 +3708,7 @@ def build_module():
                                                 "inKV_V", _vbuf, indices=[idx(_gi)]
                                             )
                                             for _lc, _cc in enumerate(_cus):
-                                                _pk = ChannelPut(
+                                                ChannelPut(
                                                     "toK",
                                                     _kbuf,
                                                     indices=[idx(_cc)],
@@ -3705,7 +3724,7 @@ def build_module():
                                                     ],
                                                     strides=[idx(8), idx(_gw), idx(1)],
                                                 )
-                                                _pv = ChannelPut(
+                                                ChannelPut(
                                                     "toV",
                                                     _vbuf,
                                                     indices=[idx(_cc)],
@@ -3728,13 +3747,6 @@ def build_module():
                                                         idx(1),
                                                     ],
                                                 )
-                                                if col == 3:
-                                                    _pk.operation.attributes[
-                                                        "air.memtile_dma_channel_min"
-                                                    ] = IntegerAttr.get(T.i32(), 1)
-                                                    _pv.operation.attributes[
-                                                        "air.memtile_dma_channel_min"
-                                                    ] = IntegerAttr.get(T.i32(), 1)
                                             DeallocOp(_kbuf)
                                             DeallocOp(_vbuf)
                                             yield_([])
@@ -3750,7 +3762,7 @@ def build_module():
                                             IntegerAttr.get(T.i32(), col)
                                         )
                                         ChannelGet("inKV", kvb, indices=[idx(c)])
-                                        _pk = ChannelPut(
+                                        ChannelPut(
                                             "toK",
                                             kvb,
                                             indices=[idx(c)],
@@ -3758,7 +3770,7 @@ def build_module():
                                             sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
                                             strides=[idx(8), idx(KVPC_DH), idx(1)],
                                         )
-                                        _pv = ChannelPut(
+                                        ChannelPut(
                                             "toV",
                                             kvb,
                                             indices=[idx(c)],
@@ -3776,19 +3788,6 @@ def build_module():
                                                 idx(1),
                                             ],
                                         )
-                                        # MULTIBLK KV re-block: same col-3 switchbox collision
-                                        # as the on-chip path (KV on memtile MM2S 0 deadlocks
-                                        # in LOOPCLOSE - the o-proj feedback + q-broadcast
-                                        # transit col-3's switchbox). Reserve MM2S 0 by steering
-                                        # col-3 KV onto channels 1-4. (col 4 already lands on
-                                        # 1-4 via GLU/down; gate on LOOPCLOSE to keep GREEN.)
-                                        if col == 3:
-                                            _pk.operation.attributes[
-                                                "air.memtile_dma_channel_min"
-                                            ] = IntegerAttr.get(T.i32(), 1)
-                                            _pv.operation.attributes[
-                                                "air.memtile_dma_channel_min"
-                                            ] = IntegerAttr.get(T.i32(), 1)
                                         DeallocOp(kvb)
                                         yield_([])
 
@@ -4132,6 +4131,8 @@ def build_module():
                     # mem_1_1 (id2) = o-proj X instead of host.
                     def _omtb_dec(_conv=CONV_MIXER):
                         omtb = AllocOp(omt_l2, [], [])
+                        # Stays pinned: gemma3-4b fails to place without it
+                        # ('aie.masterset' op targets same destination DMA: 0).
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
                             T.i32(), 5
                         )
@@ -5089,6 +5090,15 @@ def build_module():
 
 
 def run():
+    # Print a module-level constant and stop, so a Makefile can hand the kernel
+    # compile the builder's own value (see glu.cc's GLU_SLICE_EXPECTED). Inert
+    # unless set, and deliberately before the import below: this must stay
+    # runnable without XRT.
+    _const = _os.environ.get("FUSED_DECODE_PRINT_CONST")
+    if _const:
+        print(globals()[_const])
+        return 0
+
     import pyxrt as xrt
 
     module = build_module()

@@ -80,6 +80,14 @@ PEANO_KBASE     := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 DECODE_ENV      := QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(ATTN_L) W_DUAL_CHAN=$(W_DUAL_CHAN)
 
+# GLU_SLICE is derived from this model's own egress-round parity, not looked up,
+# so a header copied from another model can disagree with the IR -- silently, at
+# runtime. Hand the builder's value to the kernel compile; glu.cc asserts on it.
+# Empty (and the assert inert) if the query fails, so this cannot break a build
+# that works today.
+GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
+PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
+
 # Build-flag stamp for the idempotent skip. Every variable below changes either the
 # xclbin's dataflow, its DDR weight layout or its core ELFs, so a warm build made
 # with different settings must NOT be silently reused. (Distinct from the builder's

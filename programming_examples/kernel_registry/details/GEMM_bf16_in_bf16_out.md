@@ -118,6 +118,7 @@ Element-wise check over the **full output** against an f32 reference (cast to bf
 Shapes cover LLM weight-projection shapes (the four 2048-row entries) and a square K-sweep (512³→4096³). Tiles are the fastest legal tile from an external-path sweep (full-chip herd 8×4). Measured on NPU2 (RyzenAI-npu4), June 2026, with this example's `run.py`, all PASS.
 
 The `@L=512 / @L=1024 prefill` rows are the same projections at the other padded prefill lengths the nightly TTFT sweep builds (`llms/*/run_npu2_prefill_sweep.lit`). Their tiles come from the corresponding 2048-row entry — tile_m is dictated by the method and the rest are M-independent — but the GFLOPS, mean_rel_L1 and the resulting **best** are measured at that M, not inherited: in 5 of the 48 the fastest high-precision method at the shorter M is `drain` where the 2048 row picks `fused-cast`. Measured on NPU2 (Ryzen AI 9 HX 370), August 2026, all PASS. 256 rows are absent on purpose: tile_m 64 × herd_m 8 = 512 is the fused-cast granularity, so a 256-row entry needs its own drain/shrunk-herd sweep.
+The `@L=4096 prefill` rows are those same projections at the padded length the nightly TTFT sweep gained on top of 512/1024/2048. Tiles are carried over from the corresponding 2048-row entry -- of the four legality constraints only `M % (tile_m*herd_m) == 0` involves M, and 4096 is a multiple of 2048, so every config legal there is legal here; L1 capacity, which is what actually decides the tiling, does not move with M. GFLOPS, mean_rel_L1 and the resulting **best** are measured at M=4096, not inherited. Unlike the 512/1024 rows the carried tiles won every time: **zero best-method flips across all 42 shapes.** Measured on NPU2 (Ryzen AI 9 HX 370), August 2026; 56 of 57 configs PASS. The exception is 4096x896x896, whose JSON `_note` records why the harness gate rejects it (one near-zero element against an absolute tolerance, identical at M=2048 where it passes); the shape itself is in-family at mean_rel_L1 9.5e-3.
 
 > **GFLOPS for fused-cast includes the cast launch** (`2·M·K·N / total`), so it is the true end-to-end bf16-out throughput. **Bold** = faster of the two high-precision methods, which `auto` picks.
 
@@ -196,6 +197,40 @@ The `@L=512 / @L=1024 prefill` rows are the same projections at the other padded
 | 1024×14336×4096 | 64/512/32/128 | **9257** | 9.9e-03 | ✅ Llama-3.1-8B Down proj (ffn=14336, emb=4096) @L=1024 prefill |
 | 512×18944×3584 | 64/256/32/128 | **8851** | 9.8e-03 | ✅ Qwen2.5-7B Down proj (ffn=18944 -> emb=3584) @L=512 prefill |
 | 1024×18944×3584 | 64/256/32/128 | **9281** | 9.8e-03 | ✅ Qwen2.5-7B Down proj (ffn=18944 -> emb=3584) @L=1024 prefill |
+| 4096×1024×2048 | 64/256/32/128 | **4927** | 9.9e-03 | ✅ Qwen3-0.6B Q proj @L=4096 prefill |
+| 4096×1024×3072 | 64/256/32/128 | **4929** | 9.9e-03 | ✅ Qwen3-0.6B Gate/Up proj @L=4096 prefill |
+| 4096×1536×1536 | 64/256/32/128 | **5199** | 9.7e-03 | ✅ Qwen2.5-1.5B Q/O proj @L=4096 prefill |
+| 4096×2048×512 | 64/256/32/128 | 4270 | 9.7e-03 | ✅ llama-3.2-1B K/V proj @L=4096 prefill |
+| 4096×2048×1024 | 64/256/32/128 | **6224** | 9.7e-03 | ✅ Qwen3-0.6B O proj @L=4096 prefill |
+| 4096×2048×2048 | 64/512/32/128 | **6675** | 9.7e-03 | ✅ llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square) @L=4096 prefill |
+| 4096×2048×2560 | 64/256/32/128 | **6066** | 9.7e-03 | ✅ Gemma3-4B O proj (n_heads*head_dim=2048 -> emb=2560) @L=4096 prefill |
+| 4096×2048×6144 | 64/256/32/128 | **6752** | 9.7e-03 | ✅ Qwen3-1.7B Gate/Up proj @L=4096 prefill |
+| 4096×2048×8192 | 64/256/32/128 | **6827** | 9.7e-03 | ✅ llama-3.2-1B Gate/Up proj @L=4096 prefill |
+| 4096×2560×1024 | 64/256/32/128 | **6720** | 9.8e-03 | ✅ Qwen3-4B O proj (emb=2560) @L=4096 prefill |
+| 4096×2560×2048 | 64/256/32/128 | **7236** | 9.8e-03 | ✅ Gemma3-4B Q proj (emb=2560, n_heads*head_dim=8*256=2048) @L=4096 prefill |
+| 4096×2560×4096 | 64/256/32/128 | **7263** | 9.8e-03 | ✅ Qwen3-4B Q proj (emb=2560, n_heads*head_dim=4096) @L=4096 prefill |
+| 4096×2560×9728 | 64/64/32/128 | **5593** | 9.8e-03 | ✅ Qwen3-4B Gate/Up proj (emb=2560, ffn=9728) @L=4096 prefill |
+| 4096×2560×10240 | 64/128/32/128 | **6057** | 9.8e-03 | ✅ Gemma3-4B Gate/Up proj (emb=2560, ffn=10240) @L=4096 prefill |
+| 4096×3072×1024 | 64/256/32/128 | **6444** | 9.9e-03 | ✅ Qwen3-0.6B Down proj @L=4096 prefill |
+| 4096×3072×3072 | 64/256/32/128 | **7410** | 9.9e-03 | ✅ Llama-3.2-3B Q/O proj (square) @L=4096 prefill |
+| 4096×3072×8192 | 64/256/32/128 | **7752** | 9.9e-03 | ✅ Llama-3.2-3B Gate/Up proj @L=4096 prefill |
+| 4096×3584×3584 | 64/128/32/128 | **6258** | 9.9e-03 | ✅ Qwen2.5-7B Q/O proj (emb=3584, q_dim=28*128=3584 -> square o_proj) @L=4096 prefill |
+| 4096×3584×18944 | 64/64/32/128 | **5852** | 9.9e-03 | ✅ Qwen2.5-7B Gate/Up proj (emb=3584, ffn=18944) @L=4096 prefill |
+| 4096×4096×1024 | 64/256/32/128 | **7137** | 9.9e-03 | ✅ Qwen3-8B K/V proj (emb=4096, kv_dim=8*128=1024) @L=4096 prefill |
+| 4096×4096×2560 | 64/256/32/128 | **7618** | 9.9e-03 | ✅ Qwen3-4B O proj alt / 4096->2560 (n_heads*head_dim=4096 -> emb=2560) @L=4096 prefill |
+| 4096×4096×12288 | 64/64/32/128 | **6191** | 9.9e-03 | ✅ Qwen3-8B Gate/Up proj (emb=4096, ffn=12288) @L=4096 prefill |
+| 4096×4096×14336 | 64/128/32/128 | **6684** | 9.9e-03 | ✅ Llama-3.1-8B Gate/Up proj (emb=4096, ffn=14336) @L=4096 prefill |
+| 4096×4864×896 | 64/256/32/32 | **3653** | 9.8e-03 | ✅ Qwen2.5-0.5B Down proj @L=4096 prefill |
+| 4096×6144×2048 | 64/256/32/128 | **8543** | 9.7e-03 | ✅ Qwen3-1.7B Down proj @L=4096 prefill |
+| 4096×8192×2048 | 64/256/32/128 | **8836** | 9.7e-03 | ✅ llama-3.2-1B Down proj @L=4096 prefill |
+| 4096×8192×3072 | 64/256/32/128 | **8985** | 9.7e-03 | ✅ Llama-3.2-3B Down proj @L=4096 prefill |
+| 4096×8960×1536 | 64/256/32/128 | **9138** | 9.7e-03 | ✅ Qwen2.5-1.5B Down proj @L=4096 prefill |
+| 4096×9728×2560 | 64/256/32/128 | **8918** | 9.8e-03 | ✅ Qwen3-4B Down proj (ffn=9728 -> emb=2560) @L=4096 prefill |
+| 4096×10240×2560 | 64/256/32/128 | **9106** | 9.8e-03 | ✅ Gemma3-4B Down proj (ffn=10240 -> emb=2560) @L=4096 prefill |
+| 4096×11008×2048 | 64/256/32/128 | **9280** | 9.8e-03 | ✅ Qwen2.5-3B Down proj @L=4096 prefill |
+| 4096×12288×4096 | 64/512/32/128 | **9666** | 9.9e-03 | ✅ Qwen3-8B Down proj (ffn=12288, emb=4096) @L=4096 prefill |
+| 4096×14336×4096 | 64/512/32/128 | **9812** | 9.9e-03 | ✅ Llama-3.1-8B Down proj (ffn=14336, emb=4096) @L=4096 prefill |
+| 4096×18944×3584 | 64/256/32/128 | **9904** | 9.8e-03 | ✅ Qwen2.5-7B Down proj (ffn=18944 -> emb=3584) @L=4096 prefill |
 
 > † **Gemma3-4B rows — tiles inherited, precision measured.** The Gemma3-4B
 > shapes reuse the tiling of their nearest same-K / same-N Qwen3-4B neighbour
@@ -276,6 +311,17 @@ The `@L=512 / @L=1024 prefill` rows are the same projections at the other padded
 | 1024×3584×512 | 32/256/32/64 | **4112** | 9.5e-03 | ✅ Qwen2.5-7B K/V proj (emb=3584, kv_dim=4*128=512) @L=1024 prefill |
 | 512×8192×2048 | 32/256/32/128 | 5931 | 9.3e-03 | ✅ llama-3.2-1B Down proj @L=512 prefill |
 | 1024×8192×2048 | 32/256/32/128 | 6820 | 9.3e-03 | ✅ llama-3.2-1B Down proj @L=1024 prefill |
+| 4096×896×128 | 32/128/32/32 | **2056** | 9.5e-03 | ✅ Qwen2.5-0.5B K/V proj @L=4096 prefill |
+| 4096×896×896 | 64/128/32/32 | **2524** | 9.5e-03 | ✅ Qwen2.5-0.5B Q/O proj @L=4096 prefill (harness gate: see JSON `_note`) |
+| 4096×1024×1024 | 32/256/32/128 | **4860** | 9.4e-03 | ✅ Qwen3-0.6B K/V proj @L=4096 prefill |
+| 4096×1536×256 | 32/256/32/64 | **3830** | 9.3e-03 | ✅ Qwen2.5-1.5B K/V proj @L=4096 prefill |
+| 4096×2048×256 | 32/256/32/64 | **4374** | 9.3e-03 | ✅ Qwen2.5-3B K/V proj @L=4096 prefill |
+| 4096×2048×512 | 32/256/32/128 | **4373** | 9.3e-03 | ✅ llama-3.2-1B K/V proj @L=4096 prefill |
+| 4096×2048×2048 | 32/512/32/128 | 5999 | 9.3e-03 | ✅ llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square) @L=4096 prefill |
+| 4096×2048×8192 | 32/256/32/128 | 5847 | 9.3e-03 | ✅ llama-3.2-1B Gate/Up proj @L=4096 prefill |
+| 4096×2560×1024 | 32/256/32/128 | 5750 | 9.4e-03 | ✅ Qwen3-4B O proj (emb=2560) @L=4096 prefill |
+| 4096×3584×512 | 32/256/32/64 | **4447** | 9.5e-03 | ✅ Qwen2.5-7B K/V proj (emb=3584, kv_dim=4*128=512) @L=4096 prefill |
+| 4096×8192×2048 | 32/256/32/128 | 7172 | 9.3e-03 | ✅ llama-3.2-1B Down proj @L=4096 prefill |
 
 > **SmolVLA action-expert attention note — decomposed QKᵀ / P@V, GQA 15q/5kv, head_dim 64, 50 action tokens → 64.**
 > The four `192×…` rows above were measured on real NPU2 on 2026-07-28 (CPU governor
@@ -361,6 +407,18 @@ The `@L=512 / @L=1024 prefill` rows are the same projections at the other padded
 | 1024×4096×14336 | 64/128/32/64 | **4349** | 1.5e-02 | ✅ Llama-3.1-8B Gate/Up proj (emb=4096, ffn=14336) @L=1024 prefill |
 | 512×8192×2048 | 64/256/32/128 | **5075** | 1.9e-02 | ✅ llama-3.2-1B Down proj @L=512 prefill |
 | 1024×8192×2048 | 64/256/32/128 | **5418** | 1.9e-02 | ✅ llama-3.2-1B Down proj @L=1024 prefill |
+| 4096×896×4864 | 64/128/32/64 | **4075** | 1.1e-02 | ✅ Qwen2.5-0.5B Gate/Up proj @L=4096 prefill |
+| 4096×1024×3072 | 64/256/32/128 | **5007** | 1.1e-02 | ✅ Qwen3-0.6B Gate/Up proj @L=4096 prefill |
+| 4096×1536×8960 | 64/128/32/64 | **4070** | 1.2e-02 | ✅ Qwen2.5-1.5B Gate/Up proj @L=4096 prefill |
+| 4096×2048×512 | 64/256/32/128 | **4273** | 1.3e-02 | ✅ llama-3.2-1B K/V proj @L=4096 prefill |
+| 4096×2048×2048 | 64/512/32/128 | **5242** | 1.3e-02 | ✅ llama-3.2-1B Q/O proj + Qwen3-1.7B Q/O proj (square) + Qwen2.5-3B Q/O proj (square) @L=4096 prefill |
+| 4096×2048×8192 | 64/256/32/128 | **5290** | 1.3e-02 | ✅ llama-3.2-1B Gate/Up proj @L=4096 prefill |
+| 4096×2048×11008 | 64/128/32/64 | **4236** | 1.3e-02 | ✅ Qwen2.5-3B Gate/Up proj @L=4096 prefill |
+| 4096×2560×9728 | 64/128/32/64 | **4488** | 1.4e-02 | ✅ Qwen3-4B Gate/Up proj (emb=2560, ffn=9728) @L=4096 prefill |
+| 4096×3584×18944 | 64/32/32/64 | **3371** | 1.5e-02 | ✅ Qwen2.5-7B Gate/Up proj (emb=3584, ffn=18944) @L=4096 prefill |
+| 4096×4096×12288 | 64/128/32/64 | **4528** | 1.5e-02 | ✅ Qwen3-8B Gate/Up proj (emb=4096, ffn=12288) @L=4096 prefill |
+| 4096×4096×14336 | 64/128/32/64 | **4509** | 1.5e-02 | ✅ Llama-3.1-8B Gate/Up proj (emb=4096, ffn=14336) @L=4096 prefill |
+| 4096×8192×2048 | 64/256/32/128 | **5755** | 1.9e-02 | ✅ llama-3.2-1B Down proj @L=4096 prefill |
 
 > **Qwen2.5-1.5B note — 1536 is 512-aligned.** Unlike Qwen2.5-0.5B (896), Qwen2.5-1.5B's emb/q_dim = 1536 = 512·3 is divisible by the default `4·TILE_N = 512`, so **Q/O/Down (N=1536) place at the stock `TILE_N=128 HERD_N=4`** with no shrink. Only the thin **K/V (N=256 → TILE_N=64, drain)** and the wide **Gate/Up (N=8960 → TILE_N=64)** drop below 128. K=1536→`tile_k_l2=256` (1536/256=6); K=8960→`tile_k_l2=256` (8960/256=35). **Gate/Up (2048×1536×8960)**: the high-precision fused-cast at TILE_M=64/TILE_N=64 over-allocates L1 (NPU lowering pipeline fail); the low-precision direct path PASSES but only with `tile_k_l2=128` (tile_k_l2=256 also compile-fails at this N), at 1.2e-2 — the same Gate/Up tier-down as the smaller Qwen siblings. No padding was required for any Qwen2.5-1.5B shape.
 

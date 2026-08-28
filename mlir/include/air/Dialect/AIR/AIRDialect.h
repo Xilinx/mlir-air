@@ -49,8 +49,6 @@ constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // un-coalesced feed.
 constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
-constexpr StringLiteral MemtileDmaChannelMin = "air.memtile_dma_channel_min";
-constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
 // Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
 // buffer per production. Carried on the air.channel declaration, on a channel
 // put/get, or on the source memref.alloc of a memtile producer; read via
@@ -112,7 +110,7 @@ constexpr StringLiteral MemtileCol = "air.memtile_col";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::MemtileDmaChannelMin, RuntimeHoist, AwaitAppends, AppendBarrier,
+// (attrs::RuntimeHoist, AwaitAppends, AppendBarrier,
 // RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
 // re-instantiation from src to dst. Single source of truth for the marker set,
 // so copy sites (Util::copyPaddingAttributes, ComposeMemrefOpOnChannelOp,

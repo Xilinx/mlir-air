@@ -399,6 +399,44 @@ class Symbol:
     def __repr__(self):
         return f"air.api.symbol({self.name}={self.value})"
 
+    # Comparisons do NOT fold, unlike the arithmetic below. The two have
+    # opposite requirements and both are honest: a symbol used as a tile size
+    # has to be a Python int, because it sizes a memref; a symbol used as a
+    # branch condition has to stay a value, because folding it would delete the
+    # scf.if. Which is the whole point of a symbol -- the prototype defines one
+    # as "known at dispatch time rather than compile time", and v1 resolving it
+    # early is an implementation detail, not licence to compile the branch away.
+    # `Condition.materialize()` emits arith.constant + arith.cmpi even when both
+    # sides are constant, and air-to-aie's SpecializeScfIfPattern folds it once
+    # the herd is unrolled -- so the branch costs nothing and still exists in
+    # the IR the compiler is handed.
+    def _compare(self, other, predicate, symbol):
+        from ._index import coerce_index
+
+        return coerce_index(self)._compare(other, predicate, symbol)
+
+    def __eq__(self, o):
+        return self._compare(o, "eq", "==")
+
+    def __ne__(self, o):
+        return self._compare(o, "ne", "!=")
+
+    def __lt__(self, o):
+        return self._compare(o, "slt", "<")
+
+    def __le__(self, o):
+        return self._compare(o, "sle", "<=")
+
+    def __gt__(self, o):
+        return self._compare(o, "sgt", ">")
+
+    def __ge__(self, o):
+        return self._compare(o, "sge", ">=")
+
+    # Defining __eq__ would otherwise drop the default hash, and a Symbol is
+    # kept in PENDING_SYMBOLS and looked up by identity.
+    __hash__ = object.__hash__
+
     # Arithmetic yields plain ints: a resolved symbol is just a constant.
     def __add__(self, o):
         return self.value + int(o)
@@ -575,6 +613,30 @@ def _block_position(block, op):
     raise AssertionError("operation is not in the block it reports as its parent")
 
 
+def _lift_into(op, ops_in_home):
+    """The index in ``ops_in_home`` of ``op``'s ancestor there, or None.
+
+    An index rather than the op itself because the caller is comparing
+    positions -- it wants the latest use, and ``ops_in_home`` is in block
+    order, so the larger index wins.
+
+    Walks outward by parent rather than by block, which matters: ``.block`` on
+    a top-level operation does not return None, it trips an assertion inside
+    MLIR and takes the process with it. Anything that walks past the op it was
+    looking for therefore has to notice by running out of parents, not by
+    asking each one where it lives.
+    """
+    while op is not None:
+        for i, other in enumerate(ops_in_home):
+            if other == op:
+                return i
+        try:
+            op = op.parent
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
 def _last_use_anchor(value, ignore=None):
     """The op in ``value``'s own block after which ``value`` is no longer read.
 
@@ -582,20 +644,41 @@ def _last_use_anchor(value, ignore=None):
     is finished, so each use is walked out to the ancestor that sits directly
     in the block the alloc was emitted into. ``ignore`` drops one op from the
     scan, so that a dealloc can ask where the last *other* use was.
+
+    A use that is *not* under that block has no such ancestor, and this is
+    where that has to be caught. The buffer would be read where its allocation
+    does not reach -- a loop or a branch arm it was declared in has closed --
+    and the walk would otherwise run off the top of the IR and abort. Both
+    known instances were real: an L2 buffer allocated in a staging loop and
+    handed to a later herd, and an L1 buffer allocated in one arm of an
+    ops.branch and read after the branch.
     """
     home = value.owner.operation.block
+    ops_in_home = [o.operation for o in home.operations]
     anchor = value.owner.operation
     best = _block_position(home, anchor)
     for use in value.uses:
         op = use.owner.operation
         if ignore is not None and op == ignore:
             continue
-        while op.block != home:
-            op = op.parent
-        position = _block_position(home, op)
+        position = _lift_into(op, ops_in_home)
+        if position is None:
+            raise RuntimeError(
+                f"a buffer is used outside the region it was allocated in: the "
+                f"allocation sits in a {_region_name(home)} that has already "
+                f"closed by the time {op.name} uses it, so it does not reach "
+                "that far. Allocate it in the scope where it is read -- above "
+                "the loop or the ops.branch rather than inside one."
+            )
         if position > best:
-            anchor, best = op, position
+            anchor, best = ops_in_home[position], position
     return home, anchor
+
+
+def _region_name(block):
+    """Name the construct owning ``block``, for a diagnostic."""
+    owner = block.owner
+    return owner.name if owner is not None else "region"
 
 
 def free_buffers(buffers):
@@ -737,6 +820,10 @@ class SegmentContext:
         # segment, which is what keeps every existing example's operand list
         # byte-identical.
         self.leaves = []
+        # The segment body's own block, bound while the body is traced. It is
+        # the top of the scope a nested herd is emitted into, and so the place
+        # a walk up the block chain has to stop -- see _staged_in_scope.
+        self._entry_block = None
 
     def __enter__(self):
         return self
@@ -864,6 +951,7 @@ class SegmentContext:
             for t, v in zip(tensors, bound[len(outer_leaves) :]):
                 t.value = v
             previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
+            segment_self._entry_block = args[0].owner
             try:
                 fn(*coords)
                 free_buffers(segment_self._buffers)
@@ -891,6 +979,50 @@ def _needs(obj, kernel):
     return f"calls {kernel} from {obj!r}" if kernel else f"declares link_with={obj!r}"
 
 
+def _staged_in_scope(segment):
+    """The segment's L2 buffers that are still live where a herd is going.
+
+    ``air.herd`` is IsolatedFromAbove, so an L2 buffer the body reaches has to
+    be passed in as an operand, and the tracer cannot know which ones the body
+    touches until it has run it -- so it passes every one it can.
+
+    "Can" is the point. A buffer allocated inside an ``air.sequential`` at
+    segment scope dies with that loop: by the time a *later* herd is emitted,
+    its ``memref.alloc`` sits in a region that has already been closed, and
+    naming it as an operand is not merely wasteful but ill-formed -- it does not
+    dominate the use. The staging loop in the int4 GEMV is exactly this shape:
+    an L2 tile allocated per trip, filled from L3 and forwarded to L1 over a
+    channel, with a herd beside it that never touches the buffer at all.
+
+    Left unfiltered that operand reaches ``free_buffers``, which walks the
+    buffer's uses out to the block its alloc lives in, finds an ``air.herd``
+    that is not under that block, and walks off the top of the IR -- aborting
+    the process inside MLIR rather than raising. So the filter is what the
+    surrounding comment always claimed: only the ones in scope here.
+    """
+    if segment is None:
+        return []
+    from air.ir import InsertionPoint
+
+    top = segment._entry_block
+    if top is None:
+        return list(segment._buffers)
+    # The blocks whose values are visible here: this one and its ancestors, up
+    # to the segment body. The walk stops there rather than running to the
+    # module, because `block.owner.operation.block` on the top-level block
+    # aborts the process instead of returning None.
+    visible, block = set(), InsertionPoint.current.block
+    while True:
+        visible.add(block)
+        if block == top:
+            break
+        owner = block.owner
+        if owner is None:
+            break
+        block = owner.operation.block
+    return [b for b in segment._buffers if b.value.owner.operation.block in visible]
+
+
 class HerdContext:
     """A herd of compute cores over a (possibly strip-mined) tile grid."""
 
@@ -916,6 +1048,10 @@ class HerdContext:
         self._objects = {}
         # The core's position in the herd, bound while the body is traced.
         self._coords = []
+        # Reduction scratch buffers, one per (dtype, lanes), allocated at the
+        # top of the body and reused by every reduction under it. See scratch().
+        self._scratch = {}
+        self._entry_block = None
         if link_with is not None:
             if not isinstance(link_with, str) or not link_with:
                 raise TypeError(
@@ -1035,6 +1171,47 @@ class HerdContext:
     def register_buffer(self, buf):
         self._buffers.append(buf)
 
+    def scratch(self, dtype, lanes):
+        """An L1 vector the emitter accumulates a long reduction through.
+
+        A reduction longer than one vector has to accumulate across steps, and
+        the accumulator cannot be a loop-carried SSA vector: LLVM splits one
+        into sub-512-bit pieces the AIE2 backend will not legalize, which is the
+        failure ``ops.dot`` documents. Every hand-written kernel this models --
+        rms_norm, layer_norm, weighted_rms_norm -- round-trips its partial sums
+        through a small L1 buffer instead, so that is what this provides.
+
+        Allocated **at the top of the herd body**, not where the reduction is
+        written. A reduction normally sits inside a row loop, and allocating
+        there would emit one alloc per trip and leave the dealloc outside the
+        region that dominates it. One buffer per (dtype, lanes) serves every
+        reduction in the body, which is what the predecessors do by hand.
+        """
+        from air.ir import InsertionPoint
+
+        key = (dtype, int(lanes))
+        if key in self._scratch:
+            return self._scratch[key]
+        if self._entry_block is None:
+            raise RuntimeError(
+                "a reduction scratch buffer was requested outside a herd body"
+            )
+        with InsertionPoint.at_block_begin(self._entry_block):
+            buf = alloc([int(lanes)], dtype, scope=self.private(), _hoisted=True)
+        # Kept out of _buffers, which is freed at the end of every strip-mined
+        # run. A scratch buffer outlives those: it is allocated once above the
+        # strip loop and reused by every trip, so a dealloc inside the loop
+        # would free it after the first trip and leave the rest reading a dead
+        # buffer. It is freed once, after the strip nest, by _free_scratch.
+        self._buffers.remove(buf)
+        self._scratch[key] = buf
+        return buf
+
+    def _free_scratch(self):
+        """Dealloc the reduction scratch, once, after the strip-mined runs."""
+        free_buffers(list(self._scratch.values()))
+        self._scratch.clear()
+
     # -- emission -----------------------------------------------------------
 
     def _emit(self, fn):
@@ -1050,9 +1227,9 @@ class HerdContext:
         from air.dialects.air import herd as herd_region
         from air.dialects.scf import for_ as range_, yield_
 
-        from ._loop import aborted_loops, enter_body, exit_body
+        from ._loop import aborted_regions, enter_body, exit_body
 
-        aborted_before = aborted_loops()
+        aborted_before = len(aborted_regions())
 
         tensors = trace.tensors
         # air.herd is IsolatedFromAbove, so an L2 buffer allocated in the
@@ -1061,7 +1238,7 @@ class HerdContext:
         # tensors, and the tracer cannot know what the body will touch until it
         # has run it.
         enclosing = current_segment(required=False)
-        staged = list(enclosing._buffers) if enclosing is not None else []
+        staged = _staged_in_scope(enclosing)
         # The herd is the first thing that knows how many of a shared buffer's
         # leading dimensions are cores, so it is where their L1 charge is gated.
         _charge_shared_l1(enclosing, len(self.grid), self.name)
@@ -1127,6 +1304,10 @@ class HerdContext:
             herd_self._coords = [
                 IndexExpr.leaf(c, f"c{axis}") for axis, c in enumerate(phys_coords)
             ]
+            # Where a reduction's scratch accumulator is allocated, whatever
+            # loop or branch the reduction itself sits in. See scratch().
+            herd_self._entry_block = args[0].owner
+            herd_self._scratch.clear()
 
             def run(strip_ivs):
                 tile_ids = []
@@ -1146,9 +1327,13 @@ class HerdContext:
             outer_depth = enter_body()
             try:
                 run_strip_mined(run, herd_self.repeats, range_, yield_)
+                # After the strip nest, not inside it: one alloc above the loop
+                # needs one dealloc below it.
+                herd_self._free_scratch()
             finally:
                 exit_body(outer_depth)
                 herd_self._buffers.clear()
+                herd_self._scratch.clear()
                 for t, v in zip(tensors, saved):
                     t.value = v
                 for b, v in zip(staged, saved_staged):
@@ -1165,13 +1350,26 @@ class HerdContext:
                 next(iter(herd_self._objects))
             )
 
-        if aborted_loops() != aborted_before:
+        aborted = aborted_regions()[aborted_before:]
+        if aborted:
+            # Name the construct that was abandoned. ops.branch shares the
+            # region bookkeeping with air.sequential, and reporting a truncated
+            # branch as "left a loop early" sends the reader to the wrong line.
+            loops = [a for a in aborted if a in ("air.sequential", "air.parallel")]
+            if loops:
+                raise RuntimeError(
+                    f"a body left an {loops[0]} loop early (break, return, or a "
+                    "swallowed exception). An air.sequential body is traced once and "
+                    "stands for every trip, so an early exit does not shorten the "
+                    "loop -- it truncates the body of all of them, and the kernel "
+                    "computes a partial result. Restructure the loop bounds instead."
+                )
             raise RuntimeError(
-                "a body left an air.sequential loop early (break, return, or a "
-                "swallowed exception). An air.sequential body is traced once and "
-                "stands for every trip, so an early exit does not shorten the "
-                "loop -- it truncates the body of all of them, and the kernel "
-                "computes a partial result. Restructure the loop bounds instead."
+                "a body left an ops.branch region early (break, return, or a "
+                "swallowed exception). The region is emitted either way, so the "
+                "ops written after the exit are simply missing from it, and the "
+                "cores that take that branch compute a partial result. Let the "
+                "`with` block run to its end."
             )
 
 
@@ -1219,14 +1417,14 @@ def tensor(shape, dtype, name=None):
     return t
 
 
-def alloc(shape, dtype, scope=None, vector=None):
+def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
     from air.ir import IntegerAttr, MemRefType
     from air.dialects.air import MemorySpace
     from air.dialects.memref import AllocOp
     from air.extras import types as T
 
-    from ._loop import loop_depth
+    from ._loop import branch_depth
 
     if scope is None:
         raise ValueError(
@@ -1271,13 +1469,33 @@ def alloc(shape, dtype, scope=None, vector=None):
             "being traced; allocate inside the body of the scope you are asking "
             "for"
         )
-    if space == "L1" and loop_depth():
+    # _hoisted: the caller has already moved the insertion point to the top of
+    # the herd body, so the alloc does not land in the loop the caller is
+    # standing in and the dominance argument below does not apply. Only
+    # HerdContext.scratch sets it, and it is not part of the public signature.
+    #
+    # A loop body used to be refused here too, on the grounds that the herd
+    # frees its buffers after the loop has closed. That was not so:
+    # free_buffers anchors each dealloc in the block the *alloc* lives in, so a
+    # buffer allocated in a loop is already released inside that loop, which is
+    # both dominated and what the hand-written kernels write. The refusal cost
+    # real IR -- hoisting the int4 GEMV's per-trip L1 tiles above their loop
+    # gives the pipeline one buffer to rotate instead of a fresh one per trip,
+    # which is the ping-pong the kernel is built around.
+    #
+    # A branch arm is still refused. Both arms of an ops.branch write to the
+    # same enclosing scope, so which alloc a later use refers to is a question
+    # the tracer cannot answer, and the failure would be a silently wrong
+    # buffer rather than a verifier error.
+    if space == "L1" and branch_depth() and not _hoisted:
         raise NotImplementedError(
-            "air.alloc inside an air.sequential body is not supported: the herd "
-            "frees its buffers once the body is finished, which is outside the "
-            "loop, so the dealloc would not be dominated by its alloc. Hoist the "
-            "allocation above the loop -- the buffer is reused across trips, "
-            "which is what a loop is for."
+            "air.alloc inside an ops.branch body is not supported: the arm is a "
+            "region the buffer cannot outlive, so a use after the branch would "
+            "not be dominated by its alloc. Hoist the allocation above the "
+            "branch -- both arms then name the same buffer, which is what a "
+            "branch that fills a tile two different ways means. Allocating "
+            "inside an air.sequential is fine: the buffer is freed inside that "
+            "loop."
         )
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since

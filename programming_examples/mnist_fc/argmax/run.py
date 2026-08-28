@@ -2,170 +2,92 @@
 #
 # Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-#
-# Row-wise argmax: out[row] = argmax_col(A[row, col])
-# For each row, find the column index of the maximum element.
-# Input: [ne1, ne0] f32 (ne0 contiguous), Output: [ne1] i32.
-#
-# GGML layout: [ne0, ne1] where ne0 is contiguous.
-# GGML op: argmax [10, 500] -> [500, 1]
-#   ne0=10 (classes, contiguous, reduced), ne1=500 (batch, rows, tiled).
-# In numpy row-major: input is (ne1=500, ne0=10), output is (500,) i32.
-# Argmax is over ne0 (axis=1, columns) for each row.
+"""Row-wise argmax on air.api: out[row] = argmax_col(A[row, col]).
+
+One line of compute:
+
+    out[:] = ops.argmax(tile[:, 0:ne0])
+
+`ops.argmax` answers "which one" where `ops.reduce_max` answers "how big", so
+its destination is an integer buffer whatever the operand's type is, and ties go
+to the lowest index (a strict `>`), which is numpy's rule and the classifier
+convention. It is the one reduction that is a scalar loop rather than a
+`vector.reduction`: the running maximum and the index that produced it have to
+travel together, and no vector reduction carries an index. The pair rides in the
+loop's `iter_args`, which is fine because they are scalars -- it is a
+loop-carried *vector* that AIE2 will not legalize.
+
+The `[:, 0:ne0]` region is how the padding is handled. Columns are padded to a
+multiple of 16 for DMA alignment, and reducing the padded tail would let a zero
+outrank a genuinely negative logit; the predecessor kept a separate `ne0_actual`
+bound on its scalar loop, and here it is a slice of the operand, which is what
+numpy would write.
+
+MNIST context: GGML argmax [10, 500] -> [500, 1]. ne0=10 (classes, contiguous,
+reduced), ne1=500 (batch, rows, tiled across the herd). In numpy row-major the
+input is (500, 10) and the output (500,) i32.
+"""
 
 import argparse
 import math
+
 import numpy as np
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import f32, i32
 from air.backend.xrt import XRTBackend
-from air.extras import types as extrasT
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
 
-range_ = for_
 
+def build_module(num_rows, num_cols, tile_rows, herd_n, ne0_actual, target="npu2"):
+    """Row-wise argmax over the first `ne0_actual` of `num_cols` padded columns."""
+    if num_rows % (tile_rows * herd_n):
+        raise ValueError(
+            f"padded rows ({num_rows}) must be a multiple of tile_rows * herd_n "
+            f"({tile_rows * herd_n}); the caller pads."
+        )
+    if not 0 < ne0_actual <= num_cols:
+        raise ValueError(
+            f"ne0_actual ({ne0_actual}) must be in 1..num_cols ({num_cols})"
+        )
 
-@module_builder
-def build_module(num_rows, num_cols, tile_rows, herd_n, ne0_actual):
-    """Build row-wise argmax module.
+    A = air.tensor([num_rows, num_cols], f32)
+    OUT = air.tensor([num_rows], i32)
 
-    num_rows = ne1 (padded, tiled across herd).
-    num_cols = ne0 (padded, contiguous, reduced per row).
-    ne0_actual = actual number of columns to reduce over.
-    """
-    assert num_rows % (tile_rows * herd_n) == 0
+    with air.launch(
+        [range(1), range(num_rows // (tile_rows * herd_n))], name="argmax"
+    ) as launch:
 
-    xrt_dtype_f32 = type_mapper(np.float32)
-    xrt_dtype_i32 = IntegerType.get_signless(32)
-    index_type = IndexType.get()
-    l1_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L1)
+        @launch.body
+        def _(lx, ly):
+            with air.segment(name="argmax_seg") as seg:
 
-    # L3 MemRefTypes
-    # Input: (ne1, ne0) = (num_rows, num_cols)
-    memrefTyA = MemRefType.get([num_rows, num_cols], xrt_dtype_f32)
-    # Output: (ne1,) = (num_rows,) i32
-    memrefTyOut = MemRefType.get([num_rows], xrt_dtype_i32)
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(1), range(herd_n)], name="herd_0", shape=(1, herd_n)
+                    ) as herd:
 
-    # L1: load tile_rows rows, each with num_cols columns
-    l1TileTy = MemRefType.get(
-        shape=[tile_rows, num_cols],
-        element_type=xrt_dtype_f32,
-        memory_space=l1_mem_space,
-    )
-    l1OutTy = MemRefType.get(
-        shape=[tile_rows], element_type=xrt_dtype_i32, memory_space=l1_mem_space
-    )
-
-    @FuncOp.from_py_func(memrefTyA, memrefTyOut)
-    def argmax(arg_a, arg_out):
-        launch_size = [1, num_rows // tile_rows // herd_n]
-
-        @launch(operands=[arg_a, arg_out], sizes=launch_size)
-        def launch_body(
-            launch_ivx, launch_ivy, launch_sizex, launch_sizey, l3_a, l3_out
-        ):
-
-            @segment(
-                name="argmax_seg",
-                operands=[launch_ivy, l3_a, l3_out],
-            )
-            def segment_body(launch_ivy_s, l3_a_s, l3_out_s):
-                c_tile_rows_herd_n = ConstantOp(
-                    IntegerAttr.get(IndexType.get(), tile_rows * herd_n), None
-                )
-                launch_offset_row = arith.MulIOp(launch_ivy_s, c_tile_rows_herd_n)
-
-                @herd(
-                    name="herd_0",
-                    sizes=[1, herd_n],
-                    operands=[
-                        launch_offset_row,
-                        l3_a_s,
-                        l3_out_s,
-                    ],
-                )
-                def herd_body(tx, ty, _sx, _sy, _loff_row, _l3_a, _l3_out):
-                    l1_tile = AllocOp(l1TileTy, [], [])
-                    l1_out = AllocOp(l1OutTy, [], [])
-
-                    # row_offset = launch_offset_row + ty * tile_rows
-                    row_offset_map = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(1),
-                                    AffineConstantExpr.get(tile_rows),
-                                ),
+                        @herd.body
+                        def _(tx, ty):
+                            tile = air.alloc(
+                                [tile_rows, num_cols], f32, scope=herd.private()
                             )
-                        ],
-                    )
-                    row_offset = affine_apply(row_offset_map, [_loff_row, ty])
+                            out = air.alloc([tile_rows], i32, scope=herd.private())
 
-                    # DMA: load tile_rows rows, all num_cols columns
-                    dma_memcpy_nd(
-                        l1_tile,
-                        _l3_a,
-                        src_offsets=[row_offset, 0],
-                        src_sizes=[tile_rows, num_cols],
-                        src_strides=[num_cols, 1],
-                    )
+                            row = (ly * herd_n + ty) * tile_rows
+                            ops.load(tile, A[row : row + tile_rows, :])
 
-                    # Scalar argmax per row over ne0_actual columns
-                    c0 = ConstantOp(index_type, 0)
-                    c1 = ConstantOp(index_type, 1)
-                    c_tile_rows_cst = ConstantOp(index_type, tile_rows)
-                    c_ne0_actual = ConstantOp(index_type, ne0_actual)
-                    neg_inf = arith.ConstantOp(
-                        xrt_dtype_f32,
-                        FloatAttr.get(xrt_dtype_f32, float("-inf")),
-                    )
-                    c0_i32 = arith.ConstantOp(xrt_dtype_i32, 0)
+                            # Only the real columns: the padded tail is zero, and
+                            # a zero would outrank a negative logit.
+                            out[:] = ops.argmax(tile[:, 0:ne0_actual])
 
-                    for row in range_(c0, c_tile_rows_cst, c1):
-                        # Argmax over ne0_actual columns for this row
-                        for col, (current_max_val, current_max_idx), results in range_(
-                            c0,
-                            c_ne0_actual,
-                            c1,
-                            iter_args=[neg_inf, c0_i32],
-                        ):
-                            val = load(l1_tile, [row, col])
-                            cmp = arith.CmpFOp(
-                                arith.CmpFPredicate.OGT,
-                                val,
-                                current_max_val,
-                            )
-                            new_max_val = arith.SelectOp(cmp, val, current_max_val)
-                            col_i32 = arith.IndexCastOp(xrt_dtype_i32, col)
-                            new_max_idx = arith.SelectOp(cmp, col_i32, current_max_idx)
-                            yield_([new_max_val, new_max_idx])
+                            ops.store(out, OUT[row : row + tile_rows])
 
-                        store(results[1], l1_out, [row])
-                        yield_([])
-
-                    # DMA output back to L3
-                    dma_memcpy_nd(
-                        _l3_out,
-                        l1_out,
-                        dst_offsets=[row_offset],
-                        dst_sizes=[tile_rows],
-                        dst_strides=[1],
-                    )
-
-                    DeallocOp(l1_tile)
-                    DeallocOp(l1_out)
+    return launch.build(target=target)
 
 
 if __name__ == "__main__":

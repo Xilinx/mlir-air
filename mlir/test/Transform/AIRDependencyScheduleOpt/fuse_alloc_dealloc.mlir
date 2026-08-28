@@ -391,4 +391,51 @@ module {
     }
     return
   }
+
+// Check that the stand-in left where a sunk dealloc used to be keeps that
+// dealloc's dependences.
+//
+// The dealloc waits on the inner scf.for, and its token is what the outer
+// scf.for yields. Sinking the dealloc into the inner loop drops that
+// dependence from the dealloc itself -- it cannot wait on the loop it now
+// lives in -- so the air.wait_all standing in its place has to carry it
+// instead. An empty stand-in would leave the outer loop yielding a token that
+// does not depend on its own body.
+
+// CHECK-LABEL:   @func8
+// CHECK:   scf.for
+// CHECK:   %[[INNER:.*]] = scf.for
+// CHECK:   air.execute{{.*}}{
+// CHECK-NEXT:   memref.alloc()
+// CHECK-NEXT:   air.execute_terminator
+// CHECK-NEXT:   }
+// CHECK:   air.channel.get
+// CHECK:   air.execute{{.*}}{
+// CHECK-NEXT:   memref.dealloc
+// CHECK-NEXT:   }
+// CHECK:   }
+// CHECK:   %[[STANDIN:.*]] = air.wait_all async [%[[INNER]]]
+// CHECK:   scf.yield %[[STANDIN]]
+
+  func.func @func8() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %init = air.wait_all async
+    %0 = scf.for %arg0 = %c0 to %c2 step %c1 iter_args(%arg1 = %init) -> (!air.async.token) {
+      %async_token, %results = air.execute [%arg1] -> (memref<64xbf16, 2 : i32>) {
+        %alloc = memref.alloc() : memref<64xbf16, 2 : i32>
+        air.execute_terminator %alloc : memref<64xbf16, 2 : i32>
+      }
+      %inner = scf.for %arg2 = %c0 to %c2 step %c1 iter_args(%arg3 = %async_token) -> (!air.async.token) {
+        %get = air.channel.get async [%arg3] @channel_0[] (%results[] [] []) : (memref<64xbf16, 2 : i32>)
+        scf.yield %get : !air.async.token
+      }
+      %dealloc = air.execute [%inner] {
+        memref.dealloc %results : memref<64xbf16, 2 : i32>
+      }
+      scf.yield %dealloc : !air.async.token
+    }
+    return
+  }
 }

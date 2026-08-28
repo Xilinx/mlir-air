@@ -132,6 +132,10 @@ public:
   int ops_per_core_per_cycle;
   // Key: datatype name; mapped: pair <efficiency, ops_per_core_per_cycle>
   std::map<std::string, std::pair<double, int>> datatypes;
+  // Key: datatype name; mapped: a cycle count written as an expression over
+  // the op's operands. Present only for datatypes whose cost the throughput
+  // model cannot express; when present it replaces the whole formula.
+  std::map<std::string, std::string> cycle_exprs;
 
   void push_to_datatypes(std::string datatype_name, std::optional<double> eff,
                          std::optional<int> vectorSize) {
@@ -155,6 +159,13 @@ public:
       llvm::json::Object *datatypeObject = it->second.getAsObject();
       if (datatypeObject) {
         auto datatype_name = it->first.str();
+        // A cycle expression is a complete description of the cost, so it
+        // needs neither a rate nor an efficiency to scale.
+        if (auto cycles = datatypeObject->getString("cycles")) {
+          this->cycle_exprs.insert(
+              std::make_pair(datatype_name, cycles->str()));
+          continue;
+        }
         this->resource_assertion(
             datatypeObject->getNumber("efficiency").has_value(),
             "datatype has no 'efficiency'");
@@ -173,7 +184,7 @@ public:
                                    "unknown compute capability for datatype " +
                                        datatype_name +
                                        ", supported: ops_per_core_per_cycle, "
-                                       "macs_per_core_per_cycle");
+                                       "macs_per_core_per_cycle, cycles");
       }
       this->reset_reservation();
     }

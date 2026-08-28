@@ -104,6 +104,7 @@ extern "C" {
 // per-core output, gets duplicated on both tiles, and the design deadlocks.
 void shortconv_compute(bf16 *restrict mix, bf16 *restrict st, bf16 *restrict y,
                        bf16 *restrict st_new, int _arm) {
+  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
   pseduo_shortconv<SC_DIM>(y, st_new, mix, st);
@@ -127,6 +128,7 @@ void shortconv_compute(bf16 *restrict mix, bf16 *restrict st, bf16 *restrict y,
 //   wave which slice of dst[0 : 3*SC_DIM] this call fills
 void shortconv_stage(bf16 *restrict src, bf16 *restrict dst, int wave,
                      int _arm) {
+  aie_round_nearest_even();
   (void)_arm;
   constexpr int VS = 16;
   constexpr int SLICE = 3 * SC_DIM / SC_WAVES;
@@ -146,6 +148,7 @@ void shortconv_stage(bf16 *restrict src, bf16 *restrict dst, int wave,
 // lock cycle on `dst`, whatever the landing granularity.
 void shortconv_stage2(bf16 *restrict src0, bf16 *restrict src1,
                       bf16 *restrict dst, int _arm) {
+  aie_round_nearest_even();
   (void)_arm;
   constexpr int VS = 16;
   constexpr int SLICE = 3 * SC_DIM / 2;

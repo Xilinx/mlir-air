@@ -250,6 +250,41 @@ public:
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
 
+  // How the throughput model prices a linalg body. These were fixed constants
+  // in the runner, chosen for AIE: a herd body instance is one core, a kernel
+  // is an external function call costing ~100 cycles to enter, and a vector
+  // lane is 8 wide. They are properties of a machine, not of the simulator, so
+  // a model that is not AIE can say otherwise. The defaults reproduce the
+  // previous behaviour exactly.
+  double cores_per_kernel_instance = 1;
+  double default_ops_per_core_per_cycle = 8;
+  uint64_t kernel_invocation_overhead = 100;
+
+  void set_compute_model(llvm::json::Object *model) {
+    if (!model)
+      return;
+    // Validate here rather than at the point of use: the first two divide a
+    // work count, and the third is cast to an unsigned, so a zero or negative
+    // in the JSON would surface much later as a division by zero or as an
+    // overhead of billions of cycles.
+    if (auto v = model->getNumber("cores_per_kernel_instance")) {
+      this->resource_assertion(*v > 0,
+                               "cores_per_kernel_instance must be positive");
+      this->cores_per_kernel_instance = *v;
+    }
+    if (auto v = model->getNumber("default_ops_per_core_per_cycle")) {
+      this->resource_assertion(
+          *v > 0, "default_ops_per_core_per_cycle must be positive");
+      this->default_ops_per_core_per_cycle = *v;
+    }
+    if (auto v = model->getNumber("kernel_invocation_overhead")) {
+      this->resource_assertion(*v >= 0,
+                               "kernel_invocation_overhead must not be "
+                               "negative");
+      this->kernel_invocation_overhead = (uint64_t)*v;
+    }
+  }
+
   void set_clock(std::optional<double> clk) {
     if (clk) {
       this->set_clock(*clk);
@@ -434,6 +469,7 @@ public:
     this->setup_device_parameters(
         model->getObject("devicename"), model->getNumber("clock"),
         model->getArray("datatypes"), model->getObject("kernels"), nullptr);
+    this->set_compute_model(model->getObject("compute_model"));
     this->reset_reservation();
   }
 

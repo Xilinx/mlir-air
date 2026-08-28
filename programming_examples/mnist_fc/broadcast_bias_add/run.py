@@ -2,233 +2,113 @@
 #
 # Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-#
-# Broadcast bias add: C[row,col] = A[row,col] + bias[col]
-# Adds a row vector (ne0-aligned) to every row of a matrix.
-# All data is f32.
-#
-# GGML layout: [ne0, ne1] where ne0 is contiguous.
-# GGML op: x+y: [ne0, ne1] + [ne0, 1] -> [ne0, ne1]
-# In numpy row-major: matrix is (ne1, ne0), bias is (ne0,).
-# The bias is along the contiguous (column) dimension, broadcast along rows.
-#
-# MNIST context: ops #2 and #5 in the GGML MNIST-FC pipeline.
-# Op #2: [500,500] + [500,1] -> [500,500], bias has ne0=500 elements.
+"""Broadcast bias add, on air.api: ``C[row, col] = A[row, col] + bias[col]``.
+
+Ops #2 and #5 of the GGML MNIST-FC pipeline. GGML's layout is ``[ne0, ne1]``
+with ``ne0`` contiguous, so in numpy row-major the matrix is ``(ne1, ne0)`` and
+the bias is ``(ne0,)`` -- one value per column, reused down every row. All f32.
+
+The whole kernel is one line:
+
+    out[:] = a[:] + bias[:]        [tile_m, tile_n] + [tile_n]
+
+which is numpy's broadcast rule, right-aligned: ``bias`` is short of an axis, so
+it is stretched along the one it does not have. The predecessor wrote the same
+thing as a doubly-nested loop that, for every 16-wide strip of every row,
+re-took a ``memref.subview`` of the bias and re-read it with a
+``vector.transfer_read`` -- the bias load is loop-invariant but was spelled
+inside both loops.
+
+Two things this does *not* change, because they are the example's contract:
+
+* ``M`` and ``N`` are padded up to a whole number of tiles, and when padding
+  happens the module carries ``air.actual_sizes`` on ``air.launch`` so the
+  runtime knows the real extent. ``launch.build()`` hands back the module, so
+  that attribute is set exactly where the predecessor set it.
+* ``--vector-size`` still selects the width, through ``air.alloc(vector=...)``.
+  16 is the default and the only width f32 has: 8 lanes does not legalize on
+  either generation.
+"""
 
 import argparse
 import math
+
 import numpy as np
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview, load
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api.types import f32
 from air.backend.xrt import XRTBackend
-from air.extras import types as extrasT
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
 
-range_ = for_
 
-
-@module_builder
 def build_module(m, n, tile_m, tile_n, herd_m, herd_n, vector_size=16):
-    """Build broadcast bias add module.
+    """Build the broadcast bias add launch.
 
-    m = ne1 (rows, padded), n = ne0 (cols, contiguous, padded).
-    Bias has length n (ne0). C[row,col] = A[row,col] + bias[col].
+    ``m`` = ne1 (rows, padded), ``n`` = ne0 (cols, contiguous, padded). The bias
+    has length ``n`` and is indexed by column.
     """
     assert m % (tile_m * herd_m) == 0
     assert n % (tile_n * herd_n) == 0
     assert tile_n % vector_size == 0
 
-    xrt_dtype = type_mapper(np.float32)
-    index_type = IndexType.get()
-    l1_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L1)
+    A = air.tensor([m, n], f32)
+    BIAS = air.tensor([n], f32)
+    OUT = air.tensor([m, n], f32)
 
-    # L3 MemRefTypes
-    memrefTyA = MemRefType.get([m, n], xrt_dtype)
-    # Bias has length n (ne0, contiguous dimension)
-    memrefTyBias = MemRefType.get([n], xrt_dtype)
-    memrefTyOut = MemRefType.get([m, n], xrt_dtype)
+    grid = [range(m // tile_m // herd_m), range(n // tile_n // herd_n)]
 
-    # L1 MemRefTypes
-    l1TileTy = MemRefType.get(
-        shape=[tile_m, tile_n], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-    # Bias tile: tile_n elements (one per column in the tile)
-    l1BiasTy = MemRefType.get(
-        shape=[tile_n], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
+    with air.launch(grid, name="broadcast_bias_add") as launch:
 
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    # Rank-reduced 1D subview type
-    l1SubviewTy = MemRefType.get(
-        [vector_size],
-        xrt_dtype,
-        layout=StridedLayoutAttr.get(ShapedType.get_dynamic_size(), [1]),
-        memory_space=l1_mem_space,
-    )
+        @launch.body
+        def _(lx, ly):
+            with air.segment(name="bias_add_seg") as seg:
 
-    @FuncOp.from_py_func(memrefTyA, memrefTyBias, memrefTyOut)
-    def broadcast_bias_add(arg_a, arg_bias, arg_out):
-        launch_size = [m // tile_m // herd_m, n // tile_n // herd_n]
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_m), range(herd_n)],
+                        name="herd_0",
+                        shape=(herd_m, herd_n),
+                    ) as h:
 
-        @launch(operands=[arg_a, arg_bias, arg_out], sizes=launch_size)
-        def launch_body(
-            launch_ivx, launch_ivy, launch_sizex, launch_sizey, l3_a, l3_bias, l3_out
-        ):
+                        @h.body
+                        def _(tx, ty):
+                            # Where this core's tile starts. The launch point
+                            # picks the block of tiles; the tile coordinate
+                            # picks one inside it.
+                            m0 = lx * (tile_m * herd_m) + tx * tile_m
+                            n0 = ly * (tile_n * herd_n) + ty * tile_n
 
-            @segment(
-                name="bias_add_seg",
-                operands=[launch_ivx, launch_ivy, l3_a, l3_bias, l3_out],
-            )
-            def segment_body(launch_ivx_s, launch_ivy_s, l3_a_s, l3_bias_s, l3_out_s):
-                c_tile_m_herd_m = ConstantOp(
-                    IntegerAttr.get(IndexType.get(), tile_m * herd_m), None
-                )
-                c_tile_n_herd_n = ConstantOp(
-                    IntegerAttr.get(IndexType.get(), tile_n * herd_n), None
-                )
-                launch_offset_m = arith.MulIOp(launch_ivx_s, c_tile_m_herd_m)
-                launch_offset_n = arith.MulIOp(launch_ivy_s, c_tile_n_herd_n)
-
-                @herd(
-                    name="herd_0",
-                    sizes=[herd_m, herd_n],
-                    operands=[
-                        launch_offset_m,
-                        launch_offset_n,
-                        l3_a_s,
-                        l3_bias_s,
-                        l3_out_s,
-                    ],
-                )
-                def herd_body(
-                    tx, ty, _sx, _sy, _loff_m, _loff_n, _l3_a, _l3_bias, _l3_out
-                ):
-                    l1_tile_in = AllocOp(l1TileTy, [], [])
-                    l1_tile_out = AllocOp(l1TileTy, [], [])
-                    l1_bias = AllocOp(l1BiasTy, [], [])
-
-                    m_offset_map = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(1),
-                                    AffineConstantExpr.get(tile_m),
-                                ),
+                            # Allocated in the predecessor's order -- tile in,
+                            # tile out, bias -- so the aie.buffer numbering
+                            # comes out the same and the two designs can be
+                            # compared as generated code, not just as results.
+                            a = air.alloc(
+                                [tile_m, tile_n],
+                                f32,
+                                scope=h.private(),
+                                vector=vector_size,
                             )
-                        ],
-                    )
-                    n_offset_map = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(1),
-                                    AffineConstantExpr.get(tile_n),
-                                ),
+                            out = air.alloc(
+                                [tile_m, tile_n],
+                                f32,
+                                scope=h.private(),
+                                vector=vector_size,
                             )
-                        ],
-                    )
-                    m_offset = affine_apply(m_offset_map, [_loff_m, tx])
-                    n_offset = affine_apply(n_offset_map, [_loff_n, ty])
-
-                    # DMA bias slice: bias[n_offset : n_offset + tile_n]
-                    # Bias is along ne0 (columns, contiguous dimension).
-                    dma_memcpy_nd(
-                        l1_bias,
-                        _l3_bias,
-                        src_offsets=[n_offset],
-                        src_sizes=[tile_n],
-                        src_strides=[1],
-                    )
-
-                    # DMA matrix tile
-                    dma_memcpy_nd(
-                        l1_tile_in,
-                        _l3_a,
-                        src_offsets=[m_offset, n_offset],
-                        src_sizes=[tile_m, tile_n],
-                        src_strides=[n, 1],
-                    )
-
-                    # Compute: C[row,col] = A[row,col] + bias[col]
-                    # Bias is along columns; load as vector, add to each row.
-                    c0 = ConstantOp(index_type, 0)
-                    c1 = ConstantOp(index_type, 1)
-                    c_vec_size = ConstantOp(index_type, vector_size)
-                    c_tile_m_cst = ConstantOp(index_type, tile_m)
-                    c_tile_n_cst = ConstantOp(index_type, tile_n)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                    identity_map_1d = AffineMapAttr.get(AffineMap.get_identity(1))
-
-                    for i in range_(c0, c_tile_m_cst, c1):
-                        for j in range_(c0, c_tile_n_cst, c_vec_size):
-                            # Load bias vector (same for every row)
-                            sub_bias = subview(
-                                l1_bias.result,
-                                [j],
-                                [vector_size],
-                                [1],
-                            )
-                            v_bias = transfer_read(
-                                vecTy,
-                                sub_bias,
-                                [c0],
-                                identity_map_1d,
-                                cst0,
-                                [True],
+                            bias = air.alloc(
+                                [tile_n], f32, scope=h.private(), vector=vector_size
                             )
 
-                            sub_in = subview(
-                                l1_tile_in.result,
-                                [i, j],
-                                [1, vector_size],
-                                [1, 1],
-                                result_type=l1SubviewTy,
-                            )
-                            sub_out = subview(
-                                l1_tile_out.result,
-                                [i, j],
-                                [1, vector_size],
-                                [1, 1],
-                                result_type=l1SubviewTy,
-                            )
-                            v_in = transfer_read(
-                                vecTy, sub_in, [c0], identity_map_1d, cst0, [True]
-                            )
-                            v_out = arith.AddFOp(v_in, v_bias)
-                            transfer_write(
-                                None, v_out, sub_out, [c0], identity_map_1d, [True]
-                            )
-                            yield_([])
-                        yield_([])
+                            air.ops.load(a, A[m0 : m0 + tile_m, n0 : n0 + tile_n])
+                            air.ops.load(bias, BIAS[n0 : n0 + tile_n])
 
-                    # DMA output tile back to L3
-                    dma_memcpy_nd(
-                        _l3_out,
-                        l1_tile_out,
-                        dst_offsets=[m_offset, n_offset],
-                        dst_sizes=[tile_m, tile_n],
-                        dst_strides=[n, 1],
-                    )
+                            out[:] = a[:] + bias[:]
 
-                    DeallocOp(l1_tile_in)
-                    DeallocOp(l1_tile_out)
-                    DeallocOp(l1_bias)
+                            air.ops.store(out, OUT[m0 : m0 + tile_m, n0 : n0 + tile_n])
+
+    return launch
 
 
 if __name__ == "__main__":
@@ -262,6 +142,13 @@ if __name__ == "__main__":
         dest="compile_mode",
         default="compile-and-run",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
 
     args = parser.parse_args()
 
@@ -282,13 +169,16 @@ if __name__ == "__main__":
         print(f"M_padded={M_padded}, N_padded={N_padded}")
         print(f"TILE_M={TILE_M}, TILE_N={TILE_N}, HERD_M={HERD_M}, HERD_N={HERD_N}")
 
-    mlir_module = build_module(
+    launch = build_module(
         M_padded, N_padded, TILE_M, TILE_N, HERD_M, HERD_N, VECTOR_SIZE
     )
+    mlir_module = launch.build(target=args.target)
 
     # Add actual_sizes attribute for device-side padding
     needs_padding = (M_actual != M_padded) or (N_actual != N_padded)
     if needs_padding:
+        from air.ir import DenseI64ArrayAttr
+
         with mlir_module.context:
             for op in mlir_module.body.operations:
                 for inner_op in op.body.blocks[0].operations:
@@ -360,6 +250,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
             instance_name="broadcast_bias_add",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
@@ -376,6 +267,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
+            target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)

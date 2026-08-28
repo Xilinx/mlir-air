@@ -1,162 +1,107 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""RMS normalisation of an [M, N] tile, on air.api.
 
-"""Vectorized RMS Normalization Example
+Row by row::
 
-Implements RMS normalization on a 2D input [M, N]:
-  1. rms  = sum(x^2, axis=-1) / N
-  2. rstd = 1 / sqrt(rms + eps)
-  3. y    = x * rstd
+    acc  = sum(x * x)            over the row
+    rstd = rsqrt(acc / N + eps)
+    y    = x * rstd
 
-Uses a single AIE tile with DMA transfers between L3 and L1 memory.
-Computation is vectorized using vector.transfer_read/write with
-configurable VECTOR_SIZE (default 16 for AIE2).
+Three lines, and each is one line of DSL:
+
+    acc[:]  = ops.reduce_add(row[:] * row[:])
+    rstd[:] = ops.cast(ops.rsqrt(ops.cast(acc[:], f32) * (1 / N) + EPS), dtype)
+    out[:]  = row[:] * rstd[:]
+
+The last one is the interesting one. ``rstd`` is a ``[1, 1]`` buffer and ``row``
+is ``[1, N]``, so multiplying them is numpy broadcasting along the innermost
+axis: the DSL pins the broadcast axis at 0 and emits ``memref.load`` +
+``vector.broadcast`` inside the vector loop. The predecessor had to reduce to a
+scalar, build a ``vector.broadcast`` by hand and thread it through the second
+loop nest; here the shapes say it.
+
+``ops.reduce_add`` reads the whole innermost axis as one vector, which removes
+the predecessor's accumulator buffer entirely -- and with it the comment about
+writing the squared vector to a temporary and reading it back to break the
+``mulf``->``addf`` def-use chain that the aievec lowering rejected. There is no
+such chain left: the multiply feeds a ``vector.reduction``, not an add.
+
+Two things carried over deliberately:
+
+* **The reciprocal square root is computed in f32.** ``math.rsqrt`` on a scalar
+  ``bf16`` is not legalised by Peano, and AIE has no ``sqrt`` at all -- which is
+  why this is ``rsqrt`` and a multiply rather than ``sqrt`` and a divide. The
+  two ``ops.cast`` calls are that constraint, not a rounding preference. The
+  mean and the epsilon are now added in f32 as well, which is strictly more
+  accurate than the predecessor's bf16 arithmetic and well inside the tolerance
+  the test already used.
+* **The row loop is ``air.sequential``**, so it stays one ``scf.for`` over M
+  rather than unrolling M copies of the body at trace time.
 """
 
 import argparse
+
+import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects import arith, math as math_dialect
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import (
-    transfer_read,
-    transfer_write,
-    BroadcastOp,
-    reduction as vector_reduction,
-)
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
-
-range_ = for_
+from air.backend.xrt_runner import XRTRunner
 
 EPS = 1e-5
 
-
-@module_builder
-def build_module(M, N, np_dtype, vector_size=16):
-    xrt_dtype = type_mapper(np_dtype)
-    assert (
-        N % vector_size == 0
-    ), f"N ({N}) must be divisible by vector_size ({vector_size})"
-
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-    # L3 types
-    l3MemrefTy = MemRefType.get([M, N], xrt_dtype)
-
-    # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get([N], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
-
-    @FuncOp.from_py_func(l3MemrefTy, l3MemrefTy)
-    def rms_norm(arg0, arg1):
-
-        @herd(name="herd_0", sizes=[1, 1], operands=[arg0, arg1])
-        def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_out):
-            l1_row = AllocOp(l1RowTy, [], [])
-            l1_out = AllocOp(l1RowTy, [], [])
-            # Vector accumulator buffer for reductions
-            l1_acc = AllocOp(l1VecTy, [], [])
-
-            c0 = arith.ConstantOp.create_index(0)
-            cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-            n_f = arith.ConstantOp(xrt_dtype, float(N))
-            eps_f = arith.ConstantOp(xrt_dtype, EPS)
-
-            # Zero vector for initializing accumulator
-            v_zero = BroadcastOp(vecTy, cst0)
-
-            for row in range_(M):
-                # DMA: load one row from L3 to L1
-                dma_memcpy_nd(
-                    l1_row,
-                    l3_in,
-                    src_offsets=[row, 0],
-                    src_sizes=[1, N],
-                    src_strides=[N, 1],
-                )
-
-                # Step 1: Vectorized sum of x^2
-                # Initialize accumulator to zero
-                transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
-                for j in range_(0, N, vector_size):
-                    sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                    sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
-                    v_x = transfer_read(
-                        vecTy, sub_row, [c0], identity_map, cst0, [True]
-                    )
-                    v_sq = arith.mulf(v_x, v_x)
-                    # Write squared result to temp buffer and read back to
-                    # break the mulf->addf def-use chain. The aievec lowering
-                    # rejects addf when an operand is directly from mulf
-                    # (it defers to FMA matching which doesn't apply here).
-                    transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
-                    v_sq_rd = transfer_read(
-                        vecTy, sub_tmp, [c0], identity_map, cst0, [True]
-                    )
-                    v_acc = transfer_read(
-                        vecTy, l1_acc, [c0], identity_map, cst0, [True]
-                    )
-                    v_sum = arith.addf(v_acc, v_sq_rd)
-                    transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
-                    yield_([])
-
-                # Horizontal reduce accumulator vector to scalar
-                v_final = transfer_read(vecTy, l1_acc, [c0], identity_map, cst0, [True])
-                total_sum = vector_reduction(xrt_dtype, "add", v_final)
-                rms = arith.divf(total_sum, n_f)
-
-                # Step 2: rstd = rsqrt(rms + eps)
-                # Use math.rsqrt in f32 -- AIE supports rsqrt (not sqrt),
-                # and scalar bf16 rsqrt isn't legalized by Peano.
-                f32 = F32Type.get()
-                rms_eps = arith.addf(rms, eps_f)
-                rms_eps_f32 = arith.extf(f32, rms_eps)
-                rstd_f32 = math_dialect.rsqrt(rms_eps_f32)
-                rstd = arith.truncf(xrt_dtype, rstd_f32)
-
-                # Step 3: Vectorized normalize: y = x * rstd
-                v_rstd = BroadcastOp(vecTy, rstd)
-                for j in range_(0, N, vector_size):
-                    sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                    v_x = transfer_read(
-                        vecTy, sub_row, [c0], identity_map, cst0, [True]
-                    )
-                    v_normed = arith.mulf(v_x, v_rstd)
-                    sub_out = subview(l1_out.result, [j], [vector_size], [1])
-                    transfer_write(None, v_normed, sub_out, [c0], identity_map, [True])
-                    yield_([])
-
-                # DMA: write result row from L1 to L3
-                dma_memcpy_nd(
-                    l3_out,
-                    l1_out,
-                    dst_offsets=[row, 0],
-                    dst_sizes=[1, N],
-                    dst_strides=[N, 1],
-                )
-
-                yield_([])
-
-            DeallocOp(l1_row)
-            DeallocOp(l1_out)
-            DeallocOp(l1_acc)
+M_DEFAULT = 32
+N_DEFAULT = 64
+VECTOR_SIZE = 16
+INPUT_DATATYPE = bfloat16
 
 
-if __name__ == "__main__":
-    M_DEFAULT = 32
-    N_DEFAULT = 64
-    VECTOR_SIZE = 16
-    INPUT_DATATYPE = bfloat16
+def build_module(M, N, dtype=bf16, vector=VECTOR_SIZE):
+    if vector and N % vector:
+        raise ValueError(
+            f"N ({N}) must be a multiple of the vector width ({vector}): this "
+            "kernel has no partial vectors, so the last one would run past the "
+            "end of the row."
+        )
 
+    x = air.tensor([M, N], dtype)
+    y = air.tensor([M, N], dtype)
+
+    with air.launch(name="rms_norm") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="herd_0", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    # One row at a time. The leading 1 is what makes `rstd`
+                    # a [1, 1] that broadcasts along the row.
+                    row = air.alloc([1, N], dtype, scope=h.private(), vector=vector)
+                    out = air.alloc([1, N], dtype, scope=h.private(), vector=vector)
+                    acc = air.alloc([1, 1], dtype, scope=h.private(), vector=vector)
+                    rstd = air.alloc([1, 1], dtype, scope=h.private(), vector=vector)
+
+                    for r in air.sequential(M):
+                        ops.load(row, x[r : r + 1, :])
+
+                        acc[:] = ops.reduce_add(row[:] * row[:])
+                        rstd[:] = ops.cast(
+                            ops.rsqrt(ops.cast(acc[:], f32) * (1.0 / N) + EPS), dtype
+                        )
+
+                        out[:] = row[:] * rstd[:]
+                        ops.store(out, y[r : r + 1, :])
+
+    return launch
+
+
+def parse_args():
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="rms_norm.py",
         description="Builds, runs, and tests the RMS normalization example",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -167,7 +112,8 @@ if __name__ == "__main__":
         "--vector-size",
         type=int,
         default=VECTOR_SIZE,
-        help="Vector size for SIMD operations",
+        dest="vector",
+        help="compute vector width in lanes; 0 forces a scalar loop",
     )
     parser.add_argument(
         "--compile-mode",
@@ -183,47 +129,62 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+    return parser.parse_args()
 
-    mlir_module = build_module(args.M, args.N, INPUT_DATATYPE, args.vector_size)
+
+def main():
+    args = parse_args()
+
+    launch = build_module(args.M, args.N, bf16, args.vector)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
-        exit(0)
+        return 0
 
     np.random.seed(0)
     x_input = np.random.rand(args.M, args.N).astype(INPUT_DATATYPE)
 
-    # Reference: RMS normalization without weight/bias
-    eps = EPS
+    # Reference: RMS normalization without weight/bias.
     rms = np.sqrt(
-        np.mean(x_input.astype(np.float32) ** 2, axis=-1, keepdims=True) + eps
+        np.mean(x_input.astype(np.float32) ** 2, axis=-1, keepdims=True) + EPS
     )
     y_expected = (x_input / rms).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="rms_norm",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[x_input],
-                expected_outputs=[y_expected],
-                rtol=5e-2,
-                atol=5e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
+    if args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
-        module_function = backend.compile(mlir_module)
+        backend.compile(mlir_module)
         backend.unload()
+        return 0
+
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="rms_norm",
+        runtime_loop_tiling_sizes=[4, 4],
+        target_device=launch.target,
+    )
+    return runner.run_test(
+        mlir_module,
+        inputs=[x_input],
+        expected_outputs=[y_expected],
+        rtol=5e-2,
+        atol=5e-1,
+    )
+
+
+if __name__ == "__main__":
+    exit(main())

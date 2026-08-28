@@ -42,6 +42,7 @@ from air.dialects.vector import (
     transfer_write,
 )
 
+from ._index import Leaf
 from .types import require_computable, require_signless
 
 __all__ = ["emit_elementwise"]
@@ -144,6 +145,33 @@ def _broadcast_offset(shape, dst_shape):
     return offset
 
 
+def _broadcast_shape(shapes):
+    """numpy's broadcast of several shapes, or None if they do not agree.
+
+    Right-aligned, each axis is the one non-1 extent among the operands, or 1
+    when they are all 1. Unlike ``_broadcast_offset`` this is two-sided -- there
+    is no destination to broadcast *to* yet, which is the situation inside a
+    reduction, where the collapsed shape is whatever the operands together say
+    it is.
+    """
+    rank = max(len(s) for s in shapes)
+    out = []
+    for axis in range(rank):
+        extent = 1
+        for shape in shapes:
+            i = axis - (rank - len(shape))
+            if i < 0:
+                continue
+            e = shape[i]
+            if e == 1:
+                continue
+            if extent not in (1, e):
+                return None
+            extent = e
+        out.append(extent)
+    return tuple(out)
+
+
 def _pins_an_axis(shape, dst_shape):
     """Does reading ``shape`` as ``dst_shape`` pin one of its axes to 0?
 
@@ -170,22 +198,153 @@ def _zero_index_if(needed):
     return _result(arith.ConstantOp(IndexType.get(), 0)) if needed else None
 
 
-def _leaf_index(shape, dst_shape, ivs, zero):
-    """The indices to read a leaf of ``shape`` at, inside a nest over ``dst_shape``.
+def _axes_of(leaf):
+    """``(sizes, dropped, base)`` for a leaf, whole buffer or region alike.
+
+    A memref index has one entry per axis the *buffer* has, which is ``sizes``.
+    The elementwise shape -- what broadcasting works on -- is ``sizes`` minus
+    the axes an integer subscript took, and that is ``leaf.shape``. Keeping the
+    two apart is the whole of integer indexing: ``gu[i, j]`` reads a scalar and
+    still needs two indices to say which one.
+    """
+    sizes = getattr(leaf, "sizes", None)
+    if sizes is None:
+        # A whole buffer: every axis is walked, from zero.
+        return list(leaf.shape), [False] * len(leaf.shape), None
+    return list(sizes), list(leaf.dropped), leaf.base
+
+
+def _leaf_index(leaf, dst_shape, ivs, zero):
+    """The indices to read ``leaf`` at, inside a nest over ``dst_shape``.
 
     An axis that matches the destination's is walked with the destination's own
     induction variable; an axis of extent 1 against a wider destination is
     pinned at 0, which is what makes the read a broadcast. Axes the operand does
-    not have contribute no index at all.
+    not have contribute no index at all, and an axis an integer subscript took
+    is never walked -- it contributes its offset and nothing else.
 
-    When the shapes are equal this returns ``ivs`` unchanged, which is what
-    keeps every existing kernel's IR byte-identical.
+    The offset may be a herd coordinate or a loop variable rather than a
+    constant. It materialises the same way every index in this DSL does: a
+    constant folds, anything else becomes one ``affine.apply``.
+
+    When the shapes are equal, nothing is dropped and the base is all zeros this
+    returns ``ivs`` unchanged, which is what keeps every kernel that predates
+    regions emitting byte-identical IR.
     """
+    sizes, dropped, base = _axes_of(leaf)
+    shape = [s for s, drop in zip(sizes, dropped) if not drop]
     offset = _broadcast_offset(shape, dst_shape)
-    return [
-        ivs[i + offset] if extent == dst_shape[i + offset] else zero
-        for i, extent in enumerate(shape)
-    ]
+    index = []
+    kept = 0
+    for i, extent in enumerate(sizes):
+        start = 0 if base is None else base[i]
+        if dropped[i]:
+            # An integer subscript: this axis is not part of the element shape,
+            # so no induction variable reaches it.
+            index.append(_materialize_index(start))
+            continue
+        walks = extent == dst_shape[kept + offset]
+        iv = ivs[kept + offset] if walks else None
+        kept += 1
+        if _is_zero(start):
+            index.append(iv if walks else zero)
+        elif not walks:
+            index.append(_materialize_index(start))
+        else:
+            index.append(_result(arith.AddIOp(iv, _materialize_index(start))))
+    return index
+
+
+def _dst_index(dst, ivs):
+    """Where to write, inside a nest over the destination's element shape.
+
+    A whole buffer is written at the induction variables themselves, which is
+    what every kernel that predates region assignment emits. A region shifts
+    each axis by its own offset, and an axis an integer subscript took is
+    written at that offset alone -- so ``out[i, j, k] = ...`` nests over
+    nothing and stores at exactly ``[i, j, k]``.
+
+    The destination is not broadcast, so this is ``_leaf_index`` with the
+    element shape standing in for the destination's: every kept axis walks.
+    """
+    if getattr(dst, "sizes", None) is None:
+        return ivs
+    return _leaf_index(dst, dst.shape, ivs, None)
+
+
+def _is_zero(start):
+    """Is this offset the literal 0, needing no index arithmetic at all?"""
+    if isinstance(start, int):
+        return start == 0
+    return start.as_const() == 0
+
+
+def _materialize_index(start):
+    """An offset as an index Value: a constant folds, anything else applies.
+
+    A bare induction variable or coordinate -- one term, coefficient 1, no
+    constant -- is passed straight through. ``IndexExpr.materialize`` would wrap
+    it in an identity ``affine.apply``, which is correct but is one op per index
+    per trip; a six-deep nest indexing three buffers is where that shows.
+
+    The shortcut tests for a :class:`Leaf` specifically, not for a single term.
+    A :class:`DerivedLeaf` -- ``x // k`` or ``x % k``, which is a leaf because
+    neither operation is linear -- has no SSA value of its own to pass through;
+    it exists precisely to be materialised, and goes the long way.
+    """
+    if isinstance(start, int):
+        return _index_constant(start)
+    if len(start.terms) == 1 and start.const == 0:
+        ((leaf, coefficient),) = start.terms.items()
+        if coefficient == 1 and isinstance(leaf, Leaf):
+            return leaf.value
+    value = start.materialize()
+    return _index_constant(value) if isinstance(value, int) else value
+
+
+def _index_constant(value):
+    return _result(arith.ConstantOp(IndexType.get(), value))
+
+
+def _base_of(leaf):
+    """A slice leaf's starting offset per axis; None for a whole buffer."""
+    return getattr(leaf, "base", None)
+
+
+def _offset_key(offset):
+    """A hashable identity for one offset, constant or not.
+
+    An offset is an affine form ``sum(c_i * leaf_i) + k``, so two offsets are
+    the same index exactly when their terms and constant agree. Keying on the
+    ``IndexExpr`` object instead would read ``gu[i, :]`` twice for one region,
+    and keying on ``as_const()`` would collapse ``gu[i, :]`` and ``gu[j, :]``
+    onto a shared ``None``, which is the dangerous direction.
+
+    The terms are taken as a ``frozenset`` of the mapping's own items, which
+    leaves each leaf to say what makes it itself: a :class:`Leaf` is one
+    coordinate and compares by identity, while a :class:`DerivedLeaf` compares
+    structurally, so two separately built copies of ``(i + 1) % 4`` are one
+    term. Substituting ``id()`` for that would split them and read twice.
+    """
+    if isinstance(offset, int):
+        return ("k", offset)
+    return (frozenset(offset.terms.items()), offset.const)
+
+
+def _read_key(leaf):
+    """What makes two leaves the same read.
+
+    A buffer that appears twice in one expression is read once, and the same has
+    to hold for a region: `gu[0, :] * 2 + gu[0, :]` writes two BufferSlice
+    objects for one region, so keying on the slice's own identity would read it
+    twice. Keying on the underlying buffer alone is the opposite mistake -- it
+    would serve gu[1, :] the value already read for gu[0, :]. The region is what
+    identifies the read: which buffer, from where, how much.
+    """
+    base = _base_of(leaf)
+    buffer = getattr(leaf, "buffer", leaf)
+    key = None if base is None else tuple(_offset_key(o) for o in base)
+    return (id(buffer), key, tuple(leaf.shape))
 
 
 def _check_region(node, dst, dtype, expected=None):
@@ -203,6 +362,13 @@ def _check_region(node, dst, dtype, expected=None):
     the element type and nothing else.
     """
     expected = expected or f"destination is {dtype}"
+    # A nested reduction is diagnosed here rather than at emission, because the
+    # shape check below reaches it first and reports the collapsed axis as an
+    # operand that does not broadcast -- which is true, and says nothing about
+    # the actual mistake. `ops.cast(ops.reduce_add(row[:]), f32)` used to fail
+    # with "destination has shape (1, 1) but operand has shape (1, 64)".
+    if node.kind == "reduce":
+        raise _nested_reduction(node)
     if node.kind == "cast":
         source = node.args[0].element_dtype()
         _check_region(
@@ -233,6 +399,19 @@ def _check_region(node, dst, dtype, expected=None):
         _check_region(arg, dst, dtype, expected)
 
 
+def _nested_reduction(node):
+    """The error for a reduction used anywhere but as the whole right-hand side."""
+    spelling = "reduce_max" if node.op == "max" else "reduce_add"
+    return NotImplementedError(
+        f"air.api.ops.{spelling} cannot nest inside a larger expression: it "
+        "collapses the innermost axis, so its result has a different shape "
+        "from the operands around it, and one loop nest cannot span both. "
+        "Assign the reduction first, then use the result:\n"
+        f"    tmp[:] = ops.{spelling}(a[:])\n"
+        "    out[:] = tmp[:] + b[:]"
+    )
+
+
 def _regions_in(node, dtype, out):
     """Element types appearing in ``node``, outermost first.
 
@@ -256,7 +435,10 @@ def emit_elementwise(dst, expr):
     # destination's, so it is dispatched before the elementwise shape check
     # rather than being taught to it.
     if expr.kind == "reduce":
-        _emit_reduce(dst, expr)
+        if expr.op == "argmax":
+            _emit_argmax(dst, expr)
+        else:
+            _emit_reduce(dst, expr)
         return
 
     # A bare scalar on the right-hand side is a fill (`acc[:] = 0.0`), which is
@@ -376,27 +558,38 @@ def _emit_reduce(dst, expr):
     # from the operand's own leaves: that dimension is what gets collapsed, so
     # it is the one thing the destination cannot tell us.
     leaves = operand.leaves()
-    src_shape = leaves[0].shape
+    # The shape being reduced is every leaf broadcast together, exactly as an
+    # elementwise assignment broadcasts them: a variance is
+    # `reduce_add((x - mean) * (x - mean))` with mean a per-row scalar, and
+    # numpy stretches it the same way. Taking the widest leaf instead would be
+    # right only when one leaf already covers every axis -- [tm, 1] with [1, N]
+    # broadcast to [tm, N] and neither operand is that shape.
+    src_shape = _broadcast_shape([leaf.shape for leaf in leaves])
+    if src_shape is None:
+        raise ValueError(
+            f"shape mismatch inside a reduction: operands have shapes "
+            f"{[tuple(leaf.shape) for leaf in leaves]} and do not broadcast "
+            f"together. Right-aligned, every axis must either agree or be 1"
+        )
     for leaf in leaves:
-        if leaf.shape != src_shape:
+        if _broadcast_offset(leaf.shape, src_shape) is None:
             raise ValueError(
                 f"shape mismatch inside a reduction: operands have shapes "
-                f"{src_shape} and {leaf.shape}. Unlike a plain elementwise "
-                f"assignment, a reduction does not broadcast its operands: the "
-                f"innermost extent is the thing being collapsed, so an operand "
-                f"of extent 1 there would change what the reduction means "
-                f"rather than being stretched to fit"
-            )
-        if leaf.dtype is not dtype:
-            raise ValueError(
-                f"dtype mismatch in elementwise assignment: destination is "
-                f"{dtype} but operand is {leaf.dtype}"
+                f"{src_shape} and {leaf.shape}, and the second does not "
+                f"broadcast to the first. Right-aligned, every operand axis "
+                f"must either match or be 1"
             )
         if leaf.value is None:
             raise RuntimeError(
                 "buffer used before allocation; air.alloc() must be called "
                 "inside the herd body that uses it"
             )
+    # Each leaf is checked against the element type of *its own* region, not
+    # against the destination's. A reduction that accumulates in a wider type
+    # than it reads -- `reduce_add(ops.cast(row[:], f32))`, which is how a mean
+    # is computed -- has bf16 leaves under an f32 destination, and comparing
+    # every leaf to the destination refused exactly that.
+    _check_reduce_regions(operand, dtype)
 
     # Two destination spellings are accepted, matching numpy's keepdims:
     #   [.., n] -> [.., 1]  keeps the reduced axis (keepdims=True)
@@ -415,7 +608,18 @@ def _emit_reduce(dst, expr):
             f"(dropping it), but the destination is {tuple(dst.shape)}"
         )
 
-    lanes = src_shape[-1]
+    axis = src_shape[-1]
+    # How many lanes one step reads. The operand's own vector width, exactly as
+    # an elementwise read of the same buffer would use -- so a [.., 768] row
+    # allocated at width 16 is reduced in 48 steps of 16 rather than as one
+    # 768-lane vector, which is what the backend refuses
+    # (`G_EXTRACT_VECTOR_ELT <768 x s16>`). When the axis is one step, this is
+    # the whole-axis read the emitter has always done, unchanged.
+    # The step width comes from a leaf that actually spans the reduced axis. A
+    # leaf pinned at extent 1 there is splatted, not stepped, so its own width
+    # says nothing about how far each step should advance.
+    spanning = [leaf for leaf in leaves if leaf.shape and leaf.shape[-1] == axis]
+    lanes = _reduce_lanes(spanning[0], axis) if spanning else axis
     minor = _minor(len(src_shape))
     regions = {d: _Region(d, lanes, True) for d in _regions_in(operand, dtype, [])}
     kind = (_REDUCE_F if dtype.is_float else _REDUCE_I)[expr.op]
@@ -425,21 +629,210 @@ def _emit_reduce(dst, expr):
     zero = _result(arith.ConstantOp(IndexType.get(), 0))
     bounds = [(0, extent, 1) for extent in src_shape[:-1]]
 
-    # Every leaf here has the operand's shape -- the check above insists on it,
-    # since a reduction's extent is what is being collapsed -- so the read is
-    # always the plain one and broadcasting does not arise.
+    # The same broadcast-aware read the elementwise path uses: a leaf with the
+    # reduced axis's full extent is a vector read, and one of extent 1 there is
+    # a single element splatted across the vector.
     def load(buf, at, region):
+        index = _leaf_index(buf, src_shape, at, zero)
+        if buf.shape and buf.shape[-1] == src_shape[-1]:
+            return _result(
+                transfer_read(
+                    region.vec_ty,
+                    buf.value,
+                    index,
+                    _minor(len(_axes_of(buf)[0])),
+                    region.pad,
+                    [True],
+                )
+            )
+        return _result(broadcast(region.vec_ty, _result(memref_load(buf.value, index))))
+
+    if lanes == axis:
+
+        def body(ivs):
+            reads = {}
+            value = _eval(
+                operand, ivs + [zero], regions[dtype], regions, True, load, reads
+            )
+            scalar = _result(reduction(dtype.mlir(), kind, value))
+            memref_store(scalar, dst.value, ivs + [zero] if keepdims else ivs)
+
+        _nest(bounds, body)
+        return
+
+    # Stepped. The partial sums are carried through an L1 scratch vector rather
+    # than an scf.for iter_arg: a loop-carried vector is what LLVM splits into
+    # sub-512-bit pieces the AIE2 backend will not legalize. Every hand-written
+    # kernel this models does the same round-trip.
+    from ._trace import current_herd
+
+    scratch = current_herd().scratch(dtype, lanes)
+    acc_region = regions[dtype]
+    flat = _minor(1)
+
+    def read_acc():
         return _result(
-            transfer_read(region.vec_ty, buf.value, at, minor, region.pad, [True])
+            transfer_read(
+                acc_region.vec_ty, scratch.value, [zero], flat, acc_region.pad, [True]
+            )
         )
 
+    def write_acc(value):
+        transfer_write(None, value, scratch.value, [zero], flat, [True])
+
+    combine = (_FLOAT_OPS if dtype.is_float else _INT_OPS)[expr.op]
+
+    def step_value(ivs, at):
+        return _eval(operand, ivs + [at], regions[dtype], regions, True, load, {})
+
     def body(ivs):
-        reads = {}
-        value = _eval(operand, ivs + [zero], regions[dtype], regions, True, load, reads)
-        scalar = _result(reduction(dtype.mlir(), kind, value))
+        # The first step seeds the accumulator, rather than an identity vector
+        # seeding it and the first step combining into that. An identity is the
+        # obvious thing to write and is wrong for reduce_max: the identity there
+        # is the type's minimum, not the zero _Region carries as its padding
+        # value, so seeding with padding would floor every maximum at 0. Peeling
+        # the first step needs no identity at all and is the same shape for both
+        # reductions.
+        write_acc(step_value(ivs, zero))
+
+        for at in range_(lanes, axis, lanes):
+            write_acc(_result(combine(read_acc(), step_value(ivs, at))))
+            yield_([])
+
+        scalar = _result(reduction(dtype.mlir(), kind, read_acc()))
         memref_store(scalar, dst.value, ivs + [zero] if keepdims else ivs)
 
     _nest(bounds, body)
+
+
+def _reduce_lanes(leaf, axis):
+    """How many lanes one step of a reduction reads.
+
+    The operand's own vector width, which is what an elementwise read of the
+    same buffer uses -- unless the axis is not a whole number of steps, in which
+    case it is read in one go and the backend decides whether that width is
+    legal. A width of 0 selects the scalar path elsewhere; here it means the
+    same thing, so the whole axis is read at once and no stepping applies.
+    """
+    width = getattr(leaf, "vector_width", 0)
+    if not width or width >= axis or axis % width:
+        return axis
+    return width
+
+
+def _emit_argmax(dst, expr):
+    """``dst[:] = ops.argmax(x[:])`` -- the index of the innermost maximum.
+
+    A scalar loop, not a ``vector.reduction``: the running maximum and the index
+    that produced it have to travel together, and no vector reduction carries an
+    index. They ride in the loop's ``iter_args``, which is safe because they are
+    scalars -- it is a loop-carried *vector* AIE2 refuses.
+
+    The first element seeds the pair rather than an identity, for the same
+    reason the stepped reduction peels its first step: the identity for a
+    maximum is the type's minimum, and there is no need to name it.
+    """
+    from air.dialects.arith import CmpFOp, CmpIOp, IndexCastOp, SelectOp
+
+    operand = expr.args[0]
+    index_dtype = dst.dtype
+    require_signless(index_dtype, "the destination of air.api.ops.argmax")
+    if index_dtype.is_float:
+        raise TypeError(
+            f"air.api.ops.argmax writes an index, so its destination has to be "
+            f"an integer buffer; this one is {index_dtype}. Use "
+            "air.api.ops.reduce_max for the value itself."
+        )
+
+    leaves = operand.leaves()
+    src_shape = _broadcast_shape([leaf.shape for leaf in leaves])
+    if src_shape is None:
+        raise ValueError(
+            f"shape mismatch inside a reduction: operands have shapes "
+            f"{[tuple(leaf.shape) for leaf in leaves]} and do not broadcast "
+            f"together"
+        )
+    # The type the comparison happens in, which is the operand's *result* type
+    # and not its leaves': `argmax(ops.cast(row[:], f32))` compares in f32 while
+    # its leaves are bf16, and taking the leaf type would both evaluate the
+    # walk in the wrong region and compare at the wrong width.
+    value_dtype = operand.element_dtype() or leaves[0].dtype
+    # Checked here for the same reason the other reductions check their
+    # destination: without it an f16 or unsigned operand reaches arith.cmpf /
+    # arith.cmpi, which have no form for either.
+    require_computable(value_dtype, "the operand of air.api.ops.argmax")
+    require_signless(value_dtype, "the operand of air.api.ops.argmax")
+    _check_reduce_regions(operand, value_dtype)
+
+    kept = tuple(list(src_shape[:-1]) + [1])
+    dropped = tuple(src_shape[:-1])
+    keepdims = tuple(dst.shape) == kept
+    if not keepdims and tuple(dst.shape) != dropped:
+        raise ValueError(
+            f"shape mismatch in a reduction: reducing {src_shape} along its "
+            f"innermost axis gives {kept} (keeping the axis) or {dropped} "
+            f"(dropping it), but the destination is {tuple(dst.shape)}"
+        )
+
+    axis = src_shape[-1]
+    regions = {d: _Region(d, 0, False) for d in _regions_in(operand, value_dtype, [])}
+    zero = _result(arith.ConstantOp(IndexType.get(), 0))
+    bounds = [(0, extent, 1) for extent in src_shape[:-1]]
+
+    def load(buf, ivs, region):
+        return _result(memref_load(buf.value, _leaf_index(buf, src_shape, ivs, zero)))
+
+    def at(ivs, column):
+        return _eval(
+            operand, ivs + [column], regions[value_dtype], regions, False, load, {}
+        )
+
+    greater = CmpFOp if value_dtype.is_float else CmpIOp
+    predicate = _CMP_F["gt"] if value_dtype.is_float else _CMP_I["gt"]
+
+    def body(ivs):
+        best = at(ivs, zero)
+        first = _result(arith.ConstantOp(index_dtype.mlir(), 0))
+        for column, (running, chosen), results in range_(
+            1, axis, 1, iter_args=[best, first]
+        ):
+            candidate = at(ivs, column)
+            wins = _result(greater(predicate, candidate, running))
+            as_index = _result(IndexCastOp(index_dtype.mlir(), column))
+            yield_(
+                [
+                    _result(SelectOp(wins, candidate, running)),
+                    _result(SelectOp(wins, as_index, chosen)),
+                ]
+            )
+        memref_store(results[1], dst.value, ivs + [zero] if keepdims else ivs)
+
+    _nest(bounds, body)
+
+
+def _check_reduce_regions(node, dtype):
+    """Every leaf's element type against the region it sits in.
+
+    The elementwise path spells this as ``_check_region``, which also checks
+    shapes against the destination. A reduction's operand has a different shape
+    from its destination by construction -- that is what a reduction is -- so
+    only the type half applies here.
+    """
+    if node.kind == "cast":
+        _check_reduce_regions(node.args[0], node.args[0].element_dtype())
+        return
+    if node.kind == "buffer":
+        if dtype is not None and node.buffer.dtype is not dtype:
+            raise ValueError(
+                f"dtype mismatch inside a reduction: this part of the "
+                f"expression is computed in {dtype} but the operand is "
+                f"{node.buffer.dtype}. Reading in one type and accumulating in "
+                f"another is spelled with ops.cast: "
+                f"ops.reduce_add(ops.cast(row[:], {dtype}))"
+            )
+        return
+    for arg in node.args:
+        _check_reduce_regions(arg, dtype)
 
 
 def _minor(rank):
@@ -449,9 +842,11 @@ def _minor(rank):
 
 def _emit_vector(dst, expr, width):
     shape = dst.shape
-    rank = len(shape)
-    # Read a rank-1 vector out of a rank-N memref along the innermost dim.
-    minor = _minor(rank)
+    # Read a rank-1 vector out of a rank-N memref along the innermost dim. The
+    # rank is the *memref's*, which is the destination's element rank unless an
+    # integer subscript dropped an axis -- gu[0, :] writes into a rank-2 memref
+    # while its element shape is rank 1.
+    minor = _minor(len(_axes_of(dst)[0]))
     # One lane count for the whole nest, taken from the destination. A cast does
     # not change how many elements a trip covers, only how wide each one is, so
     # the source is read at the destination's lane count and not at its own
@@ -468,17 +863,19 @@ def _emit_vector(dst, expr, width):
     )
 
     def load(buf, ivs, region):
-        index = _leaf_index(buf.shape, shape, ivs, zero)
+        index = _leaf_index(buf, shape, ivs, zero)
         if buf.shape and buf.shape[-1] == shape[-1]:
             # The operand has the destination's innermost extent, so the vector
             # read is the ordinary one -- at the operand's own rank, which is
-            # the destination's unless leading axes were broadcast away.
+            # the destination's unless leading axes were broadcast away. The
+            # permutation map is over the *memref's* rank, which is wider than
+            # the element shape when an integer subscript dropped an axis.
             return _result(
                 transfer_read(
                     region.vec_ty,
                     buf.value,
                     index,
-                    _minor(len(buf.shape)),
+                    _minor(len(_axes_of(buf)[0])),
                     region.pad,
                     [True],
                 )
@@ -491,7 +888,7 @@ def _emit_vector(dst, expr, width):
 
     def body(ivs):
         value = _eval(expr, ivs, regions[dst.dtype], regions, True, load, {})
-        transfer_write(None, value, dst.value, ivs, minor, [True])
+        transfer_write(None, value, dst.value, _dst_index(dst, ivs), minor, [True])
 
     _nest(bounds, body)
 
@@ -506,11 +903,11 @@ def _emit_scalar(dst, expr):
     )
 
     def load(buf, ivs, region):
-        return _result(memref_load(buf.value, _leaf_index(buf.shape, shape, ivs, zero)))
+        return _result(memref_load(buf.value, _leaf_index(buf, shape, ivs, zero)))
 
     def body(ivs):
         value = _eval(expr, ivs, regions[dst.dtype], regions, False, load, {})
-        memref_store(value, dst.value, ivs)
+        memref_store(value, dst.value, _dst_index(dst, ivs))
 
     _nest(bounds, body)
 
@@ -555,7 +952,7 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
         # cast is the only thing that starts a new region. So a given buffer is
         # reachable from exactly one region and its cached value can only ever
         # have been read at that region's vector type.
-        key = id(node.buffer)
+        key = _read_key(node.buffer)
         if reads is not None and key in reads:
             return reads[key]
         value = load(node.buffer, ivs, region)
@@ -710,5 +1107,15 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
                 f"{'float' if ops is _FLOAT_OPS else 'integer'}"
             )
         return _result(op(recur(node.args[0]), recur(node.args[1])))
+
+    if node.kind == "reduce":
+        # Reached only when a reduction is *nested*: emit_elementwise dispatches
+        # a top-level one to _emit_reduce before the walk ever starts. It has no
+        # emission here because it cannot have one -- a reduction collapses the
+        # innermost axis, so its result has a different shape from the operands
+        # around it, and the surrounding loop nest is built over a single shape.
+        # Without this the walk fell through to the AssertionError below, which
+        # named an internal node kind rather than the mistake.
+        raise _nested_reduction(node)
 
     raise AssertionError(f"unknown expression node kind {node.kind!r}")

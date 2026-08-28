@@ -2509,7 +2509,7 @@ void L2MemrefToMemTileMap(
   // First stage in memref placement: grouping memrefs referenced by the same
   // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
-  // `air.memtile_col` is the memtile-level analogue of `air.shim_col` (see
+  // `air.memtile_col` pins an L2 buffer to a physical memtile column (see
   // AIRToAIESchedulingUtils.cpp). Two deliberate differences: (1) it is carried
   // on the memref.alloc rather than the channel decl, because L2 placement
   // buckets are keyed by alloc; (2) it is hint-only (an invalid column warns
@@ -6491,13 +6491,15 @@ public:
         if (!channel_head) {
           channel_head = start_bb;
           auto b = OpBuilder::atBlockBegin(channel_head);
-          startOp = AIE::DMAStartOp::create(b, loc, dir, chan, rep,
-                                            /*pad_value*/ 0, first_bd, end_bb);
+          startOp =
+              AIE::DMAStartOp::create(b, loc, dir, chan, rep,
+                                      /*pad_value*/ 0,
+                                      /*out_of_order*/ false, first_bd, end_bb);
         } else {
           auto b = OpBuilder::atBlockBegin(start_bb);
           startOp = AIE::DMAStartOp::create(
-              b, loc, dir, chan, rep, /*pad_value*/ 0, first_bd,
-              channel_head->getTerminator()->getSuccessor(1));
+              b, loc, dir, chan, rep, /*pad_value*/ 0, /*out_of_order*/ false,
+              first_bd, channel_head->getTerminator()->getSuccessor(1));
           channel_head->getTerminator()->setSuccessor(start_bb, 1);
           channel_head = start_bb;
         }

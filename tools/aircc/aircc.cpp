@@ -966,14 +966,16 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   // Ping-pong transform
   if (omitPingpong.getValue().empty() || omitPingpong.getValue() == "L1" ||
       omitPingpong.getValue() == "L2") {
-    std::string labelPass = "air-label-scf-for-to-ping-pong";
-    std::string ppPass = "air-ping-pong-transform";
+    // Pass the device so the labeller can decline a candidate whose duplicated
+    // L1 buffers would not fit the tile.
+    std::string labelOpts = "device=" + deviceName.getValue();
+    std::string ppOpts;
     if (omitPingpong.getValue() == "L1" || omitPingpong.getValue() == "L2") {
-      labelPass = "air-label-scf-for-to-ping-pong{omit-memory-space=" +
-                  omitPingpong.getValue() + "}";
-      ppPass = "air-ping-pong-transform{omit-memory-space=" +
-               omitPingpong.getValue() + "}";
+      labelOpts += " omit-memory-space=" + omitPingpong.getValue();
+      ppOpts = "{omit-memory-space=" + omitPingpong.getValue() + "}";
     }
+    std::string labelPass = "air-label-scf-for-to-ping-pong{" + labelOpts + "}";
+    std::string ppPass = "air-ping-pong-transform" + ppOpts;
     os << "," << labelPass << "," << ppPass << ",canonicalize,cse";
   }
 
@@ -1447,12 +1449,21 @@ static LogicalResult runAieCompilation() {
 
     aieccCmd.push_back("-O");
     aieccCmd.push_back("3");
+    // Which core backend aiecc will use; the same condition selects it above.
+    const bool useChess = xchesscc || xbridge;
     // Chess is not parallel-safe -- concurrent xchesscc/noodle instances die
     // with a kill signal -- so it stays sequential. Peano has no such limit and
     // builds cores in parallel. Both halves are stated rather than left to
     // aiecc's default, which has flipped before (mlir-aie 1ba5b5c).
     aieccCmd.push_back("-j");
-    aieccCmd.push_back((xchesscc || xbridge) ? "1" : "0");
+    aieccCmd.push_back(useChess ? "1" : "0");
+    // Lower each device's cores once rather than once per core; every core
+    // still compiles and links its own object. Asked for on the Peano path
+    // only, and asked for rather than stated on both: the two drivers disagree
+    // on the default (C++ aiecc per-core, aiecc.py unified), so naming Chess's
+    // half here would change it on one of them.
+    if (!useChess)
+      aieccCmd.push_back("--unified");
 
     // bf16 emulation
     if (bf16Emulation)

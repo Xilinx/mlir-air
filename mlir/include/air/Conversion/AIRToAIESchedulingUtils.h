@@ -167,11 +167,6 @@ struct allocation_info_t {
   // equal and is treated as distinct (safe: forces a separate channel).
   bool foundSameLogicalFlowInTile(AIE::TileLike tile,
                                   air::MemcpyInterface memcpyOp);
-  // True if any memcpy in this allocation is marked air.dedicated_dma_channel.
-  // A dedicated flow must own its physical channel, so an allocation that hosts
-  // one is never a collapse target.
-  bool containsDedicatedChannel();
-
   bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(AIE::DMAChannel channel);
 

@@ -90,9 +90,14 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: partial_buffer_write
-# CHECK: NotImplementedError: partial assignment into a buffer is not supported
-@expect(NotImplementedError, "partial_buffer_write")
+# CHECK-LABEL: TEST: partial_buffer_write_of_the_wrong_shape
+# Writing into a region is ordinary now, so what is left to get wrong is the
+# shape: an [8, 64] window cannot be filled from the whole [64, 64] tile. The
+# message is the elementwise one, naming both shapes, because that is exactly
+# what the mistake is -- it stopped being "the DSL cannot do this".
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: destination has shape (8, 64) but operand has shape (64, 64)
+@expect(ValueError, "partial_buffer_write_of_the_wrong_shape")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64, 64], bf16, scope=h.private())
@@ -558,19 +563,6 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: alloc_inside_sequential
-# The herd frees its buffers after the body, which is outside the loop, so the
-# dealloc would not be dominated by its alloc.
-# CHECK: NotImplementedError: air.alloc inside an air.sequential body is not supported
-@expect(NotImplementedError, "alloc_inside_sequential")
-def _():
-    def body(h, tx, ty, A, B, C):
-        for _ in air.sequential(0, 64, 32):
-            air.alloc([32, 32], bf16, scope=h.private())
-
-    _trace(body)
-
-
 # CHECK-LABEL: TEST: break_out_of_sequential
 # An air.sequential body is traced once and stands for every trip, so breaking out
 # truncates all of them rather than shortening the loop.
@@ -582,6 +574,27 @@ def _():
         for _ in air.sequential(0, 64, 32):
             buf[:] = buf[:] + 1.0
             break
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: buffer_read_after_its_loop_closed
+# A buffer allocated in a loop does not reach past it. Placement walks each use
+# out to the block the alloc lives in, and a use that is not under that block
+# has no such ancestor -- which used to walk off the top of the IR and abort the
+# process inside MLIR rather than report anything. Both real instances were this
+# shape: an L2 staging buffer handed to a later herd, and an L1 buffer allocated
+# in one arm of an ops.branch and read after it.
+# CHECK: RuntimeError: a buffer is used outside the region it was allocated in
+@expect(RuntimeError, "buffer_read_after_its_loop_closed")
+def _():
+    def body(h, tx, ty, A, B, C):
+        escaped = None
+        for _ in air.sequential(0, 64, 32):
+            escaped = air.alloc([32, 32], bf16, scope=h.private())
+            escaped[:] = 1.0
+        # The loop has closed; the allocation does not reach this far.
+        escaped[:] = escaped[:] + 1.0
 
     _trace(body)
 
@@ -599,13 +612,19 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: parallel_unimplemented
-# The unordered counterpart of air.sequential. Declared so that reaching for it
-# says what it would be, rather than raising AttributeError.
-# CHECK: NotImplementedError: air.api.parallel is not implemented yet
-@expect(NotImplementedError, "parallel_unimplemented")
+# CHECK-LABEL: TEST: a_parallel_loop_must_tile_its_extent
+# The same rule air.sequential applies, for the same reason: there are no
+# partial trips, so a step that does not divide the extent would send the last
+# one off the end of whatever it indexes. Worth pinning separately because the
+# trips of a parallel loop are slots of a spatial fan-out -- overrunning is a
+# put addressed to a destination that does not exist, not a short read.
+# CHECK: ValueError: air.parallel(0, 64, 24) does not tile its extent exactly
+@expect(ValueError, "a_parallel_loop_must_tile_its_extent")
 def _():
-    air.parallel(0, 64, 16)
+    # Generators are lazy: the bounds are checked when the first trip is
+    # requested, so the loop has to actually be entered.
+    for _ in air.parallel(0, 64, 24):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -789,9 +808,13 @@ def _():
 
 
 # CHECK-LABEL: TEST: buffer_slice_in_expression
-# A partial subscript names a DMA region, not a value.
-# CHECK: TypeError: cannot use BufferSlice
-@expect(TypeError, "buffer_slice_in_expression")
+# A plain region *is* readable elementwise now -- gu[0, :] is how a packed
+# buffer is unpacked without a copy -- so this is no longer refused for being a
+# region. It is refused for the reason numpy refuses it: half a tile does not
+# broadcast to a whole one.
+# CHECK: ValueError: shape mismatch in elementwise assignment
+# CHECK-SAME: operand has shape (16, 32)
+@expect(ValueError, "buffer_slice_in_expression")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([32, 32], bf16, scope=h.private())
@@ -801,13 +824,20 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: partial_assignment_into_buffer
-# CHECK: NotImplementedError: partial assignment into a buffer is not supported
-@expect(NotImplementedError, "partial_assignment_into_buffer")
+# CHECK-LABEL: TEST: assignment_into_a_reshaped_view
+# Assigning into a region is ordinary now. What is still refused is assigning
+# through a *view*: a reshape walks the buffer with strides that are not the
+# buffer's, so an index into the view is not an index into the buffer and the
+# store would land somewhere else entirely. Same rule, and the same message,
+# as reading one.
+# CHECK: TypeError: cannot read BufferSlice
+# CHECK-SAME: reshaped or transposed view
+@expect(TypeError, "assignment_into_a_reshaped_view")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([32, 32], bf16, scope=h.private())
-        a[0:16, :] = 1.0
+        b = air.alloc([16, 64], bf16, scope=h.private())
+        b[:] = a.reshape(16, 64)[0:16, :] * 2.0
 
     _trace(body)
 
@@ -1985,18 +2015,262 @@ def _():
     _trace(body)
 
 
-# CHECK-LABEL: TEST: a_reduction_does_not_broadcast_its_operands
-# Everywhere else an extent of 1 is stretched, but the innermost extent of a
-# reduction is the thing being collapsed: stretching it would decide how many
-# terms the sum has, which is the reduction's meaning rather than a fit.
+# CHECK-LABEL: TEST: a_reduction_operand_that_does_not_broadcast
+# A reduction's operands broadcast like any others -- a variance is
+# `reduce_add((x - mean) * (x - mean))` with a per-row scalar mean -- but the
+# rule is still numpy's, so a mismatched extent is refused rather than stretched.
 # CHECK: ValueError: shape mismatch inside a reduction
-# CHECK-SAME: does not broadcast its operands
-@expect(ValueError, "a_reduction_does_not_broadcast_its_operands")
+# CHECK-SAME: do not broadcast together
+@expect(ValueError, "a_reduction_operand_that_does_not_broadcast")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64, 16], bf16, scope=h.private())
-        s = air.alloc([64, 1], bf16, scope=h.private())
+        s = air.alloc([64, 8], bf16, scope=h.private())
         out = air.alloc([64], bf16, scope=h.private())
         out[:] = ops.reduce_add(a[:] * s[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: a_condition_has_no_truth_value
+# `if tx == 0:` is the trap ops.branch exists to close. A herd body is traced
+# once for the whole herd, so Python has to pick one branch for every core --
+# and would, silently, if Condition let itself be coerced.
+# CHECK: TypeError: the truth of (t0 == 0) is not known at trace time
+# CHECK-SAME: with ops.branch(t0 == 0)
+@expect(TypeError, "a_condition_has_no_truth_value")
+def _():
+    def body(h, tx, ty, A, B, C):
+        if tx == 0:
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: conditions_have_no_and
+# `and` cannot be reached at all -- it coerces through __bool__ -- so the
+# bitwise operator is the one worth naming a replacement for.
+# CHECK: NotImplementedError: air.api has no `&` on a condition
+# CHECK-SAME: Conjunction is nesting
+@expect(NotImplementedError, "conditions_have_no_and")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch((tx == 0) & (ty == 0)):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: when_takes_a_comparison_not_a_bool
+# A Python bool decides at trace time whether the region exists at all, which
+# is what a plain `if` already does; accepting one here would make the two
+# spellings look interchangeable when they are not.
+# CHECK: TypeError: ops.branch takes a comparison between index expressions
+@expect(TypeError, "when_takes_a_comparison_not_a_bool")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch(True):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: elsewhere_before_the_where_body
+# otherwise() names the else of a region that has been opened. Reaching for it
+# first is a sign the two `with` blocks were written the wrong way round.
+# CHECK: RuntimeError: otherwise() on an ops.branch whose region was never opened
+@expect(RuntimeError, "elsewhere_before_the_where_body")
+def _():
+    def body(h, tx, ty, A, B, C):
+        branch = ops.branch(tx == 0)
+        with branch.otherwise():
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: two_elsewhere_regions
+# An scf.if has one else. A second would silently discard the first.
+# CHECK: RuntimeError: ops.branch(t0 == 0) already has an otherwise() region
+@expect(RuntimeError, "two_elsewhere_regions")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch(tx == 0) as branch:
+            pass
+        with branch.otherwise():
+            pass
+        with branch.otherwise():
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: alloc_inside_a_branch
+# The buffer cannot outlive the arm, so a use after the branch would not be
+# dominated by the alloc. It is also the wrong instinct: L1 is charged per core
+# whether or not that core's branch runs. A loop body, by contrast, is allowed:
+# its dealloc lands inside the loop beside the alloc.
+# CHECK: NotImplementedError: air.alloc inside an ops.branch body
+@expect(NotImplementedError, "alloc_inside_a_branch")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with ops.branch(tx == 0):
+            air.alloc([64], bf16, scope=h.private())
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: select_with_a_branch_condition
+# The two conditionals cannot be told apart by name, so the one place a caller
+# can be told which they wanted is the moment they have picked. select decides
+# per element; a tile coordinate is the same for every element the core touches.
+# CHECK: TypeError: air.api.ops.select got (t0 == 0), a comparison between *index* expressions
+# CHECK-SAME: that is ops.branch's condition
+# CHECK-SAME: with ops.branch(t0 == 0)
+@expect(TypeError, "select_with_a_branch_condition")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.select(tx == 0, a[:], b[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: branch_with_a_select_condition
+# And the reverse. A branch is taken once per core, so it cannot depend on what
+# is in the buffer -- different elements would need different branches.
+# CHECK: TypeError: ops.branch takes a comparison between index expressions
+# CHECK-SAME: elementwise comparison on buffer *data*
+# CHECK-SAME: ops.select(cond, a[:], b[:])
+@expect(TypeError, "branch_with_a_select_condition")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64], bf16, scope=h.private())
+        b = air.alloc([64], bf16, scope=h.private())
+        with ops.branch(a[:] >= b[:]):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: compare_a_coordinate_against_a_bool
+# `tx == True` would otherwise be answered by Python: coerce_index rejects bool,
+# the comparison returns NotImplemented, and the fallback makes it a silent
+# False -- a trace-time branch decision the program never asked for, which is
+# the exact thing Condition.__bool__ exists to stop one line later.
+# CHECK: TypeError: cannot compare a tile coordinate against the bool True
+# CHECK-SAME: Compare against an integer instead
+@expect(TypeError, "compare_a_coordinate_against_a_bool")
+def _():
+    def body(h, tx, ty, A, B, C):
+        with air.ops.branch(tx == True):
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: break_out_of_a_branch
+# ops.branch shares the region bookkeeping with air.sequential, so an abandoned
+# branch used to be reported as "left an air.sequential loop early" -- which
+# sends the reader to the wrong line, and offers loop-bound advice for something
+# that is not a loop.
+# CHECK: RuntimeError: a body left an ops.branch region early
+# CHECK-SAME: Let the `with` block run to its end
+@expect(RuntimeError, "break_out_of_a_branch")
+def _():
+    def body(h, tx, ty, A, B, C):
+        buf = air.alloc([64], bf16, scope=h.private())
+        try:
+            with air.ops.branch(tx == 0):
+                raise ValueError("swallowed by the body")
+        except ValueError:
+            pass
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: reduce_under_a_cast
+# The nesting message lives at emission, but the shape check runs first and
+# reaches the reduction on the way down -- so this used to fail with "destination
+# has shape (1, 1) but operand has shape (1, 64), which does not broadcast to
+# it". True, and silent about the actual mistake. Found converting rms_norm,
+# where casting the row sum to f32 before the rsqrt is the obvious first thing
+# to write.
+# CHECK: NotImplementedError: air.api.ops.reduce_add cannot nest inside a larger expression
+# CHECK-SAME: Assign the reduction first
+@expect(NotImplementedError, "reduce_under_a_cast")
+def _():
+    def body(h, tx, ty, A, B, C):
+        row = air.alloc([1, 64], bf16, scope=h.private())
+        acc = air.alloc([1, 1], f32, scope=h.private())
+        acc[:] = ops.cast(ops.reduce_add(row[:]), f32)
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: elementwise_read_of_a_view
+# A plain region reads elementwise -- gu[0, :] is how a packed [2, N] buffer is
+# unpacked without a copy. A reshaped or transposed view does not: it
+# re-describes the same elements at another rank or order, so an index into it
+# is not an index into the buffer.
+# CHECK: TypeError: cannot read BufferSlice
+# CHECK-SAME: reshaped or transposed view
+@expect(TypeError, "elementwise_read_of_a_view")
+def _():
+    def body(h, tx, ty, A, B, C):
+        gu = air.alloc([2, 64], bf16, scope=h.private())
+        out = air.alloc([64, 2], bf16, scope=h.private())
+        out[:] = gu[0:2, :].transpose(1, 0) * 2.0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: elementwise_read_of_a_stepped_region
+# A region's *offset* may be a coordinate or a loop variable -- it is one more
+# term in the index, and materialises as the affine.apply every other index in
+# this DSL goes through. Its *step* may not: a stride other than 1 is a walk
+# the access pattern cannot describe, and it is refused at the subscript rather
+# than at the read.
+# CHECK: NotImplementedError: strided slicing (step=2) is not supported
+@expect(NotImplementedError, "elementwise_read_of_a_stepped_region")
+def _():
+    def body(h, tx, ty, A, B, C):
+        gu = air.alloc([2, 64], bf16, scope=h.private())
+        out = air.alloc([1, 32], bf16, scope=h.private())
+        out[:] = gu[tx, 0:64:2] * 2.0
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: argmax_into_a_float_buffer
+# argmax answers "which one", not "how big", so its destination is an index.
+# Writing it into a float buffer is the reduce_max/argmax mix-up, and the
+# message names the other one.
+# CHECK: TypeError: air.api.ops.argmax writes an index
+# CHECK-SAME: air.api.ops.reduce_max for the value itself
+@expect(TypeError, "argmax_into_a_float_buffer")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], bf16, scope=h.private())
+        out = air.alloc([64], bf16, scope=h.private())
+        out[:] = ops.argmax(a[:])
+
+    _trace(body)
+
+
+# CHECK-LABEL: TEST: argmax_of_an_f16_operand
+# The comparison is an arith.cmpf on the operand's type, and there is no f16
+# form. Checked on the operand rather than only the destination, which is an
+# index and says nothing about what is being compared.
+# CHECK: NotImplementedError: the operand of air.api.ops.argmax is not supported
+# CHECK-SAME: air.api.f16
+@expect(NotImplementedError, "argmax_of_an_f16_operand")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 16], f16, scope=h.private())
+        out = air.alloc([64], i32, scope=h.private())
+        out[:] = ops.argmax(a[:])
 
     _trace(body)

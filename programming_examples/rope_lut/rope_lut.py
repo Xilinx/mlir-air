@@ -1,133 +1,88 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""RoPE (Rotary Position Embedding) from a precomputed LUT, on air.api.
 
-"""RoPE (Rotary Position Embeddings) with Precomputed LUT
+Applies rotary position embeddings to [seq_len, embed_dim] using the
+*interleaved* convention, pairing (x[2i], x[2i+1]) against a LUT laid out
+[cos_0, sin_0, cos_1, sin_1, ...]. That is not the convention llama uses --
+`rope_halfsplit/` is -- so this is the general-purpose variant, and the two are
+deliberately kept apart.
 
-Applies rotary position embeddings to a 2D input [seq_len, embed_dim]:
-  output[r, 2i]   = input[r, 2i] * cos(r * freq_i) - input[r, 2i+1] * sin(r * freq_i)
-  output[r, 2i+1] = input[r, 2i] * sin(r * freq_i) + input[r, 2i+1] * cos(r * freq_i)
+The rotation stays in C++: `air.extern("rope", link_with="rope.o")` declares the
+microkernel and stamps link_with on both the declaration and the herd, so the
+body here is dataflow only. Rows are handed out in contiguous blocks -- tile t
+takes rows [t * rows_per_tile, (t+1) * rows_per_tile) -- one embed_dim row per
+DMA and per kernel call, matching the kernel's single-row signature.
 
-where freq_i = 1 / (theta ^ (2i / embed_dim)), theta = 10000.
+`generate_lut` and `rope_reference` below are unchanged and stay module-level:
+the llms/ shared builders import `generate_lut` from here.
 
-The cos/sin values are precomputed on the host and streamed in as a
-look-up table (LUT) with interleaved [cos, sin, cos, sin, ...] layout.
-Uses the external rope.cc kernel from mlir-aie (aie_kernels/aie2p).
+One difference from the raw-bindings version this replaces: the row offset is
+ordinary Python arithmetic on the coordinate,
 
-Supports multi-tile herd (herd_x > 1) for row-parallel execution.
-Each row's RoPE is independent — no cross-row dependencies.
+    (row + tx * rows_per_tile) * embed_dim
+
+where the predecessor built the same expression as a two-symbol AffineMap. It
+reaches the IR as one affine.apply either way.
 """
 
 import argparse
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, i32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
 
-
-@module_builder
-def build_module(seq_len, embed_dim, np_dtype_in, herd_x=1):
-    xrt_dtype = type_mapper(np_dtype_in)
+def build_module(seq_len, embed_dim, herd_x=1, dtype=bf16):
     total = seq_len * embed_dim
-    assert (
-        embed_dim % 16 == 0
-    ), "embed_dim must be divisible by 16 (kernel vector width)"
-
-    # L3 types
-    l3DataTy = MemRefType.get([total], xrt_dtype)
-
-    # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get(
-        shape=[embed_dim], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-
-    # External kernel: rope(input, lut, output, dims)
-    rope_func = FuncOp(
-        "rope", ([l1RowTy, l1RowTy, l1RowTy, T.i32()], []), visibility="private"
-    )
-    rope_func.attributes["link_with"] = StringAttr.get("rope.o")
-    rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    assert (
-        seq_len % herd_x == 0
-    ), f"seq_len ({seq_len}) must be divisible by herd_x ({herd_x})"
+    if embed_dim % 16:
+        raise ValueError(
+            f"embed_dim ({embed_dim}) must be divisible by 16: that is the "
+            "kernel's vector width."
+        )
+    if seq_len % herd_x:
+        raise ValueError(
+            f"seq_len ({seq_len}) must be divisible by herd_x ({herd_x}): every "
+            "tile takes the same number of rows, and there is no remainder path."
+        )
     rows_per_tile = seq_len // herd_x
 
-    # Affine map: row_offset = (local_row + _tx * rows_per_tile) * embed_dim
-    row_offset_map = AffineMap.get(
-        0,
-        2,
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(1),
-                        AffineConstantExpr.get(rows_per_tile),
-                    ),
-                ),
-                AffineConstantExpr.get(embed_dim),
-            )
-        ],
-    )
+    src = air.tensor([total], dtype)
+    lut = air.tensor([total], dtype)
+    dst = air.tensor([total], dtype)
 
-    @FuncOp.from_py_func(l3DataTy, l3DataTy, l3DataTy)
-    def rope_lut(arg0, arg1, arg2):
-        # arg0 = input [total], arg1 = lut [total], arg2 = output [total]
+    # rope(input_row, lut_row, output_row, dims). The trailing dims argument is
+    # a scalar, so its element type has to be stated.
+    rope = air.extern("rope", link_with="rope.o", scalars=[i32])
 
-        @herd(name="herd_0", sizes=[herd_x, 1], operands=[arg0, arg1, arg2])
-        def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_lut, l3_out):
-            l1_in = AllocOp(l1RowTy, [], [])
-            l1_lut = AllocOp(l1RowTy, [], [])
-            l1_out = AllocOp(l1RowTy, [], [])
+    with air.launch(name="rope_lut") as launch:
 
-            dim_i32 = ConstantOp(T.i32(), embed_dim)
+        @launch.body
+        def _():
+            with air.herd([range(herd_x)], name="herd_0", shape=(herd_x,)) as herd:
 
-            for local_row in range_(rows_per_tile):
-                row_offset = affine_apply(row_offset_map, [local_row, _tx])
+                @herd.body
+                def _(tx):
+                    l1_in = air.alloc([embed_dim], dtype, scope=herd.private())
+                    l1_lut = air.alloc([embed_dim], dtype, scope=herd.private())
+                    l1_out = air.alloc([embed_dim], dtype, scope=herd.private())
 
-                dma_memcpy_nd(
-                    l1_in,
-                    l3_in,
-                    src_offsets=[row_offset],
-                    src_sizes=[embed_dim],
-                    src_strides=[1],
-                )
-                dma_memcpy_nd(
-                    l1_lut,
-                    l3_lut,
-                    src_offsets=[row_offset],
-                    src_sizes=[embed_dim],
-                    src_strides=[1],
-                )
+                    for row in air.sequential(rows_per_tile):
+                        lo = (row + tx * rows_per_tile) * embed_dim
 
-                CallOp(rope_func, [l1_in, l1_lut, l1_out, dim_i32])
+                        ops.load(l1_in, src[lo : lo + embed_dim])
+                        ops.load(l1_lut, lut[lo : lo + embed_dim])
 
-                dma_memcpy_nd(
-                    l3_out,
-                    l1_out,
-                    dst_offsets=[row_offset],
-                    dst_sizes=[embed_dim],
-                    dst_strides=[1],
-                )
-                yield_([])
+                        rope(l1_in, l1_lut, l1_out, embed_dim)
 
-            DeallocOp(l1_in)
-            DeallocOp(l1_lut)
-            DeallocOp(l1_out)
+                        ops.store(l1_out, dst[lo : lo + embed_dim])
 
-        herd_body.attributes["link_with"] = StringAttr.get("rope.o")
+    return launch
 
 
 def rope_reference(input_data, lut, embed_dim):
@@ -186,6 +141,13 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     args = parser.parse_args()
 
     seq_len = args.seq_len
@@ -193,7 +155,9 @@ if __name__ == "__main__":
     herd_x = args.herd_x
     print(f"RoPE LUT: seq_len={seq_len}, embed_dim={embed_dim}, herd=[{herd_x},1]")
 
-    mlir_module = build_module(seq_len, embed_dim, bfloat16, herd_x=herd_x)
+    launch = build_module(seq_len, embed_dim, herd_x=herd_x)
+    # build() resolves --target auto, so it runs before launch.target is read.
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -210,6 +174,7 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="rope",
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
         exit(
             runner.run_test(
@@ -227,6 +192,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

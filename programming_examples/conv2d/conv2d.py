@@ -1,37 +1,49 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""2D convolution (NHWC input, HWCiCo filter) on one AIE tile, on air.api.
 
-"""2D Convolution Example
+Valid convolution, stride 1::
 
-Implements a simple 2D convolution (NHWC layout, HWC filter) on a single
-AIE tile using scalar load/store operations.
+    output[oh, ow, co] = sum over (kh, kw, ci) of
+        input[oh + kh, ow + kw, ci] * filter[kh, kw, ci, co]
 
-Input:  [1, H, W, Ci] i32
-Filter: [Kh, Kw, Ci, Co] i32
-Output: [1, Ho, Wo, Co] i32
+Written out, that is six loops with three loads, a multiply, an add and a store
+at the bottom, and this is one of the kernels where that *is* the design: no
+axis of it is tile-shaped, so there is nothing here for a whole-tile expression
+to say. The DSL version is the same six loops::
 
-Where Ho = H - Kh + 1, Wo = W - Kw + 1 (valid convolution, stride=1).
+    for oh, ow, co, kh, kw, ci in nested air.sequential(...):
+        out[oh, ow, co] = out[oh, ow, co] + in[oh + kh, ow + kw, ci] * flt[kh, kw, ci, co]
 
-Data flows:
-  1. DMA input tile and filter from L3 to L1
-  2. Compute convolution on AIE tile
-  3. DMA output tile from L1 to L3
+Two pieces of the DSL carry it, and both are ordinary numpy spellings:
+
+* **A fully-integer subscript is a scalar.** ``out[oh, ow, co]`` names one
+  element, not a one-element tile, so assigning to it emits a store and no loop
+  of its own. That is what keeps the emitted nest six deep rather than twelve.
+* **A region's offset may be a loop variable.** ``in[oh + kh, ow + kw, ci]`` is
+  the sliding window, and the shift reaches the load as one ``affine.apply`` --
+  the same way every index in this DSL is built.
+
+The kernel's own shape is therefore unchanged from the predecessor this
+replaces: same nine ``scf.for``, same three ``memref.load``, same two
+``memref.store``, same three DMAs, same herd. The one spelling difference is
+``affine.apply`` where the predecessor wrote ``arith.addi`` for ``oh + kh``.
+
+The batch axis is dropped on the way into L1 and restored on the way out -- N is
+1, so ``[1, Ho, Wo, Co]`` and ``[Ho, Wo, Co]`` are the same buffer.
 """
 
 import argparse
 
-from air.ir import *
-from air.dialects.air import *
-from air.dialects import arith
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+import numpy as np
+
+from air import api as air
+from air.api import ops
+from air.api.types import i32
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
-
-# Small default sizes for a simple demonstration
+# Small default sizes for a simple demonstration.
 H_DEFAULT = 8
 W_DEFAULT = 8
 CI_DEFAULT = 4
@@ -40,90 +52,61 @@ KH = 3
 KW = 3
 
 
-@module_builder
-def build_module(H, W, Ci, Co, Kh, Kw, np_dtype):
-    assert (
-        H >= Kh and W >= Kw
-    ), f"Invalid convolution: require H >= Kh and W >= Kw, got H={H}, W={W}, Kh={Kh}, Kw={Kw}"
-    xrt_dtype = type_mapper(np_dtype)
+def build_module(H, W, Ci, Co, Kh, Kw, dtype=i32):
+    if H < Kh or W < Kw:
+        raise ValueError(
+            f"invalid convolution: require H >= Kh and W >= Kw, got H={H}, "
+            f"W={W}, Kh={Kh}, Kw={Kw}"
+        )
+
     Ho = H - Kh + 1
     Wo = W - Kw + 1
 
-    # L3 types: NHWC input/output, HWCiCo filter
-    l3InTy = MemRefType.get([1, H, W, Ci], xrt_dtype)
-    l3FilterTy = MemRefType.get([Kh, Kw, Ci, Co], xrt_dtype)
-    l3OutTy = MemRefType.get([1, Ho, Wo, Co], xrt_dtype)
+    IN = air.tensor([1, H, W, Ci], dtype)
+    FILTER = air.tensor([Kh, Kw, Ci, Co], dtype)
+    OUT = air.tensor([1, Ho, Wo, Co], dtype)
 
-    # L1 types: drop the batch dimension (N=1) since we process one
-    # sample. The DMA copies the full extent which matches because N=1.
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1InTy = MemRefType.get([H, W, Ci], xrt_dtype, memory_space=l1_mem_space)
-    l1FilterTy = MemRefType.get([Kh, Kw, Ci, Co], xrt_dtype, memory_space=l1_mem_space)
-    l1OutTy = MemRefType.get([Ho, Wo, Co], xrt_dtype, memory_space=l1_mem_space)
+    with air.launch(name="conv2d") as launch:
 
-    @FuncOp.from_py_func(l3InTy, l3FilterTy, l3OutTy)
-    def conv2d(arg_in, arg_filter, arg_out):
+        @launch.body
+        def _():
+            with air.herd(range(1), name="herd_0", shape=(1,)) as h:
 
-        @herd(
-            name="herd_0",
-            sizes=[1, 1],
-            operands=[arg_in, arg_filter, arg_out],
-        )
-        def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_filter, l3_out):
-            l1_in = AllocOp(l1InTy, [], [])
-            l1_filter = AllocOp(l1FilterTy, [], [])
-            l1_out = AllocOp(l1OutTy, [], [])
+                @h.body
+                def _(tx):
+                    l1_in = air.alloc([H, W, Ci], dtype, scope=h.private())
+                    l1_filter = air.alloc([Kh, Kw, Ci, Co], dtype, scope=h.private())
+                    l1_out = air.alloc([Ho, Wo, Co], dtype, scope=h.private())
 
-            # DMA input and filter to L1
-            dma_memcpy_nd(l1_in, l3_in)
-            dma_memcpy_nd(l1_filter, l3_filter)
+                    # The batch axis is 1, so it drops on the way in.
+                    ops.load(l1_in, IN)
+                    ops.load(l1_filter, FILTER)
 
-            zero = arith.ConstantOp(xrt_dtype, 0)
+                    for oh in air.sequential(Ho):
+                        for ow in air.sequential(Wo):
+                            for co in air.sequential(Co):
+                                l1_out[oh, ow, co] = 0
 
-            # Initialize output to zero
-            for oh in range_(Ho):
-                for ow in range_(Wo):
-                    for co in range_(Co):
-                        store(zero, l1_out, [oh, ow, co])
-                        yield_([])
-                    yield_([])
-                yield_([])
+                    for oh in air.sequential(Ho):
+                        for ow in air.sequential(Wo):
+                            for co in air.sequential(Co):
+                                for kh in air.sequential(Kh):
+                                    for kw in air.sequential(Kw):
+                                        for ci in air.sequential(Ci):
+                                            l1_out[oh, ow, co] = (
+                                                l1_out[oh, ow, co]
+                                                + l1_in[oh + kh, ow + kw, ci]
+                                                * l1_filter[kh, kw, ci, co]
+                                            )
 
-            # Convolution: output[oh, ow, co] += input[oh+kh, ow+kw, ci] * filter[kh, kw, ci, co]
-            for oh in range_(Ho):
-                for ow in range_(Wo):
-                    for co in range_(Co):
-                        for kh in range_(Kh):
-                            for kw in range_(Kw):
-                                for ci in range_(Ci):
-                                    ih = arith.addi(oh, kh)
-                                    iw = arith.addi(ow, kw)
-                                    in_val = load(l1_in, [ih, iw, ci])
-                                    f_val = load(l1_filter, [kh, kw, ci, co])
-                                    prod = arith.muli(in_val, f_val)
-                                    acc = load(l1_out, [oh, ow, co])
-                                    new_acc = arith.addi(acc, prod)
-                                    store(new_acc, l1_out, [oh, ow, co])
-                                    yield_([])
-                                yield_([])
-                            yield_([])
-                        yield_([])
-                    yield_([])
-                yield_([])
+                    ops.store(l1_out, OUT)
 
-            # DMA output from L1 to L3
-            dma_memcpy_nd(l3_out, l1_out)
-
-            DeallocOp(l1_in)
-            DeallocOp(l1_filter)
-            DeallocOp(l1_out)
+    return launch
 
 
-if __name__ == "__main__":
-    INPUT_DATATYPE = np.int32
-
+def parse_args():
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        prog="conv2d.py",
         description="Builds, runs, and tests the 2D convolution example",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -146,26 +129,38 @@ if __name__ == "__main__":
         default="xclbin",
         dest="output_format",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
 
     Ho = args.H - KH + 1
     Wo = args.W - KW + 1
 
-    mlir_module = build_module(args.H, args.W, args.Ci, args.Co, KH, KW, INPUT_DATATYPE)
+    launch = build_module(args.H, args.W, args.Ci, args.Co, KH, KW)
+    mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
-        exit(0)
+        return 0
 
     np.random.seed(0)
     input_data = np.random.randint(0, 4, size=(1, args.H, args.W, args.Ci)).astype(
-        INPUT_DATATYPE
+        np.int32
     )
     filter_data = np.random.randint(0, 4, size=(KH, KW, args.Ci, args.Co)).astype(
-        INPUT_DATATYPE
+        np.int32
     )
 
-    # Reference convolution (NHWC layout)
-    output_ref = np.zeros((1, Ho, Wo, args.Co), dtype=INPUT_DATATYPE)
+    # Reference convolution (NHWC layout).
+    output_ref = np.zeros((1, Ho, Wo, args.Co), dtype=np.int32)
     for oh in range(Ho):
         for ow in range(Wo):
             for co in range(args.Co):
@@ -177,28 +172,32 @@ if __name__ == "__main__":
                                 * filter_data[kh, kw, ci, co]
                             )
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="conv2d",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_data, filter_data],
-                expected_outputs=[output_ref],
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
+    if args.compile_mode == "compile-only":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
             runtime_loop_tiling_sizes=[4, 4],
+            target_device=launch.target,
         )
-        module_function = backend.compile(mlir_module)
+        backend.compile(mlir_module)
         backend.unload()
+        return 0
+
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="conv2d",
+        runtime_loop_tiling_sizes=[4, 4],
+        target_device=launch.target,
+    )
+    return runner.run_test(
+        mlir_module,
+        inputs=[input_data, filter_data],
+        expected_outputs=[output_ref],
+    )
+
+
+if __name__ == "__main__":
+    exit(main())

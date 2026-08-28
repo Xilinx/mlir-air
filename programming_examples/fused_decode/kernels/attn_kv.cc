@@ -45,6 +45,7 @@ extern "C" {
 void attn_kv(bf16 *__restrict s_ping, bf16 *__restrict s_pong,
              bf16 *__restrict v_ping, bf16 *__restrict v_pong,
              bf16 *__restrict o_ping, bf16 *__restrict o_pong, int *L) {
+  aie_round_nearest_even();
   alignas(aie::vector_decl_align) static y_acc_dtype
       y[Q_HEADS_PADDED_PER_CU * DH] = {};
   alignas(aie::vector_decl_align) static bf16
@@ -111,6 +112,7 @@ __attribute__((noinline)) void passThrough_aie(T_in *restrict in0,
 ATTN_HOT
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
+  aie_round_nearest_even();
   using MMUL = aie::mmul<8, 8, 8, bf16, bf16, accfloat>;
 
   bf16 *__restrict pS1 = pS;
@@ -295,6 +297,7 @@ __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
 
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
+  aie_round_nearest_even();
   using MMUL = aie::mmul<GQA_R, GQA_S, GQA_T, bf16, bf16, accfloat>;
   bf16 *__restrict pS1 = pS;
 
@@ -332,6 +335,7 @@ typedef float y_acc_dtype;
 template <unsigned colQ, unsigned r, unsigned s, unsigned t>
 void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
              y_acc_dtype *__restrict pY, float *__restrict c) {
+  aie_round_nearest_even();
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
 
@@ -446,6 +450,7 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
 template <unsigned N>
 void scale_div_aie(bf16 *a, bf16 *o, float *l) {
+  aie_round_nearest_even();
 
   constexpr int vec_factor = 16;
   const int F = N / vec_factor;
@@ -476,6 +481,7 @@ __attribute__((noinline))
 #endif
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
+  aie_round_nearest_even();
   using MMUL = aie::mmul<GQA_R, GQA_S, GQA_T, bf16, bf16, accfloat>;
   bf16 *__restrict pS1 = pS;
 
@@ -526,6 +532,7 @@ __attribute__((noinline))
 #endif
 void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
              y_acc_dtype *__restrict pY, float *__restrict c) {
+  aie_round_nearest_even();
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
 
@@ -669,6 +676,7 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
 template <unsigned N>
 void scale_div_aie(bf16 *a, bf16 *o, float *l) {
+  aie_round_nearest_even();
 
   constexpr int vec_factor = 64;
   const int F = N / vec_factor;
@@ -745,6 +753,7 @@ ATTN_ENTRY
 void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
                  float *__restrict y_state, float *__restrict l_state, int blk,
                  int L) {
+  aie_round_nearest_even();
   if (blk == 0) {
     zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
@@ -766,6 +775,7 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
 
 void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                  bf16 *__restrict o) {
+  aie_round_nearest_even();
   alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
   passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
                                                                  y_bf16);
@@ -789,6 +799,7 @@ void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
 // natural (q_head, dh), so writing it straight would come out scrambled by
 // exactly that pattern; undoing it here is a fixed 512-element shuffle.
 void conv_o_pass(bf16 *__restrict mix, bf16 *__restrict o, int cu, int arm) {
+  aie_round_nearest_even();
   if (arm != 1)
     return;
   const int QH = Q_HEADS_PER_CU;

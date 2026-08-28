@@ -126,10 +126,6 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
 //===----------------------------------------------------------------------===//
 
 void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
-  // Memtile DMA channel-floor steer (reserve channels [0,N) for this flow),
-  // read by MemTileDMAAllocator at channel-allocation time.
-  if (auto mn = src->getAttrOfType<IntegerAttr>(attrs::MemtileDmaChannelMin))
-    dst->setAttr(attrs::MemtileDmaChannelMin, mn);
   // Runtime-sequence ordering markers (input-feed hoist; append->readback RAW
   // barrier and its participating appends), consumed by AIRRtToNpu.
   if (auto rh = src->getAttr(attrs::RuntimeHoist))

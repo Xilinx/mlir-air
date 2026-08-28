@@ -37,10 +37,12 @@ plausible-looking placeholder: a DSL that accepts an op it cannot lower
 produces a kernel that runs and is silently wrong.
 """
 
+from ._cond import Branch, Condition, branch  # noqa: F401
 from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
 from .types import require_computable, require_signless
 
 __all__ = [
+    "branch",
     "load",
     "store",
     "copy",
@@ -57,6 +59,7 @@ __all__ = [
     "fma",
     "reduce_add",
     "reduce_max",
+    "argmax",
     "relu",
     "tanh",
     "exp",
@@ -646,6 +649,15 @@ def not_equal(a, b):
 def select(cond, a, b):
     """Elementwise ``cond ? a : b``. Lowers to arith.select.
 
+    The *branchless* one of the DSL's two conditionals, and the distinction from
+    ``ops.branch`` is worth being sure of before reaching for either: this one
+    decides **per element** and evaluates **both** sides, and it is an
+    expression, so its arms are values. ``ops.branch`` decides **per core**,
+    runs **one** side, and its arms are statements -- which is what a channel
+    put or a DMA has to be. They are the two halves of if-conversion; see
+    ``_cond.py`` for the full table. Handing this one an index comparison
+    (``tx == 0``) raises and names ``ops.branch``.
+
     ``cond`` must be a comparison -- ``x[:] >= y[:]``, or ``ops.equal(x, y)`` --
     because that is the only thing in this expression language whose result type
     is i1. The predicate is emitted as an arith.cmpf/cmpi feeding an
@@ -663,6 +675,21 @@ def select(cond, a, b):
             "elementwise ones, and evaluate to a bool before select ever sees "
             "them -- use air.api.ops.equal / not_equal for those, or one of "
             "the ordering operators <, <=, >, >= which do build a predicate"
+        )
+    if isinstance(cond, Condition):
+        # The other conditional. Naming it is the whole point: the two are
+        # indistinguishable from their names alone, so the one place a caller
+        # can be told which they wanted is here, when they have already picked.
+        raise TypeError(
+            f"air.api.ops.select got {cond!r}, a comparison between *index* "
+            "expressions -- that is ops.branch's condition, not select's. "
+            "select decides per element and evaluates both sides, so its "
+            "condition has to come from buffer data (x[:] >= y[:], or "
+            "ops.equal(x[:], y[:])). A tile coordinate is the same for every "
+            "element the core touches, so selecting on it per element would "
+            "compute both arms to no purpose. Write `with ops.branch("
+            f"{cond.lhs} {cond.symbol} {cond.rhs}):` instead, which runs one "
+            "side and can hold a channel put or a DMA."
         )
     if not isinstance(cond, BufferExpr) or cond.kind != "compare":
         raise TypeError(
@@ -747,7 +774,9 @@ def fma(a, b, c):
 
 
 def _reduce(name, key, x):
-    if not isinstance(x, (Buffer, BufferExpr)):
+    from ._value import BufferSlice
+
+    if not isinstance(x, (Buffer, BufferExpr, BufferSlice)):
         raise TypeError(
             f"air.api.ops.{name} expects a buffer slice, got {type(x).__name__}"
         )
@@ -816,6 +845,30 @@ def reduce_max(x):
     side.
     """
     return _reduce("reduce_max", "max", x)
+
+
+def argmax(x):
+    """The *index* of the maximum along the innermost axis.
+
+        out[:] = air.api.ops.argmax(logits[:])      # out is an integer buffer
+
+    The odd one out among the reductions: `reduce_max` answers "how big" and
+    this answers "which one", so its destination is an integer buffer whatever
+    the operand's type is. Ties go to the lowest index, which is numpy's rule
+    and the classifier convention -- the comparison is a strict `>`, so a later
+    equal element does not displace an earlier one.
+
+    Reduce only part of an axis by handing it a region: `argmax(a[:, 0:k])`
+    looks at the first k columns, which is what a padded classifier output
+    needs.
+
+    Unlike the other reductions this is a scalar loop rather than a
+    `vector.reduction`: the running maximum and its index have to travel
+    together, and there is no vector reduction that carries an index. The pair
+    rides in the loop's `iter_args`, which is fine precisely because they are
+    scalars -- it is a loop-carried *vector* that AIE2 will not legalize.
+    """
+    return _reduce("argmax", "argmax", x)
 
 
 def _unary(name, x):

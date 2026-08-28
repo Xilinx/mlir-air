@@ -75,6 +75,14 @@ DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GO
                   W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
                   $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
+# GLU_SLICE is derived from this model's own egress-round parity, not looked up,
+# so a header copied from another model can disagree with the IR -- silently, at
+# runtime. Hand the builder's value to the kernel compile; glu.cc asserts on it.
+# Empty (and the assert inert) if the query fails, so this cannot break a build
+# that works today.
+GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
+PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
+
 .PHONY: help compile-decode _compile_decode_build compile-decode-dynseq preflight-peano preflight-llvm-link clean
 
 help:

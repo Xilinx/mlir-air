@@ -1,0 +1,26 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// QWEN3-4B Q4NX profiling: build the prefill ELFs and the production decode
+// templates (ATTN_MAXL=2048), then run the AIR prefill + generate N_TOKENS tokens
+// and capture TTFT and decode throughput into qwen3_4b_q4nx.perf.json via
+// bench/extract_perf.py (collected by the nightly LLM benchmark). Weights come
+// from the model.q4nx bundle pre-seeded into the runner's HF cache. Perf is
+// best-effort; this test gates only that profiling ran end to end.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_fastflowlm_qwen3_4b_npu2
+//
+// RUN: mkdir -p test_npu2_profile
+// RUN: cd test_npu2_profile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N_TOKENS=64 PROMPT="What is the capital of France?" | tee profile.txt
+// RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model qwen3_4b_q4nx --n-tokens 64 > qwen3_4b_q4nx.perf.json
+// RUN: FileCheck %s < qwen3_4b_q4nx.perf.json
+// CHECK: "model": "qwen3_4b_q4nx"
+// A parsed number, not just a well-formed file: if a driver's print format drifts
+// out of extract_perf.py's regexes the metric goes null and the published
+// benchmark row silently blanks while the test stays green.
+// CHECK: "ttft_ms": {{[0-9]}}
+// CHECK: "decode_tokens_per_sec": {{[0-9]}}
+// CHECK: "context_len": {{[0-9]}}
