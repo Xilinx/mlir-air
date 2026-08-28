@@ -4372,6 +4372,137 @@ public:
         bucket.push_back({std::move(key), async.getAsyncToken()});
       }
     });
+
+    warnOnUnorderedSameEndpointOps();
+  }
+
+  // The walk above can only order same-block siblings. Endpoints that address
+  // one channel slot from DIFFERENT blocks are left alone, and when nothing
+  // else orders them they race: a channel is a FIFO, so which producer's bytes
+  // arrive first decides what the consumer reads.
+  //
+  // This is reachable from the front end (two puts written into separate loop
+  // nests) and from air-dma-to-channel, which hoists each DMA's external half
+  // into its own scf.parallel wrapper -- so two DMAs naming one channel become
+  // two puts in two sibling blocks with no token between them.
+  //
+  // Warn rather than order. Convergent producers are usually time-disjoint by
+  // construction (different phases of a kernel), in which case an ordering edge
+  // is redundant; and where they are not, the fix is a front-end decision about
+  // which producer goes first, not one this pass can make. Cross-block ordering
+  // would also need loop-carried deps, which canonicalize strips -- the reason
+  // this pass runs late and stays within a block in the first place.
+  void warnOnUnorderedSameEndpointOps() {
+    SmallVector<std::pair<ChannelEndpointKey, air::ChannelInterface>> seen;
+    // One diagnostic per channel+direction, not per pair: a fan of N unordered
+    // producers would otherwise report N*(N-1)/2 times for one root cause.
+    llvm::DenseSet<std::pair<StringRef, unsigned>> reported;
+
+    getOperation().walk([&](air::ChannelInterface chan) {
+      auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
+      if (!async || !async.getAsyncToken())
+        return;
+      ChannelEndpointKey key = getChannelEndpointKey(chan);
+      for (auto &[priorKey, priorOp] : seen) {
+        // channelEndpointsResourceDep, not sameChannelEndpoint: the ordering
+        // walk needs indices provably EQUAL before it dares add an edge, while
+        // a hazard check needs them not provably DISTINCT. Two puts in sibling
+        // scf.parallel wrappers are indexed by different block arguments, so
+        // the strict predicate would miss exactly the case this exists for.
+        if (!channelEndpointsResourceDep(priorKey, key))
+          continue;
+        if (priorOp->getBlock() == chan->getBlock())
+          continue; // handled by the ordering walk above
+        if (isGuarded(priorOp) || isGuarded(chan))
+          continue; // may be mutually exclusive arms; cannot tell, stay quiet
+        if (isSanctionedMultiEndpoint(chan, key.isPut))
+          continue; // the declaration says multi-endpoint is the intent
+        if (provablyOrdered(priorOp.getOperation(), chan.getOperation()))
+          continue;
+        auto tag = std::make_pair(key.name, (unsigned)key.isPut);
+        if (!reported.insert(tag).second)
+          continue;
+        auto diag = chan->emitWarning()
+                    << "is a second " << (key.isPut ? "producer" : "consumer")
+                    << " on channel @" << key.name
+                    << ", unordered against an earlier one and in a different "
+                       "block, so air-enforce-channel-fifo-order cannot order "
+                       "them. A channel is a FIFO, so the arrival order is "
+                       "undefined. If the two are meant to converge, declare "
+                       "the channel npu_dma_packet; if they are meant to share "
+                       "a resident ring, mark it air.shared_resident_ring; "
+                       "otherwise order them explicitly.";
+        diag.attachNote(priorOp->getLoc()) << "earlier endpoint here";
+      }
+      seen.push_back({std::move(key), chan});
+    });
+  }
+
+  // A declaration can say that several endpoints are the point, in which case
+  // there is nothing to report:
+  //
+  //   - broadcast_shape: fanning one put out to many gets IS the channel.
+  //   - air.shared_resident_ring: two sibling get-loops deliberately share one
+  //     2-deep resident ring (air-ping-pong-transform merges them).
+  //   - npu_dma_packet, for producers only: converging several same-id sources
+  //     onto one destination S2MM is what a packet flow is for. A CIRCUIT
+  //     channel is point-to-point, and a second producer on one is the case
+  //     worth shouting about -- air-to-aie's channel specialization keeps only
+  //     one producer tile and leaves the other with a complete DMA program and
+  //     no flow behind it, so it stalls on its acquire forever.
+  static bool isSanctionedMultiEndpoint(air::ChannelInterface chan,
+                                        bool isPut) {
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    if (!decl)
+      return false;
+    if (decl.getBroadcastShape())
+      return true;
+    if (decl->hasAttr("air.shared_resident_ring"))
+      return true;
+    if (isPut && decl.getChannelType() == "npu_dma_packet")
+      return true;
+    return false;
+  }
+
+  // Conditionally executed ops are exempt: two endpoints in different arms of a
+  // condition are mutually exclusive, and proving that here is out of scope.
+  static bool isGuarded(air::ChannelInterface chan) {
+    if (chan->hasAttr("broadcast_set"))
+      return true;
+    for (Operation *p = chan->getParentOp(); p; p = p->getParentOp())
+      if (isa<scf::IfOp, affine::AffineIfOp>(p))
+        return true;
+    return false;
+  }
+
+  // True when one of the two provably runs before the other. Both ops are
+  // lifted to their ancestors inside the nearest common block first: an op
+  // nested in a loop is ordered by that loop's token, not its own, and
+  // air::isAsyncDependent compares tokens without crossing region boundaries.
+  static bool provablyOrdered(Operation *a, Operation *b) {
+    Block *commonBlock = nullptr;
+    for (Operation *pa = a; pa && !commonBlock; pa = pa->getParentOp())
+      for (Operation *pb = b; pb; pb = pb->getParentOp())
+        if (pa->getBlock() == pb->getBlock()) {
+          commonBlock = pa->getBlock();
+          break;
+        }
+    if (!commonBlock)
+      return false;
+    auto liftTo = [commonBlock](Operation *op) -> Operation * {
+      for (Operation *p = op; p; p = p->getParentOp())
+        if (p->getBlock() == commonBlock)
+          return p;
+      return nullptr;
+    };
+    Operation *aa = liftTo(a), *bb = liftTo(b);
+    if (!aa || !bb)
+      return false;
+    // Same enclosing op: either the ordering walk covered them, or they sit in
+    // sibling regions of one op and are not comparable here. Stay quiet.
+    if (aa == bb)
+      return true;
+    return air::isAsyncDependent(aa, bb) || air::isAsyncDependent(bb, aa);
   }
 };
 
