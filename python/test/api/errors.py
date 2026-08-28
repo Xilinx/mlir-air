@@ -1135,11 +1135,11 @@ def _():
 
 
 # CHECK-LABEL: TEST: channel_type_unsupported
-# npu_cascade is implemented now, because it is the one type this package can
-# gate on hardware. The rest are still refused: accepting channel_type and
-# ignoring it would compile an mmio request as a DMA stream, which is the
-# silent-wrongness this package exists to avoid, and each of them has its own
-# lowering and verifier rules.
+# npu_cascade and npu_dma_packet are implemented, because each is exercised end
+# to end by a design in this tree. The rest are still refused: accepting
+# channel_type and ignoring it would compile an mmio request as a DMA stream,
+# which is the silent-wrongness this package exists to avoid, and each of them
+# has its own lowering and verifier rules.
 # CHECK: NotImplementedError: air.channel(channel_type='npu_mmio') is not implemented
 @expect(NotImplementedError, "channel_type_unsupported")
 def _():
@@ -1149,11 +1149,25 @@ def _():
 # CHECK-LABEL: TEST: channel_type_with_broadcast
 # A cascade is a point-to-point link between neighbouring cores, so there is
 # nothing for a broadcast shape to describe and asking for both is a mistake
-# about what the channel is rather than a combination to resolve.
-# CHECK: ValueError: air.channel takes broadcast_shape= or channel_type=, not both
+# about what the channel is rather than a combination to resolve. This is
+# specific to cascade: a packet channel *is* a one-to-many fan-out, and the
+# next test pairs it with broadcast_shape on purpose.
+# CHECK: ValueError: air.channel does not take broadcast_shape= with channel_type='npu_cascade'
 @expect(ValueError, "channel_type_with_broadcast")
 def _():
     air.channel("C", size=[2], broadcast_shape=[4], channel_type="npu_cascade")
+
+
+# CHECK-LABEL: TEST: packet_channel_with_broadcast
+# The combination the cascade rule above must NOT be generalised to. A packet
+# broadcast reaches every destination over one flow where a circuit-switched
+# channel needs one per destination, which is what makes a 16-destination
+# fan-out fit at all (o_gemv_ffn_int4_fused's res1ToCons). Spelled out rather
+# than run through expect(), which only reports exceptions.
+print("\nTEST: packet_channel_with_broadcast")
+air.channel("C", size=[1, 1], broadcast_shape=[16, 1], channel_type="npu_dma_packet")
+# CHECK: accepted
+print("accepted")
 
 
 # CHECK-LABEL: TEST: channel_indices_without_size

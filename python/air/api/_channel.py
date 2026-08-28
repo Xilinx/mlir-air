@@ -68,10 +68,30 @@ def _as_dims(value, what):
     return dims
 
 
+# Construction order, which is the order the declarations are emitted in.
+# See Channel._declare for why it is not first-use order.
+_NEXT_SEQ = [0]
+# Symbol name -> construction index, for the channels declared so far in the
+# current module. Keyed on the name because that is all an already-emitted
+# air.channel op carries back.
+_DECLARED_SEQ = {}
+
+
+def _reset_declaration_order():
+    """Start a fresh module. Called by the tracer when it opens one.
+
+    Only the name->index map is cleared. The counter keeps running: channels
+    are constructed *before* the trace opens, so restarting it here would
+    renumber objects that already have an index and scramble the very order
+    this exists to preserve. Only relative order is ever read.
+    """
+    _DECLARED_SEQ.clear()
+
+
 class Channel:
     """A named channel; ``put`` and ``get`` move data through it."""
 
-    __slots__ = ("name", "size", "broadcast_shape", "channel_type", "_declared")
+    __slots__ = ("name", "size", "broadcast_shape", "channel_type", "_declared", "_seq")
 
     def __init__(
         self, name, size=None, broadcast_shape=None, channel_type=None, **unsupported
@@ -111,26 +131,40 @@ class Channel:
                     )
 
         self.name = name
-        # Only the cascade type is implemented, because it is the only one this
-        # package can gate: matrix_vector_multiplication/bf16_cascade runs it on
-        # npu1. The others each have their own lowering and verifier rules --
-        # see _UNSUPPORTED -- and adding them blind would be a channel that
-        # compiles as something other than what was asked for.
-        if channel_type is not None and channel_type != "npu_cascade":
+        # Only the types this package can gate against a real design are
+        # implemented: npu_cascade by matrix_vector_multiplication/bf16_cascade
+        # on npu1, and npu_dma_packet by llms/.../o_gemv_ffn_int4_fused, whose
+        # 16-destination res1ToCons broadcast is packet-switched because the LD
+        # stream switch arbiter's 4-msel multicast limit leaves no other way to
+        # reach that many cores. The rest each have their own lowering and
+        # verifier rules -- see _UNSUPPORTED -- and adding one blind would be a
+        # channel that compiles as something other than what was asked for.
+        if channel_type is not None and channel_type not in _IMPLEMENTED_TYPES:
             raise NotImplementedError(
                 f"air.channel(channel_type={channel_type!r}) is not implemented; "
-                f"{_UNSUPPORTED['channel_type']}. Only 'npu_cascade' is "
-                "available, and the default (npu_dma_stream) is what you get by "
-                "leaving channel_type off."
+                f"{_UNSUPPORTED['channel_type']}. Available: "
+                f"{', '.join(repr(t) for t in sorted(_IMPLEMENTED_TYPES))}; the "
+                "default (npu_dma_stream) is what you get by leaving "
+                "channel_type off."
             )
-        if channel_type is not None and broadcast_shape is not None:
+        # A cascade is a point-to-point link between neighbouring cores, so
+        # there is nothing for a broadcast shape to describe. That reasoning is
+        # specific to cascade and does not generalise: a *packet* broadcast is
+        # precisely a one-to-many fan-out, and reaches all of its destinations
+        # over one flow where a circuit-switched channel needs one per
+        # destination.
+        if channel_type == "npu_cascade" and broadcast_shape is not None:
             raise ValueError(
-                "air.channel takes broadcast_shape= or channel_type=, not both: "
-                "a cascade is a point-to-point link between neighbouring cores, "
-                "so there is nothing for a broadcast shape to describe."
+                "air.channel does not take broadcast_shape= with "
+                "channel_type='npu_cascade': a cascade is a point-to-point link "
+                "between neighbouring cores, so there is nothing for a broadcast "
+                "shape to describe. channel_type='npu_dma_packet' does take one "
+                "-- a packet broadcast is a genuine one-to-many fan-out."
             )
         self.channel_type = channel_type
         self._declared = False
+        self._seq = _NEXT_SEQ[0]
+        _NEXT_SEQ[0] += 1
 
     def __repr__(self):
         extra = f", size={self.size}" if self.size is not None else ""
@@ -156,22 +190,49 @@ class Channel:
         from ._trace import active_trace
 
         trace = active_trace()
-        # Immediately after the last channel already declared, so several read
-        # in declaration order; at_block_begin alone would reverse them. The
-        # anchor is the last *channel* rather than the first non-channel,
-        # because air.extern prepends its private func.func decls at block
-        # begin -- anchoring on "the first thing that is not a channel" would
-        # start inserting above them once a kernel had been called.
+        # Placed by *construction* order, not by first-use order.
+        #
+        # Declaration is deferred to first use because the module does not
+        # exist until a trace is active, and because a channel declared and
+        # never used should emit nothing. But emitting them in the order they
+        # happen to be used first is not merely untidy: air-to-aie walks the
+        # air.channel symbols in order when it hands out shim DMA channels, so
+        # on a design near the shim's limits the order decides whether an L3
+        # endpoint gets an allocation at all. o_gemv_ffn_int4_fused is the
+        # worked case -- use order there puts laResDebug where a column has no
+        # MM2S left, and it fails to compile with "failed to get MM2S tile for
+        # L3 allocation".
+        #
+        # Construction order is what the author wrote and what the raw-bindings
+        # predecessors control directly, so that is the order to reproduce:
+        # insert ahead of the first channel already emitted whose construction
+        # index is greater than this one's.
+        #
+        # The anchor is a *channel* rather than the first non-channel, because
+        # air.extern prepends its private func.func decls at block begin --
+        # anchoring on "the first thing that is not a channel" would start
+        # inserting above them once a kernel had been called.
         ops = list(trace.module.body.operations)
-        last = max(
-            (i for i, op in enumerate(ops) if op.operation.name == "air.channel"),
-            default=None,
+        channels = [
+            (i, op) for i, op in enumerate(ops) if op.operation.name == "air.channel"
+        ]
+        successor = next(
+            (
+                op
+                for _, op in channels
+                if _DECLARED_SEQ.get(op.operation.attributes["sym_name"].value, -1)
+                > self._seq
+            ),
+            None,
         )
-        if last is None:
-            ip = InsertionPoint.at_block_begin(trace.module.body)
+        if successor is not None:
+            ip = InsertionPoint(successor)
+        elif channels:
+            # After the last one; the enclosing func always follows, so there
+            # is a next sibling to insert before.
+            ip = InsertionPoint(ops[channels[-1][0] + 1])
         else:
-            # The enclosing func always follows, so there is a next sibling.
-            ip = InsertionPoint(ops[last + 1])
+            ip = InsertionPoint.at_block_begin(trace.module.body)
         with ip:
             if self.channel_type is None:
                 ChannelOp(
@@ -179,11 +240,26 @@ class Channel:
                     size=self.size,
                     broadcast_shape=self.broadcast_shape,
                 )
-            else:
+            elif self.broadcast_shape is None:
                 # The generated builder rather than the extension class: only
-                # it carries channel_type, and only the extension class carries
-                # broadcast_shape, which a typed channel is not allowed anyway.
+                # it carries channel_type.
                 channel_decl(self.name, size=self.size, channel_type=self.channel_type)
+            else:
+                # Neither builder takes both: the generated one has no
+                # broadcast_shape parameter and the extension class has no
+                # channel_type. A packet broadcast needs both, so build it with
+                # the extension class and stamp the type on afterwards.
+                from air.ir import StringAttr
+
+                op = ChannelOp(
+                    self.name,
+                    size=self.size,
+                    broadcast_shape=self.broadcast_shape,
+                )
+                op.operation.attributes["channel_type"] = StringAttr.get(
+                    self.channel_type
+                )
+        _DECLARED_SEQ[self.name] = self._seq
         self._declared = True
 
     def _indices(self, indices, direction):
@@ -376,6 +452,11 @@ class Channel:
 # Keywords the underlying ops accept and this DSL does not lower. They raise
 # rather than being dropped: a channel that silently ignores `channel_type` is
 # one that compiles as a stream and was asked for a cascade.
+# Channel types this package implements. Each is here because a real design
+# in this tree exercises it end to end; see the guard in Channel.__init__.
+_IMPLEMENTED_TYPES = ("npu_cascade", "npu_dma_packet")
+
+
 _UNSUPPORTED = {
     "channel_type": (
         "channel types other than the default npu_dma_stream (npu_dma_packet, "
