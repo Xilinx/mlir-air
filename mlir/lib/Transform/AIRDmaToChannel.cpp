@@ -160,6 +160,11 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
           air::cloneScfIfUsingRemap(builder, remap, scf_if_op);
       clonedOps.insert(clonedOps.end(), clonedScfIfOps.begin(),
                        clonedScfIfOps.end());
+    } else if (auto switch_op = dyn_cast_if_present<scf::IndexSwitchOp>(o)) {
+      auto clonedSwitchOps =
+          air::cloneIndexSwitchUsingRemap(builder, remap, switch_op);
+      clonedOps.insert(clonedOps.end(), clonedSwitchOps.begin(),
+                       clonedSwitchOps.end());
     } else if (auto dma_op = dyn_cast_if_present<air::DmaMemcpyNdOp>(o)) {
       if (o.hasAttr("loop-carried-dep"))
         clonedOps.push_back(builder.clone(o, remap));
@@ -359,6 +364,105 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
         clonedOps.push_back(op);
     }
   }
+
+  return clonedOps;
+}
+
+// Clone an scf.index_switch, preserving the switch so a hoisted external
+// channel op stays on the arm it was written for.
+//
+// Without this the op is simply DROPPED: cloneOpsInBlock has no case for
+// scf.index_switch, so the external half of a DMA written inside a switch arm
+// never reaches the parent scope and its partner get is left unpaired. That
+// does not fail here -- it fails 30-odd passes later in
+// air-verify-hierarchy-locality with "found channel op not in pairs", pointing
+// at the surviving half rather than at the arm the other one was lost from.
+//
+// Only the no-results form is rebuilt, which is the shape external channel ops
+// take (they are async and do not yield through the switch). A switch WITH
+// results falls back to flattening, matching cloneScfIfUsingRemap: the arms
+// stop being mutually exclusive, which is wrong in general, so it is reported
+// rather than done silently.
+SmallVector<Operation *>
+air::cloneIndexSwitchUsingRemap(OpBuilder builder, IRMapping &remap,
+                                scf::IndexSwitchOp switch_op) {
+  SmallVector<Operation *> clonedOps;
+  auto loc = switch_op.getLoc();
+  auto *ctx = switch_op->getContext();
+
+  // Async token results are the norm here, not an edge case: air-dependency
+  // runs before air-dma-to-channel in aircc, so by the time a switch reaches
+  // this pass every arm yields a token. Flattening it -- the fallback
+  // cloneScfIfUsingRemap takes for scf.if -- would make a copy written on one
+  // arm issue on EVERY arm, so rebuild the switch instead and give each arm a
+  // token of its own.
+  bool hasToken = false;
+  for (Value res : switch_op.getResults())
+    if (isa<air::AsyncTokenType>(res.getType()))
+      hasToken = true;
+  if (switch_op.getNumResults() > (hasToken ? 1u : 0u)) {
+    switch_op->emitWarning(
+        "hoisting an external channel op out of an scf.index_switch yielding "
+        "non-token results; the arms are flattened, so a copy written on one "
+        "arm will issue on every arm");
+    for (Region &region : switch_op->getRegions()) {
+      if (region.empty())
+        continue;
+      auto cloned = cloneOpsInBlock(&region.front(), builder, remap);
+      for (auto *op : cloned)
+        if (isa<air::ChannelInterface>(op))
+          clonedOps.push_back(op);
+    }
+    return clonedOps;
+  }
+
+  SmallVector<Type> resTys;
+  if (hasToken)
+    resTys.push_back(air::AsyncTokenType::get(ctx));
+  Value arg = remap.lookupOrDefault(switch_op.getArg());
+  auto newSwitch = scf::IndexSwitchOp::create(
+      builder, loc, resTys, arg, switch_op.getCases(), switch_op.getNumCases());
+  // Keep it through the cleanup that erases non-hoisted ops from the hoisted
+  // scf.parallel, exactly as cloneScfIfUsingRemap does for its scf.if.
+  newSwitch->setAttr("hoist", StringAttr::get(ctx, "dep"));
+
+  auto cloneRegionInto = [&](Region &src, Region &dst) {
+    if (dst.empty())
+      dst.emplaceBlock();
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToEnd(&dst.front());
+    SmallVector<Operation *> cloned;
+    if (!src.empty())
+      cloned = cloneOpsInBlock(&src.front(), builder, remap);
+    for (auto *op : cloned)
+      if (isa<air::ChannelInterface>(op))
+        clonedOps.push_back(op);
+    if (!hasToken) {
+      scf::YieldOp::create(builder, loc);
+      return;
+    }
+    // Every arm must yield a token, including one that got nothing: an empty
+    // air.wait_all is the identity the other arms' tokens are typed against.
+    SmallVector<Value> deps;
+    for (auto *op : cloned)
+      if (auto async = dyn_cast_if_present<air::AsyncOpInterface>(op))
+        if (auto tok = async.getAsyncToken())
+          deps.push_back(tok);
+    auto wa = air::WaitAllOp::create(builder, loc,
+                                     air::AsyncTokenType::get(ctx), deps);
+    wa->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    scf::YieldOp::create(builder, loc, SmallVector<Value>{wa.getAsyncToken()});
+  };
+
+  cloneRegionInto(switch_op.getDefaultRegion(), newSwitch.getDefaultRegion());
+  for (unsigned i = 0; i < switch_op.getNumCases(); i++)
+    cloneRegionInto(switch_op.getCaseRegions()[i],
+                    newSwitch.getCaseRegions()[i]);
+
+  if (hasToken)
+    for (Value res : switch_op.getResults())
+      if (isa<air::AsyncTokenType>(res.getType()))
+        remap.map(res, newSwitch.getResult(0));
 
   return clonedOps;
 }
@@ -959,6 +1063,24 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     backwardSlice.insert(externalGetPuts.begin(), externalGetPuts.end());
     for (auto b : backwardSlice) {
       b->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    }
+
+    // The backward slice is operand-producers only, so it never contains the
+    // CONTROL ops a target is nested in. cloneOpsInBlock turns every unlabelled
+    // op into a wait_all, so an unlabelled enclosing region op takes the target
+    // inside it down with it -- the external half is silently dropped and its
+    // partner is left unpaired, surfacing 30-odd passes later in
+    // air-verify-hierarchy-locality. Label the ancestors up to the hierarchy op
+    // being hoisted out of, so the structure is rebuilt around the target.
+    for (auto getput : externalGetPuts) {
+      for (Operation *p = getput->getParentOp();
+           p && p != hier_op.getOperation(); p = p->getParentOp()) {
+        if (isa<air::HierarchyInterface>(p))
+          break;
+        if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp,
+                LoopLikeOpInterface>(p))
+          p->setAttr("hoist", StringAttr::get(ctx, "dep"));
+      }
     }
 
     // Hoist hierarchy op into scf op

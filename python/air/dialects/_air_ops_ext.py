@@ -349,7 +349,11 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_strides=[],
         pad_before=None,
         pad_after=None,
+        channel=None,
+        channel_indices=None,
     ):
+        if channel is None and channel_indices is not None:
+            raise ValueError("channel_indices requires channel")
         if (pad_before is None) != (pad_after is None):
             raise ValueError(
                 "pad_before and pad_after must both be specified or both omitted"
@@ -386,6 +390,16 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
         if pad_after is not None:
             self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
+        # Name the air.channel this copy lowers onto, instead of letting
+        # air-dma-to-channel mint a fresh single-put/single-get one. The channel
+        # must already be declared; that is where channel_type, broadcast_shape
+        # and the placement attributes live.
+        if channel is not None:
+            self.operation.attributes["channel"] = FlatSymbolRefAttr.get(channel)
+        if channel_indices is not None:
+            self.operation.attributes["channel_indices"] = DenseI64ArrayAttr.get(
+                channel_indices
+            )
 
 
 dma_memcpy_nd = DmaMemcpyNd
