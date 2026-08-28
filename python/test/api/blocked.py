@@ -19,7 +19,7 @@ hardware, not merely from a form that looked reasonable when this was written.
 
 import air.api as air
 import air.api.ops as ops
-from air.api import bf16
+from air.api import bf16, i32
 
 M = N = K = 64
 TILE_M = TILE_N = TILE_K_L2 = 32
@@ -495,3 +495,82 @@ def build_extern_collapse_refusals():
 # CHECK: part of the buffer: TypeError: {{.*}}does not cover the whole buffer
 
 build_extern_collapse_refusals().build(target="npu1")
+
+
+# ---------------------------------------------------------------------------
+# A kernel scalar read out of a buffer.
+#
+# Rank decides whether a subscript is a memref operand or a value, which is the
+# rule the rest of the DSL already indexes by: an integer subscript drops an
+# axis and a slice keeps it, so ctr[0] is a scalar and ctr[0:1] is a
+# one-element region. Until this, both arrived as a memref and the scalar count
+# came out wrong.
+#
+# flash_attention/kernel_fusion_based is why: its cores keep a counter tile in
+# L1 across launch iterations, and the causal mask takes the q-block index out
+# of it -- an element of that tile plus the tile coordinate.
+# ---------------------------------------------------------------------------
+
+
+def build_extern_scalar_from_memory():
+    A = air.tensor([64, 64], bf16)
+    B = air.tensor([64, 64], bf16)
+    mask = air.extern("apply_causal_mask", link_with="attn.o", scalars=[i32, i32])
+
+    with air.launch(name="extern_scalar") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(2), range(2)], name="h", shape=(2, 2)) as h:
+
+                @h.body
+                def _(tx, ty):
+                    g = air.alloc([64, 64], bf16, scope=h.private())
+                    ctr = air.alloc([4], i32, scope=h.private())
+                    ops.load(g, A)
+                    mask(g, ctr[0] + tx, ty)
+                    ops.store(g, B)
+
+    return launch
+
+
+# CHECK: func.func private @apply_causal_mask(memref<64x64xbf16, 2 : i32>, i32, i32)
+# CHECK: %[[BASE:.*]] = memref.load %{{.*}}[%c0]
+# CHECK: %[[TX:.*]] = arith.index_cast
+# CHECK: %[[Q:.*]] = arith.addi %[[BASE]], %[[TX]]
+# CHECK: func.call @apply_causal_mask(%{{.*}}, %[[Q]], %{{.*}})
+
+print(build_extern_scalar_from_memory().build(target="npu1"))
+
+
+def build_extern_scalar_refusals():
+    A = air.tensor([64, 64], bf16)
+    B = air.tensor([64, 64], bf16)
+    one = air.extern("takes_one_i32", link_with="attn.o", scalars=[i32])
+
+    with air.launch(name="extern_scalar_refusals") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    g = air.alloc([64, 64], bf16, scope=h.private())
+                    f = air.alloc([4], bf16, scope=h.private())
+                    ops.load(g, A)
+                    # Stored as bf16, declared i32: passed as it is stored, so
+                    # the mismatch is named rather than silently converted.
+                    refused("wrong element type", lambda: one(g, f[0]))
+                    # Rank 1 is a region, and a region is a memref -- so this is
+                    # counted as a buffer operand and the scalar count is short.
+                    refused("rank-1 region", lambda: one(g, f[0:1]))
+                    ops.store(g, B)
+
+    return launch
+
+
+# CHECK: wrong element type: TypeError: {{.*}}reads air.api.bf16 out of a buffer but was declared air.api.i32
+# CHECK: rank-1 region: TypeError: {{.*}}1 scalar argument type(s) but called with 0
+
+build_extern_scalar_refusals().build(target="npu1")

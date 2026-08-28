@@ -737,8 +737,13 @@ _COMPARISONS = {"lt", "le", "gt", "ge", "eq", "ne"}
 
 def _comparison(name, key, a, b):
     for operand, pos in ((a, "first"), (b, "second")):
+        # BufferSlice belongs here: `BufferExpr.coerce` on the next line accepts
+        # one, and the message below has always named it as accepted. Leaving it
+        # out rejected `ops.equal(ctr[1:2], 0)` -- comparing one element of a
+        # buffer -- with a diagnostic that read "expects a buffer slice ... got
+        # BufferSlice".
         if isinstance(operand, bool) or not isinstance(
-            operand, (Buffer, BufferExpr, int, float)
+            operand, (Buffer, BufferExpr, BufferSlice, int, float)
         ):
             raise TypeError(
                 f"air.api.ops.{name} expects a buffer slice or a numeric scalar "
@@ -820,8 +825,10 @@ def select(cond, a, b):
             f"{type(cond).__name__}"
         )
     for operand, pos in ((a, "second"), (b, "third")):
+        # BufferSlice for the same reason as in _comparison above: coerce takes
+        # one, and the message names it.
         if isinstance(operand, bool) or not isinstance(
-            operand, (Buffer, BufferExpr, int, float)
+            operand, (Buffer, BufferExpr, BufferSlice, int, float)
         ):
             raise TypeError(
                 f"air.api.ops.select expects a buffer slice or a numeric scalar "

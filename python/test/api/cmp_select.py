@@ -197,3 +197,43 @@ def scalar_fallback_tile_not_a_multiple():
             herd_shape=(2,),
         ).mlir()
     )
+
+
+# CHECK-LABEL: TEST: a_comparison_can_name_one_element_of_a_buffer
+# ops.equal and ops.select took a whole buffer or an expression but not a
+# *region*, so `ops.equal(ctr[1:2], 0)` was refused -- with a diagnostic reading
+# "expects a buffer slice ... got BufferSlice", since the message named the type
+# the guard had left out and the next line coerced it anyway.
+#
+# It matters beyond the wording: a conditional update of one counter in a tile
+# is a predicated write, and predicated writes are what make ops.select cover
+# the state machines that otherwise look like they need branching on memory.
+# flash_attention/kernel_fusion_based keeps its causal q-block counter this way.
+# CHECK: memref.load
+# CHECK: arith.cmpi eq
+# CHECK: arith.select
+# CHECK: memref.store
+@run
+def a_comparison_can_name_one_element_of_a_buffer():
+    from air.api.types import i32
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch(name="ctr") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([64], bf16, scope=h.private())
+                    ctr = air.alloc([4], i32, scope=h.private())
+                    air.ops.load(a, A)
+                    first = air.ops.equal(ctr[1:2], 0)
+                    ctr[0:1] = air.ops.select(first, 0, ctr[0:1])
+                    ctr[1:2] = air.ops.select(first, 1, ctr[1:2])
+                    air.ops.store(a, OUT)
+
+    print(launch.mlir())

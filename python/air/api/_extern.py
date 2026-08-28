@@ -140,10 +140,23 @@ class ExternKernel:
 
 
 def _is_memref_arg(arg):
-    """Does ``arg`` become a memref operand rather than a scalar one?"""
+    """Does ``arg`` become a memref operand rather than a scalar one?
+
+    Rank decides, which is the same rule the rest of the DSL indexes by: an
+    integer subscript drops an axis and a slice keeps it, so ``ctr[0]`` is a
+    scalar and ``ctr[0:1]`` is a one-element region. A kernel wants the first as
+    an ``i32`` operand and the second as a ``memref<1xi32>``, and until now both
+    arrived as a memref.
+    """
     from ._value import BufferSlice
 
-    return isinstance(arg, (Buffer, BufferSlice))
+    if isinstance(arg, Buffer):
+        return True
+    if isinstance(arg, BufferSlice):
+        return arg.shape != ()
+    # Anything else -- an expression such as ctr[0] + tx, an int, an IndexExpr
+    # -- is a scalar. An expression has no memory of its own to pass.
+    return False
 
 
 def _region(region):
@@ -309,6 +322,28 @@ def _core_slab(buffer):
 
 def _scalar_value(arg, dtype, name, pos, arith):
     """Materialise a non-buffer argument as ``dtype``."""
+    from ._value import BufferExpr, BufferSlice
+
+    if isinstance(arg, (BufferExpr, BufferSlice)):
+        # A value read out of a buffer. The counter tile the flash-attention
+        # cores keep in L1 is the case: the causal mask takes its q-block index,
+        # which is an element of that tile plus the tile coordinate.
+        from ._emit import emit_scalar_value
+
+        expr = BufferExpr.coerce(arg)
+        source = expr.element_dtype()
+        if source is not dtype:
+            raise TypeError(
+                f"{name}: argument {pos} reads {source} out of a buffer but was "
+                f"declared {dtype}. A kernel scalar is passed as it is stored -- "
+                f"convert it with air.api.ops.cast first if that is what you "
+                f"meant, so the conversion is visible where it happens"
+            )
+        from .types import require_signless
+
+        require_signless(dtype, "an air.extern scalar argument")
+        return emit_scalar_value(expr, dtype)
+
     if isinstance(arg, IndexExpr):
         # A loop induction variable or tile coordinate. It folds to a Python int
         # when the expression is constant, and otherwise materialises as an
