@@ -944,6 +944,12 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+
+# And the KV append. Both halves are visible in one place only if the KV cache
+# reaches the rope herd, so KVC is threaded through the segment the way RMS and
+# X are. Guarded on DYNSEQ_APPEND: with a runtime context length the append
+# offset depends on the L RTP, which would have to be threaded in as well.
+APPEND_DMA = not DYNSEQ_APPEND
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -2520,6 +2526,13 @@ def build_module():
                                     # each, CU-order); the nd write places group gi at its
                                     # region slot (ATTN_L-1)*REGION_W. outer dim=NGRP at
                                     # REGION_STRIDE, inner REGION_W contiguous.
+                                    if APPEND_DMA:
+                                        # Derived from the DMAs in the rope herd.
+                                        # Converting a get to a DMA means deleting
+                                        # the matching hand-written put -- and
+                                        # here the pair is the other way round, so
+                                        # it is these gets that go.
+                                        return
                                     _apkG = ChannelGet(
                                         "appendK",
                                         KVC,
@@ -2825,6 +2838,7 @@ def build_module():
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
                     + [RMS, X]
+                    + ([KVC] if (APPEND_DMA and KVC is not None) else [])
                     + ([L_rt] if DYNSEQ else [])
                 )
                 # Index of RMS above; keeps _sa[-1] meaning L_rt for DYNSEQ.
@@ -2838,6 +2852,13 @@ def build_module():
                     _seg_RMS = _sa[_seg_rms_idx]
                     # X follows RMS, for the @rmsX feed spelled as a DMA.
                     _seg_X = _sa[_seg_rms_idx + 1]
+                    # KVC follows X, for the @appendK/@appendV feeds spelled as
+                    # DMAs. Appended after X so _sa[-1] still means L_rt.
+                    _seg_KVC = (
+                        _sa[_seg_rms_idx + 2]
+                        if (APPEND_DMA and KVC is not None)
+                        else None
+                    )
                     # The context length reaches the attention herd from here, as a
                     # herd operand: an RTP slot the instruction stream writes per
                     # dispatch, not a constant folded into the core ELF.
@@ -3173,7 +3194,7 @@ def build_module():
                     # the fix for the fused vocab deadlock: in vocab mode dest0
                     # never flows, and an idle compute-tile S2MM does NOT stall the
                     # col-2 memtile that the vocab X-feed/rms share.
-                    def _rope_body(_arm, a_qkv=None, rms=None):
+                    def _rope_body(_arm, a_qkv=None, rms=None, kvc=None, kiv=None):
                         # a_qkv given => the caller owns the buffer and has
                         # already filled it (the hybrid hands rope the ph0
                         # landing). None => rope allocates and fills its own.
@@ -3259,7 +3280,62 @@ def build_module():
                             # the reference append: this token's roped K (all heads) and
                             # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
                             # whole cache is then read back for the block loop.
-                            if KV_APPEND:
+                            if KV_APPEND and APPEND_DMA and kvc is not None:
+                                # Spelled as DMAs naming @appendK / @appendV.
+                                # The pass derives the shim S2MM half, and the
+                                # SECOND run of air-annotate-append-barrier --
+                                # after air-dma-to-channel, once both L3
+                                # endpoints share the launch block -- puts the
+                                # append->readback barrier back on it.
+                                #
+                                # The dst pattern is the launch-scope scatter the
+                                # hand-written get had: group gi lands at its
+                                # region slot. _kbase and the slot offset are
+                                # launch-scope, so they are rebuilt here from the
+                                # wave index (a herd is IsolatedFromAbove).
+                                _kb_h = (
+                                    arith.muli(kiv, idx(KV_LAYER))
+                                    if kiv is not None
+                                    else 0
+                                )
+                                _slot_h = (ATTN_L - 1) * REGION_W
+
+                                def _apoff(extra):
+                                    _e = extra + _slot_h
+                                    if kiv is None:
+                                        return _e
+                                    return arith.addi(_kb_h, idx(_e)) if _e else _kb_h
+
+                                DmaMemcpyNd(
+                                    kvc,
+                                    a_k,
+                                    dst_offsets=[_apoff(0)],
+                                    dst_sizes=[NGRP, REGION_W],
+                                    dst_strides=[REGION_STRIDE, 1],
+                                    src_offsets=[0],
+                                    src_sizes=[DK_TOT_A],
+                                    src_strides=[1],
+                                    channel="appendK",
+                                    channel_indices=[0],
+                                    # Keep the shim BD where the hand-written get
+                                    # had it: ahead of the readback that must
+                                    # observe it.
+                                    hoist_before="inKV_K",
+                                )
+                                DmaMemcpyNd(
+                                    kvc,
+                                    a_v,
+                                    dst_offsets=[_apoff(_vreg_off(0))],
+                                    dst_sizes=[NGRP, REGION_W],
+                                    dst_strides=[REGION_STRIDE, 1],
+                                    src_offsets=[0],
+                                    src_sizes=[DK_TOT_A],
+                                    src_strides=[1],
+                                    channel="appendV",
+                                    channel_indices=[0],
+                                    hoist_after="appendK",
+                                )
+                            elif KV_APPEND:
                                 ChannelPut(
                                     "appendK",
                                     a_k,
@@ -3313,10 +3389,19 @@ def build_module():
                         # the LM launch waits on -> TIMEOUT.
                         _arm_rope = _seg_arm
 
-                        @herd(name="rope", sizes=[1, 1], operands=[_arm_rope, _seg_RMS])
-                        def rope_h(tx, ty, _sx, _sy, _arm, _rms):
+                        _rope_opers = [_arm_rope, _seg_RMS] + (
+                            [_seg_KVC, _seg_iv]
+                            if (_seg_KVC is not None and _seg_iv is not None)
+                            else ([_seg_KVC] if _seg_KVC is not None else [])
+                        )
+
+                        @herd(name="rope", sizes=[1, 1], operands=_rope_opers)
+                        def rope_h(tx, ty, _sx, _sy, _arm, _rms, *_kv):
+                            _kvc = _kv[0] if _kv else None
+                            _kiv = _kv[1] if len(_kv) > 1 else None
+
                             def _dec():
-                                _rope_body(_arm, rms=_rms)
+                                _rope_body(_arm, rms=_rms, kvc=_kvc, kiv=_kiv)
                                 yield_([])
 
                             def _voc():
