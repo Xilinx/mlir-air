@@ -955,6 +955,7 @@ APPEND_DMA = not DYNSEQ_APPEND
 # obstacle was that the L2 buffer is allocated after the rope herd, so it does
 # not dominate it. Allocating it up front is the whole change; no new op.
 ROPEQ_DMA = True
+TOATTNQ_DMA = True
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3292,7 +3293,6 @@ def build_module():
                                 src_strides=[1],
                                 channel="ropeQ",
                                 channel_indices=[0],
-                                hoist_before="toAttnQ",
                             )
                         else:
                             ChannelPut(
@@ -3792,7 +3792,7 @@ def build_module():
                             _qmtb_fan(qmtb)
 
                         def _qmtb_fan(qmtb, dealloc=True):
-                            for c in range(N_ATTN_CU):
+                            for c in range(0 if TOATTNQ_DMA else N_ATTN_CU):
                                 ChannelPut(
                                     "toAttnQ",
                                     qmtb,
@@ -4111,9 +4111,29 @@ def build_module():
                                     )
                                     return arith.index_cast(idx_t, _q)
 
-                                def _qk_body(sh, Lh, _c, _arm=None):
+                                def _qk_body(sh, Lh, _c, _arm=None, qmt=None):
                                     a_q = AllocOp(aq_l1, [], [])
-                                    ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                                    if TOATTNQ_DMA and qmt is not None:
+                                        DmaMemcpyNd(
+                                            a_q,
+                                            qmt,
+                                            src_offsets=[
+                                                0,
+                                                _c * Q_HEADS_PADDED_PER_CU,
+                                                0,
+                                            ],
+                                            src_sizes=[
+                                                DH // 8,
+                                                Q_HEADS_PADDED_PER_CU,
+                                                8,
+                                            ],
+                                            src_strides=[8, DH, 1],
+                                            channel="toAttnQ",
+                                            channel_indices=[_c],
+                                            hoist_after="ropeQ",
+                                        )
+                                    else:
+                                        ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
                                     a_m = AllocOp(m_l1, [], [])
                                     a_cc = AllocOp(c_l1, [], [])
                                     # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
@@ -4285,48 +4305,54 @@ def build_module():
                         _qkb = _cus[0][4]
                         _kvb = _cus[0][5]
 
-                        def _attn_leaf(ty_arg, cu, sh, Lh, qk_ty, _arm=None):
+                        def _attn_leaf(ty_arg, cu, sh, Lh, qk_ty, _arm=None, qmt=None):
                             _isqk = arith.cmpi(
                                 arith.CmpIPredicate.eq, ty_arg, idx(qk_ty)
                             )
                             _if = IfOp(_isqk, [], has_else=True)
                             with InsertionPoint(_if.thenRegion.blocks[0]):
-                                _qkb(sh, Lh, cu, _arm)
+                                _qkb(sh, Lh, cu, _arm, qmt)
                                 yield_([])
                             with InsertionPoint(_if.elseRegion.blocks[0]):
                                 _kvb(sh, Lh, cu, _arm)
                                 yield_([])
 
-                        def _attn_pairsel(ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None):
+                        def _attn_pairsel(
+                            ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None, qmt=None
+                        ):
                             _lo = arith.cmpi(arith.CmpIPredicate.slt, ty_arg, idx(2))
                             _ifp = IfOp(_lo, [], has_else=True)
                             with InsertionPoint(_ifp.thenRegion.blocks[0]):
-                                _attn_leaf(ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm)
+                                _attn_leaf(ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm, qmt)
                                 yield_([])
                             with InsertionPoint(_ifp.elseRegion.blocks[0]):
-                                _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm)
+                                _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm, qmt)
                                 yield_([])
 
-                        def _attn_col(ty_arg, shs, Lh, ci, _arm=None):
+                        def _attn_col(ty_arg, shs, Lh, ci, _arm=None, qmt=None):
                             """The CU_PER_COL compute units of attn column `ci`,
                             selected by the herd's row index."""
                             _lo = ci * CU_PER_COL
                             if CU_PER_COL == 1:
-                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm)
+                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm, qmt)
                             else:
-                                _attn_pairsel(ty_arg, shs, Lh, _lo, _lo + 1, _arm)
+                                _attn_pairsel(ty_arg, shs, Lh, _lo, _lo + 1, _arm, qmt)
 
-                        def _attn_dec(tx_arg, ty_arg, shs, Lh, _arm=None):
+                        def _attn_dec(tx_arg, ty_arg, shs, Lh, _arm=None, qmt=None):
                             if ATTN_COLS == 1:
-                                _attn_col(ty_arg, shs, Lh, 0, _arm)
+                                _attn_col(ty_arg, shs, Lh, 0, _arm, qmt)
                                 return
                             _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
                             _ifc = IfOp(_isc0, [], has_else=True)
                             with InsertionPoint(_ifc.thenRegion.blocks[0]):
-                                _attn_col(ty_arg, shs, Lh, 0, _arm)  # first attn col
+                                _attn_col(
+                                    ty_arg, shs, Lh, 0, _arm, qmt
+                                )  # first attn col
                                 yield_([])
                             with InsertionPoint(_ifc.elseRegion.blocks[0]):
-                                _attn_col(ty_arg, shs, Lh, 1, _arm)  # second attn col
+                                _attn_col(
+                                    ty_arg, shs, Lh, 1, _arm, qmt
+                                )  # second attn col
                                 yield_([])
 
                         if _seg_arm_i is not None:
@@ -4334,11 +4360,18 @@ def build_module():
                             @herd(
                                 name="attn_blk",
                                 sizes=ATTN_HERD_SIZES,
-                                operands=[t.result for t in _sh] + [_Lc, _core_arm],
+                                operands=[t.result for t in _sh]
+                                + [_Lc, _core_arm]
+                                + ([_qmtb_pre] if TOATTNQ_DMA and _qmtb_pre else []),
                             )
                             def attn_blk(_tx, _ty, _sx, _sy, *_a):
                                 shs = list(_a[:N_ATTN_CU])
                                 Lh, _arm = _a[N_ATTN_CU], _a[N_ATTN_CU + 1]
+                                _qmt = (
+                                    _a[N_ATTN_CU + 2]
+                                    if len(_a) > N_ATTN_CU + 2
+                                    else None
+                                )
 
                                 def _voc():
                                     yield_([])
@@ -4368,7 +4401,7 @@ def build_module():
                                 _arm_only(
                                     arith.index_cast(idx_t, _arm),
                                     {1, 2} if MIX_TO_CU else {2},
-                                    lambda: _attn_dec(_tx, _ty, shs, Lh, _arm),
+                                    lambda: _attn_dec(_tx, _ty, shs, Lh, _arm, _qmt),
                                 )
 
                         else:
