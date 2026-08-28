@@ -4,26 +4,30 @@
 """The batch-8 verify pass against batch 1, AS A FUNCTION OF CONTEXT LENGTH.
 
 `dflash_verify_gate.py` runs this comparison at ONE context length -- the
-5-token Paris prompt -- and passes 8/8. That turns out to be the only regime
-that works: at P=5 the whole block fits in a single 16-key attention block
-(P + B <= 16), and the batch-8 pass is only correct there.
+5-token Paris prompt -- and passes 8/8. That was the only regime that worked:
+at P=5 the whole block fits in a single 16-key attention block, and every token
+that spanned two blocks came back wrong (corr 0.08-0.5, 1 of 8 argmaxes right at
+P=96) while batch 1 at the same context decoded coherently. The cause was a
+shared-L1 lock scope, one loop level too high -- see
+docs/DFlashFeasibility.md section 3.11. Fixed:
 
-    P     agree/8   corr(slot 0)   worst-slot corr
-    5       8/8       0.99559          0.97126
-    8       7/8       0.99478          0.99061
-   12       4/8       0.99504          0.22384
-   16       5/8       0.30692          0.30692
-   20       1/8       0.48705          0.38601
-   96       1/8       0.32474          0.07635
+    P     blocks  agree/8   corr(slot 0)   worst-slot corr   (worst, before)
+    8       1       6/8       0.98693         0.94432          0.97027
+   16       2       8/8       0.98565         0.95742          0.30692
+   20       2       8/8       0.98802         0.95238          0.38601
+   96       7       8/8       0.98857         0.96504          0.07635
 
-Batch 1 at the same P is fine -- it decodes coherent text at P=96 across seven
-attention blocks -- so this is batch>1 AND rounds>1, not either alone.
+Keep running it swept rather than at one P: a single-point gate is what let the
+original defect through, and it only ever appeared past a 16-key context.
 
-That matters beyond DFlash: a batch-8 verify pass that only works below a
-16-token context cannot verify anything, and every acceptance number measured
-through it is measuring the target's failure rather than the drafter's quality.
+--corr defaults to 0.95, which is tight. What is left is the ordinary
+batch-vs-batch-1 disagreement -- the two take different reduction orders, and in
+bf16 that moves an argmax wherever the top two logits are close -- and it runs
+0.93-0.99 at every context, including the single-block ones. Read the whole row,
+not the pass/fail.
 
     python3 dflash_verify_ctx_sweep.py --prompts prompts_gsm8k.json
+    python3 dflash_verify_ctx_sweep.py --prompts prompts_gsm8k.json --per-token
 """
 
 import argparse
@@ -51,6 +55,14 @@ def main():
     ap.add_argument("--lens", default="5,8,12,16,20,24,32,48,64,96")
     ap.add_argument("--corr", type=float, default=0.95)
     ap.add_argument("--model", default=None)
+    ap.add_argument(
+        "--per-token",
+        action="store_true",
+        help="one row per token: its own ceil(L_t/16) against the block count "
+        "the shim actually pushes, and its correlation. The min-over-tokens "
+        "summary cannot separate 'the tokens that skip a block are wrong' "
+        "from 'every token is wrong'.",
+    )
     args = ap.parse_args()
 
     import gc
@@ -112,13 +124,23 @@ def main():
             np.sqrt(((got[0] - ref[0]) ** 2).mean())
             / max(np.sqrt((ref[0] ** 2).mean()), 1e-9)
         )
-        nblk = -(-(P + B) // 16)
+        # What the shim/memtile/cores all loop, uniformly for the whole block.
+        push = (P + 15 + B - 1) // 16
         ok = min(cs) >= args.corr
         bad += not ok
         print(
-            f"  {P:4d}  {nblk:5d}    {ag}/{B}     {cs[0]:8.5f}   {min(cs):8.5f}   "
+            f"  {P:4d}  {push:5d}    {ag}/{B}     {cs[0]:8.5f}   {min(cs):8.5f}   "
             f"{r0:.3e}" + ("" if ok else "   <-- FAIL")
         )
+        if args.per_token:
+            for t in range(B):
+                Lt = P + t
+                own = (Lt + 15) // 16  # = ceil(Lt/16), what THIS token walks
+                print(
+                    f"        t={t} L={Lt:3d}  own={own} push={push} "
+                    f"skip={push - own}  corr={cs[t]:8.5f}"
+                    + ("" if cs[t] >= args.corr else "  <-- bad")
+                )
     print("\n" + ("PASS" if not bad else f"FAIL at {bad} of {len(Ps)} context lengths"))
     return 1 if bad else 0
 

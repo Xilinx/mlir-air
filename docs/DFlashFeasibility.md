@@ -37,23 +37,24 @@ what was removed and why, so the same errors are not re-derived.
 | **the verify pass on the shipping driver** | **batch 8 reproduces eight batch-1 steps, argmax 8/8** `[hw]` (§3.5) |
 | the pre-pass vs the **real** drafter's own KV rows | **cos 0.991–0.997, engine 1e-02** `[hw]` (§3.6) |
 | **the whole draft pass** (pre-pass + bidirectional 5-layer decode) | **runs on the array; 4/7 draft tokens match the bf16 drafter** `[hw]` (§3.7) |
-| what quantizing the drafter costs in ACCEPTANCE | **not measured** — §3.1's 1.24× priced a bf16 drafter (§3.6, §3.7) |
+| what quantizing the drafter costs in ACCEPTANCE | **measured: ~16%** — 3.981 tok/verify against the bf16 drafter's 4.73 (§3.12) |
 | **on-device draft + verify loop** | **runs end to end; speculative == non-speculative** `[hw]` (§3.8) |
-| **the batch-8 verify pass beyond a 16-token context** | **BROKEN** — correct only while `P + B <= 16` (§3.10) |
-| acceptance with the device drafter | **1.095 tok/verify measured, but through a broken verify pass — not a DFlash verdict** (§3.10) |
+| **the batch-8 verify pass beyond a 16-token context** | **fixed** — a shared-L1 lock was taken one loop level too high (§3.10, §3.11) |
 | **the verify pass being exact** | **fixed** — a BFP16 shared exponent spanned the context boundary (§3.9) |
-| DFlash speedup with the DEVICE drafter | **still not measured** — 1.409 tok/verify on the Paris prompt, which is degenerate |
+| DFlash speedup with the DEVICE drafter | **measured: 0.69×** at 3.981 tok/verify against a 328.3 ms step; 0.92× with the pre-pass hidden (§3.12) |
 
-The short version: the drafter is good enough on math/code to be worth wanting
-(τ≈6.06/16 at scale), and **both** halves of the DFlash pair now run correctly
-at batch 8 on qwen3-4b — which took clearing an L1 ceiling and fixing a build
-script that had been compiling the wrong model's kernels. Batch 8 is now
-**timed on device for both halves** (§6), which replaces the borrowed
-llama scaling curve every previous cost estimate rested on: a block-8
-speculative step costs 217.9 ms against a 56.9 ms baseline token, so it breaks
-even at **3.83 accepted tokens** and is worth roughly 1.3-1.6× on math/code.
-What is still missing is batch **16** (the checkpoint's block size) and the
-loop itself.
+The short version: **the loop runs end to end on the array and accepts 3.98
+tokens per verify dispatch on gsm8k, and it is still 0.69× — the pre-pass, not
+acceptance, is what it costs** (§3.12). Getting there took two numerics fixes in
+the attention path: a BFP16 shared exponent spanning the context boundary (§3.9)
+and a shared-L1 lock taken one loop level too high, which silently gave every
+attention block of a token the *last* block's scores at batch > 1 (§3.11).
+
+§6's 217.9 ms step against a 56.9 ms baseline token — break-even 3.83 — prices
+draft + verify and **omits the pre-pass**, which measures 82 ms, a quarter of a
+real 328.3 ms step. Break-even is really 5.76. What is still missing is batch
+**16** (the checkpoint's block size), and a way to overlap or amortize the
+pre-pass.
 
 Batch 16 needs `RMS_BAND_STREAM` level 3, and **level 3 now works**: at batch 8
 and 36 layers it passes the equivalence gate at 5.56e-03 and produces the SAME
@@ -962,30 +963,138 @@ They agree on the first token and diverge immediately.
 | 96 | 7 | 1/8 | 0.32474 | 0.07635 |
 
 The break is exactly where the block stops fitting in **one 16-key attention
-block** (`P + B <= 16`). Batch 1 at the same P is fine — it decodes coherently
-at P=96 across seven blocks — so this is batch>1 **and** rounds>1, not either
-alone.
+block**. Batch 1 at the same P is fine — it decodes coherently at P=96 across
+seven blocks — so this is batch>1 **and** rounds>1, not either alone.
 
 **§3.5's verify gate ran at P=5, which is the only regime that works.** That is
 the lesson worth keeping: it compared batch 8 against eight batch-1 steps, on
 the real model, and passed 8/8 — and it was a single-point test sitting inside
 the one window where the pass is correct. The context sweep is now the gate.
 
-Everything downstream of the verify pass is therefore unpriced. The 1.095 is a
-real measurement of a broken configuration, not of DFlash; §3.1's 1.24× remains
-an upper bound with nothing under it. What §3.8's exactness result still says is
-narrower but intact: the loop's accept/rollback logic and the taps plumbing are
-right, because the speculative and non-speculative streams agree — both are
-running the same broken verify pass, so agreement tests the host logic and not
-the engine.
+`--per-token` narrows it further, and the boundary turns out to be per token,
+not per dispatch. Every token whose own `ceil(L_t/16)` is 1 is correct; every
+token that spans two blocks is wrong, in the same dispatch:
 
-Next: bisect the multi-block batch>1 attention path. The suspects are the ones
-the per-token block loop touches — `_core_rounds`' uniform push count against
-each token's own `ceil(L_t/16)`, the memtile K/V ring's `_seg_blocks()` against
-`BATCH * rounds`, and the L3 re-read (`extent BATCH, stride 0`) that gives each
-token its own copy of the block sequence. `batch_equiv.py` reports 3.86e-03 at
-batch 8 / L=128 with `UNI_DEC_OVERRIDE=1`, i.e. one layer and synthetic weights,
-so it does not contradict this and does not cover it either.
+| P | token | L_t | own blocks | blocks pushed | corr |
+|---|---|---|---|---|---|
+| 9 | 6 | 16 | 1 | 2 | 0.98933 |
+| 9 | 7 | 17 | **2** | 2 | 0.25554 |
+| 15 | 0 | 16 | 1 | 2 | 0.98774 |
+| 15 | 1 | 17 | **2** | 2 | 0.08701 |
+
+Two things fall out. The tokens that **skip** a block — own count 1 against a
+pushed count of 2, the `rem <= 0` early return — are the correct ones, so the
+skip path is not implicated. And a single block is correct even when a later
+block is pushed behind it, so neither the push count nor the KV data is wrong.
+What fails is only the accumulation from one block to the next, and only at
+batch > 1.
+
+### 3.11 The cause: a shared-L1 lock taken one loop level too high
+
+`AIRToAIEPass.cpp`'s `allocateSharedL1BufferLocks` chose the **outermost**
+`scf.for` containing every access to a shared L1 buffer:
+
+```cpp
+// Find the OUTERMOST scf.for that contains ALL accessing ops
+while (candidate && candidate != coreOp.getOperation()) {
+  if (isa<scf::ForOp>(candidate)) { ... if (containsAll) info.lockScope = candidate; }
+  candidate = candidate->getParentOp();          // keeps overwriting
+}
+```
+
+The locks bracket that loop's body, so the buffer is handed over **once per
+iteration of whatever loop is chosen**. The attention score buffer is written by
+`attn_qk_blk_row` on one core and read by `attn_kv_blk` on its neighbour, and at
+`DECODE_BATCH=8` both sit inside `for token { for block { … } }`. Both loops
+contain every access, so the scope came out as the **token** loop: one handover
+per token, while the cores exchange one buffer per **block**. The producer wrote
+the buffer `ceil(L_t/16)` times before the consumer read it once, and every
+block of a token was multiplied against the last block's scores.
+
+At batch 1 the same code has a single `for block` loop, so outermost and
+innermost coincide and the handover is per block — which is why this survived
+every batch-1 gate, including `make verify` at real prompt lengths. At batch 8
+with one block per token there is exactly one write per acquire, which is why it
+also survived `dflash_verify_gate.py` at P=5. It is a lost update, not a stall,
+so nothing hangs and nothing warns.
+
+The fix picks the **deepest loop every participating core can reach, counted
+from its outermost**. Counting from the outermost rather than simply taking each
+core's innermost is what keeps the cadence equal across cores: a core nested one
+level deeper must not cycle the lock more often, or the two deadlock. When the
+cores disagree completely the choice is unchanged, so this only tightens designs
+where the nesting already matched.
+
+`decode_b1_L16.insts.bin` is **bit-identical** across the change `[hw]`, which
+is the property that matters — the shipping batch-1 path is untouched.
+
+Batch 8 after the fix, same sweep, same prompts:
+
+| P | blocks | agree/8 | corr(slot 0) | worst-slot corr | was (worst) |
+|---|---|---|---|---|---|
+| 8 | 1 | 6/8 | 0.98693 | 0.94432 | 0.97027 |
+| 16 | 2 | **8/8** | 0.98565 | 0.95742 | 0.30692 |
+| 20 | 2 | **8/8** | 0.98802 | 0.95238 | 0.38601 |
+| 32 | 3 | 4/8 | 0.97896 | 0.93574 | — |
+| 64 | 5 | 7/8 | 0.98995 | 0.97514 | — |
+| 96 | 7 | **8/8** | 0.98857 | 0.96504 | 0.07635 |
+
+The collapse is gone: every token at every context now correlates 0.93–0.99,
+where before the multi-block tokens fell to 0.08–0.5. What is left is the
+ordinary batch-vs-batch-1 disagreement — a batch-8 pass and eight batch-1 passes
+take different reduction orders, and §3.1's tie analysis already says argmax
+flips wherever the top two logits are close. The single-block P=8 row sits at the
+same 0.944, so it is not a residue of this bug. The 0.95 threshold in the sweep
+is tuned for the failure mode it was written to catch and is now too tight to be
+a pass/fail line on its own.
+
+### 3.12 Acceptance with the device drafter, on a sound verify pass
+
+This is the number the whole document has been trying to get to, and it is now
+measured rather than bounded. `dflash_acceptance_device.py`, the same 12 gsm8k
+prompts §3.1 used, 32 tokens each, **106 verify dispatches** `[hw]`:
+
+| accepted per dispatch | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| blocks | 17 | 23 | 14 | 12 | 11 | 5 | 8 | 16 |
+| share | 16.0% | 21.7% | 13.2% | 11.3% | 10.4% | 4.7% | 7.5% | **15.1%** |
+
+**Mean 3.981 tokens per verify dispatch**, against **1.095** through the broken
+pass. The full block commits 15% of the time. §3.1 measured **4.73** on the same
+prompts with a *bf16* drafter, so **quantizing the drafter to q4k/int4 costs
+about 16% of the acceptance rate** — the line the status table has carried as
+"not measured" since §3.6.
+
+The token stream is coherent now, which is the qualitative half of the same
+result. On gsm8k prompt 0 the loop emits the same structured arithmetic the
+batch-1 decode does, where before the fix it emitted eleven newlines.
+
+**It still does not pay for itself at the measured step cost.** Per block on
+that prompt, over 8 blocks `[hw]`:
+
+| | ms/block |
+|---|---|
+| verify (36 layers, batch 8) | 198.8 |
+| draft (5 layers, batch 8) | 47.5 |
+| pre-pass (24 launches) | 82.0 |
+| **step** | **328.3** |
+| pre-pass ELF load/unload | 45 — *not a shipping cost* (§3.8) |
+
+**§6's 217.92 ms step prices draft + verify and omits the pre-pass entirely**,
+which is 25% of a real step. Against §6's 56.95 ms baseline token:
+
+| priced with | break-even | at 3.981 accepted |
+|---|---|---|
+| §6's 217.92 ms (no pre-pass) | 3.83 | 1.04× |
+| the measured 328.3 ms | 5.76 | **0.69×** |
+| 246.3 ms — pre-pass fully hidden behind the target | 4.33 | 0.92× |
+
+So the ordering of the work is now clear: acceptance is no longer the problem,
+the pre-pass is. Even hiding it completely leaves the step short of break-even
+at this acceptance rate; hiding it *and* recovering §3.1's bf16 acceptance
+(4.73) would give 1.09×. The 1.24× in §3.1 and §6 assumed a bf16 drafter and no
+pre-pass, and is now clearly an upper bound that neither half of the pair
+reaches.
 
 ## 4. qwen3-4b at batch 1: verified
 

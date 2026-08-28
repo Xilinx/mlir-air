@@ -869,6 +869,9 @@ void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
 #ifdef ATTN_BATCH
 void attn_kv_fin_row(float *__restrict y_state, float *__restrict l_state,
                      bf16 *__restrict o, int t) {
+  // attn_kv_blk has always run first on this core, so the mode is already set;
+  // this is here so the entry point does not depend on that to be right.
+  aie_round_nearest_even();
   alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
   passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
                                                                  y_bf16);
