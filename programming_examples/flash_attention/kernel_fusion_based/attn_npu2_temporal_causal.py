@@ -397,7 +397,8 @@ def build_module(
     if _row_split_out and NB not in (3, 4):
         raise NotImplementedError(
             f"the row-split output placement past 4 rounds is only mapped for "
-            f"NB in (3, 4) (num_heads / num_kv_heads); got NB={NB} from "
+            f"the GQA ratio NB = num_heads / num_kv_heads to be 3 or 4; "
+            f"got NB={NB} from "
             f"num_heads={num_heads}, num_kv_heads={num_kv_heads}. Either keep "
             f"lq <= 4 * lqp (= {4 * lqp}) so the four-tile gathers are used, "
             f"or extend _out_col with a verified column budget for this NB."

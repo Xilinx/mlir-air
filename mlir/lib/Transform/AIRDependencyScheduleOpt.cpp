@@ -2613,8 +2613,18 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       auto w1 = getConstantIntValue(wraps[1]);
       auto s0 = getConstantIntValue(strides[0]);
       auto s1 = getConstantIntValue(strides[1]);
-      if (w0 && w1 && s0 && s1 && *w0 > kOutermostWrapMax && *s1 != 0 &&
-          *s0 == *s1 * *w1) {
+      // Re-splitting is only address-preserving from the START of the run.
+      // The addresses covered are s1 * [(o0+k0)*w1 + (o1+k1)], so the first is
+      // s1 * (o0*w1 + o1); after the re-split it is s1 * (o0*b + o1). Those
+      // agree only when o0 == 0 -- with a non-zero outer offset, rewriting
+      // strides[0] silently moves the base of the DMA region. o1 is required
+      // zero too: it indexes within the outer dim's span, and that span
+      // changes from w1 to b.
+      auto o0 = getConstantIntValue(offsets[0]);
+      auto o1 = getConstantIntValue(offsets[1]);
+      bool zeroOuterOffsets = o0 && o1 && *o0 == 0 && *o1 == 0;
+      if (w0 && w1 && s0 && s1 && zeroOuterOffsets &&
+          *w0 > kOutermostWrapMax && *s1 != 0 && *s0 == *s1 * *w1) {
         int64_t total = *w0 * *w1;
         for (int64_t a = kOutermostWrapMax; a >= 1; a--) {
           if (total % a)
