@@ -25,16 +25,25 @@ carries no DFlash code:
   * the wave descriptors (I2 / J2 / dest / X source / weight offset);
   * the layout gate, below, which is the thing that fails SILENTLY.
 
-TWO WAVES, NOT TEN. This corrects an earlier reading of section 3.3:
+TEN WAVES, and section 3.3's decomposition was right after all:
 
-  fc      is ONE 2560x12800 projection, I2=5 J2=25 -- not five accumulating
-          2560x2560 ones. Accumulating across input column-blocks is exactly
-          what the proj cores already do (`_gemv`/`_mm` loop 2*J2 col-blocks
-          into one `yacc`), and `qwen3_4b_draft_requant.py` already packs it
-          that way as `W_fc`.
+  fc      is FIVE accumulating 2560x2560 projections, I2=5 J2=5, one per tap.
+          A single 2560x12800 wave is the tidier description and it was tried;
+          it has nowhere to keep its X. The taps can only reach @xnorm through
+          the rms core (the one producer there with a route to DDR), and at the
+          shipping RMS_BAND_STREAM=0 that core's @rmsX get is ONE op outside the
+          refeed loop, landing a resident BATCH*K row -- 40 KB of a 64 KB tile
+          for ONE tap. Split, each wave's X is one resident tap and the
+          cross-wave sum lands where the model already puts a cross-phase sum:
+          the rms core's residual, which accumulates through DDR.
+          The pack is NOT redone -- `fc_slab_perm` shows the five-slab layout is
+          a bijection on the shipped `W_fc` blocks, so it is a gather.
   ctx K/V is the drafter's OWN k_proj/v_proj, already inside each drafter
           layer's phase-0 `concat([Wq;Wk;Wv])` slab. Nothing new is packed --
           only a row window is selected.
+
+Every wave now reads exactly ONE X slot, which is what made the split worth
+taking on its own terms.
 
 A wave is a whole launch iteration running ONE phase, which is the shape the
 LM-head waves already have (`nph_v = _sel(idx(1), ... idx(NPH))`). That is why
@@ -356,6 +365,39 @@ def _tap_slots(fd_draft):
     return slots[0], step.pop()
 
 
+def fc_slab_perm(fd_draft):
+    """Block permutation taking the shipped one-slab `W_fc` pack to five slabs.
+
+    `pack_q4k_cascade(iter_major=True)` emits `for cx: for h: for i: for j: for
+    cy`, so a column-block range is NOT contiguous -- it is interleaved with the
+    row iteration and the channel half. But it IS a permutation: every block of
+    the 2560x12800 pack appears exactly once across the five 2560x2560 slabs,
+    because the split is on column-block boundaries and `block_coords` carries
+    `(gi, j)` for both geometries. The assertion below is the whole argument --
+    a bijection means no block is dropped, duplicated, or re-quantized.
+
+    Returns an index array `perm` such that
+    `blocks[perm]` is the five-slab layout, laid out slab-major.
+    """
+    from qwen3_4b_draft_weights import D, FC_IN
+
+    g_one = geom_for(D, FC_IN, fd_draft)
+    g_slab = geom_for(D, D, fd_draft)
+    pos = {c: k for k, c in enumerate(g_one.block_coords())}
+    if len(pos) != g_one.n_blocks:
+        raise AssertionError("one-slab block coords are not unique")
+    coords = g_slab.block_coords()
+    perm = np.asarray(
+        [pos[(gi, j + s * g_slab.nbj)] for s in range(FC_IN // D) for (gi, j) in coords]
+    )
+    if len(set(perm.tolist())) != g_one.n_blocks:
+        raise AssertionError(
+            f"the five-slab layout is not a permutation of the one-slab pack: "
+            f"{len(set(perm.tolist()))} distinct blocks of {g_one.n_blocks}"
+        )
+    return perm
+
+
 def wave_specs(fd_draft):
     """The extra waves, and the compact extra-BO layout they read from.
 
@@ -398,20 +440,52 @@ def wave_specs(fd_draft):
     # layers would put target_hidden on top of target layer 5's output.
     th_slot = _target_x_slots()
 
+    # fc is FIVE 2560x2560 waves, not one 2560x12800 one -- and that is forced
+    # by an L1 budget, not chosen for tidiness. The rms core is the only producer
+    # on @xnorm with a route to DDR, so the taps have to arrive through its
+    # @rmsX get; at the shipping RMS_BAND_STREAM=0 that get is ONE op outside the
+    # refeed loop, landing a resident BATCH*K row. One tap is 8*2560*2 = 40 KB of
+    # a 64 KB tile, so five cannot be resident and a 12800-wide wave has nowhere
+    # to hold its X. Moving the get inside the loop would change the DECODE
+    # path's structure and its transfer count, which is the one thing this fold
+    # may not do.
+    #
+    # Split, each wave's X is one resident tap and the cross-wave sum lands
+    # where the model already puts a cross-phase sum: the rms core's residual,
+    # which accumulates through DDR (read, add, write back). That is
+    # section 3.3's own decomposition, fc(concat) = sum_i W_i . h_i, which
+    # section 3.14 had overridden because the shipped pack is one slab.
+    #
+    # The pack does not have to be redone. `fc_slab_perm` shows the five-slab
+    # layout is a BIJECTION on the shipped W_fc's blocks -- the q4k groups are 32
+    # columns and the split is at multiples of 2560, so the quantized bytes are
+    # identical and only re-ordered.
+    #
+    # Measured cost of the split, on the real fc against a bf16 reference:
+    # 1.090e-01 where one wave gives 1.080e-01 (cos 0.996578 vs 0.996583). The
+    # four extra bf16 roundings are 5.6e-03 between the two forms, two orders
+    # below the 1.08e-01 quantization floor. It is free.
+    n_slab = FC_IN // D
+    g_slab = geom_for(D, D, fd_draft)
+    slab_bytes = g_slab.n_blocks * BLOCK_BF16
     waves = [
         WaveSpec(
-            name="fc",
+            name=f"fc{s}",
             m=D,
-            k=FC_IN,
-            i2=g_fc.nbi_pc,
-            j2=g_fc.nbj // 2,
+            k=D,
+            i2=g_slab.nbi_pc,
+            j2=g_slab.nbj // 2,
             iter_lo=0,
-            w_off=0,
-            x_slot=tap0,
-            x_stride=tap_stride,
+            w_off=s * slab_bytes,
+            x_slot=tap0 + s * tap_stride,
+            x_stride=1,
             dest="rms",
         )
+        for s in range(n_slab)
     ]
+    assert (
+        n_slab * g_slab.n_blocks == g_fc.n_blocks
+    ), f"{n_slab} slabs of {g_slab.n_blocks} blocks is not fc's {g_fc.n_blocks}"
     off = g_fc.n_blocks * BLOCK_BF16
     kv_blocks = kv_n_iter * g_kv.nbj * g_kv.blocks_per_step * g_kv.NCX * g_kv.n_chan
     for L in range(n_layers):
@@ -449,7 +523,10 @@ def build_extra_weights(fd_draft, npz, verbose=True):
     first, n_blk = g_kv.chan_window(it_lo, n_it)
 
     W = np.asarray(npz["W"]).reshape(-1)
-    fc = np.asarray(npz["W_fc"]).reshape(-1)
+    # Re-order the shipped one-slab pack into the five per-tap slabs the waves
+    # read, block by block. A gather, not a re-pack: see fc_slab_perm.
+    fc = np.asarray(npz["W_fc"]).reshape(-1, BLOCK_BF16)
+    fc = fc[fc_slab_perm(fd_draft)].reshape(-1)
     parts = [fc]
     for L in range(fd_draft.UNI_DEC):
         lay = W[L * fd_draft.W_LAYER : (L + 1) * fd_draft.W_LAYER]
@@ -523,6 +600,37 @@ def gate_layout(cache=None, verbose=True):
             f"  fc      [{D}x{FC_IN}] rows {band[0]}..{band[1]}: "
             f"max rel {rel:.3e}  (one step {step:.3e})  {'OK' if ok else 'WRONG LAYOUT'}"
         )
+
+    # 1b. the five per-tap slabs the waves actually read, which are the shipped
+    #     pack REORDERED by fc_slab_perm. The bijection assertion in that
+    #     function proves no block is lost; this proves each slab holds the
+    #     columns its wave will contract against, which is the part a
+    #     permutation cannot tell you on its own.
+    g_slab = geom_for(D, D, fd)
+    reord = np.asarray(npz["W_fc"]).reshape(-1, BLOCK_BF16)[fc_slab_perm(fd)]
+    worst, worst_s = 0.0, -1
+    for s in range(FC_IN // D):
+        sl = reord[s * g_slab.n_blocks : (s + 1) * g_slab.n_blocks].reshape(-1)
+        got = dequant_cascade(sl, D, D, g_slab, rows=band)
+        ref = fc[band[0] : band[1], s * D : (s + 1) * D]
+        r = np.abs(got - ref).max() / max(np.abs(ref).max(), 1e-9)
+        if r > worst:
+            worst, worst_s = r, s
+    ok = worst <= 2.0 * step
+    bad += not ok
+    if verbose:
+        # The control that makes it a gate: slab 0 against the NEXT tap's
+        # columns. A permutation that is a bijection but wrong reads like this.
+        sl0 = reord[: g_slab.n_blocks].reshape(-1)
+        g0 = dequant_cascade(sl0, D, D, g_slab, rows=band)
+        r1 = fc[band[0] : band[1], D : 2 * D]
+        wrong = np.abs(g0 - r1).max() / max(np.abs(r1).max(), 1e-9)
+        print(
+            f"  fc slabs 5x[{D}x{D}] rows {band[0]}..{band[1]}: "
+            f"worst rel {worst:.3e} (slab {worst_s})  "
+            f"{'OK' if ok else 'WRONG SPLIT'}"
+        )
+        print(f"          negative control, slab 0 vs tap 1: {wrong:.3e}")
 
     # 2. the K/V window of drafter layer 0's phase-0 slab, from the same cache.
     kv_lo, kv_hi = _kv_rows(fd)
