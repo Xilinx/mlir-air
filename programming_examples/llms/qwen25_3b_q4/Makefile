@@ -1,7 +1,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Qwen2.5-3B Q4_0 on NPU2 (MLIR-AIR): op-by-op prefill + the fused
+# Qwen2.5-3B Q4NX on NPU2 (MLIR-AIR): op-by-op prefill + the fused
 # single-dispatch decode.
 #
 # Same driver contract as the other Q4NX examples (llama32_1b_q4nx,
@@ -11,7 +11,7 @@
 #   make compile         — build/cache the prefill ELFs (no weights, no NPU dispatch)
 #   make compile-decode  — build the fused decode kernels + the decode_L<N> template pair
 #   make run             — prefill "The capital of France is" -> expect " Paris"
-#   make gen             — end-to-end: NPU prefill -> KV hand-off -> NPU fused decode
+#   make gen             — end-to-end: NPU prefill -> NPU fused decode
 #   make bench           — warm TTFT at BENCH_L (default 2048)
 #
 # Config: 36 layers, emb=2048, 16 heads / 2 KV heads (GQA group 8), head_dim=128,
@@ -24,18 +24,21 @@ PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 SEQ_LEN  ?= 2048
 N_LAYERS ?= 36
 BENCH_L  ?= 2048
-MODEL    ?= Qwen/Qwen2.5-3B-Instruct
+# NPU weight source: FastFlowLM's pre-quantized Q4NX bundle. A local dir holding
+# model.q4nx, a direct path, or a full-precision HF checkpoint (quantized on load)
+# also work.
+MODEL    ?= FastFlowLM/Qwen2.5-3B-Instruct-NPU2
 
-PREFILL := $(srcdir)/qwen25_3b_q4_prefill.py
+PREFILL   := $(srcdir)/qwen25_3b_q4_prefill.py
+INFERENCE := $(srcdir)/qwen25_3b_q4_inference.py
 
 # ---- fused decode (the shared programming_examples/fused_decode engine) ----
-# Qwen drives its own builder (fused_decode_qwen.py) rather than fused_decode.py's
-# DECODE_MODEL switch: its attention topology is 2 CUs of 1x8x1 on column 7 at
-# DH=128, not the Llama/Gemma layout. Everything else -- the kernels, the
-# inline-attn merge, the llvm-link preflight -- is shared.
+# Qwen2.5-3B is one of the fused_decode engine's DECODE_MODEL entries, like the
+# other nine models; it differs from qwen2.5-7b in dimensions only (2 attention
+# CUs of 1x8x1 instead of 4). The kernels, the inline-attn merge and the
+# llvm-link preflight are shared too.
 DEC            := $(srcdir)/../../fused_decode
-DECODE_DRIVER  := $(DEC)/fused_decode_qwen.py
-HANDOFF        := $(DEC)/qwen_prefill_to_decode.py
+DECODE_DRIVER  := $(DEC)/fused_decode.py
 AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),$(shell realpath $(dir $(shell which aie-opt))/..))
 # Decode context CAP. The attention herd takes L as a runtime operand (an RTP the
 # instruction stream writes), so the device attends over the real context and
@@ -52,8 +55,8 @@ LREF        := $(shell echo $$(($(LBUILD) - 1)))
 ATTN_L      ?= $(LBUILD)
 # W_DUAL_CHAN feeds each proj column's weights on BOTH of its shim MM2S channels
 # and reorders the DDR cascade accordingly, so the build and the weight packer
-# must agree. The builder stamps decode_qwen.flags and the hand-off refuses a
-# mismatch; this variable is what keeps the two in sync from one place.
+# must agree. The packer reads the flag off the loaded engine rather than the
+# environment, so the two cannot disagree; this only records it in the stamp.
 W_DUAL_CHAN ?= 1
 
 # Per-kernel -O is LOAD-BEARING (see fused_decode/Makefile): proj_qmm/rms_residual/
@@ -66,8 +69,7 @@ ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merg
 # Extra kernel defines, as in fused_decode/Makefile -- read that file's header
 # for what these are for. The other three Q4NX examples delegate their kernel
 # builds to it and so inherit the hook; this Makefile compiles its own kernels
-# (it drives fused_decode_qwen.py rather than fused_decode.py) and had dropped
-# it. Empty by default, so the shipped path is byte-identical. Example:
+# and had dropped it. Empty by default, so the shipped path is byte-identical. Example:
 #     make compile-decode NONATTN_EXTRA=-DQ4_SFIX_MODE=0
 # rebuilds against the pre-xor-bias int4 sign fix, which is how the 2.4x in
 # README.md's decode table was measured on one box in one session.
@@ -78,7 +80,15 @@ PEANO_KBASE     := -std=c++20 --target=aie2p-none-unknown-elf \
   -DNDEBUG -DMODEL_TYPE=QWEN2_5_3B -D__AIE_API_AIE_ADF_HPP__ \
   -I $(AIEOPT_DIR)/include -I $(DEC)/kernels -I $(DEC)/models \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
-DECODE_ENV      := QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(ATTN_L) W_DUAL_CHAN=$(W_DUAL_CHAN)
+# Shared-engine decode env, as for the other nine models. VOCAB_CHUNK_I2 is NOT
+# free: it must pair with the model entry's UNI_LM=25 (product covers the padded
+# vocab). 20/15 also satisfies every divisibility rule and still deadlocks the
+# vocab wave on device, so do not 'simplify' it.
+# NLAYERS=1 as for every other model: it is the multi-launch outer stitch, which
+# the unified wave loop does not use. N_LAYERS (36) reaches the engine through
+# the model entry's UNI_DEC, not through here.
+DECODE_ENV      := DECODE_MODEL=qwen2.5-3b VOCAB_CHUNK_I2=12 UNIFIED=1 LM_HEAD=0 \
+                   NLAYERS=1 DECODE_GOLDEN=1
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
 # so a header copied from another model can disagree with the IR -- silently, at
@@ -90,16 +100,14 @@ PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPEC
 
 # Build-flag stamp for the idempotent skip. Every variable below changes either the
 # xclbin's dataflow, its DDR weight layout or its core ELFs, so a warm build made
-# with different settings must NOT be silently reused. (Distinct from the builder's
-# own decode_qwen.flags, which records W_DUAL_CHAN for the *runtime* packer check
-# and whose single-line format the hand-off parses.)
+# with different settings must NOT be silently reused.
 #
 # The kernel defines are in the stamp for the same reason the rest are: without
 # them `make compile-decode NONATTN_EXTRA=...` would find the templates present,
 # skip the build and hand back the PREVIOUS kernels -- an A/B that silently
 # measures the same binary twice.
 DECODE_STAMP := $(srcdir)/.decode_build_flags
-DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B NLAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
+DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B N_LAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
                 ATTN_EXTRA=$(ATTN_EXTRA) NONATTN_EXTRA=$(NONATTN_EXTRA)
 
 # End-to-end generation demo. The only bound now is the cache cap: the prompt
@@ -120,15 +128,15 @@ MAX_PROMPTS    ?= 2
 
 help:
 	@echo "============================================================"
-	@echo " Qwen2.5-3B Q4_0 on NPU2 (MLIR-AIR)"
+	@echo " Qwen2.5-3B Q4NX on NPU2 (MLIR-AIR)"
 	@echo "============================================================"
 	@echo ""
 	@echo "  make compile         Build/cache the prefill ELFs (CI-runnable, no weights)"
 	@echo "  make compile-decode  Build the fused decode (kernels + decode_L<N> templates, no weights)"
 	@echo "  make run             Prefill gate: 'The capital of France is' -> ' Paris'"
-	@echo "  make gen             End-to-end NPU prefill -> KV hand-off -> NPU fused decode"
+	@echo "  make gen             End-to-end NPU prefill -> NPU fused decode"
 	@echo "  make bench           Warm prefill TTFT at BENCH_L=$(BENCH_L) (alias: profile-prefill)"
-	@echo "  make weights         Q4_0 quant-error report for layer 0 (no NPU)"
+	@echo "  make weights         Q4NX weight-load smoke for layer 0 (no NPU)"
 	@echo ""
 	@echo "Correctness:"
 	@echo "  make verify          Top-k token-set gate vs HF bf16 (2 prompts x 32 tokens, k=5)"
@@ -177,12 +185,11 @@ compile-decode-dynseq:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
-	  DECODE_DYNSEQ=1 $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
-	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/air_project/npu.air.txn.h ]; then \
-	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
-	    cp -f $(DEC)/air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
-	    mv -f $(DEC)/decode_qwen.flags $(srcdir)/decode_dyn_L$(LBUILD).flags 2>/dev/null || true; \
+	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) DECODE_DYNSEQ=1 \
+	  $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
+	  if [ -f $(DEC)/decode.xclbin ] && [ -f $(DEC)/decode.insts.bin ]; then \
+	    mv -f $(DEC)/decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
+	    mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_dyn_L$(LBUILD).insts.bin; \
 	    rm -f $(DEC)/npu_seq_*.mlir; \
 	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/qwen_decode_dyn_L$(LBUILD).log)"; \
 	    tail -30 /tmp/qwen_decode_dyn_L$(LBUILD).log; exit 1; fi
@@ -209,13 +216,12 @@ _compile_decode_build:
 	@# Qwen pair sitting next to the Llama decode_L2048 pair would be picked up as
 	@# another window of the same model.
 	@for W in $(LBUILD) $(LREF); do \
-	  echo ">>> qwen decode template decode_L$$W (NLAYERS=$(N_LAYERS) W_DUAL_CHAN=$(W_DUAL_CHAN))"; \
-	  cd $(DEC) && QWEN_NLAYERS=$(N_LAYERS) ATTN_L=$$W W_DUAL_CHAN=$(W_DUAL_CHAN) \
+	  echo ">>> qwen decode template decode_L$$W (N_LAYERS=$(N_LAYERS))"; \
+	  cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$$W \
 	    $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_L$$W.log 2>&1; \
-	  if [ -f $(DEC)/decode_qwen.xclbin ] && [ -f $(DEC)/decode_qwen.insts.bin ]; then \
-	    mv -f $(DEC)/decode_qwen.xclbin $(srcdir)/decode_L$$W.xclbin; \
-	    mv -f $(DEC)/decode_qwen.insts.bin $(srcdir)/decode_L$$W.insts.bin; \
-	    mv -f $(DEC)/decode_qwen.flags $(srcdir)/decode_L$$W.flags; \
+	  if [ -f $(DEC)/decode.xclbin ] && [ -f $(DEC)/decode.insts.bin ]; then \
+	    mv -f $(DEC)/decode.xclbin $(srcdir)/decode_L$$W.xclbin; \
+	    mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$$W.insts.bin; \
 	  else echo "decode_L$$W FAILED (see /tmp/qwen_decode_L$$W.log)"; \
 	    tail -30 /tmp/qwen_decode_L$$W.log; exit 1; fi; \
 	done
@@ -226,20 +232,20 @@ run:
 	cd $(srcdir) && $(PYTHON) $(PREFILL) \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS) --model $(MODEL)
 
-## Prefill GEN_PROMPT and dump the per-layer roped-K / biased-V hand-off cache.
+## Prefill GEN_PROMPT and dump the per-layer roped-K / raw-V cache (debug aid).
 dump-kv:
 	cd $(srcdir) && $(PYTHON) $(PREFILL) \
 		--seq-len $(SEQ_LEN) --n-layers $(N_LAYERS) --model $(MODEL) \
 		--prompt "$(GEN_PROMPT)" --dump-kv $(KV_NPZ)
 
-## End-to-end: NPU prefill -> KV hand-off -> N_GEN tokens on the fused NPU decode.
-## No reference model in the loop. The decode's first token equals the prefill's
-## own argmax, which is the cross-check that the hand-off is exact -- and now
-## holds for ANY prompt that fits the cache, since both sides see the same
-## context (they used to diverge once the prompt outgrew the decode's window).
-gen: dump-kv
-	cd $(DEC) && $(DECODE_ENV) $(PYTHON) $(HANDOFF) --kv $(KV_NPZ) --n-gen $(N_GEN) \
-		--templates $(srcdir)
+## End-to-end: NPU prefill -> N_GEN tokens on the fused NPU decode. No reference
+## model in the loop. Prints the "Time to first token (TTFT)" and "Tokens/second"
+## lines llms/bench/extract_perf.py parses.
+## The default prompt is the Paris gate, so this also reports whether the decode
+## reproduces the recorded greedy continuation.
+gen:
+	cd $(srcdir) && $(PYTHON) $(INFERENCE) --model $(MODEL) \
+		--n-tokens $(N_GEN) --no-eos-stop
 
 ## Warm TTFT benchmark (+ per-ELF profile).
 bench:
@@ -251,25 +257,24 @@ bench:
 ## `profile` composes it and llms/bench/extract_perf.py parses its output.
 profile-prefill: bench
 
-## Q4_0 quant-error report for layer 0 (no NPU).
+## Q4NX weight-load smoke for layer 0 (no NPU).
 weights:
 	cd $(srcdir) && $(PYTHON) $(srcdir)/qwen25_3b_q4_weights.py --model $(MODEL)
 
-# ---- correctness gate (identical to the other three Q4NX examples) ----
+# ---- correctness gate (identical to the other Q4NX examples) ----
 #
-# DECODE_ENV is passed here too, not just to the build: fused_decode_qwen reads
-# QWEN_NLAYERS / ATTN_L / W_DUAL_CHAN from the environment at import and they
-# default to a 1-layer lowering check. Without them the runner would pack a
-# 1-layer weight stream for a 36-layer xclbin.
+# No DECODE_ENV here: the inference driver sets the engine's geometry itself,
+# before importing fused_decode.py, so the runner cannot be handed a different
+# model than the one the xclbin was built for.
 
 ## Top-k token-set inclusion gate (NPU q4 vs HF bf16, 2 prompts x 32 tokens, k=5).
 verify:
-	cd $(srcdir)/.. && $(DECODE_ENV) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && Q4NX_MODEL_SOURCE=$(MODEL) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
 
 ## Full-sweep variant of `make verify` (all prompts in the prompt file).
 verify-full:
-	cd $(srcdir)/.. && $(DECODE_ENV) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && Q4NX_MODEL_SOURCE=$(MODEL) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE)
 
 ## Fast weight-integrity smoke: prefill "The capital of France is"; PASS iff the
@@ -278,10 +283,10 @@ verify-full:
 verify-paris: run
 
 ## Diagnosis lens (single prompt through the shared runner, informational).
-## The Q4_0 prefill does not expose per-layer ffn_out, so this reports the
+## The Q4NX prefill does not expose per-layer ffn_out, so this reports the
 ## token-level view rather than per-layer cosines.
 diagnosis:
-	cd $(srcdir)/.. && $(DECODE_ENV) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
+	cd $(srcdir)/.. && Q4NX_MODEL_SOURCE=$(MODEL) $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts single --prompt "$(GEN_PROMPT)" --model $(MODEL_CHOICE)
 
 ## Perf capture for llms/bench/extract_perf.py: prefill TTFT + fused decode
@@ -297,8 +302,7 @@ clean:
 	rm -f $(DECODE_STAMP) $(KV_NPZ) 2>/dev/null || true
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
 	      $(srcdir)/decode_L*.flags 2>/dev/null || true
-	rm -f $(DEC)/decode_qwen.xclbin $(DEC)/decode_qwen.insts.bin \
-	      $(DEC)/decode_qwen.flags 2>/dev/null || true
+	rm -f $(DEC)/decode.xclbin $(DEC)/decode.insts.bin 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	@echo "Qwen caches, decode artifacts and shared-dir kernels removed."

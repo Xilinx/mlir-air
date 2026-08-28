@@ -370,6 +370,37 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
         UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
     ),
+    # Qwen2.5-3B-Instruct: same family as qwen2.5-7b, one third the width, and
+    # the only entry with 2 kv heads -- so the only one whose attention herd is
+    # 2 compute units in a single column rather than 4 across two.
+    #   I2P = [M, K, 2*INTER, K]/512 = [2560, 2048, 22528, 2048]/512 = [5, 4, 44, 4]
+    #   J2P = [K, DQ, K, INTER]/512  = [2048, 2048, 2048, 11264]/512 = [4, 4, 4, 22]
+    # PAIR_ROWS=1 as for qwen2.5-7b: paired egress needs every phase output
+    # divisible by 1024 and M=2560 is not.
+    # LM head: VOCAB_SIZE_PADDED_FULL = ceil(151936/2048)*2048 = 153600 -> 4800
+    # rowblocks; 16*VOCAB_I2 must divide it, so UNI_LM*VOCAB_I2 = 300, and
+    # K/PAYLOAD = 4 must divide VOCAB_I2, leaving {4,12,20} under 2*VOCAB_I2<=63.
+    # Of those only 12 runs: VOCAB_I2=20 (UNI_LM=15) satisfies every divisibility
+    # rule above and still DEADLOCKS the vocab wave on device, the same way the
+    # 1B default does on llama-3.2-3b. Driver MUST set VOCAB_CHUNK_I2=12.
+    "qwen2.5-3b": dict(
+        K=2048,
+        M=2560,  # DQ+DK+DV = 2048+256+256
+        DH_A=128,
+        KV_PER_CU=1,  # 2 kv / 2 CU
+        N_ATTN_CU=2,
+        NPH=4,
+        I2P=[5, 4, 44, 4],
+        J2P=[4, 4, 4, 22],
+        DEST=["rope", "rms", "glu", "rms"],
+        GQA_SEG=8,  # ATTN_IMPL_1x8x1
+        PAIR_ROWS=1,
+        N_NORMS=2,
+        HAS_QKV_BIAS=True,
+        VOCAB_SIZE=151936,
+        UNI_DEC=36,  # 36 decoder layers
+        UNI_LM=25,  # VOCAB_CHUNK_I2=12
+    ),
     # Qwen3-4B: the DFlash target (see docs/DFlashFeasibility.md). Qwen3 QK-norm
     # like qwen3-8b, but with the DECOUPLED q dim the bf16 llms/qwen3_4b example
     # already handles: n_heads*head_dim = 4096 != hidden 2560, so the o-proj
@@ -935,7 +966,27 @@ KV_APPEND = MULTIBLK
 # no separate output arg). Frees arg3 (== the reference's rope_rms slot).
 # Reference 4-CU layout: attn cols 3,4 (CU0,1 col3 / CU2,3 col4), adjacent to q/o on
 # mem_5_1 (col5). kv on mem_3_1/mem_4_1. (col4 freed by GLU->col5 relayout.)
-ATTN_CU_LOC = [(3, 2, 3), (3, 4, 5), (4, 2, 3), (4, 4, 5)][:N_ATTN_CU]
+# A 2-CU model (2 kv heads) fills one column instead of two. Which column is not
+# free: the placement decides the routing, and the routing decides whether the
+# decode wedges. Swept on NPU2 with qwen2.5-3b -- cols 0/1/2/6/7 do not build
+# (occupied), col 3 reaches COMPLETED about 1 run in 10, cols 4 and 5 are both
+# 20/20 over 29 dispatches. 4 is taken: it is inside the footprint the 4-CU
+# models already reserve for attention, where col 5 also carries the GLU tile.
+# Overridable so the sweep can be repeated.
+ATTN_PCOL = int(_os.environ.get("ATTN_PCOL", "4"))
+ATTN_CU_LOC = (
+    [(ATTN_PCOL, 2, 3), (ATTN_PCOL, 4, 5)]
+    if N_ATTN_CU == 2
+    else [(3, 2, 3), (3, 4, 5), (4, 2, 3), (4, 4, 5)][:N_ATTN_CU]
+)
+# Attn herd geometry: dim0 = columns spanned, dim1 = 2 rows per CU (qk, kv).
+# 4 CUs span cols {3,4} -> [2, 4]; 2 CUs sit in one column -> [1, 4].
+# Spreading 2 CUs one-per-column instead ([(3,2,3),(4,2,3)]) builds but times out
+# at pos0 on every run: the k/v fan and the o-proj gather both assume a column's
+# CUs are a contiguous pair, and one CU per column is not that.
+ATTN_COLS = len({_l[0] for _l in ATTN_CU_LOC})
+CU_PER_COL = N_ATTN_CU // ATTN_COLS
+ATTN_HERD_SIZES = [ATTN_COLS, 2 * CU_PER_COL]
 # Group CUs by column. rope k/v fans to one packet channel PER COLUMN (the reference
 # routes k/v as per-destination packets). A single channel feeding memtiles on 2 cols
 # deadlocks: its FIFO interleaves the 2 cols' gets, so one col blocks on the other's
@@ -4041,36 +4092,38 @@ def build_module():
                                 _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm)
                                 yield_([])
 
+                        def _attn_col(ty_arg, shs, Lh, ci, _arm=None):
+                            """The CU_PER_COL compute units of attn column `ci`,
+                            selected by the herd's row index."""
+                            _lo = ci * CU_PER_COL
+                            if CU_PER_COL == 1:
+                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm)
+                            else:
+                                _attn_pairsel(ty_arg, shs, Lh, _lo, _lo + 1, _arm)
+
                         def _attn_dec(tx_arg, ty_arg, shs, Lh, _arm=None):
+                            if ATTN_COLS == 1:
+                                _attn_col(ty_arg, shs, Lh, 0, _arm)
+                                return
                             _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
                             _ifc = IfOp(_isc0, [], has_else=True)
                             with InsertionPoint(_ifc.thenRegion.blocks[0]):
-                                _attn_pairsel(
-                                    ty_arg, shs, Lh, 0, 1, _arm
-                                )  # col3: cu0, cu1
+                                _attn_col(ty_arg, shs, Lh, 0, _arm)  # first attn col
                                 yield_([])
                             with InsertionPoint(_ifc.elseRegion.blocks[0]):
-                                _attn_pairsel(
-                                    ty_arg, shs, Lh, 2, 3, _arm
-                                )  # col4: cu2, cu3
+                                _attn_col(ty_arg, shs, Lh, 1, _arm)  # second attn col
                                 yield_([])
 
                         if _seg_arm_i is not None:
 
                             @herd(
                                 name="attn_blk",
-                                sizes=[2, 4],
-                                operands=[
-                                    _sh[0].result,
-                                    _sh[1].result,
-                                    _sh[2].result,
-                                    _sh[3].result,
-                                    _Lc,
-                                    _core_arm,
-                                ],
+                                sizes=ATTN_HERD_SIZES,
+                                operands=[t.result for t in _sh] + [_Lc, _core_arm],
                             )
-                            def attn_blk(_tx, _ty, _sx, _sy, s0, s1, s2, s3, Lh, _arm):
-                                shs = [s0, s1, s2, s3]
+                            def attn_blk(_tx, _ty, _sx, _sy, *_a):
+                                shs = list(_a[:N_ATTN_CU])
+                                Lh, _arm = _a[N_ATTN_CU], _a[N_ATTN_CU + 1]
 
                                 def _voc():
                                     yield_([])
@@ -4107,17 +4160,11 @@ def build_module():
 
                             @herd(
                                 name="attn_blk",
-                                sizes=[2, 4],
-                                operands=[
-                                    _sh[0].result,
-                                    _sh[1].result,
-                                    _sh[2].result,
-                                    _sh[3].result,
-                                    _Lc,
-                                ],
+                                sizes=ATTN_HERD_SIZES,
+                                operands=[t.result for t in _sh] + [_Lc],
                             )
-                            def attn_blk(_tx, _ty, _sx, _sy, s0, s1, s2, s3, Lh):
-                                _attn_dec(_tx, _ty, [s0, s1, s2, s3], Lh)
+                            def attn_blk(_tx, _ty, _sx, _sy, *_a):
+                                _attn_dec(_tx, _ty, list(_a[:N_ATTN_CU]), _a[N_ATTN_CU])
 
                         attn_blk.attributes["x_loc"] = IntegerAttr.get(
                             T.i64(), ATTN_CU_LOC[0][0]
