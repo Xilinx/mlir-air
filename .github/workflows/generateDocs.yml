@@ -157,6 +157,10 @@ jobs:
           test -f /tmp/llmperf/sweep.json \
             && echo "sweep.json fetched" \
             || echo "no sweep.json in that artifact; context table omitted"
+          # Same for the prefill TTFT curves (a later addition still).
+          test -f /tmp/llmperf/prefill_sweep.json \
+            && echo "prefill_sweep.json fetched" \
+            || echo "no prefill_sweep.json in that artifact; TTFT table omitted"
 
       # Pull the append-only time series from the durable `perf-history` branch
       # (accumulated by nightlyPerfBenchmark.yml). Best-effort: if the branch
@@ -173,6 +177,9 @@ jobs:
             git show FETCH_HEAD:sweep_history.ndjson > /tmp/llmperf_history/sweep_history.ndjson \
               && echo "sweep_history.ndjson fetched" \
               || echo "perf-history branch has no sweep_history.ndjson"
+            git show FETCH_HEAD:prefill_sweep_history.ndjson > /tmp/llmperf_history/prefill_sweep_history.ndjson \
+              && echo "prefill_sweep_history.ndjson fetched" \
+              || echo "perf-history branch has no prefill_sweep_history.ndjson"
           else
             echo "no perf-history branch yet; empty-state page"
           fi
@@ -194,6 +201,8 @@ jobs:
             --llm-sweep-history /tmp/llmperf_history/sweep_history.ndjson \
             --llm-perf /tmp/llmperf/perf.json \
             --llm-sweep /tmp/llmperf/sweep.json \
+            --llm-prefill-sweep-history /tmp/llmperf_history/prefill_sweep_history.ndjson \
+            --llm-prefill-sweep /tmp/llmperf/prefill_sweep.json \
             --output docs/llms/index.md
           python3 programming_examples/generate_perf_history.py \
             --embed --history /tmp/llmperf_history/history.ndjson \
