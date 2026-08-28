@@ -36,10 +36,6 @@ Differences from the NPU1 variant, beyond mmul<8,8,8> and attn_npu2.o:
 * ``num_heads_per_unroll`` defaults to 2 and is a parameter. It multiplies the
   physical columns -- ``num_heads_per_unroll * num_q_tiles``, which must be at
   most 8 -- so the 8-column part runs two heads at once.
-* ``dv_tile`` is a parameter rather than fixed at ``lkp``. ``dv // dv_tile``
-  becomes a launch axis, and every dv chunk re-streams the whole of K and Q, so
-  widening it trades L1 for L3 bandwidth; at ``dv_tile == dv`` the launch loses
-  the axis and V and the output keep their natural layout.
 * Under ``causal``, fully-future K-blocks always skip their matmul, softmax and
   PV rather than computing them and masking to -inf. It is not a flag here, as
   it is in ``attn_npu2``: numerically it is identical -- a fully masked block
@@ -606,11 +602,27 @@ def parse_args():
     parser.add_argument("--num-cascade-stages", type=int, default=4)
     parser.add_argument("--num-heads", type=int, default=2)
     parser.add_argument("--num-heads-per-unroll", type=int, default=2)
-    parser.add_argument("--window", type=int, default=None)
-    parser.add_argument("--dv-tile", type=int, default=None)
-    parser.add_argument("--causal-skip", action="store_true", dest="causal_skip")
     parser.add_argument("--num-kv-heads", type=int, default=None)
     parser.add_argument("--causal", action="store_true")
+    # Both carried from the predecessor's CLI. --num-q-tiles was hardcoded to 4
+    # by the conversion and --perf-iters dropped entirely; neither is exercised
+    # by a lit, which is exactly why losing them was invisible.
+    parser.add_argument(
+        "--num-q-tiles",
+        type=int,
+        default=4,
+        dest="num_q_tiles",
+        help="Number of tiles to partition the Q chunk into (default: 4). "
+        "Under causal masking, lqp / num_q_tiles must equal lkp.",
+    )
+    parser.add_argument(
+        "--perf-iters",
+        type=int,
+        default=0,
+        dest="perf_iters",
+        help="If >0, time the kernel over this many iters and report latency "
+        "and achieved TFLOP/s alongside the correctness check",
+    )
     parser.add_argument(
         "--output-format",
         type=str,
@@ -632,7 +644,7 @@ def main():
 
     lk, lkp, lq, lqp = args.lk, args.lkp, args.lq, args.lqp
     dk, dv = args.dk, args.dv
-    num_q_tiles = 4
+    num_q_tiles = args.num_q_tiles
     num_heads = args.num_heads
     num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
     causal = args.causal
@@ -660,26 +672,26 @@ def main():
     from ml_dtypes import bfloat16
 
     rng = np.random.default_rng(42)
-    val_range = 4.0
-    input_q = rng.uniform(0, val_range, (num_heads, lq, dk)).astype(bfloat16)
-    input_k = rng.uniform(0, val_range, (num_kv_heads, lk, dk)).astype(bfloat16)
-    input_v_orig = rng.uniform(0, val_range, (num_kv_heads, lk, dv)).astype(bfloat16)
-    dv_tile_host = lkp
-    dv_chunks_host = dv // dv_tile_host
-    input_v = (
-        input_v_orig.reshape(num_kv_heads, lk, dv_chunks_host, dv_tile_host)
-        .transpose(0, 2, 1, 3)
-        .reshape(num_kv_heads * dv_chunks_host, lk, dv_tile_host)
-        .copy()
-    )
+    # SEQ-FIRST inputs: [seq, heads * dim]. This is the whole point of the
+    # variant -- the builder declares air.tensor([lq, num_heads * dk]) and the
+    # heads are a slice of the trailing axis, not a leading axis. Feeding the
+    # head-first arrays attn_npu2.py uses does NOT fail: the buffers are the
+    # same size, so XRT copies them happily and the kernel reads transposed
+    # data. That is what it did, for a correlation of 0.497.
+    #
+    # N(0,1) rather than uniform(0, 4), matching the GPU SDPA test standard
+    # (PyTorch uses randn), so the check sees a signed distribution.
+    input_q = rng.standard_normal((lq, num_heads * dk)).astype(bfloat16)
+    input_k = rng.standard_normal((lk, num_kv_heads * dk)).astype(bfloat16)
+    input_v = rng.standard_normal((lk, num_kv_heads * dv)).astype(bfloat16)
 
     inv_sqrt_dk = 1.0 / sqrt(dk)
-    sdpa_output = np.zeros((num_heads, lq, dv), dtype=bfloat16)
+    sdpa_output_hf = np.zeros((num_heads, lq, dv), dtype=bfloat16)
     for head in range(num_heads):
         kv_h = head // gqa_group_size
-        qf = input_q[head].astype(np.float32)
-        kf = input_k[kv_h].astype(np.float32)
-        vf = input_v_orig[kv_h].astype(np.float32)
+        qf = input_q[:, head * dk : (head + 1) * dk].astype(np.float32)
+        kf = input_k[:, kv_h * dk : (kv_h + 1) * dk].astype(np.float32)
+        vf = input_v[:, kv_h * dv : (kv_h + 1) * dv].astype(np.float32)
         scores = qf @ kf.T * inv_sqrt_dk
         if causal:
             mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
@@ -687,16 +699,18 @@ def main():
         mx = np.max(scores, axis=-1, keepdims=True)
         p = np.exp(scores - mx)
         p = p / np.sum(p, axis=-1, keepdims=True)
-        sdpa_output[head] = (p @ vf).astype(bfloat16)
+        sdpa_output_hf[head] = (p @ vf).astype(bfloat16)
 
-    expected = (
-        sdpa_output.reshape(num_heads, lq, dv_chunks_host, dv_tile_host)
-        .transpose(0, 2, 1, 3)
-        .reshape(num_heads * dv_chunks_host, lq, dv_tile_host)
-        .copy()
-    )
+    # And seq-first on the way out too: [lq, num_heads * dv].
+    expected = sdpa_output_hf.transpose(1, 0, 2).reshape(lq, num_heads * dv).copy()
 
-    tiling = [1, 1, 1] if dv_chunks_host > 1 else [1, 1]
+    # The output is 2-D, so the runtime loop tiling is 2-D.
+    tiling = [1, 1]
+    # Q@K^T scales with dk and P@V with dv, each 2*num_heads*lq*lk*<dim>;
+    # causal masking roughly halves the effective work.
+    perf_flops = 2.0 * num_heads * lq * lk * (dk + dv)
+    if causal:
+        perf_flops *= 0.5
     if args.compile_mode == "compile-only":
         backend = XRTBackend(
             omit_while_true_loop=False,
@@ -719,15 +733,20 @@ def main():
         output_format=args.output_format,
         instance_name="attention_bf16",
         target_device=launch.target,
+        report_precision=True,
+        n_perf_iters=args.perf_iters,
+        perf_flops=(perf_flops if args.perf_iters > 0 else None),
     )
+    # The predecessor's tolerances, unchanged. The conversion had loosened them
+    # to atol=0.15 / rtol=0.04 plus a 0.5% mismatch allowance -- a weaker gate
+    # than the thing being replaced, which is not a trade a conversion gets to
+    # make on its own.
     return runner.run_test(
         mlir_module,
         inputs=[input_q, input_k, input_v],
         expected_outputs=[expected],
-        atol=0.15,
-        rtol=0.04,
-        max_mismatch_percentage=0.5,
-        min_correlation=0.99,
+        rtol=1.6e-2,
+        atol=1e-1,
     )
 
 
