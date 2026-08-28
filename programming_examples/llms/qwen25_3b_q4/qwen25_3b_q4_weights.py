@@ -346,16 +346,29 @@ class HFQ40Model:
 
 
 def open_weight_source(model):
-    """Q4nxModel for a `model.q4nx` bundle, HFQ40Model for anything else.
+    """Q4nxModel for a `model.q4nx` bundle, HFQ40Model for a checkpoint.
 
-    Only a path that actually resolves to a model.q4nx takes the bundle path;
-    an HF repo id or a checkpoint directory gets quantized on load."""
+    A local path is classified by what is on disk. A REPO ID has to be probed:
+    the default source is FastFlowLM's bundle-only repo, which ships a
+    model.q4nx and no safetensors, so guessing HFQ40Model there sends
+    snapshot_download looking for files that do not exist."""
     import os
 
-    if os.path.isfile(model) and model.endswith(".q4nx"):
+    if os.path.isfile(model):
+        return Q4nxModel(model) if model.endswith(".q4nx") else HFQ40Model(model)
+    if os.path.isdir(model):
+        has_bundle = os.path.isfile(os.path.join(model, "model.q4nx"))
+        return Q4nxModel(model) if has_bundle else HFQ40Model(model)
+    # Repo id: try the bundle, fall back to the checkpoint. Only a missing-file
+    # error is a fallback; anything else (auth, network) is the caller's problem
+    # and must not be reported as "this repo has no bundle".
+    try:
         return Q4nxModel(model)
-    if os.path.isdir(model) and os.path.isfile(os.path.join(model, "model.q4nx")):
-        return Q4nxModel(model)
+    except Exception as e:
+        from huggingface_hub.errors import EntryNotFoundError
+
+        if not isinstance(e, EntryNotFoundError):
+            raise
     return HFQ40Model(model)
 
 

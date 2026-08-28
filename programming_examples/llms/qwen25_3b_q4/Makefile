@@ -84,8 +84,11 @@ PEANO_KBASE     := -std=c++20 --target=aie2p-none-unknown-elf \
 # free: it must pair with the model entry's UNI_LM=25 (product covers the padded
 # vocab). 20/15 also satisfies every divisibility rule and still deadlocks the
 # vocab wave on device, so do not 'simplify' it.
+# NLAYERS=1 as for every other model: it is the multi-launch outer stitch, which
+# the unified wave loop does not use. N_LAYERS (36) reaches the engine through
+# the model entry's UNI_DEC, not through here.
 DECODE_ENV      := DECODE_MODEL=qwen2.5-3b VOCAB_CHUNK_I2=12 UNIFIED=1 LM_HEAD=0 \
-                   NLAYERS=$(N_LAYERS) DECODE_GOLDEN=1
+                   NLAYERS=1 DECODE_GOLDEN=1
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
 # so a header copied from another model can disagree with the IR -- silently, at
@@ -104,7 +107,7 @@ PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPEC
 # skip the build and hand back the PREVIOUS kernels -- an A/B that silently
 # measures the same binary twice.
 DECODE_STAMP := $(srcdir)/.decode_build_flags
-DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B NLAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
+DECODE_FLAGS := MODEL_TYPE=QWEN2_5_3B N_LAYERS=$(N_LAYERS) LBUILD=$(LBUILD) W_DUAL_CHAN=$(W_DUAL_CHAN) \
                 ATTN_EXTRA=$(ATTN_EXTRA) NONATTN_EXTRA=$(NONATTN_EXTRA)
 
 # End-to-end generation demo. The only bound now is the cache cap: the prompt
@@ -213,7 +216,7 @@ _compile_decode_build:
 	@# Qwen pair sitting next to the Llama decode_L2048 pair would be picked up as
 	@# another window of the same model.
 	@for W in $(LBUILD) $(LREF); do \
-	  echo ">>> qwen decode template decode_L$$W (NLAYERS=$(N_LAYERS))"; \
+	  echo ">>> qwen decode template decode_L$$W (N_LAYERS=$(N_LAYERS))"; \
 	  cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$$W \
 	    $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_L$$W.log 2>&1; \
 	  if [ -f $(DEC)/decode.xclbin ] && [ -f $(DEC)/decode.insts.bin ]; then \

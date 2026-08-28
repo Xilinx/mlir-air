@@ -12,9 +12,11 @@
 # with per-layer resident BOs (weights written once).
 #
 # Deltas vs the Llama Q4NX example, all model-driven:
-#   codec   the same Q4NX affine codec, read from FastFlowLM's shipped bundle
-#           (or quantized on load from an HF checkpoint). Same values the
-#           fused_decode weight cache uses -> prefill and decode agree.
+#   codec   Q4_0 (signed nibbles, w = q*scale, the block's `mins` unused), read
+#           from FastFlowLM's shipped model.q4nx -- the .q4nx CONTAINER carries
+#           the Q4_0 variant for this model, which is why the kernels are built
+#           -DQ4_0. Same values the fused_decode weight cache uses, so prefill
+#           and decode agree. See qwen25_3b_q4_weights.py's header.
 #   shape   36 layers, 16 heads x head_dim 128, 2 kv heads (GQA group 8),
 #           hidden 11008, vocab 151936, rope_theta 1e6, tied lm_head.
 #   bias    q/k/v projection bias (bf16, unquantized), fused into the NPU
@@ -28,7 +30,9 @@
 #
 # Weight source (env-overridable):
 #   Q4NX_MODEL_SOURCE : model.q4nx bundle (repo id / dir / path), or a
-#                       full-precision HF checkpoint, quantized on load.
+#                       full-precision HF checkpoint, quantized on load. Named
+#                       for the .q4nx container it points at, shared with the
+#                       other q4nx examples -- not for the codec inside it.
 import argparse
 import os
 import sys
