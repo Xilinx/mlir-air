@@ -252,4 +252,30 @@ void copy_bf16_to_bf16(bfloat16 *y, const bfloat16 *y_bf16) {
   }
 }
 
+// Round-to-nearest-even for every accumulator narrowing in this core.
+//
+// An AIE core comes up with its rounding mode set to FLOOR (toward -inf), and
+// the mode is a core register that nothing else here writes -- so a kernel that
+// does not set it narrows accum->bf16 by flooring, on EVERY conversion. That is
+// not a wash: it is a one-sided bias, so it does not cancel across a reduction
+// the way round-to-nearest error does, and it compounds down a residual stream.
+//
+// Measured on LFM2-1.2B decode (16 layers, NPU2): flooring reproduced the
+// device BIT-EXACTLY while round-to-nearest was 0.0152 away, and the bias grew
+// from 0.015 relative error on layer 0's ShortConv state to 0.264 by layer 15,
+// dragging the whole-model logit cosine to 0.876 and flipping top-1 tokens.
+// Setting the mode once per kernel entry costs one register write.
+//
+// This is the same call the conv2d/matmul kernels in aie_kernels and
+// programming_examples already make; the decode kernels were the ones missing
+// it. Call it FIRST in every extern "C" entry point -- the register is per
+// core, but a core runs whichever kernels its herd assigns, so relying on some
+// other entry point having set it is how one path silently keeps flooring.
+//
+// Taken from origin/main 980a8acc (#1929); this branch carries only that
+// commit's rounding half, not its opt-in finer SiLU table.
+static inline void aie_round_nearest_even() {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+}
+
 #endif

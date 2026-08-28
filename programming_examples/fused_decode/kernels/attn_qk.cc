@@ -77,6 +77,7 @@ extern "C" {
 void attn_qk(bf16 *__restrict q_ping, bf16 *__restrict q_pong,
              bf16 *__restrict k_ping, bf16 *__restrict k_pong,
              bf16 *__restrict s_ping, bf16 *__restrict s_pong, int *L) {
+  aie_round_nearest_even();
   // Peano's CDO loader does not zero .bss; keep ping/pong selectors and
   // zero-init scratch in .data so they are actually zeroed at load.
   __attribute__((section(".data"))) static bool is_ql_ping = false;
@@ -496,6 +497,7 @@ ATTN_ENTRY
 void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
                  bf16 *__restrict m_state, float *__restrict c_state,
                  bf16 *__restrict s_block, int blk, int L) {
+  aie_round_nearest_even();
   const aie::vector<bf16, 16> neg_inf = aie::broadcast<bf16, 16>(-0x1.FEp127f);
   const aie::vector<int, 16> idx = aie::vector<int, 16>(
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);

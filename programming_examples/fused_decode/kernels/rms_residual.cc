@@ -116,6 +116,7 @@ extern "C" {
 //   residual_add_aie: y = x_buf + x ; x_buf = y    (MODEL_DIM bf16)
 void rms_norm_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                   int _arm) {
+  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
   rms_norm(y, x, w);
@@ -126,11 +127,13 @@ void rms_norm_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 // norms so the Gemma 4-norm rms tile keeps <=4 packet ids per S2MM port.
 void rms_norm_lo_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                      int _arm) {
+  aie_round_nearest_even();
   (void)_arm;
   rms_norm(y, x, w);
 }
 void rms_norm_hi_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                      int _arm) {
+  aie_round_nearest_even();
   (void)_arm;
   rms_norm(y, x, w + MODEL_DIM);
 }
@@ -142,12 +145,14 @@ void rms_norm_hi_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 // route it.
 void rms_norm_aie_hdr(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                       unsigned int pkt_id) {
+  aie_round_nearest_even();
   *reinterpret_cast<unsigned int *>(y + 14) = pkt_id;
   rms_norm(y + 16, x, w);
 }
 
 void residual_add_aie(bf16 *restrict y, bf16 *restrict x_buf,
                       bf16 *restrict x) {
+  aie_round_nearest_even();
   residual_add(y, x_buf, x);
 }
 
@@ -389,6 +394,89 @@ void residual_acc_row_banded_aie(bf16 *restrict acc, bf16 *restrict x, int t,
   }
 }
 
+/// residual_acc_row_banded_aie, OUT OF PLACE: out = acc + x.
+///
+/// WHY A SEPARATE DESTINATION AND NOT `acc += x`. The in-place form makes the
+/// band buffer both the @rmsX get destination and the @layerOut put source,
+/// and air-to-aie sizes a tile-DMA BD's lock acquire/release from
+/// ceil(reads/writes) over the memcpy ops naming that buffer while the core
+/// side is hardwired to 1 -- so six gets against two puts emits a layerOut BD
+/// that acquires 3 against a core that releases 1, and the dispatch hangs
+/// with nothing written. Writing the sum somewhere else leaves the fetch
+/// buffer written-only and the drain buffer read-only, and both ratios are
+/// then 1:1.
+///
+/// It also keeps the @rmsX BD ring uniform. With one task on the channel the
+/// ring is count-free and lock-driven, so its slots rotate independently of
+/// which core call site is asking; every slot targeting the SAME buffer is
+/// what makes that safe. Two band buffers on the ring would deliver
+/// round-robin into whichever one the slot names, not the one the core is
+/// about to read.
+///
+/// `w` is the band width (always copied); `n <= w` is how much of it the
+/// projection round actually contributes (DECODE_ACC_STOP passes 0 to freeze
+/// the residual while keeping every transfer, so the tail must still be a
+/// copy and not left undefined).
+void residual_acc_row_banded_out_aie(bf16 *restrict out, bf16 *restrict acc,
+                                     bf16 *restrict x, int t, int w, int n) {
+  constexpr int vector_size = 16;
+  bf16 *it_o = out + t * w;
+  bf16 *it_a = acc + t * w;
+  bf16 *it_x = x + t * w;
+  for (int i = 0; i < n / vector_size; i++) {
+    aie::vector<bf16, vector_size> a_vec = aie::load_v<vector_size>(it_a);
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+    aie::store_v(it_o, aie::add(a_vec, x_vec));
+    it_o += vector_size;
+    it_a += vector_size;
+    it_x += vector_size;
+  }
+  for (int i = n / vector_size; i < w / vector_size; i++) {
+    aie::store_v(it_o, aie::load_v<vector_size>(it_a));
+    it_o += vector_size;
+    it_a += vector_size;
+  }
+}
+
+/// Copy `n` elements out of a band fetch into the resident norm weight.
+///
+/// RMS_W_ON_X: at RMS_BAND_STREAM>=3 the norm weights arrive on @rmsX, in the
+/// same band-shaped transfer and the same buffer as every other visit, because
+/// the rms core has two S2MM ports and level 3 needs three unless the weights
+/// stop owning one (see RMS_W_ON_X in fused_decode.py). A band fetch is
+/// BATCH*STG_W >= MODEL_DIM elements wide, so the whole K-wide weight fits in
+/// one; the launch side lands it at the front with a band-shaped descriptor and
+/// this lifts it out before the next fetch overwrites the buffer.
+///
+/// Deliberately NOT rms_copy_aie: that one is fixed at MODEL_DIM over two
+/// MODEL_DIM-typed buffers, and this reads a band-typed one. func.call needs an
+/// exact type match, which is the same reason the other banded leaves are
+/// separate symbols from their whole-row twins.
+void band_to_weight_aie(bf16 *restrict w, bf16 *restrict band, int n) {
+  constexpr int vector_size = 16;
+  for (int i = 0; i < n / vector_size; i++)
+    aie::store_v(w + i * vector_size,
+                 aie::load_v<vector_size>(band + i * vector_size));
+}
+
+/// Copy one whole band, band-typed on both sides.
+///
+/// Exists to RELEASE A CHANNEL BUFFER EARLY, not to move data anywhere useful.
+/// The residual accumulate consumes an @outY round and an @rmsX band together,
+/// so AIR keeps the @outY landing buffer acquired across the band's arrival --
+/// and the band cannot arrive while the round after it is queued behind it (see
+/// _RMS_STG_COPY in fused_decode.py). Copying the round out gives the get a
+/// reader of its own, which is what moves the release to just after it.
+///
+/// Same reason band_to_weight_aie is not rms_copy_aie: func.call needs an exact
+/// memref type match, and this one is band-typed on BOTH sides.
+void band_copy_aie(bf16 *restrict dst, bf16 *restrict src, int n) {
+  constexpr int vector_size = 16;
+  for (int i = 0; i < n / vector_size; i++)
+    aie::store_v(dst + i * vector_size,
+                 aie::load_v<vector_size>(src + i * vector_size));
+}
+
 // MLIR-managed-lock decode (q4nx_decode_repro): pure-compute leaves that let
 // the rms core's lock/control-flow live in the aie.core body (explicit
 // aie.use_lock) instead of inside rms_residual()'s in-kernel
@@ -397,12 +485,14 @@ void residual_acc_row_banded_aie(bf16 *restrict acc, bf16 *restrict x, int t,
 //   residual_add_aie_hdr: pkt_id@y+14; y+16 = x_buf + x ; x_buf = y+16  (step
 //   3)
 void rms_copy_aie(bf16 *restrict dst, bf16 *restrict src) {
+  aie_round_nearest_even();
   for (int i = 0; i < MODEL_DIM; i++)
     dst[i] = src[i];
 }
 
 void residual_add_aie_hdr(bf16 *restrict y, bf16 *restrict x_buf,
                           bf16 *restrict x, unsigned int pkt_id) {
+  aie_round_nearest_even();
   *reinterpret_cast<unsigned int *>(y + 14) = pkt_id;
   residual_add(y + 16, x_buf, x);
 }
@@ -411,6 +501,7 @@ void rms_residual(bf16 *restrict y, bf16 *restrict x_ping,
                   bf16 *restrict x_pong, bf16 *restrict w,
                   bf16 *restrict y_out_0, bf16 *restrict y_out_1,
                   bf16 *restrict x_buf, int *IS_ATTN) {
+  aie_round_nearest_even();
   constexpr int w_prod_lock = 0;
   constexpr int w_cons_lock = 1;
   constexpr int y_prod_lock = 2;

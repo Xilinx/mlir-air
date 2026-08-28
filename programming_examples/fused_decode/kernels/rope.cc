@@ -200,6 +200,7 @@ extern "C" {
 
 void rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
           bf16 *restrict qkv, bf16 *restrict rope_w) {
+  aie_round_nearest_even();
   constexpr int qkv_prod_lock = 0;
   constexpr int qkv_cons_lock = 1;
   constexpr int q_prod_lock = 2;
@@ -231,6 +232,7 @@ void rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
 // aie.use_lock).
 void rope_compute(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
                   bf16 *restrict qkv, bf16 *restrict rope_w, int _arm) {
+  aie_round_nearest_even();
   (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
               // lock)
 #ifdef HAS_QKV_BIAS

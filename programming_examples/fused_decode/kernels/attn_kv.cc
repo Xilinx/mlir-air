@@ -45,6 +45,7 @@ extern "C" {
 void attn_kv(bf16 *__restrict s_ping, bf16 *__restrict s_pong,
              bf16 *__restrict v_ping, bf16 *__restrict v_pong,
              bf16 *__restrict o_ping, bf16 *__restrict o_pong, int *L) {
+  aie_round_nearest_even();
   alignas(aie::vector_decl_align) static y_acc_dtype
       y[Q_HEADS_PADDED_PER_CU * DH] = {};
   alignas(aie::vector_decl_align) static bf16
@@ -111,6 +112,7 @@ __attribute__((noinline)) void passThrough_aie(T_in *restrict in0,
 ATTN_HOT
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
+  aie_round_nearest_even();
   using MMUL = aie::mmul<8, 8, 8, bf16, bf16, accfloat>;
 
   bf16 *__restrict pS1 = pS;
@@ -271,6 +273,7 @@ ATTN_HOT void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
 template <unsigned N>
 __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
+  aie_round_nearest_even();
 
   constexpr int vec_factor = 64;
   const int F = N / vec_factor;
@@ -310,6 +313,7 @@ __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
 
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
+  aie_round_nearest_even();
   using MMUL = aie::mmul<GQA_R, GQA_S, GQA_T, bf16, bf16, accfloat>;
   bf16 *__restrict pS1 = pS;
 
@@ -347,6 +351,7 @@ typedef float y_acc_dtype;
 template <unsigned colQ, unsigned r, unsigned s, unsigned t>
 void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
              y_acc_dtype *__restrict pY, float *__restrict c) {
+  aie_round_nearest_even();
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
 
@@ -463,6 +468,7 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
 template <unsigned N>
 void scale_div_aie(bf16 *a, bf16 *o, float *l) {
+  aie_round_nearest_even();
 
   constexpr int vec_factor = 16;
   const int F = N / vec_factor;
@@ -493,6 +499,7 @@ __attribute__((noinline))
 #endif
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
+  aie_round_nearest_even();
   using MMUL = aie::mmul<GQA_R, GQA_S, GQA_T, bf16, bf16, accfloat>;
   bf16 *__restrict pS1 = pS;
 
@@ -543,6 +550,7 @@ __attribute__((noinline))
 #endif
 void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
              y_acc_dtype *__restrict pY, float *__restrict c) {
+  aie_round_nearest_even();
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
 
@@ -688,6 +696,7 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
 template <unsigned N>
 void scale_div_aie(bf16 *a, bf16 *o, float *l) {
+  aie_round_nearest_even();
 
   constexpr int vec_factor = 64;
   const int F = N / vec_factor;
@@ -764,6 +773,7 @@ ATTN_ENTRY
 void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
                  float *__restrict y_state, float *__restrict l_state, int blk,
                  int L) {
+  aie_round_nearest_even();
   if (blk == 0) {
     zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
@@ -772,8 +782,55 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
   // Block fully beyond L: skip (pairs with attn_qk_blk's skip -- s_block/c are
   // not produced for this block, so they must not be consumed). No V
   // contribution, matching the runtime-L path.
-  if (L - blk * 16 <= 0)
+  const int rem = L - blk * 16;
+  if (rem <= 0)
     return;
+#ifndef ATTN_NO_VTAIL_ZERO
+  // THE V TILE'S OUT-OF-CONTEXT KEYS MUST BE ZEROED, EVEN THOUGH THEIR SCORES
+  // ALREADY ARE.
+  //
+  // S.V runs as a BFP16 mmul contracting over KEYS, and BFP16 shares ONE
+  // exponent across 8 elements of that dimension. Those groups are 8-key
+  // aligned, so whenever L % 8 != 0 the group straddling the context boundary
+  // also covers KV rows past L-1 -- and their exponents still enter the
+  // shared-exponent max, right-shifting the VALID rows' mantissas. The masked
+  // keys contribute no WEIGHT (attn_qk zeroes their scores, and a zero never
+  // raises a max, which is why the K side shows nothing); what they cost is
+  // PRECISION.
+  //
+  // Measured before this zeroing, on qwen3-4b decode, by writing a value into
+  // KV rows L..L+7 and re-dispatching: the output moved at every L except
+  // L % 8 == 0, where it was bit-identical -- and it depended ONLY on those
+  // rows' EXPONENT. Sign ignored (v and -v byte-identical), mantissa ignored
+  // (1.00/1.25/1.50/1.75 byte-identical), no dependence on how many rows
+  // carried it (a max, not a sum), and nothing at all once the valid rows'
+  // exponent was the larger one (valid 256 vs phantom 1/16/256 -> exactly 0).
+  //
+  // Invisible in ordinary decode, where the rows past L-1 are zero. NOT
+  // invisible in a speculative verify pass, where they hold the block's own
+  // later tokens: see docs/DFlashFeasibility.md section 3.8.
+  //
+  // Only the group containing the boundary can hurt -- a group entirely past L
+  // is its own BFP block -- but zeroing to the end of the tile is the same
+  // bounded cost and needs no second boundary to get right. Last block only.
+  //
+  // The in-kernel-lock `attn_kv` above has the same exposure and is NOT fixed:
+  // AIR declares and calls only attn_kv_blk / attn_kv_fin / attn_kv_fin_row
+  // (fused_decode.py `_set_attn_link`), so that path is the reference form and
+  // is unreachable from this engine. Fix it there too before reviving it.
+  if (rem < 16) {
+    // v_block is [2 key-halves][KV_HEADS_PER_CU*DH/8 chunks][8 keys][8 dh],
+    // which is the shape the toV memtile put lands (fused_decode.py: sizes
+    // [2, KVPC_DH//8, 8, 8]).
+    constexpr int NCH = (KV_HEADS_PER_CU * DH) / 8;
+    const aie::vector<bf16, 8> z8 = aie::zeros<bf16, 8>();
+    for (int k = rem; k < 16; ++k) {
+      bf16 *__restrict p = v_block + (k >> 3) * (NCH * 64) + (k & 7) * 8;
+      for (int ch = 0; ch < NCH; ++ch)
+        aie::store_v(p + ch * 64, z8);
+    }
+  }
+#endif
   float *c = (float *)(s_block + Q_HEADS_PADDED_PER_CU * 16);
 #ifndef SKIP_CALC_L
   calculate_l(s_block, c, l_state);
@@ -785,6 +842,7 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
 
 void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                  bf16 *__restrict o) {
+  aie_round_nearest_even();
   alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
   passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
                                                                  y_bf16);
