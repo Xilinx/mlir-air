@@ -358,9 +358,10 @@ jobs:
           # NOT applied to it -- so this literal, not the `default:` above, is
           # what the nightly actually runs. The two must be kept in step: when
           # they drifted, the schedule silently dropped a whole suite and still
-          # reported green, because publishing is guarded on `event_name ==
-          # 'schedule'` (true) while the missing results file is skipped by an
-          # `if [ -f ... ]`. Neither check can see a suite that never ran.
+          # reported green, because publishing is guarded on
+          # `github.event_name == 'schedule'` (true) while the results file it
+          # consumes is guarded by an `if [ -f ... ]` (a no-op when absent).
+          # Neither check can see a suite that never ran.
           SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep' }}"
           echo "running suites: $SUITES"
           want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
