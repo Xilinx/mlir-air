@@ -1,59 +1,132 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+"""Shared-L1 communication between cores of a single herd, on air.api.
 
-"""Shared-L1 communication between cores within a single air.herd.
-
-A column of NC cores is expressed as ONE air.herd [1, NC]. Every core runs the
-same body (a herd is a single program replicated across its cores) and learns
-its position from the tile index ty. Data flows DOWN the column entirely through
-shared L1: neighbor cores read/write a common L1 buffer, so there is no DMA --
-and no AIE hardware cascade link -- between the cores. Exercising that shared-L1
-hand-off is the whole point of the example.
+A column of NC cores is one ``air.herd [1, NC]``. Every core runs the same body
+and learns its position from ``ty``. Data flows down the column entirely through
+shared L1 -- there is no DMA and no hardware cascade between the cores::
 
     core 0   : v0 = g(in0)                    -> hop[0]
     core k   : vk = g(ink) + hop[k-1]         -> hop[k]        (1 <= k < NC-1)
     core NC-1: out = g(in_{NC-1}) + hop[NC-2] -> @outY
 
-  * Each hop[k] is an L1 buffer shared between neighbor cores k and k+1: core k
-    writes it, core k+1 reads it (intra-herd neighbor shared L1).
-  * Each core picks its role (first / middle / last) from its tile index ty with
-    a single scf.index_switch.
-  * g() also runs a short loop whose per-iteration constant is chosen by a SECOND
-    scf.index_switch keyed on the loop counter -- so the example shows
-    scf.index_switch used both for tile-index role selection and for loop-index
-    value selection.
+Each ``hop[k]`` is an L1 buffer that neighbouring cores k and k+1 both address:
+k writes it, k+1 reads it. In the DSL that is ``<segment>.per_core()`` -- L1
+allocated at segment scope and handed to the herd whole. The name says what the
+*allocation* is, one buffer per core rather than one slab of a divided one; that
+the cores of a single herd can then hand data along it is the compiler's doing,
+and it is what this example exists to exercise.
 
-The per-core compute here is just a trivial vectorized accumulate (a placeholder
-for whatever real work a core would do); input/output move over simple L3<->L1
-channels so the example runs standalone on NPU1.
+``g()`` adds a per-step constant chosen by ``ops.switch`` on the loop counter --
+a value picked by a runtime index, which is ``scf.index_switch`` in its
+value-returning form.
 
 Result: out = sum(in[0..NC-1]) + NC * sum(STEP_ADDENDS).
+
+One departure from the predecessor's IR. The role dispatch was a second
+``scf.index_switch``, keyed on ``ty`` and run for its effects; here it is a
+chain of ``ops.branch``, which is ``scf.if``. The DSL has one N-way construct
+and it is the value-returning one, on the grounds that the statement form is
+nested branch -- so this is that spelling, not a missing feature. What the
+example demonstrated twice it now demonstrates once, in the half where a switch
+buys something a branch does not.
+
+The chunk width is pinned with ``vector=VEC`` rather than left to the emitter:
+a producer's write to a shared buffer and the consumer's read of it have to
+carry matching per-chunk lock acquire/release counts, so the two must be
+chunked the same way.
 """
 
 import argparse
+
 import numpy as np
+from ml_dtypes import bfloat16
+
+from air import api as air
+from air.api import ops
+from air.api.types import bf16
+from air.backend.xrt_runner import XRTRunner
 
 np.random.seed(42)
-
-import air
-from air.ir import *
-from air.dialects.air import *
-from air.dialects import memref, vector, arith, scf
-from air.dialects.func import FuncOp
-from air.dialects.scf import for_, yield_, index_switch
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp
-from air.backend.xrt_runner import XRTRunner
-from ml_dtypes import bfloat16
 
 NC = 4  # cores in the column; NC-1 shared-L1 hops
 T = 64  # elements per core tile
 VEC = 16  # vector width
 
-STEP_ADDENDS = [1.0, 10.0]  # per-step constant selected via scf.index_switch
+STEP_ADDENDS = [1.0, 10.0]  # per-step constant selected by ops.switch
 NSTEP = len(STEP_ADDENDS)
 
-range_ = for_
+
+def build_module():
+    l3_in = air.tensor([NC, T], bf16)
+    l3_out = air.tensor([1, T], bf16)
+
+    in_x = air.channel("inX", size=[NC])  # per-core input feed (L2 -> L1)
+    out_y = air.channel("outY", size=[1])  # last core's result (L1 -> L2)
+
+    with air.launch([range(1), range(1)], name="col_relay") as launch:
+
+        @launch.body
+        def _(lx, ly):
+
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    # Input L3 -> L2 in one transfer, then fanned per core.
+                    in_l2 = air.alloc([NC, T], bf16, scope=seg.private())
+                    ops.load(in_l2, l3_in)
+                    for c in range(NC):
+                        in_x.put(in_l2[c, :], indices=[c])
+
+                    # One hop buffer per relay edge: core k writes hop[k],
+                    # core k+1 reads it.
+                    hop = [
+                        air.alloc([T], bf16, scope=seg.per_core(), vector=VEC)
+                        for _ in range(NC - 1)
+                    ]
+
+                    with air.herd(
+                        [range(1), range(NC)], name="col_relay", shape=(1, NC)
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            local = air.alloc([T], bf16, scope=h.private(), vector=VEC)
+                            in_x.get(local, indices=[ty])
+
+                            # Every core runs this: local += the step's addend,
+                            # which ops.switch picks from the loop counter.
+                            for step in air.sequential(0, NSTEP):
+                                local[:] = local[:] + ops.switch(step, STEP_ADDENDS)
+
+                            def role(k):
+                                if k > 0:
+                                    local[:] = local[:] + hop[k - 1][:]
+                                if k < NC - 1:
+                                    hop[k][:] = local[:]
+                                else:
+                                    out_y.put(local)
+
+                            # core 0, then 1, ... with the last core in the
+                            # final else, matching the predecessor's default arm.
+                            def dispatch(k):
+                                if k == NC - 1:
+                                    role(k)
+                                    return
+                                with ops.branch(ty == k) as arm:
+                                    role(k)
+                                with arm.otherwise():
+                                    dispatch(k + 1)
+
+                            dispatch(0)
+
+                    # The last core's result, L1 -> L2 -> L3.
+                    out_l2 = air.alloc([1, T], bf16, scope=seg.private())
+                    out_y.get(out_l2)
+                    ops.store(out_l2, l3_out)
+
+    return launch
 
 
 def parse_args():
@@ -65,175 +138,24 @@ def parse_args():
         default="xclbin",
         dest="output_format",
     )
+    p.add_argument(
+        "--target",
+        type=str,
+        default="auto",
+        help="NPU generation to build for: auto (default, detects the installed "
+        "device), npu1 or npu2",
+    )
     return p.parse_args()
-
-
-@module_builder
-def build_module():
-    itype = IndexType.get()
-    bf16 = air.ir.Type.parse("bf16")
-
-    def idx(v):
-        return ConstantOp(itype, v)
-
-    l1 = Attribute.parse("2")
-    l2 = Attribute.parse("1")
-    l1_t = MemRefType.get([T], bf16, memory_space=l1)
-    l2_in_t = MemRefType.get([NC, T], bf16, memory_space=l2)
-    l2_out_t = MemRefType.get([1, T], bf16, memory_space=l2)
-    l3_in_t = MemRefType.get([NC, T], bf16)
-    l3_out_t = MemRefType.get([1, T], bf16)
-
-    channel("inX", size=[NC])  # per-core input feed (L2 -> L1)
-    channel("outY", size=[1])  # last core's result (L1 -> L2)
-
-    am = AffineMapAttr.get(AffineMap.get_identity(1))
-
-    def _rd(buf, j):
-        cst0 = arith.ConstantOp(bf16, 0.0)
-        return vector.transfer_read(
-            VectorType.get([VEC], bf16),
-            memref.subview(buf, [j], [VEC], [1]),
-            [idx(0)],
-            am,
-            cst0,
-            [True],
-        )
-
-    def _wr(vec, buf, j):
-        vector.transfer_write(
-            None, vec, memref.subview(buf, [j], [VEC], [1]), [idx(0)], am, [True]
-        )
-
-    def emit_axpy(buf, scalar_val):
-        """buf[:] += scalar_val (bf16 SSA value)."""
-        for j in range_(idx(0), idx(T), idx(VEC)):
-            vs = vector.BroadcastOp(VectorType.get([VEC], bf16), scalar_val)
-            _wr(arith.AddFOp(_rd(buf, j), vs), buf, j)
-            yield_([])
-
-    def emit_add_inplace(dst, src):
-        """dst[:] += src[:]. Chunked so a producer's shared-buffer write and this
-        consumer's read carry MATCHING per-chunk lock acquire/release counts."""
-        for j in range_(idx(0), idx(T), idx(VEC)):
-            _wr(arith.AddFOp(_rd(dst, j), _rd(src, j)), dst, j)
-            yield_([])
-
-    def emit_copy(src, dst):
-        """dst[:] = src[:], chunked (same lock-count reasoning as emit_add_inplace)."""
-        for j in range_(idx(0), idx(T), idx(VEC)):
-            _wr(_rd(src, j), dst, j)
-            yield_([])
-
-    @FuncOp.from_py_func(l3_in_t, l3_out_t)
-    def col_relay(l3_in, l3_out):
-        @launch(operands=[l3_in, l3_out], sizes=[1, 1])
-        def launch_body(lx, ly, lsx, lsy, gin, gout):
-            @segment(name="seg", operands=[gin, gout])
-            def segment_body(sin, sout):
-                # Relay input L3 -> L2 (one DMA) -> fan per-core via @inX.
-                in_l2 = AllocOp(l2_in_t, [], [])
-                dma_memcpy_nd(
-                    in_l2.result,
-                    sin,
-                    dst_offsets=[idx(0), idx(0)],
-                    dst_sizes=[idx(NC), idx(T)],
-                    dst_strides=[idx(T), idx(1)],
-                    src_offsets=[idx(0), idx(0)],
-                    src_sizes=[idx(NC), idx(T)],
-                    src_strides=[idx(T), idx(1)],
-                )
-                for c in range(NC):
-                    ChannelPut(
-                        "inX",
-                        in_l2.result,
-                        indices=[idx(c)],
-                        offsets=[idx(c), idx(0)],
-                        sizes=[idx(1), idx(T)],
-                        strides=[idx(T), idx(1)],
-                    )
-
-                # NC-1 shared L1 hop buffers, one per relay edge (core k -> k+1).
-                shbuf = [AllocOp(l1_t, [], []) for _ in range(NC - 1)]
-                shbuf_ops = [b.result for b in shbuf]
-
-                @herd(name="col_relay", sizes=[1, NC], operands=shbuf_ops)
-                def herd_body(tx, ty, sx, sy, *hops):
-                    # ---- input + step loop (all cores run this common body) ----
-                    # local = in + sum over steps of STEP_ADDENDS[step], where
-                    # each step's addend is picked by scf.index_switch(step).
-                    local = AllocOp(l1_t, [], [])
-                    ChannelGet("inX", local.result, indices=[ty])
-                    a_consts = [arith.ConstantOp(bf16, v) for v in STEP_ADDENDS]
-                    for step in range_(idx(0), idx(NSTEP), idx(1)):
-                        addend = index_switch(
-                            [bf16],
-                            step,
-                            list(range(NSTEP - 1)),
-                            case_body_builder=lambda op, i, cv: yield_(
-                                [a_consts[i].result]
-                            ),
-                            default_body_builder=lambda op: yield_(
-                                [a_consts[-1].result]
-                            ),
-                        )
-                        emit_axpy(local.result, addend)
-                        yield_([])
-
-                    # ---- relay role dispatch by ty via scf.index_switch ----
-                    # case k (0..NC-2): if k>0 fold in the incoming hop, then
-                    #                   publish to hop[k].
-                    # default (k=NC-1): fold in the last hop, emit the result.
-                    def emit_role(k):
-                        if k > 0:
-                            emit_add_inplace(local.result, hops[k - 1])
-                        if k < NC - 1:
-                            emit_copy(local.result, hops[k])
-                        else:
-                            ChannelPut("outY", local.result, indices=[idx(0)])
-
-                    index_switch(
-                        [],
-                        ty,
-                        list(range(NC - 1)),
-                        case_body_builder=lambda op, k, cv: (
-                            emit_role(k),
-                            yield_([]),
-                        )[-1],
-                        default_body_builder=lambda op: (
-                            emit_role(NC - 1),
-                            yield_([]),
-                        )[-1],
-                    )
-
-                # Collect the last core's result L1 -> L2 -> L3.
-                out_l2 = AllocOp(l2_out_t, [], [])
-                ChannelGet(
-                    "outY",
-                    out_l2.result,
-                    indices=[idx(0)],
-                    offsets=[idx(0), idx(0)],
-                    sizes=[idx(1), idx(T)],
-                    strides=[idx(T), idx(1)],
-                )
-                dma_memcpy_nd(
-                    sout,
-                    out_l2.result,
-                    dst_offsets=[idx(0), idx(0)],
-                    dst_sizes=[idx(1), idx(T)],
-                    dst_strides=[idx(T), idx(1)],
-                    src_offsets=[idx(0), idx(0)],
-                    src_sizes=[idx(1), idx(T)],
-                    src_strides=[idx(T), idx(1)],
-                )
 
 
 def main():
     args = parse_args()
-    mlir_module = build_module()
+
+    launch = build_module()
+    mlir_module = launch.build(target=args.target)
     if args.print_ir:
-        print(str(mlir_module))
-        return
+        print(mlir_module)
+        return 0
 
     A = np.random.rand(NC, T).astype(bfloat16)
     s = float(sum(STEP_ADDENDS))
@@ -244,10 +166,10 @@ def main():
         verbose=False,
         output_format=args.output_format,
         instance_name="col_relay",
-        debug_ir=True,
+        target_device=launch.target,
     )
-    exit(runner.run_test(mlir_module, inputs=[A], expected_outputs=[C], rtol=3e-2))
+    return runner.run_test(mlir_module, inputs=[A], expected_outputs=[C], rtol=3e-2)
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())
