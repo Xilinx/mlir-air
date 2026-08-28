@@ -470,12 +470,17 @@ def shape_of_difference(yN, y1, batch, K):
             print(f"    token 0 repeats every {name}: {eq} of {len(seg) - 1}")
 
 
-def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000):
+def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000, scalar=None):
     """One dispatch. Returns the X buffer afterwards -- the layer output.
 
     Raw int16, not floats: this compares BYTES. A bit-level difference a float
     compare would round away is exactly the kind of layout error the gate is
     for.
+
+    `insts` is a path to a frozen insts.bin, or an already-assembled uint32
+    array -- a DYNSEQ build has no frozen stream, it emits a TXN builder the
+    host calls per dispatch. `scalar` is the trailing context-length argument
+    such a build's kernel signature carries (decode_dynseq.dispatch_args).
     """
     dev = xrt.device(0)
     xb = xrt.xclbin(str(xclbin))
@@ -484,7 +489,11 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000):
     kn = [k for k in xb.get_kernels() if "MLIR_AIE" in k.get_name()][0]
     kern = xrt.kernel(ctx, kn.get_name())
 
-    ib = np.fromfile(str(insts), dtype=np.uint32)
+    ib = (
+        np.asarray(insts, dtype=np.uint32)
+        if isinstance(insts, np.ndarray)
+        else np.fromfile(str(insts), dtype=np.uint32)
+    )
     i_bo = xrt.bo(dev, ib.nbytes, xrt.bo.cacheable, kern.group_id(1))
     i_bo.write(ib, 0)
     i_bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
@@ -514,9 +523,10 @@ def dispatch(xclbin, insts, g, batch, x_row, seed, xrt, wait_ms=60000):
         bos[name].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
     _t0 = time.perf_counter()
-    st = kern(3, i_bo, ib.size, bos["x"], bos["w"], bos["r"], bos["y"], bos["kv"]).wait(
-        wait_ms
-    )
+    _extra = [] if scalar is None else [int(scalar)]
+    st = kern(
+        3, i_bo, ib.size, bos["x"], bos["w"], bos["r"], bos["y"], bos["kv"], *_extra
+    ).wait(wait_ms)
     _el = time.perf_counter() - _t0
     for b in ("x", "y", "kv"):
         bos[b].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
@@ -562,6 +572,45 @@ def template(prefix, batch, L):
     return xb, xb.with_suffix("").with_suffix(".insts.bin")
 
 
+# One DYNSEQ build serves every context length, so the gate stops needing a
+# template per position -- which is what made `--tokens all` cost a build per
+# token and kept the mask arithmetic untestable on device. The stream comes from
+# the compiler-emitted TXN builder instead of a frozen insts.bin.
+_TXN_CACHE = {}
+
+
+def dynseq_insts(prefix, batch, build_L, arg):
+    """The instruction stream for one dispatch of a DYNSEQ build.
+
+    `build_L` names the template (its compile-time ATTN_MAXL); `arg` is the
+    runtime context length the stream is assembled for -- and, under
+    DECODE_MASK_MODE_RTP, the mask mode riding in its bit 30. The builder is
+    cached because constructing it parses and JITs the emitted header, which is
+    slow enough to dominate a multi-position sweep.
+    """
+    hdr = HERE / f"{prefix}_b{batch}_L{build_L}.txn.h"
+    if not hdr.exists():
+        sys.exit(
+            f"{hdr.name} not found -- a DYNSEQ build emits a TXN builder, not an\n"
+            f"insts.bin. Build it with\n"
+            f"    DECODE_DYNSEQ=1 ./build_template.sh {batch} {build_L}"
+        )
+    key = str(hdr)
+    if key not in _TXN_CACHE:
+        air_py = str(HERE.parent.parent / "python")
+        if air_py not in sys.path:
+            sys.path.insert(0, air_py)
+        from air.backend.txn_builder import TxnBuilder
+
+        b = TxnBuilder(key)
+        names = b.function_names
+        if len(names) != 1:
+            sys.exit(f"{hdr.name} declares {len(names)} builders; expected 1")
+        _TXN_CACHE[key] = (b, names[0])
+    b, name = _TXN_CACHE[key]
+    return b(name, int(arg))
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -571,6 +620,16 @@ def main():
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--L", type=int, default=128, help="token 0's context length")
     ap.add_argument("--prefix", default="decode")
+    ap.add_argument(
+        "--build-L",
+        type=int,
+        default=None,
+        help="the L the DYNSEQ templates were BUILT at, if it differs from the "
+        "L being dispatched. One dynseq build serves every runtime L up to its "
+        "compile-time ATTN_MAXL, and --bidir dispatches the reference at "
+        "L+B-1 -- so both templates have to be built high enough to cover that, "
+        "e.g. --L 128 --batch 8 needs ATTN_MAXL >= 135, i.e. --build-L 144.",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n-layers", type=int, default=1)
     ap.add_argument(
@@ -597,6 +656,24 @@ def main():
         "batch-1 one, and the default was chosen for batch 1.",
     )
     ap.add_argument(
+        "--dynseq",
+        action="store_true",
+        help="the templates were built with DECODE_DYNSEQ=1: assemble each "
+        "dispatch's stream from the emitted TXN builder instead of reading a "
+        "frozen insts.bin. ONE build then serves every position, so --tokens "
+        "all no longer needs a batch-1 template per token.",
+    )
+    ap.add_argument(
+        "--bidir",
+        action="store_true",
+        help="check the BIDIRECTIONAL mask (DFlash's draft pass): every token "
+        "of the block attends to the whole block, so compare EVERY token "
+        "against a batch-1 dispatch at context L+B-1 -- which is what they "
+        "should all now see. Use with a DECODE_MASK_BIDIR=1 build (mode baked "
+        "in), or add --dynseq for a DECODE_MASK_MODE_RTP=1 build (mode set per "
+        "dispatch in the RTP-L's bit 30).",
+    )
+    ap.add_argument(
         "--smoke",
         action="store_true",
         help="dispatch the batched build only and report that it completed. "
@@ -604,14 +681,22 @@ def main():
         "the first thing a new wire fails at.",
     )
     args = ap.parse_args()
+    # Under --dynseq the template NAME carries the build's ATTN_MAXL, while the
+    # dispatch carries the runtime L. They are the same number unless --bidir
+    # pushes a reference past the build's window.
+    build_L = args.build_L if args.build_L is not None else args.L
 
     try:
         import pyxrt as xrt
     except ImportError:
         sys.exit("pyxrt not importable: this gate needs the NPU")
 
-    gN = geom(args.model, args.vocab_chunk_i2, args.L, args.batch, args.n_layers)
-    g1 = geom(args.model, args.vocab_chunk_i2, args.L, 1, args.n_layers)
+    # A DYNSEQ build's BOs are sized by its compile-time ATTN_MAXL, not by the L
+    # being dispatched -- that is the whole point of it. Sizing them from the
+    # runtime L instead hangs the dispatch with nothing written.
+    geom_L = build_L if args.dynseq else args.L
+    gN = geom(args.model, args.vocab_chunk_i2, geom_L, args.batch, args.n_layers)
+    g1 = geom(args.model, args.vocab_chunk_i2, geom_L, 1, args.n_layers)
     rng = np.random.default_rng(args.seed)
     # bf16 of a bounded float, NOT raw int16. A BO holds bit patterns, and half
     # the int16 range is a bf16 exponent of 0xF0 and up -- 0xFF80 alone is -inf.
@@ -621,7 +706,7 @@ def main():
     # buffer over.
     row = bf16(rng.uniform(-1.0, 1.0, size=g1["k"]))
 
-    bn, bni = template(args.prefix, args.batch, args.L)
+    bn, bni = template(args.prefix, args.batch, build_L)
     if not bn.exists():
         sys.exit(
             f"{bn.name} not found. Build it from THIS tree with\n"
@@ -630,8 +715,25 @@ def main():
             f"and rename decode.* to {bn.stem}.*"
         )
 
-    print(f"\nbatch equivalence  [{args.model}, batch {args.batch}, L {args.L}]")
-    yN, probeN, kvN = dispatch(bn, bni, gN, args.batch, row, args.seed, xrt, args.wait)
+    # fused_decode.py's MASK_MODE_BIT. Set in the RTP-L, it tells the attention
+    # cores to give every token of the block the same context (the DFlash draft
+    # pass) instead of the causal staircase (the verify pass).
+    # Only meaningful with --dynseq; a DECODE_MASK_BIDIR build has the mode
+    # folded into the core and ignores it.
+    MASK_MODE_BIT = 1 << 30
+
+    mode = "bidirectional" if args.bidir else "causal"
+    print(
+        f"\nbatch equivalence  [{args.model}, batch {args.batch}, L {args.L}"
+        + (f", {mode}]" if (args.dynseq or args.bidir) else "]")
+    )
+    scalarN = None
+    if args.dynseq:
+        scalarN = args.L | (MASK_MODE_BIT if args.bidir else 0)
+        bni = dynseq_insts(args.prefix, args.batch, build_L, scalarN)
+    yN, probeN, kvN = dispatch(
+        bn, bni, gN, args.batch, row, args.seed, xrt, args.wait, scalarN
+    )
     print(f"  batch {args.batch}: dispatch COMPLETED, {yN.size} elements back")
     # A constant output makes every comparison below trivially true. This is not
     # hypothetical: random-byte weights produced 0x7F81 -- one NaN -- in every
@@ -655,27 +757,47 @@ def main():
         return 0
 
     K = g1["k"]
-    positions = range(args.batch if args.tokens == "all" else 1)
+    positions = range(args.batch if (args.tokens == "all" or args.bidir) else 1)
     bad, missing, kv_ok = [], [], True
+    _G1 = {geom_L: g1}  # reference geometry per context length; geom() is slow
     for t in positions:
-        b1, b1i = template(args.prefix, 1, args.L + t)
+        # Causal: token t is at position L+t-1 and sees L+t keys. Bidirectional:
+        # every token sees the whole block, so every one of them should match the
+        # SAME batch-1 dispatch -- the one at L+B-1. That single reference for all
+        # B tokens is the check; a build that quietly kept the staircase would
+        # match at t=B-1 and nowhere else.
+        ref_L = (args.L + args.batch - 1) if args.bidir else (args.L + t)
+        # The reference's geometry is a function of ITS context length, not the
+        # batched build's: geom() sizes the KV BO from L. Feeding a template
+        # built at L+B-1 the BOs for L hangs the dispatch with nothing written,
+        # which reads exactly like a device fault and is not one.
+        gk = geom_L if args.dynseq else ref_L
+        if gk not in _G1:
+            _G1[gk] = geom(args.model, args.vocab_chunk_i2, gk, 1, args.n_layers)
+        g1t = _G1[gk]
+        if args.dynseq:
+            b1, _ = template(args.prefix, 1, build_L)
+            b1i, s1 = dynseq_insts(args.prefix, 1, build_L, ref_L), ref_L
+        else:
+            b1, b1i = template(args.prefix, 1, ref_L)
+            s1 = None
         if not b1.exists():
             missing.append(b1.name)
             continue
-        y1, probe1, kv1 = dispatch(b1, b1i, g1, 1, row, args.seed, xrt, args.wait)
+        y1, probe1, kv1 = dispatch(b1, b1i, g1t, 1, row, args.seed, xrt, args.wait, s1)
         got = yN[t * K : (t + 1) * K]
         n, rel, nnf = compare(got, y1)
         if not (rel <= args.tol) or nnf:
             bad.append((t, n, int(np.argmax(got != y1)), rel, nnf))
         print(
-            f"  token {t} (L {args.L + t}): {n} of {K} bytes differ, "
+            f"  token {t} (L {ref_L}): {n} of {K} bytes differ, "
             f"rms rel {rel:.2e}"
             + (f", {nnf} NON-FINITE" if nnf else "")
             + ("" if rel <= args.tol and not nnf else f"   <-- FAIL")
         )
         if t == 0:
-            kv_ok = kv_stage(gN, g1, kvN, kv1, args.batch, args.tol)
-        probe_stages(gN, g1, probeN, probe1, t, args.tol)
+            kv_ok = kv_stage(gN, g1t, kvN, kv1, args.batch, args.tol)
+        probe_stages(gN, g1t, probeN, probe1, t, args.tol)
 
     if missing:
         print(

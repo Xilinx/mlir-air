@@ -233,8 +233,27 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         k=fd.X_SLOTS * fd.K * _b,
         w_elems=w_elems,
         **({"w_parts": w_parts} if w_parts else {}),
-        rms_size=fd.UNI_DEC * fd.RMS_LAYER + _rope_w_elems(fd) + fd.K,
-        ny=decode_y + fd.UNI_LM * fd.VOCAB_SIZE_PADDED * _b,
+        # RMS_TAIL_SLACK is 0 for every shipping build. RMS_BAND_STREAM>=3 at
+        # BATCH>1 carries the norm weights on @rmsX as band-shaped transfers, so
+        # each weight is read BATCH*STG_W wide from its own base -- and the last
+        # of them (the vocab arm's final norm) sits at the end of this buffer.
+        # The slack is that overhang; fused_decode.py exports it so the host BO
+        # and the descriptor that reads it cannot disagree. getattr keeps this
+        # working against a fused_decode.py that predates the symbol.
+        rms_size=fd.UNI_DEC * fd.RMS_LAYER
+        + _rope_w_elems(fd)
+        + fd.K
+        + getattr(fd, "RMS_TAIL_SLACK", 0),
+        # RMS_SCRATCH is 0 for every shipping build. RMS_BAND_STREAM>=3 at
+        # BATCH>1 keeps `h` -- one whole block of hidden states -- in DDR
+        # between residual1 and residual2, and parks it at the end of this
+        # buffer rather than adding a fifth DDR argument. It is device scratch,
+        # not an output: nothing reads it back. Without the term the drain runs
+        # off the end of the Y BO and into whatever is mapped next (measured: it
+        # landed in the KV cache).
+        ny=decode_y
+        + fd.UNI_LM * fd.VOCAB_SIZE_PADDED * _b
+        + getattr(fd, "RMS_SCRATCH", 0),
         kv_elems=fd.UNI_DEC * fd.ATTN_MAXL * fd.KVSZ_TOK,
         decode_y=decode_y,
         # B tokens' logits per wave, token-major within the wave: token t's

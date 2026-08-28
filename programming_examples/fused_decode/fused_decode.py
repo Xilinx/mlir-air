@@ -625,7 +625,7 @@ XMT_PCOL = int(_os.environ.get("XMT_PCOL", MAIN_PCOL if W_DUAL_CHAN else RMS_PCO
 # all three sources of the merge -- mlir-aie reports it as an incomplete
 # packet-flow routing (it used to drop the source silently). Llama's hub is on
 # col 1, clear of the X column, and routes fine from col 4.
-DOWN_PCOL = 3 if MODEL["PAIR_ROWS"] == 1 else 4
+DOWN_PCOL = int(_os.environ.get("DOWN_PCOL", 3 if MODEL["PAIR_ROWS"] == 1 else 4))
 
 # Phases (reproducer I2=[3,2,16,2], J2=[4,4,4,16], pkt=[1,4,8,4]). Phase 0 = QKV
 # (id1), phase 1 = o-proj (id4), phase 2 = gate-up MLP (id8), phase 3 = DOWN (id4).
@@ -783,6 +783,75 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+# DECODE_MASK_MODE_RTP=1: carry the attention MASK MODE in the RTP-L scalar the
+# host already writes, so one device program serves both DFlash passes.
+#
+# batch_attn_mask.py establishes that a per-query triangular mask is nothing but
+# a per-query VALUE of L: token t of a block gets L+t keys (causal verify) or the
+# whole block (bidirectional draft). Everything else about the two passes -- the
+# tile program, the herds, the channels, the wave loop -- is identical, because
+# the layer loop is rolled and the device is wave-invariant. So the ONLY thing
+# standing between "one xclbin runs both DFlash passes" and "two xclbins with a
+# PDI reload between them" is which of two integers the core adds per token.
+#
+# Rather than add a second RTP (a new launch operand threaded launch -> segment
+# -> herd, and a second word for the instruction stream to patch), the mode
+# rides in bit 30 of the L the host already sends. Real context lengths are
+# under 2^30 by six orders of magnitude, so the bit is free:
+#
+#     L_rt = L                 causal, per-token step 1   (verify)
+#     L_rt = L | 1<<30         bidirectional, step 0      (draft)
+#
+# L keeps ONE meaning in both modes -- token 0's context length -- so only the
+# per-token mask value moves. The four other consumers of L (the shim readback
+# count, the memtile dequeue count, the core trip count, the KV append slot) all
+# already size themselves off the LAST token, L + BATCH - 1, which is exactly
+# what every token sees in bidirectional mode. They need the mode bit stripped
+# and nothing else.
+#
+# Decoded with divui/muli/subi only -- no andi, which this builder does not use
+# anywhere else and which is not worth being the first to rely on.
+MASK_MODE_RTP = bool(int(_os.environ.get("DECODE_MASK_MODE_RTP", "0")))
+MASK_MODE_BIT = 1 << 30
+# DECODE_MASK_BIDIR=1: bake the bidirectional mask in at BUILD time instead of
+# selecting it per dispatch.
+#
+# The RTP form above needs DECODE_DYNSEQ, because that is the only configuration
+# where L reaches the cores as a runtime scalar at all -- and DYNSEQ does not
+# currently build at BATCH>1: `airrt.dma_memcpy_nd` on @inKV_K fails to legalize
+# with a dynamic dim-1 length and a dynamic dim-3 offset together. That is a
+# pre-existing gap (a build with MASK_MODE_RTP off fails identically), so it
+# gates the runtime-selectable form but says nothing about whether the MASK is
+# right. This knob separates those two questions: it exercises exactly the same
+# core arithmetic with the step folded to a constant, so the numerics can be
+# gated on hardware now and the RTP selection re-tested once DYNSEQ reaches
+# batch 8.
+MASK_BIDIR = bool(int(_os.environ.get("DECODE_MASK_BIDIR", "0")))
+
+
+def _split_mask_mode(Lh):
+    """(L_base, per_token_step) from an RTP-L that may carry the mode bit.
+
+    The step comes back as a PYTHON int when it is known at build time -- 1 for
+    the causal staircase, 0 for a baked bidirectional block -- and as an SSA
+    value only under MASK_MODE_RTP. Callers branch on that so the default build
+    emits exactly the arithmetic it emitted before: it has to stay
+    byte-identical, because every gate in docs/DFlashFeasibility.md was measured
+    against it.
+    """
+    if not MASK_MODE_RTP:
+        return Lh, (0 if MASK_BIDIR else 1)
+    # `i32` at the top of build() is function-local; this helper is called from
+    # inside the builder but defined outside it, so it makes its own.
+    _i32 = IntegerType.get_signless(32)
+    _bit = arith.ConstantOp(IntegerAttr.get(_i32, MASK_MODE_BIT), None).result
+    # Lh < 2*MASK_MODE_BIT, so the quotient is exactly the mode bit: 0 or 1.
+    _bid = arith.divui(Lh, _bit)
+    _base = arith.subi(Lh, arith.muli(_bid, _bit))
+    _one = arith.ConstantOp(IntegerAttr.get(_i32, 1), None).result
+    return _base, arith.subi(_one, _bid)
+
+
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -830,6 +899,10 @@ KV_APPEND = MULTIBLK
 # Reference 4-CU layout: attn cols 3,4 (CU0,1 col3 / CU2,3 col4), adjacent to q/o on
 # mem_5_1 (col5). kv on mem_3_1/mem_4_1. (col4 freed by GLU->col5 relayout.)
 ATTN_CU_LOC = [(3, 2, 3), (3, 4, 5), (4, 2, 3), (4, 4, 5)][:N_ATTN_CU]
+# The columns the attention CUs sit in. Both reserve their memtile's MM2S 0 for
+# the q-broadcast transit, so anything else landing on one of them has to start
+# at channel 1 (see the transposer's air.memtile_dma_channel_min).
+_ATTN_COLS = {loc[0] for loc in ATTN_CU_LOC}
 # Group CUs by column. rope k/v fans to one packet channel PER COLUMN (the reference
 # routes k/v as per-destination packets). A single channel feeding memtiles on 2 cols
 # deadlocks: its FIFO interleaves the 2 cols' gets, so one col blocks on the other's
@@ -988,7 +1061,7 @@ LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 # index_switch selecting decode vs vocab host feeds. Concatenated args for the
 # first folding test (separate ELF args come after folding is proven).
 UNIFIED = 1  # fixed config: single-launch unified decode + lm_head
-UNI_DEC = MODEL["UNI_DEC"]  # decode waves in the unified sequence
+UNI_DEC = int(_os.environ.get("UNI_DEC_OVERRIDE", MODEL["UNI_DEC"]))  # decode waves
 # lm-head waves in the unified sequence. Overridable so the wave count can be varied
 # while the LM-head WORK is held constant: UNI_LM * VOCAB_I2 == VOCAB_FULL_ROWBLKS/32
 # (=126) always, so (UNI_LM=9,VOCAB_I2=14) and (UNI_LM=21,VOCAB_I2=6) stream the exact
@@ -1445,7 +1518,22 @@ if BATCH > BATCH_MAX_PROJ:
 # The tile is a LOOP COUNT, not a correctness parameter -- these phases are
 # row-independent (per-token rms, per-token rope, per-token glu), so any tile
 # that fits gives the same answer.
-_L1_ROWTILE_BUDGET = 65536 - STACK_SIZE
+# The per-herd RTP word is allocated on the tile too, AFTER every buffer, and
+# nothing above accounts for it. It costs 4 bytes and it is the difference
+# between a design that fits and `'aie.tile' op allocated buffers exceeded
+# available memory` naming no buffer: at DECODE_BATCH=16 the rms core lands on
+# 65,536 EXACTLY -- stack 6,080 + three 16 KB bands + two 5 KB norm weights + 64
+# B of scales -- and __air_herd_rtp_2_2 is placed at 0x10000. Reserve it here so
+# the ceiling is checked rather than discovered.
+#
+# 16, not 64: the allocator packs the RTP word immediately after the last buffer
+# with no alignment padding (0xFFC0-0xFFFF then 0x10000-0x10003 in that map), so
+# 4 is the true cost and this is a small guard on top. 64 is NOT free -- levels
+# 0 and 2 put the rms core at 59,424 B at batch 8, 32 under the un-reserved
+# ceiling, so a 64-byte reserve refuses a configuration that is verified on
+# hardware.
+_L1_RTP_RESERVE = 16
+_L1_ROWTILE_BUDGET = 65536 - STACK_SIZE - _L1_RTP_RESERVE
 
 
 def _tile_for(*widths):
@@ -1517,6 +1605,140 @@ if RMS_BAND_STREAM >= 3:
         "@xnorm chunk, and that only lines up if a chunk IS a band."
     )
     assert K % STG_W == 0
+
+# RMS_W_ON_X: the norm weights ride the @rmsX band stream instead of owning
+# channels of their own. THE RMS CORE HAS TWO S2MM PORTS AND LEVEL 3 NEEDS
+# THREE, and this is what makes it two.
+#
+# air-to-aie emits a count-free, lock-driven BD ring for a physical S2MM only
+# when the whole port collapses to ONE repeat-count group (generateDmaBdProgram:
+# `infiniteBDLoopMode = repeat_counts.size() == 1`); anything else becomes a
+# SEQUENCE of terminating tasks, and a terminating task fires once per dispatch,
+# which is wrong for a per-layer transfer. So every port here must be one ring
+# -- and a ring fires each of its slots exactly once per rotation, which means
+# every channel on a port must have the SAME per-wave transfer count.
+#
+# Level 3's counts per layer are rmsX 270, rmsW 1, rmsW2 1, outY 10. `rmsX` has
+# to be alone (270 is not a ratio any 16-slot ring expresses), `outY` has to be
+# alone (its BD is deliberately unstamped -- the channel pins several packet ids
+# and the core writes the routing id into the payload header, so the DMA must
+# not filter), and that is both ports. Levels 0-2 do not have this problem:
+# their rmsX is ONE whole-row get per layer, so {rmsX, rmsW, rmsW2} is 1:1:1 and
+# rings on one port, which is exactly what the shipping build emits.
+#
+# The way out is to stop the weights needing a port at all. A norm weight is
+# K bf16 and a band fetch moves BATCH*STG_W >= K of them into `xb`, so the
+# weight fits in ONE band-shaped transfer on @rmsX: the launch side puts it from
+# the rms weight buffer with a band-shaped descriptor, the core takes it with
+# the SAME `_rms_band_get` every other visit uses, and copies the first K
+# elements out to `w`. Identical descriptor => AIR folds it into the same BD as
+# every other rmsX get => the ring stays one slot and count-free.
+#
+# It costs (BATCH*STG_W - K) elements of wasted transfer per weight per layer
+# (1,536 at batch 8, 5,632 at batch 16 -- 0.1% of a layer's weight traffic) and
+# one K-element on-core copy, and it BUYS the whole level-3 port budget. It also
+# retires the rmsW2 lock hazard below: `w`/`w2` are no longer DMA destinations,
+# so they have no locks to collide.
+RMS_W_ON_X = (RMS_BAND_STREAM >= 3 or _os.environ.get("_RMS_W_ON_X")) and BATCH > 1
+# Below level 3 the weight does not need a band-shaped transfer at all: it goes
+# straight into `w` with its own 2-D descriptor, and rmsX's port ring is then
+# {weight, weight2, row} at 1:1:1 -- the same shape the shipping build already
+# rings {rmsX, rmsW, rmsW2} in. That makes _RMS_W_ON_X=1 a BISECTION: it tests
+# carrying the norm weights on @rmsX, and nothing else, against a level that is
+# verified on device.
+# The band-shaped weight read walks BATCH*STG_W elements from the weight's base,
+# so the LAST slab it reads from (the vocab arm's final norm, which sits at the
+# very end of the rms BO) needs that much room behind it. Exported for
+# llms/bench/decode_geometry.py, which sizes the host BO -- both sides read this
+# same symbol so they cannot disagree. Zero unless the mode is on, so no
+# shipping BO size moves.
+RMS_TAIL_SLACK = (BATCH * STG_W - K) if RMS_W_ON_X else 0
+
+# RMS_SCRATCH: one block of hidden states appended to the END of the Y buffer,
+# holding `h` (the post-attention residual) between residual1 and residual2 at
+# RMS_BAND_STREAM>=3. It is NOT a host output -- see
+# _rms_interleave_after_phase for why `h` cannot share X.
+#
+# In Y rather than in a fifth DDR argument because Y's size is already derived
+# from these symbols (llms/bench/decode_geometry.py), so a region appended here
+# needs no new host binding and no ABI change. ONE block, not one per layer: it
+# is dead the moment residual2 has read it. Zero for every other build, so no
+# shipping BO moves.
+RMS_SCRATCH = BATCH * K if (RMS_BAND_STREAM >= 3 and BATCH > 1) else 0
+
+# _RMS_RES_ONLY=1|2: keep the banded round-trip for ONE residual stage and drop
+# it from the other -- both halves, core and launch, so @rmsX and @layerOut stay
+# balanced. The dropped stage still gets its @outY rounds and still calls the
+# accumulate kernel, on whatever stale band is in `xb`; its OUTPUT is wrong by
+# construction. The question it answers is whether residual2 hangs because it is
+# residual2 or because it is SECOND.
+_RMS_RES_ONLY = int(_os.environ.get("_RMS_RES_ONLY", "0"))
+
+# _RMS_BANDS_GET / _RMS_BANDS_PUT: which residual stages do the @rmsX band GET
+# and which do the @layerOut band PUT-BACK, as digit strings over {1, 2}. The
+# two halves are separable on purpose -- residual1's round-trip completes and
+# residual2's does not, on identical channel volumes, and the halves are the
+# next place to cut. Dropping a half drops the matching launch-side op too, so
+# both channels stay balanced; the stage that keeps its get without its put (or
+# the reverse) accumulates onto a stale band and its output is garbage.
+#
+#   _RMS_BANDS_GET=1 _RMS_BANDS_PUT=12   residual2 puts back a band it never got
+#   _RMS_BANDS_GET=12 _RMS_BANDS_PUT=1   residual2 gets a band it never returns
+#
+# _RMS_RES_ONLY=N is the shorthand for setting both to N.
+_RMS_BANDS_GET = _os.environ.get(
+    "_RMS_BANDS_GET", str(_RMS_RES_ONLY) if _RMS_RES_ONLY else "12"
+)
+_RMS_BANDS_PUT = _os.environ.get(
+    "_RMS_BANDS_PUT", str(_RMS_RES_ONLY) if _RMS_RES_ONLY else "12"
+)
+
+# _RMS_STG_COPY: copy each @outY round out of its landing buffer immediately,
+# so the round's lock is RELEASED before the accumulate waits for its @rmsX
+# band. Without it AIR keeps the landing buffer acquired across the band's
+# arrival, because the accumulate kernel reads both.
+#
+# The bisection says residual2 stalls on its band GET specifically (its
+# put-back is fine: _RMS_BANDS_GET=1 _RMS_BANDS_PUT=12 completes, the reverse
+# hangs) while residual1's identical get works. What differs is only the
+# producer -- the DOWN projection instead of the o-proj -- so the suspect is
+# back-pressure: the core holds the outY buffer, the next round's packet has
+# nowhere to land, and if it shares a link with the band's route the band never
+# arrives. Copying the round out is the one-line version of "do not hold it".
+#
+# Costs one more BATCH*STG_W band buffer on the rms tile (8 KB at batch 8),
+# accounted in _rms_l1_bytes.
+_RMS_STG_COPY = bool(_os.environ.get("_RMS_STG_COPY")) and RMS_BAND_STREAM >= 3
+
+# _RMS_LATE_RT: put every level-3 banded feed after the whole weight-feed loop
+# again, the placement that shipped before _rms_interleave_after_phase. Kept as
+# the A side of the comparison, not as an option -- it DEADLOCKS (see that
+# function's docstring: the gate-up weight await needs ph2, ph2 needs
+# residual1, residual1 needs a band the host has not armed).
+_RMS_LATE_RT = bool(_os.environ.get("_RMS_LATE_RT"))
+
+# _RMS_RT_PER_BAND: emit a residual round-trip as five put/drain PAIRS instead
+# of one folded put and one folded get. MEASURED WORSE, kept as the record.
+#
+# The folded pair is ordered by AIR's whole-op dependency analysis --
+#
+#   %138 = air.channel.put  @rmsX     (X[0,0,0] [5,8,512])            <- reads X
+#   %139 = air.channel.get  @layerOut (X[0,0,0] [5,8,512]) [.. %138]  <- writes X
+#
+# -- and lowers to `await(put); start(get)`, which the core cannot satisfy: it
+# takes band b, accumulates, and PUTS BAND b BACK before asking for band b+1, so
+# the folded put does not retire until the drain is armed. Per band that
+# dependency is at the granularity the core works at and each put retires when
+# its own band is taken.
+#
+# It trades one deadlock for a worse one. Per band, band b's drain is ordered
+# before band b+1's put, so the HOST blocks on band 0's drain before it has
+# issued the projection weight feed the drain's data depends on -- and the
+# whole round-trip has to be armed before that feed (see
+# _rms_interleave_after_phase). Measured: nothing written at all, where folded
+# gets through residual1 and ph2.
+_RMS_RT_FOLD = not _os.environ.get("_RMS_RT_PER_BAND")
+
 # BOTH norm weights, because the batched body really does hold both. It allocs
 # `w` (input norm) and `w2` (post-attention norm) together at the top and frees
 # them together at the bottom -- not alloc-at-first-use/free-at-last-use, and
@@ -1541,9 +1763,21 @@ def _rms_l1_bytes(b):
     Below level 3 the residual (`xb`) is the whole K-wide row. At level 3
     it is one STG_W-wide band, refetched fresh instead of held resident --
     that swap is the entire point (see RMS_BAND_STREAM's level-3 comment).
+
+    Level 3 holds a SECOND band buffer (`xr`, the residual round-trip's own),
+    and it is a lock-correctness requirement rather than a convenience: see
+    the `xr` alloc in _rms_batched. Same width as `xb`, so level 3 is
+    2*b*STG_W of band where levels 0-2 are b*K of resident row.
     """
     _xb_w = STG_W if RMS_BAND_STREAM >= 3 else K
-    return 2 * (b * _xb_w + b * STG_W + _RMS_W_RESIDENT) + 4 * b
+    _xr_w = STG_W if RMS_BAND_STREAM >= 3 else 0
+    # _RMS_STG_COPY adds a THIRD band buffer, the @outY landing shadow. A
+    # diagnostic knob today; if it becomes the shipping shape it is what sets
+    # the batch ceiling, since three bands at b=16 is the whole tile.
+    _sg2_w = STG_W if _RMS_STG_COPY else 0
+    return (
+        2 * (b * _xb_w + b * _xr_w + b * _sg2_w + b * STG_W + _RMS_W_RESIDENT) + 4 * b
+    )
 
 
 BATCH_MAX_RMS = max(
@@ -1686,6 +1920,16 @@ def build_module():
                     else 0
                 )
                 + K  # dedicated final-norm slot for real lm_head (vocab)
+                # RMS_W_ON_X reads each norm weight BATCH*STG_W wide from its own
+                # base (one band-shaped transfer), which overruns the LAST of
+                # them -- the final-norm slot immediately above -- by
+                # RMS_TAIL_SLACK. It has to be in THIS type, not just in the
+                # host's BO: the declared memref is what the descriptor is
+                # bounds-checked against, and the vocab arm's weight read would
+                # otherwise sit past the end of it. Zero unless RMS_W_ON_X, so no
+                # shipping buffer moves. llms/bench/decode_geometry.py adds the
+                # same term from the same symbol.
+                + RMS_TAIL_SLACK
             ],
             bf16,
         )
@@ -1700,6 +1944,8 @@ def build_module():
             + UNI_LM * VOCAB_SIZE_PADDED * BATCH
             + PROBE_TOTAL
         )
+        _y_scratch_off = _y_elems
+        _y_elems += RMS_SCRATCH
         y_l3 = MemRefType.get(
             [_y_elems], bf16
         )  # host-drain (QKV) rounds + LAYER_RNDS rms layer-out (down) rounds
@@ -1893,6 +2139,24 @@ def build_module():
         # relay memtile columns for the id-demux dests (free cols, not proj/X/MT).
         # GLU dest (gate-up) goes DIRECT to the GLU tile (no relay).
         RELAY_COLS = [3, 5, 4][:NDEST]
+        # QKV_RELAY_COL: which free column the dest-0 (QKV) transposer lands on.
+        # It is the LARGEST movable buffer on its memtile (BATCH*M) and column 3
+        # is the one that runs out first at batch 16 -- see below. Col 3 also
+        # carries the down memtile (DOWN_PCOL, pinned there by a routing
+        # constraint) and two of the four attention CUs' KV re-blocks, neither
+        # of which moves; this one does.
+        #
+        #   batch 8, level 3, memtile occupancy of 512 KB   [static]
+        #     3,1  319,488 (60%)   down 155,648 + qkv 98,304 + 4 KV blocks
+        #     5,1  196,608 (37%)   o-gather + two o-proj relays
+        #     4,1   65,536 (12%)   the other two CUs' KV blocks
+        #     2,1   32,776  (6%)   the X memtile
+        #     0/1/6/7,1  45,064 (8%) each, the weight fan
+        #
+        # Doubled, only col 3 overflows -- 573,440 of 524,288. Moving the
+        # transposer to col 4 leaves col 3 at 376,832 (72%) and col 4 at 262,144
+        # (50%), and every other column is under 20%.
+        RELAY_COLS[0] = int(_os.environ.get("QKV_RELAY_COL", RELAY_COLS[0]))
 
         # ---- kernels ----
         zero = FuncOp("proj_qmm_zero", ([yacc_l1, i32], []), visibility="private")
@@ -2046,6 +2310,32 @@ def build_module():
                 residual_acc_row_banded_aie.attributes["link_with"] = StringAttr.get(
                     "rms_residual.o"
                 )
+                # (out_band, acc_band, round, row, band_width, round_width)
+                residual_acc_row_banded_out_aie = FuncOp(
+                    "residual_acc_row_banded_out_aie",
+                    ([rstg_l1, rstg_l1, rstg_l1, i32, i32, i32], []),
+                    visibility="private",
+                )
+                residual_acc_row_banded_out_aie.attributes["link_with"] = (
+                    StringAttr.get("rms_residual.o")
+                )
+            if RMS_W_ON_X:
+                # (norm_weight, band_fetch, elems) -- see RMS_W_ON_X.
+                band_to_weight_aie = FuncOp(
+                    "band_to_weight_aie",
+                    ([rms_l1, rstg_l1, i32], []),
+                    visibility="private",
+                )
+                band_to_weight_aie.attributes["link_with"] = StringAttr.get(
+                    "rms_residual.o"
+                )
+            if _RMS_STG_COPY:
+                band_copy_aie = FuncOp(
+                    "band_copy_aie",
+                    ([rstg_l1, rstg_l1, i32], []),
+                    visibility="private",
+                )
+                band_copy_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
         # #4 faithful residual stream (reproducer rms_residual.o): residual_add_aie
         # (y = x_buf + x) for residual1 (input + o-proj-out) and residual2 (h + down-out).
         residual_add_aie = FuncOp(
@@ -2143,7 +2433,22 @@ def build_module():
         # on the rms core's S2MM0 -- the reference's tile_2_2 DMA0 receives @xy(id0)+id4
         # both as packets into one 2-slot ping-pong (input, then o-proj, then down).
         # Debug configs keep the original circuit rmsX.
-        if FULL4:
+        # CIRCUIT-SWITCHED AT LEVEL 3. The reason above no longer
+        # applies -- RMS_W_ON_X pins @rmsX to S2MM0 and @outY to S2MM1, so the
+        # two do not converge on one port and @rmsX has no id to demux against.
+        # What it buys is a DEDICATED physical stream channel on the link both
+        # flows share (shim 2,0 and memtile 2,1 are both SOUTH of the rms core,
+        # so packet_flow(0) and packet_flow(30) are multiplexed on one
+        # south->north stream). Packet-switched, a band the core has no credit
+        # for parks at the head of that link, and the @outY round behind it
+        # never arrives -- which is measured: residual2 blocks on its @outY
+        # acquire, and only when residual2 also has an @rmsX get to leave bands
+        # queued. _RMS_X_PACKET=1 restores the packet flow, which is the A
+        # side of that measurement (see docs/DFlashFeasibility.md 5.4 x).
+        _rx_packet = FULL4 and not (RMS_BAND_STREAM >= 3 and BATCH > 1)
+        if _os.environ.get("_RMS_X_PACKET"):
+            _rx_packet = FULL4  # A/B: put level 3 back on the packet flow
+        if _rx_packet:
             _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
             _rx = channel_decl("rmsX", size=[1])
@@ -2160,6 +2465,43 @@ def build_module():
             # (rmsW = [input | post_attn], rmsW2 = [pre_ffn | post_ffn], each 2K) so the
             # rms tile's S2MM0 carries only {rmsX, rmsW, rmsW2, o-proj/down} = 4 packet
             # ids (a compute-tile S2MM port demuxes at most 4). No rmsW3/rmsW4 channels.
+        # _RMS_PIN=1 forces the level-3 S2MM pinning at any level. Bisection
+        # hatch: it makes the port re-assignment testable against the KNOWN-GOOD
+        # level-0 batch-8 design, so a level-3 hang can be attributed to the
+        # pinning or cleared of it.
+        if RMS_BAND_STREAM >= 3 or _os.environ.get("_RMS_PIN"):
+            # LEVEL 3 NEEDS rmsX ALONE ON ITS PHYSICAL S2MM, and nothing below
+            # level 3 does. air-to-aie turns a tile's per-channel memcpy list
+            # into BD *tasks* -- one per run of equal static trip counts
+            # (getRepeatCounts) -- and only emits a count-free, lock-driven
+            # infinite BD loop when the whole physical channel collapses to
+            # ONE task (generateDmaBdProgram's `infiniteBDLoopMode =
+            # repeat_counts.size() == 1`). Level 3's regen fetch sits inside
+            # the arm-selected re-feed loop, whose trip count is a RUNTIME
+            # value (_cnt's index_switch), so no finite repeat_count can ever
+            # be right for it: it has to be count-free. Sharing the port with
+            # rmsW/rmsW2 splits it -- their gets land BETWEEN the rmsX gets in
+            # program order, giving [rmsW][rmsX x2][rmsW2][rmsX x4] as four
+            # tasks -- and the finite chains that result under-deliver (2 BDs
+            # x repeat 4 = 10 transfers against 5 + 5*XN_REFEED needed), which
+            # is a wave-0 hang with nothing written.
+            #
+            # This is the same remedy air-to-aie applies on its own to an
+            # arm-varying get inside an scf.index_switch
+            # (dedicateArmVaryingGetChannels, "must own a dedicated count-free
+            # S2MM"); it cannot fire here because _rms_batched is deliberately
+            # ONE body for both arms rather than two index_switch regions, so
+            # the pin is set by hand. Levels 0-2 keep AIR's own allocation --
+            # their rmsX is a single whole-row get with a static count and has
+            # no such requirement.
+            # With RMS_W_ON_X the rms core's inbound set is just {rmsX, outY},
+            # and @outY is already pinned to 1 by its own decl -- so rmsX gets 0
+            # and is alone on it, which is the whole requirement. The pin is
+            # still explicit rather than left to the round-robin allocator:
+            # `simpleDmaChannelAlloc` reuses an existing packet-flow allocation
+            # on the tile when one is free, and rmsX sharing outY's port would
+            # silently put it back in a multi-op task.
+            _rx.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(i32, 0)
         # FAITHFUL convergent X feed (reproducer x_buffer DMA:3): ONE channel
         # carries BOTH the rmsnorm'd token X (phases 0..2) and the GLU-output X
         # (down phase), as convergent packet sources into ONE X-memtile S2MM, read
@@ -2537,8 +2879,9 @@ def build_module():
                     widths but has no case for index-typed arithmetic, and this
                     expression has to survive all the way into the emitted builder.
                     """
+                    _lb0, _ = _split_mask_mode(L_rt)
                     _s = arith.addi(
-                        L_rt,
+                        _lb0,
                         arith.ConstantOp(
                             IntegerAttr.get(i32, 15 + BATCH - 1), None
                         ).result,
@@ -2585,8 +2928,9 @@ def build_module():
                     """
                     if not DYNSEQ_APPEND:
                         return (ATTN_L - 1) * REGION_W
+                    _lb1, _ = _split_mask_mode(L_rt)
                     _m = arith.subi(
-                        L_rt, arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
+                        _lb1, arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
                     )
                     _p = arith.muli(
                         _m,
@@ -2767,7 +3111,7 @@ def build_module():
                             _uarm = arith.select(_ucmp, _u1, _u0)
                         _uarm_i = arith.index_cast(idx_t, _uarm)
 
-                        def _rms_x_put_band(base, b):
+                        def _rms_x_put_band(base, b, src=None):
                             """Put STG_W-wide band `b` (0-indexed) of the
                             K-wide row at DRAM offset `base` on rmsX -- the
                             launch-side half of the compute tile's
@@ -2780,38 +3124,221 @@ def build_module():
                             assert STG_W % _RMS_DMA_CHUNK == 0
                             ChannelPut(
                                 "rmsX",
-                                X,
-                                offsets=[base + b * STG_W, 0, 0],
-                                sizes=[
-                                    STG_W // _RMS_DMA_CHUNK,
-                                    BATCH,
-                                    _RMS_DMA_CHUNK,
-                                ],
-                                strides=[_RMS_DMA_CHUNK, K, 1],
+                                X if src is None else src,
+                                # On the UNIT-STRIDE dimension: the linear
+                                # offset is sum(offsets[i]*strides[i]), so on
+                                # dim 0 this would come out multiplied by
+                                # _RMS_DMA_CHUNK -- see _rms_w_on_x_put.
+                                offsets=[0, base + b * STG_W],
+                                sizes=[BATCH, STG_W],
+                                strides=[K, 1],
                             )
 
-                        def _rms_x_feed_ph(base, nrefeed):
-                            """ph0/ph2's launch-side feed at
-                            RMS_BAND_STREAM>=3: nband puts for the scale
-                            pre-pass, then nrefeed*nband puts for the regen
-                            (nchunk == nband, asserted at STG_W's
-                            definition) -- Python-unrolled (a launch-scope
-                            scf.for deadlocks the shim, see _feed_wcols),
-                            matching the compute side's per-visit fresh
-                            fetch 1:1. `nrefeed` is a plain Python int:
-                            this function's own caller already knows
-                            statically which arm it is (_uni_dec passes
-                            XN_REFEED/REFEED[GATEUP_PHASE], _uni_voc passes
-                            VOCAB_RNDS) -- unlike the shared compute-tile
-                            body, which needs _cnt()'s dynamic index_switch
-                            to pick the same count at runtime.
+                        def _rms_x_put_allbands(base, src=None):
+                            """Put all _nband STG_W-wide bands of the
+                            K-wide row at DRAM offset `base` on rmsX in ONE
+                            textual op, band folded into an outer
+                            descriptor dimension. _rms_x_put_band (below)
+                            emits _nband SEPARATE ops for this same data;
+                            this exists because AIRToAIEPass's compute-tile
+                            ring-builder cannot fold rmsX and rmsW onto one
+                            shared S2MM port when their per-visit launch-
+                            side op counts differ this much -- "operand #0
+                            does not dominate this use", confirmed to
+                            reproduce with vocab removed entirely (so it is
+                            rmsX-vs-rmsW parity, not a decode/vocab
+                            mismatch) -- see docs/DFlashFeasibility.md.
+                            rmsW itself is still ONE op; folding rmsX's
+                            _nband down to ONE op per visit is the smallest
+                            move toward matching it, tried before reaching
+                            for the bigger (and still unproven) fix of
+                            splitting rmsW to match rmsX instead.
                             """
+                            # FOUR DIMENSIONS IS THE CEILING for a shim put, and
+                            # this spends all four: a shim BD carries three
+                            # dimensions plus a repeat count, so the band
+                            # dimension here becomes the repeat and the rest is
+                            # the BD. A fifth dimension is dropped in
+                            # AIRRtToNpuPass with no diagnostic -- see
+                            # _rms_x_feed_ph, which is what that cost.
                             _nband = K // STG_W
-                            for b in range(_nband):
-                                _rms_x_put_band(base, b)
-                            for _ in range(nrefeed):
-                                for b in range(_nband):
-                                    _rms_x_put_band(base, b)
+                            ChannelPut(
+                                "rmsX",
+                                X if src is None else src,
+                                # base on the UNIT-STRIDE dimension: the linear
+                                # offset is sum(offsets[i]*strides[i]), so on
+                                # dim 0 it would come out base*STG_W. Correct
+                                # either way while X_SLOTS == 1 makes base 0 --
+                                # see _rms_w_on_x_put, where a real base made
+                                # this visible.
+                                offsets=[0, 0, base],
+                                sizes=[_nband, BATCH, STG_W],
+                                strides=[STG_W, K, 1],
+                            )
+
+                        def _rms_w_on_x_put(base):
+                            """One norm weight, band-shaped, on @rmsX.
+
+                            RMS_W_ON_X's launch half. The descriptor MIRRORS
+                            _rms_band_get exactly, with the weight's own
+                            row stride (STG_W) where a band of X uses K: the
+                            core's get lands stream position (c, t, i) at
+                            xb[t*STG_W + c*64 + i], so sending
+                            RMS[base + t*STG_W + c*64 + i] in that order puts
+                            weight element j at xb[j] for every j < K. Anything
+                            past K lands in the tail of `xb` and is never read
+                            -- band_to_weight_aie copies K.
+
+                            It reads BATCH*STG_W elements from `base`, i.e.
+                            RMS_TAIL_SLACK past the end of a K-wide weight; the
+                            rms BO carries that slack for the last one (see
+                            RMS_TAIL_SLACK / decode_geometry.py).
+                            """
+                            assert STG_W % _RMS_DMA_CHUNK == 0
+                            assert BATCH * STG_W >= K, (
+                                f"RMS_W_ON_X needs a band fetch ({BATCH}*{STG_W}) "
+                                f"wide enough to carry the whole {K}-wide norm "
+                                "weight in one transfer"
+                            )
+                            # `base` GOES ON THE UNIT-STRIDE DIMENSION. An
+                            # air.channel offset list is the usual strided-view
+                            # convention -- the linear offset is
+                            # sum(offsets[i] * strides[i]), not offsets[0] -- so
+                            # putting a whole-buffer element offset on dimension
+                            # 0 multiplies it by that dimension's stride. It is
+                            # silent: `_rms_w_on_x_put(_final_norm_off)` with
+                            # base on dim 0 lowered to `offset = 18874368`,
+                            # which is _final_norm_off * _RMS_DMA_CHUNK, read
+                            # far outside the weight and hung the dispatch.
+                            # The other level-3 helpers are written the same way
+                            # and are only correct because their base is always
+                            # 0 (X_SLOTS == 1); they carry the same note.
+                            if RMS_BAND_STREAM < 3:
+                                # Bisection shape -- matches _w_row_get above.
+                                ChannelPut(
+                                    "rmsX",
+                                    RMS,
+                                    offsets=[0, base],
+                                    sizes=[K // _RMS_DMA_CHUNK, _RMS_DMA_CHUNK],
+                                    strides=[_RMS_DMA_CHUNK, 1],
+                                )
+                                return
+                            ChannelPut(
+                                "rmsX",
+                                RMS,
+                                offsets=[0, base],
+                                sizes=[BATCH, STG_W],
+                                strides=[STG_W, 1],
+                            )
+
+                        def _rms_x_feed_ph(base, nrefeed, src=None):
+                            """ph0/ph2's launch-side feed at
+                            RMS_BAND_STREAM>=3: the prepass sweep plus one
+                            sweep per regen visit, each an all-bands put.
+
+                            ONE PUT PER SWEEP, NOT ONE PER PHASE. This used to
+                            fold the whole phase into a single op via a stride-0
+                            outer dimension of extent (1+nrefeed) -- every visit
+                            re-reads the identical `base` row, so a repeat with
+                            no address advance is exactly what a regen visit is,
+                            and as AIR that is a correct description. It does not
+                            SURVIVE lowering. A shim BD holds three dimensions
+                            plus a repeat count, `_rms_x_put_allbands` already
+                            spends all four (band becomes the repeat), and the
+                            fifth is dropped in AIRRtToNpuPass WITHOUT a
+                            diagnostic:
+
+                                air   sizes [13, 5, 8, 8, 64] strides [0, 512, 64, 2560, 1]
+                                npu   sizes     [5, 8, 8, 64] strides    [512, 64, 2560, 1]
+                                      len 4096  repeat_count 4
+
+                            -- 5 bands where the core waits for 65, and the
+                            dispatch hangs in wave 0 with nothing written. The
+                            band dimension is the one that has to be folded (it
+                            is what makes a sweep one op); the refeed dimension
+                            has to be unrolled.
+
+                            The fold's original reason is also gone. It was
+                            introduced because 1+nrefeed separate puts tripped
+                            "operand #0 does not dominate this use" in the
+                            compute-tile ring builder, which multiplexed rmsX
+                            against rmsW on one S2MM port. Under RMS_W_ON_X
+                            there is no rmsW flow and rmsX is alone on its port,
+                            so there is no ring to confuse.
+
+                            `nrefeed` is a plain Python int, so the sweep count
+                            is static rather than read from a register.
+                            """
+                            if _os.environ.get("_RMS_NO_FOLD"):
+                                # Bisection escape: one put per band per visit,
+                                # the shape before the band dimension was folded.
+                                _nband = K // STG_W
+                                for _ in range(1 + nrefeed):
+                                    for b in range(_nband):
+                                        _rms_x_put_band(base, b)
+                                return
+                            # ONE op for the whole phase again -- refeed,
+                            # band, token, element -- now that token-major has
+                            # freed a dimension. This is the ONLY placement that
+                            # works: a shim task is awaited before the host can
+                            # issue anything else (air.preserve_shim_dma_order is
+                            # global), and a banded sweep completes only once the
+                            # core has consumed it, which needs @xnorm to drain
+                            # through the projections. One task per sweep leaves
+                            # the host blocked mid-phase with the rest of the
+                            # layer's feeds unissued.
+                            #
+                            # The earlier attempt at this fold was 5-D
+                            # ([1+nrefeed, nband, STG_W/64, BATCH, 64]) because
+                            # the band was chunk-major, and AIRRtToNpuPass
+                            # silently dropped the outermost dimension:
+                            #     air  [13, 5, 8, 8, 64] / [0, 512, 64, 2560, 1]
+                            #     npu      [5, 8, 8, 64] / [512, 64, 2560, 1]
+                            # -- 5 bands where the core waits for 65.
+                            _nband = K // STG_W
+                            if _os.environ.get("_RMS_W3_IN_NORM"):
+                                _rms_w_on_x_put(0)
+                                return
+                            if _os.environ.get("_RMS_FETCH_OFF"):
+                                return
+                            if _os.environ.get("_RMS_NO_REGEN_FETCH"):
+                                nrefeed = 0
+                            if _os.environ.get("_RMS_PREPASS_BANDS"):
+                                for b in range(int(_os.environ["_RMS_PREPASS_BANDS"])):
+                                    if _os.environ.get("_RMS_PREPASS_AS_W"):
+                                        # Feed the pre-pass band with the EXACT
+                                        # descriptor the norm weights use --
+                                        # same buffer, same contiguous shape.
+                                        # Data is wrong; if this completes, the
+                                        # fault is in the band descriptor, and
+                                        # if it hangs the fault is simply "a
+                                        # third rmsX transfer".
+                                        _rms_w_on_x_put(0)
+                                    else:
+                                        _rms_x_put_band(base, b)
+                                return
+                            if _os.environ.get("_RMS_SRC_RMS"):
+                                # Bisection: same shape, same count, same
+                                # channel -- but sourced from the RMS buffer
+                                # instead of X. The DATA is wrong; the question
+                                # is whether the transfers complete. The weight
+                                # bands (which read RMS) do; every band that
+                                # reads X does not.
+                                ChannelPut(
+                                    "rmsX",
+                                    RMS,
+                                    offsets=[0, 0, 0, 0],
+                                    sizes=[1 + nrefeed, _nband, BATCH, STG_W],
+                                    strides=[0, STG_W, STG_W, 1],
+                                )
+                                return
+                            ChannelPut(
+                                "rmsX",
+                                X if src is None else src,
+                                offsets=[0, 0, 0, base],
+                                sizes=[1 + nrefeed, _nband, BATCH, STG_W],
+                                strides=[0, STG_W, K, 1],
+                            )
 
                         def _rms_layerout_drain_band(dst, base, b):
                             """Get STG_W-wide band `b` of layerOut into DRAM
@@ -2823,16 +3350,53 @@ def build_module():
                                 "layerOut",
                                 dst,
                                 indices=[idx(0)],
-                                offsets=[base + b * STG_W, 0, 0],
-                                sizes=[
-                                    STG_W // _RMS_DMA_CHUNK,
-                                    BATCH,
-                                    _RMS_DMA_CHUNK,
-                                ],
-                                strides=[_RMS_DMA_CHUNK, K, 1],
+                                # unit-stride dimension, as above.
+                                offsets=[0, base + b * STG_W],
+                                sizes=[BATCH, STG_W],
+                                strides=[K, 1],
                             )
 
-                        def _rms_residual_roundtrip(base, nband_rounds):
+                        def _rms_layerout_drain_allbands(dst, base):
+                            """All _nband bands of layerOut into `dst` at
+                            `base`, in ONE textual op -- band as an outer
+                            descriptor dimension, exactly mirroring
+                            _rms_x_put_allbands on the feed side.
+
+                            Needed for the same reason that one is: a CORE
+                            tile's DMA holds at most 16 BD blocks
+                            (`'aie.mem' op has more than 16 blocks`), and the
+                            rms core at level 3 carries rmsX, rmsW, rmsW2,
+                            outY, xnorm AND layerOut. Five separate drains per
+                            residual phase, twice a layer, does not fit; one
+                            repeated BD per phase does.
+
+                            The compute side is unchanged and still alternates
+                            get-then-put per round inside its own scf.for --
+                            which AIR folds to a repeat-count BD -- so the
+                            per-iteration lock handshake is what keeps the two
+                            sides in step. That is the same mechanism a
+                            repeated transfer into a single-band buffer
+                            already relies on; it is NOT an assumption that
+                            all five bands are in flight at once (the core has
+                            one band buffer, `rstg_l1`, and could not hold
+                            them).
+                            """
+                            _nband = K // STG_W
+                            assert STG_W % _RMS_DMA_CHUNK == 0
+                            ChannelGet(
+                                "layerOut",
+                                dst,
+                                indices=[idx(0)],
+                                # base on the unit-stride dimension -- same
+                                # strided-view rule as _rms_x_put_allbands.
+                                offsets=[0, 0, base],
+                                sizes=[_nband, BATCH, STG_W],
+                                strides=[STG_W, K, 1],
+                            )
+
+                        def _rms_residual_roundtrip(
+                            base, nband_rounds, dst=None, src=None
+                        ):
                             """residual1/residual2's launch-side half, at
                             RMS_BAND_STREAM>=3: for each of the nband_rounds
                             (== OPROJ_RNDS or DOWN_RNDS -- asserted equal to
@@ -2869,10 +3433,238 @@ def build_module():
                             would be (nothing here starts until the whole
                             weight feed is queued), not incorrect --
                             recovering that is Stage 7, not this.
+
+                            The rmsX side is folded into ONE op
+                            (_rms_x_put_allbands) rather than
+                            nband_rounds separate puts: same "operand #0
+                            does not dominate this use" reason ph0/ph2
+                            were folded for. layerOut's gets stay
+                            nband_rounds separate ops -- draining is the
+                            core's per-band output, one band at a time,
+                            same as before -- so this only reduces how
+                            many times rmsX (not layerOut) is put,
+                            leaving the read-before-write memref-level
+                            ordering the docstring above relies on intact
+                            (the whole read still precedes every write in
+                            program order).
                             """
-                            for b in range(nband_rounds):
-                                _rms_x_put_band(base, b)
-                                _rms_layerout_drain_band(X, base, b)
+                            # `dst`/`dbase`: where the UPDATED bands land. X at
+                            # `base`, in place, everywhere but the
+                            # _RMS_RES2_TO_Y probe -- see there.
+                            _dst, _dbase = (X, base) if dst is None else dst
+                            if _os.environ.get("_RMS_NO_FOLD") or not _RMS_RT_FOLD:
+                                for b in range(nband_rounds):
+                                    _rms_x_put_band(base, b, src)
+                                    _rms_layerout_drain_band(_dst, _dbase, b)
+                                return
+                            _rms_x_put_allbands(base, src)
+                            _rms_layerout_drain_allbands(_dst, _dbase)
+
+                        def _rms_interleave_after_phase(p):
+                            """Arm the level-3 banded feeds INSIDE the weight
+                            feed loop, one phase ahead of the core needing them.
+
+                            A WEIGHT PHASE'S FEED IS AWAITED BEFORE THE NEXT ONE
+                            IS ISSUED. `_feed_wcols` emits a coalesced put per
+                            column and then an await barrier across all of them,
+                            and that await only returns once the proj cores have
+                            CONSUMED the phase -- 1.9 M bf16 for gate-up, far
+                            more than the memtile holds, so consumption means
+                            the phase actually ran. Placing the banded feeds
+                            after the whole loop therefore deadlocks:
+
+                              host: await(gate-up weights)   needs ph2 to run
+                                    ph2                      needs residual1
+                                    residual1                needs @rmsX band
+                                    @rmsX band               not armed yet
+                              core: residual1's _rms_band_get, forever
+
+                            -- which is exactly what the late placement did
+                            (measured: KV cache written, X never written, and
+                            the hang is at residual1). Levels 0-2 are immune
+                            because their residual never leaves L1: nothing the
+                            core needs mid-layer comes from the host at all.
+
+                            So each feed goes one phase EARLIER than the phase
+                            whose await depends on it:
+
+                              after p=0 (QKV)     residual1's round-trip, and
+                                                  ph2's feed
+                              after p=2 (gate-up) residual2's round-trip
+
+                            p=0 rather than p=1 for residual1: the o-proj await
+                            (p=1) needs the o-proj to drain 5 rounds of @outY
+                            into the rms core, and the rms core takes round r+1
+                            only after round r's band round-trip -- so the
+                            round-trip has to be armed before the o-proj feed,
+                            not after it. Same argument one phase along for
+                            residual2 and the down projection.
+
+                            SHIM SLOT PRESSURE IS WHY THIS FITS. @rmsX gets two
+                            task slots. At the p=0 boundary they hold the two
+                            norm weights (retired) and ph0's sweep, and ph0's
+                            sweep is complete by then -- the QKV await that just
+                            returned is the proof, since every one of its
+                            1+XN_REFEED sweeps feeds that projection. So both
+                            slots are free for residual1's put and ph2's feed.
+                            At the p=2 boundary residual1's put has retired
+                            (residual1 ran during p=1), freeing one for
+                            residual2's. @layerOut needs one slot at a time.
+                            """
+                            _nb = K // STG_W
+                            # WHERE `h` LIVES. residual1's output is a whole
+                            # intermediate hidden state that ph2 re-reads 39
+                            # times and residual2 reads once more, and at level 3
+                            # it cannot stay on the tile -- that is the whole
+                            # point of the level. Writing it back over X (the
+                            # obvious in-place choice, and what levels 0-2 do
+                            # with their single whole-row write) puts every
+                            # level-3 feed and drain on one memref, and AIR
+                            # chains same-memref channel ops in program order.
+                            # residual2's drain then lands after its own put,
+                            # which the core cannot satisfy: the put does not
+                            # retire until the core has taken all five bands,
+                            # and the core will not take band b+1 until band b's
+                            # drain is armed. (Measured: X carries residual1's
+                            # output and the dispatch times out with residual2's
+                            # bands undrained.)
+                            #
+                            # So `h` gets its own region and X is touched twice
+                            # per layer, at the two ends, exactly as before:
+                            #
+                            #   read X   ph0's sweep, residual1's put
+                            #   write H  residual1's drain
+                            #   read H   ph2's sweep, residual2's put
+                            #   write X  residual2's drain   <- the layer output
+                            #
+                            # Nothing reads X between residual1's put and
+                            # residual2's drain, so that drain is ordered only
+                            # behind reads that retired phases ago.
+                            # AND RESIDUAL2'S TWO HALVES SPLIT ACROSS THE
+                            # BOUNDARY. Its drain goes one phase early, with
+                            # ph2's feed; only its put waits for the gate-up
+                            # boundary. Emitted together at p=2 the lowering
+                            # puts `await(put)` between them --
+                            #
+                            #   start rmsX(res2 put) ; await rmsX ; start layerOut
+                            #
+                            # -- and that await cannot retire: the core takes
+                            # residual2's band 0 only after @outY round 0, which
+                            # is the DOWN projection's output, whose weights are
+                            # fed at p=3, after the drain. Splitting them puts
+                            # the drain ahead of the await, and the put keeps its
+                            # own ordering behind ph2's sweep (same channel, same
+                            # buffer) which is what it actually depends on.
+                            #
+                            # Both channels still see their bands in the core's
+                            # order -- @rmsX w, w2, ph0, res1, ph2, res2 and
+                            # @layerOut res1, res2 -- because the split only
+                            # moves the drain earlier past ops on the OTHER
+                            # channel.
+                            _nb = K // STG_W
+                            # WHERE `h` LIVES, and where the layer output goes.
+                            # _RMS_H_SWAP inverts them: `h` back in X in place
+                            # and the output in the scratch. Not a shipping path
+                            # (it breaks chaining), it is the buffer half of the
+                            # residual2 bisection -- with it, the round-trip that
+                            # hangs is still the LATE one, so the buffer is not
+                            # the variable.
+                            if _os.environ.get("_RMS_H_SWAP"):
+                                _H, _OUT = (X, _x_in()), (Y, _y_scratch_off)
+                            else:
+                                _H, _OUT = (Y, _y_scratch_off), (X, _x_out())
+                            # _RMS_PH2_PHASE / _RMS_RES2_PUT_PHASE /
+                            # _RMS_RES2_DRAIN_PHASE: which weight-phase boundary
+                            # each of the three late feeds is armed at. The
+                            # defaults are the derivation above. @rmsX's ring
+                            # order still has to hold, so ph2's feed may not land
+                            # later than residual2's put.
+                            _p_ph2 = int(
+                                _os.environ.get("_RMS_PH2_PHASE", GATEUP_PHASE - 1)
+                            )
+                            _p_put = int(
+                                _os.environ.get("_RMS_RES2_PUT_PHASE", GATEUP_PHASE)
+                            )
+                            _p_drn = int(
+                                _os.environ.get(
+                                    "_RMS_RES2_DRAIN_PHASE", GATEUP_PHASE - 1
+                                )
+                            )
+                            assert _p_ph2 <= _p_put, "@rmsX ring order"
+                            # Emitted in the order the two rings expect: @rmsX
+                            # res1-put, ph2, res2-put and @layerOut res1-drain,
+                            # res2-drain. Only entries whose phase matches fire,
+                            # so moving one with the knobs above cannot reorder
+                            # the others.
+                            # _RMS_RT_COMBINED: feed BOTH residuals' bands as
+                            # ONE @rmsX task -- ten bands, the five of `h`
+                            # repeated via a stride-0 outer dimension, exactly
+                            # the shape _rms_x_feed_ph uses for a phase. Both
+                            # residuals then read the scratch (residual1's data
+                            # is garbage; only completion is being measured).
+                            #
+                            # The point is the TASK COUNT. residual1's band feed
+                            # lands and residual2's does not, on a dedicated
+                            # packet flow (shim 2,0 MM2S0 -> tile 2,2 DMA0, one
+                            # source one dest) with the core holding lock credit
+                            # and the task started. If one task carrying both
+                            # works where two do not, the fault is the second
+                            # shim task on this channel, not anything about
+                            # residual2.
+                            if _os.environ.get("_RMS_RT_COMBINED"):
+                                if p == 0:
+                                    ChannelPut(
+                                        "rmsX",
+                                        _H[0],
+                                        offsets=[0, 0, 0, _H[1]],
+                                        sizes=[2, _nb, BATCH, STG_W],
+                                        strides=[0, STG_W, K, 1],
+                                    )
+                                    _rms_layerout_drain_allbands(*_H)
+                                elif p == _p_drn:
+                                    _rms_layerout_drain_allbands(*_OUT)
+                                return
+                            if p == 0 and "1" in _RMS_BANDS_GET:
+                                _rms_x_put_allbands(_x_in())
+                            if p == 0 and "1" in _RMS_BANDS_PUT:
+                                _rms_layerout_drain_allbands(*_H)
+                            if p == _p_ph2:
+                                _rms_x_feed_ph(_H[1], REFEED[GATEUP_PHASE], src=_H[0])
+                            if p == _p_put and "2" in _RMS_BANDS_GET:
+                                if _os.environ.get("_RMS_RES2_AS_W"):
+                                    # Bisection: feed residual2's five bands with
+                                    # the NORM WEIGHT's descriptor -- same
+                                    # channel, same count, same position, but a
+                                    # 2-D contiguous read of the rms BO that is
+                                    # known to work (it is how both norm weights
+                                    # arrive). Data is wrong by construction. If
+                                    # this completes, residual2's descriptor or
+                                    # source is the variable; if it hangs, the
+                                    # position in the @rmsX ring is.
+                                    for _ in range(_nb):
+                                        _rms_w_on_x_put(0)
+                                else:
+                                    _rms_x_put_allbands(_H[1], src=_H[0])
+                            if p == _p_drn and "2" in _RMS_BANDS_PUT:
+                                _rms_layerout_drain_allbands(*_OUT)
+
+                        # real-lm-head final norm (model.norm.weight): a DEDICATED
+                        # slot after the [in|post]*UNI_DEC rms slabs + 64-wide rope
+                        # LUT, so the vocab rmsnorm uses the true final norm -- NOT
+                        # layer-0's in_LN (mirrors decoding_layer's separate
+                        # final_rms_weight). The final norm sits AFTER the rope
+                        # region: llama has ONE shared rope LUT (ROPE_W_LEN),
+                        # per-layer models have UNI_DEC slabs.
+                        #
+                        # Hoisted out of _uni_voc (where it used to be computed just
+                        # before the rmsW put) because RMS_W_ON_X needs it EARLIER in
+                        # that function -- the weights now go on @rmsX ahead of the X
+                        # feed. Pure Python arithmetic over module constants, so
+                        # hoisting emits no IR and moves no constant.
+                        _final_norm_off = (
+                            UNI_DEC * RMS_LAYER
+                            + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN * BATCH
+                        )
 
                         def _uni_voc():
                             _wsel[0] = None  # lm-head buffer, statically known
@@ -2930,6 +3722,15 @@ def build_module():
                                 # ph2's regen count is 0 on this arm). So
                                 # this arm needs ph0's feed and nothing
                                 # else from _rms_residual_roundtrip's world.
+                                #
+                                # The two weights go FIRST and on @rmsX, in the
+                                # core's own order (RMS_W_ON_X). On this arm the
+                                # first is the real final norm and the second is
+                                # the dummy the shared body still consumes.
+                                if RMS_W_ON_X:
+                                    _rms_w_on_x_put(_final_norm_off)
+                                    if POST_RMS:
+                                        _rms_w_on_x_put(0)
                                 _rms_x_feed_ph(_x_final, VOCAB_RNDS)
                             elif RMS_BAND_STREAM >= 2 and BATCH > 1:
                                 # _rms_batched's compute-tile body is ONE
@@ -2943,6 +3744,16 @@ def build_module():
                                 # 8-bit-per-dimension BD wrap field can't hold
                                 # STG_W (512) as an extent (variant D).
                                 assert K % _RMS_DMA_CHUNK == 0
+                                # AFTER the row, not before. The rms core's
+                                # rmsX BD ring is emitted in the core's PROGRAM
+                                # order, and at level <3 the row get sits at the
+                                # top of _rms_batched (with the allocs) while the
+                                # weight gets come later -- so the ring is
+                                # [row, w, w2] and the launch has to feed it in
+                                # that order. Feeding the weights first sends
+                                # them into the row's slot: no hang, and every
+                                # weight and the row land in each other's
+                                # buffers (measured: rms rel 1.56e+00).
                                 ChannelPut(
                                     "rmsX",
                                     X,
@@ -2950,6 +3761,10 @@ def build_module():
                                     sizes=[K // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
                                     strides=[_RMS_DMA_CHUNK, K, 1],
                                 )
+                                if RMS_W_ON_X:
+                                    _rms_w_on_x_put(_final_norm_off)
+                                    if POST_RMS:
+                                        _rms_w_on_x_put(0)
                             else:
                                 ChannelPut(
                                     "rmsX",
@@ -2958,19 +3773,13 @@ def build_module():
                                     sizes=[BATCH * K],
                                     strides=[1],
                                 )
-                            # real-lm-head final norm (model.norm.weight): a DEDICATED slot
-                            # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
-                            # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
-                            # (mirrors decoding_layer's separate final_rms_weight).
-                            # final norm sits AFTER the rope region: llama has ONE shared
-                            # rope LUT (ROPE_W_LEN), per-layer models have UNI_DEC slabs.
-                            _final_norm_off = (
-                                UNI_DEC * RMS_LAYER
-                                + (UNI_DEC if ROPE_W_PER_LAYER else 1)
-                                * ROPE_W_LEN
-                                * BATCH
-                            )
-                            if N_NORMS >= 4:
+                            # _final_norm_off is hoisted above _uni_voc now -- see
+                            # there. RMS_W_ON_X has already fed both norms on
+                            # @rmsX at the top of this function, so this whole
+                            # weight-put block is skipped.
+                            if RMS_W_ON_X:
+                                pass
+                            elif N_NORMS >= 4:
                                 # Gemma: rmsW/rmsW2 are 2K (two norms packed). Put final_norm
                                 # in rmsW's HI half (lm_head reads it via rms_norm_hi_aie); the
                                 # LO half is the last rope-region K -- a harmless in-bounds
@@ -3089,7 +3898,55 @@ def build_module():
                                 # global air.preserve_shim_dma_order would
                                 # turn into a deadlock if placed too early
                                 # -- see _rms_residual_roundtrip's comment.
+                                #
+                                # The two norm weights go FIRST, on @rmsX, in
+                                # the order the core takes them (RMS_W_ON_X):
+                                # one channel means launch order IS core order,
+                                # where two channels made them independent
+                                # FIFOs. They used to be put after the X feed,
+                                # further down this function.
+                                #
+                                # These two stay EARLY and ph0's feed does not
+                                # (see the block at the end of this function).
+                                # A weight band is consumed by the core the
+                                # moment it arrives and produces nothing
+                                # downstream, so nothing queues behind it; a
+                                # ph0 sweep produces @xnorm and cannot complete
+                                # until the projection cores are fed.
+                                if RMS_W_ON_X:
+                                    _rms_w_on_x_put(_rbase)
+                                    if _os.environ.get("_RMS_W3"):
+                                        _rms_w_on_x_put(_rbase)
+                                    if POST_RMS:
+                                        _rms_w_on_x_put(_lo(_rbase, K))
+                                # ph0's feed goes HERE: the top of _uni_dec,
+                                # right after the norm weights and before the
+                                # rope LUT and the projection weights. That is
+                                # where levels 0 and 2 put their single
+                                # whole-row rmsX read, and AFTER the weights so
+                                # the launch order still matches the order the
+                                # core takes them in.
+                                #
+                                # MEASURED, not chosen. Fed instead from the QKV
+                                # weight boundary -- after _feed_wcols(p=0),
+                                # just before the KV append, which is where a
+                                # dependency argument puts it -- the dispatch
+                                # hangs with nothing written at all. Fed from
+                                # here it runs through ph0, the QKV projection
+                                # and rope, and the KV cache comes back written.
+                                # Same descriptor, same count, same core code;
+                                # only the launch-side position differs.
                                 _rms_x_feed_ph(_x_in(), XN_REFEED)
+                                if _os.environ.get("_RMS_RES1_PUT_TOP"):
+                                    # residual1's rmsX PUT can come up here too:
+                                    # it reads the layer INPUT, which nothing has
+                                    # written yet. Its @layerOut drain cannot --
+                                    # that one only completes once the core has
+                                    # reached residual1, so hoisting it stalls
+                                    # every later feed behind it (measured: with
+                                    # the whole round-trip at the top, not even
+                                    # the KV cache is written).
+                                    _rms_x_put_allbands(_x_in())
                             elif RMS_BAND_STREAM >= 2:
                                 # Variant D: one static 3-D put/get pair on
                                 # both ends (like variant C), but at
@@ -3100,6 +3957,16 @@ def build_module():
                                 # for_-deadlocks-the-shim rule (_feed_wcols)
                                 # doesn't enter into it.
                                 assert K % _RMS_DMA_CHUNK == 0
+                                # AFTER the row, not before. The rms core's
+                                # rmsX BD ring is emitted in the core's PROGRAM
+                                # order, and at level <3 the row get sits at the
+                                # top of _rms_batched (with the allocs) while the
+                                # weight gets come later -- so the ring is
+                                # [row, w, w2] and the launch has to feed it in
+                                # that order. Feeding the weights first sends
+                                # them into the row's slot: no hang, and every
+                                # weight and the row land in each other's
+                                # buffers (measured: rms rel 1.56e+00).
                                 ChannelPut(
                                     "rmsX",
                                     X,
@@ -3107,6 +3974,10 @@ def build_module():
                                     sizes=[K // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
                                     strides=[_RMS_DMA_CHUNK, K, 1],
                                 )
+                                if RMS_W_ON_X:
+                                    _rms_w_on_x_put(_rbase)
+                                    if POST_RMS:
+                                        _rms_w_on_x_put(_lo(_rbase, K))
                             else:
                                 ChannelPut(
                                     "rmsX",
@@ -3115,7 +3986,11 @@ def build_module():
                                     sizes=[BATCH * K],
                                     strides=[1],
                                 )
-                            if N_NORMS >= 4:
+                            # RMS_W_ON_X feeds both norms on @rmsX at the top of
+                            # this function instead -- see the level-3 branch above.
+                            if RMS_W_ON_X:
+                                pass
+                            elif N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
                                 # post_ffn] (slab 2K..4K). Keeps the rms tile at <=4 packet
@@ -3171,12 +4046,39 @@ def build_module():
                                 if (ROPE_W_PER_LAYER and MULTIBLK)
                                 else _lut_off
                             )
+                            # THE PER-TOKEN LOOP, AT EVERY LEVEL. There used to
+                            # be a RMS_BAND_STREAM>=3 fold here that collapsed
+                            # the BATCH puts below into one op with the
+                            # per-token spacing as an outer dimension. It was
+                            # added for the same "operand #0 does not dominate
+                            # this use" reason rmsX's feeds were folded for --
+                            # a compute-tile ring builder tripping over rmsX
+                            # and rmsW multiplexed on one S2MM -- and that
+                            # reason is gone: RMS_W_ON_X leaves rmsX alone on
+                            # its port.
+                            #
+                            # It was also WRONG, in a way that cost most of a
+                            # debugging session. `offsets=[_rope_off, 0]`
+                            # against `strides=[ROPE_W_LEN, 1]` does not put
+                            # the read at `_rope_off`: a channel offset list is
+                            # the strided-view convention, so the linear offset
+                            # is sum(offsets[i]*strides[i]) and this read
+                            # `_rope_off * ROPE_W_LEN` -- hundreds of thousands
+                            # of elements past the end of the rms buffer. The
+                            # element COUNT stayed right (3072, so shim_volume.py
+                            # and check_channel_balance.py both read balanced),
+                            # rope got garbage, and the dispatch hung before the
+                            # first KV append with nothing written at all.
+                            # The comment below already said a single B-wide
+                            # put against B gets is not something this channel
+                            # promises. It was right.
+                            _tl_range = range(BATCH)
                             # ONE PUT PER TOKEN, matching rope's one get per
                             # token. A single B-wide put paired against B gets
                             # is not something an AIR channel promises: @xnorm
                             # gets away with it because it is a packet channel
                             # whose dest BD reassembles, this one is not.
-                            for _tl in range(BATCH):
+                            for _tl in _tl_range:
                                 _lo_t = _tl * ROPE_W_LEN
                                 # _rope_off is a raw int on models with one
                                 # shared LUT and an SSA value on per-layer ones;
@@ -3454,6 +4356,8 @@ def build_module():
                                 if MULTIBLK and p == 0:
                                     _emit_append()
                                     _emit_readback()
+                                if RMS_BAND_STREAM >= 3 and not _RMS_LATE_RT:
+                                    _rms_interleave_after_phase(p)
                             # per-dest host drain: dest p drains ROUNDS_PER_DEST[p] rounds into
                             # this layer's Y region (diagnostic per-layer QKV observation).
                             roff = 0
@@ -3498,10 +4402,65 @@ def build_module():
                                 # different nested scope, and K // STG_W is
                                 # the same value -- asserted equal at
                                 # STG_W's own definition.
+                                #
+                                # ph0's feed lands here too, and that is the
+                                # fix for a deadlock rather than tidiness. It
+                                # used to be emitted at the TOP of _uni_dec,
+                                # where a whole-row level-0 rmsX read is
+                                # correct: that read completes the instant the
+                                # core takes it, so the projection weight feed
+                                # queued behind it goes out immediately. A
+                                # BANDED ph0 does not. It completes only after
+                                # the core has consumed 1+XN_REFEED sweeps, and
+                                # every sweep but the first also PRODUCES
+                                # @xnorm chunks, which drain only if the
+                                # projection cores are consuming, which needs
+                                # the @inW weights -- issued after ph0 in the
+                                # global shim order, and therefore never. The
+                                # dispatch hangs in wave 0 with nothing written
+                                # at all, not even KV.
+                                #
+                                # So every banded feed goes after the weight
+                                # feed, in the core's own order. ph0's is the
+                                # exception and sits further up, at the QKV
+                                # weight/KV-append boundary -- see there.
                                 _nband = K // STG_W
-                                _rms_residual_roundtrip(_x_in(), _nband)
-                                _rms_x_feed_ph(_x_in(), REFEED[GATEUP_PHASE])
-                                _rms_residual_roundtrip(_x_out(), _nband)
+                                if not _RMS_LATE_RT:
+                                    # DEFAULT. Every round-trip and ph2's feed
+                                    # were armed inside the weight-feed loop,
+                                    # one phase ahead of the await that needs
+                                    # them -- see _rms_interleave_after_phase
+                                    # for why anything left here deadlocks.
+                                    pass
+                                elif _os.environ.get("_RMS_ALL_TOP"):
+                                    # Already emitted at the top of _uni_dec.
+                                    pass
+                                elif _os.environ.get("_RMS_PH0_ONLY"):
+                                    # Bisection probe. Feed ph0 and NOTHING
+                                    # else, so the launch side stops where the
+                                    # core's residual1 begins. The dispatch is
+                                    # then guaranteed to hang -- the core waits
+                                    # for a round-trip that is never fed -- but
+                                    # WHERE it hangs is the datum: ph0 drives
+                                    # the QKV projection and rope, so if the KV
+                                    # cache comes back written, everything up
+                                    # to and including ph0 works and the fault
+                                    # is in the residual round-trip. If nothing
+                                    # is written, the fault is in ph0 or
+                                    # earlier. Not a shipping path.
+                                    pass
+                                elif _os.environ.get("_RMS_RES1_AT_P1"):
+                                    # residual1 + ph2 were emitted at the o-proj
+                                    # weight boundary; only residual2 is left.
+                                    _rms_residual_roundtrip(_x_out(), _nband)
+                                elif _os.environ.get("_RMS_RES1_PUT_TOP"):
+                                    _rms_layerout_drain_allbands(X, _x_in())
+                                    _rms_x_feed_ph(_x_in(), REFEED[GATEUP_PHASE])
+                                    _rms_residual_roundtrip(_x_out(), _nband)
+                                else:
+                                    _rms_residual_roundtrip(_x_in(), _nband)
+                                    _rms_x_feed_ph(_x_in(), REFEED[GATEUP_PHASE])
+                                    _rms_residual_roundtrip(_x_out(), _nband)
                             else:
                                 _out_bo = X
                                 _out_base = _x_out()
@@ -3591,8 +4550,13 @@ def build_module():
                         """
                         if not DYNSEQ_MEM:
                             return idx(ATTN_ROUNDS)
+                        # Same decode as the cores'. The memtile's dequeue count,
+                        # the shim's push count and the cores' trip count must
+                        # agree, so the mode bit has to be stripped here too --
+                        # left in, it would ask the memtile for 2^26 blocks.
+                        _sb, _ = _split_mask_mode(_seg_L)
                         _s = arith.addi(
-                            _seg_L,
+                            _sb,
                             arith.ConstantOp(
                                 IntegerAttr.get(i32, 15 + BATCH - 1), None
                             ).result,
@@ -3900,23 +4864,49 @@ def build_module():
                                 sizes=[idx(v) for v in _qs],
                                 strides=[idx(v) for v in _qt],
                             )
-                            for _t in range(BATCH):
+                            # ONE flat put of every token's row, not B of
+                            # them. The rows are consecutive and M-wide, so B
+                            # puts at t*M ARE one contiguous BATCH*M run -- and
+                            # a memtile DMA channel holds 24 BD ids SHARED
+                            # between its MM2S and S2MM halves. B=16 puts plus
+                            # the KV re-block's 8 on the same channel is 24, and
+                            # the S2MM side then has nowhere to go: "Allocator
+                            # exhausted available BD IDs (maximum 24 available
+                            # for channel 1)". Folded it is one BD at any batch.
+                            #
+                            # The rope core still gets one M-wide row per token;
+                            # a single producer BD feeding B consumer firings is
+                            # the same shape the shim's banded @rmsX task has
+                            # (one 20,480 task, five 4,096 core firings).
+                            _pt_all = (
+                                [(0, BATCH * M)]
+                                if not _os.environ.get("_QKV_ROPE_PERTOKEN")
+                                else [(_t * M, M) for _t in range(BATCH)]
+                            )
+                            for _off, _len in _pt_all:
                                 _pt = ChannelPut(
                                     "toRope",
                                     qmt,
-                                    offsets=[idx(_t * M)],
-                                    sizes=[idx(M)],
+                                    offsets=[idx(_off)],
+                                    sizes=[idx(_len)],
                                     strides=[idx(1)],
                                 )
-                                if RELAY_COLS[0] == 3:
-                                    # This memtile is SHARED with the col-3 KV
-                                    # re-block, and col 3 reserves MM2S 0: the
-                                    # q-broadcast transits this switchbox and a
-                                    # flow on MM2S 0 deadlocks the route. The KV
-                                    # puts already carry this floor; without it
-                                    # here the transposer takes MM2S 0 (visible
-                                    # in the AIE dump as mem_tile_3_1 gaining
-                                    # MM2S0, which batch 1 leaves empty).
+                                if RELAY_COLS[0] in _ATTN_COLS:
+                                    # This memtile is SHARED with that column's
+                                    # KV re-block, and an attention column
+                                    # reserves MM2S 0: the q-broadcast transits
+                                    # this switchbox and a flow on MM2S 0
+                                    # deadlocks the route. The KV puts already
+                                    # carry this floor; without it here the
+                                    # transposer takes MM2S 0 (visible in the
+                                    # AIE dump as the memtile gaining MM2S0,
+                                    # which batch 1 leaves empty).
+                                    #
+                                    # Matched on the SET of attention columns,
+                                    # not the literal 3: both attention columns
+                                    # reserve MM2S 0 for the same reason, and
+                                    # QKV_RELAY_COL exists to move this buffer
+                                    # between them.
                                     _pt.operation.attributes[
                                         "air.memtile_dma_channel_min"
                                     ] = IntegerAttr.get(T.i32(), 1)
@@ -4542,8 +5532,11 @@ def build_module():
                                 """
                                 if not DYNSEQ_RTP:
                                     return idx(ATTN_ROUNDS)
+                                # base + BATCH - 1 is the longest token's L in
+                                # BOTH modes, so only the mode bit comes off.
+                                _base, _ = _split_mask_mode(Lh)
                                 _s = arith.addi(
-                                    Lh,
+                                    _base,
                                     arith.ConstantOp(
                                         IntegerAttr.get(i32, 15 + BATCH - 1), None
                                     ).result,
@@ -4557,15 +5550,46 @@ def build_module():
                                 return arith.index_cast(idx_t, _q)
 
                             def _tok_L(Lh, t_iv):
-                                """This token's context length: Lh + t.
+                                """This token's context length: Lh + t*step.
 
                                 A block of B tokens occupies B CONSECUTIVE cache
                                 positions, so token t attends to t more keys
                                 than token 0. Still ONE RTP per dispatch -- the
                                 per-token part is the loop's own induction
                                 variable, not a second runtime value.
+
+                                Under MASK_MODE_RTP the step is 0 or 1 decoded
+                                from the same scalar: step 1 is that causal
+                                staircase (DFlash verify), step 0 gives every
+                                token the same L (DFlash draft, where the block
+                                attends to itself bidirectionally). See
+                                batch_attn_mask.py for why a per-query mask is
+                                exactly a per-query L.
                                 """
-                                return arith.addi(Lh, arith.index_cast(i32, t_iv))
+                                _base, _step = _split_mask_mode(Lh)
+                                _t = arith.index_cast(i32, t_iv)
+                                if isinstance(_step, int):
+                                    if _step == 0:
+                                        # Baked bidirectional: every token of
+                                        # the block sees base + (B-1) -- the
+                                        # whole block, DFlash's draft pass.
+                                        return arith.addi(
+                                            _base,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(i32, BATCH - 1), None
+                                            ).result,
+                                        )
+                                    return arith.addi(_base, _t)
+                                # base + (B-1) - step*(B-1-t):
+                                #   step 1 -> base + t        the causal staircase
+                                #   step 0 -> base + (B-1)    the whole block
+                                _bm1 = arith.ConstantOp(
+                                    IntegerAttr.get(i32, BATCH - 1), None
+                                ).result
+                                return arith.subi(
+                                    arith.addi(_base, _bm1),
+                                    arith.muli(_step, arith.subi(_bm1, _t)),
+                                )
 
                             def _tok_loop(one, sh, Lh, _c):
                                 """Run `one` for each token in the block.
@@ -4623,8 +5647,13 @@ def build_module():
                                 for _t in for_(idx(0), idx(BATCH), idx(1)):
                                     _kv_body_one(sh, _tok_L(Lh, _t), Lh, _c, a_o, _t)
                                     yield_([])
-                                for _to in range(BATCH):
-                                    _attn_o_put(a_o, _c, _to)
+                                if _os.environ.get("_ATTN_O_PERTOKEN"):
+                                    # A/B: the per-token form, which is one BD
+                                    # block per token and does not fit at 16.
+                                    for _to in range(BATCH):
+                                        _attn_o_put(a_o, _c, _to)
+                                else:
+                                    _attn_o_put_block(a_o, _c)
                                 DeallocOp(a_o)
 
                             def _qk_body_one(sh, Lh, Lblk, _c, a_q=None, t_iv=None):
@@ -4709,6 +5738,39 @@ def build_module():
                                 DeallocOp(a_y)
                                 DeallocOp(a_l)
 
+                            def _attn_o_put_block(a_o, _c):
+                                """Every token's o, in ONE flat transfer.
+
+                                ONE BD BLOCK, INDEPENDENT OF BATCH, and that is
+                                what makes batch 16 build. The per-token form
+                                below spends a BD block per token -- a compute
+                                tile holds 16, the attention core already needs
+                                several for @toAttnQ/@toK/@toV, and BATCH=16
+                                puts it over ('aie.mem' op has more than 16
+                                blocks, on air.herd @attn_blk). A single flat op
+                                is one block at any batch.
+
+                                It is flat because the UN-INTERLEAVE MOVED TO THE
+                                MEMTILE. The transpose from the kernel's
+                                [q_head, dc, de] to natural (q_head, dh) needs
+                                three descriptor dimensions, which is all a
+                                compute tile has, so the token could not be a
+                                fourth and had to ride the offset -- one op per
+                                token. A MEMTILE BD has four, so the same
+                                permutation plus the token fits there in one op;
+                                see _o_gather. Nothing about the data or the
+                                order changes, only which end of the channel
+                                describes it.
+                                """
+                                ChannelPut(
+                                    "attnO",
+                                    a_o,
+                                    indices=[idx(_c)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(BATCH * DQ_PADDED_PER_CU)],
+                                    strides=[idx(1)],
+                                )
+
                             def _attn_o_put(a_o, _c, t):
                                 # o un-interleave: kernel [q_head, dc, de] -> natural
                                 # (q_head, dh). sizes=[Q_HEADS_PER_CU, DH//8, 8].
@@ -4718,6 +5780,8 @@ def build_module():
                                 # token, but issued AFTER the token loop: what
                                 # deadlocks the o-gather is interleaving the
                                 # CUs, not the number of transfers.
+                                #
+                                # BATCH == 1 ONLY now -- see _attn_o_put_block.
                                 ChannelPut(
                                     "attnO",
                                     a_o,
@@ -4882,12 +5946,59 @@ def build_module():
                                     strides=[idx(1)],
                                 )
 
+                        def _o_gather_block():
+                            """All four CUs' o for the whole batch, four gets.
+
+                            The CU sends its block FLAT now (one BD block on the
+                            compute tile at any batch -- see _attn_o_put_block),
+                            so this end does the un-interleave. A memtile BD has
+                            FOUR dimensions where a compute tile has three, which
+                            is exactly the one this needs.
+
+                            The stream arrives in `a_o` order, which decomposes
+                            token-major then dc, q_head, de:
+
+                                src  j = t*DQ_PER_CU + dc*(QH*8) + qh*8 + de
+                                dst  p = t*DQ + c*DQ_PER_CU + qh*DH + dc*8 + de
+
+                            so iterating [t, dc, qh, de] walks the stream in
+                            order and lands it transposed -- destination strides
+                            [DQ, 8, DH, 1]. Same permutation the compute tile's
+                            3-D descriptor used to express, plus the token.
+                            """
+                            assert DH % 8 == 0
+                            for c in range(N_ATTN_CU):
+                                ChannelGet(
+                                    "attnO",
+                                    omtb,
+                                    indices=[idx(c)],
+                                    # On the UNIT-STRIDE dimension: an
+                                    # air.channel offset is the strided-view
+                                    # convention, so a whole-buffer offset on
+                                    # dim 0 comes out multiplied by DQ.
+                                    offsets=[
+                                        idx(0),
+                                        idx(0),
+                                        idx(0),
+                                        idx(c * DQ_PER_CU),
+                                    ],
+                                    sizes=[
+                                        idx(BATCH),
+                                        idx(DH // 8),
+                                        idx(Q_HEADS_PER_CU),
+                                        idx(8),
+                                    ],
+                                    strides=[idx(DQ), idx(8), idx(DH), idx(1)],
+                                )
+
                         if BATCH == 1:
                             _o_gather(None)
-                        else:
+                        elif _os.environ.get("_ATTN_O_PERTOKEN"):
                             for _t in for_(idx(0), idx(BATCH), idx(1)):
                                 _o_gather(arith.muli(_t, idx(DQ)))
                                 yield_([])
+                        else:
+                            _o_gather_block()
                         refeed(
                             OPROJ_REFEED,
                             lambda: _xnorm_put(
@@ -5959,12 +7070,27 @@ def build_module():
                         would use, since `dst` is only ever one band wide.
                         """
                         assert STG_W % _RMS_DMA_CHUNK == 0
+                        # TOKEN-MAJOR, not chunk-major, and the reason is on the
+                        # LAUNCH side. A band is [BATCH][STG_W] in `dst`; walking
+                        # it token-major makes each token's STG_W elements
+                        # CONTIGUOUS in the stream, which lets the shim describe
+                        # a whole band in two dimensions ([BATCH, STG_W]) instead
+                        # of three. That is what buys ph0's entire feed --
+                        # refeed, band, token, element -- a legal FOUR-dimension
+                        # shim descriptor, and a shim BD holds three dimensions
+                        # plus a repeat. Chunk-major needs three dims per band
+                        # and pushes the phase to five, which is dropped without
+                        # a diagnostic (see _rms_x_feed_ph).
+                        # The _RMS_DMA_CHUNK sub-dicing stays: it is here because
+                        # a COMPUTE tile's BD wrap field is 8 bits and STG_W does
+                        # not fit in it. The shim's is 10, so the shim side does
+                        # not need it.
                         ChannelGet(
                             "rmsX",
                             dst,
                             offsets=[0, 0, 0],
-                            sizes=[STG_W // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
-                            strides=[_RMS_DMA_CHUNK, STG_W, 1],
+                            sizes=[BATCH, STG_W // _RMS_DMA_CHUNK, _RMS_DMA_CHUNK],
+                            strides=[STG_W, _RMS_DMA_CHUNK, 1],
                         )
 
                     def _rms_band_put_back(src):
@@ -5979,12 +7105,13 @@ def build_module():
                         gets the STG_W-strided (tightly packed) side.
                         """
                         assert STG_W % _RMS_DMA_CHUNK == 0
+                        # Token-major, mirroring _rms_band_get -- see there.
                         ChannelPut(
                             "layerOut",
                             src,
                             offsets=[0, 0, 0],
-                            sizes=[STG_W // _RMS_DMA_CHUNK, BATCH, _RMS_DMA_CHUNK],
-                            strides=[_RMS_DMA_CHUNK, STG_W, 1],
+                            sizes=[BATCH, STG_W // _RMS_DMA_CHUNK, _RMS_DMA_CHUNK],
+                            strides=[STG_W, _RMS_DMA_CHUNK, 1],
                         )
 
                     def _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm):
@@ -6022,9 +7149,115 @@ def build_module():
                             # `first` still resets scales[t] per TOKEN at
                             # band 0 -- correct regardless of loop order,
                             # since each token's accumulator is independent.
+                            #
+                            # AN scf.for, NOT A PYTHON-UNROLLED ONE, AND THAT
+                            # IS THE WHOLE REASON BATCH 16 BUILDS. A core
+                            # tile's `aie.mem` holds at most 16 BD blocks, and
+                            # a get inside an scf.for costs ONE (the loop
+                            # becomes a repeat count on a single BD) where
+                            # _nband unrolled gets cost _nband. Unrolled, the
+                            # rms core needed 2*_nband + 12 blocks -- 22 for
+                            # qwen3-4b's 5 bands, over the limit, which is
+                            # exactly the `'aie.mem' op has more than 16
+                            # blocks` that level 3 used to die on. Rolled, the
+                            # pre-pass costs 1 block per phase instead of
+                            # _nband and the core lands at 14, INDEPENDENT of
+                            # K. Nothing about the transfer changes: every
+                            # visit is the same op (see _rms_band_get -- the
+                            # offset is always 0, the launch side picks the
+                            # band), so the unrolled form was _nband textually
+                            # identical copies of one op.
+                            #
+                            # `first` was the only thing the unrolled form
+                            # varied, and it does not need unrolling either:
+                            # it is (band == 0), which the loop index already
+                            # carries. Same extui(cmpi) shape PROJ_RC_CACHE's
+                            # own first-visit flag uses.
                             _nband = K // STG_W
-                            for _b in range(_nband):
+                            if _os.environ.get("_RMS_W3_IN_NORM"):
+                                # Bisection: one extra band get at the top of the
+                                # norm body -- same descriptor as the weight gets,
+                                # straight-line, consumed immediately. The ONLY
+                                # difference from _RMS_W3 (which works) is that
+                                # this sits AFTER the scf.index_switch that _cnt
+                                # emits for the arm-selected refeed count.
                                 _rms_band_get(xb)
+                            if _os.environ.get("_RMS_UNROLL_PREPASS"):
+                                # Bisection: the pre-pass Python-unrolled, so its
+                                # band gets are STRAIGHT-LINE instead of inside an
+                                # scf.for. Every rmsX get on this tile shares one
+                                # descriptor and one buffer, so getUniqueBDPattern
+                                # folds them to a single BD either way -- unrolling
+                                # costs no BD blocks now that rmsX is alone on its
+                                # port (it did when it shared with rmsW/rmsW2,
+                                # which is why the loop was introduced).
+                                # _RMS_PREPASS_BANDS=N: fetch on the first N
+                                # bands only (paired with the launch feeding N).
+                                # Sweeps how many band-from-X transfers the
+                                # pipeline survives.
+                                _nb = int(_os.environ.get("_RMS_PREPASS_BANDS", _nband))
+                                for _bi in range(_nband):
+                                    if _bi < _nb:
+                                        _rms_band_get(xb)
+                                    for t in range(BATCH):
+                                        CallOp(
+                                            rms_scale_row_partial_banded_aie,
+                                            [
+                                                scl,
+                                                xb,
+                                                _i32(t),
+                                                _i32(STG_W),
+                                                _i32(1 if _bi == 0 else 0),
+                                                _arm,
+                                            ],
+                                        )
+                                for t in range(BATCH):
+                                    CallOp(
+                                        rms_scale_row_finalize_aie,
+                                        [scl, _i32(t), _arm],
+                                    )
+                                _n = nrefeed if isinstance(nrefeed, int) else None
+                                for _r in for_(
+                                    idx(0),
+                                    idx(_n) if _n is not None else nrefeed,
+                                    idx(1),
+                                ):
+                                    for _c in for_(idx(0), idx(_nchunk), idx(1)):
+                                        CallOp(
+                                            rms_chunk_banded_aie,
+                                            [
+                                                stg,
+                                                xb,
+                                                wbuf,
+                                                scl,
+                                                _i32(BATCH),
+                                                arith.index_cast(i32, _c),
+                                                _i32(XCHUNK),
+                                            ],
+                                        )
+                                        ChannelPut(
+                                            "xnorm",
+                                            stg,
+                                            offsets=[idx(0)],
+                                            sizes=[idx(BATCH * XCHUNK)],
+                                            strides=[idx(1)],
+                                        )
+                                        yield_([])
+                                    yield_([])
+                                return
+                            for _b in for_(idx(0), idx(_nband), idx(1)):
+                                # _RMS_FETCH_OFF: bisection, drops BOTH the
+                                # pre-pass and the regen refetch and feeds no ph0
+                                # sweep at all, leaving @rmsX carrying only the
+                                # two weight bands and the residual round-trips.
+                                # Output is wrong by construction; the question
+                                # is whether it COMPLETES.
+                                if not _os.environ.get("_RMS_FETCH_OFF"):
+                                    _rms_band_get(xb)
+                                _first = arith.extui(
+                                    i32,
+                                    arith.cmpi(arith.CmpIPredicate.eq, _b, idx(0)),
+                                )
                                 for t in range(BATCH):
                                     CallOp(
                                         rms_scale_row_partial_banded_aie,
@@ -6033,14 +7266,13 @@ def build_module():
                                             xb,
                                             _i32(t),
                                             _i32(STG_W),
-                                            _i32(1 if _b == 0 else 0),
+                                            _first,
                                             _arm,
                                         ],
                                     )
+                                yield_([])
                             for t in range(BATCH):
-                                CallOp(
-                                    rms_scale_row_finalize_aie, [scl, _i32(t), _arm]
-                                )
+                                CallOp(rms_scale_row_finalize_aie, [scl, _i32(t), _arm])
                         elif RMS_BAND_STREAM:
                             # Transitional: xb is still the full resident row
                             # (row_stride=K), only the REDUCTION is banded, to
@@ -6064,9 +7296,7 @@ def build_module():
                                             _arm,
                                         ],
                                     )
-                                CallOp(
-                                    rms_scale_row_finalize_aie, [scl, _i32(t), _arm]
-                                )
+                                CallOp(rms_scale_row_finalize_aie, [scl, _i32(t), _arm])
                         else:
                             for t in range(BATCH):
                                 CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
@@ -6091,7 +7321,19 @@ def build_module():
                                     # this is is the launch side's choice,
                                     # not this side's; `_c` only selects `w`'s
                                     # slice (unchanged, still fully resident).
-                                    _rms_band_get(xb)
+                                    # _RMS_NO_REGEN_FETCH: bisection. Drop the
+                                    # per-visit refetch and let the regen read
+                                    # whatever band is already in xb. The OUTPUT
+                                    # is wrong by construction; the question is
+                                    # whether the dispatch COMPLETES, which
+                                    # splits ph0 into (weights + scale pre-pass)
+                                    # and (regen refetch). Paired with
+                                    # _rms_x_feed_ph feeding nrefeed=0 so the
+                                    # channel still balances.
+                                    if not _os.environ.get(
+                                        "_RMS_NO_REGEN_FETCH"
+                                    ) and not _os.environ.get("_RMS_FETCH_OFF"):
+                                        _rms_band_get(xb)
                                     CallOp(
                                         rms_chunk_banded_aie,
                                         [
@@ -6226,7 +7468,37 @@ def build_module():
                                 body()
                                 yield_([])
 
-                        xb = AllocOp(rstg_l1 if RMS_BAND_STREAM >= 3 else rmsb_l1, [], [])
+                        xb = AllocOp(
+                            rstg_l1 if RMS_BAND_STREAM >= 3 else rmsb_l1, [], []
+                        )
+                        # THE @layerOut DRAIN GETS ITS OWN BAND BUFFER, and
+                        # that is a LOCK requirement, not tidiness. A tile-DMA
+                        # BD's acquire/release COUNT comes from
+                        # air::getLockValuePair(targetModel, buffer) --
+                        # AIRToAIEPass.cpp, the two-argument overload -- which
+                        # is ceil(reads/writes) over the memcpy ops naming that
+                        # buffer, while the CORE side is hardwired to 1. Share
+                        # one band buffer for both roles and `xb` is the dst of
+                        # every rmsX get (6) and the src of both layerOut puts
+                        # (2), so the layerOut MM2S BD is emitted as
+                        # acquire>=3 / release 3 against a core that releases
+                        # 1 per band: the DMA never fires, the core blocks on
+                        # its second band, and the dispatch times out with
+                        # nothing written at all. (Measured, qwen3-4b batch 8:
+                        # lock_2_2_128 init 0, DMA AcquireGreaterEqual 3, core
+                        # Release 1.) Splitting the roles makes BOTH 1:1 --
+                        # `xb` is written by 6 gets and read by no memcpy at
+                        # all (the ratio path is skipped outright for a
+                        # write-only buffer), `xr` is read by 2 puts and
+                        # written by none -- so every count on this tile is 1,
+                        # matching the core. residual_acc_row_banded_out_aie
+                        # is what keeps them apart: out = acc + x rather than
+                        # acc += x. Keeping `xb` the ONLY rmsX destination
+                        # also keeps that channel's count-free BD ring uniform
+                        # -- see the kernel's comment.
+                        xr = AllocOp(rstg_l1, [], []) if RMS_BAND_STREAM >= 3 else None
+                        # _RMS_STG_COPY's landing-buffer shadow -- see there.
+                        sg2 = AllocOp(rstg_l1, [], []) if _RMS_STG_COPY else None
                         if RMS_BAND_STREAM >= 3:
                             # No upfront fetch: xb is refilled fresh inside
                             # _rms_batched_norm's scale pre-pass (the first
@@ -6358,7 +7630,8 @@ def build_module():
                             """
                             _add = not ACC_STOP or stage < ACC_STOP
                             _rof, _rsz, _rst = outy_tokmajor(PAYLOAD)
-                            for _r in for_(idx(0), idx(nrnds), idx(1)):
+
+                            def _outy_get():
                                 # De-interleave here, not at the memtile: the
                                 # round arrives emitter-major so its packet
                                 # header stays in one piece upstream.
@@ -6370,6 +7643,54 @@ def build_module():
                                     sizes=[idx(v) for v in _rsz],
                                     strides=[idx(v) for v in _rst],
                                 )
+
+                            # _RMS_BAND_FIRST: ask for the @rmsX band BEFORE the
+                            # @outY round instead of after. The two arrive on
+                            # different S2MM ports of the same tile but share the
+                            # switchbox path into it, so taking outY first and
+                            # then blocking on the band can leave the band's
+                            # packet queued behind an outY packet the core cannot
+                            # accept -- head-of-line, and the core waits forever.
+                            _band_first = RMS_BAND_STREAM >= 3 and _os.environ.get(
+                                "_RMS_BAND_FIRST"
+                            )
+                            for _r in for_(idx(0), idx(nrnds), idx(1)):
+                                _do_get = str(stage) in _RMS_BANDS_GET
+                                _do_put = str(stage) in _RMS_BANDS_PUT
+                                # _RMS_RES2_PUT_FIRST: a PROGRESS WITNESS, not a
+                                # fix. In residual2 only, put a band back as the
+                                # FIRST op of the loop body -- ahead of the @outY
+                                # get as well as the @rmsX get. Its contents are
+                                # stale garbage, but the drain is host-visible,
+                                # so reaching this loop at all lands one band in
+                                # X (BATCH runs of STG_W, one per token row) and
+                                # X staying empty means the core never got here.
+                                # Everything else the core does after ph2 is
+                                # invisible from the host.
+                                # ..._PUT_FIRST puts it ahead of the @outY get
+                                # too; ..._PUT_MID puts it BETWEEN the @outY get
+                                # and the @rmsX get. One band in X under MID and
+                                # none under neither says @outY arrived and the
+                                # BAND did not; none under MID says @outY is
+                                # what blocks. Nothing else separates the two.
+                                _pm = _os.environ.get("_RMS_RES2_PUT_MID")
+                                _pf = _os.environ.get("_RMS_RES2_PUT_FIRST")
+                                _wit = (_pf or _pm) and _do_put and stage == 2
+                                if _pf and _wit:
+                                    _rms_band_put_back(xr)
+                                if _band_first and _do_get:
+                                    _rms_band_get(xb)
+                                _outy_get()
+                                if _pm and _wit:
+                                    _rms_band_put_back(xr)
+                                if _RMS_STG_COPY:
+                                    # `stg`'s ONLY reader in this round, so AIR
+                                    # releases the @outY landing buffer here
+                                    # rather than after the accumulate.
+                                    CallOp(
+                                        band_copy_aie,
+                                        [sg2, stg, _i32(BATCH * STG_W)],
+                                    )
                                 if RMS_BAND_STREAM >= 3:
                                     # Length 0, not a dropped call: see the
                                     # comment below -- unchanged reasoning,
@@ -6387,13 +7708,22 @@ def build_module():
                                     # the final output (residual2) can
                                     # correctly re-read it. No scratch slot
                                     # -- see the HIDDEN_TAPS refusal above.
-                                    _rms_band_get(xb)
+                                    if _do_get and not _band_first:
+                                        _rms_band_get(xb)
                                     for t in range(BATCH):
                                         CallOp(
-                                            residual_acc_row_banded_aie,
-                                            [xb, stg, _i32(t), _n],
+                                            residual_acc_row_banded_out_aie,
+                                            [
+                                                xr,
+                                                xb,
+                                                sg2 if _RMS_STG_COPY else stg,
+                                                _i32(t),
+                                                _i32(STG_W),
+                                                _n,
+                                            ],
                                         )
-                                    _rms_band_put_back(xb)
+                                    if _do_put and not _wit:
+                                        _rms_band_put_back(xr)
                                 else:
                                     _off = arith.muli(
                                         arith.index_cast(i32, _r), _i32(PAYLOAD)
@@ -6433,24 +7763,74 @@ def build_module():
                         # _xc_voc sizes the X memtile's get loop for. N_NORMS>=4
                         # (the Gemma sandwich, which would need rms_chunk_hi_aie
                         # here) is already refused at BATCH>1 upstream.
-                        ChannelGet("rmsW", w, indices=[idx(0)])
-                        _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
-                        if POST_RMS:
-                            # Swap in the post-attention weight BEFORE the first
-                            # o-proj get, not after: rmsW2 packet-muxes onto the
-                            # same S2MM as the o-proj id, and a packet whose BD
-                            # is not armed yet blocks the port behind it.
-                            # Its OWN buffer, not `w` reused. Reusing it saves
-                            # 4 KB on a tile that has them, and it costs the
-                            # separate lock pair AIR gives the second weight --
-                            # which serialises the ph0 norm against the rmsW2
-                            # fill and hangs the batched decode in wave 0.
-                            # On the LM head arm this weight is a DUMMY and
-                            # the get exists only to consume it: rmsW2 is
-                            # decode-only but packet-muxes onto the same shim
-                            # MM2S as the vocab-active rmsX, so a hole in that
-                            # group stalls the tail (see _uni_voc).
-                            ChannelGet("rmsW2", w2, indices=[idx(0)])
+                        if RMS_W_ON_X and RMS_BAND_STREAM < 3:
+                            # Bisection shape (_RMS_W_ON_X at level <3): the
+                            # weight goes straight into its own buffer, no band
+                            # and no copy. Same channel, same ordering rule.
+                            def _w_row_get(dst):
+                                ChannelGet(
+                                    "rmsX",
+                                    dst,
+                                    offsets=[0, 0],
+                                    sizes=[K // _RMS_DMA_CHUNK, _RMS_DMA_CHUNK],
+                                    strides=[_RMS_DMA_CHUNK, 1],
+                                )
+
+                            _w_row_get(w)
+                            if POST_RMS:
+                                _w_row_get(w2)
+                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
+                        elif RMS_W_ON_X:
+                            # BOTH weights first, back to back, before anything
+                            # else touches the band buffer -- and in the SAME
+                            # order the launch side puts them, because they now
+                            # share one channel where they used to have two of
+                            # their own (RMS_W_ON_X). `xb` is overwritten by the
+                            # very next fetch, so each has to be lifted out
+                            # before the following get, which is what makes
+                            # "get, copy, get, copy" the only legal shape here.
+                            #
+                            # rmsW2 moves UP from its old position after ph0.
+                            # The reason it sat there -- rmsW2 packet-muxed onto
+                            # the same S2MM as the o-proj id, and a packet whose
+                            # BD is not armed yet blocks the port behind it --
+                            # no longer applies: there is no rmsW2 flow.
+                            _rms_band_get(xb)
+                            CallOp(band_to_weight_aie, [w, xb, _i32(K)])
+                            if _os.environ.get("_RMS_W3"):
+                                # Bisection: a THIRD straight-line, weight-shaped
+                                # get at the very top, consumed immediately, with
+                                # every other band fetch off (_RMS_FETCH_OFF).
+                                # Separates "three transfers on @rmsX is the
+                                # limit" from "the third transfer is fine but the
+                                # pre-pass position is not".
+                                _rms_band_get(xb)
+                                CallOp(band_to_weight_aie, [w, xb, _i32(K)])
+                            if POST_RMS:
+                                _rms_band_get(xb)
+                                CallOp(band_to_weight_aie, [w2, xb, _i32(K)])
+                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
+                        else:
+                            ChannelGet("rmsW", w, indices=[idx(0)])
+                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
+                            if POST_RMS:
+                                # Swap in the post-attention weight BEFORE the
+                                # first o-proj get, not after: rmsW2 packet-muxes
+                                # onto the same S2MM as the o-proj id, and a
+                                # packet whose BD is not armed yet blocks the
+                                # port behind it.
+                                # Its OWN buffer, not `w` reused. Reusing it
+                                # saves 4 KB on a tile that has them, and it
+                                # costs the separate lock pair AIR gives the
+                                # second weight -- which serialises the ph0 norm
+                                # against the rmsW2 fill and hangs the batched
+                                # decode in wave 0.
+                                # On the LM head arm this weight is a DUMMY and
+                                # the get exists only to consume it: rmsW2 is
+                                # decode-only but packet-muxes onto the same shim
+                                # MM2S as the vocab-active rmsX, so a hole in that
+                                # group stalls the tail (see _uni_voc).
+                                ChannelGet("rmsW2", w2, indices=[idx(0)])
                         # residual1: h = x + o-proj, in place.
                         _if_decode(lambda: _accumulate(OPROJ_RNDS, 1))
                         # ph2: pre-MLP layernorm of h -> the gate-up X feed.
@@ -6465,7 +7845,12 @@ def build_module():
                         # residual2: layer output = h + down, in place.
                         _if_decode(lambda: _accumulate(DOWN_RNDS, 2))
                         _if_decode(_layer_out)
-                        for _b in ([w2] if POST_RMS else []) + [w, scl, stg, xb]:
+                        for _b in (
+                            ([w2] if POST_RMS else [])
+                            + ([xr] if xr is not None else [])
+                            + ([sg2] if sg2 is not None else [])
+                            + [w, scl, stg, xb]
+                        ):
                             DeallocOp(_b)
 
                     def _rms_decode_body(_arm):
@@ -6701,6 +8086,7 @@ def run():
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
         # per dispatch from the emitted header instead of read from insts.bin.
         emit_txn_cpp=bool(DYNSEQ),
+        debug_ir=bool(_os.environ.get("FUSED_DECODE_DEBUG_IR")),
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "

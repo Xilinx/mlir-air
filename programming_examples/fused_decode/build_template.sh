@@ -37,6 +37,40 @@ cd "$HERE"
 
 KB=$("$PYTHON" -c "import sys; sys.path.insert(0,'.');
 import check_kernels_inert as C; print(' '.join(C.makefile_kbase()))")
+
+# THE KERNELS MUST BE COMPILED FOR THE MODEL THE DESIGN IS BUILT FOR.
+# makefile_kbase() returns THIS directory's Makefile PEANO_KBASE, which
+# hardcodes -DMODEL_TYPE=LLAMA_3_2_1B: that Makefile only ever builds
+# llama-3.2-1b, and each llms/<model>_q4nx/Makefile carries its own
+# -DMODEL_TYPE. Taken verbatim, every DECODE_MODEL!=llama-3.2-1b template this
+# script produced had LLAMA kernels (MODEL_DIM 2048, DH 64) inside a design
+# built for another model's dimensions -- and the failure is silent: it links,
+# it dispatches, it returns COMPLETED, and the layer output is simply never
+# written (measured on qwen3-4b: X came back bit-identical to the host fill
+# with the tail zeroed, at batch 1, where the production template writes all
+# of it). Substitute the model's own MODEL_TYPE here so the object and the
+# design cannot disagree -- the same rule this script already applies to
+# PROJ_MM_BATCH.
+case "$DECODE_MODEL" in
+  llama-3.2-1b)          MT=LLAMA_3_2_1B ;;
+  llama-3.2-3b)          MT=LLAMA_3_2_3B ;;
+  llama-3.1-8b)          MT=LLAMA_3_1_8B ;;
+  gemma3-4b)             MT=GEMMA3_4B ;;
+  phi4-mini)             MT=PHI4_4B ;;
+  qwen2.5-3b)            MT=QWEN2_5_3B ;;
+  qwen2.5-7b)            MT=QWEN2_5_7B ;;
+  qwen3-8b)              MT=QWEN3_8B ;;
+  # The DFlash drafter is qwen3-4b's per-layer geometry with fewer layers, so
+  # it takes qwen3-4b's kernels unchanged; only UNI_DEC differs, and that is a
+  # builder-side constant, not a kernel one.
+  qwen3-4b|qwen3-4b-draft) MT=QWEN3_4B ;;
+  lfm2-1.2b)             MT=LFM2_1_2B ;;
+  *) echo "build_template.sh: no MODEL_TYPE known for DECODE_MODEL=$DECODE_MODEL" >&2
+     echo "  add it to the case above AND to models/all_models.h" >&2; exit 1 ;;
+esac
+KB=$(echo "$KB" | sed "s/-DMODEL_TYPE=[A-Z0-9_]*/-DMODEL_TYPE=$MT/")
+echo ">>> kernels for MODEL_TYPE=$MT  [DECODE_MODEL=$DECODE_MODEL]"
+
 CLANG="$PEANO_INSTALL_DIR/bin/clang++"
 
 # proj_qmm's batched entry points are behind -DPROJ_MM_BATCH so that a build
@@ -75,6 +109,11 @@ done
 PFX=decode
 [ "${DECODE_PROBE:-0}" != "0" ] && PFX=probe
 [ "${DECODE_HIDDEN_TAPS:-0}" != "0" ] && PFX=taps
+# A dynseq build ships a .txn.h and NO insts.bin, so it cannot stand in for a
+# frozen template -- and it would delete the insts.bin of whatever it overwrote.
+# Its own prefix keeps it away from the templates the shipping gates read
+# (batch_equiv.py --prefix dyn picks it back up).
+[ "${DECODE_DYNSEQ:-0}" = "1" ] && PFX=dyn
 OUT="${PFX}_b${BATCH}_L${L}"
 echo ">>> template $OUT  [$DECODE_MODEL]"
 LOG="${TMPDIR:-/tmp}/${OUT}.log"
@@ -86,6 +125,23 @@ env VOCAB_CHUNK_I2="$VOCAB_CHUNK_I2" LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 UNIFIED
     DECODE_NO_LM_WAVES="${DECODE_NO_LM_WAVES:-1}" \
     DECODE_MODEL="$DECODE_MODEL" DECODE_BATCH="$BATCH" DECODE_GOLDEN_L="$L" \
     "$PYTHON" fused_decode.py > "$LOG" 2>&1 || true
+# DECODE_DYNSEQ=1 takes the context length at dispatch, so there is no frozen
+# insts.bin to move: the compiler emits a TXN builder the host calls per L. It
+# lands in air_project/ under a fixed name, so it has to be copied out beside
+# the xclbin or the next build overwrites it -- the same rule that makes every
+# other artifact here carry its batch and L in the filename.
+if [ "${DECODE_DYNSEQ:-0}" = "1" ]; then
+  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then
+    mv -f decode.xclbin "$OUT.xclbin"
+    cp -f air_project/npu.air.txn.h "$OUT.txn.h"
+    rm -f decode.insts.bin
+    echo "    $OUT.xclbin + $OUT.txn.h  [dynseq]"
+    exit 0
+  fi
+  echo "    FAILED (dynseq) -- see $LOG"
+  grep -m5 "error:" "$LOG" || tail -5 "$LOG"
+  exit 1
+fi
 if [ -f decode.xclbin ] && [ -f decode.insts.bin ]; then
   mv -f decode.xclbin "$OUT.xclbin"
   mv -f decode.insts.bin "$OUT.insts.bin"

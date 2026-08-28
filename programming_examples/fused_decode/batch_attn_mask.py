@@ -147,6 +147,7 @@ def cost(P):
 
 
 def main():
+    global BATCH
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -159,9 +160,19 @@ def main():
         "--prefix", type=int, default=2048, help="context length for --cost"
     )
     ap.add_argument("--cost", action="store_true", help="attn call counts at batch 16")
+    ap.add_argument(
+        "--batch",
+        type=int,
+        default=BATCH,
+        help="block size to check. Was fixed at 16 when this file was written, "
+        "because 16 was the checkpoint's block size; docs/DFlashFeasibility.md "
+        "section 3.1 since measured block 8 to be the one worth building, so "
+        "the arithmetic has to be checked there too.",
+    )
     a = ap.parse_args()
     if not (a.check or a.cost):
         ap.error("pass --check, --cost, or both")
+    BATCH = a.batch
     rc = 0
     if a.check:
         rc = check()
