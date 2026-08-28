@@ -367,6 +367,24 @@ class XRTBackend(AirBackend):
                 "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
             )
 
+        # The module is written out with str() further down, so anything at all
+        # is accepted by Python and rejected by aircc's parser two passes later,
+        # as "air.mlir:1:1: expected operation name in quotes" -- a diagnostic
+        # that names neither the caller nor the type it passed. Check here
+        # instead, where the argument still has a name. The common slip is an
+        # air.api LaunchContext, which is one .build() away from a module, so
+        # say that rather than only naming the type.
+        if not isinstance(air_module, (air.ir.Module, air.ir.Operation, str)):
+            hint = (
+                " Call .build(target=...) on it first."
+                if hasattr(air_module, "build")
+                else ""
+            )
+            raise AirBackendError(
+                f"XRTBackend.compile expects an MLIR module, got "
+                f"{type(air_module).__module__}.{type(air_module).__name__}.{hint}"
+            )
+
         # Determine target device: use explicit parameter if provided, otherwise auto-detect
         if self.target_device is not None:
             target_device = self.target_device
