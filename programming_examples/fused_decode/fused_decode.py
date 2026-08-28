@@ -1965,6 +1965,15 @@ ATTN_QSUBTILES = (BATCH + ATTN_QTILE - 1) // ATTN_QTILE
 # placed after all NLAYERS rms slabs.
 W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights / layer
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
+# Offset of the ones run appended to the rms BO for extra waves (see rms_l3 and
+# _uni_extra). Module scope because the HOST has to fill it, and a second copy of
+# this arithmetic on that side is exactly how a silently-wrong buffer happens.
+RMS_ONES_OFF = (
+    UNI_DEC * RMS_LAYER
+    + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN * BATCH
+    + K
+    + RMS_TAIL_SLACK
+)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y / layer
 # X slots: 1 for the in-place chain, one per layer boundary when tapping. UNI_DEC
@@ -3873,9 +3882,10 @@ def build_module():
                             UNI_DEC * RMS_LAYER
                             + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN * BATCH
                         )
-                        # The ones run appended to the rms BO (see rms_l3). The
-                        # host fills it; nothing in the decode path reads it.
-                        _rms_ones_off = _final_norm_off + K + RMS_TAIL_SLACK
+                        # The ones run appended to the rms BO (see rms_l3),
+                        # from the module constant the host reads.
+                        _rms_ones_off = RMS_ONES_OFF
+                        assert _rms_ones_off == _final_norm_off + K + RMS_TAIL_SLACK
 
                         def _uni_voc():
                             _wsel[0] = None  # lm-head buffer, statically known
