@@ -19,7 +19,7 @@ hardware, not merely from a form that looked reasonable when this was written.
 
 import air.api as air
 import air.api.ops as ops
-from air.api import bf16
+from air.api import bf16, i32
 
 M = N = K = 64
 TILE_M = TILE_N = TILE_K_L2 = 32
@@ -333,3 +333,244 @@ def build_extern_accumulator():
 # CHECK: func.call @step_kernel(%[[LOCAL]], %[[SV2]])
 
 print(build_extern_accumulator().build(target="npu1"))
+
+
+# ---------------------------------------------------------------------------
+# The subview the caller DOES choose.
+#
+# The two above are narrowings the DSL performs on the caller's behalf, because
+# there is exactly one slab a core may touch. A cascade payload is the opposite
+# case: a fixed-width slice of a wider L1 buffer, and which row it is comes from
+# the loop. Everywhere else in the DSL that subscript is a DMA access pattern;
+# passed to a kernel it has to become a real memref, so it emits memref.subview.
+#
+# The offset is dynamic and the declaration carries the subview's strided type,
+# so the C symbol is declared exactly as it is called -- which is the property
+# the whole of air.extern is built on.
+# ---------------------------------------------------------------------------
+
+
+def build_extern_region():
+    A = air.tensor([16, 16], bf16)
+    B = air.tensor([16, 16], bf16)
+    row_kernel = air.extern("row_kernel", link_with="mm.o")
+
+    with air.launch(name="extern_region") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    buf = air.alloc([16, 16], bf16, scope=h.private())
+                    ops.load(buf, A)
+                    for r in air.sequential(16):
+                        row_kernel(buf[r, 0:16])
+                    ops.store(buf, B)
+
+    return launch
+
+
+# CHECK: func.func private @row_kernel(memref<1x16xbf16, strided<[16, 1], offset: ?>, 2 : i32>)
+# CHECK: memref.subview %{{.*}}[%{{.*}}, 0] [1, 16] [1, 1]
+# CHECK: func.call @row_kernel(%subview)
+print(build_extern_region().build(target="npu1"))
+
+
+# A reshape of *part* of a buffer still names no memref. The whole-buffer case
+# does -- see the collapse tests below -- but `buf[0:16, 0:16].reshape(256)`
+# describes the order a transfer would walk a sub-region, and memref has no view
+# for that. This test asserted a blanket refusal of every reshape when the
+# subview support was written; the rule narrowed when collapse arrived, and this
+# is the half of it that still holds.
+# CHECK: refused: {{.*}}does not cover the whole buffer
+def build_reshaped_region_is_refused():
+    A = air.tensor([16, 16], bf16)
+    B = air.tensor([16, 16], bf16)
+    k = air.extern("reshaped_kernel", link_with="mm.o")
+
+    with air.launch(name="extern_reshaped") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    buf = air.alloc([16, 16], bf16, scope=h.private())
+                    ops.load(buf, A)
+                    try:
+                        k(buf[0:8, 0:16].reshape(128))
+                        print("NOT REFUSED")
+                    except TypeError as e:
+                        print("refused:", e)
+                    ops.store(buf, B)
+
+    return launch
+
+
+build_reshaped_region_is_refused().build(target="npu1")
+
+
+# ---------------------------------------------------------------------------
+# The other view a kernel can take: a whole buffer at a lower rank.
+#
+# The flash-attention kernels take their accumulator flat -- a [chunks, n] L1
+# tile handed to zero_fill_g_bf16 as [chunks * n] -- because the kernel walks it
+# as one run and the rank only matters to the matmul that fills it.
+# `buf.reshape(n)` is how the DSL already says "the same elements at a different
+# rank", and for the whole of a contiguous buffer that is memref.collapse_shape.
+#
+# Only a *grouping* of the existing axes is one. The refusals below are the
+# three ways it can fail to be, and the transpose is the one worth having a test
+# for: it has the same extents as an identity collapse, so a check on shape
+# alone accepts it and emits a collapse that hands the kernel the untransposed
+# buffer. The strides are what tell them apart.
+# ---------------------------------------------------------------------------
+
+
+def build_extern_collapsed():
+    A = air.tensor([8, 64], bf16)
+    B = air.tensor([8, 64], bf16)
+    flat = air.extern("zero_fill_g_bf16", link_with="attn.o")
+
+    with air.launch(name="extern_collapsed") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    g = air.alloc([8, 64], bf16, scope=h.private())
+                    flat(g.reshape(512))
+                    ops.load(g, A)
+                    ops.store(g, B)
+
+    return launch
+
+
+# CHECK: func.func private @zero_fill_g_bf16(memref<512xbf16, 2 : i32>)
+# CHECK: memref.collapse_shape %{{.*}} {{\[}}[0, 1]] : memref<8x64xbf16, 2 : i32> into memref<512xbf16, 2 : i32>
+# CHECK: func.call @zero_fill_g_bf16
+
+print(build_extern_collapsed().build(target="npu1"))
+
+
+def refused(what, fn):
+    try:
+        fn()
+    except Exception as e:
+        print(f"{what}: {type(e).__name__}: {e}")
+        return
+    raise AssertionError(f"{what}: expected a diagnostic, got none")
+
+
+def build_extern_collapse_refusals():
+    A = air.tensor([8, 64], bf16)
+    B = air.tensor([8, 64], bf16)
+    k = air.extern("takes_a_memref", link_with="attn.o")
+
+    with air.launch(name="extern_collapse_refusals") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    g = air.alloc([8, 64], bf16, scope=h.private())
+                    refused("transpose", lambda: k(g.transpose(1, 0)))
+                    refused("expand", lambda: k(g.reshape(8, 8, 8)))
+                    refused("part of the buffer", lambda: k(g[0:4, :].reshape(256)))
+                    ops.load(g, A)
+                    ops.store(g, B)
+
+    return launch
+
+
+# CHECK: transpose: TypeError: {{.*}}different order (a transpose)
+# CHECK: expand: TypeError: {{.*}}memref.expand_shape
+# CHECK: part of the buffer: TypeError: {{.*}}does not cover the whole buffer
+
+build_extern_collapse_refusals().build(target="npu1")
+
+
+# ---------------------------------------------------------------------------
+# A kernel scalar read out of a buffer.
+#
+# Rank decides whether a subscript is a memref operand or a value, which is the
+# rule the rest of the DSL already indexes by: an integer subscript drops an
+# axis and a slice keeps it, so ctr[0] is a scalar and ctr[0:1] is a
+# one-element region. Until this, both arrived as a memref and the scalar count
+# came out wrong.
+#
+# flash_attention/kernel_fusion_based is why: its cores keep a counter tile in
+# L1 across launch iterations, and the causal mask takes the q-block index out
+# of it -- an element of that tile plus the tile coordinate.
+# ---------------------------------------------------------------------------
+
+
+def build_extern_scalar_from_memory():
+    A = air.tensor([64, 64], bf16)
+    B = air.tensor([64, 64], bf16)
+    mask = air.extern("apply_causal_mask", link_with="attn.o", scalars=[i32, i32])
+
+    with air.launch(name="extern_scalar") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(2), range(2)], name="h", shape=(2, 2)) as h:
+
+                @h.body
+                def _(tx, ty):
+                    g = air.alloc([64, 64], bf16, scope=h.private())
+                    ctr = air.alloc([4], i32, scope=h.private())
+                    ops.load(g, A)
+                    mask(g, ctr[0] + tx, ty)
+                    ops.store(g, B)
+
+    return launch
+
+
+# CHECK: func.func private @apply_causal_mask(memref<64x64xbf16, 2 : i32>, i32, i32)
+# CHECK: %[[BASE:.*]] = memref.load %{{.*}}[%c0]
+# CHECK: %[[TX:.*]] = arith.index_cast
+# CHECK: %[[Q:.*]] = arith.addi %[[BASE]], %[[TX]]
+# CHECK: func.call @apply_causal_mask(%{{.*}}, %[[Q]], %{{.*}})
+
+print(build_extern_scalar_from_memory().build(target="npu1"))
+
+
+def build_extern_scalar_refusals():
+    A = air.tensor([64, 64], bf16)
+    B = air.tensor([64, 64], bf16)
+    one = air.extern("takes_one_i32", link_with="attn.o", scalars=[i32])
+
+    with air.launch(name="extern_scalar_refusals") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    g = air.alloc([64, 64], bf16, scope=h.private())
+                    f = air.alloc([4], bf16, scope=h.private())
+                    ops.load(g, A)
+                    # Stored as bf16, declared i32: passed as it is stored, so
+                    # the mismatch is named rather than silently converted.
+                    refused("wrong element type", lambda: one(g, f[0]))
+                    # Rank 1 is a region, and a region is a memref -- so this is
+                    # counted as a buffer operand and the scalar count is short.
+                    refused("rank-1 region", lambda: one(g, f[0:1]))
+                    ops.store(g, B)
+
+    return launch
+
+
+# CHECK: wrong element type: TypeError: {{.*}}reads air.api.bf16 out of a buffer but was declared air.api.i32
+# CHECK: rank-1 region: TypeError: {{.*}}1 scalar argument type(s) but called with 0
+
+build_extern_scalar_refusals().build(target="npu1")

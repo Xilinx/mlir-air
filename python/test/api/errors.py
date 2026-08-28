@@ -551,9 +551,12 @@ def _():
 
 
 # CHECK-LABEL: TEST: sequential_bound_from_tile_coordinate
-# A loop bound is resolved at trace time; a tile coordinate is an SSA value and
-# cannot be one.
-# CHECK: TypeError: air.sequential(stop=...) takes a Python integer
+# A bound may now be an enclosing loop's variable -- scf.for takes SSA bounds --
+# but not a tile coordinate. That differs between cores, and the body is traced
+# once for all of them, so each would run a different number of trips and
+# anything with a channel operation in it would deadlock on the ones that run
+# fewer.
+# CHECK: TypeError: {{.*}}built from a tile coordinate
 @expect(TypeError, "sequential_bound_from_tile_coordinate")
 def _():
     def body(h, tx, ty, A, B, C):
@@ -760,13 +763,6 @@ def _():
 @expect(NotImplementedError, "segment_grid_too_deep")
 def _():
     air.segment(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
-
-
-# CHECK-LABEL: TEST: launch_grid_too_deep
-# CHECK: NotImplementedError: air.launch is 1-D or 2-D; got 3-D
-@expect(NotImplementedError, "launch_grid_too_deep")
-def _():
-    air.launch(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
 
 
 # CHECK-LABEL: TEST: launch_body_arity

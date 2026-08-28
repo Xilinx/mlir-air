@@ -45,7 +45,7 @@ from air.dialects.vector import (
 from ._index import Leaf
 from .types import require_computable, require_signless
 
-__all__ = ["emit_elementwise"]
+__all__ = ["emit_elementwise", "emit_scalar_value"]
 
 _FLOAT_OPS = {
     "add": arith.AddFOp,
@@ -1080,6 +1080,51 @@ def _emit_vector(dst, expr, width):
         transfer_write(None, value, dst.value, _dst_index(dst, ivs), minor, [True])
 
     _nest(bounds, body)
+
+
+def emit_scalar_value(expr, dtype):
+    """Evaluate a rank-0 elementwise expression to one SSA value.
+
+    ``emit_elementwise`` always has somewhere to put its result; this is for the
+    caller that wants the value itself. air.extern is the only one: a kernel
+    scalar may be an element of a buffer -- the flash-attention causal mask takes
+    the q-block index out of a counter tile the core keeps in L1 -- and a
+    ``func.call`` operand is a value, not a store.
+
+    Rank 0 is the whole precondition, and it is the destination shape
+    ``_emit_scalar`` would nest over being empty: no induction variables, one
+    load per leaf, one value out. An expression of any other rank has more than
+    one value and no single answer to give.
+    """
+    shape = tuple(expr_shape(expr))
+    if shape != ():
+        raise ValueError(
+            f"expected a single value but this expression has shape {shape}; "
+            "subscript it down to one element"
+        )
+    regions = {d: _Region(d, 0, False) for d in _regions_in(expr, dtype, [])}
+    zero = _zero_index_if(_pins_for(expr, ()))
+
+    def load(buf, ivs, region, packed=False):
+        if packed:
+            raise NotImplementedError(
+                "air.api.ops.bitcast that changes the lane count needs the "
+                "vector path, and a single value is the scalar one"
+            )
+        return _result(memref_load(buf.value, _leaf_index(buf, (), ivs, zero)))
+
+    return _eval(expr, [], regions[dtype], regions, False, load, {})
+
+
+def expr_shape(node):
+    """The elementwise shape an expression evaluates to.
+
+    Broadcast across the leaves, which is what the emitter does implicitly by
+    checking each against the destination. There is no destination here, so it
+    is computed.
+    """
+    shapes = [leaf.shape for leaf in node.leaves()]
+    return _broadcast_shape(shapes) if shapes else ()
 
 
 def _emit_scalar(dst, expr):

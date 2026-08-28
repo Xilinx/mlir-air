@@ -79,6 +79,45 @@ def sequential(start, stop=None, step=None, name=None):
     if step is None:
         step = 1
 
+    from ._index import IndexExpr as _IndexExpr
+
+    # A bound may be an index expression -- a coordinate, or an enclosing loop's
+    # variable. scf.for takes SSA bounds, so nothing here has to fold: what it
+    # costs is that the trip count is no longer known at trace time, which only
+    # the checks below wanted. flash_attention's temporal-causal variant is the
+    # case: its inner loop runs the round's causal prefix, (lx + 1) * NQ blocks,
+    # and folding the round axis is what keeps the core inside program memory.
+    #
+    # as_const() rather than materialize(): asking whether the bound is a
+    # constant must not *emit* anything. materialize() writes an affine.apply
+    # into the block, which is one op leaked on the constant path (a second
+    # apply follows in _dynamic_sequential) and, worse, an op left behind in
+    # the block when the spatial-coordinate check below then raises.
+    if isinstance(stop, _IndexExpr):
+        folded = stop.as_const()
+        if folded is not None:
+            stop = folded
+    dynamic = isinstance(stop, _IndexExpr)
+    if dynamic and any(leaf.spatial for leaf in stop.terms):
+        # A tile coordinate differs between cores, so a bound built from one
+        # gives each core a different trip count. The body is traced once and
+        # stands for all of them, and anything with a channel operation in it
+        # would then deadlock on the cores that run fewer trips. A loop variable
+        # is uniform and is allowed.
+        raise TypeError(
+            "air.sequential(stop=...) takes a Python integer, an air.symbol, or "
+            "an enclosing loop's variable; this bound is built from a tile "
+            "coordinate, which differs between cores and would give each a "
+            "different trip count"
+        )
+    if dynamic:
+        lo = _as_bound(start, "start")
+        st = _as_bound(step, "step")
+        if st <= 0:
+            raise ValueError(f"air.sequential needs a positive step, got {st}")
+        yield from _dynamic_sequential(lo, stop, st, name)
+        return
+
     lo, hi, st = (
         _as_bound(v, n) for v, n in ((start, "start"), (stop, "stop"), (step, "step"))
     )
@@ -112,6 +151,28 @@ def sequential(start, stop=None, step=None, name=None):
             yield_([])
 
 
+def _dynamic_sequential(lo, stop, st, name):
+    """An air.sequential whose upper bound is only known at run time."""
+    from air.dialects import arith
+    from air.dialects.scf import for_ as scf_for, yield_
+    from air.ir import IndexType
+
+    global _ABORTED
+
+    hi = stop.materialize()
+    lo_v = arith.ConstantOp(IndexType.get(), lo)
+    st_v = arith.ConstantOp(IndexType.get(), st)
+    for iv in scf_for(lo_v, hi, st_v):
+        completed = False
+        try:
+            yield IndexExpr.leaf(iv, name or "k")
+            completed = True
+        finally:
+            if not completed:
+                _ABORTED.append("air.sequential")
+            yield_([])
+
+
 def parallel(start, stop=None, step=None, name=None):
     """An unordered ``scf.forall`` over ``[start, stop)`` in strides of ``step``.
 
@@ -133,8 +194,24 @@ def parallel(start, stop=None, step=None, name=None):
 
     Emitted as ``scf.forall``; the pipeline's ``scf-forall-to-parallel`` turns
     it into the ``scf.parallel`` that the hand-written examples spell directly.
+
+    A **grid** -- ``air.parallel([range(nrows), range(2)])`` -- makes one
+    ``scf.forall`` with that many induction variables, and yields them as a
+    tuple. It is one loop, not nested ones: a spatial fan-out whose destinations
+    are a 2-D arrangement of tiles is a single unordered iteration space, and
+    nesting two would give the inner one a bundle index derived from the outer's
+    variable rather than its own. flash_attention's output gather is the case --
+    a 4-way gather over (row, column-within-block).
     """
     global _ABORTED
+
+    if _is_grid(start):
+        if stop is not None or step is not None:
+            raise TypeError(
+                "air.parallel takes either a grid or start/stop/step, not both"
+            )
+        yield from _parallel_grid(start, name)
+        return
 
     if stop is None:
         start, stop = 0, start
@@ -169,6 +246,54 @@ def parallel(start, stop=None, step=None, name=None):
             yield IndexExpr.leaf(op.induction_variables[0], name or "p")
             completed = True
             # scf.forall's terminator, emitted inside the body region.
+            InParallelOp()
+    finally:
+        if not completed:
+            _ABORTED.append("air.parallel")
+            with InsertionPoint(op.body):
+                InParallelOp()
+
+
+def _is_grid(value):
+    """Is this a list of ranges rather than a single bound?"""
+    return isinstance(value, (list, tuple))
+
+
+def _parallel_grid(grid, name):
+    """A multi-dimensional air.parallel: one scf.forall, one IV per axis."""
+    from air.ir import InsertionPoint
+    from air.dialects.scf import ForallOp, InParallelOp
+
+    global _ABORTED
+
+    bounds = []
+    for axis, r in enumerate(grid):
+        if not isinstance(r, range):
+            raise TypeError(
+                f"air.parallel(grid) takes a list of ranges, and axis {axis} is "
+                f"{type(r).__name__} {r!r}"
+            )
+        if r.step <= 0 or r.start > r.stop or (r.stop - r.start) % r.step:
+            raise ValueError(
+                f"air.parallel axis {axis} is {r!r}, which does not tile its "
+                "extent exactly with a positive step"
+            )
+        bounds.append((r.start, r.stop, r.step))
+
+    op = ForallOp(
+        lower_bounds=[b[0] for b in bounds],
+        upper_bounds=[b[1] for b in bounds],
+        steps=[b[2] for b in bounds],
+    )
+    completed = False
+    try:
+        with InsertionPoint(op.body):
+            base = name or "p"
+            yield tuple(
+                IndexExpr.leaf(iv, f"{base}{axis}")
+                for axis, iv in enumerate(op.induction_variables)
+            )
+            completed = True
             InParallelOp()
     finally:
         if not completed:

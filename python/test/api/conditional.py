@@ -219,3 +219,77 @@ def no_otherwise_canonicalizes_away():
         PassManager.parse("builtin.module(canonicalize)").run(module.operation)
     print("canonicalized:")
     print(module)
+
+
+# CHECK-LABEL: TEST: a_branch_can_test_a_value_read_from_a_buffer
+# Rank says which conditional was meant. ctr[0] is a single value, so comparing
+# it yields one bool and can open a region; ctr[:] is one bool per element and
+# is ops.select's, which the refusal below still says.
+#
+# This is legal for the same reason the index form is -- it decides once per
+# core, not once per element -- and it is not ops.select, because what it
+# guards is a func.call and a select evaluates both of its arms.
+# flash_attention/kernel_fusion_based's --causal-skip is the case: a core keeps
+# its q-block index in an L1 counter tile, and blocks the causal mask kills
+# outright have their matmul and softmax skipped rather than computed and
+# thrown away.
+# CHECK: memref.load
+# CHECK: arith.cmpi sge
+# CHECK: scf.if
+# CHECK: func.call @block_kernel
+@run
+def a_branch_can_test_a_value_read_from_a_buffer():
+    from air.api.types import bf16, i32
+
+    kernel = air.extern("block_kernel", link_with="attn.o")
+    A = air.tensor([64, 64], bf16)
+    OUT = air.tensor([64, 64], bf16)
+
+    with air.launch(name="vcond") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(2), range(2)], shape=(2, 2), link_with="attn.o") as h:
+
+                @h.body
+                def _(tx, ty):
+                    g = air.alloc([64, 64], bf16, scope=h.private())
+                    ctr = air.alloc([4], i32, scope=h.private())
+                    air.ops.load(g, A)
+                    with air.ops.branch(ctr[0] + tx >= ty):
+                        kernel(g)
+                    air.ops.store(g, OUT)
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_wider_data_comparison_is_still_ops_select
+# One bool per element cannot open one region, and the diagnostic names the op
+# that can.
+# CHECK: TypeError: {{.*}}ops.select
+@run
+def a_wider_data_comparison_is_still_ops_select():
+    from air.api.types import bf16, i32
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch(name="vcond_wide") as launch:
+
+        @launch.body
+        def _():
+            with air.herd([range(1)], shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([64], bf16, scope=h.private())
+                    ctr = air.alloc([4], i32, scope=h.private())
+                    air.ops.load(a, A)
+                    try:
+                        air.ops.branch(air.ops.equal(ctr[0:2], 0))
+                        print("NOT REFUSED")
+                    except TypeError as e:
+                        print("TypeError:", e)
+                    air.ops.store(a, OUT)
+
+    launch.mlir()

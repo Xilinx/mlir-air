@@ -47,11 +47,11 @@ class LaunchContext:
         # is one replay of everything inside, so outer tiling belongs here:
         # a segment's L2 staging is refilled per point. air.segment and
         # air.herd each own a separate one; see LaunchState.
+        # No rank cap: air.launch's sizes are Variadic<Index>, so the op takes
+        # as many axes as it is given. This carried a limit of two, then of
+        # three, and both were the DSL inventing a constraint the dialect does
+        # not have.
         self.dims = parse_grid(grid) if grid is not None else ()
-        if len(self.dims) > 2:
-            raise NotImplementedError(
-                f"air.launch is 1-D or 2-D; got {len(self.dims)}-D"
-            )
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
         self.name = name
@@ -193,8 +193,12 @@ class LaunchContext:
         if not self.dims:
             self._body()
             return
-        # air.launch is always 2-D; a 1-D grid pads with 1.
-        counts = list(self.grid) + [1] * (2 - len(self.grid))
+        # air.launch takes as many sizes as it is given, and a 1-D grid pads to
+        # two so that it emits what it always has. Three occurs: the attention
+        # kernels split the value dimension across a third axis when dv exceeds
+        # one tile, and the whole grid is one iteration space, so it is one
+        # launch rather than a loop around a 2-D one.
+        counts = list(self.grid) + [1] * max(0, 2 - len(self.grid))
         open_launch_region(
             state, self.tensors, counts, lambda: self._body(*state.coords)
         )
