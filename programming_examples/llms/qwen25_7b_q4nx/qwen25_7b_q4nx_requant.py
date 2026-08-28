@@ -93,7 +93,7 @@ def build_requant_cache(model, fd, cache_path, verbose=True):
     DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
     # The reference per-block Python packer costs ~65 s per projection (~2 h for
     # this model); the vectorized one is bit-identical and ~1000x faster.
-    from qwen25_3b_requant import pack_q4k_cascade_fast
+    from q4_0_codec import pack_q4k_cascade_fast
 
     def _pack(q, sc, mn):
         return pack_q4k_cascade_fast(q, sc, NCX, NCY, dual_chan=DUAL, mins=mn)

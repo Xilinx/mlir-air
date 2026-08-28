@@ -243,7 +243,7 @@ class HFQ4nxModel:
         _FD = str(Path(__file__).resolve().parents[2] / "fused_decode")
         if _FD not in sys.path:
             sys.path.insert(0, _FD)
-        from qwen25_3b_requant import HFModel
+        from q4_0_codec import HFModel
 
         self._hf = HFModel(model)
 

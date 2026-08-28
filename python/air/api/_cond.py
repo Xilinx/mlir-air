@@ -162,6 +162,63 @@ class Condition:
         )
 
 
+# The branch arm currently being traced, as a list of (branch, arm) pairs --
+# one per enclosing ops.branch. air.alloc stamps it on each buffer so the L1
+# budget can tell "both of these exist" from "only one of these exists".
+_ARM_PATH = []
+
+
+def current_arm_path():
+    """Where in the branch nest the tracer is, as a hashable tuple."""
+    return tuple(_ARM_PATH)
+
+
+class ValueCondition:
+    """A comparison between values read out of buffers, awaiting ``ops.branch``.
+
+    The sibling of :class:`Condition`, which compares *index* expressions --
+    tile coordinates and loop variables, known per core before anything runs.
+    This one compares data, and is legal for the same reason the index form is:
+    it decides once per core, not once per element. Rank is what says which was
+    meant, and it is the rule the whole DSL indexes by -- ``ctr[0] <= n`` is a
+    single value and so a branch, while ``a[:] <= n`` is one bool per element
+    and so ``ops.select``, which ``_why_not_a_branch`` still says.
+
+    flash_attention/kernel_fusion_based's ``--causal-skip`` is the case. A core
+    keeps its q-block index in an L1 counter tile, and blocks the mask kills
+    outright have their matmul, softmax and PV skipped rather than computed and
+    discarded. That cannot be ``ops.select``: what is being skipped is a
+    ``func.call``, and a select evaluates both of its arms.
+    """
+
+    __slots__ = ("expr",)
+
+    def __init__(self, expr):
+        self.expr = expr
+
+    def __repr__(self):
+        return f"({self.expr!r})"
+
+    def __bool__(self):
+        raise TypeError(
+            f"the truth of {self!r} is not known at trace time: it compares "
+            "values that only exist once the kernel runs. Write "
+            f"`with ops.branch(...):` for a region taken on that condition."
+        )
+
+    def materialize(self):
+        """Emit the comparison, returning its ``i1`` result."""
+        from ._emit import emit_scalar_value
+
+        dtype = self.expr.args[0].element_dtype() or self.expr.args[1].element_dtype()
+        if dtype is None:
+            raise TypeError(
+                "ops.branch was given a comparison between two scalars, which "
+                "has no buffer to read and therefore no run-time value"
+            )
+        return emit_scalar_value(self.expr, dtype)
+
+
 def _why_not_a_branch(condition):
     """Say which of the two conditionals the caller actually reached for."""
     from ._value import BufferExpr
@@ -197,9 +254,12 @@ class _Region:
     it instead.
     """
 
-    def __init__(self, at, terminate):
+    def __init__(self, at, terminate, arm=None):
         self._at = at
         self._terminate = terminate
+        # (branch, index) while this region is open, so air.alloc can tell a
+        # buffer in the then arm from one in the else arm.
+        self._arm = arm
         self.open = False
 
     def __enter__(self):
@@ -208,6 +268,8 @@ class _Region:
         self._ip = InsertionPoint(self._at) if self._terminate else self._at
         self._ip.__enter__()
         self.open = True
+        if self._arm is not None:
+            _ARM_PATH.append(self._arm)
         enter_region()
         return self
 
@@ -220,6 +282,8 @@ class _Region:
         # block with no terminator turns a diagnosable error into a verifier
         # crash somewhere unrelated.
         self.open = False
+        if self._arm is not None:
+            _ARM_PATH.pop()
         exit_region(aborted=exc_type is not None, what="ops.branch")
         if self._terminate:
             yield_([])
@@ -227,11 +291,28 @@ class _Region:
         return False
 
 
+def _as_condition(condition):
+    """Promote a rank-0 data comparison to a :class:`ValueCondition`.
+
+    Rank decides. A comparison whose operands are single elements -- ``ctr[0]``,
+    not ``ctr[:]`` -- yields one bool and can open a region; anything wider
+    yields one per element and is ops.select's, which the diagnostic says.
+    """
+    from ._emit import expr_shape
+    from ._value import BufferExpr
+
+    if isinstance(condition, BufferExpr) and condition.kind == "compare":
+        if expr_shape(condition) == ():
+            return ValueCondition(condition)
+    return condition
+
+
 class Branch:
     """The ``scf.if`` opened by :func:`branch`; ``otherwise()`` is its else."""
 
     def __init__(self, condition):
-        if not isinstance(condition, Condition):
+        condition = _as_condition(condition)
+        if not isinstance(condition, (Condition, ValueCondition)):
             raise TypeError(
                 "ops.branch takes a comparison between index expressions, such "
                 f"as `tx == 0` or `k < n - 1`, got {condition!r} "
@@ -248,7 +329,12 @@ class Branch:
         if self._op is not None:
             raise RuntimeError(f"ops.branch{self._condition} entered twice")
         self._op = scf.IfOp(self._condition.materialize(), has_else=True)
-        self._then = _Region(self._op.then_block, terminate=True)
+        # The Branch itself keys the arm, not id(self): an id is only unique
+        # while the object is alive, and `with ops.branch(...)` binds no name,
+        # so a freed Branch's id can be handed to the next one. Two unrelated
+        # branches would then share a key and _peak_bytes would take a max
+        # across arms that are not alternatives, under-counting L1.
+        self._then = _Region(self._op.then_block, terminate=True, arm=(self, 0))
         self._then.__enter__()
         return self
 
@@ -285,7 +371,9 @@ class Branch:
                 f"ops.branch{self._condition} already has an otherwise() region"
             )
         self._otherwise_taken = True
-        return _Region(InsertionPoint(self._else_terminator), terminate=False)
+        return _Region(
+            InsertionPoint(self._else_terminator), terminate=False, arm=(self, 1)
+        )
 
 
 def branch(condition):

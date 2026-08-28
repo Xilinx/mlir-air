@@ -44,7 +44,7 @@ HALO = K_TAPS - 1  # 2 rows of left context
 L1_BYTES = 65536  # per-compute-tile L1 on AIE2P
 
 
-def build_module(seq, channels, tile_s, np_dtype_in=bfloat16, herd_x=8, herd_y=1):
+def build_launch(seq, channels, tile_s, np_dtype_in=bfloat16, herd_x=8, herd_y=1):
     assert (
         channels % herd_x == 0
     ), f"channels ({channels}) must be divisible by herd_x ({herd_x})"
@@ -169,6 +169,25 @@ def build_module(seq, channels, tile_s, np_dtype_in=bfloat16, herd_x=8, herd_y=1
     return launch
 
 
+def build_module(
+    seq, channels, tile_s, np_dtype_in=bfloat16, herd_x=8, herd_y=1, target="npu2"
+):
+    """The MLIR module. Signature and return type are the llms/ builders' contract.
+
+    Most air.api examples let `build_module` hand back the LaunchContext and
+    leave `.build()` to their own `main`, which is fine for an example nobody
+    imports. The four that llms/ imports — gelu_and_mul, layer_norm,
+    silu_and_mul, weighted_rms_norm — instead split the two: `build_launch` for
+    the context, `build_module` for a built module with an explicit target.
+    lfm2's prefill hands the result straight to `cache.compile_and_cache`, so it
+    needs the module; returning the context stringified an object repr into
+    air.mlir and failed as a parse error two passes downstream.
+    """
+    return build_launch(
+        seq, channels, tile_s, np_dtype_in, herd_x=herd_x, herd_y=herd_y
+    ).build(target=target)
+
+
 def conv1d_reference(x_pad, w_tapmajor, seq, channels):
     """FP32 reference for the causal depthwise conv.
 
@@ -268,7 +287,7 @@ if __name__ == "__main__":
     if args.perf_iters < 0:
         parser.error("--perf-iters must be >= 0")
 
-    launch = build_module(
+    launch = build_launch(
         args.seq,
         args.channels,
         args.tile_s,

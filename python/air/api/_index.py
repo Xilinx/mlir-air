@@ -53,11 +53,17 @@ class Leaf:
     under subtraction.
     """
 
-    __slots__ = ("value", "name")
+    __slots__ = ("value", "name", "spatial")
 
-    def __init__(self, value, name):
+    def __init__(self, value, name, spatial=False):
         self.value = value
         self.name = name
+        # True for a herd/segment/launch coordinate -- an index that differs
+        # between cores. A loop induction variable does not, and the difference
+        # matters wherever something has to be the same on every core: a loop
+        # bound with a channel operation inside is the case, since an unbalanced
+        # trip count deadlocks the herd.
+        self.spatial = spatial
 
     def leaves(self):
         return (self,)
@@ -125,8 +131,8 @@ class IndexExpr:
     # -- construction -------------------------------------------------------
 
     @staticmethod
-    def leaf(value, name):
-        leaf = Leaf(value, name)
+    def leaf(value, name, spatial=False):
+        leaf = Leaf(value, name, spatial)
         return IndexExpr({leaf: 1}, 0)
 
     @staticmethod

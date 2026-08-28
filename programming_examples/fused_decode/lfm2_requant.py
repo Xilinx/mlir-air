@@ -7,7 +7,7 @@
 # Quantizes the full-precision checkpoint directly rather than re-quantizing a
 # pre-quantized bundle -- see llms/lfm2_1_2b_q4nx/docs/Q4NX_DECODE_STATUS.md.
 # The device is built -DQ4_0 (symmetric signed int4, w = q*scale, no min term),
-# so `requant_q4_0` from the Qwen path is the codec, reused verbatim.
+# so `requant_q4_0` from the shared Q4_0 codec module is reused verbatim.
 #
 # LFM2 is HYBRID: 6 of its 16 layers are attention (2,5,8,10,12,14) and the
 # other 10 are a gated causal depthwise conv ("ShortConv"). Both layer types
@@ -39,7 +39,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from proj_qmm_pack import BLOCK_BF16  # noqa: E402
-from qwen25_3b_requant import (  # noqa: E402
+from q4_0_codec import (  # noqa: E402
     HFModel,
     requant_q4_0,
     pack_q4k_cascade_fast,
@@ -215,8 +215,8 @@ def build_requant_cache(
                         [_rows, np.zeros((fd.M - _rows.shape[0], fd.K), _qkv.dtype)]
                     )
                 ph[_mp] = requant_q4_0(_rows)
-            # NO column permutation on o-proj. `attn_out_perm` is a QWEN-ENGINE
-            # concept (fused_decode_qwen); it appears nowhere in fused_decode.py
+            # NO column permutation on o-proj. `attn_out_perm` belonged to the
+            # retired qwen-only builder; it appears nowhere in fused_decode.py
             # or its packer, which LFM2 drives. Applying it scrambles the o-proj
             # input mapping -- that cost a debugging cycle, hence this note.
             ph[OP] = requant_q4_0(R["o"])

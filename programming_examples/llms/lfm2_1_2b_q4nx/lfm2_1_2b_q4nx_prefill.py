@@ -460,11 +460,12 @@ def _call_o_ffn(
             np.asarray(lw.w_down, dtype=bfloat16).reshape(hidden_dim, emb_dim),  # 12
             np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 13
             np.zeros(n_total, dtype=bfloat16),  # 14 out
-            np.zeros((seq_len, emb_dim), dtype=np.float32),  # 15
-            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # 16
-            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # 17
-            np.zeros((seq_len, emb_dim), dtype=np.float32),  # 18
         ]
+        # 15..: one f32 C-scratch per fused-cast GEMM, per the registry.
+        args.extend(
+            np.zeros(shape, dtype=np.float32)
+            for shape in _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim)[0]
+        )
         _ARG_CACHE[key] = args
     results = cache.load_and_run(
         "o_ffn",
@@ -472,7 +473,8 @@ def _call_o_ffn(
         *args,
         output_indices=[14],
         static_input_indices={1, 5, 7, 9, 12},
-        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
+        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14}
+        | _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim)[1],
         bo_key=f"o_ffn_L{layer_idx}",
         shared_nonstatic=True,
     )
@@ -568,6 +570,41 @@ def run_conv_block(
     out = _call_o_ffn(cache, y, x_bf16, lw, config, seq_len, layer_idx, verbose)
     ints["ffn_out"] = out
     return out, ints, new_state
+
+
+def _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim):
+    """Registry-driven f32 C-scratch PLAN for o_ffn's four GEMMs, in builder
+    order (O, Gate, Up, Down). Returns (list_of_shapes, set_of_indices) and
+    allocates nothing, so the caller that only wants the index set does not
+    build tens of MB of f32 arrays per layer call just to drop them.
+
+    Same contract as _gemm_args below -- the registry spec says which GEMMs
+    take an f32 C scratch, never a guess -- and it MUST mirror
+    build_o_ffn_module's own alloc_gemm_scratch call (same shapes, same order,
+    base index 15). All four are fused-cast at seq_len 2048, which is why the
+    list used to be four hardcoded arrays, but not at every length: at 512 and
+    1024 the registry measures drain faster for Gate/Up, the ELF then declares
+    two scratch args instead of four, and the hardcoded list overran it
+    (`set_arg(16) >= size 16`).
+    """
+    from shared.builders.gemm_builder import gemm_registry_config
+
+    o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
+    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
+    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
+    shapes, inter = [], set()
+    nxt = 15
+    for spec, cols in (
+        (o_spec, emb_dim),
+        (g_spec, hidden_dim),  # gate
+        (g_spec, hidden_dim),  # up (same shape/spec as gate)
+        (d_spec, emb_dim),  # down
+    ):
+        if spec["needs_f32_scratch"]:
+            shapes.append((seq_len, cols))
+            inter.add(nxt)
+            nxt += 1
+    return shapes, inter
 
 
 def _gemm_args(a, b, m, k, n):

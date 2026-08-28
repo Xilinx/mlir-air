@@ -70,6 +70,8 @@ air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib")
 config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 config.substitutions.append(("%PYTHON", config.python_executable))
+# For tests that import a programming example's builder to check its contract.
+config.substitutions.append(("%air_src_root", config.air_src_root))
 
 # excludes: A list of directories to exclude from the testsuite. The 'Inputs'
 # subdirectories contain auxiliary inputs for various tests in their parent

@@ -224,7 +224,7 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         num_heads_per_unroll=num_heads_per_unroll,
         fused_qkv=fused_qkv,
         n_images=n_images,
-    )
+    ).build(target="npu2")
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
     print(f"    (FA microkernel BFP16={fa_bfp16})")
     cache.compile_and_cache(

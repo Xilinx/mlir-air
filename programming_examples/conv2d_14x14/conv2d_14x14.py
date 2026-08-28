@@ -10,246 +10,115 @@ to keep total work identical at 72 oc-groups across CO=1152.
 Both paths execute 14x14 stride-14 conv on 896x896 input, 4 in-channels,
 1152 out-channels, uint8 act / int8 wts / int8 out.
 
-Design highlights:
-  * L2 act buffer holds a full 14-row image-band per memtile (50176 B each,
-    4 memtiles); producer L3->L2 uses a 4D scatter wrap matching upstream's
-    [<14,56>,<64,784>,<56,1>], and consumer L2->L1 gathers via the same
-    [<2,6272>,<98,8>,<8,784>,<8,1>] window the kernel expects.
-  * L1 weights are streamed direct L3->L1 with a 4D shim BD per col. The
-    per-col weight slab is num_g * 12544 bytes (=112896 for npu2, =225792
-    for npu1).
-  * L2->L3 output drain is a flat 65536-B/col S2MM per g iter; host
-    reorders the kernel's [oc=2,nt=2,nt8=8,oc8=8] byte order into
-    upstream-host-major [nt=2,nt8=8,oc=2,oc8=8] before comparing.
+Every transfer here is a *view*, not a copy: the buffer keeps its declared
+shape and the reshape/transpose describes the order the hardware walks it.
+The three that are not simply contiguous:
+
+* **L3 -> L2 activations.** The input is declared ``[4, 802816]`` and read as
+  ``[4, 14, 64, 56]`` over strides ``[802816, 3584, 56, 1]`` -- a band of 14
+  rows per memtile. ``I[:, y0:y0+50176].reshape(4, 14, 64, 56)`` is that,
+  and it is the case ``python/test/api/tensor_views.py`` pins.
+* **The L2 side of the same transfer** wants ``[50176, 56, 784, 1]``, whose
+  middle two strides are swapped relative to row-major. Splitting the memtile
+  band the other way round and permuting gets there:
+  ``reshape(4, 64, 14, 56).transpose(0, 2, 1, 3)``.
+* **L2 -> L1 activations** is the 6-D gather the kernel expects,
+  ``[1, 1, 2, 98, 8, 8]`` over ``[50176, 12544, 6272, 8, 784, 1]``. Same idiom
+  one rank up: ``reshape(4, 4, 2, 8, 98, 8).transpose(0, 1, 2, 4, 3, 5)``,
+  then subscript the two leading axes. An integer subscript keeps its axis in
+  the transfer's sizes, which is where the two leading 1s come from.
+
+All compute is in ``conv2dk14.o``; this file moves data and calls it.
 """
 
 import argparse
 import numpy as np
 import torch
 
-from air.ir import (
-    AffineConstantExpr,
-    AffineExpr,
-    AffineMap,
-    AffineSymbolExpr,
-    IntegerAttr,
-    MemRefType,
-    StringAttr,
-    UnitAttr,
-)
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import (
-    MemorySpace,
-    T,
-    dma_memcpy_nd,
-    herd,
-    launch,
-    module_builder,
-    segment,
-)
-from air.dialects.arith import ConstantOp
-from air.dialects.func import CallOp, FuncOp
-from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.scf import for_, yield_
+from air import api as air
+from air.api import ops
+from air.api.types import i8, i32
 from air.backend.xrt_runner import XRTRunner
 
-range_ = for_
+KERNEL = "conv2dk14.o"
 
 
-def _mul_const_map(c):
-    """affine_map<(s0) -> (s0 * c)> for affine_apply of `iv * c`."""
-    return AffineMap.get(
-        0,
-        1,
-        [AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(c))],
-    )
+def build_launch(n_cols=8, num_g=9):
+    """An n_cols x 4 herd processing num_g oc-groups per column.
 
-
-def _add_mul_map(c):
-    """affine_map<(s0, s1) -> (s0 * c + s1)> for `iv0 * c + iv1`."""
-    return AffineMap.get(
-        0,
-        2,
-        [
-            AffineExpr.get_add(
-                AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(c)),
-                AffineSymbolExpr.get(1),
-            )
-        ],
-    )
-
-
-@module_builder
-def build_module(n_cols=8, num_g=9):
-    """Build the AIR module for an n_cols x 4 herd processing num_g oc-groups
-    per column. n_cols * num_g must equal 72 (total oc-groups across CO=1152
-    with 16 OC per group). For NPU2 use (8, 9); for NPU1 use (4, 18)."""
+    n_cols * num_g == 72, the total oc-groups across CO=1152.
+    """
     assert (
         n_cols * num_g == 72
     ), f"Expected n_cols * num_g == 72, got {n_cols} * {num_g} = {n_cols * num_g}"
     wts_per_col = num_g * 12544  # bytes per col in the L3 weight slab
     out_per_col = num_g * 65536  # bytes per col in the L3 output slab
 
-    i8 = T.i8()
-    i32 = T.i32()
-    l2_attr = IntegerAttr.get(i32, MemorySpace.L2)
-    l1_attr = IntegerAttr.get(i32, MemorySpace.L1)
+    I = air.tensor([4, 802816], i8)
+    W = air.tensor([n_cols, wts_per_col], i8)
+    O = air.tensor([n_cols, out_per_col], i8)
 
-    # L3 (host) memref types
-    memrefTyI = MemRefType.get([4, 802816], i8)
-    memrefTyW = MemRefType.get([n_cols, wts_per_col], i8)
-    memrefTyO = MemRefType.get([n_cols, out_per_col], i8)
+    conv = air.extern("conv2dk14_i8", link_with=KERNEL, scalars=[i32] * 5)
 
-    # L2 (memtile)
-    l2ActTy = MemRefType.get([4, 14, 3584], i8, memory_space=l2_attr)
-    l2OutTy = MemRefType.get([n_cols, 4, 64, 256], i8, memory_space=l2_attr)
+    with air.launch(name="conv2dk14_test") as launch:
 
-    # L1 (compute tile)
-    l1InTy = MemRefType.get([12544], i8, memory_space=l1_attr)
-    l1WtsTy = MemRefType.get([12544], i8, memory_space=l1_attr)
-    l1OutTy = MemRefType.get([256], i8, memory_space=l1_attr)
+        @launch.body
+        def _():
+            with air.segment(name="conv2dk14_seg") as seg:
 
-    # External kernel
-    conv_func = FuncOp(
-        "conv2dk14_i8",
-        ([l1InTy, l1WtsTy, l1OutTy, i32, i32, i32, i32, i32], []),
-        visibility="private",
-    )
-    conv_func.attributes["link_with"] = StringAttr.get("conv2dk14.o")
-    conv_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+                @seg.body
+                def _():
+                    # One full 14-row image band per memtile, and the output
+                    # staging slab the herd drains into.
+                    l2_act = air.alloc([4, 14, 3584], i8, scope=seg.private())
+                    l2_out = air.alloc([n_cols, 4, 64, 256], i8, scope=seg.private())
 
-    @FuncOp.from_py_func(memrefTyI, memrefTyW, memrefTyO)
-    def conv2dk14_test(I, W, O):
-        @launch(operands=[I, W, O])
-        def launch_body(l3_I, l3_W, l3_O):
-            @segment(name="conv2dk14_seg", operands=[l3_I, l3_W, l3_O])
-            def segment_body(l3_I_s, l3_W_s, l3_O_s):
-                l2_act = AllocOp(l2ActTy, [], [])
-                l2_out = AllocOp(l2OutTy, [], [])
+                    # L3 -> L2: scatter the band. The destination walk swaps
+                    # the two middle axes relative to row-major, hence the
+                    # transpose on the L2 side.
+                    for _gp in air.sequential(num_g):
+                        for yp in air.sequential(16):
+                            y14 = yp * 14
+                            ops.load(
+                                l2_act.reshape(4, 64, 14, 56).transpose(0, 2, 1, 3),
+                                I.reshape(4, 224, 64, 56)[:, y14 : y14 + 14, :, :],
+                            )
 
-                # L3->L2 act fill (num_g oc-groups x 16 y-rows of the 4D
-                # scatter wrap matching upstream's [<14,56>,<64,784>,<56,1>]).
-                mul14 = _mul_const_map(14)
-                for _gp in range_(0, num_g):
-                    for yp in range_(0, 16):
-                        y_off = affine_apply(mul14, [yp])
-                        dma_memcpy_nd(
-                            l2_act,
-                            l3_I_s,
-                            src_offsets=[0, y_off, 0, 0],
-                            src_sizes=[4, 14, 64, 56],
-                            src_strides=[802816, 3584, 56, 1],
-                            dst_offsets=[0, 0, 0, 0],
-                            dst_sizes=[4, 14, 64, 56],
-                            dst_strides=[50176, 56, 784, 1],
-                        )
-                        yield_([])
-                    yield_([])
+                    with air.herd(
+                        [range(n_cols), range(4)],
+                        name="conv2dk14_herd",
+                        shape=(n_cols, 4),
+                        link_with=KERNEL,
+                    ) as h:
 
-                @herd(
-                    name="conv2dk14_herd",
-                    sizes=[n_cols, 4],
-                    operands=[l3_W_s, l2_act, l2_out],
-                )
-                def herd_body(tx, ty, _sx, _sy, _l3_W, _l2_act, _l2_out):
-                    l1_in = AllocOp(l1InTy, [], [])
-                    l1_wts = AllocOp(l1WtsTy, [], [])
-                    l1_out = AllocOp(l1OutTy, [], [])
+                        @h.body
+                        def _(tx, ty):
+                            l1_in = air.alloc([12544], i8, scope=h.private())
+                            l1_wts = air.alloc([12544], i8, scope=h.private())
+                            l1_out = air.alloc([256], i8, scope=h.private())
 
-                    c224 = ConstantOp(IntegerAttr.get(i32, 224), None)
-                    c4_i32 = ConstantOp(IntegerAttr.get(i32, 4), None)
-                    c16_i32 = ConstantOp(IntegerAttr.get(i32, 16), None)
-                    c14_i32 = ConstantOp(IntegerAttr.get(i32, 14), None)
+                            # The 6-D gather, subscripted at (memtile, quarter).
+                            act = l2_act.reshape(4, 4, 2, 8, 98, 8).transpose(
+                                0, 1, 2, 4, 3, 5
+                            )
 
-                    mul12544 = _mul_const_map(12544)
-                    y4_plus_xb = _add_mul_map(4)
+                            for g in air.sequential(num_g):
+                                w0 = g * 12544
+                                ops.load(l1_wts, W[tx, w0 : w0 + 12544])
+                                for y in air.sequential(16):
+                                    for xb in air.sequential(4):
+                                        ops.load(l1_in, act[ty, xb, :, :, :, :])
+                                        conv(l1_in, l1_wts, l1_out, 224, 4, 16, 14, 14)
+                                        ops.store(
+                                            l1_out, l2_out[tx, ty, y * 4 + xb, 0:256]
+                                        )
 
-                    for g in range_(0, num_g):
-                        g_off = affine_apply(mul12544, [g])
+                    # L2 -> L3: one flat 65536-B/col drain per g iteration.
+                    for gg in air.sequential(num_g):
+                        g0 = gg * 65536
+                        ops.store(l2_out.reshape(n_cols, 65536), O[:, g0 : g0 + 65536])
 
-                        # L3->L1 wts (per oc-group, per col=tx).
-                        dma_memcpy_nd(
-                            l1_wts,
-                            _l3_W,
-                            src_offsets=[tx, g_off],
-                            src_sizes=[1, 12544],
-                            src_strides=[wts_per_col, 1],
-                        )
-
-                        for y in range_(0, 16):
-                            for xb in range_(0, 4):
-                                # L2->L1 act gather (4D inner wrap
-                                # [<2,6272>,<98,8>,<8,784>,<8,1>] selected
-                                # per (tx_row=ty, xb_col=xb) image block).
-                                dma_memcpy_nd(
-                                    l1_in,
-                                    _l2_act,
-                                    src_offsets=[ty, xb, 0, 0, 0, 0],
-                                    src_sizes=[1, 1, 2, 98, 8, 8],
-                                    src_strides=[
-                                        50176,
-                                        12544,
-                                        6272,
-                                        8,
-                                        784,
-                                        1,
-                                    ],
-                                )
-
-                                CallOp(
-                                    conv_func,
-                                    [
-                                        l1_in,
-                                        l1_wts,
-                                        l1_out,
-                                        c224,
-                                        c4_i32,
-                                        c16_i32,
-                                        c14_i32,
-                                        c14_i32,
-                                    ],
-                                )
-
-                                # L1->L2 out: drop the 256-B kernel result
-                                # at (col=tx, row=ty, y_xb_slot=i_yx).
-                                i_yx = affine_apply(y4_plus_xb, [y, xb])
-                                dma_memcpy_nd(
-                                    _l2_out,
-                                    l1_out,
-                                    dst_offsets=[tx, ty, i_yx, 0],
-                                    dst_sizes=[1, 1, 1, 256],
-                                    dst_strides=[65536, 16384, 256, 1],
-                                )
-                                yield_([])
-                            yield_([])
-                        yield_([])
-
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_wts)
-                    DeallocOp(l1_out)
-
-                herd_body.attributes["link_with"] = StringAttr.get("conv2dk14.o")
-
-                # L2->L3 out drain (flat 65536 B per (col, g iter)). Host
-                # reorders the per-call [oc, nt, nt8, oc8] byte order into
-                # spatial [nt, nt8, oc, oc8] before comparing.
-                mul65536 = _mul_const_map(65536)
-                for g in range_(0, num_g):
-                    gg_off = affine_apply(mul65536, [g])
-                    dma_memcpy_nd(
-                        l3_O_s,
-                        l2_out,
-                        dst_offsets=[0, gg_off],
-                        dst_sizes=[n_cols, 65536],
-                        dst_strides=[out_per_col, 1],
-                        src_offsets=[0, 0, 0, 0],
-                        src_sizes=[n_cols, 4, 64, 256],
-                        src_strides=[65536, 16384, 256, 1],
-                    )
-                    yield_([])
-
-                DeallocOp(l2_act)
-                DeallocOp(l2_out)
+    return launch
 
 
 # Problem dims (fixed to match the IR string)
@@ -381,9 +250,9 @@ if __name__ == "__main__":
 
     n_cols, num_g = DEVICE_LAYOUTS[args.target_device]
 
-    mlir_module = build_module(n_cols=n_cols, num_g=num_g)
+    launch = build_launch(n_cols=n_cols, num_g=num_g)
     if args.print_module_only:
-        print(mlir_module)
+        print(launch.mlir())
         exit(0)
 
     in1, in2, expected_out = build_inputs_and_golden(n_cols, num_g)
@@ -398,7 +267,7 @@ if __name__ == "__main__":
     )
     exit(
         runner.run_test(
-            mlir_module,
+            launch.build(target=args.target_device),
             inputs=[in1, in2],
             expected_outputs=[expected_out],
         )

@@ -240,8 +240,9 @@ def current_launch():
 def open_launch_region(launch, tensors, counts, body):
     """Emit air.launch with ``counts`` as its sizes and run ``body`` inside.
 
-    Block arguments are ids + sizes + operands; air.launch is 2-D, so the
-    operands start at index 4.
+    Block arguments are ids + sizes + operands, so the operands start after two
+    entries per axis -- four for the 2-D launch that was the only kind when this
+    was written, six for a 3-D one.
     """
     from air.dialects.air import launch as launch_region
     from air.ir import InsertionPoint
@@ -252,16 +253,18 @@ def open_launch_region(launch, tensors, counts, body):
     def launch_body(*largs):
         launch.opened = True
         launch.leaves = [
-            Leaf(largs[axis], f"l{axis}") for axis in range(len(launch.ctx.grid))
+            Leaf(largs[axis], f"l{axis}", spatial=True)
+            for axis in range(len(launch.ctx.grid))
         ]
         launch.coords = [IndexExpr({leaf: 1}, 0) for leaf in launch.leaves]
+        first_operand = 2 * len(counts)
         saved = [t.value for t in tensors]
-        for t, v in zip(tensors, largs[4:]):
+        for t, v in zip(tensors, largs[first_operand:]):
             t.value = v
         # Captured here, published only once this region closes: while it is
         # open the ordinary insertion point is already right, and the block has
         # no terminator to insert ahead of yet.
-        closed.append((InsertionPoint.current.block, list(largs[4:])))
+        closed.append((InsertionPoint.current.block, list(largs[first_operand:])))
         try:
             body()
         finally:
@@ -681,6 +684,81 @@ def _region_name(block):
     return owner.name if owner is not None else "region"
 
 
+def prune_unused_operands(op):
+    """Drop the kernel operands ``op``'s body turned out not to touch.
+
+    ``air.segment`` and ``air.herd`` are IsolatedFromAbove, so anything the
+    body reaches has to arrive as an operand -- and the operand list is fixed
+    when the op is created, which is *before* the body runs. The tracer
+    therefore cannot know what the body will touch at the one moment it has to
+    decide, and over-approximates: every tensor, every enclosing coordinate,
+    every L2 buffer still in scope. This is the same bind any builder of these
+    ops is in, which is why ``canonicalizeHierarchyOpArgs`` exists in
+    AIRDialect.cpp to clean up after it.
+
+    Leaving the cleanup to that canonicalization is too late. It runs at PASS
+    014, and ``air-dependency`` runs at 008 -- so the dead operands have
+    already been read as data dependencies by the time they are removed, and
+    the async edges they produced outlive them. In
+    ``flash_attention/dataflow_based`` that serialises three herds the
+    predecessor leaves independent; a loop body with three impure ops instead
+    of one fails ``hasNImpureOps(body, 1)`` in
+    ``HoistAIRHerdsToSharedRegionPattern``, so the herds never hoist out of
+    the loop, never merge, and their L1 accumulators are still herd operands
+    when ``air-verify-hierarchy-locality`` rejects them at 043.
+
+    So the over-approximation is undone here, while the body is fresh and its
+    uses are visible, rather than left for a pass that runs after the damage.
+    The op is rebuilt because an operand list is not resizable in place; the
+    traced block moves across unchanged.
+
+    ``air.launch`` is deliberately not pruned: its operands are the kernel
+    interface, and ``LaunchState.reentry`` holds its block arguments so a
+    later segment can step back into the region.
+    """
+    from air.ir import DenseI32ArrayAttr, InsertionPoint, Operation
+
+    op = op.operation if hasattr(op, "operation") else op
+    segments = op.attributes["operandSegmentSizes"]
+    n_async, n_sizes = segments[0], segments[1]
+    # Block arguments are ids + sizes + operands, so the operands start after
+    # twice the number of size operands.
+    ctrl = 2 * n_sizes
+    block = op.regions[0].blocks[0]
+    dead = [
+        i
+        for i in range(ctrl, len(block.arguments))
+        if not list(block.arguments[i].uses)
+    ]
+    if not dead:
+        return op
+
+    kept = [j for j in range(len(block.arguments) - ctrl) if j + ctrl not in dead]
+    base = n_async + n_sizes
+    operands = list(op.operands[:base]) + [op.operands[base + j] for j in kept]
+    attributes = {name: op.attributes[name] for name in op.attributes}
+    attributes["operandSegmentSizes"] = DenseI32ArrayAttr.get(
+        [n_async, n_sizes, len(kept)]
+    )
+    new = Operation.create(
+        op.name,
+        results=[r.type for r in op.results],
+        operands=operands,
+        attributes=attributes,
+        regions=1,
+        ip=InsertionPoint(op),
+        loc=op.location,
+    )
+    # Highest index first: erasing shifts everything after it down.
+    for i in reversed(dead):
+        block.erase_argument(i)
+    block.append_to(new.regions[0])
+    for old_result, new_result in zip(op.results, new.results):
+        old_result.replace_all_uses_with(new_result)
+    op.erase()
+    return new
+
+
 def free_buffers(buffers):
     """End the life of every buffer that ``air.dealloc`` did not already end.
 
@@ -873,6 +951,28 @@ class SegmentContext:
         """
         return Scope("shared", self)
 
+    def per_core(self):
+        """L1 allocated here, and every core gets its own copy of the whole thing.
+
+        The sibling of :meth:`shared`, and the distinction is what the cores
+        see. A ``shared()`` buffer is one allocation that the cores divide
+        between them -- it carries a leading dimension per herd axis and each
+        core addresses its own slab. A ``per_core()`` buffer is not divided:
+        every core gets the shape as written, privately, and no core can see
+        another's.
+
+        What the two have in common is the lifetime, which is the reason to
+        allocate at segment scope at all. A buffer in a herd body dies when that
+        body ends, so state that has to survive from one herd to the next cannot
+        live there. flash_attention/dataflow_based carries a running maximum, a
+        running sum and a running output across three separate herds this way.
+
+        Nothing is sliced, so nothing is subscripted by tile coordinate, and the
+        buffer reaches a kernel whole. It is charged against the 64 KB core
+        budget at full size, because that is what each core spends on it.
+        """
+        return Scope("per_core", self)
+
     def register_buffer(self, buf):
         self._buffers.append(buf)
 
@@ -940,7 +1040,8 @@ class SegmentContext:
             n = len(sizes)
             declared = len(segment_self.dims)
             segment_self.leaves = [
-                Leaf(v, f"u{axis}") for axis, v in enumerate(args[:declared])
+                Leaf(v, f"u{axis}", spatial=True)
+                for axis, v in enumerate(args[:declared])
             ]
             coords = [IndexExpr({leaf: 1}, 0) for leaf in segment_self.leaves]
             bound = args[2 * n :]
@@ -963,6 +1064,11 @@ class SegmentContext:
                     leaf.value = v
                 _CURRENT_SEGMENT = previous
 
+        # The body has run, so what it touched is finally knowable. Herds
+        # nested inside pruned themselves as they closed, which is what makes
+        # an operand only they had a candidate here too.
+        prune_unused_operands(segment_body)
+
 
 def segment(grid=None, name=None):
     """A device segment with L2 scope; nest herds inside its body."""
@@ -984,7 +1090,8 @@ def _staged_in_scope(segment):
 
     ``air.herd`` is IsolatedFromAbove, so an L2 buffer the body reaches has to
     be passed in as an operand, and the tracer cannot know which ones the body
-    touches until it has run it -- so it passes every one it can.
+    touches until it has run it -- so it passes every one it can, and drops the
+    unused ones afterwards (``prune_unused_operands``).
 
     "Can" is the point. A buffer allocated inside an ``air.sequential`` at
     segment scope dies with that loop: by the time a *later* herd is emitted,
@@ -1011,6 +1118,15 @@ def _staged_in_scope(segment):
     # to the segment body. The walk stops there rather than running to the
     # module, because `block.owner.operation.block` on the top-level block
     # aborts the process instead of returning None.
+    # Ancestry, not dominance -- and those are only the same thing because the
+    # tracer appends. A buffer is in segment._buffers here only if its alloc has
+    # already been emitted, and a herd is created at the end of its block or
+    # ahead of the terminator, so anything sitting in an ancestor block also
+    # precedes this point. Checked against an exact dominance test over all 72
+    # converted examples: they agree on every buffer. A construct that stepped
+    # back into a closed region to allocate would break that, and this check
+    # would have to compare positions (Operation.is_before_in_block) rather than
+    # just block membership.
     visible, block = set(), InsertionPoint.current.block
     while True:
         visible.add(block)
@@ -1227,7 +1343,7 @@ class HerdContext:
         from air.dialects.air import herd as herd_region
         from air.dialects.scf import for_ as range_, yield_
 
-        from ._loop import aborted_regions, enter_body, exit_body
+        from ._loop import aborted_regions
 
         aborted_before = len(aborted_regions())
 
@@ -1256,10 +1372,11 @@ class HerdContext:
         #
         # Every live one is passed, referenced or not, which is the policy
         # already applied to tensors and to L2 buffers: the tracer cannot know
-        # what the body will touch until it has run it. That is not free -- an
-        # unused herd operand survives air-dependency as an async edge -- but a
-        # coordinate is one index, and correctness for the kernels that need it
-        # is worth the edge for the kernels that do not.
+        # what the body will touch until it has run it. The ones it turns out
+        # not to touch are dropped once it has -- see prune_unused_operands,
+        # and note that leaving them in place is not merely untidy: they reach
+        # air-dependency as data dependencies and serialise herds that have
+        # nothing to do with each other.
         outer = list(current_launch().leaves)
         outer += list(enclosing.leaves) if enclosing is not None else []
         operands = (
@@ -1302,7 +1419,8 @@ class HerdContext:
             # herd-shared buffer is indexed by this: it has one slab per core,
             # not one per logical tile.
             herd_self._coords = [
-                IndexExpr.leaf(c, f"c{axis}") for axis, c in enumerate(phys_coords)
+                IndexExpr.leaf(c, f"c{axis}", spatial=True)
+                for axis, c in enumerate(phys_coords)
             ]
             # Where a reduction's scratch accumulator is allocated, whatever
             # loop or branch the reduction itself sits in. See scratch().
@@ -1312,7 +1430,10 @@ class HerdContext:
             def run(strip_ivs):
                 tile_ids = []
                 for axis, phys in enumerate(phys_coords):
-                    tile = IndexExpr.leaf(phys, f"t{axis}") * herd_self.repeats[axis]
+                    tile = (
+                        IndexExpr.leaf(phys, f"t{axis}", spatial=True)
+                        * herd_self.repeats[axis]
+                    )
                     if herd_self.repeats[axis] > 1:
                         tile = tile + IndexExpr.leaf(strip_ivs[axis], f"i{axis}")
                     tile_ids.append(tile)
@@ -1324,14 +1445,12 @@ class HerdContext:
                 free_buffers(herd_self._buffers)
                 herd_self._buffers.clear()
 
-            outer_depth = enter_body()
             try:
                 run_strip_mined(run, herd_self.repeats, range_, yield_)
                 # After the strip nest, not inside it: one alloc above the loop
                 # needs one dealloc below it.
                 herd_self._free_scratch()
             finally:
-                exit_body(outer_depth)
                 herd_self._buffers.clear()
                 herd_self._scratch.clear()
                 for t, v in zip(tensors, saved):
@@ -1349,6 +1468,10 @@ class HerdContext:
             herd_body.attributes["link_with"] = StringAttr.get(
                 next(iter(herd_self._objects))
             )
+
+        # After link_with, because pruning rebuilds the op and carries its
+        # attributes across.
+        prune_unused_operands(herd_body)
 
         aborted = aborted_regions()[aborted_before:]
         if aborted:
@@ -1410,30 +1533,89 @@ def herd(iterable, name=None, shape=None, target=None, link_with=None):
     )
 
 
+def _require_allocatable(dtype, what):
+    """Refuse an element type no buffer can hold. Only i4 is such a type."""
+    if getattr(dtype, "allocatable", True):
+        return
+    raise TypeError(
+        f"{what} cannot have element type {dtype}: a DMA moves whole bytes and "
+        f"the L1 budget is counted in them, so there is no buffer of half-bytes "
+        f"to allocate. {dtype} names what packed *bytes* contain -- read them "
+        f"as a byte buffer and reinterpret with air.api.ops.bitcast"
+    )
+
+
 def tensor(shape, dtype, name=None):
     """Declare a host-visible L3 array; becomes a kernel argument."""
+    _require_allocatable(dtype, "air.tensor")
     t = Tensor(shape, dtype, name=name or infer_name(f"t{len(PENDING_TENSORS)}"))
     PENDING_TENSORS.append(t)
     return t
 
 
-def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
-    """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
+def _peak_bytes(entries):
+    """The most memory live at once, given which branch arm each buffer is in.
+
+    ``entries`` is (arm path, bytes) per buffer, where an arm path is one
+    (branch, index) pair per enclosing ops.branch. Buffers in different arms of
+    the *same* branch never coexist, so they cost the larger of the two rather
+    than both; buffers under different branches are sequential and are summed,
+    which is the conservative reading.
+
+    Summing everything, which this did first, rejects designs that fit:
+    flash_attention's cascade merge allocates a full accumulator tile in each of
+    its two arms, and at dk=dv=128 counting both put a 56 KB body over the 64 KB
+    line. The predecessor compiles and runs that configuration.
+    """
+    here = sum(nbytes for path, nbytes in entries if not path)
+    branches = {}
+    for path, nbytes in entries:
+        if path:
+            branches.setdefault(path[0][0], {}).setdefault(path[0][1], []).append(
+                (path[1:], nbytes)
+            )
+    for arms in branches.values():
+        here += max(_peak_bytes(rest) for rest in arms.values())
+    return here
+
+
+def alloc(
+    shape, dtype, scope=None, vector=None, column=None, split=True, _hoisted=False
+):
+    """Allocate a tile: L1 in a herd body, or L2 in a segment body.
+
+    ``column`` pins an L2 buffer to one memtile column and ``split=False`` keeps
+    it whole. Both are placement, not semantics -- the kernel computes the same
+    thing either way -- but on a design that fills the array they decide whether
+    it routes at all. flash_attention's temporal-causal variant is the worked
+    case: its K/V broadcast buffer sits alone on a central column so its
+    switchbox carries nothing else, its four Q relays pin to the even columns so
+    place-tiles spreads them instead of piling 32 buffer descriptors on one
+    MM2S, and those relays are unsplit because ``air-split-l2-memref`` would
+    otherwise partition each into per-tile slices and overflow the shim.
+    """
+    _require_allocatable(dtype, "air.alloc")
+    from ._cond import current_arm_path
+
+    arm_path = current_arm_path()
     from air.ir import IntegerAttr, MemRefType
     from air.dialects.air import MemorySpace
     from air.dialects.memref import AllocOp
     from air.extras import types as T
-
-    from ._loop import branch_depth
 
     if scope is None:
         raise ValueError(
             "air.alloc requires scope=<herd>.private() (L1) or "
             "scope=<segment>.private() (L2)"
         )
-    if not isinstance(scope, Scope) or scope.kind not in ("private", "shared"):
+    if not isinstance(scope, Scope) or scope.kind not in (
+        "private",
+        "shared",
+        "per_core",
+    ):
         raise NotImplementedError(
-            f"air.api can only allocate in a private or shared scope, got {scope!r}"
+            f"air.api can only allocate in a private, shared or per_core scope, "
+            f"got {scope!r}"
         )
 
     owner = scope.owner
@@ -1448,7 +1630,7 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
         holder = current_herd()
     elif isinstance(owner, SegmentContext):
         # private() is the memtile; shared() is core L1 with segment lifetime.
-        if scope.kind == "shared":
+        if scope.kind in ("shared", "per_core"):
             space, memory_space, capacity = "L1", MemorySpace.L1, L1_BYTES
         else:
             space, memory_space, capacity = (
@@ -1483,20 +1665,17 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     # gives the pipeline one buffer to rotate instead of a fresh one per trip,
     # which is the ping-pong the kernel is built around.
     #
-    # A branch arm is still refused. Both arms of an ops.branch write to the
-    # same enclosing scope, so which alloc a later use refers to is a question
-    # the tracer cannot answer, and the failure would be a silently wrong
-    # buffer rather than a verifier error.
-    if space == "L1" and branch_depth() and not _hoisted:
-        raise NotImplementedError(
-            "air.alloc inside an ops.branch body is not supported: the arm is a "
-            "region the buffer cannot outlive, so a use after the branch would "
-            "not be dominated by its alloc. Hoist the allocation above the "
-            "branch -- both arms then name the same buffer, which is what a "
-            "branch that fills a tile two different ways means. Allocating "
-            "inside an air.sequential is fine: the buffer is freed inside that "
-            "loop."
-        )
+    # A branch arm allocates on the same terms. The arm is a region like the
+    # loop body is, and placement treats it the same way: the dealloc lands in
+    # the arm beside its alloc, so a tile that only one kind of core needs is
+    # written where it is needed rather than hoisted above the branch and paid
+    # for by every core. flash_attention/dataflow_based does this twelve times,
+    # once per scratch tile in each arm of its cascade-stage select.
+    #
+    # What used to make this unsafe was not the allocation but the diagnosis: a
+    # buffer read *after* the arm closed walked off the top of the IR and
+    # aborted the process. _last_use_anchor now reports that as an error naming
+    # the region, so the bad case is caught and the good case is allowed.
     # 0 is meaningful -- it selects the scalar path. Negative is not, and it
     # would otherwise pass a caller's own `tile % width` guard unnoticed, since
     # Python's modulo is 0 for any divisor of the tile regardless of sign.
@@ -1518,7 +1697,7 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     for extent in shape:
         nbytes *= int(extent)
     nbytes *= dtype.itemsize
-    if scope.kind == "shared":
+    if scope.kind in ("shared", "per_core"):
         # A herd-shared buffer is declared once with one leading dimension per
         # herd axis, and each core addresses exactly one slab of it. Charging
         # the whole thing against one core's 64 KB would reject configurations
@@ -1526,12 +1705,21 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
         # and 16 KB per core. How many leading dimensions are the herd is the
         # herd's business, and no herd has been entered yet: this is segment
         # scope. So the charge is deferred to the herd -- see _charge_shared_l1.
+        #
+        # A per_core buffer has no such ambiguity -- every core spends the whole
+        # of it -- but it is deferred alongside, because the two kinds compete
+        # for the same 64 KB and only a combined total means anything.
         pass
     else:
         # A segment holds L2 memtile buffers and herd-shared L1 buffers at once,
         # so each budget only counts its own space.
-        live = (
-            sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
+        live = _peak_bytes(
+            [
+                (getattr(b, "arm_path", ()), _buffer_bytes(b))
+                for b in holder._buffers
+                if b.space == space
+            ]
+            + [(arm_path, nbytes)]
         )
         if space == "L1" and isinstance(owner, HerdContext):
             # A core's 64 KB holds its private tiles *and* its slab of whatever
@@ -1542,11 +1730,16 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
             enclosing = current_segment(required=False)
             if enclosing is not None:
                 nlead = len(owner.grid)
-                live += sum(
-                    _buffer_bytes(b, nlead)
-                    for b in enclosing._buffers
-                    if b.space == "L1" and getattr(b.scope, "kind", None) == "shared"
-                )
+                # A shared buffer is charged by the slab this core owns; a
+                # per_core buffer by the whole of it, since every core has one.
+                for b in enclosing._buffers:
+                    if b.space != "L1":
+                        continue
+                    kind = getattr(b.scope, "kind", None)
+                    if kind == "shared":
+                        live += _buffer_bytes(b, nlead)
+                    elif kind == "per_core":
+                        live += _buffer_bytes(b)
         if space == "L1":
             unit, verb = "a compute tile", "has"
         else:
@@ -1574,8 +1767,34 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
         value=op.result,
         space=space,
     )
+    # Which branch arm this was allocated in, for _peak_bytes above. Set as an
+    # attribute rather than a Buffer field: it concerns the budget only, and
+    # nothing that reads a Buffer elsewhere should have to know about it.
+    if column is not None or not split:
+        from air.ir import IntegerAttr, UnitAttr
+        from air.extras import types as T2
+
+        if space != "L2":
+            raise ValueError(
+                f"air.alloc(column=/split=) place a memtile buffer, and this is "
+                f"an {space} allocation. Only <segment>.private() buffers live "
+                "in a memtile"
+            )
+        if column is not None:
+            if not isinstance(column, int) or column < 0:
+                raise TypeError(
+                    f"air.alloc(column=...) takes a memtile column index, got "
+                    f"{column!r}"
+                )
+            op.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                T2.i32(), column
+            )
+        if not split:
+            op.operation.attributes["air.no_split"] = UnitAttr.get()
+
+    buf.arm_path = arm_path if space in ("L1", "L2") else ()
     holder.register_buffer(buf)
-    if space == "L1" and scope.kind != "shared":
+    if space == "L1" and scope.kind not in ("shared", "per_core"):
         trace = active_trace()
         trace.l1_peak = max(trace.l1_peak, live)
     return buf
@@ -1600,15 +1819,21 @@ def _charge_shared_l1(segment, nlead, herd_name):
     herd is what says, so the check waits until one is entered. Deferring it is
     not a loosening: a shared buffer is unusable without a herd, so every one
     of them reaches this.
+
+    ``per_core()`` buffers are counted here too. Their own charge needs no herd
+    -- a core spends the whole of one -- but they share the 64 KB with the
+    shared slabs, so only the combined figure is worth checking.
     """
     if segment is None:
         return
-    shared = [
-        b
-        for b in segment._buffers
-        if b.space == "L1" and getattr(b.scope, "kind", None) == "shared"
-    ]
-    if not shared:
+    kinds = {}
+    for b in segment._buffers:
+        kind = getattr(b.scope, "kind", None)
+        if b.space == "L1" and kind in ("shared", "per_core"):
+            kinds.setdefault(kind, []).append(b)
+    shared = kinds.get("shared", [])
+    per_core = kinds.get("per_core", [])
+    if not shared and not per_core:
         return
     for b in shared:
         if len(b.shape) <= nlead:
@@ -1619,12 +1844,15 @@ def _charge_shared_l1(segment, nlead, herd_name):
                 "itself. Give it one leading dimension per herd axis and at "
                 "least one more."
             )
-    live = sum(_buffer_bytes(b, nlead) for b in shared)
+    live = sum(_buffer_bytes(b, nlead) for b in shared) + sum(
+        _buffer_bytes(b) for b in per_core
+    )
     if live > L1_BYTES:
         detail = ", ".join(
-            f"{list(b.shape)} {b.dtype} ({_buffer_bytes(b, nlead) / 1024:.1f} KB "
+            f"{list(b.shape)} {b.dtype} ({_buffer_bytes(b, lead) / 1024:.1f} KB "
             "per core)"
-            for b in shared
+            for group, lead in ((shared, nlead), (per_core, 0))
+            for b in group
         )
         raise ValueError(
             f"L1 budget exceeded: the buffers shared across herd {herd_name!r} "

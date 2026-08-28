@@ -177,3 +177,113 @@ def a_launch_coordinate_reaches_into_the_herd():
                             air.ops.store(buf, B[row : row + TILE // 2, 0:N])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_parallel_grid_is_one_forall_with_one_iv_per_axis
+# A spatial fan-out whose destinations are a 2-D arrangement of tiles is a
+# single unordered iteration space, so it is one scf.forall with two induction
+# variables -- not two nested loops, which would give the inner one a bundle
+# index derived from the outer's variable rather than its own.
+#
+# Both IVs have to be usable as channel bundle indices, which is the whole
+# reason air.parallel exists rather than air.sequential: air-place-herds
+# refuses a temporal scf.for induction variable there outright.
+# flash_attention/kernel_fusion_based's output gather is the case, a 4-way
+# gather over (row, column-within-block).
+# CHECK: scf.forall (%[[I:.*]], %[[J:.*]]) in (2, 2)
+# CHECK: air.channel.get @gather[%{{.*}}, %{{.*}}]
+@run
+def a_parallel_grid_is_one_forall_with_one_iv_per_axis():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+    gather = air.channel("gather", size=[2, 2])
+
+    with air.launch(name="pgrid") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    staged = air.alloc([64], bf16, scope=seg.private())
+                    tile = air.alloc([64], bf16, scope=seg.private())
+                    for row, col in air.parallel([range(2), range(2)]):
+                        gather.get(tile, indices=[row, col])
+                    air.ops.load(staged, A)
+                    air.ops.store(staged, OUT)
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_launch_grid_has_no_rank_cap
+# air.launch's sizes are Variadic<Index>, so the op takes as many axes as it is
+# given and the DSL should not invent a limit. This carried one of two, then of
+# three -- the second time on the grounds that three was as deep as anything had
+# run, which is a fact about the examples rather than about the op.
+#
+# flash_attention needs three, splitting the value dimension across a third
+# axis when dv exceeds one tile. Four is here to pin that nothing caps it.
+# CHECK: air.launch (%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) in (%{{.*}}=%c2{{.*}}, %{{.*}}=%c3{{.*}}, %{{.*}}=%c2{{.*}}, %{{.*}}=%c2{{.*}})
+@run
+def a_launch_grid_has_no_rank_cap():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch([range(2), range(3), range(2), range(2)], name="deep") as launch:
+
+        @launch.body
+        def _(w, x, y, z):
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    b = air.alloc([64], bf16, scope=h.private())
+                    air.ops.load(b, A)
+                    air.ops.store(b, OUT)
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_sequential_bound_may_come_from_an_enclosing_loop
+# scf.for takes SSA bounds, so a trip count need not be known at trace time.
+# What it costs is only the checks that wanted one -- and a bound built from a
+# *tile coordinate* is still refused, because that differs between cores: the
+# body is traced once for all of them, so each would run a different number of
+# trips and anything with a channel operation in it would deadlock on the ones
+# that run fewer. A loop variable is uniform.
+#
+# flash_attention's temporal-causal variant is the consumer: its inner loop runs
+# the round's causal prefix, (lx + 1) * NQ blocks, and folding the round axis
+# into a loop is what keeps the core inside AIE2P program memory.
+# CHECK: scf.for %[[LX:.*]] = %c0{{.*}} to %c4
+# CHECK: affine.apply #{{.*}}[%[[LX]]]
+# The inner bound is that value rather than a constant, which is the point.
+# CHECK: scf.for %{{.*}} = %c0{{.*}} to %{{[0-9]+}} step
+@run
+def a_sequential_bound_may_come_from_an_enclosing_loop():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch(name="dynbound") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    b = air.alloc([64], bf16, scope=h.private())
+                    air.ops.load(b, A)
+                    for lx in air.sequential(0, 4):
+                        for _blk in air.sequential(0, (lx + 1) * 8):
+                            pass
+                    air.ops.store(b, OUT)
+
+    print(launch.mlir())

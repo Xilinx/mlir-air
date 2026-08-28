@@ -127,7 +127,7 @@ from ._trace import (
     wait,
 )
 from ._value import Buffer, BufferSlice, Tensor, TensorSlice, Token
-from .types import DType, bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32
+from .types import DType, bf16, f16, f32, i4, i8, i16, i32, ui8, ui16, ui32
 
 __all__ = [
     # operations
@@ -157,6 +157,7 @@ __all__ = [
     "bf16",
     "f16",
     "f32",
+    "i4",
     "i8",
     "i16",
     "i32",

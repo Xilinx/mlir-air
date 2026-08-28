@@ -177,4 +177,19 @@ add_lit_testsuite(check-programming-examples-llms-sweep
 )
 set_target_properties(check-programming-examples-llms-sweep PROPERTIES FOLDER "Tests")
 
+# LLM prefill-latency sweep: TTFT against the PADDED prefill length, for the
+# models with a profile-prefill target. The other axis from the decode sweep
+# above: that one walks KV depth, this one walks the length the prefill ELFs are
+# built for, which is what TTFT scales with. Not the prompt length -- the prompt
+# is padded to the built length, so at a fixed engine TTFT is flat. Unlike the
+# decode sweep this needs real weights (hf_token) because a prefill is a
+# prefill. Latency, never correctness. Sequential (-j1), same NPU-OOM reason.
+add_lit_testsuite(check-programming-examples-llms-prefill-sweep
+  "Running LLM prefill TTFT-vs-length sweeps (sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_prefill_sweep"
+)
+set_target_properties(check-programming-examples-llms-prefill-sweep PROPERTIES FOLDER "Tests")
+
 add_dependencies(check-all check-programming-examples)

@@ -30,4 +30,11 @@
 // nothing left to match. See @func8 in
 // mlir/test/Transform/AIRDependencyScheduleOpt/fuse_alloc_dealloc.mlir.
 
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 774.592us
+// 774.592us until air.api stopped handing a herd the operands its body never
+// touches. air-dependency reads an unknown op's memref accesses off its operand
+// list alone, taking every operand as both read and written, so two herds that
+// shared a dead operand got an async edge between them. Removing the operands
+// removes the edge, the simulator is free to overlap what the edge had ordered,
+// and the estimate drops by 16ns. Measured on one box with only that commit
+// reverted: 774.592us before, 774.576us after.
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 774.576us

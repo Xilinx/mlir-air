@@ -2583,6 +2583,65 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       if (postFoldActiveDims > maxNumDims)
         return failure();
     }
+
+    // Outermost-dimension rebalance (shim only).
+    //
+    // canonicalizeWrapAndStrideList splits an oversized extent against a
+    // single `maxSize` (1023) for every dimension, but the outermost shim BD
+    // dimension is narrower than the rest -- a 6-bit count, so 64 on AIE2.
+    // A fold that lands 1024 iterations as [512, 2, ...] is therefore legal by
+    // maxSize and illegal in the slot it occupies, and airrt-to-npu has to
+    // split it again. The descriptor is already at the 4-dim limit by then, so
+    // that second split overflows to 5 dims and gets unrolled into a chain of
+    // one BD per outer iteration: 16 BDs for llama's SwiGLU drain at seq_len
+    // 4096, which alone exhausts a shim tile's 16 BD slots and fails the
+    // build.
+    //
+    // Whenever strides[0] == strides[1] * wraps[1] the two outermost dims
+    // describe one contiguous iteration space, so the same extent can be
+    // re-split as any factor pair. Pick the largest outer factor that fits the
+    // outermost bound while keeping strides[0] under the stride cap: [512, 2]
+    // becomes [32, 32], legal in place, and the descriptor stays a single BD.
+    // Only rebalances descriptors that would otherwise be split downstream, so
+    // anything already legal is emitted byte-for-byte as before.
+    if (!skipZeroStride && wraps.size() >= 2) {
+      // AIE2 shim BD limits, mirrored from AIE2_WRAP_UPPER_BOUNDS /
+      // AIE2_STRIDE_UPPER_BOUND in AIRRtToNpuPass.cpp.
+      constexpr int64_t kOutermostWrapMax = 63;
+      constexpr int64_t kStrideMax = 1048576;
+      auto w0 = getConstantIntValue(wraps[0]);
+      auto w1 = getConstantIntValue(wraps[1]);
+      auto s0 = getConstantIntValue(strides[0]);
+      auto s1 = getConstantIntValue(strides[1]);
+      // Re-splitting is only address-preserving from the START of the run.
+      // The addresses covered are s1 * [(o0+k0)*w1 + (o1+k1)], so the first is
+      // s1 * (o0*w1 + o1); after the re-split it is s1 * (o0*b + o1). Those
+      // agree only when o0 == 0 -- with a non-zero outer offset, rewriting
+      // strides[0] silently moves the base of the DMA region. o1 is required
+      // zero too: it indexes within the outer dim's span, and that span
+      // changes from w1 to b.
+      auto o0 = getConstantIntValue(offsets[0]);
+      auto o1 = getConstantIntValue(offsets[1]);
+      bool zeroOuterOffsets = o0 && o1 && *o0 == 0 && *o1 == 0;
+      if (w0 && w1 && s0 && s1 && zeroOuterOffsets && *w0 > kOutermostWrapMax &&
+          *s1 != 0 && *s0 == *s1 * *w1) {
+        int64_t total = *w0 * *w1;
+        for (int64_t a = kOutermostWrapMax; a >= 1; a--) {
+          if (total % a)
+            continue;
+          int64_t b = total / a;
+          if (b > maxSize)
+            continue;
+          int64_t newS0 = *s1 * b;
+          if (newS0 > kStrideMax)
+            continue;
+          wraps[0] = arith::ConstantIndexOp::create(rewriter, loc, a);
+          wraps[1] = arith::ConstantIndexOp::create(rewriter, loc, b);
+          strides[0] = arith::ConstantIndexOp::create(rewriter, loc, newS0);
+          break;
+        }
+      }
+    }
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
     if (enableRepeatAtHighestDim && !wraps.empty()) {
       // Force bump up number of dims to maxNumDims.
@@ -4441,6 +4500,53 @@ public:
       return res;
     };
 
+    // True when every op of one channel sits in the `then` arm of some scf.if
+    // and every op of the other sits in that same if's `else` arm. NFL fusion
+    // rewrites two channels into one loop and keeps only the destination's
+    // ops, on the understanding that the new loop's trip count is what
+    // distinguishes the two. Complementary arms break that understanding: the
+    // condition is invariant in the loop being created, so the surviving arm
+    // runs on every trip and the erased arm's data is simply never moved. The
+    // symptom is silent -- op counts, channel counts and call counts all stay
+    // the same, and only the flows for the dropped channel go missing.
+    //
+    // Not reachable from the raw-bindings examples, which spell a per-core
+    // guard as affine.if; air.api spells it as scf.if, and its two arms then
+    // look to checkIfTemporalMergeable like two independently loop-nested
+    // channels. Skipping is always safe: fusion here is an optimization.
+    // The arm index (0 = then, 1 = else) of the nearest enclosing scf.if that
+    // `op` and `other` have in common, or nullopt when they share none.
+    auto armIn = [](Operation *op, scf::IfOp ifOp) -> std::optional<unsigned> {
+      for (Operation *q = op; q; q = q->getParentOp())
+        if (q->getParentOp() == ifOp.getOperation())
+          return q->getBlock() == ifOp.thenBlock() ? 0u : 1u;
+      return std::nullopt;
+    };
+    auto inComplementaryArmsOfOneIf = [&armIn](air::ChannelOp a,
+                                               air::ChannelOp b) -> bool {
+      SmallVector<Operation *> aOps, bOps;
+      for (auto p : air::getChannelPutOpThroughSymbol(a))
+        aOps.push_back(p);
+      for (auto p : air::getChannelPutOpThroughSymbol(b))
+        bOps.push_back(p);
+      for (auto *x : aOps) {
+        for (Operation *p = x->getParentOp(); p; p = p->getParentOp()) {
+          auto ifOp = dyn_cast<scf::IfOp>(p);
+          if (!ifOp)
+            continue;
+          auto armA = armIn(x, ifOp);
+          if (!armA)
+            continue;
+          for (auto *y : bOps) {
+            auto armB = armIn(y, ifOp);
+            if (armB && *armA != *armB)
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+
     // Identify mergeable channel pairs and classify fusion type.
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
@@ -4465,22 +4571,21 @@ public:
           // scf.if, which wrapRegionsWithForLoops cannot safely wrap.
           if (opInMultiResultIfOp(chanA) || opInMultiResultIfOp(chanB))
             continue;
+          if (inComplementaryArmsOfOneIf(chanA, chanB))
+            continue;
           chan_merge_map[chanB] = chanA;
           nfl_merge_pairs.push_back(std::make_pair(chanA, chanB));
         }
       }
     }
 
-    // Collect channel interface ops to fuse and erase for NFL (loop-based)
-    // merges.
-    llvm::SetVector<Operation *> nfl_merge_destinations, nfl_erased_ops;
+    // Collect the channel interface ops to fuse. The ops to *erase* are
+    // deliberately not collected here -- see the NFL branch below.
+    llvm::SetVector<Operation *> nfl_merge_destinations;
     for (auto &[destChan, srcChan] : nfl_merge_pairs) {
       auto [toFuse, toErase] = getChannelIfOpsFusableByFor(destChan, srcChan);
       for (auto chanIf : toFuse) {
         nfl_merge_destinations.insert(chanIf);
-      }
-      for (auto chanIf : toErase) {
-        nfl_erased_ops.insert(chanIf);
       }
     }
     // Find minimal enclosing regions for the destinations that need wrapping.
@@ -4505,7 +4610,20 @@ public:
       // Found enclosing regions → wrap them with scf.for loops.
       wrapRegionsWithForLoops(rewriter, nfl_merge_regions);
       invalidateChannelIndex();
-      // Erase obsolete ops (nfl_erased_ops) and replace async semantics.
+      // Re-derive the ops to erase, rather than reusing a list collected
+      // before the wrap. wrapRegionsWithForLoops clones each region's parent
+      // into a new scf.for and then erases the original, which destroys every
+      // op inside it -- so any pointer taken beforehand to a channel op in one
+      // of those regions is dangling by now, and the isAsyncOp below reads
+      // freed memory. The channels themselves survive the wrap, so asking them
+      // again is both safe and the same question.
+      llvm::SetVector<Operation *> nfl_erased_ops;
+      for (auto &[destChan, srcChan] : nfl_merge_pairs) {
+        auto [toFuse, toErase] = getChannelIfOpsFusableByFor(destChan, srcChan);
+        for (auto chanIf : toErase)
+          nfl_erased_ops.insert(chanIf);
+      }
+      // Erase obsolete ops and replace async semantics.
       for (auto e : nfl_erased_ops) {
         if (air::isAsyncOp(e)) {
           IRMapping remap;

@@ -1654,35 +1654,49 @@ FailureOr<Value> tileChannelOpByFactor(
     // (potentially overlapping access pattern).
     affine::AffineApplyOp newApplyOp = nullptr;
 
-    // Methods to compose affine expression for offset at each split.
-    auto composeAffineExprWithOffsetAndAffineMap = [](AffineExpr originalExpr,
-                                                      AffineMap affineMap,
-                                                      std::optional<int> offset,
-                                                      MLIRContext *ctx) {
-      int const_in = offset ? *offset : 0;
-      if (affineMap) {
-        auto original_map = affineMap;
-        if (original_map.getNumSymbols() > 0) {
-          original_map =
-              original_map.replace(getAffineSymbolExpr(0, ctx),
-                                   getAffineConstantExpr(const_in, ctx), 0, 1);
-        } else if (original_map.getNumDims() > 0) {
-          original_map =
-              original_map.replace(getAffineDimExpr(0, ctx),
-                                   getAffineConstantExpr(const_in, ctx), 1, 0);
-        }
-        AffineExpr add = originalExpr + original_map.getResult(0);
-        return AffineMap::get(0, 1, add);
-      }
-      AffineExpr add = originalExpr + getAffineConstantExpr(const_in, ctx);
-      return AffineMap::get(0, 1, add);
+    // The composed expression inherits the ORIGINAL offset apply's symbols, and
+    // that is not always exactly one: a launch offset built from two induction
+    // variables (e.g. row = iv * tile + batch * rows_per_batch) carries two.
+    // Size the map from the expression rather than assuming a single symbol,
+    // or AffineMap::get asserts on an invalid map.
+    // AffineMap::get takes its context from the expression, so no ctx here.
+    auto mapForExpr = [](AffineExpr e) {
+      unsigned numSyms = 0;
+      e.walk([&](AffineExpr sub) {
+        if (auto sym = dyn_cast<AffineSymbolExpr>(sub))
+          numSyms = std::max(numSyms, sym.getPosition() + 1);
+      });
+      return AffineMap::get(0, std::max(numSyms, 1u), e);
     };
-    auto composeAffineExprFromSizes = [](AffineExpr originalExpr,
-                                         int originalMemrefSize, int factor,
-                                         int i) {
+
+    // Methods to compose affine expression for offset at each split.
+    auto composeAffineExprWithOffsetAndAffineMap =
+        [mapForExpr](AffineExpr originalExpr, AffineMap affineMap,
+                     std::optional<int> offset, MLIRContext *ctx) {
+          int const_in = offset ? *offset : 0;
+          if (affineMap) {
+            auto original_map = affineMap;
+            if (original_map.getNumSymbols() > 0) {
+              original_map = original_map.replace(
+                  getAffineSymbolExpr(0, ctx),
+                  getAffineConstantExpr(const_in, ctx), 0, 1);
+            } else if (original_map.getNumDims() > 0) {
+              original_map = original_map.replace(
+                  getAffineDimExpr(0, ctx),
+                  getAffineConstantExpr(const_in, ctx), 1, 0);
+            }
+            AffineExpr add = originalExpr + original_map.getResult(0);
+            return mapForExpr(add);
+          }
+          AffineExpr add = originalExpr + getAffineConstantExpr(const_in, ctx);
+          return mapForExpr(add);
+        };
+    auto composeAffineExprFromSizes = [mapForExpr](AffineExpr originalExpr,
+                                                   int originalMemrefSize,
+                                                   int factor, int i) {
       AffineExpr add =
           originalExpr + i * llvm::divideCeilSigned(originalMemrefSize, factor);
-      return AffineMap::get(0, 1, add);
+      return mapForExpr(add);
     };
 
     AffineMap map;
