@@ -1143,20 +1143,48 @@ for _i, _w in enumerate(EXTRA_WAVES):
             f"{K}-wide X slots"
         )
     EXTRA_X_NSLOT.append(EXTRA_K[_i] // K)
+# The three scalars an arm hands the proj cores, and the egress round count --
+# all in the units the decode phases already use, so an extra wave is a phase
+# whose numbers happen to come from a dict:
+#
+#   ROUNDS_PER_PH[p] = I2P[p]*PAIR_ROWS = NBI_PH[p]/(NCX*NCY)
+#
+# and `i2` in a wave descriptor is that same row-block-iteration count (the
+# packer's, `NCX*NCY` blocks per step). So the wave's egress rounds ARE its i2,
+# and the core's own loop trip count -- which emits PAIR_ROWS blocks per step --
+# is i2/PAIR_ROWS. The two differ only on a paired model; keeping them separate
+# is what stops a PAIR_ROWS=2 build from silently running the wave twice.
+EXTRA_RNDS = [w["i2"] for w in EXTRA_WAVES]
+EXTRA_J2 = [w["j2"] for w in EXTRA_WAVES]
+EXTRA_I2 = []
+for _w in EXTRA_WAVES:
+    if _w["i2"] % PAIR_ROWS:
+        raise SystemExit(
+            f"extra wave {_w['name']}: i2={_w['i2']} row-block iterations is not "
+            f"a whole number of PAIR_ROWS={PAIR_ROWS} core steps"
+        )
+    EXTRA_I2.append(_w["i2"] // PAIR_ROWS)
+# The packet destination the outA put names -- an index into DEMUX, exactly as
+# DEST[ph] is, so air-annotate-packet-ids allocates the same id the decode
+# phases targeting that consumer get.
+EXTRA_DEST = [DEMUX.index(_w["dest"]) for _w in EXTRA_WAVES]
 # The arm lands in pieces, so the guard names what is still missing rather than
-# refusing the whole flag. Today the extra waves get their arm, their weight
-# feed and their X; they do NOT get their egress or their per-wave proj scalars,
-# so the cores would run a decode-shaped phase count against them. That does not
-# fail -- it returns a plausible wrong answer, which is the failure this whole
-# section exists to stop shipping.
+# refusing the whole flag. Today an extra wave gets its arm, its weight feed, its
+# X, its proj scalars and its egress -- everything up to and including the outY
+# put. What it does NOT get is a CONSUMER: the demux delivers its rounds to the
+# rms or rope core, and those cores still run a decode-shaped get count, so they
+# stall on rounds the wave never produces (or drop rounds it does). That is a
+# hang or a plausible wrong answer, which is the failure this section exists to
+# stop shipping.
 #
 # DECODE_EXTRA_WAVES_PARTIAL=1 emits it anyway, for reading the IR. It is not a
 # runnable configuration and the message says so.
 EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
 if N_EXTRA and not EXTRA_PARTIAL:
     raise SystemExit(
-        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the arm, the weight feed and "
-        f"the X source are wired, the egress and the proj scalars are not "
+        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the producer side is wired "
+        f"(arm, weight feed, X, proj scalars, egress) but the destination cores "
+        f"named by `dest` are not -- they still get a decode-shaped round count "
         f"(docs/DFlashFeasibility.md section 3.14). Set "
         f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection -- it will not "
         f"compute the right thing -- or unset DECODE_EXTRA_WAVES."
@@ -3242,9 +3270,7 @@ def build_module():
                             # The arm is already a herd operand on every tile,
                             # so this is free.
                             _uarm = arith.select(
-                                arith.cmpi(
-                                    arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)
-                                ),
+                                arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
                                 _u1,
                                 arith.select(
                                     arith.cmpi(
@@ -3256,9 +3282,7 @@ def build_module():
                                     arith.addi(
                                         arith.index_cast(
                                             i32,
-                                            arith.subi(
-                                                a_iv, idx(UNI_DEC + UNI_LM)
-                                            ),
+                                            arith.subi(a_iv, idx(UNI_DEC + UNI_LM)),
                                         ),
                                         arith.ConstantOp(
                                             IntegerAttr.get(i32, 2), None
@@ -4084,7 +4108,11 @@ def build_module():
                                         "xnorm",
                                         X,
                                         offsets=[idx(_sl0), idx(0), idx(0)],
-                                        sizes=[idx(_nsl), idx(K // XCHUNK), idx(XCHUNK)],
+                                        sizes=[
+                                            idx(_nsl),
+                                            idx(K // XCHUNK),
+                                            idx(XCHUNK),
+                                        ],
                                         strides=[idx(_sst), idx(XCHUNK), idx(1)],
                                     )
                                 else:
@@ -4852,9 +4880,7 @@ def build_module():
                                     arith.addi(
                                         arith.index_cast(
                                             i32,
-                                            arith.subi(
-                                                _seg_iv, idx(UNI_DEC + UNI_LM)
-                                            ),
+                                            arith.subi(_seg_iv, idx(UNI_DEC + UNI_LM)),
                                         ),
                                         arith.ConstantOp(
                                             IntegerAttr.get(i32, 2), None
@@ -5131,13 +5157,36 @@ def build_module():
                             _egress(N_ROUNDS)
                             yield_([])
 
-                        index_switch(
-                            [],
-                            _seg_arm_i,
-                            [0],
-                            case_body_builder=lambda op, i, cv: _egr_voc(),
-                            default_body_builder=lambda op: _egr_dec(),
-                        )
+                        if not N_EXTRA:
+                            index_switch(
+                                [],
+                                _seg_arm_i,
+                                [0],
+                                case_body_builder=lambda op, i, cv: _egr_voc(),
+                                default_body_builder=lambda op: _egr_dec(),
+                            )
+                        else:
+                            # An extra wave drains its own row-block iterations,
+                            # EXTRA_RNDS[k] of them. Every arm calls the SAME
+                            # _egress over the SAME outA/toMain/outY ops and
+                            # differs only in the trip count -- the rule this
+                            # mechanism exists to keep (see _rms_batched's
+                            # header: a second arm that names a channel op again
+                            # doubles that buffer's lock credit and the wave
+                            # never completes).
+                            def _egr_extra(k):
+                                _egress(EXTRA_RNDS[k])
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                _seg_arm_i,
+                                [0] + [2 + k for k in range(N_EXTRA)],
+                                case_body_builder=lambda op, i, cv: (
+                                    _egr_voc() if cv == 0 else _egr_extra(cv - 2)
+                                ),
+                                default_body_builder=lambda op: _egr_dec(),
+                            )
                     else:
                         _egress(VOCAB_RNDS if LM_HEAD else N_ROUNDS)
                     # id-demux HOST dests (QKV id1, o-proj id4): per-round relay memtile
@@ -6806,28 +6855,59 @@ def build_module():
                             _arm_i = arith.index_cast(idx_t, _arm)
                             _id4 = idx(VOCAB_DEST)  # vocab-arm packet dest
 
-                            def _sel(voc_val, dec_thunk, ty_):
+                            def _sel(voc_val, dec_thunk, ty_, ex=None):
+                                # arm 0 -> vocab, arm 2+k -> extra wave k, else
+                                # decode. Adding arms is safe here and only here
+                                # because every arm yields a SCALAR into the same
+                                # loop nest over the same channel ops; an arm
+                                # that named a channel op would double its lock
+                                # credit and blow the tile's BD budget both.
+                                if not N_EXTRA:
+                                    return index_switch(
+                                        [ty_],
+                                        _arm_i,
+                                        [0],
+                                        case_body_builder=lambda op, i, cv: yield_(
+                                            [voc_val]
+                                        ),
+                                        default_body_builder=lambda op: yield_(
+                                            [dec_thunk()]
+                                        ),
+                                    )
+                                assert ex is not None and len(ex) == N_EXTRA
                                 return index_switch(
                                     [ty_],
                                     _arm_i,
-                                    [0],
+                                    [0] + [2 + k for k in range(N_EXTRA)],
                                     case_body_builder=lambda op, i, cv: yield_(
-                                        [voc_val]
+                                        [voc_val if cv == 0 else idx(ex[cv - 2])]
                                     ),
                                     default_body_builder=lambda op: yield_(
                                         [dec_thunk()]
                                     ),
                                 )
 
-                            nph_v = _sel(idx(1), lambda: idx(NPH), idx_t)
+                            # An extra wave is ONE phase, like a vocab chunk.
+                            nph_v = _sel(idx(1), lambda: idx(NPH), idx_t, [1] * N_EXTRA)
                             for ph in for_(idx(0), nph_v, idx(1)):
                                 I2v = _sel(
-                                    idx(VOCAB_I2), lambda: _psw(ph, i2c, idx_t), idx_t
+                                    idx(VOCAB_I2),
+                                    lambda: _psw(ph, i2c, idx_t),
+                                    idx_t,
+                                    EXTRA_I2,
                                 )
                                 J2v = _sel(
-                                    idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
+                                    idx(VOCAB_J2),
+                                    lambda: _psw(ph, j2c, idx_t),
+                                    idx_t,
+                                    EXTRA_J2,
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
+                                pktv = _sel(
+                                    _id4,
+                                    lambda: _psw(ph, pktc, idx_t),
+                                    idx_t,
+                                    EXTRA_DEST,
+                                )
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
                                         _emit(_proj(J2v), pktv)
@@ -7060,28 +7140,54 @@ def build_module():
                             _arm_i = arith.index_cast(idx_t, _arm)
                             _id4 = idx(VOCAB_DEST)  # vocab-arm packet dest
 
-                            def _sel(voc_val, dec_thunk, ty):
+                            def _sel(voc_val, dec_thunk, ty, ex=None):
+                                # See _core_blk_np's _sel: arm 0 vocab, 2+k the
+                                # k-th extra wave, default decode -- scalars only.
+                                if not N_EXTRA:
+                                    return index_switch(
+                                        [ty],
+                                        _arm_i,
+                                        [0],
+                                        case_body_builder=lambda op, i, cv: yield_(
+                                            [voc_val]
+                                        ),
+                                        default_body_builder=lambda op: yield_(
+                                            [dec_thunk()]
+                                        ),
+                                    )
+                                assert ex is not None and len(ex) == N_EXTRA
                                 return index_switch(
                                     [ty],
                                     _arm_i,
-                                    [0],
+                                    [0] + [2 + k for k in range(N_EXTRA)],
                                     case_body_builder=lambda op, i, cv: yield_(
-                                        [voc_val]
+                                        [voc_val if cv == 0 else idx(ex[cv - 2])]
                                     ),
                                     default_body_builder=lambda op: yield_(
                                         [dec_thunk()]
                                     ),
                                 )
 
-                            nph_v = _sel(idx(1), lambda: idx(NPH), idx_t)
+                            nph_v = _sel(idx(1), lambda: idx(NPH), idx_t, [1] * N_EXTRA)
                             for ph in for_(idx(0), nph_v, idx(1)):
                                 I2v = _sel(
-                                    idx(VOCAB_I2), lambda: _psw(ph, i2c, idx_t), idx_t
+                                    idx(VOCAB_I2),
+                                    lambda: _psw(ph, i2c, idx_t),
+                                    idx_t,
+                                    EXTRA_I2,
                                 )
                                 J2v = _sel(
-                                    idx(VOCAB_J2), lambda: _psw(ph, j2c, idx_t), idx_t
+                                    idx(VOCAB_J2),
+                                    lambda: _psw(ph, j2c, idx_t),
+                                    idx_t,
+                                    EXTRA_J2,
                                 )
-                                pktv = _sel(_id4, lambda: _psw(ph, pktc, idx_t), idx_t)
+                                pktv = _sel(
+                                    _id4,
+                                    lambda: _psw(ph, pktc, idx_t),
+                                    idx_t,
+                                    EXTRA_DEST,
+                                )
                                 # b_col_reduce_add cache: one per core, scoped to
                                 # the PROJECTION (x changes per phase, so it is
                                 # refilled on each phase's first row-block). The
