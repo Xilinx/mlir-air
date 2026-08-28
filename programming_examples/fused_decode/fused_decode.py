@@ -1170,24 +1170,30 @@ for _w in EXTRA_WAVES:
 EXTRA_DEST = [DEMUX.index(_w["dest"]) for _w in EXTRA_WAVES]
 # The arm lands in pieces, so the guard names what is still missing rather than
 # refusing the whole flag. Today an extra wave gets its arm, its weight feed, its
-# X, its proj scalars and its egress -- everything up to and including the outY
-# put. What it does NOT get is a CONSUMER: the demux delivers its rounds to the
-# rms or rope core, and those cores still run a decode-shaped get count, so they
-# stall on rounds the wave never produces (or drop rounds it does). That is a
-# hang or a plausible wrong answer, which is the failure this section exists to
-# stop shipping.
+# proj scalars and its egress. Two things are missing, and both are on the COMPUTE
+# TILES rather than in the plumbing:
+#
+#   the X source   the launch-side @xnorm put below does not compile, and neither
+#                  does a dedicated shim channel -- see the comment on that put,
+#                  which records both failures. The X has to be forwarded by the
+#                  rms core, which is not written.
+#   the consumer   the demux delivers the wave's rounds to the rms or rope core,
+#                  and those cores still run a decode-shaped get count, so they
+#                  stall on rounds the wave never produces.
 #
 # DECODE_EXTRA_WAVES_PARTIAL=1 emits it anyway, for reading the IR. It is not a
-# runnable configuration and the message says so.
+# runnable configuration -- it does not even reach a device -- and the message
+# says so.
 EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
 if N_EXTRA and not EXTRA_PARTIAL:
     raise SystemExit(
-        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the producer side is wired "
-        f"(arm, weight feed, X, proj scalars, egress) but the destination cores "
-        f"named by `dest` are not -- they still get a decode-shaped round count "
+        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the launch and memtile side "
+        f"is wired (arm, weight feed, proj scalars, egress) but the compute "
+        f"tiles are not -- the rms core neither forwards the wave's X onto "
+        f"@xnorm nor consumes its output, and the rope core does not either "
         f"(docs/DFlashFeasibility.md section 3.14). Set "
-        f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection -- it will not "
-        f"compute the right thing -- or unset DECODE_EXTRA_WAVES."
+        f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection -- it will "
+        f"NOT compile past air-to-aie -- or unset DECODE_EXTRA_WAVES."
     )
 UNI_WAVES = UNI_DEC + UNI_LM + N_EXTRA
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
@@ -4078,21 +4084,47 @@ def build_module():
                                 _colspan,
                                 EXTRA_NSTEPS[k],
                             )
-                            # X, straight from DDR onto @xnorm -- the FIFTH
-                            # producer on a channel that already converges four
-                            # (the rms core twice, the o memtile, the GLU down
-                            # buffer), consumed by the X memtile in phase-time
-                            # order. It has to come from here and not through
-                            # the rms core: an extra wave's X is RAW, and the
-                            # rms core's path normalizes. Making the norm
-                            # arm-conditional would be a second PROGRAM on the
-                            # tightest tile in the design, which is what
-                            # _rms_batched's header says hangs the dispatch.
+                            # X, straight from DDR onto @xnorm. REFUTED, AND
+                            # LEFT HERE ONLY BECAUSE THE GUARD ABOVE STOPS THIS
+                            # PATH FROM BUILDING -- it does not compile, and
+                            # neither does the alternative. Both failures were
+                            # measured, and together they say where the X has to
+                            # come from instead.
                             #
-                            # A channel with several producers is refused only
-                            # when the CONSUMER is the shim (see @layerOut);
-                            # here it is a memtile, which is the case @xnorm is
-                            # already in.
+                            # 1. This put:
+                            #      'air.channel.put' op failed to link to any
+                            #      shim dma allocation
+                            #    @xnorm's producers are all on-array, so the
+                            #    channel has no shim side for the allocator to
+                            #    pair a launch-scope put with
+                            #    (AIRToAIEPass.cpp, allocateShimDmas). A channel
+                            #    is L3->L2 or L2->L2, not both.
+                            #
+                            # 2. A dedicated @tapsX shim->X-memtile channel,
+                            #    which is what 1 seems to ask for:
+                            #      'air.channel.put' op failed to get S2MM tile
+                            #      for L3 allocation
+                            #    with the flow holding 5 producers and ZERO
+                            #    receivers. Dumping the device at flow
+                            #    construction shows why: the X memtile's
+                            #    arm-switched feed is collapsed to ONE relay
+                            #    structure before flows are built -- one
+                            #    @xnorm -> @inX loop at the decode trip count,
+                            #    with the vocab arm's copy gone too. Any channel
+                            #    named only in a non-surviving arm is simply not
+                            #    in the device by then.
+                            #
+                            # That is the count-not-program rule again, one hop
+                            # out and sharper than the lock-credit form: an arm
+                            # may vary a memtile feed's COUNT, and a channel it
+                            # names alone does not survive to be allocated. So
+                            # an extra wave's X has to arrive on @xnorm from a
+                            # producer that ALREADY puts there -- the rms core,
+                            # which has the shim's @rmsX on its input side, is
+                            # the only one with a route to DDR. Its arm then
+                            # selects a copy kernel instead of a norm kernel
+                            # over the same channel ops, which is a kernel and a
+                            # count, not a program.
                             _nsl = EXTRA_X_NSLOT[k]
                             _xw = EXTRA_K[k]
                             _sl0 = EXTRA_WAVES[k]["x_slot"] * BATCH * K

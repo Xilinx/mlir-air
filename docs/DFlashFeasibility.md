@@ -1210,37 +1210,81 @@ made by the same code:
   is what a group of 32 against AWQ's 128 should do.
 
 **The hook is inert.** `DECODE_EXTRA_WAVES` is a validated JSON list; unset, the
-emitted AIR is byte-identical at batch 1 and batch 8 `[static]`.
+emitted AIR is byte-identical at batch 1 and batch 8, on qwen3-4b and on
+llama-3.2-1b (the `PAIR_ROWS=2` core body) `[static]`.
 
-**What the engine will not allow, and it decides the last open question.** An
-extra wave is a third arm, and an arm may select **a count and never a program**.
-That is not style — `_rms_batched`'s header records the measurement: AIR derives
-a buffer's lock credit from how many channel ops *name* it, counting across
-`scf.if` arms because it cannot know they are exclusive, so a second arm doubled
-the credit on `@layerOut`'s MM2S and `@outY`'s S2MM and decode hung in wave 0
-with the KV written and the layer output never landing. The memtile's X feed
-already obeys the same discipline: both its arms call `_feed_inX("xnorm", n)`
-and differ only in `n`.
+**The launch and memtile side is wired** `[static]`, and verified on emitted IR
+at the six-wave geometry: the arm carries the wave index (1 decode, 0 LM head,
+2+k extra wave *k*), each wave feeds its own slab out of its own appended weight
+BO, and the proj cores and the egress take their shape from that arm as scalars.
 
-So §3.13's two candidates for `fc`'s raw 12800-wide X both fail. Routing it
-through the rms core with `rms_copy_aie` instead of `rms_norm_aie` is a
-different *program* on the tightest tile in the design. A dedicated `@tapsX`
-channel into the X memtile is a different program on the memtile, which is the
-same doubled-credit hazard one hop out.
+| | arm 0 (vocab) | arm 2 (fc) | arms 3–7 (ctxkv) | default (decode) |
+|---|---|---|---|---|
+| phases | 1 | 1 | 1 | 4 |
+| I2 | 30 | 5 | 4 | per phase |
+| J2 | 5 | 25 | 5 | per phase |
+| dest | rms | rms | rope | per phase |
+| egress rounds | 30 | 5 | 4 | 60 |
 
-**What is left is to put the taps on `@xnorm` from the launch side.** `@xnorm`
-is already a convergent packet channel with four producers (the rms core twice,
-the o memtile, the GLU down buffer), consumed by the X memtile in phase-time
-order; a fifth, time-disjoint producer is that same pattern. The memtile then
-changes by a count only, and the rms core is not touched at all for the X
-source. It is legal in the direction that matters — a channel with several
-producers is refused only when the *consumer* is the shim (§5.4's `@layerOut`
-finding), and here it is a memtile.
+The units needed care. `ROUNDS_PER_PH[p] = I2P[p]*PAIR_ROWS = NBI_PH[p]/(NCX*NCY)`
+and a descriptor's `i2` is the second quantity, so a wave's egress rounds **are**
+its `i2` while the core's own loop runs `i2/PAIR_ROWS`. They coincide here and
+would not on a paired model.
 
-Remaining, and it needs device iteration rather than analysis: the arm-2 wiring
-across the launch feed, the two memtile counts, the proj core's scalars, the rms
-core's `hidden_norm` on `fc`'s output, and the rope core's `k_norm`/RoPE into
-`appendK`/`appendV` at the drafter's KV base.
+### 3.15 Where the X comes from: both candidates refuted, at compile time
+
+§3.14 concluded the taps should ride `@xnorm` from the launch side. **That does
+not compile, and neither does the alternative** `[static]`. Both were tried on
+the real six-wave configuration; the failures are cheap, early, and they decide
+the question rather than leaving it to device iteration.
+
+**1. The launch-side put on `@xnorm`.**
+
+```
+'air.channel.put' op failed to link to any shim dma allocation
+```
+
+`@xnorm`'s producers are all on-array, so the channel has no shim side for the
+allocator to pair a launch-scope put with. A channel is L3→L2 **or** L2→L2, not
+both. The "several producers are refused only when the consumer is the shim"
+reading (§5.4) is true and irrelevant: the objection is not fan-in, it is that
+`@xnorm` has no shim allocation to fan into.
+
+**2. A dedicated `@tapsX` shim→X-memtile channel**, which is what the first
+failure appears to ask for:
+
+```
+'air.channel.put' op failed to get S2MM tile for L3 allocation
+```
+
+with the flow holding **5 producers and 0 receivers** — the same under
+`npu_dma_stream` and `npu_dma_packet`, with and without channel indices, and
+with one extra wave as well as six. Instrumenting `air-to-aie` at flow
+construction and dumping the device shows why: **the X memtile's arm-switched
+feed has already been collapsed to ONE relay structure** — a single
+`@xnorm → @inX` loop at the decode trip count, sitting bare at device top level.
+The vocab arm's copy is gone too, in a build whose LM head works. A channel named
+only in a non-surviving arm is not in the device by the time flows are built.
+
+**This is the count-not-program rule again, one hop out, and it is a stronger
+statement than the lock-credit one.** §3.14 had it as: an arm must not name a
+channel op twice, or `getLockValuePair` doubles the credit. The measured form is
+sharper — *an arm may vary a memtile feed's count, and a channel it names alone
+does not survive to be allocated at all.* The lock-credit hazard is what happens
+when the arm's op does survive; this is what happens when it does not.
+
+**So the X has to arrive on `@xnorm` from a producer that already puts there.**
+Of the four — the rms core (twice), the o memtile, the GLU down buffer — only the
+rms core has a route to DDR, on the shim's `@rmsX` at its input. Its arm then
+selects a *copy* kernel where the decode arm selects a *norm* kernel, over the
+same channel ops with different counts. That is §3.13's option (a), rejected in
+§3.14 for a reason that turns out not to be the operative one: a CallOp is not a
+channel op, so swapping the kernel is a count and a kernel, not a program.
+
+Remaining, and all of it now on the compute tiles: the rms core forwarding the
+taps onto `@xnorm`, the rms core's `hidden_norm` on `fc`'s output into X slot 37,
+and the rope core's `k_norm`/RoPE into `appendK`/`appendV` at the drafter's KV
+base. The launch, memtile, proj-core and egress sides are done.
 
 ## 4. qwen3-4b at batch 1: verified
 
