@@ -935,6 +935,31 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
   return false;
 }
 
+// Whether hoisting `getput` out of `hier_op` lands it in its matching memory
+// hierarchy, i.e. whether this is the LAST hop of the walk outwards.
+//
+// An issue-order anchor may only be honoured on the last hop. A channel that
+// stages through memory -- an L3 -> L2 -> L1 weight feed, say -- has endpoints
+// at more than one level, so naming it as an anchor from inside a herd matches
+// its SEGMENT-level endpoint and pins the transfer two levels short of where it
+// belongs. The anchor is then consumed, and the remaining hop is unanchored, so
+// the transfer silently lands at the hierarchy's position after all.
+static bool hoistReachesMatchingHierarchy(air::ChannelInterface getput,
+                                          Operation *hier_op) {
+  auto memrefType =
+      llvm::dyn_cast_if_present<BaseMemRefType>(getput.getMemref().getType());
+  if (!memrefType)
+    return false;
+  auto destHier = hier_op->getParentOfType<air::HierarchyInterface>();
+  if (!destHier || isa<air::LaunchOp>(destHier.getOperation()))
+    return true;
+  if (isa<air::SegmentOp>(destHier.getOperation()))
+    return air::isL2(memrefType) || air::isL1(memrefType);
+  if (isa<air::HerdOp>(destHier.getOperation()))
+    return air::isL1(memrefType);
+  return true;
+}
+
 // Check whether a channel op is an "external" side channel op.
 bool isValidExternalChannelOp(air::ChannelInterface getput) {
   // It must be the "external" half of the data movement.
@@ -1021,6 +1046,8 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   FlatSymbolRefAttr anchor;
   placeBefore = false;
   for (auto getput : externalGetPuts) {
+    if (!hoistReachesMatchingHierarchy(getput, hier_op))
+      continue;
     auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
     if (!a) {
       a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
@@ -1068,7 +1095,12 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
         getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before"))
       wantArm = armOf(getput.getOperation());
 
-  Operation *last = nullptr, *lastSameArm = nullptr;
+  // "After the LAST endpoint" and "before the FIRST endpoint" are the mirror
+  // pair. Taking the last one in both directions would drop a hoist_before
+  // transfer in between a multi-endpoint anchor's own transfers instead of
+  // ahead of the group -- e.g. anchoring ahead of a weight feed that is spelled
+  // as two contiguous halves.
+  Operation *pick = nullptr, *pickSameArm = nullptr;
   hier_op->getParentRegion()->walk([&](air::ChannelInterface o) {
     if (hier_op->isAncestor(o.getOperation()))
       return WalkResult::advance();
@@ -1077,12 +1109,26 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
     auto oParent = o->getParentOfType<air::HierarchyInterface>();
     if ((oParent ? oParent.getOperation() : nullptr) != hierParent)
       return WalkResult::advance();
-    last = o.getOperation();
-    if (armOf(o.getOperation()) == wantArm)
-      lastSameArm = o.getOperation();
+    bool sameArm = armOf(o.getOperation()) == wantArm;
+    if (placeBefore) {
+      if (!pick)
+        pick = o.getOperation();
+      if (sameArm && !pickSameArm)
+        pickSameArm = o.getOperation();
+    } else {
+      pick = o.getOperation();
+      if (sameArm)
+        pickSameArm = o.getOperation();
+    }
     return WalkResult::advance();
   });
-  return lastSameArm ? lastSameArm : last;
+  LLVM_DEBUG(
+      llvm::dbgs() << "[dma-to-channel] anchor " << anchor
+                   << " hoisting out of " << hier_op->getName()
+                   << ": arm=" << wantArm << " resolved="
+                   << (pickSameArm ? "same-arm" : (pick ? "any-arm" : "NONE"))
+                   << "\n");
+  return pickSameArm ? pickSameArm : pick;
 }
 
 // Hoist the "external" half of the data movement out by one level of air
@@ -1949,7 +1995,52 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                       StringAttr::get(context, "internalGetPut"));
     }
 
+    // Anchors CHAIN: a transfer can be anchored to a channel whose own external
+    // half is derived by this pass too. In a real design the head of an arm's
+    // feed block ends up entirely derived, each feed pinned behind the previous
+    // one. Anchor resolution searches the live IR, so a target that has not
+    // been hoisted yet is simply not found and the anchored transfer silently
+    // falls back to the hierarchy's position. Hoist a channel before whatever
+    // is anchored to it.
+    //
+    // Rank = length of the anchor chain back to a channel that is hand-written
+    // or unanchored. A channel in a CYCLE keeps rank 0, i.e. its original
+    // relative order: a cyclic chain has no correct order, and reordering it on
+    // a guess would be worse than leaving it alone.
+    llvm::StringMap<FlatSymbolRefAttr> anchorOfChan;
+    llvm::DenseSet<StringRef> derivedChans;
     for (auto getput : externalChannelOps) {
+      derivedChans.insert(getput.getChanName());
+      auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+      if (!a)
+        a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
+      if (a)
+        anchorOfChan[getput.getChanName()] = a;
+    }
+    llvm::StringMap<unsigned> rank;
+    std::function<unsigned(StringRef, unsigned)> rankOf =
+        [&](StringRef c, unsigned depth) -> unsigned {
+      if (auto it = rank.find(c); it != rank.end())
+        return it->second;
+      // Deeper than the number of channels means a cycle was walked.
+      if (depth > derivedChans.size())
+        return 0;
+      auto it = anchorOfChan.find(c);
+      if (it == anchorOfChan.end() ||
+          !derivedChans.count(it->second.getValue()))
+        return 0;
+      unsigned r = 1 + rankOf(it->second.getValue(), depth + 1);
+      rank[c] = r;
+      return r;
+    };
+    SmallVector<air::ChannelInterface> hoistOrder(externalChannelOps.begin(),
+                                                  externalChannelOps.end());
+    llvm::stable_sort(
+        hoistOrder, [&](air::ChannelInterface a, air::ChannelInterface b) {
+          return rankOf(a.getChanName(), 0) < rankOf(b.getChanName(), 0);
+        });
+
+    for (auto getput : hoistOrder) {
       getput->setAttr("loop-carried-dep", StringAttr::get(context, "external"));
       RewritePatternSet hoistChannelPatterns(context);
       hoistChannelPatterns
