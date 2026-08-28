@@ -2623,8 +2623,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       auto o0 = getConstantIntValue(offsets[0]);
       auto o1 = getConstantIntValue(offsets[1]);
       bool zeroOuterOffsets = o0 && o1 && *o0 == 0 && *o1 == 0;
-      if (w0 && w1 && s0 && s1 && zeroOuterOffsets &&
-          *w0 > kOutermostWrapMax && *s1 != 0 && *s0 == *s1 * *w1) {
+      if (w0 && w1 && s0 && s1 && zeroOuterOffsets && *w0 > kOutermostWrapMax &&
+          *s1 != 0 && *s0 == *s1 * *w1) {
         int64_t total = *w0 * *w1;
         for (int64_t a = kOutermostWrapMax; a >= 1; a--) {
           if (total % a)
