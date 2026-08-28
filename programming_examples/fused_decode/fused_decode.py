@@ -193,6 +193,7 @@ from proj_qmm_pack import (
 # table; every constant below DERIVES from these names, so a model is defined by
 # its entry alone. DECODE_MODEL selects it (default llama-3.2-1b). The llama entry
 # reproduces the original hardcoded values BYTE-IDENTICALLY (no-op).
+import contextlib
 import json as _json
 import os as _os
 
@@ -1168,6 +1169,14 @@ for _w in EXTRA_WAVES:
 # DEST[ph] is, so air-annotate-packet-ids allocates the same id the decode
 # phases targeting that consumer get.
 EXTRA_DEST = [DEMUX.index(_w["dest"]) for _w in EXTRA_WAVES]
+# The arms an EXISTING consumer must sit out. Every arm-keyed switch in the
+# design reads "case 0 -> idle (the LM head produces nothing for me), default ->
+# decode", so an extra wave -- arm 2+k -- lands in the DECODE branch of all of
+# them and waits for rounds it never produces. Measured as a dispatch timeout on
+# the first fc wave to reach the device. Each such switch takes this list instead
+# of a bare [0], with the same idle body: a COUNT (zero) and not a program, and
+# byte-identical when there are no extra waves.
+ARM_IDLE_CASES = [0] + [2 + k for k in range(N_EXTRA)]
 # The arm lands in pieces, so the guard names what is still missing rather than
 # refusing the whole flag. An extra wave now gets its arm, its weight feed, its
 # proj scalars, its egress, and its X (the rms core forwards the tap, see
@@ -4112,12 +4121,16 @@ def build_module():
                             wave issue ~464 puts per column.
                             """
                             _wsel[0] = "extra"
-                            _colspan = EXTRA_PER_COL[k] * blk
-                            _feed_wcols(
-                                idx(EXTRA_WAVES[k]["w_off"]),
-                                _colspan,
-                                EXTRA_NSTEPS[k],
-                            )
+                            # X FIRST, WEIGHTS SECOND, and that order is
+                            # load-bearing. air.preserve_shim_dma_order is
+                            # global: a shim task is awaited before the host can
+                            # issue anything else. Feeding the weights first
+                            # blocks the shim on tasks the proj cores cannot
+                            # drain, because they are waiting for an X that has
+                            # not been issued yet -- measured as a dispatch
+                            # timeout, and the vocab arm already feeds in this
+                            # order for the same reason.
+                            #
                             # X: the tap row on @rmsX, and ONES on @rmsW.
                             #
                             # It cannot come straight from DDR onto @xnorm, and
@@ -4178,6 +4191,31 @@ def build_module():
                                     sizes=[K],
                                     strides=[1],
                                 )
+                            # The layer-output drain, which this wave needs for
+                            # the same reason a decode wave does: the rms core's
+                            # @layerOut put runs on every arm that is not the LM
+                            # head, so arm 2+k puts a BATCH*K row that SOMEONE has
+                            # to receive. Without this get the core blocks on it
+                            # and the dispatch times out -- measured, and the last
+                            # of four stalls between the first extra-wave build
+                            # and the first one that runs.
+                            #
+                            # Same op, same extent, offset 0: an extra wave's
+                            # result lands in X slot 0, where the host reads it.
+                            ChannelGet(
+                                "layerOut",
+                                X,
+                                indices=[idx(0)],
+                                offsets=[0],
+                                sizes=[BATCH * LAYER_RNDS * PAYLOAD],
+                                strides=[1],
+                            )
+                            _colspan = EXTRA_PER_COL[k] * blk
+                            _feed_wcols(
+                                idx(EXTRA_WAVES[k]["w_off"]),
+                                _colspan,
+                                EXTRA_NSTEPS[k],
+                            )
                             yield_([])
 
                         def _uni_dec():
@@ -5320,7 +5358,7 @@ def build_module():
                             index_switch(
                                 [],
                                 _seg_arm_i,
-                                [0],
+                                ARM_IDLE_CASES,
                                 case_body_builder=lambda op, i, cv: yield_([]),
                                 default_body_builder=lambda op: _qt_dec(),
                             )
@@ -5511,7 +5549,7 @@ def build_module():
                         index_switch(
                             [],
                             arith.index_cast(idx_t, _arm),
-                            [0],
+                            ARM_IDLE_CASES,
                             case_body_builder=lambda op, i, cv: _voc(),
                             default_body_builder=lambda op: _dec(),
                         )
@@ -5633,7 +5671,7 @@ def build_module():
                         index_switch(
                             [],
                             _seg_arm_i,
-                            [0],
+                            ARM_IDLE_CASES,
                             case_body_builder=lambda op, i, cv: _q_voc(),
                             default_body_builder=lambda op: _q_dec(),
                         )
@@ -5906,7 +5944,7 @@ def build_module():
                                 index_switch(
                                     [],
                                     _seg_arm_i,
-                                    [0],
+                                    ARM_IDLE_CASES,
                                     case_body_builder=lambda op, i, cv: _rb_voc(),
                                     default_body_builder=lambda op: _rb_dec(),
                                 )
@@ -6283,7 +6321,7 @@ def build_module():
                             index_switch(
                                 [],
                                 arith.index_cast(idx_t, _arm),
-                                [0],
+                                ARM_IDLE_CASES,
                                 case_body_builder=lambda op, i, cv: _voc(),
                                 default_body_builder=lambda op: _dec(),
                             )
@@ -6422,7 +6460,7 @@ def build_module():
                         index_switch(
                             [],
                             _seg_arm_i,
-                            [0],
+                            ARM_IDLE_CASES,
                             case_body_builder=lambda op, i, cv: _o_voc(),
                             default_body_builder=lambda op: _o_dec(),
                         )
@@ -6640,7 +6678,7 @@ def build_module():
                                 index_switch(
                                     [],
                                     arith.index_cast(idx_t, _arm),
-                                    [0],
+                                    ARM_IDLE_CASES,
                                     case_body_builder=lambda op, i, cv: yield_([]),
                                     default_body_builder=lambda op: _dec_case(),
                                 )
@@ -6657,34 +6695,76 @@ def build_module():
                                 # the case AIR gives 1 without counting.
                                 _gx = [AllocOp(glu_x_l1, [], []) for _ in range(2)]
                                 _gh = [AllocOp(glu_hid_l1, [], []) for _ in range(2)]
-                                _ifa = IfOp(
-                                    arith.cmpi(
-                                        arith.CmpIPredicate.ne,
-                                        _arm,
-                                        arith.ConstantOp(
-                                            IntegerAttr.get(i32, 0), None
-                                        ).result,
-                                    ),
-                                    [],
-                                    has_else=True,
-                                )
-                                # then = decode, else = LM head. See _if_decode
-                                # on the rms core for what the label is for.
-                                _ifa.operation.attributes["air.arm_select"] = (
-                                    UnitAttr.get()
-                                )
-                                with InsertionPoint(_ifa.thenRegion.blocks[0]):
+
+                                def _glu_dec_body():
                                     for _s in for_(idx(0), idx(NGLU // 2), idx(1)):
                                         _glu_slice(_gx[0], lambda: _gh[0])
                                         _glu_slice(_gx[1], lambda: _gh[1])
                                         yield_([])
-                                    yield_([])
-                                with InsertionPoint(_ifa.elseRegion.blocks[0]):
+
+                                def _glu_voc_body():
                                     for _s in for_(idx(0), idx(VOC_ROTATIONS), idx(1)):
                                         _voc_slice(_gx[0], lambda: _gh[0])
                                         _voc_slice(_gx[1], lambda: _gh[1])
                                         yield_([])
-                                    yield_([])
+
+                                # THREE arms, from TWO scf.ifs, because an
+                                # scf.index_switch cannot carry an async token
+                                # here -- the four hoisted allocs precede it, so
+                                # the dependency pass tries to give it one and
+                                # fails with "unknown op type producing async
+                                # token". (Measured; the rope and attn herds get
+                                # away with index_switch because theirs is the
+                                # first op in the body.) An scf.if is handled,
+                                # so the extra arm becomes an ENCLOSING one and
+                                # the existing two-way select is left exactly as
+                                # it was -- one copy of every channel op, still
+                                # inside a single air.arm_select pair.
+                                _outer = None
+                                if N_EXTRA:
+                                    _outer = IfOp(
+                                        arith.cmpi(
+                                            arith.CmpIPredicate.slt,
+                                            arith.index_cast(idx_t, _arm),
+                                            idx(2),
+                                        ),
+                                        [],
+                                        has_else=False,
+                                    )
+                                    _outer.operation.attributes["air.arm_select"] = (
+                                        UnitAttr.get()
+                                    )
+                                _ctx = (
+                                    InsertionPoint(_outer.thenRegion.blocks[0])
+                                    if _outer is not None
+                                    else contextlib.nullcontext()
+                                )
+                                with _ctx:
+                                    _ifa = IfOp(
+                                        arith.cmpi(
+                                            arith.CmpIPredicate.ne,
+                                            _arm,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(i32, 0), None
+                                            ).result,
+                                        ),
+                                        [],
+                                        has_else=True,
+                                    )
+                                    # then = decode, else = LM head. See
+                                    # _if_decode on the rms core for what the
+                                    # label is for.
+                                    _ifa.operation.attributes["air.arm_select"] = (
+                                        UnitAttr.get()
+                                    )
+                                    with InsertionPoint(_ifa.thenRegion.blocks[0]):
+                                        _glu_dec_body()
+                                        yield_([])
+                                    with InsertionPoint(_ifa.elseRegion.blocks[0]):
+                                        _glu_voc_body()
+                                        yield_([])
+                                    if _outer is not None:
+                                        yield_([])
                                 for _b in _gx + _gh:
                                     DeallocOp(_b)
 
