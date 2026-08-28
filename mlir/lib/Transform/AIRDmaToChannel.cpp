@@ -1036,6 +1036,23 @@ class AIRDmaToAIRChannelConversion
   }
 };
 
+// The anchor symbol a batch agrees on, or null. Same rule as
+// findIssueOrderAnchor: one insertion point serves the whole batch, so a batch
+// that disagrees has no anchor.
+static FlatSymbolRefAttr
+anchorAttrOf(ArrayRef<air::ChannelInterface> externalGetPuts) {
+  FlatSymbolRefAttr anchor;
+  for (auto getput : externalGetPuts) {
+    auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+    if (!a)
+      continue;
+    if (anchor && anchor != a)
+      return nullptr;
+    anchor = a;
+  }
+  return anchor;
+}
+
 // Find the op named by an "air.hoist_after" anchor on any of the external
 // channel ops: the LAST endpoint of that channel in the region the hierarchy op
 // lives in, skipping anything inside the hierarchy op itself. Returns null when
@@ -1391,10 +1408,26 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // anchor's position and its control context (no new guard is synthesised;
     // if the anchor sits in a switch arm, so does this).
     if (anchorOp) {
-      if (placeBefore)
+      if (placeBefore) {
+        // Inserting each op directly before the anchor already preserves the
+        // group's order: [A, T], then [A, B, T].
         rewriter.setInsertionPoint(anchorOp);
-      else
-        rewriter.setInsertionPointAfter(anchorOp);
+      } else {
+        // "After the anchor" does NOT preserve order -- inserting each op
+        // directly after T gives [T, A], then [T, B, A], so a group of N
+        // siblings sharing one anchor comes out reversed. A per-CU fan is
+        // exactly that shape, and reversal is silent: the transfers are all
+        // legal, just issued back to front. Step past everything already
+        // anchored to the same target so the group keeps its order.
+        Operation *tail = anchorOp;
+        for (Operation *n = anchorOp->getNextNode(); n; n = n->getNextNode()) {
+          auto a = n->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+          if (!a || a != anchorAttrOf(externalGetPuts))
+            break;
+          tail = n;
+        }
+        rewriter.setInsertionPointAfter(tail);
+      }
       insertionPointAtHierOp = rewriter.saveInsertionPoint();
       anchored = true;
     }
@@ -1560,10 +1593,11 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       // The anchor is a front-end directive, not output metadata. Drop it once
       // it has been honoured, but only then -- an unanchored hoist has to carry
       // it further out (herd -> segment -> launch) to be honoured later.
-      if (anchored) {
-        cloned->removeAttr("air.hoist_after");
+      // NOTE: deliberately NOT removing air.hoist_after here. A later sibling
+      // anchored to the same target has to see it, to step past this op rather
+      // than land in front of it. Cleared for everything in the final sweep.
+      if (anchored)
         cloned->removeAttr("air.hoist_before");
-      }
     }
 
     // Remove the original "external" side puts and gets.
@@ -2179,6 +2213,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       f.walk([&](Operation *op) {
         op->removeAttr("loop-carried-dep");
         op->removeAttr("hoist");
+        op->removeAttr("air.hoist_after");
+        op->removeAttr("air.hoist_before");
       });
     }
 
