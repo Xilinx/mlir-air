@@ -141,11 +141,11 @@ class Channel:
         # channel that compiles as something other than what was asked for.
         if channel_type is not None and channel_type not in _IMPLEMENTED_TYPES:
             raise NotImplementedError(
-                f"air.channel(channel_type={channel_type!r}) is not implemented; "
-                f"{_UNSUPPORTED['channel_type']}. Available: "
-                f"{', '.join(repr(t) for t in sorted(_IMPLEMENTED_TYPES))}; the "
-                "default (npu_dma_stream) is what you get by leaving "
-                "channel_type off."
+                f"air.channel(channel_type={channel_type!r}) is not implemented. "
+                f"Implemented: "
+                f"{', '.join(repr(t) for t in sorted(_IMPLEMENTED_TYPES))}, plus "
+                "the default npu_dma_stream, which is what you get by leaving "
+                f"channel_type off. {_UNSUPPORTED['channel_type']}."
             )
         # A cascade is a point-to-point link between neighbouring cores, so
         # there is nothing for a broadcast shape to describe. That reasoning is
@@ -452,20 +452,40 @@ class Channel:
 # Keywords the underlying ops accept and this DSL does not lower. They raise
 # rather than being dropped: a channel that silently ignores `channel_type` is
 # one that compiles as a stream and was asked for a cascade.
-# Channel types this package implements. Each is here because a real design
-# in this tree exercises it end to end; see the guard in Channel.__init__.
+# Every non-default channel type the underlying op accepts, and the subset this
+# package implements. Each implemented one is here because a real design in this
+# tree exercises it end to end; see the guard in Channel.__init__.
+#
+# The refusal message is *derived* from the difference rather than written out,
+# because a hand-written list is what went stale when npu_dma_packet was added:
+# the guard was updated and the sentence beside it still called packet
+# unimplemented.
+_ALL_CHANNEL_TYPES = (
+    "npu_dma_packet",
+    "npu_cascade",
+    "npu_mmio",
+    "gpu_symmetric_heap",
+)
 _IMPLEMENTED_TYPES = ("npu_cascade", "npu_dma_packet")
+_UNIMPLEMENTED_TYPES = tuple(
+    t for t in _ALL_CHANNEL_TYPES if t not in _IMPLEMENTED_TYPES
+)
 
 
 _UNSUPPORTED = {
     "channel_type": (
-        "channel types other than the default npu_dma_stream (npu_dma_packet, "
-        "npu_cascade, npu_mmio, gpu_symmetric_heap). Each has its own lowering "
-        "and its own verifier rules -- mmio, for instance, requires an L3 put, "
-        "an L1 get and a constant memref.get_global source"
+        "Still unimplemented: "
+        + ", ".join(_UNIMPLEMENTED_TYPES)
+        + ". Each has its own lowering and its own verifier rules -- mmio, for "
+        "instance, requires an L3 put, an L1 get and a constant "
+        "memref.get_global source"
     ),
-    "dest": "the packet-demux destination index, which needs npu_dma_packet",
-    "packet_ids": "explicit packet routing ids, which need npu_dma_packet",
+    # These two need a packet channel, which is now implemented, but the knobs
+    # themselves are not: say so, rather than implying packet is the blocker.
+    "dest": "the packet-demux destination index (the channel type it needs is "
+    "implemented; this knob is not)",
+    "packet_ids": "explicit packet routing ids (the channel type they need is "
+    "implemented; these are not)",
     "buffer_resources": "the objectFifo depth knob",
     "pad_before": "padded transfers",
     "pad_after": "padded transfers",
