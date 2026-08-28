@@ -1,38 +1,88 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Flash attention with memtile-relayed dataflow — selective Q capture.
+"""Flash attention on air.api -- NPU2, sequence-first input layout.
 
-All data (Q, K, V) routes through memtile for L3→L2→L1 transfer.
-Per-stage QKIn/QK2L1 and VIn/V2L1 channels handle the relay.
-Q tiles are selectively captured: each tile receives all NQ Q sends
-but only copies the one matching its tx. Cascade merge follows the
-cascade-after pattern.
+Q, K and V all reach L1 through the memtile: per-stage ``QKIn``/``QK2L1`` and
+``VIn``/``V2L1`` channels relay L3 -> L2 -> L1. Q tiles are captured
+selectively -- every tile receives all NQ Q sends and copies only the one whose
+index matches its own ``tx`` -- and the per-stage partial results merge along a
+cascade, last stage to first.
 
-Multi-head support via 3D channels with segment unroll:
-  - num_heads_per_unroll=2 heads are processed per segment unroll
-  - Segment sizes=[num_heads_per_unroll, 1], each segment instance handles
-    one head index
-  - 3D channels have head dimension as first index
-  - Cascade channels remain 2D (shared within each segment instance)
-
-Supports multi-head (MHA), grouped-query (GQA), and causal masking.
+Multi-head runs through a segment unroll: the segment carries its own
+iteration space of ``num_heads_per_unroll`` (1 on NPU1, whose 4x4 array does one
+head at a time), the QK/V channels carry a leading head axis, and the cascade
+channels stay 2-D because they are private to one segment instance. MHA, GQA
+and causal masking are all supported.
 
 Default design parameters:
   lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64
-  num_q_tiles=4, num_cascade_stages=4, num_heads=2
-  Shared-buffer mode (lkp == dk).
+  num_q_tiles=4, num_cascade_stages=4, num_heads=1
 
-DMA channel strategy (2 S2MM + 2 MM2S per compute tile):
-  S2MM 0: QK channel (Q selective capture, then K chunks)
-  S2MM 1: V (per-stage via memtile)
-  MM2S 0: Cascade or output
-  MM2S 1: Cascade
+Q, K, V and the output are laid out sequence-first -- ``[seq, heads * d]``,
+with the heads interleaved along the feature axis -- rather than head-first
+``[heads, seq, d]``. That is the layout the surrounding pipeline already has, so
+consuming it directly removes a host-side transpose per tensor per layer.
 
-Channel layout:
-  QKIn_s/QK2L1_s: per-stage memtile relay with horizontal broadcast
-  VIn_s/V2L1_s: per-stage memtile relay with horizontal broadcast
-  cascade_gp/cascade_up/cascade_sp: 2D cascade channels (per-segment)
-  Gp2L2/GpOut: output from ty=0 tiles
+Only the L3 access patterns change. Head ``h``'s slice is a *column* range
+rather than a leading index, so the send is a two-dimensional slice of the
+tensor re-described with the same reshape-and-transpose the other variants use:
+the row range splits into (tile, row) and the column range into (chunk,
+element), and the chunk axis lifts over the row axis. The row stride is the
+whole embedding width, which is what makes it a strided view rather than a flat
+one.
+
+Differences from the NPU1 variant, beyond mmul<8,8,8> and attn_npu2.o:
+
+* ``num_heads_per_unroll`` defaults to 2 and is a parameter. It multiplies the
+  physical columns -- ``num_heads_per_unroll * num_q_tiles``, which must be at
+  most 8 -- so the 8-column part runs two heads at once.
+* ``dv_tile`` is a parameter rather than fixed at ``lkp``. ``dv // dv_tile``
+  becomes a launch axis, and every dv chunk re-streams the whole of K and Q, so
+  widening it trades L1 for L3 bandwidth; at ``dv_tile == dv`` the launch loses
+  the axis and V and the output keep their natural layout.
+* Under ``causal``, fully-future K-blocks always skip their matmul, softmax and
+  PV rather than computing them and masking to -inf. It is not a flag here, as
+  it is in ``attn_npu2``: numerically it is identical -- a fully masked block
+  contributes exp(-inf) = 0 -- and it saves the wasted block-matmul over the
+  causal upper triangle, which grows with sequence length. The channel gets
+  stay unconditional so the channels stay balanced; a skipped block leaves the
+  stage's neutral local, so the cascade merge is an identity.
+
+That skip is the one place this needs a branch on a value rather than a
+predicated write, because what it skips is a ``func.call`` and ``ops.select``
+evaluates both arms. The q-block index is rank 0, so the comparison opens a
+region.
+
+DMA channel budget per compute tile is 2 S2MM + 2 MM2S:
+  S2MM 0: QK (Q selective capture, then K chunks)
+  S2MM 1: V, per stage via the memtile
+  MM2S 0: cascade or output
+  MM2S 1: cascade
+
+Three things about this port are worth knowing.
+
+**Every hand-built AffineMap is gone.** The predecessor spelled each offset as
+an ``AffineMap.get`` plus an ``affine_apply``; here they are Python arithmetic
+on the launch and tile coordinates, and the DSL emits the same
+``affine.apply``. The access patterns went the same way: what was an offsets /
+sizes / strides triple written out by hand is a ``reshape`` and a ``transpose``
+of the tensor, which is a view and moves nothing. The 4-D Q send, for instance,
+is the sequence axis split into (tile, row) and the depth axis into (chunk,
+element), with the chunk axis lifted over the row axis.
+
+**The causal counter is predicated writes, not branches.** Each core keeps a
+small i32 tile in L1 holding a boot flag, a q-block index and a head index, and
+carries it across launch iterations. The predecessor updates it inside
+``scf.if``; every arm of those branches only ever stores to that tile, so they
+are ``ops.select`` here -- which emits the same load, compare, add, select and
+store. The q-block index reaches ``apply_causal_mask`` as ``ctr[0] + tx``: rank
+zero, so it is passed as a value rather than as a memref.
+
+**``ops.branch`` replaces ``affine.if``.** The stage and cascade dispatch was an
+``IntegerSet`` per case; the conditions are plain comparisons on ``ty``, so they
+are written as such. The middle-stage arm nests inside the first-stage
+``otherwise()`` rather than testing a two-sided range, which is the shape
+``cascade_reduction`` and ``matvec_cascade`` already use.
 """
 
 import argparse
@@ -40,19 +90,17 @@ from math import sqrt
 
 import numpy as np
 
-import air
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.air import channel
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, CollapseShapeOp, DeallocOp, load, store
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_ as scf_range, yield_
-from air.dialects import scf, affine, arith
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, i32
+from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
+
+KERNEL = "attn_npu2.o"
+M = 8  # mmul_m = mmul_k = mmul_n, the AIE2P mmul<8,8,8>
+K_MMUL = 8
 
 
-@module_builder
 def build_module(
     lk=512,
     lkp=64,
@@ -67,35 +115,6 @@ def build_module(
     causal=False,
     num_heads_per_unroll=2,
 ):
-    """Build flash attention module with selective Q capture pattern.
-
-    Args:
-        lk: Total K/V sequence length (default: 512)
-        lkp: K/V chunk size per tile (default: 64)
-        lq: Total Q sequence length (default: 512)
-        lqp: Q chunk size per launch iteration (default: 256)
-        dk: Key dimension (default: 64)
-        dv: Value dimension (default: 64)
-        num_q_tiles: Number of tiles to partition Q chunk into (default: 4)
-        num_cascade_stages: Number of cascade pipeline stages (default: 4)
-        num_heads: Number of attention heads (default: 2)
-        num_kv_heads: Number of key/value heads for grouped-query attention
-            (GQA). If None, defaults to num_heads (standard MHA).
-        causal: Whether to enable causal (autoregressive) masking. Under
-            causal, fully-future K-blocks (kv_block > q_block) skip their
-            matmul/softmax/PV instead of computing then masking to -inf —
-            numerically identical (a fully-masked block contributes
-            exp(-inf)=0) and it saves the wasted block-matmul over the
-            causal upper triangle (grows with sequence length). DMA
-            gets/puts stay unconditional so channels stay balanced; a
-            skipped block leaves the stage's neutral local so the cascade
-            merge is an identity.
-        num_heads_per_unroll: Heads processed per segment instance (default: 2).
-            Acts as the physical-column multiplier — physical columns =
-            num_heads_per_unroll * num_q_tiles (must be <= 8 on NPU2). Requires
-            num_heads % num_heads_per_unroll == 0.
-    """
-    # Validate
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
         lqp % num_q_tiles == 0
@@ -111,15 +130,6 @@ def build_module(
     dv_tile = lkp
     assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
     dv_chunks = dv // dv_tile
-    # The seq-first L3 layout interleaves all kv-heads at column-stride dv,
-    # so a single chunk's per-head DMA descriptor is straightforward; with
-    # dv_chunks > 1 the per-chunk strides need additional validation that is
-    # not yet covered by a test. Restrict to dv == lkp until that exists.
-    assert dv_chunks == 1, (
-        f"attn_npu2_seqfirst.py currently supports only dv == lkp "
-        f"(dv_chunks == 1); got dv={dv}, lkp={lkp}. "
-        f"Use attn_npu2.py for the dv_chunks > 1 / heads-first layout."
-    )
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
@@ -127,30 +137,24 @@ def build_module(
             f"tile_size_q={lqp // num_q_tiles}, lkp={lkp}"
         )
 
-    # Multi-head / GQA parameters
+    # Skipping fully-future blocks is unconditional under causal here.
+    causal_skip = causal
+    window_blocks = None
+
     if num_kv_heads is None:
         num_kv_heads = num_heads
     assert num_kv_heads > 0, f"num_kv_heads must be positive, got {num_kv_heads}"
-    assert num_heads % num_kv_heads == 0, (
-        f"num_heads ({num_heads}) must be divisible by "
-        f"num_kv_heads ({num_kv_heads})"
-    )
+    assert (
+        num_heads % num_kv_heads == 0
+    ), f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
     gqa_group_size = num_heads // num_kv_heads
 
-    # num_heads_per_unroll is now a build_module parameter (was hardcoded to 2).
     assert num_heads % num_heads_per_unroll == 0, (
-        f"num_heads ({num_heads}) must be divisible by "
-        f"num_heads_per_unroll ({num_heads_per_unroll})"
+        f"num_heads ({num_heads}) must be divisible by num_heads_per_unroll "
+        f"({num_heads_per_unroll})"
     )
     num_head_groups = num_heads // num_heads_per_unroll
 
-    bf16 = Type.parse("bf16")
-    i32 = IntegerType.get_signless(32)
-    index_type = IndexType.get()
-
-    M = 8  # mmul_m = mmul_k = mmul_n
-
-    # Derived parameters
     num_lq_iters = lq // lqp
     tile_size_q = lqp // num_q_tiles
     num_chunks = lk // lkp
@@ -159,1176 +163,482 @@ def build_module(
 
     NQ = num_q_tiles
     NS = num_cascade_stages
+    H = num_heads_per_unroll
 
-    # Memory spaces
-    l1_space = IntegerAttr.get(i32, 2)
-    l2_space = IntegerAttr.get(i32, 1)
+    # L1 tile shapes. G is allocated 2-D for the matmul and handed to the
+    # kernels flat, which is the one place a collapse is needed.
+    g_flat = tile_size_q * lkp
 
-    # L1 MemRefTypes (Q and K use dk_tile, not full dk)
-    q_l1_t = MemRefType.get([tile_size_q, dk_tile], bf16, memory_space=l1_space)
-    k_l1_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l1_space)
-    v_l1_t = MemRefType.get([lkp, dv_tile], bf16, memory_space=l1_space)
-    g_l1_2d = MemRefType.get([tile_size_q, lkp], bf16, memory_space=l1_space)
-    g_l1_1d = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
-    gp_l1_t = MemRefType.get([tile_size_q, dv_tile], bf16, memory_space=l1_space)
-    up_l1_t = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
-
-    # L2 MemRefTypes (QK relay uses dk_tile)
-    qk_l2_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l2_space)
-    v_l2_t = MemRefType.get([lkp, dv_tile], bf16, memory_space=l2_space)
-    gp_l2_t = MemRefType.get([lqp, dv_tile], bf16, memory_space=l2_space)
-
-    # L3 MemRefTypes — SEQ-FIRST layout (no head dimension in shape)
-    # Q: [lq, num_heads * dk] — all heads interleaved per position
-    # K: [lk, num_kv_heads * dk] — all KV heads interleaved per position
-    # V: [lk, num_kv_heads * dv] — all KV heads interleaved per position
-    # Output: [lq, num_heads * dv] — all heads interleaved per position
-    q_l3_t = MemRefType.get([lq, num_heads * dk], bf16)
-    k_l3_t = MemRefType.get([lk, num_kv_heads * dk], bf16)
-    v_l3_t = MemRefType.get([lk, num_kv_heads * dv], bf16)
-    gp_l3_t = MemRefType.get([lq, num_heads * dv], bf16)
-
-    # External function declarations
-    def external_func(name, inputs, outputs=None, link_with=None, visibility="private"):
-        if outputs is None:
-            outputs = []
-        func_type = FunctionType.get(inputs, outputs)
-        func = FuncOp(name=name, type=func_type, visibility=visibility)
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-        if link_with:
-            func.attributes["link_with"] = StringAttr.get(link_with)
-        return func
-
-    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn_npu2.o")
-    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn_npu2.o")
-    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn_npu2.o")
-    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn_npu2.o")
-    external_func(
-        "matmul_a_b_bf16",
-        [q_l1_t, k_l1_t, g_l1_1d],
-        link_with="attn_npu2.o",
+    # ---------------------------------------------------------------- kernels
+    zero_fill_g = air.extern("zero_fill_g_bf16", link_with=KERNEL)
+    zero_fill_gp = air.extern("zero_fill_gp_bf16", link_with=KERNEL)
+    zero_fill_sp = air.extern("zero_fill_sp_bf16", link_with=KERNEL)
+    neg_inf_fill_up = air.extern("neg_inf_fill_up_bf16", link_with=KERNEL)
+    matmul_a_b = air.extern("matmul_a_b_bf16", link_with=KERNEL)
+    matmul_g_b = air.extern("matmul_g_b_bf16", link_with=KERNEL)
+    fused_softmax = air.extern("fused_softmax", link_with=KERNEL)
+    maximum_up_u = air.extern("maximum_up_u_bf16", link_with=KERNEL)
+    exp_up_minus_u = air.extern("exp_up_minus_u", link_with=KERNEL)
+    mul_r_gp = air.extern("mul_r_gp", link_with=KERNEL)
+    accum_sp_r_s = air.extern("accum_sp_r_s", link_with=KERNEL)
+    vector_copy = air.extern("vector_copy_32elems", link_with=KERNEL, scalars=[i32])
+    copy_tile = air.extern("copy_tile", link_with=KERNEL)
+    div_gp_sp = air.extern("div_gp_sp", link_with=KERNEL)
+    add_gp_g = air.extern("add_gp_g", link_with=KERNEL)
+    apply_mask = (
+        air.extern("apply_causal_mask", link_with=KERNEL, scalars=[i32, i32])
+        if causal
+        else None
     )
-    external_func(
-        "matmul_g_b_bf16",
-        [g_l1_1d, v_l1_t, gp_l1_t],
-        link_with="attn_npu2.o",
-    )
-    external_func(
-        "fused_softmax",
-        [g_l1_1d, up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn_npu2.o",
-    )
-    external_func("maximum_up_u_bf16", [up_l1_t, up_l1_t], link_with="attn_npu2.o")
-    external_func(
-        "exp_up_minus_u",
-        [up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn_npu2.o",
-    )
-    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn_npu2.o")
-    external_func(
-        "accum_sp_r_s",
-        [up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn_npu2.o",
-    )
-    external_func(
-        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn_npu2.o"
-    )
-    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn_npu2.o")
-    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn_npu2.o")
-    external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn_npu2.o")
-    if causal:
-        external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn_npu2.o")
 
-    # ----------------------------------------------------------------
-    # Channel declarations (3D with head dimension for multi-head)
-    # ----------------------------------------------------------------
-
-    # QK: per-stage through memtile (3D with head dimension)
-    # L3→memtile via QKIn_s, memtile→L1 via QK2L1_s with broadcast
+    # --------------------------------------------------------------- channels
+    # Declared in the order the predecessor declares them, which is the order
+    # they are printed in.
+    qk2l1, qkin, v2l1, vin = [], [], [], []
     for s in range(NS):
-        Channel(
-            f"QK2L1_{s}",
-            size=[num_heads_per_unroll, 1, 1],
-            broadcast_shape=[num_heads_per_unroll, 1, NQ],
+        qk2l1.append(
+            air.channel(f"QK2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
         )
-        Channel(f"QKIn_{s}", size=[num_heads_per_unroll])
-
-    # V: per-stage through memtile (3D with head dimension)
+        qkin.append(air.channel(f"QKIn_{s}", size=[H]))
     for s in range(NS):
-        Channel(
-            f"V2L1_{s}",
-            size=[num_heads_per_unroll, 1, 1],
-            broadcast_shape=[num_heads_per_unroll, 1, NQ],
+        v2l1.append(
+            air.channel(f"V2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
         )
-        Channel(f"VIn_{s}", size=[num_heads_per_unroll])
+        vin.append(air.channel(f"VIn_{s}", size=[H]))
+    cascade_gp = air.channel(
+        "cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    cascade_up = air.channel(
+        "cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    cascade_sp = air.channel(
+        "cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    gp2l2 = air.channel("Gp2L2", size=[NQ, 1])
+    gpout = air.channel("GpOut", size=[H])
 
-    # Cascade: 2D per-segment (shared within each segment instance)
-    channel("cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade")
-    channel("cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade")
-    channel("cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade")
+    # ---------------------------------------------------------------- tensors
+    # Sequence-first: heads are interleaved along the feature axis, so a head is
+    # a column range rather than a leading index.
+    emb_q = num_heads * dk
+    emb_k = num_kv_heads * dk
+    emb_v = num_kv_heads * dv
+    emb_out = num_heads * dv
+    Q = air.tensor([lq, emb_q], bf16)
+    K = air.tensor([lk, emb_k], bf16)
+    V = air.tensor([lk, emb_v], bf16)
+    GP = air.tensor([lq, emb_out], bf16)
 
-    # Output: L1-to-L2 gather, then L2-to-L3
-    Channel("Gp2L2", size=[NQ, 1])
-    Channel("GpOut", size=[num_heads_per_unroll])
+    grid = [range(num_lq_iters), range(num_head_groups)]
+    if dv_chunks > 1:
+        grid.append(range(dv_chunks))
 
-    # ----------------------------------------------------------------
-    # Main attention function
-    # ----------------------------------------------------------------
-    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
-    def attention_bf16(q_in, k_in, v_in, gp_out):
-        c1 = ConstantOp(index_type, 1)
-        c_lq_iters = ConstantOp(index_type, num_lq_iters)
-        c_num_head_groups = ConstantOp(index_type, num_head_groups)
+    with air.launch(grid, name="attention_bf16") as launch:
+        # The body is registered at the grid's own arity -- the DSL checks that
+        # they agree -- so the third coordinate is bound to 0 when the value
+        # dimension fits in one tile and there is no third axis.
+        def run(lx, ly, lz):
+
+            head_base = ly * H
+
+            for head_local in range(H):
+                head_idx = head_base + head_local
+                kv_head_idx = (
+                    head_idx if gqa_group_size == 1 else head_idx // gqa_group_size
+                )
+
+                q_row = lx * lqp
+                q_col = head_idx * dk
+                k_col = kv_head_idx * dk
+                v_col = kv_head_idx * dv + lz * dv_tile
+
+                # Q: a [lqp, dk] window of the embedding, re-described as NQ
+                # tiles each split into dk_chunks depth slices, with the chunk
+                # axis lifted over the row axis so one send is a
+                # [tile_size_q, dk_tile] block. The row stride is the whole
+                # embedding width, which is what makes this a strided view
+                # rather than a flat one.
+                for s in range(NS):
+                    qkin[s].put(
+                        Q[q_row : q_row + lqp, q_col : q_col + dk]
+                        .reshape(NQ, tile_size_q, dk_chunks, dk_tile)
+                        .transpose(0, 2, 1, 3),
+                        indices=[head_local],
+                    )
+
+                # K: the same split over this stage's chunks.
+                for s in range(NS):
+                    row = s * lk_per_stage
+                    qkin[s].put(
+                        K[row : row + chunks_per_stage * lkp, k_col : k_col + dk]
+                        .reshape(chunks_per_stage, lkp, dk_chunks, dk_tile)
+                        .transpose(0, 2, 1, 3),
+                        indices=[head_local],
+                    )
+
+                # V needs no permutation, only the chunk split.
+                for s in range(NS):
+                    row = s * lk_per_stage
+                    vin[s].put(
+                        V[
+                            row : row + chunks_per_stage * lkp,
+                            v_col : v_col + dv_tile,
+                        ].reshape(chunks_per_stage, lkp, dv_tile),
+                        indices=[head_local],
+                    )
+
+            with air.segment([range(H), range(1)], name="attn_seg") as seg:
+
+                @seg.body
+                def _(seg_x, seg_y):
+                    qk_l2 = [
+                        air.alloc([lkp, dk_tile], bf16, scope=seg.private())
+                        for _ in range(NS)
+                    ]
+                    v_l2 = [
+                        air.alloc([lkp, dv_tile], bf16, scope=seg.private())
+                        for _ in range(NS)
+                    ]
+                    gp_l2 = air.alloc([lqp, dv_tile], bf16, scope=seg.private())
+
+                    # L1, allocated here so it survives the whole segment and
+                    # reaches the herd as an operand.
+                    q_saved = [
+                        air.alloc([tile_size_q, dk_tile], bf16, scope=seg.per_core())
+                        for _ in range(dk_chunks)
+                    ]
+                    qk = air.alloc([lkp, dk_tile], bf16, scope=seg.per_core())
+                    v_l1 = air.alloc([lkp, dv_tile], bf16, scope=seg.per_core())
+                    g = air.alloc([tile_size_q, lkp], bf16, scope=seg.per_core())
+                    gp = air.alloc([tile_size_q, dv_tile], bf16, scope=seg.per_core())
+                    up = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
+                    sp = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
+                    ctr = (
+                        air.alloc(
+                            [4 if dv_chunks > 1 else 3], i32, scope=seg.per_core()
+                        )
+                        if causal
+                        else None
+                    )
+
+                    # The memtile relay. One get per L3 send, one put per L1
+                    # receive, and the put re-describes the [lkp, dk_tile] tile
+                    # in the 4x8 blocks the mmul instruction consumes.
+                    for s in range(NS):
+                        for _ in air.sequential(0, NQ * dk_chunks):
+                            qkin[s].get(qk_l2[s], indices=[seg_x])
+                            qk2l1[s].put(
+                                qk_l2[s]
+                                .reshape(lkp // M, M, dk_tile // M, M)
+                                .transpose(2, 0, 1, 3),
+                                indices=[seg_x, 0, 0],
+                            )
+                        for _ in air.sequential(0, chunks_per_stage * dk_chunks):
+                            qkin[s].get(qk_l2[s], indices=[seg_x])
+                            qk2l1[s].put(
+                                qk_l2[s]
+                                .reshape(lkp // M, M, dk_tile // M, M)
+                                .transpose(2, 0, 1, 3),
+                                indices=[seg_x, 0, 0],
+                            )
+
+                    for s in range(NS):
+                        for _ in air.sequential(0, chunks_per_stage):
+                            vin[s].get(v_l2[s], indices=[seg_x])
+                            v2l1[s].put(
+                                v_l2[s]
+                                .reshape(lkp // M, M, dv_tile // M, M)
+                                .transpose(2, 0, 1, 3),
+                                indices=[seg_x, 0, 0],
+                            )
+
+                    with air.herd(
+                        [range(NQ), range(NS)],
+                        name="herd_0",
+                        shape=(NQ, NS),
+                        link_with=KERNEL,
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            zero_fill_gp(gp)
+                            zero_fill_sp(sp)
+                            neg_inf_fill_up(up)
+
+                            if causal:
+                                # Boot: set the counters the first time this
+                                # core runs. Predicated writes rather than a
+                                # branch -- every arm only stores. ctr[1] is
+                                # written last because the predicate reads it.
+                                first = ops.equal(ctr[1:2], 0)
+                                ctr[0:1] = ops.select(first, 0, ctr[0:1])
+                                ctr[2:3] = ops.select(first, 0, ctr[2:3])
+                                if dv_chunks > 1:
+                                    ctr[3:4] = ops.select(first, 0, ctr[3:4])
+                                ctr[1:2] = ops.select(first, 1, ctr[1:2])
+
+                            # Q selective capture: receive all NQ * dk_chunks
+                            # sends, keep the one this column owns.
+                            for qt in range(NQ):
+                                for dk_c in range(dk_chunks):
+                                    for s in range(NS):
+                                        with ops.branch(ty == s):
+                                            qk2l1[s].get(qk, indices=[seg_x, ty, tx])
+                                    with ops.branch(tx == qt):
+                                        copy_tile(qk, q_saved[dk_c])
+
+                            for chunk in air.sequential(0, chunks_per_stage):
+                                # This block's place in the mask. q_block is a
+                                # value the core carries in L1; kv_block is a
+                                # coordinate.
+                                q_block = ctr[0] + tx if causal else None
+                                kv_block = ty * chunks_per_stage + chunk
+
+                                def live():
+                                    """The region for a block the mask keeps.
+
+                                    kv_block <= q_block, and inside the window
+                                    when there is one. The lower bound is
+                                    inclusive: that block is the ragged edge
+                                    apply_window_mask half-keeps, not a dead
+                                    one. Conjunction is nesting in this DSL, so
+                                    the window bound is a second region inside
+                                    the first rather than an arith.andi.
+                                    """
+                                    outer = ops.branch(q_block >= kv_block)
+                                    outer.__enter__()
+                                    if window_blocks is None:
+                                        return [outer]
+                                    inner = ops.branch(
+                                        q_block - window_blocks <= kv_block
+                                    )
+                                    inner.__enter__()
+                                    return [inner, outer]
+
+                                def close(regions):
+                                    for r in reversed(regions):
+                                        r.__exit__(None, None, None)
+
+                                zero_fill_g(g.reshape(g_flat))
+
+                                for dk_c in range(dk_chunks):
+                                    # The gets stay unconditional even for a
+                                    # skipped block: the channels have to stay
+                                    # balanced or the herd deadlocks. Only the
+                                    # arithmetic is elided.
+                                    for s in range(NS):
+                                        with ops.branch(ty == s):
+                                            qk2l1[s].get(qk, indices=[seg_x, ty, tx])
+                                    if causal_skip:
+                                        regions = live()
+                                        matmul_a_b(q_saved[dk_c], qk, g.reshape(g_flat))
+                                        close(regions)
+                                    else:
+                                        matmul_a_b(q_saved[dk_c], qk, g.reshape(g_flat))
+
+                                for s in range(NS):
+                                    with ops.branch(ty == s):
+                                        v2l1[s].get(v_l1, indices=[seg_x, ty, tx])
+
+                                def softmax_accumulate():
+                                    if causal:
+                                        if window_blocks is not None:
+                                            apply_mask(
+                                                g, q_block, kv_block, window_blocks
+                                            )
+                                        else:
+                                            apply_mask(g, q_block, kv_block)
+                                    s_tmp = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    r_tmp = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    fused_softmax(g.reshape(g_flat), up, s_tmp, r_tmp)
+                                    mul_r_gp(r_tmp, gp)
+                                    matmul_g_b(g.reshape(g_flat), v_l1, gp)
+                                    accum_sp_r_s(sp, r_tmp, s_tmp)
+                                    vector_copy(0, s_tmp, sp)
+
+                                if causal_skip:
+                                    regions = live()
+                                    softmax_accumulate()
+                                    close(regions)
+                                else:
+                                    softmax_accumulate()
+
+                            # Cascade merge, north to south.
+                            with ops.branch(ty == NS - 1) as north:
+                                cascade_gp.put(gp, indices=[tx, ty - 1])
+                                cascade_up.put(up, indices=[tx, ty - 1])
+                                cascade_sp.put(sp, indices=[tx, ty - 1])
+
+                            with north.otherwise():
+
+                                def merge():
+                                    """Fold the neighbour's partials into ours.
+
+                                    Returns the buffers holding the merged
+                                    result, which the caller either forwards or
+                                    normalises and drains.
+                                    """
+                                    gp_c = air.alloc(
+                                        [tile_size_q, dv_tile], bf16, scope=h.private()
+                                    )
+                                    up_c = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    sp_c = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    cascade_gp.get(gp_c, indices=[tx, ty])
+                                    cascade_up.get(up_c, indices=[tx, ty])
+                                    cascade_sp.get(sp_c, indices=[tx, ty])
+                                    up_s = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    vector_copy(0, up, up_s)
+                                    maximum_up_u(up_c, up)
+                                    rc = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    exp_up_minus_u(up_c, up, rc)
+                                    rl = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    exp_up_minus_u(up_s, up, rl)
+                                    mul_r_gp(rc, gp_c)
+                                    mul_r_gp(rl, gp)
+                                    add_gp_g(gp, gp_c)
+                                    st = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    zero_fill_sp(st)
+                                    accum_sp_r_s(sp_c, rc, st)
+                                    accum_sp_r_s(sp, rl, st)
+                                    vector_copy(0, st, sp_c)
+                                    return gp_c, sp_c
+
+                                with ops.branch(ty == 0) as south:
+                                    # Southernmost: normalise and drain.
+                                    gp_c, sp_c = merge()
+                                    div_gp_sp(sp_c, gp_c)
+                                    gp2l2.put(
+                                        gp_c.reshape(
+                                            tile_size_q // M, dv_tile // M, M, M
+                                        ).transpose(1, 2, 0, 3),
+                                        indices=[tx, 0],
+                                    )
+
+                                with south.otherwise():
+                                    gp_c, _sp_c = merge()
+                                    cascade_gp.put(gp_c, indices=[tx, ty - 1])
+                                    cascade_up.put(up, indices=[tx, ty - 1])
+                                    cascade_sp.put(_sp_c, indices=[tx, ty - 1])
+
+                            if causal:
+                                # Advance the q block once per head-group cycle,
+                                # and only on the last dv chunk when there is
+                                # more than one. Nested selects rather than
+                                # nested ifs, for the reason above.
+                                head_next = ctr[2:3] + 1
+                                wrapped = head_next >= num_head_groups
+                                q_adv = ops.select(wrapped, ctr[0:1] + NQ, ctr[0:1])
+                                head_adv = ops.select(wrapped, 0, head_next)
+                                if dv_chunks > 1:
+                                    last_dv = ctr[3:4] >= dv_chunks - 1
+                                    ctr[0:1] = ops.select(last_dv, q_adv, ctr[0:1])
+                                    ctr[2:3] = ops.select(last_dv, head_adv, ctr[2:3])
+                                    ctr[3:4] = ops.select(last_dv, 0, ctr[3:4] + 1)
+                                else:
+                                    ctr[0:1] = q_adv
+                                    ctr[2:3] = head_adv
+
+                    # Gather the NQ column results into the L2 output tile.
+                    for col in air.parallel(0, NQ):
+                        gp2l2.get(
+                            gp_l2[
+                                col * tile_size_q : col * tile_size_q + tile_size_q, :
+                            ],
+                            indices=[col, 0],
+                        )
+
+                    gpout.put(gp_l2, indices=[seg_x])
+
+            for head_local in range(H):
+                head_idx = head_base + head_local
+                out_row = lx * lqp
+                out_col = head_idx * dv + lz * dv_tile
+                gpout.get(
+                    GP[out_row : out_row + lqp, out_col : out_col + dv_tile],
+                    indices=[head_local],
+                )
 
         if dv_chunks > 1:
-            c_dv_chunks = ConstantOp(index_type, dv_chunks)
-            launch_sizes = [c_lq_iters, c_num_head_groups, c_dv_chunks]
+
+            @launch.body
+            def _(lx, ly, lz):
+                run(lx, ly, lz)
+
         else:
-            launch_sizes = [c_lq_iters, c_num_head_groups]
 
-        @launch(
-            operands=[q_in, k_in, v_in, gp_out],
-            sizes=launch_sizes,
-        )
-        def launch_body(*launch_args):
-            if dv_chunks > 1:
-                lx, ly, lz, lsx, lsy, lsz, q, k, v, gp = launch_args
-            else:
-                lx, ly, lsx, lsy, q, k, v, gp = launch_args
-                lz = ConstantOp(index_type, 0)
+            @launch.body
+            def _(lx, ly):
+                run(lx, ly, 0)
 
-            # Compute Q offset from launch iteration index
-            # SEQ-FIRST launch offsets: ROW offset only (not flat)
-            # q_launch_row = lx * lqp (which row to start from)
-            affine_map_q_launch_row = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(lqp),
-                    )
-                ],
-            )
-            q_launch_row = affine_apply(affine_map_q_launch_row, [lx])
-
-            # Output launch row offset
-            out_launch_row = q_launch_row  # same row offset
-
-            # Compute head base from head group index (ly)
-            # head_base = ly * num_heads_per_unroll
-            affine_map_head_base = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(num_heads_per_unroll),
-                    )
-                ],
-            )
-            head_base = affine_apply(affine_map_head_base, [ly])
-
-            # Offset maps for one head's worth of Q/K/V/output data
-            # SEQ-FIRST head offsets: column offset within each row
-            # head_q_off = head * dk (not head * lq * dk)
-            affine_map_head_q = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(dk),
-                    )
-                ],
-            )
-            # head_k_off = kv_head * dk
-            affine_map_head_k = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(dk),
-                    )
-                ],
-            )
-            # head_v_off = kv_head * dv (column offset in seq-first V)
-            affine_map_head_v_dv = AffineMap.get(
-                0,
-                2,  # s0=kv_head, s1=lz (dv chunk index; constant 0 because dv == lkp is enforced above)
-                [
-                    AffineExpr.get_add(
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(dv),
-                        ),
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(1),
-                            AffineConstantExpr.get(dv_tile),
-                        ),
-                    )
-                ],
-            )
-            # head_out_off = head * dv (column offset in seq-first output)
-            affine_map_head_out_dv = AffineMap.get(
-                0,
-                2,  # s0=head, s1=lz
-                [
-                    AffineExpr.get_add(
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(dv),
-                        ),
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(1),
-                            AffineConstantExpr.get(dv_tile),
-                        ),
-                    )
-                ],
-            )
-
-            # s0 + s1
-            affine_map_add = AffineMap.get(
-                0,
-                2,
-                [
-                    AffineExpr.get_add(
-                        AffineSymbolExpr.get(0),
-                        AffineSymbolExpr.get(1),
-                    )
-                ],
-            )
-
-            # head_1 = head_base + 1
-            affine_map_plus1 = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_add(
-                        AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(1),
-                    )
-                ],
-            )
-
-            # ----------------------------------------------------------
-            # For each head in the unroll group, send Q/K/V and get output
-            # ----------------------------------------------------------
-            # GQA: compute KV head index from Q head index
-            # kv_head = q_head // gqa_group_size
-            if gqa_group_size > 1:
-                affine_map_kv_head = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_floor_div(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(gqa_group_size),
-                        )
-                    ],
-                )
-
-            for head_local in range(num_heads_per_unroll):
-                if head_local == 0:
-                    head_idx = head_base
-                else:
-                    head_idx = affine_apply(affine_map_plus1, [head_base])
-
-                # KV head index: same as Q head for MHA, floor-div for GQA
-                if gqa_group_size == 1:
-                    kv_head_idx = head_idx
-                else:
-                    kv_head_idx = affine_apply(
-                        affine_map_kv_head,
-                        [head_idx],
-                    )
-
-                head_q_off = affine_apply(affine_map_head_q, [head_idx])
-                head_k_off = affine_apply(affine_map_head_k, [kv_head_idx])
-                head_v_off = affine_apply(affine_map_head_v_dv, [kv_head_idx, lz])
-                head_out_off = affine_apply(affine_map_head_out_dv, [head_idx, lz])
-
-                head_offset_idx = ConstantOp(index_type, head_local)
-
-                # SEQ-FIRST: separate row (launch) and column (head) offsets
-                q_col_off = head_q_off  # head * dk
-                out_col_off = head_out_off  # head * dv
-
-                # Q puts: SEQ-FIRST 2D memref [lq, num_heads*dk]
-                # Use 2D offsets: [row=q_launch_row, col=q_col_off]
-                # Read NQ tiles of (tile_size_q, dk_tile) with proper strides
-                emb_dim_q = num_heads * dk
-                for stage in range(NS):
-                    ChannelPut(
-                        f"QKIn_{stage}",
-                        q,
-                        indices=[head_offset_idx],
-                        offsets=[q_launch_row, q_col_off],
-                        sizes=[NQ, dk_chunks, tile_size_q, dk_tile],
-                        strides=[tile_size_q * emb_dim_q, dk_tile, emb_dim_q, 1],
-                    )
-
-                # K puts: SEQ-FIRST 2D memref [lk, num_kv_heads*dk]
-                # 2D offsets: [row=stage*lk_per_stage, col=head_k_off]
-                emb_dim_k = num_kv_heads * dk
-                for stage in range(NS):
-                    k_stage_row = ConstantOp(index_type, stage * lk_per_stage)
-                    ChannelPut(
-                        f"QKIn_{stage}",
-                        k,
-                        indices=[head_offset_idx],
-                        offsets=[k_stage_row, head_k_off],
-                        sizes=[chunks_per_stage, dk_chunks, lkp, dk_tile],
-                        strides=[lkp * emb_dim_k, dk_tile, emb_dim_k, 1],
-                    )
-
-                # V puts: SEQ-FIRST 2D memref [lk, num_kv_heads*dv]
-                # 2D offsets: [row=stage*lk_per_stage, col=head_v_off]
-                emb_dim_v = num_kv_heads * dv
-                for stage in range(NS):
-                    v_stage_row = ConstantOp(index_type, stage * lk_per_stage)
-                    ChannelPut(
-                        f"VIn_{stage}",
-                        v,
-                        indices=[head_offset_idx],
-                        offsets=[v_stage_row, head_v_off],
-                        sizes=[chunks_per_stage, lkp, dv_tile],
-                        strides=[lkp * emb_dim_v, emb_dim_v, 1],
-                    )
-
-            # ----------------------------------------------------------
-            # Segment: unrolled over heads
-            # ----------------------------------------------------------
-            c_num_heads_unroll = ConstantOp(index_type, num_heads_per_unroll)
-            c1_seg = ConstantOp(index_type, 1)
-
-            @segment(
-                name="attn_seg",
-                operands=[],
-                sizes=[c_num_heads_unroll, c1_seg],
-            )
-            def segment_body(seg_x, seg_y, seg_sx, seg_sy):
-                # L2 allocations for QK and V (per-stage) and output
-                qk_l2_bufs = [AllocOp(qk_l2_t, [], []) for _ in range(NS)]
-                v_l2_bufs = [AllocOp(v_l2_t, [], []) for _ in range(NS)]
-                gp_l2 = AllocOp(gp_l2_t, [], [])
-
-                # L1 allocations passed to herd
-                q_saved_bufs = [AllocOp(q_l1_t, [], []) for _ in range(dk_chunks)]
-                qk_buf = AllocOp(k_l1_t, [], [])
-                v_l1 = AllocOp(v_l1_t, [], [])
-                g_l1 = AllocOp(g_l1_2d, [], [])
-                gp_l1 = AllocOp(gp_l1_t, [], [])
-                up_l1 = AllocOp(up_l1_t, [], [])
-                sp_l1 = AllocOp(up_l1_t, [], [])
-                if causal:
-                    # Counter layout: [0]=q_block, [1]=boot_flag, [2]=head_local,
-                    # [3]=dv_iter (counts dv_chunk iterations, for dv_chunks>1 guard)
-                    ctr_size = 4 if dv_chunks > 1 else 3
-                    ctr_t = MemRefType.get([ctr_size], i32, memory_space=l1_space)
-                    causal_ctr = AllocOp(ctr_t, [], [])
-
-                c_nq = ConstantOp(index_type, NQ)
-                c_ns = ConstantOp(index_type, NS)
-                c0_seg = ConstantOp(index_type, 0)
-                c_chunks_s = ConstantOp(index_type, chunks_per_stage)
-
-                # QK streaming: L3-to-L2-to-L1 per stage
-                # Q: NQ * dk_chunks transfers, then K: chunks_per_stage * dk_chunks
-                # L2 buffer is [lkp, dk_tile], all transfers are [dk_tile, dk_tile]
-                c_nq_dk = ConstantOp(index_type, NQ * dk_chunks)
-                c_chunks_dk = ConstantOp(index_type, chunks_per_stage * dk_chunks)
-                for stage in range(NS):
-                    for qt_iter in scf_range(0, c_nq_dk, 1):
-                        ChannelGet(
-                            f"QKIn_{stage}",
-                            qk_l2_bufs[stage].result,
-                            indices=[seg_x],
-                        )
-                        ChannelPut(
-                            f"QK2L1_{stage}",
-                            qk_l2_bufs[stage].result,
-                            indices=[seg_x, c0_seg, c0_seg],
-                            offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
-                        )
-                        yield_([])
-                    for chunk_iter in scf_range(0, c_chunks_dk, 1):
-                        ChannelGet(
-                            f"QKIn_{stage}",
-                            qk_l2_bufs[stage].result,
-                            indices=[seg_x],
-                        )
-                        ChannelPut(
-                            f"QK2L1_{stage}",
-                            qk_l2_bufs[stage].result,
-                            indices=[seg_x, c0_seg, c0_seg],
-                            offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
-                        )
-                        yield_([])
-
-                # V streaming: L3-to-L2-to-L1 per stage
-                for stage in range(NS):
-                    for chunk_iter in scf_range(0, c_chunks_s, 1):
-                        ChannelGet(
-                            f"VIn_{stage}",
-                            v_l2_bufs[stage].result,
-                            indices=[seg_x],
-                        )
-                        ChannelPut(
-                            f"V2L1_{stage}",
-                            v_l2_bufs[stage].result,
-                            indices=[
-                                seg_x,
-                                c0_seg,
-                                c0_seg,
-                            ],  # [head, stage_dim=0, col_dim=0]
-                            offsets=[0, 0, 0, 0],
-                            sizes=[dv_tile // M, lkp // M, M, M],
-                            strides=[M, dv_tile * M, dv_tile, 1],
-                        )
-                        yield_([])
-
-                # ----------------------------------------------------------
-                # Herd: [NQ, NS] — pass seg_x as operand
-                # ----------------------------------------------------------
-                herd_operands = q_saved_bufs + [
-                    qk_buf,
-                    v_l1,
-                    g_l1,
-                    gp_l1,
-                    up_l1,
-                    sp_l1,
-                    seg_x,
-                ]
-                if causal:
-                    herd_operands.append(causal_ctr)
-
-                @herd(
-                    name="herd_0",
-                    sizes=[c_nq, c_ns],
-                    operands=herd_operands,
-                    link_with="attn_npu2.o",
-                )
-                def herd_body(tx, ty, hsx, hsy, *all_args):
-                    # Unpack: dk_chunks Q buffers, then qk, v, g, gp, up, sp, seg_x, [causal_ctr]
-                    q_bufs = list(all_args[:dk_chunks])
-                    qk = all_args[dk_chunks]
-                    v = all_args[dk_chunks + 1]
-                    g = all_args[dk_chunks + 2]
-                    gp = all_args[dk_chunks + 3]
-                    up_buf = all_args[dk_chunks + 4]
-                    sp_buf = all_args[dk_chunks + 5]
-                    h_seg_x = all_args[dk_chunks + 6]
-                    counter_buf = all_args[dk_chunks + 7] if causal else None
-                    # Precompute affine sets for per-stage V dispatch
-                    s0 = AffineSymbolExpr.get(0)
-                    s1 = AffineSymbolExpr.get(1)
-                    c_ns_m1 = AffineConstantExpr.get(NS - 1)
-                    stage_sets = []
-                    for s in range(NS):
-                        cs = AffineConstantExpr.get(s)
-                        stage_sets.append(
-                            IntegerSet.get(
-                                0,
-                                2,
-                                [s0, s1 - cs],
-                                [False, True],
-                            )
-                        )
-
-                    # === INIT PHASE (FIRST — before any channel ops) ===
-                    CallOp([], "zero_fill_gp_bf16", [gp])
-                    CallOp([], "zero_fill_sp_bf16", [sp_buf])
-                    CallOp([], "neg_inf_fill_up_bf16", [up_buf])
-
-                    # === CAUSAL COUNTER INIT ===
-                    if causal:
-                        c0_ctr = ConstantOp(index_type, 0)
-                        c1_ctr = ConstantOp(index_type, 1)
-                        c2_ctr = ConstantOp(index_type, 2)
-                        c3_ctr = ConstantOp(index_type, 3) if dv_chunks > 1 else None
-                        boot_flag = load(counter_buf, [c1_ctr])
-                        is_first = arith.CmpIOp(
-                            arith.CmpIPredicate.eq,
-                            boot_flag,
-                            ConstantOp(i32, 0),
-                        )
-                        if_first = scf.IfOp(is_first)
-                        with InsertionPoint(if_first.then_block):
-                            store(ConstantOp(i32, 0), counter_buf, [c0_ctr])
-                            store(ConstantOp(i32, 1), counter_buf, [c1_ctr])
-                            store(ConstantOp(i32, 0), counter_buf, [c2_ctr])
-                            if dv_chunks > 1:
-                                store(ConstantOp(i32, 0), counter_buf, [c3_ctr])
-                            scf.YieldOp([])
-
-                    # === Q SELECTIVE CAPTURE ===
-                    # Receive all NQ Q tiles × dk_chunks dk slices, but only
-                    # copy the one matching this tile's tx index.
-                    # Stage-gated get from per-stage QK2L1_s channels.
-                    for qt in range(NQ):
-                        for dk_c in range(dk_chunks):
-                            for s in range(NS):
-                                if_qk_q = affine.AffineIfOp(
-                                    stage_sets[s],
-                                    cond_operands=[tx, ty],
-                                )
-                                with InsertionPoint(if_qk_q.then_block):
-                                    ChannelGet(
-                                        f"QK2L1_{s}",
-                                        qk,
-                                        indices=[h_seg_x, ty, tx],
-                                    )
-                                    affine.AffineYieldOp([])
-                            cmp = arith.CmpIOp(
-                                arith.CmpIPredicate.eq,
-                                arith.IndexCastOp(i32, tx),
-                                arith.ConstantOp(i32, qt),
-                            )
-                            if_cap = scf.IfOp(cmp)
-                            with InsertionPoint(if_cap.then_block):
-                                CallOp([], "copy_tile", [qk, q_bufs[dk_c]])
-                                scf.YieldOp([])
-
-                    # === K CHUNK LOOP ===
-                    c_chunks_h = ConstantOp(index_type, chunks_per_stage)
-                    for chunk_iter in scf_range(0, c_chunks_h, 1):
-                        # 1. Zero fill G (FIRST — once per K seq chunk)
-                        g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
-                        CallOp([], "zero_fill_g_bf16", [g1d])
-
-                        # Under causal, precompute this block's (q_block,
-                        # kv_block) so a fully-future block (kv_block > q_block)
-                        # skips its matmul/softmax/PV — the stage's neutral local
-                        # (init) then makes the cascade merge an identity,
-                        # matching the compute-then-mask-to-(-inf) path.
-                        do_compute = None
-                        q_block = kv_block = None
-                        if causal:
-                            c_cps_i32 = ConstantOp(i32, chunks_per_stage)
-                            ty_i32 = arith.IndexCastOp(i32, ty).result
-                            chunk_i32 = arith.IndexCastOp(i32, chunk_iter).result
-                            kv_base = arith.MulIOp(ty_i32, c_cps_i32)
-                            kv_block = arith.AddIOp(kv_base.result, chunk_i32).result
-                            q_base = load(counter_buf, [c0_ctr])
-                            tx_i32 = arith.IndexCastOp(i32, tx).result
-                            q_block = arith.AddIOp(q_base, tx_i32).result
-                            do_compute = arith.CmpIOp(
-                                arith.CmpIPredicate.sle,
-                                kv_block,
-                                q_block,
-                            ).result
-
-                        # 2. dk_chunks loop: K get (kept — balances the memtile
-                        #    relay) + matmul (guarded under causal).
-                        for dk_c in range(dk_chunks):
-                            for s in range(NS):
-                                if_qk_k = affine.AffineIfOp(
-                                    stage_sets[s],
-                                    cond_operands=[tx, ty],
-                                )
-                                with InsertionPoint(if_qk_k.then_block):
-                                    ChannelGet(
-                                        f"QK2L1_{s}",
-                                        qk,
-                                        indices=[h_seg_x, ty, tx],
-                                    )
-                                    affine.AffineYieldOp([])
-                            # Matmul Q_dk_slice @ K_dk_slice^T → G (accumulate)
-                            if do_compute is not None:
-                                if_mm = scf.IfOp(do_compute)
-                                with InsertionPoint(if_mm.then_block):
-                                    CallOp(
-                                        [],
-                                        "matmul_a_b_bf16",
-                                        [q_bufs[dk_c], qk, g1d],
-                                    )
-                                    scf.YieldOp([])
-                            else:
-                                CallOp(
-                                    [],
-                                    "matmul_a_b_bf16",
-                                    [q_bufs[dk_c], qk, g1d],
-                                )
-
-                        # 3. V get via affine.if per stage (AFTER dk_chunks)
-                        #    — 3D index with head dim
-                        for s in range(NS):
-                            if_v = affine.AffineIfOp(
-                                stage_sets[s],
-                                cond_operands=[tx, ty],
-                            )
-                            with InsertionPoint(if_v.then_block):
-                                ChannelGet(
-                                    f"V2L1_{s}",
-                                    v,
-                                    indices=[h_seg_x, ty, tx],
-                                )
-                                affine.AffineYieldOp([])
-
-                        # 4+5. Causal mask + softmax + PV + accumulate. Under
-                        # causal the whole block is gated on do_compute
-                        # (past/diagonal only); a future block is left neutral.
-                        def _mask_softmax():
-                            if causal:
-                                CallOp(
-                                    [],
-                                    "apply_causal_mask",
-                                    [g, q_block, kv_block],
-                                )
-                            s_tmp = AllocOp(up_l1_t, [], [])
-                            r_tmp = AllocOp(up_l1_t, [], [])
-                            CallOp(
-                                [],
-                                "fused_softmax",
-                                [g1d, up_buf, s_tmp.result, r_tmp.result],
-                            )
-                            CallOp([], "mul_r_gp", [r_tmp.result, gp])
-                            CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
-                            c0_i32 = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_buf, r_tmp.result, s_tmp.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32, s_tmp.result, sp_buf],
-                            )
-                            DeallocOp(s_tmp)
-                            DeallocOp(r_tmp)
-
-                        if do_compute is not None:
-                            if_cmp = scf.IfOp(do_compute)
-                            with InsertionPoint(if_cmp.then_block):
-                                _mask_softmax()
-                                scf.YieldOp([])
-                        else:
-                            _mask_softmax()
-
-                        yield_([])
-
-                    # === CASCADE MERGE (last/middle/first) ===
-                    # Exactly matching step_test.py ordering.
-                    set_first_stage = IntegerSet.get(
-                        0, 2, [s0, s1 - c_ns_m1], [False, True]
-                    )
-                    set_middle_stage = IntegerSet.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(s1, AffineConstantExpr.get(-1)),
-                            AffineExpr.get_add(
-                                AffineConstantExpr.get(NS - 2),
-                                AffineExpr.get_mul(s1, AffineConstantExpr.get(-1)),
-                            ),
-                            s0,
-                            AffineExpr.get_add(
-                                AffineConstantExpr.get(NQ - 1),
-                                AffineExpr.get_mul(s0, AffineConstantExpr.get(-1)),
-                            ),
-                        ],
-                        [False, False, False, False],
-                    )
-                    c1_h = ConstantOp(index_type, 1)
-
-                    # Last stage (ty == NS-1): send cascade down
-                    if_last = affine.AffineIfOp(
-                        set_first_stage,
-                        cond_operands=[tx, ty],
-                        has_else=True,
-                    )
-                    with InsertionPoint(if_last.then_block):
-                        subi_l = arith.SubIOp(ty, c1_h)
-                        ChannelPut("cascade_gp", gp, indices=[tx, subi_l])
-                        ChannelPut("cascade_up", up_buf, indices=[tx, subi_l])
-                        ChannelPut("cascade_sp", sp_buf, indices=[tx, subi_l])
-                        affine.AffineYieldOp([])
-
-                    with InsertionPoint(if_last.else_block):
-                        # Middle stages: 1 <= ty <= NS-2
-                        if_mid = affine.AffineIfOp(
-                            set_middle_stage,
-                            cond_operands=[tx, ty],
-                            has_else=True,
-                        )
-                        with InsertionPoint(if_mid.then_block):
-                            gp_c = AllocOp(gp_l1_t, [], [])
-                            up_c = AllocOp(up_l1_t, [], [])
-                            sp_c = AllocOp(up_l1_t, [], [])
-                            ChannelGet(
-                                "cascade_gp",
-                                gp_c.result,
-                                indices=[tx, ty],
-                            )
-                            ChannelGet(
-                                "cascade_up",
-                                up_c.result,
-                                indices=[tx, ty],
-                            )
-                            ChannelGet(
-                                "cascade_sp",
-                                sp_c.result,
-                                indices=[tx, ty],
-                            )
-                            up_s = AllocOp(up_l1_t, [], [])
-                            c0m = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0m, up_buf, up_s.result],
-                            )
-                            CallOp(
-                                [],
-                                "maximum_up_u_bf16",
-                                [up_c.result, up_buf],
-                            )
-                            rc = AllocOp(up_l1_t, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_c.result, up_buf, rc.result],
-                            )
-                            rl = AllocOp(up_l1_t, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_s.result, up_buf, rl.result],
-                            )
-                            CallOp([], "mul_r_gp", [rc.result, gp_c.result])
-                            CallOp([], "mul_r_gp", [rl.result, gp])
-                            CallOp([], "add_gp_g", [gp, gp_c.result])
-                            st = AllocOp(up_l1_t, [], [])
-                            CallOp([], "zero_fill_sp_bf16", [st.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_c.result, rc.result, st.result],
-                            )
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_buf, rl.result, st.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0m, st.result, sp_c.result],
-                            )
-                            subi_m = arith.SubIOp(ty, c1_h)
-                            ChannelPut(
-                                "cascade_gp",
-                                gp_c.result,
-                                indices=[tx, subi_m],
-                            )
-                            ChannelPut(
-                                "cascade_up",
-                                up_buf,
-                                indices=[tx, subi_m],
-                            )
-                            ChannelPut(
-                                "cascade_sp",
-                                sp_c.result,
-                                indices=[tx, subi_m],
-                            )
-                            DeallocOp(gp_c)
-                            DeallocOp(up_c)
-                            DeallocOp(sp_c)
-                            DeallocOp(up_s)
-                            DeallocOp(rc)
-                            DeallocOp(rl)
-                            DeallocOp(st)
-                            affine.AffineYieldOp([])
-
-                        with InsertionPoint(if_mid.else_block):
-                            # First stage (ty == 0): cascade in, merge,
-                            # div, output
-                            gp_c2 = AllocOp(gp_l1_t, [], [])
-                            up_c2 = AllocOp(up_l1_t, [], [])
-                            sp_c2 = AllocOp(up_l1_t, [], [])
-                            ChannelGet(
-                                "cascade_gp",
-                                gp_c2.result,
-                                indices=[tx, ty],
-                            )
-                            ChannelGet(
-                                "cascade_up",
-                                up_c2.result,
-                                indices=[tx, ty],
-                            )
-                            ChannelGet(
-                                "cascade_sp",
-                                sp_c2.result,
-                                indices=[tx, ty],
-                            )
-                            up_s2 = AllocOp(up_l1_t, [], [])
-                            c0f = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0f, up_buf, up_s2.result],
-                            )
-                            CallOp(
-                                [],
-                                "maximum_up_u_bf16",
-                                [up_c2.result, up_buf],
-                            )
-                            rc2 = AllocOp(up_l1_t, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_c2.result, up_buf, rc2.result],
-                            )
-                            rl2 = AllocOp(up_l1_t, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_s2.result, up_buf, rl2.result],
-                            )
-                            CallOp(
-                                [],
-                                "mul_r_gp",
-                                [rc2.result, gp_c2.result],
-                            )
-                            CallOp([], "mul_r_gp", [rl2.result, gp])
-                            CallOp([], "add_gp_g", [gp, gp_c2.result])
-                            st2 = AllocOp(up_l1_t, [], [])
-                            CallOp([], "zero_fill_sp_bf16", [st2.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_c2.result, rc2.result, st2.result],
-                            )
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_buf, rl2.result, st2.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0f, st2.result, sp_c2.result],
-                            )
-                            CallOp(
-                                [],
-                                "div_gp_sp",
-                                [sp_c2.result, gp_c2.result],
-                            )
-                            c0_out = ConstantOp(index_type, 0)
-                            ChannelPut(
-                                "Gp2L2",
-                                gp_c2.result,
-                                indices=[tx, c0_out],
-                                offsets=[0, 0, 0, 0],
-                                sizes=[
-                                    tile_size_q // M,
-                                    M,
-                                    dv_tile // M,
-                                    M,
-                                ],
-                                strides=[
-                                    M * M,
-                                    M,
-                                    tile_size_q * M,
-                                    1,
-                                ],
-                            )
-                            DeallocOp(gp_c2)
-                            DeallocOp(up_c2)
-                            DeallocOp(sp_c2)
-                            DeallocOp(up_s2)
-                            DeallocOp(rc2)
-                            DeallocOp(rl2)
-                            DeallocOp(st2)
-                            affine.AffineYieldOp([])
-                        affine.AffineYieldOp([])
-
-                    # === CAUSAL COUNTER INCREMENT ===
-                    # Only increment on the last dv_chunk iteration to avoid
-                    # double-counting when dv_chunks > 1. Uses counter_buf[3]
-                    # as a dv_iter counter that tracks position within the
-                    # dv_chunks cycle.
-                    if causal:
-
-                        def _emit_counter_increment():
-                            head_cur = load(counter_buf, [c2_ctr])
-                            c1_i32_inc = ConstantOp(i32, 1)
-                            head_next = arith.AddIOp(head_cur, c1_i32_inc)
-                            total_hg = ConstantOp(i32, num_head_groups)
-                            wrapped = arith.CmpIOp(
-                                arith.CmpIPredicate.sge,
-                                head_next.result,
-                                total_hg,
-                            )
-                            if_wrap = scf.IfOp(wrapped)
-                            with InsertionPoint(if_wrap.then_block):
-                                q_cur = load(counter_buf, [c0_ctr])
-                                c_nq_i32 = ConstantOp(i32, NQ)
-                                q_next = arith.AddIOp(q_cur, c_nq_i32)
-                                store(q_next.result, counter_buf, [c0_ctr])
-                                store(ConstantOp(i32, 0), counter_buf, [c2_ctr])
-                                scf.YieldOp([])
-                            not_wrapped = arith.CmpIOp(
-                                arith.CmpIPredicate.slt,
-                                head_next.result,
-                                total_hg,
-                            )
-                            if_no_wrap = scf.IfOp(not_wrapped)
-                            with InsertionPoint(if_no_wrap.then_block):
-                                store(head_next.result, counter_buf, [c2_ctr])
-                                scf.YieldOp([])
-
-                        if dv_chunks > 1:
-                            # Use counter_buf[3] as dv_iter counter
-                            dv_iter_cur = load(counter_buf, [c3_ctr])
-                            c_dv_last_i32 = ConstantOp(i32, dv_chunks - 1)
-                            is_last_dv = arith.CmpIOp(
-                                arith.CmpIPredicate.sge,
-                                dv_iter_cur,
-                                c_dv_last_i32,
-                            )
-                            if_last_dv = scf.IfOp(is_last_dv)
-                            with InsertionPoint(if_last_dv.then_block):
-                                _emit_counter_increment()
-                                # Reset dv_iter counter
-                                store(
-                                    ConstantOp(i32, 0),
-                                    counter_buf,
-                                    [c3_ctr],
-                                )
-                                scf.YieldOp([])
-                            # If not last dv_chunk, just increment dv_iter
-                            not_last_dv = arith.CmpIOp(
-                                arith.CmpIPredicate.slt,
-                                dv_iter_cur,
-                                c_dv_last_i32,
-                            )
-                            if_not_last = scf.IfOp(not_last_dv)
-                            with InsertionPoint(if_not_last.then_block):
-                                c1_i32_dv = ConstantOp(i32, 1)
-                                dv_next = arith.AddIOp(dv_iter_cur, c1_i32_dv)
-                                store(
-                                    dv_next.result,
-                                    counter_buf,
-                                    [c3_ctr],
-                                )
-                                scf.YieldOp([])
-                        else:
-                            _emit_counter_increment()
-
-                # Output gather from ty=0 tiles
-                affine_map_col = AffineMap.get(
-                    0,
-                    1,
-                    [
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_size_q),
-                        )
-                    ],
-                )
-                par_out = scf.ForallOp(lower_bounds=[0], upper_bounds=[NQ], steps=[1])
-                with InsertionPoint(par_out.body):
-                    apply_off = affine_apply(
-                        affine_map_col,
-                        [par_out.induction_variables[0]],
-                    )
-                    ChannelGet(
-                        "Gp2L2",
-                        gp_l2.result,
-                        indices=[par_out.induction_variables[0], 0],
-                        offsets=[apply_off, 0],
-                        sizes=[tile_size_q, dv_tile],
-                        strides=[dv_tile, 1],
-                    )
-                    scf.InParallelOp()
-
-                # Output: L2-to-L3
-                ChannelPut("GpOut", gp_l2.result, indices=[seg_x])
-
-                # Deallocs for segment-level buffers
-                for q_buf in q_saved_bufs:
-                    DeallocOp(q_buf)
-                DeallocOp(qk_buf)
-                DeallocOp(v_l1)
-                DeallocOp(g_l1)
-                DeallocOp(gp_l1)
-                DeallocOp(up_l1)
-                DeallocOp(sp_l1)
-                for stage in range(NS):
-                    DeallocOp(v_l2_bufs[stage])
-                for stage in range(NS):
-                    DeallocOp(qk_l2_bufs[stage])
-                DeallocOp(gp_l2)
-                if causal:
-                    DeallocOp(causal_ctr)
-
-            # Output gets: one per head in the unroll group, placed after the
-            # producing @segment so source order encodes producer→consumer.
-            emb_dim_out = num_heads * dv
-            for head_local in range(num_heads_per_unroll):
-                if head_local == 0:
-                    head_idx = head_base
-                else:
-                    head_idx = affine_apply(affine_map_plus1, [head_base])
-                head_out_off = affine_apply(affine_map_head_out_dv, [head_idx, lz])
-                head_offset_idx = ConstantOp(index_type, head_local)
-                out_col_off = head_out_off
-                ChannelGet(
-                    "GpOut",
-                    gp,
-                    indices=[head_offset_idx],
-                    offsets=[out_launch_row, out_col_off],
-                    sizes=[lqp, dv_tile],
-                    strides=[emb_dim_out, 1],
-                )
+    return launch
 
 
-if __name__ == "__main__":
+def parse_args():
     parser = argparse.ArgumentParser(
-        prog="attn_npu2.py",
-        description="Flash attention with memtile-relayed L3-to-L1 Q/K/V — "
-        "selective Q capture",
+        prog="attn_npu2_seqfirst.py",
+        description="Flash attention with memtile-relayed L3-to-L1 Q/K/V -- "
+        "selective Q capture (NPU2/AIE2P, sequence-first layout)",
     )
+    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--lk", type=int, default=512)
+    parser.add_argument("--lkp", type=int, default=64)
+    parser.add_argument("--lq", type=int, default=512)
+    parser.add_argument("--lqp", type=int, default=256)
+    parser.add_argument("--dk", type=int, default=64)
+    parser.add_argument("--dv", type=int, default=64)
+    parser.add_argument("--num-cascade-stages", type=int, default=4)
+    parser.add_argument("--num-heads", type=int, default=2)
+    parser.add_argument("--num-heads-per-unroll", type=int, default=2)
+    parser.add_argument("--window", type=int, default=None)
+    parser.add_argument("--dv-tile", type=int, default=None)
+    parser.add_argument("--causal-skip", action="store_true", dest="causal_skip")
+    parser.add_argument("--num-kv-heads", type=int, default=None)
+    parser.add_argument("--causal", action="store_true")
     parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-        help="Print MLIR module and exit",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output",
-    )
-    parser.add_argument(
-        "--lk",
-        type=int,
-        default=512,
-        help="Total K/V sequence length (default: 512)",
-    )
-    parser.add_argument(
-        "--lq",
-        type=int,
-        default=512,
-        help="Total Q sequence length (default: 512)",
-    )
-    parser.add_argument(
-        "--lqp",
-        type=int,
-        default=256,
-        help="Q chunk size per launch iteration (default: 256)",
-    )
-    parser.add_argument(
-        "--lkp",
-        type=int,
-        default=64,
-        help="K/V chunk size per tile (default: 64)",
-    )
-    parser.add_argument(
-        "--dk",
-        type=int,
-        default=64,
-        help="Key dimension (default: 64). Must be divisible by lkp.",
-    )
-    parser.add_argument(
-        "--dv",
-        type=int,
-        default=64,
-        help="Value dimension (default: 64). Must be divisible by lkp.",
-    )
-    parser.add_argument(
-        "--num-cascade-stages",
-        type=int,
-        default=4,
-        help="Number of cascade pipeline stages (default: 4)",
-    )
-    parser.add_argument(
-        "--num-q-tiles",
-        type=int,
-        default=4,
-        dest="num_q_tiles",
-        help="Number of tiles to partition the Q chunk into (default: 4). "
-        "Under causal masking, lqp / num_q_tiles must equal lkp.",
-    )
-    parser.add_argument(
-        "--num-heads-per-unroll",
-        type=int,
-        default=2,
-        dest="num_heads_per_unroll",
-        help="Heads processed per segment instance (default: 2). "
-        "Physical columns = num_heads_per_unroll * num_q_tiles.",
-    )
-    parser.add_argument(
-        "--num-heads",
-        type=int,
-        default=2,
-        help="Number of attention heads (default: 2)",
-    )
-    parser.add_argument(
-        "--num-kv-heads",
-        type=int,
-        default=None,
-        help="Number of KV heads (default: num_heads for MHA, " "< num_heads for GQA)",
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="elf",
+        help="Output format (default: elf, as on NPU2)",
     )
     parser.add_argument(
         "--compile-mode",
         type=str,
+        choices=["compile-and-run", "compile-only"],
         default="compile-and-run",
-        choices=["compile-only", "compile-and-run"],
-        help="Compilation mode (default: compile-and-run)",
     )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        default="elf",
-        choices=["xclbin", "elf"],
-        help="Output format (default: elf)",
-    )
-    parser.add_argument(
-        "--causal",
-        action="store_true",
-        help="Enable causal masking (autoregressive attention)",
-    )
-    parser.add_argument(
-        "--perf-iters",
-        type=int,
-        default=0,
-        dest="perf_iters",
-        help="If >0, time the kernel over this many iters (after 10 warmup) and "
-        "print Latency + GFLOPs in addition to the correctness check",
-    )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    if args.perf_iters < 0:
-        parser.error("--perf-iters must be >= 0")
-    if args.num_q_tiles < 1:
-        parser.error("--num-q-tiles must be >= 1")
-    if args.num_heads_per_unroll < 1:
-        parser.error("--num-heads-per-unroll must be >= 1")
 
-    lk = args.lk
-    lkp = args.lkp
-    lq = args.lq
-    lqp = args.lqp
-    dk = args.dk
-    dv = args.dv
-    num_cascade_stages = args.num_cascade_stages
-    num_q_tiles = args.num_q_tiles
-    num_heads_per_unroll = args.num_heads_per_unroll
+def main():
+    args = parse_args()
+
+    lk, lkp, lq, lqp = args.lk, args.lkp, args.lq, args.lqp
+    dk, dv = args.dk, args.dv
+    num_q_tiles = 4
     num_heads = args.num_heads
     num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
     causal = args.causal
     gqa_group_size = num_heads // num_kv_heads
 
-    mlir_module = build_module(
+    launch = build_module(
         lk=lk,
         lkp=lkp,
         lq=lq,
@@ -1336,91 +646,90 @@ if __name__ == "__main__":
         dk=dk,
         dv=dv,
         num_q_tiles=num_q_tiles,
-        num_cascade_stages=num_cascade_stages,
+        num_cascade_stages=args.num_cascade_stages,
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
         causal=causal,
-        num_heads_per_unroll=num_heads_per_unroll,
+        num_heads_per_unroll=args.num_heads_per_unroll,
     )
-
+    mlir_module = launch.build(target="npu2")
     if args.print_module_only:
         print(mlir_module)
-        exit(0)
+        return 0
 
-    from air.backend.xrt_runner import XRTRunner
-    from air.backend.xrt import XRTBackend
     from ml_dtypes import bfloat16
 
-    INPUT_DATATYPE = OUTPUT_DATATYPE = bfloat16
     rng = np.random.default_rng(42)
+    val_range = 4.0
+    input_q = rng.uniform(0, val_range, (num_heads, lq, dk)).astype(bfloat16)
+    input_k = rng.uniform(0, val_range, (num_kv_heads, lk, dk)).astype(bfloat16)
+    input_v_orig = rng.uniform(0, val_range, (num_kv_heads, lk, dv)).astype(bfloat16)
+    dv_tile_host = lkp
+    dv_chunks_host = dv // dv_tile_host
+    input_v = (
+        input_v_orig.reshape(num_kv_heads, lk, dv_chunks_host, dv_tile_host)
+        .transpose(0, 2, 1, 3)
+        .reshape(num_kv_heads * dv_chunks_host, lk, dv_tile_host)
+        .copy()
+    )
 
-    # SEQ-FIRST inputs: [seq, heads * dim]. Use N(0,1) (matching the GPU SDPA
-    # test standard — PyTorch uses randn) so the correctness check sees a
-    # realistic signed distribution rather than an all-positive one.
-    input_q = rng.standard_normal((lq, num_heads * dk)).astype(INPUT_DATATYPE)
-    input_k = rng.standard_normal((lk, num_kv_heads * dk)).astype(INPUT_DATATYPE)
-    input_v = rng.standard_normal((lk, num_kv_heads * dv)).astype(INPUT_DATATYPE)
-
-    # CPU reference: extract per-head data for attention computation
     inv_sqrt_dk = 1.0 / sqrt(dk)
-    sdpa_output_hf = np.zeros((num_heads, lq, dv), dtype=OUTPUT_DATATYPE)
-    for h in range(num_heads):
-        kv_h = h // gqa_group_size
-        Qf = input_q[:, h * dk : (h + 1) * dk].astype(np.float32)
-        Kf = input_k[:, kv_h * dk : (kv_h + 1) * dk].astype(np.float32)
-        Vf = input_v[:, kv_h * dv : (kv_h + 1) * dv].astype(np.float32)
-        scores = Qf @ Kf.T * inv_sqrt_dk
+    sdpa_output = np.zeros((num_heads, lq, dv), dtype=bfloat16)
+    for head in range(num_heads):
+        kv_h = head // gqa_group_size
+        qf = input_q[head].astype(np.float32)
+        kf = input_k[kv_h].astype(np.float32)
+        vf = input_v_orig[kv_h].astype(np.float32)
+        scores = qf @ kf.T * inv_sqrt_dk
         if causal:
             mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
             scores = np.where(mask, -1e9, scores)
         mx = np.max(scores, axis=-1, keepdims=True)
-        P = np.exp(scores - mx)
-        P = P / np.sum(P, axis=-1, keepdims=True)
-        sdpa_output_hf[h] = (P @ Vf).astype(OUTPUT_DATATYPE)
+        p = np.exp(scores - mx)
+        p = p / np.sum(p, axis=-1, keepdims=True)
+        sdpa_output[head] = (p @ vf).astype(bfloat16)
 
-    # Expected output in seq-first: [lq, num_heads * dv]
-    sdpa_output_transposed = (
-        sdpa_output_hf.transpose(1, 0, 2).reshape(lq, num_heads * dv).copy()
+    expected = (
+        sdpa_output.reshape(num_heads, lq, dv_chunks_host, dv_tile_host)
+        .transpose(0, 2, 1, 3)
+        .reshape(num_heads * dv_chunks_host, lq, dv_tile_host)
+        .copy()
     )
 
-    # Seq-first: output is 2D [lq, num_heads*dv], so tiling is [1, 1]
-    tiling = [1, 1]
-    # FLOPs for attention: Q@K^T scales with dk, P@V scales with dv (each is
-    # 2*num_heads*lq*lk*<dim>), so total = 2*num_heads*lq*lk*(dk+dv). Causal
-    # masking roughly halves the effective work.
-    perf_flops = 2.0 * num_heads * lq * lk * (dk + dv)
-    if causal:
-        perf_flops *= 0.5
-    backend_opts = dict(
+    tiling = [1, 1, 1] if dv_chunks_host > 1 else [1, 1]
+    if args.compile_mode == "compile-only":
+        backend = XRTBackend(
+            omit_while_true_loop=False,
+            omit_pingpong="all",
+            verbose=args.verbose,
+            runtime_loop_tiling_sizes=tiling,
+            output_format=args.output_format,
+            instance_name="attention_bf16",
+            target_device=launch.target,
+        )
+        backend.compile(mlir_module)
+        print("Compilation complete.")
+        return 0
+
+    runner = XRTRunner(
         omit_while_true_loop=False,
         omit_pingpong="all",
         verbose=args.verbose,
         runtime_loop_tiling_sizes=tiling,
         output_format=args.output_format,
         instance_name="attention_bf16",
-        target_device="npu2",
-        report_precision=True,
-        n_perf_iters=args.perf_iters,
-        perf_flops=(perf_flops if args.perf_iters > 0 else None),
+        target_device=launch.target,
+    )
+    return runner.run_test(
+        mlir_module,
+        inputs=[input_q, input_k, input_v],
+        expected_outputs=[expected],
+        atol=0.15,
+        rtol=0.04,
+        max_mismatch_percentage=0.5,
+        min_correlation=0.99,
     )
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(**backend_opts)
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_q, input_k, input_v],
-                expected_outputs=[sdpa_output_transposed],
-                rtol=1.6e-2,
-                atol=1e-1,
-            )
-        )
-    elif args.compile_mode == "compile-only":
-        # report_precision / n_perf_iters / perf_flops are XRTRunner-only args;
-        # strip them for the bare XRTBackend used in compile-only mode.
-        runner_only = {"report_precision", "n_perf_iters", "perf_flops"}
-        backend = XRTBackend(
-            **{k: v for k, v in backend_opts.items() if k not in runner_only}
-        )
-        module_function = backend.compile(mlir_module)
-        print("Compilation complete.")
+
+if __name__ == "__main__":
+    exit(main())
