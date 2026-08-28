@@ -133,8 +133,24 @@ def parallel(start, stop=None, step=None, name=None):
 
     Emitted as ``scf.forall``; the pipeline's ``scf-forall-to-parallel`` turns
     it into the ``scf.parallel`` that the hand-written examples spell directly.
+
+    A **grid** -- ``air.parallel([range(nrows), range(2)])`` -- makes one
+    ``scf.forall`` with that many induction variables, and yields them as a
+    tuple. It is one loop, not nested ones: a spatial fan-out whose destinations
+    are a 2-D arrangement of tiles is a single unordered iteration space, and
+    nesting two would give the inner one a bundle index derived from the outer's
+    variable rather than its own. flash_attention's output gather is the case --
+    a 4-way gather over (row, column-within-block).
     """
     global _ABORTED
+
+    if _is_grid(start):
+        if stop is not None or step is not None:
+            raise TypeError(
+                "air.parallel takes either a grid or start/stop/step, not both"
+            )
+        yield from _parallel_grid(start, name)
+        return
 
     if stop is None:
         start, stop = 0, start
@@ -169,6 +185,54 @@ def parallel(start, stop=None, step=None, name=None):
             yield IndexExpr.leaf(op.induction_variables[0], name or "p")
             completed = True
             # scf.forall's terminator, emitted inside the body region.
+            InParallelOp()
+    finally:
+        if not completed:
+            _ABORTED.append("air.parallel")
+            with InsertionPoint(op.body):
+                InParallelOp()
+
+
+def _is_grid(value):
+    """Is this a list of ranges rather than a single bound?"""
+    return isinstance(value, (list, tuple))
+
+
+def _parallel_grid(grid, name):
+    """A multi-dimensional air.parallel: one scf.forall, one IV per axis."""
+    from air.ir import InsertionPoint
+    from air.dialects.scf import ForallOp, InParallelOp
+
+    global _ABORTED
+
+    bounds = []
+    for axis, r in enumerate(grid):
+        if not isinstance(r, range):
+            raise TypeError(
+                f"air.parallel(grid) takes a list of ranges, and axis {axis} is "
+                f"{type(r).__name__} {r!r}"
+            )
+        if r.step <= 0 or r.start > r.stop or (r.stop - r.start) % r.step:
+            raise ValueError(
+                f"air.parallel axis {axis} is {r!r}, which does not tile its "
+                "extent exactly with a positive step"
+            )
+        bounds.append((r.start, r.stop, r.step))
+
+    op = ForallOp(
+        lower_bounds=[b[0] for b in bounds],
+        upper_bounds=[b[1] for b in bounds],
+        steps=[b[2] for b in bounds],
+    )
+    completed = False
+    try:
+        with InsertionPoint(op.body):
+            base = name or "p"
+            yield tuple(
+                IndexExpr.leaf(iv, f"{base}{axis}")
+                for axis, iv in enumerate(op.induction_variables)
+            )
+            completed = True
             InParallelOp()
     finally:
         if not completed:

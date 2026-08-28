@@ -177,3 +177,42 @@ def a_launch_coordinate_reaches_into_the_herd():
                             air.ops.store(buf, B[row : row + TILE // 2, 0:N])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_parallel_grid_is_one_forall_with_one_iv_per_axis
+# A spatial fan-out whose destinations are a 2-D arrangement of tiles is a
+# single unordered iteration space, so it is one scf.forall with two induction
+# variables -- not two nested loops, which would give the inner one a bundle
+# index derived from the outer's variable rather than its own.
+#
+# Both IVs have to be usable as channel bundle indices, which is the whole
+# reason air.parallel exists rather than air.sequential: air-place-herds
+# refuses a temporal scf.for induction variable there outright.
+# flash_attention/kernel_fusion_based's output gather is the case, a 4-way
+# gather over (row, column-within-block).
+# CHECK: scf.forall (%[[I:.*]], %[[J:.*]]) in (2, 2)
+# CHECK: air.channel.get @gather[%{{.*}}, %{{.*}}]
+@run
+def a_parallel_grid_is_one_forall_with_one_iv_per_axis():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+    gather = air.channel("gather", size=[2, 2])
+
+    with air.launch(name="pgrid") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    staged = air.alloc([64], bf16, scope=seg.private())
+                    tile = air.alloc([64], bf16, scope=seg.private())
+                    for row, col in air.parallel([range(2), range(2)]):
+                        gather.get(tile, indices=[row, col])
+                    air.ops.load(staged, A)
+                    air.ops.store(staged, OUT)
+
+    print(launch.mlir())
