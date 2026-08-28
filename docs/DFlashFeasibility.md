@@ -1,3821 +1,2133 @@
-# DFlash on NPU2 — feasibility
+# DFlash on NPU2: what is verified, what is modelled, what is unknown
 
-Written 2026-08-21, updated 2026-08-22, against mlir-air `32ef2677`. Excluded
-from the published site (`exclude_docs` in `mkdocs.yml`).
+Speculative decoding with [DFlash](https://github.com/z-lab/dflash)
+(`z-lab/Qwen3-4B-DFlash-b16`) on top of this repo's `fused_decode` superkernel,
+targeting Qwen3-4B on NPU2. Excluded from the published site (`exclude_docs` in
+`mkdocs.yml`).
 
-Every number below is tagged **[measured]** (taken from a run or read out of the
-tree) or **[estimated]** (derived from those). No untagged numbers.
+**This document was rewritten from a 4810-line running log after an audit found
+several load-bearing claims to be false — most importantly a measurement taken
+on llama-3.2-1b and written up as though it were qwen3-4b.** The rewrite keeps
+only claims traceable to a specific run on a specific model. Section 9 records
+what was removed and why, so the same errors are not re-derived.
 
----
+**Every claim below carries a tag:**
 
-## State of play
+- `[hw]` — measured on real NPU2 hardware. The model is always named.
+- `[static]` — read off the builder, a bundle count, an ELF, or source. Real,
+  but not a run.
+- `[cpu]` — measured, but on CPU (the drafter acceptance work).
+- `[model]` — arithmetic on top of measured inputs. Not a measurement.
+- `[unknown]` — open.
 
-**DFlash is still worth building. The block size is 4-8, not 16, and the
-speedup is ~1.6-2.8x, not 4.9x.**
+## 1. Status
 
-**Build state, in one line: the batch-8 engine RUNS on device and every gate on
-it is green.** A batch-8 llama-3.2-1b dispatch completes all 16 decode layers,
-all eight tokens' K and V land, and **every token agrees with a batch-1 dispatch
-at its own position** — not just token 0 **[measured]**:
-
-    token 0 (L 1)  6.72e-03      token 4 (L 5)  7.87e-03
-    token 1 (L 2)  7.59e-03      token 5 (L 6)  7.89e-03
-    token 2 (L 3)  7.78e-03      token 6 (L 7)  7.88e-03
-    token 3 (L 4)  7.94e-03      token 7 (L 8)  8.03e-03
-
-The error grows smoothly with the context each token attends over, which is the
-shape it should have and is the evidence that token `t` really is getting `t+1`
-positions and not somebody else's. The row-map probe — which feeds row `t` the
-constant `(t+1)/8` and reads the ratios back out of the KV cache — says every
-row of the mmul saw its own token **[measured]**:
-
-    role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000
-    role 0:  1.000  2.000  3.000  4.000  4.995  6.000  7.000  8.000
-
-The last fault was **not** a permutation and not a descriptor. mlir-aie aligns a
-compute-tile buffer to the tile's load/store bus width — 256 bits, **32 bytes**,
-on AIE2p — and `aie::mmul<8,8,8>`'s C tile is 64 floats that Peano moves in
-512-bit chunks, which need 64. One odd-sized buffer (the 528-bf16 shared egress
-block, 16.5 × 64) pushed the proj **lead** tiles' second accumulator to `…820`,
-and a misaligned 512-bit access on AIE2 does not fault — it masks the address.
-The whole accumulator landed 8 floats low with its tail never written. See "Next
-step"; `l1_align.py` is the gate.
-
-**The batched LM head works too.** A batch-8 dispatch returns eight tokens'
-logits, and each token's agree with a batch-1 dispatch on ITS OWN embedding to
-1.1-2.0% -- the GEMV-vs-mmul kernel difference and nothing else -- while being
-**64x further** from every other token's **[measured]**:
-
-                     reference 0  reference 3  reference 7
-    token 0             1.23e-02     1.47e+00     1.41e+00
-    token 3             1.39e+00     2.02e-02     1.45e+00
-    token 7             1.33e+00     1.43e+00     1.17e-02
-
-That matrix is the gate (`batch_lm_equiv.py`), not the diagonal: with rows drawn
-from one distribution a tolerance alone cannot tell "the batched kernel rounds
-differently" from "token 3 got token 5's row", and the off-diagonal can.
-
-**And the batched engine now agrees with batch 1 on the REAL model.** It did
-not, and the cause was neither the batching nor -- as the first pass through
-this concluded -- the silu. `chess_storage(...)` expands to nothing under Peano,
-so the silu LUT carried no alignment and landed on a 4-byte boundary in the
-batch-8 build (`0x72804`) while landing aligned in the batch-1 and shipping ones
-(`0x78400`). `getActivationBf16` therefore returned silu in one build and a
-positive, roughly affine function in the other **[measured]**. Every other table
-in that header already had the portable `alignas`; these four did not. One layer,
-real weights, all eight tokens:
-
-    full layer vs batch 1      before  cos 0.121  ratio 4.23
-                               after   cos 0.998  ratio 1.00
-    recovered silu curve       before  185% from true silu
-                               after     6.1%
-
-The fix is data placement, not codegen: `check_kernels_inert.py` still passes
-and the shipping pair rebuilt under it returns **bitwise identical** logits.
-
-End to end, `batch_dispatch_check.py` depends on which block it is given, and
-that turned out to matter more than the tolerance **[measured]**:
-
-|  | random block | self-drafted block |
-|---|---|---|
-| diagonal | 5.7e-2..2.4e-1 | **3.9e-2..6.4e-2** |
-| off-diagonal | ~0.7..2.0 | ~0.39..0.84 |
-| argmax | 7 of 8 | **8 of 8** |
-| top-5 set overlap | 85% | **98%** |
-
-The random block is the right choice for the permutation question and the wrong
-one for the loss question: it puts the model on hidden states it never visits.
-On the block a speculative decoder would actually hand it -- the model's own
-continuation, `--self-draft` -- the batched pass reproduces the sequential
-pass's argmax exactly and its top-5 to 98%, with the diagonal sitting right at
-the 5e-2 line. It still reports NOT EQUIVALENT.
-
-That residual is the **projection kernel swap and not a fault** -- batch 1 uses
-the GEMV, batch 8 the mmul, 1.599% apart at the projection while both sit ~1%
-from exact fp32 -- and closing it means putting both paths on the same kernel,
-which would move shipping numerics. That is the open decision.
-
-What remains is that. **The block-size decision is closed: it is 8.** Block 16
-does not compile — the rms core's `BATCH*K` residual, which is a lifetime
-problem and not a working-set one — and unblocking it is a known, bounded change
-(band-stream the residual through the `@rmsX`/`@layerOut` round-trip the layer
-already makes; ceiling goes 9 -> 22 on llama-3.2-1b, 7 -> 21 on qwen3-4b) that
-three independent routes say would produce a SLOWER loop. See "What it would
-take to build block 16" and the section after it.
-
-Section 5's roofline counted projection weight traffic and left attention out.
-Attention is the one term that does not amortize over a batch — every query
-re-reads the whole KV cache — so putting it back moves batch 16 from 1.04x the
-memory floor to **3.58x** (section 5e), and sweeping the block size against
-`max(compute, memory)` puts the best **measured** block at **8**, at 1.65x, with
-block 16 at **1.06x** (section 5f). That conclusion survives every variant tried,
-including feeding the model the undercounted attention figure that started the
-investigation — and it survives the on-device measurement below, which says the
-roofline is wrong about *why*: block 8 is still the answer, but for the opposite
-reason.
-
-~~And it is an **attention** problem~~ — **it is not, and that was the roofline
-being wrong about the projection.** Measured on device, a batch-8 dispatch is
-**65% layer body, 16% attention, 16% LM head**. The roofline predicts the layer
-body stays memory bound at batch 8 (the weights are read once either way) and so
-costs 1.04x; it costs **3.74x**, and the device spends ~10450 cycles on a 32x256
-weight block where `bench_q4k_mm.py` measures 2327. At batch 1 the same model is
-accurate to one part in eight hundred, so the error is specific to batching and
-it inflates attention's *share* by deflating everything beside it. See "Where a
-dispatch's time actually goes"; `decode_cost.py` is the measurement.
-
-The 1.55x attention-hoist ceiling from section 5g still stands as a ceiling, but
-it now applies to 16% of a dispatch rather than 69% — worth about 4% end to end,
-not 26%.
-
-**And it is not the projection either.** Deleting the mmul and the unpack
-outright (`PROJ_MM_PROBE=1`, every channel and descriptor untouched) moves the
-layer from 3.089 ms to 3.017 — the batched projection's whole arithmetic is
-**2% of a dispatch**, and the layer still runs at **3.65x its weight-streaming
-floor with nothing in it**. The batched decode is dataflow bound. That 3.65x is
-the largest number in this document, it is worth more than the speculative
-mechanism it was measured in service of, and finding it comes before optimizing
-anything (item 13).
-
-The recommendation to build it stands. What changes is the block size, the
-headline, and where the optimization effort belongs.
-
-Steps 1, 3, 4 and most of 5 of the plan in section 6 are **built and on disk**,
-step 1's matmul is **numerically validated on device**, and step 2's proj kernel
-is **built and gated against the GEMV it replaces**. Eight things worth knowing
-before writing any more code:
-
-- **Attention does not amortize, and it is 71% of batch-16 compute**
-  **[measured]**. Every query re-reads the whole KV cache, so 16 tokens is 16x
-  the attention calls where it is 1x the weight traffic. This is the finding
-  that moves the answer, and it also says where the optimization effort belongs:
-  attention runs at ~7 MAC/cycle against the matmul's 38.8 (section 5e).
-- **Only 35% of attention is hoistable, and the transpose is not the part**
-  **[measured]**. Deleting the `aie::transpose` makes llama's kernel *slower* —
-  it is free, hidden in issue slots. The hoistable work is the K/V **tile
-  loads**; the floor is the softmax `update` (55% of `attn_qk_blk`) and the y
-  rescale pass, both per token by construction. Ceiling 1.55x on qwen3-4b, an
-  upper bound and a loose one (section 5g).
-- **The matmul was wrong, and is now right.** The numeric gate found two faults
-  on its first run that every static check had passed — the operands were being
-  fed to `aie::mmul` in the wrong roles, and `sizeof(q4k_block_t)` is not the
-  size of a packed block. Both give plausible wrong answers, not crashes. Fixed;
-  bit-exact now; bundle counts unchanged (section 5d).
-- **The batched projection costs 1.4x the GEMV's error** and moves the
-  projection output by 1.7% rms **[measured]**, both kernels run in one launch
-  off the same weights. Real, small, and not yet checked against a model's
-  output (section 5d).
-- The new matmul needs a **16 KB unpacked-weight buffer** the current GEMV does
-  not have — but it also **drops the reduce cache entirely**, since that exists
-  only for the `+min` factorisation the batched path does not use (section 5b,
-  section 6 step 2).
-- The **X feed overtakes the weight feed at batch 10** — so at block 8 it is a
-  non-issue, where at 16 it was the tightest number in the step (section 5c).
-- ~~Verify needs an intra-block causal mask that does not exist.~~ **It already
-  exists**, and `attn_qk_blk`'s tail mask *is* a per-query triangular mask when
-  `L` varies per query. But `L` is **one RTP for the whole dispatch**, so "verify
-  and draft differ by a scalar" holds only while attention is called per token.
-  Batch attention into the mmul's R dimension and verify needs a per-query mask
-  in the kernel; draft does not, because its `L` is uniform (section 6, step 2,
-  "What the shipping q4nx models already answer"). Guarded by
-  `batch_attn_mask.py --check`.
-- The hidden-state taps step 3 needs were **already crossing the shim every
-  layer**, just overwritten in place. Step 3 turned out to be an offset change
-  and is now built behind `DECODE_HIDDEN_TAPS=1` (section 6).
-
-Build step 2 on the **plain 32x256 kernel**. Both folds that would make it
-faster are parked behind a measurement the static-bundle method cannot make
-(section 5), and at block 8 the plain form has L1 to spare.
-
-~~Before building more of step 2, settle the block size.~~ **Settled: build for
-block 8** (section 5f). It is the best measured point, and it is also the
-kernel's best shape by a wide margin — 71.4 MAC/cycle against batch 4's 20.6 and
-batch 16's 55.7, because `aie::mmul<4,8,8>` is a poor fit and 1x4 blocking at
-`rowA = 1` is a good one. Batch 16's egress and L1 analysis (sections 5b, 5c)
-hold at 8 with room to spare.
-
-| artifact | what it is |
+| | state |
 |---|---|
-| `kernels/q4k_mm.h` | batched q4k matmul: unpack a block, then `aie::mmul` |
-| `kernels/q4k_mm_bench.cc` | one symbol per measurement point |
-| `kernels/q4k_mm_gate.cc` | the same kernel behind a device-runnable entry point |
-| `bench_q4k_mm.py` | cycles/block sweep + roofline (the step-1 cost gate) |
-| `q4k_mm_gate.py` | **the numeric gate** — bit-exact vs numpy, on device |
-| `mmul_probe.py` | what `aie::mmul` means by an A/B/C tile, measured |
-| `kernels/proj_qmm.cc` | `+DPROJ_MM_BATCH`: batched zero / acc / flush entry points |
-| `kernels/proj_qmm_gate.cc` | both projection paths in one launch |
-| `proj_qmm_gate.py` | **batched projection vs the GEMV**, on device |
-| `batch_attn_mask.py` | the causal mask, and a `--check` that guards it |
-| `bench_attn.py` | attention's static cost and the corrected roofline |
-| `bench_attn_batch.py` | **what a batch can hoist**, piece by piece |
-| `check_kernels_inert.py` | **the inertness gate** — every shipping kernel vs `HEAD` |
-| `xfeed_bd.py` | the X feed's tile-blocking BD, checked against `pack_A` |
-| `egress_bd.py` | the egress gathers, both levels, checked against batch 1 |
-| `kvappend_bd.py` | the KV append BD + the end-of-window overrun guard |
-| `batch_path_check.py` | **the whole path composed** — token t's row vs batch 1's |
-| `batch_equiv.py` | **the dataflow gate** — batch-B token t vs batch-1 at position P+t, stage by stage |
-| `batch_row_probe.py` | **the row-map gate** — does row t of the projection get TOKEN t? The one question the others are blind to |
-| `dflash_blocksize.py` | **the block-size answer** — passes priced max(compute, memory) |
-| `kernels/q4k_mm.h` | also `q4k_mmul_small` — batch 4/8, 1x4 at `rowA = 1` |
-| `models/qwen3-4b.h` | kernel-side model header for the DFlash target |
-| `batch_l1_budget.py` | per-model L1 budget at batch > 1 |
-| `batch_wire.py` | egress descriptors + X-feed bandwidth at batch > 1 |
-| `dflash_traffic.py` | DFlash weight traffic per iteration + resident DDR |
-| `fused_decode.py` | `qwen3-4b` + `qwen3-4b-draft` `_MODELS` entries; `DECODE_HIDDEN_TAPS` |
-| `llms/qwen3_4b_q4nx/` | q4nx weights loader + requant for the DFlash target |
+| qwen3-4b batch 1 decode, end to end | **works** `[hw]` |
+| DFlash acceptance rate, real drafter vs real target | **measured** `[cpu]` |
+| **qwen3-4b (target) batch 8 decode** | **passes the equivalence gate** `[hw]` |
+| **qwen3-4b-draft (drafter) batch 8 decode** | **passes the equivalence gate** `[hw]` |
+| **RMS_BAND_STREAM level 3** (the batch-16 route) | **passes the equivalence gate at 36 layers, same output as levels 0 and 2** `[hw]` (§5.4 x) |
+| qwen3-4b batch 16 (what the checkpoint needs) | **builds** — every L1/L2/BD ceiling cleared (§5.4 xii); hangs in wave 0 (§5.4 xiii) `[hw]` |
+| batch-8 dispatch cost, both models | **measured on device** `[hw]` (§6) |
+| accepted-length DISTRIBUTION, blocks 16 / 8 / 4 | **measured** `[cpu]` (§3.1) — **block 16 is the wrong block size** |
+| bidirectional draft mask, selected per dispatch on ONE program | **verified** `[hw]` (§3.2) |
+| the drafter's non-decode half (`fc`, context K/V, `k_norm`, RoPE) | **one 24-launch dispatch, int4, gates on device** `[hw]` (§3.3, §3.4) |
+| **the verify pass on the shipping driver** | **batch 8 reproduces eight batch-1 steps, argmax 8/8** `[hw]` (§3.5) |
+| the pre-pass vs the **real** drafter's own KV rows | **cos 0.991–0.997, engine 1e-02** `[hw]` (§3.6) |
+| **the whole draft pass** (pre-pass + bidirectional 5-layer decode) | **runs on the array; 4/7 draft tokens match the bf16 drafter** `[hw]` (§3.7) |
+| what quantizing the drafter costs in ACCEPTANCE | **not measured** — §3.1's 1.24× priced a bf16 drafter (§3.6, §3.7) |
+| **on-device draft + verify loop** | **runs end to end; speculative == non-speculative** `[hw]` (§3.8) |
+| **the batch-8 verify pass beyond a 16-token context** | **BROKEN** — correct only while `P + B <= 16` (§3.10) |
+| acceptance with the device drafter | **1.095 tok/verify measured, but through a broken verify pass — not a DFlash verdict** (§3.10) |
+| **the verify pass being exact** | **fixed** — a BFP16 shared exponent spanned the context boundary (§3.9) |
+| DFlash speedup with the DEVICE drafter | **still not measured** — 1.409 tok/verify on the Paris prompt, which is degenerate |
 
-All under `programming_examples/` — everything but the last in `fused_decode/`,
-plus a new `llms/qwen3_4b_q4nx/`. Outside that, only a one-line `exclude_docs`
-entry in `mkdocs.yml`.
+The short version: the drafter is good enough on math/code to be worth wanting
+(τ≈6.06/16 at scale), and **both** halves of the DFlash pair now run correctly
+at batch 8 on qwen3-4b — which took clearing an L1 ceiling and fixing a build
+script that had been compiling the wrong model's kernels. Batch 8 is now
+**timed on device for both halves** (§6), which replaces the borrowed
+llama scaling curve every previous cost estimate rested on: a block-8
+speculative step costs 217.9 ms against a 56.9 ms baseline token, so it breaks
+even at **3.83 accepted tokens** and is worth roughly 1.3-1.6× on math/code.
+What is still missing is batch **16** (the checkpoint's block size) and the
+loop itself.
 
-Five existing files are modified, and **every one is a proven no-op on the
-shipping path** **[measured]**:
+Batch 16 needs `RMS_BAND_STREAM` level 3, and **level 3 now works**: at batch 8
+and 36 layers it passes the equivalence gate at 5.56e-03 and produces the SAME
+output as levels 0 and 2, for **4.4%** more dispatch time (§5.4 x). Ten defects
+between here and there — BD-block exhaustion, a lock-count mismatch, the rms
+core needing a third S2MM port, two classes of descriptor that are correct AIR
+but do not survive lowering, the launch-side POSITION of the banded ph0 feed,
+arming every banded feed one weight phase ahead of the await that depends on it,
+giving `h` its own DDR region instead of sharing X, and two compiler fixes in
+`AIRRtToNpuPass`.
 
-| file | change | proof it is inert |
+The last one was the interesting one, and it had nothing to do with the rms
+core. `@rmsX` and `@outY` both reach that core from the SOUTH and, packet-
+switched, share one physical stream. Level 3 is the first shape that leaves a
+band in flight while the core waits on `@outY` — so the band parks at the head
+of the link and the projection output queues behind it, forever. Giving `@rmsX`
+its own circuit-switched channel at level 3 fixes it in one line; the reason it
+was a packet (converging with the o-proj/down id on one port) stopped applying
+when `RMS_W_ON_X` split the ports (§5.4 ix).
+
+Batch **16 now BUILDS**, five walls further on. After the rms core came the
+attention core's BD-block limit (`@attnO` was one put per token; the
+un-interleave moved to the memtile, which has a fourth BD dimension where a
+compute tile does not), then three allocation ceilings in a row — 512 KB of L2
+on one memtile, 24 BD ids shared per memtile channel, and 64 KB of L1 on the rms
+core where the budget model had never counted the per-herd RTP word (§5.4
+xi-xii). It still hangs in wave 0 with nothing written; batch 8 with the
+identical settings passes, so it is the batch and not the fixes (§5.4 xiii).
+
+**And that comparison has now been made, and it says to stop.** §3.1 measures
+the accepted-length distribution the block-size question needs — 2058 blocks at
+block 16, then the same 60 prompts re-run natively at blocks 8 and 4. An extra
+verify slot costs **0.368** of a baseline token step (§6 said 0.30 by counting
+only the verify half; the draft pass batches too), so slot *k* pays iff
+`P(produced ≥ k) > 0.368`, and that runs out at k=5. Priced against §6's
+measured dispatch times:
+
+| block | math | code | chat |
+|---|---|---|---|
+| 8 | **1.24×** | **1.24×** | 0.88× |
+| 16 | 0.90× | 0.89× | 0.57× |
+
+**Block 16 is slower than not speculating at all, in every category.** Batch 16
+is the wrong thing to finish: the wave-0 hang is now an unclaimed bug rather
+than a blocker, and batch 8 — which already works — is the configuration to
+build the loop on.
+
+**The loop is now built (§3.8), and building it found — and fixed — an engine
+defect that had to go before any acceptance number could mean anything.** A
+decode step at context length L depended on KV rows `L..ceil(L/8)*8-1`. The
+cause was not attention: `S·V` is a **BFP16** mmul contracting over keys, 8 keys
+share one exponent, and when `L % 8 != 0` that shared exponent spans past the
+context boundary — so out-of-context rows cost the in-context rows *mantissa
+bits* (§3.9). Invisible in ordinary decode, where those rows are zero and a zero
+exponent never wins a max; not invisible in a verify pass, where they hold the
+block's own later tokens. Four lines in `attn_kv_blk` zero the V tile's tail
+before the mmul. Ordinary decode is bit-identical across the fix, and the
+speculative loop now reproduces the non-speculative stream exactly.
+
+## 2. What DFlash is
+
+Read from the checkpoint's own source and the current upstream package, not
+inferred `[static]`:
+
+- **Block size 16, fixed by the checkpoint** (`-b16`). This is why batch 16,
+  not batch 8, is the number that matters for a real deployment.
+- The drafter is **5 Qwen3-4B-shaped layers**, not a truncated target. Its
+  per-layer geometry is identical to the target's; only the layer count differs
+  (`_MODELS["qwen3-4b-draft"]`, `UNI_DEC=5`).
+- Draft attention is **non-causal cross-attention** (`is_causal=False`): Q comes
+  from embedding a 16-token block (mostly `mask_token_id=151669`), K/V are
+  `concat(k_proj(target_hidden), k_proj(hidden_states))`.
+- **Context fusion** is one linear plus one norm: `fc` (12800→2560, no bias)
+  then `hidden_norm`, over the target's hidden states tapped at
+  `target_layer_ids=[1,9,17,25,33]` (HF `hidden_states` indices `[2,10,18,26,34]`,
+  `offset=1`).
+- **The LM head is tied to the target's embedding.** The checkpoint's
+  safetensors header carries only `fc.weight [2560,12800]`,
+  `hidden_norm.weight [2560]`, `norm.weight [2560]` beyond the layer weights —
+  no `embed_tokens`, no `lm_head`. So the draft pass pays the target's LM-head
+  cost.
+- **The draft-side KV cache persists and grows**, one entry per accepted
+  position. An earlier reading of this document concluded it was stateless;
+  that was wrong, and traced to `transformers.Cache.crop()` changing meaning
+  between the version the checkpoint was written against (4.57.3, "keep first
+  N") and the installed one (5.15, "remove N from end").
+
+Coupling between the two models is **one handoff per block** — target runs its
+36 layers, 5 taps are fused to one vector, the drafter's 5 layers consume it.
+There is no per-layer exchange.
+
+## 3. Acceptance rate: the number the whole idea rests on
+
+Measured with the **real, unmodified upstream `dflash_generate`** against the
+real target, greedy (`temperature=0.0`, which is upstream `cli.py`'s own
+default), block 16 `[cpu]`.
+
+The headline result, on real dataset samples drawn exactly the way upstream's
+own `benchmark.py` draws them (seeded `random.Random(42)`):
+
+| dataset | blocks | mean accepted / 16 |
 |---|---|---|
-| `fused_decode.py` | `DECODE_HIDDEN_TAPS`, `qwen3-4b` entries | emitted IR byte-identical to `HEAD` at `DECODE_HIDDEN_TAPS=0` |
-| `kernels/proj_qmm.cc` | batched entry points behind `PROJ_MM_BATCH` | `.o` disassembly identical to `HEAD` |
-| `kernels/attn_qk.cc`, `attn_kv.cc` | `ATTN_Q_LOOP`, plus the section-5g decomposition knobs | `.o` disassembly identical to `HEAD` |
-| `kernels/aie_kernel_utils.h` | defines `ATTN_Q_LOOP` and the decomposition knobs | every kernel that includes it re-checked |
-| `models/all_models.h` | `QWEN3_4B` id + include | additive; no existing model's expansion changes |
+| gsm8k | 610 | **6.09** (38.0%) |
+| humaneval | 660 | **6.03** (37.7%) |
+| **overall** | **1270** | **6.06** (37.9%) |
 
-The disassembly check is the one that matters and it is worth re-running after
-any kernel edit. It is `check_kernels_inert.py` — a script now, not a sketch,
-because it has to compile each kernel at *its own* `-O` level (`rope`
-miscompiles at `-O1`, the attention pair deadlocks at `-O2`) and has to ignore
-the object path, which `cmp` cannot: `cmp` reports a difference on unmodified
-sources, and that false positive is what got the check skipped by hand before.
+Close to the paper's own Table 1 for Qwen3-4B (math 6.53, code 7.84).
 
-### Resuming
+**Thinking mode is the whole story on the gap that used to be here.** Earlier
+passes of this work measured τ≈2.2/16 and concluded the drafter was weak. That
+was Qwen3's chat template defaulting to thinking mode enabled; the paper's
+Table 1 caption says "with thinking mode disabled". Same GSM8K prompt, same
+code, `enable_thinking=False`: **2.79 → 6.16** `[cpu]`.
 
-Environment (this box: Ryzen AI 7 PRO 350 / Krackan, NPU2, native Windows):
+Ruled out as explanations, each by direct experiment:
 
-```bash
-source ~/air_env.sh            # PEANO_INSTALL_DIR, PYTHONPATH, air/aie/XRT on PATH
+- **Quantization** — clean bf16 target gives 2.34 where Q4NX gives 3.00 on the
+  same prompt `[cpu]`. Not the cause.
+- **A bug in this repo's harness** — the real upstream `dflash_generate` on a
+  raw prompt gives 2.32 against this harness's 2.22 over 10 prompts `[cpu]`.
+  The harness was never the problem.
+
+**It is strongly task-dependent, and that matters for deployment** `[cpu]`:
+
+| category | blocks | mean / 16 |
+|---|---|---|
+| math | 74 | 6.30 (39.4%) |
+| code | 79 | 7.56 (47.2%) |
+| open-ended chat | 200 | **2.62** (16.4%) |
+
+Chat sits near the original low numbers. A chat-oriented deployment gets a
+different answer from a math/code one.
+
+**What this measurement is not:** the drafter ran on CPU against a recorded
+target continuation. Nothing here is an on-device batched draft/verify loop.
+The replay is valid because the target's greedy decode is a deterministic
+function of the token prefix, so replaying accept/reject against a recorded
+continuation is equivalent to interleaving — but it measures *acceptance*, not
+*speed*.
+
+Harness detail worth keeping: driving the checkpoint's own model code required
+a `SimpleCropCache` reimplementing the old `crop()` semantics, verified
+bit-exact against the model's own `past_key_values=None` forward for block 0
+before being trusted. A first attempt that hand-transcribed the attention was
+**not** bit-exact (max abs diff 1.25) and was discarded rather than patched.
+
+### 3.1 The distribution, and what it says about the block size
+
+§3's means were never enough: `E[min(a, 8)]` cannot be recovered from a mean
+over 16, and the tail is the entire thing a larger block buys. So the same run
+was repeated keeping the raw per-block lengths
+(`dflash_acceptance_hist.py`), 20 prompts per dataset, greedy, thinking off,
+real upstream `dflash_generate` `[cpu]`.
+
+**First, what the quantity is**, because the name misleads and §3's column
+header was loose about it. Upstream appends `produced = accepted + 1` — the
+drafted tokens that matched, plus the bonus token the verify pass emits for
+free. It is tokens per speculative step, range 1..16 at block 16, never 0. That
+is the same scale §6's break-even is stated in, so the two compare directly.
+
+The harness reproduces §3 exactly — same seed, same selection, same block
+counts (gsm8k 610 blocks / 6.09, humaneval 660 / 6.03), which is the cross-check
+that says the distribution below and the mean above come from the same thing.
+The chat row is now mt-bench, the dataset upstream's own benchmark uses, rather
+than §3's three hand-written prompts; it scores 3.86 where those scored 2.62.
+
+| category | dataset | prompts | blocks | mean / 16 |
+|---|---|---|---|---|
+| math | gsm8k | 20 | 610 | 6.09 |
+| code | humaneval | 20 | 660 | 6.03 |
+| chat | mt-bench | 20 | 788 | 3.86 |
+| **all** | | 60 | **2058** | **5.22** |
+
+`P(produced ≥ k)` — the chance verify slot *k* emits a token at all, which is
+the value side of the per-slot trade `[cpu]`:
+
+| k | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 12 | 14 | 16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| math | 1.00 | 0.88 | 0.73 | 0.61 | 0.53 | 0.45 | 0.38 | 0.33 | 0.26 | 0.22 | 0.16 | 0.09 | 0.05 |
+| code | 1.00 | 0.84 | 0.70 | 0.58 | 0.46 | 0.39 | 0.34 | 0.31 | 0.27 | 0.23 | 0.18 | 0.13 | 0.10 |
+| chat | 1.00 | 0.73 | 0.51 | 0.38 | 0.27 | 0.20 | 0.15 | 0.13 | 0.10 | 0.09 | 0.06 | 0.05 | 0.04 |
+| **all** | 1.00 | 0.81 | 0.64 | 0.51 | 0.41 | 0.33 | 0.28 | 0.25 | 0.20 | 0.17 | 0.13 | 0.09 | 0.06 |
+
+**A slot has to clear 0.368, and the curve crosses it between k=5 and k=6.**
+Slots 6 through 16 all cost more than they return; slots 9-16, which is what
+finishing batch 16 buys, return 0.20 down to 0.06 against a bar of 0.368.
+
+**The truncation step was removed rather than assumed.** Predicting block 8 from
+a block-16 run means assuming `produced_B ≈ min(produced_16, B)`, and that is not
+obviously safe — the drafter's attention is non-causal across the whole block, so
+a native block-8 draft is not a block-16 draft cut in half, and the checkpoint is
+trained at 16. So the whole 60-prompt sweep was re-run natively at block 8 and
+block 4. The drafter works fine at both, and the approximation holds `[cpu]`:
+
+| mean produced | math | code | chat | all |
+|---|---|---|---|---|
+| block 8, native | 4.73 | 4.75 | 3.36 | 4.25 |
+| block 8, predicted from the block-16 run | 4.92 | 4.63 | 3.36 | 4.23 |
+| block 4, native | 3.21 | 3.23 | 2.63 | 3.03 |
+| block 4, predicted from the block-16 run | 3.23 | 3.13 | 2.62 | 2.96 |
+
+Within 4%. Two useful things fall out: the block-16 histogram is a valid
+predictor for smaller blocks, and **the b16 checkpoint is not actually pinned to
+block 16** — it runs at 8 and 4 without retraining, and its per-step yield goes
+*up* as a fraction (4.73/8 = 59% against 6.09/16 = 38%).
+
+**The block size is numerically free, not bit-free** `[cpu]`. Greedy speculative
+decoding keeps a drafted token only where it equals the target's own `argmax`
+and emits the target's `argmax` as the bonus, so in exact arithmetic every block
+size produces the identical stream. It does not.
+`dflash_block_equiv.py` ran blocks 1/4/8/16 on the same prompts: gsm8k identical
+everywhere, humaneval diverged at token 141 (block 8 only — block 16 matched),
+mt-bench at 175 and 103. Non-monotone in the block size, and late.
+
+`dflash_tie_probe.py` found the cause and it is arithmetic, not algorithm. A
+batch-B verify pass and a batch-1 pass take different reduction orders through
+sdpa and the projections; in bf16 that moves a logit by a fraction of an ulp,
+which flips the `argmax` wherever the top two are nearly tied, and one flip
+changes every token after it. The divergences land exactly where that predicts:
+
+| | top-2 gap at the divergence | percentile among that run's 200 decisions |
+|---|---|---|
+| humaneval, token 141 | 0.125 | **0.0** (the smallest gap in the whole generation) |
+| mt-bench, token 175 | 0.250 | 1.5 (p1 = 0.125) |
+
+**This is the right gate to set, and it is not an exact token match** — no block
+size can hold that, on CPU or on device, and a device implementation adds Q4NX
+quantization on top. The repo's existing gates are the correct ones: `make
+verify`'s top-5 token-set inclusion, and `batch_equiv.py`'s 5e-2 at the layer
+level. Divergence at a near-tie is expected behaviour; divergence at a wide
+logit margin is a bug.
+
+Priced against §6's measured dispatch times, using the native block-8 and
+block-4 acceptance and the interpolated block-4 dispatch cost `[hw]` + `[cpu]`:
+
+| block | step ms | math | code | chat | all |
+|---|---|---|---|---|---|
+| 4 | 134.0 `[model]` | 1.36× | 1.37× | 1.12× | 1.29× |
+| 8 | 217.9 `[hw]` | **1.24×** | **1.24×** | 0.88× | 1.11× |
+| 16 | 385.8 `[model]` | 0.90× | 0.89× | 0.57× | 0.77× |
+
+**Block 16 is below 1.0× everywhere** — slower than plain autoregressive decode
+on math, on code, and on chat. Block 8 is the best configuration that exists
+today, and it is the one that already works.
+
+**Block 4 looks better still, and is not buildable.** `proj_qmm.cc`'s
+`proj_qmm_mm_flush_row` de-tiles for `aie::mmul<8,8,8>` and asserts
+`PROJ_MM_BATCH % 8 == 0`; at batch 4 `q4k_mmul_any` picks `mmul<4,8,8>`, `size_C`
+is 32 rather than 64, and `RA` integer-divides to zero. The kernel comment
+already diagnoses this precisely and notes `q4k_mm.h` itself is bit-exact at
+batch 4 — it is one de-tiling variant, not a redesign. Until it exists the
+buildable batch set is {1, 8, 16, 24, 32} and there is nothing between 1 and 8.
+Note also that block 4's 1.36× rests on a step time interpolated between the
+measured b1 and b8 points, which is exactly where linear scaling is least
+trustworthy (the mmul intrinsic only engages at batch ≥ 8). If a batch-4
+dispatch in fact costs what batch 8 costs, block 4 is 0.84×, not 1.36×. The
+honest range is **[0.84×, 1.36×] and it cannot be narrowed without the kernel
+variant**.
+
+### 3.2 The draft pass's bidirectional mask, on device
+
+The verify pass needs a causal mask over the block; the DFlash **draft** pass
+needs a bidirectional one — every query attends to the whole block
+(`_dflash_upstream/model.py:388`, K/V is `concat(ctx, block)` with no mask).
+`batch_attn_mask.py` argued in 2026 that this costs no kernel change, because a
+per-query mask is nothing but a per-query VALUE of L. That was an argument from
+three lines of `attn_qk.cc`. It is now measured `[hw]`.
+
+`_tok_L` in `fused_decode.py` gave token *t* of a block `L+t` keys. It now takes
+a step: `L + t·S`, with `S = 1` the causal staircase and `S = 0` giving every
+token `L + B - 1` — the whole block. Two ways to set it:
+
+- `DECODE_MASK_BIDIR=1` bakes it at build time.
+- `DECODE_MASK_MODE_RTP=1` decodes it per dispatch from **bit 30 of the RTP-L
+  scalar the host already writes**, so one device program serves both passes.
+  Real context lengths are under 2^30 by six orders of magnitude. L keeps one
+  meaning in both modes (token 0's context length), so the four other consumers
+  of L — shim readback count, memtile dequeue count, core trip count, KV append
+  slot — already size off `L + B - 1`, which is what every token sees
+  bidirectionally. They need the bit stripped and nothing else.
+
+**Measured, qwen3-4b, batch 8, L 128, one layer** `[hw]`, via `batch_equiv.py
+--bidir`, which compares every token against a batch-1 dispatch at L+B-1 = 135:
+
+| token | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| rms rel vs batch-1 at L 135 | 1.37e-03 | 1.37e-03 | 1.37e-03 | 1.37e-03 | 1.37e-03 | 1.37e-03 | 1.37e-03 | 1.37e-03 |
+
+All eight agree with L=135 **and with each other**, which is the discriminating
+part: under the causal mask each token sees a different context, so only token 7
+would match L=135 and the other seven would not match anything. The causal build
+still gates at **3.86e-03**, unchanged.
+
+**And the RTP form is verified too, on one device program** `[hw]`. Same
+xclbin (`dyn_b8_L144`, `DECODE_MASK_MODE_RTP=1`), two dispatches differing only
+in bit 30 of the RTP-L scalar:
+
+| dispatch | bit 30 | compared against | result |
+|---|---|---|---|
+| verify | clear | batch-1 at L 128, token 0 | **1.83e-03** |
+| draft | set | batch-1 at L 135, all 8 tokens | **1.37e-03** each |
+
+The bidirectional number is identical to the baked-in build's, so the two routes
+agree. **This is stronger than it was scoped to be.** The mask was the one thing
+that looked like it forced draft and verify onto separate device programs; it no
+longer does, so the draft/verify boundary needs no PDI reload at all — which is
+the cost §7 item 4 was worried about. Everything else that differs between the
+two passes is host-side: the wave range (5 layers against 36, and the layer loop
+is a rolled `scf.for` whose device is wave-invariant) and the weight BO.
+
+**Two things had to be fixed to get there, both outside `fused_decode.py`:**
+
+- **DYNSEQ did not build at batch > 1.** `airrt.dma_memcpy_nd` on `@inKV_K`
+  failed to legalize. `DmaToNpuPattern` requires every dimension above a
+  runtime-valued size to have length 1; a batched KV readback is
+  `[B, ceil(L/16), 16, 512]` with strides `[0, 8192, 512, 1]`, so dim 0 is 8.
+  But its stride is **zero** — a pure repeat, which contributes nothing to
+  addressing and which `repeat_count` already carries, and the dynamic-length BD
+  is emitted with no dimensions at all. Excluding zero-stride dimensions from
+  that contiguity test is a two-line fix in `AIRRtToNpuPass.cpp` and it is what
+  unblocked batch-8 DYNSEQ. This matters well beyond the mask: §7 item 3's KV
+  rollback needs a runtime L.
+- **The TXN builder could not run on Windows.** A DYNSEQ build assembles its
+  stream from a compiled shim at DISPATCH time, and `txn_builder.py` hardcoded
+  `g++`, which this host does not have — surfacing as a bare
+  `FileNotFoundError: [WinError 2]` naming nothing. It now takes `AIR_TXN_CXX`
+  and drives MSVC with MSVC flags, and the generated shim carries
+  `__declspec(dllexport)`: `extern "C"` gives the symbol a C name but does not
+  put it in a DLL's export table, so ctypes reported "function not found" on a
+  library that had compiled and loaded cleanly.
+
+### 3.3 The rest of the drafter, and why it fits the engine
+
+§3.2 put the drafter's mask on the array. Three things still separate a drafter
+layer from a target layer (`_dflash_upstream/model.py:340-397`):
+
+```
+q      = q_proj(hidden_states)                        B rows
+k, v   = k/v_proj(cat[target_hidden, hidden_states])  ctx + B rows
+target_hidden = hidden_norm(fc(taps))   12800 -> 2560, ONCE per block
 ```
 
-Reproduce every measurement, in rough cost order:
+Two structural claims make that fit, and `dflash_draft_decomp.py` checks both
+against the real checkpoint rather than asserting them `[cpu]`:
 
-```bash
-cd programming_examples/fused_decode
-python3 dflash_traffic.py                              # seconds; traffic + DDR
-python3 dflash_traffic.py --draft-head-frac 0.25       # prices a trimmed draft head
-python3 batch_l1_budget.py --model qwen3-4b --batch 16 -v \
-        --scratch-rows 32 --scratch-cols 256      # the new kernel's weight tile
-python3 batch_wire.py --model qwen3-4b --batch 16 -v
-python3 q4k_mm_gate.py --mode exact                    # ~2 min ON DEVICE; the
-python3 q4k_mm_gate.py --mode random                   # ~2 min; numeric gate
-python3 q4k_mm_gate.py --mode exact --batch 8          # ~2 min; the small-batch
-python3 q4k_mm_gate.py --mode exact --batch 4          # ~2 min; kernel
-python3 mmul_probe.py                                  # ~2 min; mmul tile order
-python3 proj_qmm_gate.py --nblk 1 --batch 8            # ~2 min; batched vs
-python3 proj_qmm_gate.py --nblk 2 --batch 8            # ~2 min; GEMV, at the
-python3 proj_qmm_gate.py --nblk 1 --batch 16           # ~2 min; block size
-python3 batch_attn_mask.py --check --cost              # seconds; the causal mask
-python3 bench_attn.py                                  # ~4 min; attention roofline
-python3 bench_attn.py --model QWEN3_4B --layers 36     # ~4 min
-python3 bench_attn_batch.py                            # ~8 min; what a batch
-python3 bench_attn_batch.py --model QWEN3_4B --layers 36  # ~8 min; can hoist
-python3 check_kernels_inert.py                         # ~1 min; THE gate
-python3 xfeed_bd.py                                    # seconds; the X-feed BD
-python3 egress_bd.py                                   # seconds; egress BDs
-python3 kvappend_bd.py --overrun                       # seconds; KV append BD
-python3 batch_path_check.py                            # seconds; THE composition gate
-python3 l1_align.py                                    # seconds, needs a build;
-                                                       # 64-byte L1 alignment
-python3 dflash_blocksize.py                            # seconds; the block size
-python3 dflash_blocksize.py --attn-hoistable 1503      # with a perfect hoist
-python3 dflash_blocksize.py --overlap                  # the optimistic bound
-python3 dflash_blocksize.py --target llama-3.2-1b --draft llama-3.2-1b         --vocab-chunk-i2 18 --attn-cycles 2368         # the model's cross-check
-python3 bench_q4k_mm.py --batches 16                   # ~3 min; mmul cycles only
-python3 bench_q4k_mm.py --batches 4,8,16,32 --noperm   # ~9 min; the batch sweep
-python3 bench_q4k_mm.py --kcol 512 --batches 16        # ~22 min  } pre-layout-fix
-python3 bench_q4k_mm.py --mrows 64 --batches 16        # ~35 min  } baselines
-python3 bench_q4k_mm.py --batches 16 --chunks 2        # FAILS, on purpose --
-                                                       # see the gotchas below
-cd ../llms/bench && python3 decode_geometry.py --check  # builder regression gate
-cd ../qwen3_4b_q4nx && python3 qwen3_4b_q4nx_requant.py --check   # packer vs builder
+| claim | check | result |
+|---|---|---|
+| `fc(cat[h1..h5])` = Σ per-tap 2560→2560 projections | vs `draft.fc` in fp32 | 3.4e-05 on max │fc│ 246 — summation-order noise |
+| the context input is layer-invariant and equals `hidden_norm(fc(taps))` | `k_proj` forward hook, all 5 layers | **0.0**, exactly |
+
+The second is the load-bearing one: `target_hidden` never flows through the
+stack and never sees `input_layernorm` (model.py:446-453 hands it to
+`self_attn` raw), so every layer re-projects the SAME vector with its own k/v
+weights. All five layers' context K/V are therefore computable **before the
+layer loop**, from the taps alone. The check hooks `k_proj` — each layer calls
+it twice, first on the context then on its own hidden states — and confirms the
+first call's input is byte-identical across layers while the second changes at
+every one of the 4 layer steps, so it is not passing vacuously.
+
+**The position convention falls out consistent with §3.2**, which is worth
+stating because it was chosen for a different reason. RoPE gives `k` the full
+`ctx+B` positions and `q` only the last B (`model.py:334`), so the drafter is a
+plain rotation over `ctx+B` contiguous positions with only the last B as
+queries. Setting the RTP-L to `ctx+1` with the mode bit then does both jobs at
+once: every token sees `L+B-1 = ctx+B` keys, and the append slot `(L-1)+t`
+lands the block's own K/V at `ctx+t`, immediately after the context.
+
+**`fc` needs a phase, not a kernel.** The engine's phase dimensions are
+`J2P = K/(2·COL_BLOCK)` and `I2P = out/(ROW_BLOCK·NCX·NCY·PAIR_ROWS)`; qwen3-4b
+has `2·COL_BLOCK = 512`, giving `J2P=[5,8,5,19]` for inputs `[2560, 4096, 2560,
+INTER]`. So `fc` at 12800 → 2560 is `I2P=5, J2P=25` — a well-formed entry in the
+existing scheme, since accumulating across input column-blocks is exactly what
+`J` already does. The 5-way split above is the reason the tap buffer can be fed
+as one 12800-wide input; it does not need to appear in the IR.
+
+**The drafter's weight bundle is built** `[static]`. `qwen3_4b_draft_weights.py`
+reads the checkpoint's bf16 `model.safetensors` behind the same accessor surface
+the target's packer already consumes, and `qwen3_4b_draft_requant.py` packs it:
+5 layers × 31,539,200 elements plus 10 tied vocab slabs = 280,576,000, fc, and
+the norms. Two things the target has no analogue for — `fc` (2560×12800) and
+`hidden_norm` — and one it cannot supply: the drafter carries **no embedding
+table at all**, its head being tied to the target's, so the target bundle is a
+required argument rather than a default. Its per-layer shapes are the target's
+exactly (q 4096×2560, k/v 1024×2560, o 2560×4096, gate/up 9728×2560, down
+2560×9728), which is why `qwen3-4b-draft` is the target's geometry with
+`UNI_DEC=5` and nothing else changed. The fc requant round-trips at 4.5e-02
+relative against a quantization step of 9.2e-02.
+
+**`fc` cannot be a 5th decode phase.** Everything else about the phase machinery
+is table-driven off `I2P`/`J2P`/`DEST`, so a 5th entry looked like a config
+change. It is not: `FULL4` (`fused_decode.py:1180`) is
+`NPH == 4 and DOWN_PHASE == 3 and DEST[1] == DEST[3] and NDEST == 3`, and it
+gates the whole fused four-phase structure — including the `RMS_BAND_STREAM`
+level 3 path §3.2 depends on. Setting `NPH = 5` silently switches the design to
+a different, far less exercised shape. So fc takes **its own launch**, which is
+also what the multi-launch route wants, and a standalone launch is served by the
+bf16 GEMM builder in `llms/shared/builders` rather than by the q4k cascade. At
+ctx ≤ 8 the shape is a thin `[8, 12800] × [12800, 2560]`; 65 MB of bf16 against
+the drafter's ~300 MB of Q4 layers is worth not introducing a quantized shape on
+a path nothing else uses.
+
+**The fc launch runs on NPU2** `[hw]` — the first piece of the DRAFTER, as
+opposed to the target, to run on the array. Two `air.launch` ops in one
+`func.func` (a 32×12800×2560 GEMM then the RMSNorm), built by
+`dflash_fc_builder.py`, gated by `dflash_fc_gate.py` against the **real**
+`fc.weight` and `hidden_norm.weight` — not random fill, because a transposed or
+mis-strided weight still correlates well on random data whose rows are
+exchangeable:
+
+| | rows 0-7 |
+|---|---|
+| rms rel vs f32 numpy | 1.13e-02 – 1.24e-02 |
+| correlation | 0.99993 – 0.99995 |
+| padded rows 8-31 | 0 non-zero elements |
+
+1.2e-02 is bf16 through a K=12800 reduction; the registry quotes 9.3e-3 for its
+own high-precision tier at smaller K. The padded-row check is there because
+nothing else would catch a GEMM writing outside the rows it was given.
+
+Four things had to be right, and each failed first in a way that named nothing:
+
+- **ELF, not xclbin.** Multi-launch is the ELF path — that is what emits
+  `load_pdi` between launches. On the xclbin path the two launches' instruction
+  streams collide, reported as `edge 'air.insts.bin' produced duplicate output
+  path` and then a bare `pipeline failed` several stages later, with every
+  intermediate `.ll` compiling cleanly by hand.
+- **GEMM, not GEMV.** fc applies one 2560×12800 weight to every context row. A
+  GEMV re-streams it per row: 8 × 65 MB per draft call, more traffic than the
+  drafter's whole 5 layers. The M=32 padding costs arithmetic that is free next
+  to the weight stream.
+- **The herd and tiles are not free.** `tile_m` is forced to 32 by the drain
+  method, `mm_aie2p.cc` additionally static-asserts `DIM_M % (2·r) == 0`, and
+  `M % (tile_m·herd_m) == 0` then forces a 1×4 herd with M a multiple of 32.
+  The registry's own 320×128 staging is 80 KB and does not fit a 64 KB tile.
+- **A stale `mm_m32.o`** built at different tile parameters sat in
+  `build_peano/` and was picked up ahead of the fresh one.
+
+**The context K/V runs on NPU2 too** `[hw]`. 15 `air.launch` ops in one func —
+per drafter layer a K GEMM, a V GEMM and `k_norm` — checked against the real
+per-layer `k_proj`/`v_proj`/`k_norm`:
+
+| layer | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| k, pre-norm | 9.51e-03 | 9.71e-03 | 9.59e-03 | 9.76e-03 | 9.61e-03 |
+| v | 9.62e-03 | 9.71e-03 | 9.73e-03 | 9.68e-03 | 9.73e-03 |
+| k, post-`k_norm` | 1.21e-02 | 1.20e-02 | 1.18e-02 | 1.20e-02 | 1.18e-02 |
+
+A fused `[k|v]` form (5 launches instead of 15) also passes at 9.6e-03 and is
+kept, but it cannot feed `k_norm`: the norm is over `head_dim`, i.e. over K
+viewed as `[ctx·8, 128]`, and in a fused `[ctx, 2048]` output the K half is
+strided rather than contiguous.
+
+Three things this cost, each worth keeping:
+
+- **`k_norm` is NOT shared between layers.** The first version passed layer 0's
+  weight to all five, and **every layer still gated clean** — because the
+  reference made the same assumption. What caught it was comparing the five
+  checkpoint tensors to each other directly. The gate now does that, and each
+  launch gets its own weight.
+- **The pre-norm K is checked as well as the post-norm K.** RMSNorm is
+  scale-invariant in its input, so a K wrong by a per-row scale — exactly what a
+  mis-strided reshape gives — comes out of the norm looking right.
+- **`memref.reinterpret_cast`, not `collapse_shape` + `expand_shape`.**
+  `aie.dma_bd` accepts a buffer rooted at a subview/view/cast/reinterpret_cast
+  chain and rejects anything else, so the reshape pair lowers cleanly until DMA
+  lowering and then fails.
+
+The cross-layer check on the fused form is the other guard worth naming: every
+launch takes the same input and differs only in its weight, so a mis-wired arg
+map yields a plausible result belonging to another layer. The distance matrix is
+diagonal by two orders of magnitude (9.7e-03 against 1.2–1.8).
+
+### 3.4 int4 for the two non-decode projections, and a GEMM bug it found
+
+bf16 costs 65 MB for `fc` and 52 MB for the context k/v against a draft pass
+whose 5 Q4 decode layers are ~315 MB — a **37% surcharge**, and the k/v half is
+worse than it looks because those are the same tensors the decode already
+streams in Q4 in the same call. `fc` cannot join the superkernel's own q4k
+cascade (`FULL4` is `NPH == 4 and ...`, and `GLU_PHASE = 2 if NPH == 4 else -1`,
+so a fifth phase disables both the residual and the GLU paths), so the int4-AWQ
+GEMM is the available quantized route. Quantized, **fc is 65.5 MB → 17.2 MB**,
+round-tripping at 5.5e-02 against a 1.1e-01 step `[cpu]`.
+
+Getting it to run turned up three defects. The last is a real constraint on
+`matmul_int4_packed` that its own tests cannot see, and it is what decides the
+shape of everything below.
+
+**`compile_mv_int4_bf16` builds the GEMV, not the GEMM** `[static]`. It passes
+`-DDIM_K` and **no `-DDIM_N` at all**, where the int4 GEMM's own Makefile passes
+`-DDIM_N` and `-DDIM_K_CHUNK`. The GEMV object links, loads and runs inside the
+GEMM — and returns NaNs and uncorrelated rows, because the kernel's tile
+constants disagree with the IR's.
+
+**The default stack silently computes the wrong answer** `[hw]`. The reference
+passes `stack_size=16384`; without it the same module runs to completion and
+returns rel ≈ 0.85 instead of 7.4e-03. No crash, no diagnostic.
+
+**And the int4 GEMM is only correct when `tile_k_l2 == K`** `[hw]` — i.e. one
+K-outer iteration. Bisected on device, M=64 N=128 herd 2×4:
+
+| K | tile_k_l2 | K-outer | rel |
+|---|---|---|---|
+| 128 | 128 | 1 | 7.4e-03 |
+| 256 | 256 | 1 | 7.2e-03 |
+| 1280 | 1280 | 1 | 7.3e-03 |
+| 256 | 128 | **2** | **1.12** |
+| 1280 | 128 | **10** | **1.03** |
+
+M and N are innocent: N=2560 and M=32 both pass at K=128. The accumulation
+across L2 K-tiles is what breaks, and every lit test in
+`matrix_multiplication/int4_awq` uses K=128 with `tile_k_l2=128`, so K-outer is
+never exercised. (Their Makefile also cannot build the kernel in this
+environment — `PEANOWRAP2P_FLAGS` is missing the `aie_api` include path — which
+is why the bug had to be found through `_compile_kernel`.)
+
+Reading the builder says why: `matmul_int4_packed.build_module` puts the whole
+herd **inside** the K-outer loop, and the herd body allocates its L1 f32
+accumulator, zeroes it, converts and drains to L2 on every iteration. The
+accumulator cannot survive a K-outer step, so the L2 C tile ends up holding the
+last chunk's partial product rather than the sum.
+
+That blocks int4 `fc` at K=12800 directly: L2 needs `tile_k_l2 < K` to fit
+(at `tile_k_l2 = K` the A and B stages are 400 KB + 429 KB against 512 KB), and
+`tile_k_l2 < K` is the broken case. **The way out is the decomposition §3.3
+already verified** — `fc` over a concatenation is a sum of per-chunk GEMMs, so K
+can be split across launches and the partials added. Any partition works, not
+just the tap boundary; **K=6400** stages 200 KB + 209 KB and needs only one add.
+
+**A herd tile takes at most two incoming L3 streams** `[hw]`, and this shapes
+every launch here. Bisected on the sum/norm herd, counting L3 operands as
+(inputs + weight):
+
+| L3 operands | outcome |
+|---|---|
+| 2 in, 1 out | correct — rel 0.0 for a copy, 2.6e-03 for a sum |
+| 3 in, 1 out | **silently wrong** — rel 1.12–1.17, padded rows fill with other rows' data, and the value **varies run to run**, so it is a race rather than a miscompile |
+| 5 in, 1 out | `aircc` dies with `0xC0000005` and no diagnostic |
+
+A single AIE tile has two S2MM channels, which is exactly where the first
+boundary sits. The same class of hazard shows up **within** a launch: draining
+an L1 accumulator straight to L3 lets the next loop iteration's input DMA
+overwrite it mid-flight — a WAR the dependency pass does not order. The symptom
+is a run-to-run-varying output whose rows are permutations of *other* rows'
+data (measured 0.85 / 0.88 / 0.94 / 1.04 on repeated runs of the same pure-copy
+module). Draining a separate L1 buffer fixes it.
+
+**Both projections now run in int4 on device** `[hw]`, against the real
+z-lab/Qwen3-4B-DFlash-b16 weights, with the dequantized weight as the reference
+so the number measures the engine and not the quantizer:
+
+| | launches | engine rel | end to end |
+|---|---|---|---|
+| `fc` + `hidden_norm` | 2 GEMM (K=6400) + add + norm = **4** | 7.09e-03, 7.29e-03 | **1.10e-02** |
+| context K/V + `k_norm` + RoPE | 5 × (2 GEMM + norm + RoPE) = **20** | k 7.0–7.3e-03, v 7.2e-03 | k_norm 9.8e-03–1.01e-02, RoPE **1.15–1.18e-02** |
+
+The bf16 `fc` gated at 1.13–1.24e-02, so quantizing costs nothing measurable
+downstream of the norm. Cross-pair and cross-layer distance matrices are
+diagonal by two orders of magnitude in both, and the RoPE rows are also compared
+against the **unrotated** `k_norm` output (0.65–0.76 away), so a LUT stuck at
+position 0 or one that ignores the 8 KV heads per position cannot read as a
+pass. Positions are absolute — the drafter is called with
+`position_ids[start - ctx_len : start + block]` — and the gate defaults to
+`start=137` rather than 0 for that reason.
+
+**The draft pass's non-decode traffic drops from 117.9 MB to 30.9 MB**, i.e.
+from a 37% surcharge on the drafter's ~315 MB of Q4 decode layers to **9.8%**.
+
+**And the two halves now run as one dispatch** `[hw]` —
+`dflash_draft_prepass.py`, **24 launches in one `func.func`**, taps in and the
+five layers' RoPE'd context K/V out:
+
+```
+  target_hidden: 1.10e-02, padded spill 0
+  layer 0: k 5.32e-03, v 5.36e-03, k_ctx 1.07e-02 (end to end 1.44e-02), spill 0
+  ...      k 4.1-5.3e-03  v 4.7-6.1e-03  k_ctx 1.00-1.07e-02  e2e 1.32-1.44e-02
 ```
 
-The first three need the NPU; the rest are static and run anywhere. **The gates are
-`q4k_mm_gate.py --mode exact`, `proj_qmm_gate.py`, `batch_attn_mask.py --check`,
-`check_kernels_inert.py`, the three `*_bd.py` checkers, `batch_path_check.py`,
-`l1_align.py`, `batch_row_probe.py`, `batch_lm_equiv.py` and the
-`DECODE_HIDDEN_TAPS` no-op diff below** — the rest are measurements.
+`target_hidden` is an intermediate no host code sees, so the K/V numbers are
+referenced against the **device's own** `target_hidden` — that isolates the
+wiring — with the fully-host-computed end-to-end number printed beside it. The
+cross-layer matrix stays diagonal by two orders of magnitude after the merge.
 
-The batched on-device pair, which needs the NPU and two templates each:
+**What is left:**
 
-```bash
-RMS_CHUNK_PROBE=1 UNI_WAVE_HI=1 ./build_template.sh 8 1   # -> rename to x2_*
-python3 batch_row_probe.py --batch 8 --L 1 --prefix x2    # does row t get token t?
-UNI_WAVE_HI=1 ./build_template.sh 1 1                     # -> w4_b1_L1
-UNI_WAVE_HI=1 ./build_template.sh 8 1                     # -> w4_b8_L1
-python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens 0
-for L in 2 3 4 5 6 7 8; do UNI_WAVE_HI=1 ./build_template.sh 1 $L; done  # -> w4_b1_L*
-python3 batch_equiv.py --prefix w4 --batch 8 --L 1 --tokens all   # each token at its own position
+1. ~~The fc launch.~~ **Done**, bf16 and int4.
+2. ~~The context-K/V projection, `k_norm` and RoPE.~~ **Done.** None of it can
+   reuse a plain decode pass, because the engine RMS-norms X before projecting
+   and the context must reach `k/v_proj` raw. Pre-compensating the input to
+   cancel the norm does not work — RMSNorm is not invertible that way, and the
+   residual scale would land in `v_ctx`, where `k_norm`'s scale-invariance
+   cannot absorb it.
+3. ~~Stitching those into one dispatch.~~ **Done** — 24 launches, one func.
+4. Seeding the drafter's KV cache from this pass's output, and the host loop.
+
+### 3.5 The verify pass, on the shipping driver
+
+§5.3b established that the batched *template* is correct: `batch_equiv.py` runs
+it on synthetic q4k weights and compares layer outputs (3.86e-03 at one layer,
+5.56e-03 at 36). That is not the same as a verify pass. The verify pass is the
+shipping **driver** handing the target B draft tokens at B consecutive positions
+and taking B next-token distributions back, and it exercises everything
+`batch_equiv.py` cannot see: the batched X buffer, the B rope slabs, the batched
+logit readback, and the ATTN_MAXL window the batch moves.
+
+`FusedDecoder` now takes `batch=`, and `dflash_verify_gate.py` checks it against
+the only thing it has to equal — **eight sequential batch-1 dispatches of the
+same tokens from the same KV seed, on the real model** `[hw]`:
+
+```
+  batch-1 : [12095, 13, 576, 6722, 315, 9856, 374, 19846, 13]
+  batch-8 :  one dispatch, argmax = at all 8 positions
+             margins 1.75 - 12.75, corr 0.977 - 0.993, top5 3-5/5
 ```
 
-And the batched LM head, which needs the FULL wave sequence (the gate builds the
-decode layers as passthroughs rather than trimming the range — see its header):
+**One defect, and it was invisible in the sizes.** The rope region is
+LAYER-major then token — layer L's block at `rms_lut_off + L*B*ROPE_W_LEN`,
+token t at `+ t*ROPE_W_LEN` inside it — which is the *transpose* of B copies of
+the batch-1 slab. Writing it the other way gives the right region size and the
+right element count, and returns `[13, 1096, 279, 315, 279, 30, 279, 30]`: token
+0 correct, because its slab lands first either way, and every later token
+rotated by another layer's angles.
 
-```bash
-DECODE_NO_LM_WAVES=0 DECODE_ACC_STOP=1 ./build_template.sh 8 1   # -> lm_b8_L1
-DECODE_NO_LM_WAVES=0 DECODE_ACC_STOP=1 ./build_template.sh 1 1   # -> lm_b1_L1
-python3 batch_lm_equiv.py --batch 8 --prefix lm
+**The logits agree loosely and that is the projection kernel, not the batching.**
+RMS-relative logit error is 6.5e-02–2.0e-01 with the argmax unchanged. The
+batch-1 template runs the v1 GEMV and the batched one the q4k mmul — different
+kernels, different accumulation orders, which `proj_qmm_gate.py` already
+measures at 1.4× the GEMV's error. **The toolchain was ruled out by measurement,
+not by argument**: the same batch-1 design built by `build_template.sh` (which
+skips the Peano pin preflight — and this sandbox's nightly index no longer
+carries the pinned build) is **bit-identical** to the shipping Makefile-built
+pair, all 8 tokens, rel 0.0. So the gate is argmax agreement outside a near-tie,
+a correlation floor, and `rel` reported rather than targeted.
+
+Two host-side traps, both of which present as a device fault:
+
+- **Dropping a `FusedDecoder` segfaults the process.** Its BOs and the XRT
+  device go down in whatever order the collector picks, and the symptom is a
+  bare SIGSEGV after the last flushed line — which reads exactly like a fault in
+  the dispatch that just succeeded. Keep both decoders alive.
+- **`DECODE_STACK` must match the build.** At batch 8 it is not optional: the
+  default stack leaves the rms core 55280 B of L1 against the 59424 B a batch-8
+  residual plus staging plus norm weights need, and the builder refuses to
+  import rather than build something that fits by truncation. `FusedDecoder`
+  takes `env_extra` for exactly this.
+
+Batched templates now build from the model's own Makefile
+(`make compile-decode-batch DBATCH=8 LBUILD=16`), which carries the
+`-DPROJ_MM_BATCH` the batched projection needs and restores the batch-1 objects
+afterwards — a batched `proj_qmm.o` left behind is linked into the next batch-1
+build.
+
+### 3.6 The pre-pass against the real drafter, not against itself
+
+§3.4's gates check the pre-pass against a numpy chain built from the same
+weights. That proves the *engine* and it cannot prove the chain is the
+drafter's: the tap concatenation order, that `fc` sees the taps raw, that
+`hidden_norm` sits between `fc` and `k/v_proj`, that `k_norm` precedes RoPE, and
+that the positions are absolute are all assumptions the reference shares.
+
+`dflash_draft_oracle.py` runs **z-lab/Qwen3-4B-DFlash-b16 itself** — the model
+code, via `dflash_phase2_replay.py`'s crop cache, not a reimplementation — over
+the recorded NPU target state, and dumps one block: taps, `target_hidden`, and
+the per-layer K/V rows **as the model's own cache holds them**. It has to be a
+dumper rather than a call, because torch and XRT segfault in one process.
+`dflash_prepass_oracle_gate.py` then replays that npz through the device
+`[hw]`, block 0 of the Paris state (ctx = the whole 5-token prompt, positions
+0–4):
+
+```
+  target_hidden: int4 vs oracle 1.22e-01, engine vs dq 1.12e-02, cos 0.9925
+  layer 0: k int4 9.2e-02 dq 9.9e-03 cos 0.9957 | v int4 1.28e-01 dq 6.3e-03 cos 0.9919
+  ...      k 8.4-9.6e-02  dq 9.8-10.9e-03  cos 0.9953-0.9965
+           v 1.20-1.30e-01 dq  5.6-6.3e-03  cos 0.9915-0.9929
 ```
 
-**Both halves of a `batch_equiv` pair must carry the same `UNI_WAVE_HI`** — see
-the warning under the stage table.
+**The structure is right and the quantization is the whole gap.** `dq` — the
+device against the dequantized weights fed its *own* `target_hidden` — is
+5.6e-03 to 1.1e-02, the same scale §3.4 measured in isolation. The `int4`
+column is the AWQ round-trip, which `dflash_int4.self_check` puts at 5.5e-02
+against a 1.1e-01 step.
 
-**`--noperm` is the one that gives totals.** The default build reports the
-multiply as cycles and the unpack as a rolled static size, because the correct
-unpack cannot be fully unrolled (see the gotchas). `--noperm` swaps in the
-wrong-but-unrollable unpack, which is the only way to get an exact
-total / MAC-per-cycle / roofline — and those totals are a lower bound.
+**And that cost is now a named risk on the thing the whole idea rests on.**
+Cosine 0.991–0.997 against the real drafter is not free: §3.1's 1.24× priced a
+**bf16** drafter's acceptance distribution, and a quantized drafter proposes
+slightly different tokens. Nothing here measures how much acceptance that costs
+— it needs the acceptance sweep re-run with the device drafter in the loop, and
+until then the 1.24× is an upper bound rather than a prediction.
 
-### Next step
+One methodological note, because it cost a rerun: referencing the layer K/V
+against the *oracle's* `target_hidden` folds `fc`'s quantization into every
+layer a second time and turns a 1e-02 engine number into 7e-02. Reference the
+engine against what the engine was actually given.
 
-~~**Batched attention.**~~ **Measured and bounded — section 5g.** The hoistable
-share is 35% on qwen3-4b, the ceiling is 1.55x on the attention term and 2.08x
-end to end, and the block size stays at 8 either way. It is worth building and
-it blocks nothing, so it is no longer the next thing.
+### 3.7 The whole draft pass, on the array
 
-Two corrections it leaves behind, both worth carrying forward: the
-`aie::transpose` this document twice named as the lever is **free** — the
-hoistable work is the K/V tile loads — and the real floor is the softmax
-`update` plus the y rescale pass, neither of which any batch arrangement can
-touch.
+`dflash_draft_gate.py` runs a block end to end on NPU2 `[hw]` — taps through
+the 24-launch pre-pass, its output seeded into the drafter's KV cache, then a
+**bidirectional 5-layer decode at batch 8** — against the same oracle block.
+This is the first point at which the drafter half of DFlash exists on the array
+rather than as pieces.
 
-**Step 2's builder wiring, at block 8.** Where it stands:
+The drafter reuses the target's own `FusedDecoder`: `qwen3-4b-draft` is
+qwen3-4b's per-layer geometry with `UNI_DEC=5`, so once `decode_model`,
+`weights`, `npz` and `artifact_dir` are arguments nothing in that driver is
+target-specific. Its templates carry their own `draft_b8_L<N>` prefix — a
+different xclbin for a different model at the same context length would
+otherwise be picked up by whichever scan ran last. RTP-L is **ctx+1**, which is
+one value doing both jobs: with the bidirectional bit every token sees ctx+B
+keys, and the append slot `(L-1)+t` puts token *t*'s K/V at `ctx+t`.
+
+```
+  seed layers 0-4      k cos 0.9953-0.9965   v cos 0.9915-0.9929
+  block K/V layer 0    k cos 0.999555        v cos 0.996433     [structural]
+  block K/V layers 1-4 k 0.9886 0.9834 0.9609 0.9738  v 0.9774 0.9595 0.9288 0.9284
+  draft tokens matching the bf16 drafter: 4/7
+```
+
+**Layer 0's block K/V is the structural gate and it is clean.** It is a function
+of the mask-token embedding, `input_layernorm`, the batch-8 k/v projection,
+`k_norm`, the RoPE angles at positions ctx..ctx+B-1 and the append slot — and of
+nothing that has been through a quantized layer yet. A wrong slot or a wrong
+block position shows up there and nowhere else, because five layers of attention
+have not mixed it yet. Reading it needs the KV BO back off the device;
+`read_block_kv` inverts `seed_kv`'s region-major layout.
+
+**Layers 1-4 fall monotonically, and `--seed-oracle` says whose fault that is.**
+Re-seeding with the oracle's bf16 context rows instead of the int4 pre-pass
+lifts depth-4 K from 0.974 to 0.985 and V from 0.928 to 0.961 — so roughly half
+the drift is the pre-pass and half is the decode layers' own q4k. **The draft
+tokens are identical either way**, all seven of them. Quantizing the pre-pass to
+int4 is therefore not what moves the draft; the decode layers are.
+
+**4 of 7 draft tokens match the bf16 drafter, and that is the open number.**
+§3.1's 1.24× priced a bf16 drafter's acceptance distribution, and a quantized
+drafter proposes different tokens. One block of one prompt says nothing about
+the distribution — block 0 here is also the degenerate case, where the context
+is the whole prompt rather than the previous round's `produced`, and the bf16
+drafter itself only produced 1 of 8. What this needs is the §3.1 sweep re-run
+with the device drafter in the loop. Until then 1.24× is an upper bound.
+
+### 3.8 The loop, and the engine defect it exposed
+
+`dflash_loop.py` closes it: per block, one batch-8 **taps** verify dispatch
+(`taps_b8_L<N>`, `DECODE_HIDDEN_TAPS=1`, so the same dispatch returns both the
+distributions that decide acceptance and the five tap slots the drafter needs),
+the 24-launch pre-pass over the positions that verify just committed, a KV seed
+or append into the drafter, one bidirectional draft dispatch, and greedy
+accept. Neither cache needs an explicit rollback: both engines append in place
+and the next dispatch's own writes cover every rejected slot before anything
+reads it. Three device programs do not fit on the array at once, so the
+pre-pass ELF is loaded and unloaded around each block — a correctness vehicle,
+not a shipping shape, and `dflash_loop.py` reports that reload separately for
+exactly that reason.
+
+It runs `[hw]`. With the drafter switched off (`--no-spec`) it reproduces
+`PARIS_GREEDY` **10/10**, which is the mechanical gate on the taps template,
+the accept path and the tap indexing (slot 0 of the X buffer comes back
+bit-identical to the embeddings the host wrote, which is the one check that
+pins both indices of `(slot, token)`). With the drafter on it committed 32
+tokens over 21 blocks at a **mean of 1.476 tokens per verify dispatch**.
+
+**That number is not yet a measurement of DFlash, because the verify pass it
+rests on is not causal.** Chasing why the speculative stream diverged from the
+non-speculative one at a wide margin found a defect in the decode engine
+itself, present in the shipping batch-1 path:
+
+> **A decode step at context length L depends on KV rows `L..ceil(L/8)*8-1`.**
+
+`dflash_causal_probe.py` is the minimal repro: poison KV rows `L..L+7`, which
+the mask must exclude, and re-dispatch the same token from the same state. At
+batch 1 on the shipping template the logits move at every L except `L % 8 == 0`
+(max|Δ| 0.48–1.25, corr 0.994–0.999), and at `L % 8 == 0` they are
+bit-identical. It is a **V-side** defect, not a masking one: poisoning only K
+changes nothing at all — `attn_qk`'s `aie::le(idx, rem)` mask is exact per key —
+poisoning only V changes the output, and the reach stops exactly at
+`ceil(L/8)*8`, even though the whole 16-key block containing those rows is
+streamed to the core.
+
+It has never mattered because in ordinary decode every row past `L-1` is zero,
+so the leak is a small fixed pull that no gate resolves — `batch_equiv.py`'s
+own regression point is L=128, which is `L % 8 == 0` and therefore exactly in
+the clean class. It matters here because in a verify pass those rows are **the
+block's own later tokens**, written by the same dispatch. Measured at batch 8
+with the taps build, holding slot 0's token fixed and changing only the tail:
+slot 0's hidden state diverges from **layer 1** onward at every `L % 8 != 0`
+and is bit-identical at every `L % 8 == 0` — 51 consecutive L, no exceptions —
+and by the 36th layer max|Δ| reaches 208. Over 29 consecutive positions the
+tail moved slot 0's **argmax** at 2 of them (7%), which is the rate at which an
+accept/reject decision is currently made on a corrupted logit.
+
+**It is not extra attention, and that took a second instrument to establish.**
+`dflash_attn_leak_probe.py` measures the WEIGHT those rows carry. Seed every
+position with the same key `k0` so the softmax is uniform whatever *q* is —
+the attention output is then the plain mean of the attended V — build ONE layer
+with `DECODE_ACC_STOP=2` so the layer output is `x + o_proj(attn)` and the
+readback is linear in it, and vary only the phantom rows' V. (`DECODE_PROBE=2`,
+the o-gather memtile tap, does not route in this configuration — the dispatch
+times out. `ACC_STOP` changes only what a buffer holds, so there is nothing new
+to route, which is what the engine's own notes say it is for.) Then:
 
 | | |
 |---|---|
-| proj kernels | **done**, gated on device at batch 8 and 16 (section 5d) |
-| proj cores in the builder | **done**, both `_core_blk` and `_core_blk_np` |
-| `DECODE_BATCH` + L1 sizing rules | **done**, strict no-op at 1 |
-| X-feed BD / egress BD / KV-append BD | **derived and checked** |
-| whole path composed, in numpy | **done**, `batch_path_check.py` |
-| X feed, egress, KV append, QKV transposer, rope | **done** |
-| rms row loop (and why it is not a row loop) | **done** |
-| glu row loop | **done** |
-| attention token loop + per-token L | **done** |
-| a batch-8 template that COMPILES | **done** |
-| a batch-8 template that RUNS | **done**, all 16 layers, dispatch completes |
-| the answers | **done** — every gate green, see below |
-| host driver at batch > 1 | **not done** |
+| `f`, the leaked fraction of the attention output | **−0.0063**, ~0.6% |
+| at L = 16, 24, 32 | **+0.000000** exactly — three controls |
+| across L = 9…34 | constant; independent of L, of R, and of how many phantom rows there are |
+| vs the phantom V value | linear (same `f` at V=1 and V=16) |
+| one phantom row set vs all five | **the identical difference vector**, cosine 1.0000 |
+| rows at or past `ceil(L/8)*8` | exactly 0 |
 
-#### Where the layer is right and where it is not [measured]
+The last two lines refute the two mechanisms that survived the poison test —
+"the softmax includes the phantom keys" and "`attn_fv` pairs valid scores with
+the wrong V rows" — because both predict a per-row additive weight, and the
+measured contribution does not depend on the row count at all. (The write was
+verified by reading the KV cache back: only the intended row is set.) Combined
+with the K/V asymmetry, what is left is a **descriptor** asymmetry in the KV
+readback for a partial last group, not kernel arithmetic. The next instrument
+is `shim_volume.py` / `shim_schedule.py`, which print what each channel really
+moves after lowering.
 
-`DECODE_ACC_STOP` sends an INTERMEDIATE residual out on `layerOut` instead of
-the layer output, by dropping an add and keeping the get — so every channel
-stays balanced and the shim task is the same task in the same place. That, plus
-reading the DDR KV cache back (which both builds already write and the gate
-already reads), splits the layer into stages that can each be compared against
-a batch-1 dispatch:
+The severity scales accordingly: 0.6% of the attention weight, not the ~25% a
+genuine extra key would carry — which is why decode looks fine (corr 0.997) and
+why it still compounds to an argmax flip at 7% of positions across 36 layers.
 
-| stage | what it covers | batch 8 token 0 vs batch 1 |
-|---|---|---|
-| `ACC_STOP=1` | the layer-out drain and the in-place residual buffer | **0.00 — bit-exact** |
-| rope's K and V | rms core, X feed, batched mmul, both gathers, id-demux, QKV transpose, rope | **1.2% rms** |
-| `ACC_STOP=2` | + attention, the o gather, the o-projection, residual1 | **2.0% rms** |
-| full layer | + ph2 norm, gate-up, GLU, down, residual2 | **0.67% rms** |
+Nothing on the host can work around it. Token *t* of a block has `L_t = L_0+t`,
+so exactly one of any eight consecutive tokens lands in the clean class, and
+the rows in question are written by the dispatch that reads them.
 
-**Every row of that table dispatches B copies of ONE token**, so it says
-nothing about which token a projection row read — that is `batch_row_probe.py`'s
-job, below. What the table establishes is that the DATAFLOW is right end to end,
-which is exactly the question it was built to answer. The floor is the kernel
-swap and nothing else: `proj_qmm_gate.py --nblk 4 --batch 8` puts the GEMV and
-the batched mmul **1.65% rms** apart on device off the same weights, and says
-the batched one is the closer of the two to exact fp32 (bias 0.03% against the
-GEMV's 0.73%). The layer output lands *below* that floor, because the residual
-stream dominates it.
+### 3.9 The cause: a BFP16 shared exponent that spans the context boundary
 
-**Compare only builds with the same `UNI_WAVE_HI`.** It is not a numerics knob
-and it changes the answer by 7x: the same source at `UNI_WAVE_HI=1` reads
-**0.67%** and unset reads **4.88%** (9,352-byte instruction stream against
-149,392). A stale template from an earlier build is the easy way to compare two
-different designs and read the difference as a regression — check
-`ls -l <prefix>_b8_L*.insts.bin` before believing an A/B. This cost an afternoon
-after the alignment fix landed, when the fix looked like a 7x regression and was
-not: at matched wave count, before and after are both 0.67%, and after is
-strictly better (token 7 goes from 5.98e-3 off token 0 to **bit-identical**).
+**It is not extra attention at all. It is precision.**
 
-**The fault, as first seen.** The KV readback found it rather than the layer
-output. Every token in this gate gets the same X and the same rope LUT, and
-neither K nor V depends on position beyond the LUT, so all 8 tokens' K and all
-8 tokens' V have to be bit-identical to each other — they come out of ONE mmul
-over one A operand. All 8 K are. **Token 7's V is not:** 93% rms against token
-0, with 32 of its 256 elements per group still at the cache's initial zero, in
-runs at `[24..31]`, `[88..95]`, `[152..159]`, `[216..223]` — 8 missing every 64.
+`S·V` runs as a **BFP16** mmul contracting over KEYS, and BFP16 shares ONE
+exponent across 8 elements of that dimension. Those groups are 8-key aligned,
+so whenever `L % 8 != 0` the group straddling the context boundary also covers
+KV rows past `L-1` — and their exponents still enter the shared-exponent max,
+right-shifting the *valid* rows' mantissas. The masked keys contribute no
+**weight**; what they cost is **bits**.
 
-Read that signature as a coordinate. 64 is `PAIR_PAY`, one emitter's per-token
-block, laid `[lead's 32 rows | partner's 32]`; 24..31 is the lead's last 8 rows.
-`proj_qmm_mm_flush_row` writes those from `y_acc[(j*RA+z)*64 + rr*8]`, which at
-batch 8 (`RA` 1, `z` 0, `rr` 7) is **row 7 of each of the four `aie::mmul<8,8,8>`
-C tiles**, and 24..31 is `j = 3` — `y_acc[248:256]`.
+Every measurement falls out of that, and each was made before the mechanism was
+named (`dflash_attn_leak_probe.py`, batch 1, one layer, `DECODE_ACC_STOP=2` so
+the readback is linear in the attention output, every key seeded identical so
+the softmax is uniform whatever *q* is):
 
-Two probes, both behind `-DPROJ_FLUSH_PROBE` so the shipping kernel stays inert,
-narrow it a long way:
-
-| probe | result | what it rules out |
-|---|---|---|
-| `=1` run the flush's tokens BACKWARDS | the hole does not move | not a write-order race — the egress is not reading before the last store lands |
-| `=2` store a marker instead of the last vector | the marker reaches the KV cache, at exactly 24..31 of token 7's **K** | the WRITE path works. `y_acc[248:256]` really was zero |
-| `=3` label every element with `±(t*32 + p)` — the token, the position, the role in the sign — and read the labels out of the KV cache | **every label is exactly right, for all 8 tokens.** Token 7's V region reads `[+224..+255 \| -224..-255]` per emitter, which is `[role 0 \| role 1]` of token 7 and nothing else | the whole descriptor chain: the flush's addressing, both egress gathers, the id-demux, the QKV L2 transpose, rope's per-token slice and the KV append. None of them mixes a token or drops a byte |
-
-The labels are the strongest single result here: **the data path is correct and
-the accumulator's contents are not.** V is copied through rope unrotated, so its
-labels survive to DDR; K's do not, which is why the probe is read on V.
-
-And the marker sharpens the shape. On the K round, only 24..31 changed — so
-token 7's K was otherwise CORRECT, which rules out the X feed and the token
-index on their own (the same `rr = 7` reads row 7 of every tile in every round).
-On the V round, token 7 was already wrong from element 0, with the zeros on top.
-So the V round's accumulator is wrong in all four tiles for row 7, and zero in
-the fourth. Also ruled out: the append descriptor (`kvappend_bd.py`, and the
-region maths checks out), rope's DMA (single-buffered K and V BDs in one MM2S
-chain, correct lock protocol), the emitter's egress BD (`offset = 14 len = 514`
-on a 528 buffer), and `ypair_l1`'s size (emitted as 528, correctly batched).
-
-#### The fault: role 0 reads `(X[0] + X[t]) / 2`
-
-The probe that names it is one stage further up, and it is the one that should
-have been written first. `RMS_CHUNK_PROBE=1` makes the rms core stop normalising
-and feed row `t` the **constant** `(t+1)/8`. The projection is linear, so every
-output row comes out proportional to whatever X its row of the mmul saw, and the
-ratio of row `t`'s output to row 0's IS that token index — read straight off the
-KV cache, since V passes through rope unrotated. `batch_row_probe.py` is that
-check, and it fails on its first run **[measured]**:
-
-    role 1:  1.000  2.000  3.000  4.000  5.000  6.000  7.000  8.000   exact
-    role 0:  1.000  1.500  2.000  2.498  3.000  3.500  4.000  0.000
-
-128 of 128 output rows agree on each ratio, so it is a clean structural map and
-not noise. Role 0 is the LEAD of every cascade pair, so this is half the output
-rows of every projection in the model.
-
-**Why nothing else could see it.** `batch_equiv.py` dispatches B copies of ONE
-token, because that is what makes token `t` comparable to a batch-1 run at
-position `P+t` — and identical rows hide it. `batch_path_check.py` models ONE
-core; `proj_qmm_gate.py` runs ONE core. Three gates, one blind spot, and the
-engine passed all three.
-
-`(1 + t/2)/8` reads like `(X[0] + X[t]) / 2`, and that reading is **wrong** —
-it cost most of a day of looking for a token permutation in the X feed, the
-descriptors and the L2 transpose, none of which had one. Two things kill it.
-First, a DMA does not average. Second, the ratio is uniform to bf16 on all 128
-elements, and a half-pitch *read* would mix two tokens within each 8-element
-run and show two distinct ratios, not one.
-
-#### What it actually was: a 32-byte misalignment [measured]
-
-Two more probes settle it, both behind `-D` guards so the shipping kernels stay
-inert (`check_kernels_inert.py`):
-
-| probe | what it does | result |
-|---|---|---|
-| `PROJ_FLUSH_PROBE=4` | skip the de-tiling and ship `y_acc` RAW, in `PROJ_MM_BATCH` contiguous `RB`-float chunks, read with SCALAR loads | role 1 is a textbook `mmul<8,8,8>` C — 4 tiles of 64, token `rr` at `rr*8`, scaling 1..8. Role 0 fits `observed[m] == correct[m+8]` on all 32 runs, with `y_acc[248:256]` zero |
-| `PROJ_MM_PROBE=1` | skip the multiply and ship the A OPERAND as delivered | **both roles byte-identical and correct** — `1..8` repeating every 64, zero within-run spread |
-
-So the X feed, the flush's store position, both gathers, the L2 transpose and
-the KV append are all correct on both cores, and role 0's accumulator is the
-correct accumulator **shifted left by exactly one 8-float vector**. The emitted
-`aie.air.mlir` says the two cores are otherwise identical — same `inX` and
-`wL2ToL1` BDs, same loop bounds, same buffers; the only differences are the
-flush's role constant and the lead's 2-element packet header store.
-
-The cause is in the linker script, and `l1_align.py` reads it straight off:
-
-    LEAD    tile 0,2   buf41 (yacc, _e=1)  @ 0x7D820   <-- 0x20 past a 64B line
-    PARTNER tile 0,3   buf57 (yacc, _e=1)  @ 0x63800
-
-mlir-aie aligns a compute-tile buffer to the tile's LOAD/STORE BUS width and
-packs the rest end to end (`AIEAssignBuffers.cpp`; `aligned` defaults true, the
-width is `getComputeTileLoadStoreBusWidth`). On AIE2p that width is 256 bits —
-**32 bytes**. `aie::mmul<8,8,8>`'s C tile is `size_C` = 64 floats = 256 bytes and
-Peano moves it in 512-bit chunks, which need 64. A misaligned 512-bit access on
-AIE2 does not fault; it masks the low address bits, so the whole accumulator
-lands 32 bytes low and its last 8 floats are never written.
-
-Four things follow from that, and all four are what was measured:
-
-- **`ypair_mm_l1` is the only odd-sized buffer on a proj core** — `16 + 2*32*8`
-  = 528 bf16 = 1056 bytes = 16.5 × 64 — so it misaligns whatever is packed next.
-- **Only LEAD tiles host it**, so only they misplaced an accumulator. That is
-  the entire role 0 / role 1 asymmetry; nothing about the cascade pairing or the
-  X feed was ever involved.
-- **Only the `_e=1` round** uses the misplaced accumulator (`_e=0` gets the
-  other, still aligned). The QKV phase's 6 rounds put K on round 4 and V on
-  round 5, which is exactly why K read correct and V did not.
-- **`y_acc[248:256]` is never written** — the loose end from the section above,
-  same cause, no second fault.
-
-And the ratios stop being mysterious: normalising against `observed[0]`, which
-holds `correct[8]` rather than `correct[0]`, turns a clean `t+1` into `(t+2)/2`.
-
-**The fix** is one line: round the shared egress buffer up to a multiple of 64
-bytes (528 → 544). It is inert on the wire — the egress BD is still
-`offset = 14 len = 514` and the instruction stream is byte-identical — it only
-moves `buf41` to `0x7D840`. `batch_row_probe.py` then passes, token 7's V stops
-being 93% wrong, and token 7's layer output goes from 5.98e-3 off token 0 to
-bit-identical.
-
-**The lesson worth keeping** is that the alignment a kernel needs is the
-*caller's* job here, and nothing in the toolchain says so: the allocator does
-what it documents, the kernel assumes what its intrinsics need, and the two
-numbers differ by a factor of two. `l1_align.py` is the check that closes it,
-and it checks the emitted ADDRESSES rather than restating the rule.
-
-#### A gate that measures floating point instead of the engine
-
-Worth reading before trusting any number above, and the reason this took as
-long as it did. `batch_equiv.py` had two ill-conditioned fills, one after the
-other, and each produced a confident wrong answer.
-
-**`min` drawn independently of `scale`.** In a real q4k block `min` is the block
-minimum, so `w = q*scale + min` is CENTRED on zero; drawn independently it is a
-small perturbation on a mean of `7.5*scale`, and every dot product against a
-zero-mean activation becomes a sum of 2048 terms of magnitude ~55 cancelling to
-a result of magnitude ~2. The 1.65% kernel difference then landed as **20%** in
-K and V, compounded through each projection, and reached the layer output as
-**772x** — as a near-constant additive offset on V, a clean 1.5x on the
-o-projection, and an unbounded blow-up at the end. It looked exactly like a
-batching fault.
-
-**A gate-up output outside silu's LUT.** `getActivationBf16` is a 64-bin linear
-approximation over about `[-8, 8)` with a truncating out-of-range policy. With
-the weight scale as first written, the gate-up output had an rms of 3.7 and
-roughly 5% of 8192 elements per token fell outside — so which bin a value landed
-in flipped on a fraction of a percent of input, and the layer output was
-CHAOTIC: 101% apart between two builds whose gate-up outputs agreed to 2%.
-Deleting the silu collapsed that to 9.6%, which is how it was found.
-
-**The instrument that settles it is a SWEEP, not a number** [measured]:
-
-| weight scale | layer output | rope K |
-|---|---|---|
-| 1.0 | 49% | 1.1% |
-| 0.5 | 14% | 1.1% |
-| 0.25 | 3.6% | 1.1% |
-| 0.1 | **0.67%** | 1.2% |
-
-Read the columns against each other. K comes off the projection and nothing
-else, and it does not move — 1.1% is the kernel swap. The layer output moves by
-two orders of magnitude over the same sweep, because silu sits between them. A
-wiring fault would move BOTH columns and would not care about the scale. That
-is what turned "the MLP half is wrong" into "the MLP half is fine".
-
-The lesson generalises past this file: a synthetic fill that makes the
-arithmetic ill-conditioned turns every gate downstream of it into a measurement
-of cancellation, and a single number cannot tell you which you are looking at.
-`batch_equiv.py` now reports a difference as a SHAPE — offset or scale,
-permuted or not, which tokens, how it moves with the conditioning — before it
-reports it as a number.
-
-#### Seven deadlocks, and what they have in common
-
-None of them was visible in the AIR, all of them were visible in the emitted
-AIE dialect, and none is the kind of bug an element count can find. They are
-worth reading as a set, because the next one will look like them.
-
-| what | why |
+| observation | what it means |
 |---|---|
-| token-major egress gathers | a packet's 2-word header rides ONCE at the front; a BD walks its source linearly, so no descriptor lands the header at 0 and token t at `HDR + t*stride`. Two gets do it arithmetically and eat the memtile's ping-pong ring. **The transpose moved to the consumers**; the gathers are now the batch-1 descriptor, B times longer |
-| outY on the rms core's S2MM0 | the batched rms body aliases one staging buffer as both the outY destination and the @xnorm source, so the allocator's packet-flow reuse folded outY onto the port that already had rmsX/rmsW/rmsW2 — as a SECOND BD chain. A channel has one. The first also stopped cycling |
-| the QKV transposer on col-3 MM2S 0 | a documented route deadlock in this builder; the KV puts already carry the floor, the transposer did not |
-| rope blocked on the q broadcast | rope must finish all B tokens before the KV readback can start, the CUs wait on the readback, the q memtile waits on the CUs, rope waits on the q memtile. Got 4 of 8 tokens through |
-| per-token KV append gets | each is a separate shim task and the fused launch paces a `preserve_shim_dma_order` channel at depth 2. Got 6 of 8 tokens through |
-| **a per-token q get on the attention CU** | the q memtile fans to the four CUs as a DAISY CHAIN — CU c+1's transfer starts when CU c's finishes. At batch 1 each link is one 512-element landing that completes on arrival; taking q a token at a time makes CU 0's link an 8-token transfer gated on CU 0 running the whole block, and CU 0 cannot, because the KV re-block memtile hands both CUs of a column their block together and CU 1 is waiting for a q it will not get until CU 0 finishes. **Take all B rows in ONE get before the token loop** — the shape the q memtile itself already uses one hop up |
-| **the vocab waves, at batch > 1** | `LM_HEAD` is refused when batched and the rms core's batched body has no vocab arm — not an empty arm, the DECODE body emitted unconditionally, because the vocab `@xnorm` put is a memtile-shaped descriptor whose 512-element wrap does not fit a compute tile's 8-bit wrap field. Left at `UNI_WAVES` this deadlocks at the FIRST vocab wave and nowhere earlier: all 16 decode layers run, every layer's output lands, every layer's KV appends, and then the rms core starts a decode pass into a chip that has taken its vocab arm and gone idle. Clamp `UNI_WAVE_HI` to `UNI_DEC` |
+| sign ignored — `v` and `−v` byte-identical, even for a random per-dim vector | not an arithmetic contribution |
+| mantissa ignored — 1.00 / 1.25 / 1.50 / 1.75 byte-identical, likewise 2.0…3.5 | **only the exponent is read** |
+| `‖d‖` doubles per power-of-two step | it *is* the exponent |
+| any one row = all five rows, identical vector, cos 1.0000 | a **max**, not a sum |
+| valid V at 256 vs phantom 1 / 16 / 256 → **exactly 0**; only 4096 shows | the max is **shared**, and only an exponent that *exceeds* the valid rows' does anything |
+| K poison does nothing, ever | QK contracts over DH (all valid), and masked scores are exactly `0.0`, whose exponent never raises a max |
+| bit-identical at `L % 8 == 0` | the group boundary coincides with the context boundary |
 
-And one that is not a deadlock but caused one: writing the q buffering as
-`for t: get slice` then `for t: fan slice` gets rebuilt by
-`air-ping-pong-transform` into a 2-deep ring of slices — **the interleaved form
-again**. One get and one put per CU, with the batch as a BD dimension, gives the
-transform nothing to rewrite.
+**The fix is four lines in `attn_kv_blk`**: on the last block, zero the V tile's
+keys from `rem` to the end before the mmul. Their scores are already zero, so it
+changes no arithmetic — it only keeps their exponents out of the shared max.
+Only `attn_kv_blk` / `attn_kv_fin` / `attn_kv_fin_row` are reachable from AIR;
+the in-kernel-lock `attn_kv` is the reference form and is left alone.
 
-**Both of the last two look like a batching fault and neither is about the
-batch.** The q fan is a batch-1 idiom that only has a cycle when a CU has more
-than one thing to wait for; the vocab wave is a mode the batched build was never
-going to run and forgot to stop driving. The common shape is still the one the
-shipping q4nx decode answers by construction: *nothing on the critical path
-waits for a consumer more than one hop downstream.*
+Verified `[hw]`:
 
-#### Two facts about the shim, measured while bisecting
+- `dflash_attn_leak_probe.py`: `f = +0.000000`, off-direction residual 0.000, at
+  **every** L from 9 to 26 (was −0.0063 at every `L % 8 != 0`).
+- `dflash_causal_probe.py` on the real 36-layer batch-1 template: **PASS**, K and
+  V both, every L from 6 to 24 — max|Δ| exactly 0.00000, corr 1.000000.
+- **Strictly no-op in ordinary decode**, which is the claim the mechanism makes
+  and it was checked rather than assumed: pre-fix and post-fix 36-layer batch-1
+  builds are bit-identical over 20 decode steps, max|Δlogit| **0.0**, same
+  tokens, PARIS_GREEDY intact. Rows past `L-1` are zero there, and a zero
+  exponent never wins a max.
+- **The loop is now exact.** With a causal verify pass the speculative stream
+  reproduces the non-speculative one on all 32 tokens; before the fix they
+  diverged at position 19 at a top-2 margin of 2.19, which is the divergence
+  that started this. Acceptance is **1.409** tokens per verify dispatch — now
+  measured on a sound pass, but on the Paris prompt, which degenerates into
+  *"of the of the"* by token 12 under plain greedy and gives a drafter nothing
+  real to predict. The sweep that prices DFlash has to run on §3.1's math/code
+  prompts.
 
-Both cost a build to learn and neither is written down anywhere else.
+### 3.10 The batch-8 verify pass only works below a 16-token context
 
-- **`air.preserve_shim_dma_order` is a GLOBAL order, not a per-channel one.**
-  Moving the layer-output drain to the front of the runtime sequence -- to make
-  it report progress before the KV readback rather than after -- starved the
-  whole sequence: even the KV append, which normally completes, wrote nothing.
-  So a diagnostic drain cannot be hoisted past unrelated traffic, and the
-  ordering between two channels' shim tasks is real.
-- **A drain placed between the append and the readback does not route.**
-  `aie.packet_flow` source (2,2) DMA1 to destination (1,1) DMA2: the pathfinder
-  gives up. The floorplan has no slack for an extra shim endpoint there.
+Running the acceptance sweep on real prompts (`dflash_acceptance_device.py`, 12
+gsm8k prompts drawn through the upstream's own loader and formatted exactly as
+§3.1 formats them) returned **1.095** tokens per verify dispatch — 92% of blocks
+committing nothing but the bonus token, which prices at **0.29×**. Against
+§3.1's bf16 measurement on the same data (**4.73**, P(slot 1 accepted) 0.87
+against 0.079) that gap is far too large to be quantization, and it is not the
+drafter.
 
-Together those close off the obvious way to bisect a batched hang by phase. The
-signal that does work is the buffer readback on timeout, which is why
-`batch_equiv.py --smoke` does it.
+**The target's own batch-8 output is garbage at that context length.** On gsm8k
+prompt 0 (96 tokens) batch 1 decodes coherently — *"We are given the following
+… measurements: - First measurement: **47 kg** …"* — while batch 8 emits
+`[1654, 686, 387, 2952, 311, 387, 220, 198, 198, 198, …]`, eleven newlines.
+They agree on the first token and diverge immediately.
 
-#### The tools this needed
+`dflash_verify_ctx_sweep.py` puts a boundary on it — the same comparison
+§3.5 makes, swept over context length instead of run once at P=5:
 
-All were written mid-hunt and all found a real fault immediately.
+| P | attention blocks | agree/8 | corr(slot 0) | worst-slot corr |
+|---|---|---|---|---|
+| 5 | 1 | **8/8** | 0.99559 | 0.97126 |
+| 8 | 1 | 7/8 | 0.99478 | 0.99061 |
+| 12 | 2 | 4/8 | 0.99504 | 0.22384 |
+| 16 | 2 | 5/8 | 0.30692 | 0.30692 |
+| 20 | 2 | 1/8 | 0.48705 | 0.38601 |
+| 96 | 7 | 1/8 | 0.32474 | 0.07635 |
 
-- **`l1_align.py`** — reads the buffer addresses aiecc actually assigned out of
-  `air_project/ldScripts_*.ld.script` and fails on any compute-tile buffer that
-  is not 64-byte aligned. Checks the emitted addresses rather than restating the
-  rule, so it stays true if the allocator changes. Costs one build.
-- **`batch_row_probe.py`** — asks, on device, whether row `t` of the batched
-  projection got token `t`. The other gates structurally cannot: `batch_equiv`
-  dispatches B copies of one token, `batch_path_check` and `proj_qmm_gate` model
-  a single core.
-- **`check_channel_balance.py`** — how each SIDE of each channel scaled from
-  batch 1. Ratios, not totals: counting elements absolutely needs a model of
-  `scf.parallel` fans, `index_switch` arms and herd multiplicity, and getting
-  one wrong made the first version call the SHIPPING batch-1 design broken. The
-  same modelling error on both sides of a division cancels.
-- **`check_dma_alloc.py`** — which tiles moved their DMA channels, and how the
-  BD chains and lock counts changed. Found the two-chains-on-one-channel fault
-  in seconds. Needs two AIE dumps, so it costs two builds (~9 min). It answers
-  WHICH CHANNEL and not WHAT IT WAITS FOR: it passed every one of the hung
-  lm-head builds. For that, diff the `use_lock` VALUES in the two dumps'
-  `aie.mem` blocks — see the lm-head section.
-- **`batch_dispatch_check.py`** (in `llms/llama32_1b_q4nx/`) — the only gate
-  that runs the batched engine on the REAL model: real weights, a real prefill,
-  B distinct tokens, and every token compared against every batch-1 reference so
-  the off-diagonal is the answer. It is what found the silu divergence, and
-  nothing synthetic could have.
-- **`batch_lm_equiv.py`** — the device gate for the batched LM head, and the
-  only one that sees it at all (`batch_equiv` reads layer outputs; the vocab
-  waves write Y). Feeds B DISTINCT embeddings and compares every token against
-  every batch-1 reference, so the answer is a matrix whose off-diagonal is the
-  real gate. Isolates the head from the sixteen layers in front of it with
-  `DECODE_ACC_STOP=1` rather than by trimming the wave range — a vocab wave does
-  not run standalone in this design, at batch 1 either.
+The break is exactly where the block stops fitting in **one 16-key attention
+block** (`P + B <= 16`). Batch 1 at the same P is fine — it decodes coherently
+at P=96 across seven blocks — so this is batch>1 **and** rounds>1, not either
+alone.
 
-What none of them can see is ORDER, and four of the seven faults above are
-ordering.
-For those the tool is the emitted `air_project/aie.air.mlir` and a hypothesis.
+**§3.5's verify gate ran at P=5, which is the only regime that works.** That is
+the lesson worth keeping: it compared batch 8 against eight batch-1 steps, on
+the real model, and passed 8/8 — and it was a single-point test sitting inside
+the one window where the pass is correct. The context sweep is now the gate.
 
-#### The order to do the rest in
+Everything downstream of the verify pass is therefore unpriced. The 1.095 is a
+real measurement of a broken configuration, not of DFlash; §3.1's 1.24× remains
+an upper bound with nothing under it. What §3.8's exactness result still says is
+narrower but intact: the loop's accept/rollback logic and the taps plumbing are
+right, because the speculative and non-speculative streams agree — both are
+running the same broken verify pass, so agreement tests the host logic and not
+the engine.
 
-1. ~~**The device equivalence gate, FIRST.**~~ **Written — `batch_equiv.py`.**
+Next: bisect the multi-block batch>1 attention path. The suspects are the ones
+the per-token block loop touches — `_core_rounds`' uniform push count against
+each token's own `ceil(L_t/16)`, the memtile K/V ring's `_seg_blocks()` against
+`BATCH * rounds`, and the L3 re-read (`extent BATCH, stride 0`) that gives each
+token its own copy of the block sequence. `batch_equiv.py` reports 3.86e-03 at
+batch 8 / L=128 with `UNI_DEC_OVERRIDE=1`, i.e. one layer and synthetic weights,
+so it does not contradict this and does not cover it either.
 
-   **Its first premise was wrong, and the correction is the point.** It asserted
-   that B IDENTICAL tokens give B IDENTICAL rows. That is false, and for the
-   reason the batch exists: a block occupies B CONSECUTIVE positions, so token t
-   attends to t more keys than token 0 and rotates by a different RoPE angle.
-   An "all rows equal" gate would have PASSED on an engine that gave every token
-   position P's context — exactly the silent failure `batch_attn_mask.py` was
-   written to warn about. The property that is actually true, and that DFlash
-   rests on, is
+## 4. qwen3-4b at batch 1: verified
 
-       one batch-B dispatch at position P
-         ==
-       B batch-1 dispatches at positions P .. P+B-1, same X each time
+The target model works end to end on NPU2 `[hw]`:
 
-   `--tokens 0` needs one batch-1 template and already covers the whole batched
-   data path; `--tokens all` needs one per position (a non-DYNSEQ template bakes
-   L) and is what proves token t gets a DIFFERENT and correct answer rather than
-   a copy of token 0's. **Both now pass** at batch 8 on llama-3.2-1b — see the
-   per-token table in "State of play". The eight batch-1 references cost eight
-   builds; `DECODE_DYNSEQ=1` would remove that.
+- Prefill: 36 layers + tied LM-head GEMV, real Q4NX weights, first token
+  **12095** (" Paris"), matching HF bf16.
+- Decode: `[12095, 13, 576, 6722, 315, 9856, 374, 19846, 13, 576]` →
+  *" Paris. The capital of Germany is Berlin. The"*.
+- Production `ATTN_MAXL=2048` templates, two prompts, all facts correct,
+  **14.99 tok/s**.
 
-   **Two other things it taught.** Random bytes make random bf16 SCALES: the
-   first run returned 0x7F81 — one NaN — in every element, and a gate whose
-   output is constant passes on anything. It now builds REAL q4k blocks and
-   refuses to compare a flat output. And a hung dispatch is not information-free:
-   `--smoke` reads the buffers back on timeout and says which regions moved,
-   which is the only progress signal this engine gives.
+**The bug that blocked this was `GLU_SLICE`** `[static]`: `models/qwen3-4b.h`
+carried 1024, inherited from qwen3-8b.h when the header was copied. The Python
+builder computes its own value from this model's egress round-count parity
+(`ROUNDS_PER_DEST[GLU_DEST]=38`, `38//2=19`, odd → `GLU_PKTS=1` → 512). With
+1024 in the header the kernel consumed slices at double the width the IR fed
+it, and the FFN/down contribution came out ~zero for every layer — verified by
+`DECODE_ACC_STOP`, where the real decode's output was byte-identical to an
+FFN-skipped debug build. Fixed to 512; shipped as PR #1916. qwen2.5-7b hits the
+identical odd-parity case and already had 512.
 
-   **Writing it before the wiring already paid.** It found that the host-facing
-   L3 buffers never scaled — `x_l3`, the rope-LUT slab in `rms_l3`, and `y_l3` —
-   and that `decode_geometry.py` restates those sizes rather than reading the
-   memref shapes, so it reported batch 8 and batch 1 as the same dispatch. Both
-   fixed. The scaling is now visible and is the thesis of this whole document in
-   one table **[measured]**:
+**Per-layer hidden-state taps work** (`DECODE_HIDDEN_TAPS`), which DFlash needs
+to feed the drafter `[hw]`. Read back on device at P=5 against HF bf16, cosine
+per tap slot: 0.999843 / 0.995922 / 0.989015 / 0.980171 / 0.981922 / 0.985569,
+**mean 0.988740**. Before this it had only ever been an IR-level no-op check.
 
-   | BO | batch 1 | batch 8 | |
-   |---|---|---|---|
-   | X | 2560 | 20480 | x8 — B token embeddings |
-   | **weights** | **154419200** | **154419200** | **x1 — the entire point** |
-   | rms (+ B rope LUTs) | 200704 | 297472 | x1.48 |
-   | Y | 162304 | 223232 | x1.38 |
-   | KV cache | 150994944 | 152174592 | x1.01 — the last token's position |
+**Where a batch-1 dispatch's time goes** `[hw]`, qwen3-4b, median of 25,
+ctx 8→1800, three template families (`_decode_cost/run_family.py`):
 
-   Read the weight row against the X row. That ratio is what the whole
-   speculative-decoding argument rests on, and it is now a property of the
-   emitted design rather than a claim.
-2. ~~**rms row loop.**~~ **Done — and it is NOT a row loop.** Everything the rms
-   core does is per row, but it has to hold all B rows of TWO things at once:
-   the raw batch (the residual stream) and the normalized batch (what the
-   projection re-reads REFEED[p] times). On qwen3-4b that is 2 x 40 KB against a
-   54 KB budget, and neither can be dropped. So the normalized batch is **never
-   materialized**: `rms_scale_row_aie` keeps one float per row and
-   `rms_chunk_aie` regenerates whichever @xnorm chunk is being sent, for all B
-   rows, into a staging buffer one chunk wide. The big buffer stays raw and
-   accumulates in place — x, then h, then the layer output, one buffer, three
-   roles. `residual_acc_row_aie` adds a projection round in where it lands,
-   which also removes the K-wide landing buffer on the way in.
-
-   54304 B of 55296 at batch 8 **[measured]**, so `BATCH_MAX_RMS` is exactly 8 —
-   computed from the live set, not asserted. Gemma's sandwich norm is refused
-   rather than half-wired: normalizing the SUBLAYER OUTPUT needs the whole
-   projection row resident, which is the second buffer this design exists to
-   avoid.
-
-   The cost is that a chunk is recomputed once per re-broadcast round rather
-   than once per token. Whether that lands on the critical path is unmeasured;
-   the alternative is a resident X buffer in L2.
-3. ~~**glu row loop.**~~ **Done.** Same shape, ten minutes once step 2 was.
-4. ~~**Attention token loop + per-token `L`.**~~ **Done.** The mask needed no
-   kernel change, as `batch_attn_mask.py` predicted: `attn_qk_blk`'s tail mask
-   IS a per-query causal mask when L is a per-query value, so token t runs with
-   `L + t` — the loop's own induction variable, not a second RTP. The block
-   COUNT stays uniform at `ceil((L+B-1)/16)` because the shim's push and the
-   core's consume have to agree; blocks past a token's own L hit the kernels'
-   existing `rem <= 0` early return. `ATTN_L_BLK` is where that lives, and it
-   also makes `kvappend_bd`'s overrun guard hold by construction.
-5. ~~**Find the last deadlock.**~~ **Done — there were two.** The q fan and the
-   vocab waves; both are in the deadlock table above, with the mechanism. The
-   method that found them is the one that found the other five: build,
-   `check_dma_alloc.py` against a batch-1 dump, and when that is clean, reason
-   about ORDER in the emitted AIE.
-
-   **Reading the SHIPPING q4/q4nx decode first is what closed it**, and the
-   question the doc pointed at — *what keeps a producer from being blocked by a
-   consumer three hops downstream?* — named the q-fan fault directly. Every one
-   of the seven faults was a place where the batched wiring invented a dataflow
-   the batch-1 engine does not use. Still worth reading, for the numeric work
-   that is left:
-
-   | where | what it answers |
-   |---|---|
-   | `llms/*/q4nx_decode_*.py`, `llama32_1b_q4nx_inference.py` | how the driver sequences a dispatch, and what it does between tokens — the closest thing to a multi-token cadence that already runs |
-   | `decode_staircase.py`, `decode_insts_gen.py` | how L varies per dispatch without a rebuild. The batched build currently bakes one L; the staircase is how the shipping models avoid that |
-   | `decode_dynseq.py` + `DECODE_DYNSEQ=1` | the runtime-L form. It exists, it works, and it would remove the per-position template pair `batch_equiv.py --tokens all` needs |
-   | the `refeed()` sites and their `air.refeed_count` in the AIE dump | the ONE re-broadcast idiom this engine is built around. The batched rms core stepped outside it (a real production loop, not a collapsed re-broadcast) and that is the largest un-audited difference left |
-   | `llms/shared/builders/*_multi.py` | the multi-launch block builders — a different answer to "more than one thing per call" than the one being built here |
-
-   The specific question to take to them: **what does the shipping engine do that
-   keeps a producer from being blocked by a consumer three hops downstream?**
-   Five of the seven faults were exactly that, and the batch-1 design never hits
-   it because one token never has to wait for a second.
-6. ~~**The MLP half.**~~ **Not a fault — see the sweep above.** The layer output
-   is 0.67% from batch 1 once the gate-up stops being driven outside silu's LUT.
-   The three probes it took are still in the tree and worth knowing about:
-   `GLU_ROW_PROBE=1` swaps the halves, `=2` is `up - gate` (antisymmetric and
-   silu-free, and the one that proved the plumbing), `=3` is `up` alone. All
-   behind `-DGLU_ROW_PROBE`, so `check_kernels_inert.py` stays green.
-7. ~~**Role 0 reads `(X[0] + X[t]) / 2`.**~~ **Fixed — and it was never a token
-   permutation.** The proj lead tiles' `_e=1` accumulator was 32 bytes off a
-   64-byte line, because the one odd-sized buffer on a proj core (the 528-bf16
-   shared egress block) is packed just before it and mlir-aie only promises
-   32-byte alignment. Rounding that buffer to 544 fixes it; `batch_row_probe.py`
-   passes and `l1_align.py` is the standing check. Full account above.
-
-   Worth keeping from how it was found: the shape of a wrong answer is a weak
-   signal. `(1 + t/2)/8` looked exactly like an average of two rows, which is
-   not a thing a DMA can do, and a day went into the X feed and the descriptors
-   before the raw-accumulator dump (`PROJ_FLUSH_PROBE=4`) and the A-operand dump
-   (`PROJ_MM_PROBE=1`) said in one run each that both were fine. **Dump the
-   operand and dump the accumulator before theorising about either.**
-8. ~~**The batched lm head.**~~ **Done.** `batch_lm_equiv.py` passes: eight
-   tokens' logits out of one dispatch, each matching a batch-1 wave on its own
-   row. It was never the port budget the refusal blamed, and it was never the
-   L1 either — both were consequences. See the section below.
-9. **Host driver.** ~~B embeddings in, B logits out, B rope LUTs,
-   `check_bounds`.~~ **Written** — `FusedDecoder(batch=B)`, and two silent
-   window bugs fixed on the way (see the commit): `attn_maxl_of` ignored the
-   batch, and the driver imported the builder at a context length whose derived
-   window was B-1 positions larger than the template's. ATTN_MAXL is the KV
-   REGION STRIDE, so either one lays every group's region away from where the
-   device reads it.
-
-   `batch_dispatch_check.py` is the gate. The engine fault behind its failure is
-   FIXED -- a misaligned silu LUT, see the section below -- and the driver was
-   never implicated. What is left is not a bug: batch 1 runs the GEMV and batch 8
-   the q4k mmul, 1.599% apart, which compounds over 16 layers to a 5.7e-2..2.4e-1
-   diagonal against a 5e-2 tolerance. Every token is closest to its own reference
-   and argmax agrees on 7 of 8.
-
-10. **Decide the projection kernel.** A lossless speculative verify needs the
-    batched pass to agree with the single pass, and the only thing now keeping
-    them apart is that they use different projection kernels. Putting batch 1 on
-    the mmul would close it, but the builder selects on `BATCH > 1` in several
-    places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`, `wscr_mm_l1`) goes
-    with it, so it moves SHIPPING batch-1 numerics and needs `make verify`
-    behind it. The alternative is to accept a lossy verify and measure what it
-    costs in accepted tokens. **Measured: `spec_accept.py` says 7.20 of 8, so
-    the lossy verify costs 10%** and closing it buys at most 1.11x. This is a
-    decision, not a defect.
-
-11. ~~**Unblock block 16.**~~ **Explored. Do the change, but not for block 16.**
-    What blocks it is the rms core's `BATCH*K` residual, and it is a LIFETIME
-    problem rather than a working-set one — see "What it would take to build
-    block 16". Moving the `@xnorm` staging to L2 (the builder's old advice)
-    reaches 11 on llama-3.2-1b and 8 on qwen3-4b, not 16; band-streaming the
-    residual through the `@rmsX`/`@layerOut` round-trip the layer already makes
-    reaches 22 and 21. Three independent routes say block 16 would be SLOWER
-    than block 8, so the ceiling is now correctly counted and documented rather
-    than lifted for that reason.
-
-    **The reason to do it anyway is qwen3-4b at block 8.** Its ceiling is 7 and
-    the projection kernel's smallest batch is 8, so the DFlash target cannot run
-    a batched verify at any size — every batched number in this document is
-    llama-3.2-1b standing in for it.
-
-12. ~~**Claim the attention term.**~~ **Demoted by measurement.** It is 16% of
-    a batch-8 dispatch on device, not 69%, so section 5g's 1.55x ceiling on it
-    is worth about 4% end to end rather than 26%. Still real, no longer the
-    lever.
-
-13. **THE open number: the batched layer runs at 3.65x its memory floor with no
-    arithmetic in it.** `PROJ_MM_PROBE=1` deletes the mmul and the unpack and
-    the layer goes 3.089 -> 3.017 ms, so the batched projection's entire
-    arithmetic is **2%** of a dispatch. The same design at batch 1 sits on its
-    floor. This is not the kernel and it is not the weights; it is dataflow that
-    appears only above batch 1, and it is worth more than every other item here
-    combined — closing it alone would take the batch-8 verify from 2.2x toward
-    the 8x a shared weight stream allows, which is more than DFlash's whole
-    speculative mechanism is claiming.
-
-    Three candidate causes have been **tested and ruled out** — see "What it is
-    not": the `@xnorm` handshake count (`XCHUNK_MUL=4` halves it, runs 1 ms
-    slower, emits bitwise-identical logits), the `@inX` multicast being
-    replicated (it is one MM2S with 16 flows), and the ping-pong structure being
-    absent (it is not; both proj-core inputs are 2-deep rings already).
-
-    **What is confirmed, without a trace** (the AIE trace unit does not work on
-    this part, and `get_cycles()` is an undefined symbol under Peano — see "The
-    pipeline has almost no slack"): injecting a calibrated, known delay into the
-    proj core (`PROJ_DELAY`) shows 25-45% of it exposed in wall time even at
-    small magnitudes, climbing to 89% by `PROJ_DELAY=2000`. That is the
-    signature of several thinly-buffered handshakes, not one buffer with real
-    spare capacity — the array is not idle-with-slack, it is running close to
-    its coupling limit.
-
-    **Tried: deepen the compute-tile ring to 3.** It compiles, runs, and is
-    correct (8/8 accepted on device) — and the `PROJ_DELAY` exposed fraction at
-    depth 3 is statistically the same as at depth 2 (63% vs 60% at
-    `PROJ_DELAY=800`, 90% vs 89% at 2000). Compute-tile ring depth is closed as
-    the sole explanation. See "Depth 3 was tried" above for how (pre-tag the
-    unchanged loop with `unroll=3` so `air-label-scf-for-to-ping-pong`'s own
-    factor-2 default never fires, rather than hand-building a deeper ring —
-    two attempts at that failed the same way in `air-dependency`) and what it
-    does not rule out: the memtile-side producer, one level up, is subject to
-    the identical depth-2 default and was not touched by this change.
-
-Keep running the batch-1 no-op diff on **both** models after every step. It has
-already caught a leaked constant that folded away on qwen3-4b and did not on
-llama, so one model is not enough.
-
-#### The batched lm head: what it was [measured]
-
-**The refusal blamed the rms tile's DMA port budget. That was wrong**, and so
-was the version before it (which claimed a separate lm-head herd; there is none).
-The projection was already batched — one proj herd family, both RTP arms through
-it, `_proj = _mm if BATCH > 1 else _gemv` arm-independent, `_emit` already
-shipping `HDR + PAIR_PAY*BATCH`. What was missing was the rms core's vocab arm,
-and four attempts at writing it all hung identically: wave 0, one layer's KV
-written, layer output never landing, no message.
-
-**What it actually was is one line of AIR.** `getLockValuePair`
-(`AIRToAIESchedulingUtils.cpp`) sizes a compute-tile buffer's lock credit from
-the RATIO of the channel ops that write it to the ops that read it:
-
-    if (!read_counter || !write_counter) return {1, 1};
-    if (read_counter >= write_counter) return {ceil(r/w), 1};
-    else                               return {1, ceil(w/r)};
-
-It counts **all** users, and an `scf.if` / `index_switch` arm select is invisible
-to it — two mutually exclusive arms naming the same buffer look like twice the
-traffic. So the moment the two arms SHARE a buffer, which at batch 8 they must
-(two sets is 2×(32+8+4+4) KB on a 64 KB tile), the credit on that buffer's ports
-doubles: the DMA waits for two core releases per fire and the core issues one.
-
-That is the whole of it, and it explains every symptom the earlier attempts had.
-The emitted diff against a working build is two characters — `%c1_i32` becomes
-`%c2_i32` on `@layerOut`'s MM2S and `@outY`'s S2MM — which is exactly "the layer
-output never lands", and it is invisible to `check_dma_alloc.py`, whose subject
-is which channel a flow sits on rather than what it waits for.
-
-**The rule that follows** is the useful part, because it is not about this design:
-
-> Two arms may share a buffer only if, counting BOTH arms, that buffer is
-> DMA-written-only or DMA-read-only, or the read and write op counts are equal.
-> Anything else silently doubles a lock credit.
-
-Everything in the fix is that rule applied three times:
-
-| | |
+| term | ms |
 |---|---|
-| the rms core | **ONE body**, not two. The arm selects a COUNT (`@xnorm` re-feeds: `XN_REFEED`/`REFEED[GATEUP]` for decode, `VOCAB_RNDS`/0 for the head) and never a program, so every buffer has exactly one op per role. The residual accumulates and the layer-out sit under an `scf.if` — one op each, still credit 1 — which also keeps their `@outY` gets on STATIC loop bounds |
-| the logits' route | the vocab projection stamps the **gate-up id** (`VOCAB_DEST`) and leaves from the **GLU core**, which is idle in vocab, has a free MM2S, and whose column's shim is entirely unused. One hop from the demux instead of two |
-| the GLU core | two arms, so the shared `@outY` landing ring stays write-only: the relay COPIES into the GLU's output buffer (`glu_copy_aie`) instead of sending the input buffer back out. Read-only and write-only buffers hit the `{1,1}` early return and cannot be miscounted at all |
+| fixed | 1.78 |
+| per layer | 1.593 |
+| × 36 layers | 57.34 |
+| attention | 7.82 |
+| lm head | 7.00 |
+| **total (ctx 1800)** | **73.94** (13.5 tok/s) |
 
-**Two dead ends worth not repeating.**
+The 73.94 ms here and the 14.99 tok/s above are different measurement
+conditions (synthetic-KV sweep vs a real generation run), not a contradiction.
 
-The first is the memtile. Draining the logits from dest 0's memtile is the
-obvious route — that memtile already exists for the batched QKV transpose and is
-idle in vocab — and it does not compile: at batch 8 `mem_tile_3_1` has five MM2S
-in use and reserves the sixth (MM2S 0 carries the q-broadcast's route), so
-air-to-aie says *"failed to get MM2S tile for L3 allocation"*. The main egress
-memtile is worse, with all six spent. **Count the memtile's channels in a
-working dump before choosing a relay**; the numbers are in `aie.air.mlir` and
-cost nothing to read.
+## 5. Batching: the actual blocker
 
-The second is the one-body form on the GLU core. Making its trip count
-RTP-selected — the proj core's shape — puts the `@outY` get under a dynamic loop
-bound, and `@outY` is the DEMUX: its routing ids are derived from its gets'
-static VOLUME (`PacketRoutingDomain.cpp`), so an unknowable volume means no ids
-and all sixteen proj emitters fail with *"selects a destination, but its routing
-domain has no demux"*. **A dynamic trip count is free around an ordinary
-channel and forbidden around a demux's get.**
+### 5.1 The L1 ceiling
 
-**What it cost, and what would have found it sooner.** `check_dma_alloc.py` said
-"no tile has two chains on one channel" for every one of these builds, which was
-true and not the question. The diff that mattered was the acquire/release VALUES
-in the two tiles' `aie.mem` blocks against a known-good dump — one `grep` over
-`use_lock` — and it named the fault in one pass once it was run. That comparison
-is now the first thing to do when a batched build hangs with the decode engine
-otherwise green.
+The batched rms core holds, at peak `[static]`:
 
-**One design decision worth knowing about**, because it is not obvious and it
-shaped everything downstream. The projection emits **(round, token)**: round r
-is a 32-row band of the output for *all* B tokens, because that is what a
-batched mmul computes in one go. rope wants **(token, round)** — one token's
-whole `M`-wide row — and cannot be given a strided landing for it, because a
-`[B][M]` L1 buffer is 96 KB against a 54 KB budget. Two ways out:
+```
+_rms_l1_bytes(b) = 2*(b*K + b*STG_W + 2*K) + 4*b        # levels 0-2
+```
 
-| | cost |
+against `_L1_ROWTILE_BUDGET = 65536 - STACK_SIZE`. Both norm weights are
+resident (the body allocs `w` and `w2` together); reusing one buffer for both
+saves K bf16 and **hangs the batched decode in wave 0**, so it is not available.
+
+Ceilings this gives `[static]`, independently re-derived:
+
+| model | K | ceiling |
+|---|---|---|
+| llama-3.2-1b | 2048 | 9 |
+| **qwen3-4b** | **2560** | **7** |
+| gemma3-4b | 2560 | 7 (also refused: sandwich norm) |
+| llama-3.2-3b, phi4-mini | 3072 | 5 |
+| qwen2.5-7b | 3584 | 4 |
+| qwen3-8b, llama-3.1-8b | 4096 | 4 |
+
+**`DECODE_BATCH` must be a multiple of 8** — `aie::mmul<8,8,8>`'s A tile is 8
+rows and `q4k_mm.h` asserts `rowA == 1`, so 8/16/32 compile and 2/4 fail at
+`static_assert` `[static]`. So qwen3-4b's ceiling of 7 means **it could not
+batch at all**, and llama's 9 means 8 is the only batch it can do.
+
+This is the single fact that shaped everything else: **all batched work in this
+repo's history was done on llama-3.2-1b, because qwen3-4b could not build.**
+
+### 5.2 What was cleared, and how
+
+`STACK_SIZE` (env `DECODE_STACK`, default 10240) is a knob, and the budget is
+`65536 - STACK_SIZE`. qwen3-4b at batch 8 needs 59,424 B by the formula and
+**59,428 B** in the emitted IR (the formula omits the 4-byte herd RTP buffer);
+tile_2_2's buffers are 40960 residual + 8192 staging + 5120 + 5120 norms + 32
+scales + 4 RTP. At `DECODE_STACK=6080` the budget is 59,456 B and it fits.
+
+**qwen3-4b now builds and dispatches at batch 8** `[hw]` — no hang, 20480
+elements returned, 1500 distinct values. This is the first time any qwen3-4b
+build above batch 1 has run.
+
+**The stack reduction is not a fudge, and that was checked rather than
+asserted** `[hw]`: llama-3.2-1b at batch 8 produces **byte-identical** output at
+`DECODE_STACK=10240` and `DECODE_STACK=6080` (rms rel 1.81e-03, the same 226
+differing elements). Reducing the stack changes nothing about the result.
+
+### 5.3 The second bug: `build_template.sh` compiled the wrong model's kernels
+
+With the ceiling cleared, batch 8 ran but **failed** the equivalence gate at
+rms rel 5.02e-01 against a 5e-2 tolerance. That turned out not to be a batching
+fault at all.
+
+The trail, in the order it actually went — each step ruling out the obvious
+suspect:
+
+1. A per-512-chunk profile (`_b8_chunk_profile.py`) showed chunks 0-3 agreeing
+   at ~1.8% and chunk 4 of the **batch-1 reference** reading all zeros `[hw]`.
+   So most of the 50% was the reference, not the batched output.
+2. An X-buffer probe (`_x_hole.py`), which distinguishes *zeroed* from
+   *untouched* from *written*, showed the qwen3-4b batch-1 reference was
+   **bit-identical to the host fill** in chunks 0-3 — the device never wrote
+   them — with chunk 4 zeroed `[hw]`. llama-3.2-1b wrote all four of its
+   chunks normally `[hw]`.
+3. Not the wave count (`UNI_WAVE_HI` 1, 2 and 36 all identical `[hw]`), not the
+   context length (same at L=2048 `[hw]`), not `W_DUAL_CHAN` (defaults to 1),
+   not the RTP arity (`dispatch_args` returns `[]` for non-dynseq builds).
+4. The **production** qwen3-4b template — the one that generates correct text —
+   passed the same probe with all five chunks written `[hw]`. So two qwen3-4b
+   batch-1 templates disagreed, and the difference had to be in how they were
+   built.
+
+**Root cause:** `build_template.sh` takes its kernel flags from *this*
+directory's Makefile via `check_kernels_inert.makefile_kbase()`, and that
+`PEANO_KBASE` hardcodes **`-DMODEL_TYPE=LLAMA_3_2_1B`** — the fused_decode
+Makefile only ever builds llama-3.2-1b, and each `llms/<model>_q4nx/Makefile`
+carries its own `-DMODEL_TYPE`. So every `DECODE_MODEL != llama-3.2-1b`
+template this script produced had **llama kernels** (`MODEL_DIM` 2048, `DH` 64)
+inside a design built for another model's dimensions. Its own usage text
+documents `DECODE_MODEL=qwen3-4b ... ./build_template.sh 8 2048`, so this was
+reachable exactly as intended and silently wrong.
+
+**The failure mode is the dangerous kind**: it links, it dispatches, it returns
+`COMPLETED`, and the layer output is simply never written. Nothing reports an
+error.
+
+Fixed by deriving `MODEL_TYPE` from `DECODE_MODEL` in `build_template.sh` (a
+`case` covering all ten models, with an explicit failure for an unknown one),
+substituted into the flags before any kernel is compiled — the same
+"the object and the design cannot disagree" rule the script already applied to
+`PROJ_MM_BATCH`.
+
+### 5.3b Batch 8, with correct kernels: both models pass
+
+`batch_equiv.py --tokens 0`, L=128, `DECODE_STACK=6080` `[hw]`:
+
+| design | layers | rms rel vs batch 1 | verdict |
+|---|---|---|---|
+| **qwen3-4b** (target) | 36 | **2.79e-03** | pass (tol 5e-2) |
+| **qwen3-4b-draft** (drafter) | 5 | **3.75e-03** | pass |
+| llama-3.2-1b (control) | 16 | 1.81e-03 | pass, unchanged |
+
+Both DFlash halves now run correctly at batch 8 on qwen3-4b, and the residual
+error sits where llama's does — this is the GEMV-vs-mmul kernel difference the
+gate is designed to tolerate, not a wiring fault.
+
+The llama control is byte-for-byte what it was before the fix (same 226
+differing elements), so making `MODEL_TYPE` explicit changed nothing for the
+model that was accidentally correct.
+
+**Scope of what this invalidates:** any qwen3-4b (or gemma3-4b, phi4-mini,
+qwen2.5-*, qwen3-8b, llama-3.1-8b, lfm2) template ever built through
+`build_template.sh` was built with llama kernels. Measurements taken on those
+templates mean nothing and must be re-run — including this document's own
+level-3 results (§5.4), which went through the same script.
+
+**Still not measured:** what a batch-8 dispatch *costs* on either model. It runs
+correctly; it has not been timed.
+
+### 5.4 RMS_BAND_STREAM, and what is actually known about it
+
+The band-streamed residual is the intended route past the ceiling: move the
+residual out of L1 and round-trip one band at a time through DDR on
+`@rmsX`/`@layerOut`, which would raise qwen3-4b's ceiling to 21 `[model]`.
+
+| level | what it does | state |
+|---|---|---|
+| 0 | off | shipping |
+| 1 | two-pass scale kernel | **llama-3.2-1b, batch 8, on device: 8/8 accepted** `[hw]` |
+| 2 | bands the initial `rmsX` read; `xb` still full-size | **verified: llama-3.2-1b 8/8 accepted; qwen3-4b batch 8 byte-identical to level 0** `[hw]` |
+| 3 | `xb` shrinks to one band; six-phase refetch | builds clean, hangs in wave 0 — see below |
+
+**Levels 1 and 2 were verified on llama-3.2-1b, not qwen3-4b.** They cannot
+have been verified on qwen3-4b: neither level changes `_xb_w`, so neither moves
+qwen3-4b's ceiling of 7, so neither can build at batch 8 there. An earlier
+version of this document claimed level 2 was "already verified on real qwen3-4b
+hardware at `DECODE_BATCH=8`" — see §9.
+
+**Level 3 now builds, and hangs on a wall one layer further down.** Three
+separate defects were found and two of them fixed; the third is structural.
+Everything below is post-`MODEL_TYPE`-fix, qwen3-4b, `DECODE_BATCH=8`,
+`DECODE_STACK=6080`.
+
+#### (i) BD-block exhaustion — FIXED
+
+`aircc` used to fail with `'aie.mem' op has more than 16 blocks`: the rms core
+wanted 22 channel ops against a core tile's 16 BD blocks.
+
+| op | before | after |
+|---|---|---|
+| `get @rmsX` | 14 | **6** |
+| `put @xnorm` | 2 | 2 |
+| `get @outY` | 2 | 2 |
+| `put @layerOut` | 2 | 2 |
+| `get @rmsW` | 1 | 1 |
+| `get @rmsW2` | 1 | 1 |
+| **total** | **22** | **14** |
+
+The 14 came from the scale pre-pass being a PYTHON-unrolled loop over bands:
+`_nband` textually identical gets, one BD block each. Rolling it into an
+`scf.for` costs one block for the whole pre-pass — the loop becomes a repeat
+count on a single BD — and the only per-band value it carried, the `first`
+flag, is just `band == 0` and comes from the loop index via the same
+`extui(cmpi)` shape `PROJ_RC_CACHE`'s own first-visit flag uses. The count is
+then `2 pre-pass + 2 regen + 2 residual = 6`, **independent of K**, and the
+whole tile lands at 14 of 16 (11 BD blocks after AIR folds equivalent ops).
+
+This retires the previous section's whole band-width analysis: with the op
+count no longer proportional to `nband`, there is no BD-vs-L1 squeeze and no
+need to move off `w = STG_W = 512`.
+
+#### (ii) A lock-count mismatch on `@layerOut` — FIXED
+
+With the blocks under the limit, the first level-3 build ever to reach the
+device timed out with **nothing written at all**. Cause, read straight out of
+`aie.air.mlir` `[static]`:
+
+```
+DMA  (MM2S, layerOut):  use_lock(lock_2_2_128, AcquireGreaterEqual, 3) ... Release 3
+core (the band put):    use_lock(lock_2_2_128, Release, 1)
+```
+
+A tile-DMA BD's acquire/release COUNT comes from
+`air::getLockValuePair(targetModel, buffer)` — the two-argument overload in
+`AIRToAIEPass.cpp` — which is `ceil(reads/writes)` over the memcpy ops naming
+that buffer. The core side is hardwired to 1. Sharing one band buffer between
+the `@rmsX` gets (6, writes) and the `@layerOut` puts (2, reads) therefore asks
+the DMA for 3 credits per firing against a core that issues 1: the DMA never
+fires, the core blocks on its second band, and nothing lands.
+
+Fix: `residual_acc_row_banded_out_aie`, an out-of-place `out = acc + x` instead
+of `acc += x`, so the fetch buffer is written-only and the drain buffer is
+read-only and both ratios are 1:1. Costs one more `BATCH*STG_W` band buffer
+(level 3 is now `2*b*STG_W` of band where levels 0-2 are `b*K` of resident
+row). It also keeps `@rmsX`'s BD ring uniform, which (iii) turns out to
+require.
+
+#### (iii) The rms core has two S2MM ports and level 3 needs three — FIXED
+
+`air-to-aie` turns a tile's per-channel memcpy list into BD **tasks**, one per
+run of equal static trip counts (`getRepeatCounts`), and emits a count-free,
+lock-driven **infinite BD ring** only when the whole physical channel collapses
+to ONE task (`generateDmaBdProgram`: `infiniteBDLoopMode = repeat_counts.size()
+== 1`). A terminating task fires once per dispatch, which is wrong for anything
+consumed per layer. So every S2MM port here must be a single ring — and a ring
+fires each of its slots exactly once per rotation.
+
+That gives the rule the whole problem reduces to: **all channels sharing a port
+must have equal per-wave transfer counts, consumed in rotation order.** The
+shipping level-0 build satisfies it exactly `[static]`:
+
+```
+S2MM 0:  ring [ rmsX, rmsW, rmsW2 ]   counts 1, 1, 1     -- one rotation per layer
+S2MM 1:  ring [ outY ]                count 10
+```
+
+Level 3's counts are `rmsX 270, rmsW 1, rmsW2 1, outY 10` per layer. `rmsX` must
+be alone (270 is not a ratio any 16-slot ring expresses) and `outY` must be alone
+(its BD is deliberately unstamped — the channel pins several packet ids and the
+core writes the routing id into the payload header, so the DMA must not filter),
+and that is both ports. Forcing the weights onto `outY`'s port instead was
+measured and hangs the **known-good level-0 batch-8 design** too `[hw]`.
+
+**The fix is `RMS_W_ON_X`: the norm weights ride the `@rmsX` stream, so they
+stop needing a port at all.** A norm weight is K bf16 and a band fetch already
+moves `BATCH*STG_W >= K` of them, so the weight fits in ONE band-shaped transfer
+on `@rmsX`: the launch puts it from the rms weight buffer with a band-shaped
+descriptor, the core takes it with the same `_rms_band_get` every other visit
+uses, and `band_to_weight_aie` copies the first K elements out. The descriptor is
+identical to every other rmsX get, so AIR folds it into the same BD and the ring
+stays one count-free slot. Cost: `BATCH*STG_W - K` wasted elements per weight per
+layer (0.1% of a layer's weight traffic) and one K-element on-core copy.
+
+**Verified on device, in isolation** `[hw]`: carrying both norm weights on
+`@rmsX` at **level 2** — where no banding is involved and the weight goes
+straight into its own buffer with a 2-D descriptor — passes the batch-8
+equivalence gate at **1.83e-03**, identical to level 2 without it
+(`_RMS_W_ON_X=1 RMS_BAND_STREAM=2`). The rms core's inbound set is then
+`{rmsX, outY}`, exactly two, and the level-3 tile emits **one self-looping BD
+per port**, every lock count 1.
+
+That test also established a rule worth keeping: **the launch must feed a
+channel in the same order the core's BD ring rotates, and the ring is emitted in
+the CORE's program order.** At level <3 the row get sits at the top of
+`_rms_batched` with the allocs while the weight gets come later, so the ring is
+`[row, w, w2]`; feeding the weights first does not hang, it silently swaps the
+row and the weights into each other's buffers (measured: rms rel **1.56e+00**).
+Level 3 is immune only because all its rmsX gets share one descriptor and one
+buffer.
+
+#### (iv) Still hanging, and what is now ruled out
+
+With (i)-(iii) fixed, level 3 builds and emits a structurally ideal tile
+program — **one self-looping BD per port**, every lock count 1, packet ids
+matching end to end — and still times out in wave 0 with **nothing written at
+all, not even the KV cache** `[hw]`.
+
+Two more real defects were found and fixed on the way, both of the same family
+(a descriptor that is correct AIR and does not survive lowering, with no
+diagnostic):
+
+- **A 5-D shim descriptor loses its outermost dimension.** `_rms_x_feed_ph`
+  folded a whole phase into one op via a stride-0 refeed dimension. A shim BD
+  holds three dimensions plus a repeat, and the fifth was dropped:
+  `[13,5,8,8,64]` came out as `[5,8,8,64]` — five bands where the core waits
+  for sixty-five. **Fixed by going TOKEN-MAJOR**: a band walked token-major
+  makes each token's STG_W elements contiguous, so the shim describes a band in
+  two dimensions instead of three and the whole phase fits in a legal 4-D op
+  (`[1+nrefeed, nband, BATCH, STG_W]`). The compute tile keeps its
+  `_RMS_DMA_CHUNK` sub-dicing — its wrap field is 8 bits, the shim's is 10.
+- **`offsets` are multiplied by their dimension's stride.** An `air.channel`
+  offset list is the strided-view convention: the linear offset is
+  `sum(offsets[i]*strides[i])`, not `offsets[0]`. Every banded helper put the
+  buffer offset on dimension 0, which is only correct because that base is
+  0 (`X_SLOTS == 1`). It bit as soon as a real base appeared: the vocab arm's
+  norm-weight read lowered to `offset = 18874368`, i.e. `_final_norm_off * 64`.
+  The same bug was live in the **ropeLUT fold** (`_rope_off * ROPE_W_LEN`),
+  where the element COUNT stayed right — so `shim_volume.py` and
+  `check_channel_balance.py` both read balanced — and rope silently got
+  garbage. That fold has been removed outright: it was added for the
+  rmsX-vs-rmsW port contention that `RMS_W_ON_X` retires, and the comment
+  beside it already warned that a single B-wide put against B per-token gets is
+  not something the channel promises.
+
+What is established about the remaining hang `[hw]`, all measured:
+
+- **A one-layer repro exists.** `UNI_DEC_OVERRIDE=1` hangs identically, and the
+  same one-layer build at level 0 and at level 2 both pass at 1.83e-03.
+- **Level 2 is verified on qwen3-4b at batch 8**, at one layer and at the full
+  36 — where it is **byte-identical to level 0** (both 5.56e-03). The banded
+  `@rmsX` get is not the problem, and level 2 is a usable fallback.
+- **The fault is in ph0 or earlier.** `_RMS_PH0_ONLY=1` feeds ph0 and nothing
+  else; it still writes no KV, and the KV append is downstream of ph0 through
+  the QKV projection and rope.
+- **Not the launch-side folding, in either direction.** The folded feed (6 shim
+  tasks/wave) and `_RMS_NO_FOLD=1` (272 puts against 272 gets, strict 1:1
+  packet pairing) hang identically. So it is neither the repeat-count BD nor a
+  packet spanning several core BD firings.
+- **Not the shim task ORDER.** The final order is the intended one: QKV weights
+  fed and awaited, then ph0's feed, then the KV append and readback, then the
+  remaining weight phases, then residual1/ph2/residual2. Both neighbouring
+  placements were measured and both deadlock for understood reasons — too early
+  starves the projections of weights, too late puts `await appendK` in front of
+  ph0.
+- **Not the X memtile.** Its BD program is structurally identical to level 2's;
+  only lock and packet-id numbering shift.
+- **Not the `air.await_appends` barrier any more** (see (v)).
+
+**The bisection ladder found it, and level 3 now reaches the KV append.** Each
+rung is a separate device run at `UNI_DEC_OVERRIDE=1`, `DECODE_BATCH=8` `[hw]`:
+
+| what changed | result |
 |---|---|
-| **transpose in L2** (taken) | one `[B][M]` memtile buffer, 96 KB of 512 KB; rope, attention, the KV append and everything downstream stay per-token, looped B times |
-| slice rope by head so it consumes (round, token) directly | a kernel change to `pseduo_rope` plus a rewrite of the attention feed, for a phase that is ~3% of the pass |
+| weights only on `@rmsX` (`_RMS_FETCH_OFF=1`) — 2 transfers | **KV written** |
+| a THIRD straight-line weight-shaped transfer (`_RMS_W3=1`) | **KV written** |
+| that third transfer moved after the arm-selecting `scf.index_switch` | nothing written |
+| the same transfer, but FED from the top of `_uni_dec` instead | **KV written** |
+| **the whole ph0 feed, fed from the top of `_uni_dec`** | **KV written** |
 
-The L2 transpose costs nothing that matters — attention does not amortize anyway
-(section 5e), so looping the post-projection phases per token is what the cost
-model already assumes. It does re-introduce a memtile on the QKV path, which is
-what deadlocked the fused vocab build once, so it is **arm-guarded**: in vocab
-mode dest 0 never flows, and a memtile that stalls waiting for it is precisely
-that failure. An idle compute-tile S2MM is harmless; an idle memtile is not.
+**The cause is the LAUNCH-side position of the banded ph0 feed, and nothing on
+the compute tile.** Fed from the QKV weight boundary — after `_feed_wcols(p=0)`,
+just before the KV append, which is where a dependency argument puts it — the
+dispatch hangs with nothing written at all. Fed from the top of `_uni_dec`,
+right after the norm weights and before the rope LUT and the projection weights,
+it runs through ph0, the QKV projection and rope, and **the KV cache comes back
+complete** (16,384 of 294,912 elements = 8 tokens x KVSZ_TOK, exactly one
+block). Same descriptor, same count, same core code; only the position differs.
+That is where levels 0 and 2 put their single whole-row `@rmsX` read, so the
+banded feed wants the same slot rather than a "smarter" one.
 
-The two descriptors are the parts that were easy to get silently wrong, and
-they are now numbers rather than intentions:
+The launch order must also still match the order the core takes the transfers
+in, since they all share one BD: the feed goes AFTER the two norm-weight puts.
+Getting that backwards does not hang, it swaps the buffers (§5.4 iii).
 
-- `Xt` at block 8 is `sizes=[32,8,8] strides=[8,512,1] offsets=[chunk*32,0,0]`,
-  verified elementwise against `pack_A` itself rather than against a
-  restatement of the derivation. Two traps closed: the token stride is
-  `X_CHUNKS*COL_BLOCK`, not `KCOL`, and AIR's offsets follow
-  **`memref.subview`** — the address is `base + Σ offsets[d]*strides[d]`, so a
-  flat chunk offset would be multiplied by `strides[0]` and read the wrong
-  activations while transferring exactly the right *number* of them.
-- The egress needs **two** descriptors, group and main. See section 6 step 2.
-- The flush has to **de-tile**: `aie::mmul` leaves the accumulator in C tile
-  order, so one token's 32 rows are four 8-float runs 64 floats apart.
-  `proj_qmm_mm_flush_row` does it; the egress BDs agree with it.
+This retires a lot of theory that was in this section, each killed by its own
+rung: it is not the loop form (unrolled hangs identically), not the transfer
+size (one band hangs as readily as five), not the source buffer
+(`_RMS_SRC_RMS=1` sources the same shapes from the rms buffer), not the
+descriptor (the weight's own descriptor hangs in the wrong position), and not a
+transfer-count limit (three work when all three are fed early).
 
-**What is left is one job, not five.** The feed and the drain both terminate at
-`rms` / `rope` / `glu`, and `PAYLOAD` is a structural constant of the refeed
-path as well as the drain — so the X memtile, the egress widening, the row
-tiling at 4 and the attention query tile all have to land together or the
-engine is inconsistent in between. Nothing smaller than that is testable.
+**What is left, after ph0.** With ph0 fixed the layer got as far as
+residual1 and stopped there; three more defects were found and fixed, and the
+remaining fault is now isolated to a single line of the design. In order:
 
-**The gate it needs is half built.** Everything else has been gated by
-"byte-identical at batch 1", which by construction says nothing about batch 8.
+#### (vi) The weight-feed loop awaits each phase, so every banded feed has to be armed a phase early — FIXED
 
-The *software* half now exists — `batch_path_check.py`. Each descriptor checker
-passes on its own, and that is not the same as the path working, because the
-pieces meet at conventions no single checker sees both sides of: `tok_stride`
-across the flush and the gather, A-tile order across the X feed and `pack_A`,
-C-tile order across the mmul and the de-tiling. Get one wrong and **both**
-checkers still pass — each side is self-consistent, and they are consistent
-with different layouts. So this walks a token block through every stage in
-order, using the same functions and descriptors the engine will use, and
-asserts token t's assembled row equals the row batch 1 produces. Both pairing
-regimes, batch 8 and 16.
+`_feed_wcols` emits a coalesced put per column and then an await barrier across
+all of them, and that await only returns once the projection cores have
+CONSUMED the phase — 1.9 M bf16 for gate-up, far more than the memtile holds, so
+consumption means the phase actually ran. Every level-3 banded feed sat AFTER
+that whole loop, which is a deadlock:
 
-**It has been seen to fail**, which is the only reason to trust a checker that
-passed first time. Flush writing role-major instead of token-major: caught.
-De-tiling dropping the `RA` factor: caught — *at batch 16 and not at batch 8*,
-because `RA` is 1 there, so a batch-8-only run does not exercise the tiling.
+```
+host: await(gate-up weights)   needs ph2 to run
+      ph2                      needs residual1
+      residual1                needs an @rmsX band
+      @rmsX band               not armed yet
+core: residual1's _rms_band_get, forever
+```
 
-The *device* half still has to be built, and still comes before the wiring: an
-**equivalence run** — dispatch at `DECODE_BATCH=B` with all B tokens identical,
-assert every token's output equals the batch-1 output. No reference model
-needed, and it covers what numpy cannot: DMA, locks, cascade, backpressure.
+Levels 0-2 are immune because their residual never leaves L1: nothing the core
+needs mid-layer comes from the host at all. The fix (`_rms_interleave_after_phase`)
+arms each feed one phase EARLIER than the phase whose await depends on it —
+residual1's round-trip after p=0, ph2's feed and residual2's drain after p=1,
+residual2's put after p=2. p=0 and not p=1 for residual1: the o-proj await needs
+the o-proj to drain five `@outY` rounds into the rms core, and the rms core takes
+round r+1 only after round r's band round-trip, so the round-trip has to be armed
+before the o-proj feed rather than after it.
 
-**Do not build for block 16.** It is 1.06x modelled, and the hardware loop
-independently puts it at 0.69-0.90x of the batch-1 baseline at DFlash's own
-`tau16 = 6.00`. It also does not currently compile. See "And it is probably not
-worth building" above, and section 5f, before re-litigating.
+`_RMS_LATE_RT=1` restores the old placement. Two other placements were measured
+and are worse, both for reasons the above explains: per-band put/drain pairs
+(`_RMS_RT_PER_BAND=1`) order band b's drain before band b+1's put, so the host
+blocks on the first drain before it has issued the weight feed that drain's data
+depends on — nothing written at all; and hoisting only residual1's put while
+leaving its drain late changes nothing, because the core cannot put band 0 back
+until the drain is armed.
 
-Run `q4k_mm_gate.py --mode exact` after **any** change to `q4k_mm.h`, and
-`check_kernels_inert.py` after any change to a production kernel. The first has
-already caught two faults that compiled, benchmarked identically, and were wrong
-(section 5d); the second is what proves the five modified production files are
-inert, and it is the reason the section-5g knobs could be put *inside* shipping
-kernels at all.
+#### (vii) `h` cannot live in X — FIXED
+
+residual1's output is a whole intermediate hidden state that ph2 re-reads 39
+times and residual2 reads once more. Writing it back over X — the obvious
+in-place choice, and what levels 0-2 do with their single whole-row write — puts
+every level-3 feed and drain on one memref, and AIR chains same-memref channel
+ops in program order. In `placed.air.mlir`:
+
+```
+%138 = air.channel.put  @rmsX     (X[0,0,0] [5,8,512])            <- reads X
+%139 = air.channel.get  @layerOut (X[0,0,0] [5,8,512]) [.. %138]  <- writes X
+```
+
+so the drain lowers to `await(put); start(get)`, which the core cannot satisfy:
+the put does not retire until the core has taken all five bands, and the core
+will not take band b+1 until band b's drain is armed.
+
+`h` now gets its own region — `RMS_SCRATCH`, one block of hidden states appended
+to the END of the Y buffer, so it needs no fifth DDR argument and no ABI change
+(`llms/bench/decode_geometry.py` adds the same term from the same symbol). X is
+then touched twice per layer, at the two ends:
+
+```
+read X   ph0's sweep, residual1's put
+write H  residual1's drain
+read H   ph2's sweep, residual2's put
+write X  residual2's drain   <- the layer output
+```
+
+Without the host-side term the drain runs off the end of the Y BO and into
+whatever is mapped next — measured: it landed in the KV cache, which is how the
+missing term was found.
+
+**With (vi) and (vii), residual1 completes.** `h` comes back whole: 20,480 of
+20,480 elements in the scratch region, one contiguous run `[hw]`. (In-place in X
+the same data reads as "10,564 of 20,480 written" — the other 9,916 are elements
+where `x + o_proj == x` in bf16, not a partial write. That is worth knowing
+before reading a partial-write count as a partial write.)
+
+#### (viii) The paced tail-drain anchor skipped coalesced feeds — FIXED (compiler)
+
+`synthesizeDoubleBufferedAwaits` (AIRRtToNpuPass.cpp) drains a paced MM2S
+channel's in-flight tail after "the last start among ALL paced channels in the
+segment", and excluded `air.coalesced_shim_feed` tasks from that anchor. The
+anchor is only asking where the segment stops issuing, and a coalesced weight
+feed issued after the last paced start is still part of the segment — excluding
+it drains the paced channels while the segment is still going. Measured here:
+the last `@rmsX` task is residual2's band feed, and the core takes those bands
+only after the DOWN projection has produced its output, so the drain awaited it
+BEFORE the down weight feed was issued and the projection never ran. Coalesced
+feeds now count towards the anchor. The anchor only ever moves LATER within the
+same segment, so the fence it provides is unchanged.
+
+This does move IR for every design, so it was re-gated rather than argued:
+**qwen3-4b batch 8 at 36 layers still passes at 5.56e-03 at level 0 AND at level
+2, byte-for-byte the same output (1,491 of 2,560 bytes differ, 1,623 distinct
+values, both levels)** `[hw]`.
+
+#### (ix) residual2, and the head-of-line deadlock — FIXED
+
+The last stall was **head-of-line blocking on a shared stream link**, and the
+bisection that found it is worth keeping because five plausible explanations
+died on the way.
+
+Cutting the round-trip into its two halves separated them. Both halves keep
+their launch-side op, so the channels stay balanced either way `[hw]`:
+
+```
+_RMS_BANDS_GET=1  _RMS_BANDS_PUT=12   residual2 puts back, never gets  -> COMPLETES
+_RMS_BANDS_GET=12 _RMS_BANDS_PUT=1    residual2 gets, never puts back  -> hangs
+```
+
+So the fault was residual2's `@rmsX` GET. Then a **progress witness** placed
+that get precisely. `_RMS_RES2_PUT_FIRST` moves residual2's band put-back to the
+front of the loop body, ahead of both gets: its contents are stale garbage but
+the drain is host-visible, so reaching the loop lands exactly one band in X.
+`_RMS_RES2_PUT_MID` puts it between the two gets instead. Nothing else can tell
+these apart — everything the core does after ph2 is invisible from the host.
+
+| witness position | X | reading |
+|---|---|---|
+| before both gets (`_PUT_FIRST`) | one band, 8 runs of 512 at stride K | core reaches residual2 |
+| between the gets (`_PUT_MID`) | empty | it blocks on the `@outY` get |
+
+**On the `@outY` get** — not the band, even though dropping the band get is what
+makes it complete. Two flows reach the rms core and they both come from the
+SOUTH:
+
+```
+aie.packet_flow(0)   shim_noc(2,0) DMA0 -> tile(2,2) DMA0    @rmsX
+aie.packet_flow(30)  mem_tile(2,1) DMA1 -> tile(2,2) DMA1    @outY
+```
+
+Packet-switched, they are multiplexed onto one south→north stream. The rms core
+is single-buffered on `@rmsX`, so at the end of residual1 it takes one band of
+residual2's ahead and then has NO credit until residual2's first iteration —
+which is waiting on `@outY`. The remaining bands park at the head of the shared
+link, the DOWN projection's `@outY` round queues behind them, and neither moves.
+
+Levels 0-2 never hit it because their `@rmsX` carries ONE whole-row transfer at
+the top of the layer, consumed immediately: there is never a surplus band in the
+network while the core is waiting on `@outY`. That is the invariant level 3
+breaks, and it is why the fault looked like it belonged to residual2 — residual1
+runs while the shim is still streaming, so no queue has built up yet.
+
+**The fix is one line.** `@rmsX` is packet-switched because of `FULL4`, so it can
+converge with the o-proj/down id on the rms core's S2MM0 — and under `RMS_W_ON_X`
+that reason is gone: `@rmsX` is pinned to S2MM0 and `@outY` to S2MM1, they no
+longer share a port, and `@rmsX` has no id to demux against. Declaring it
+CIRCUIT-switched at level 3 gives it a dedicated physical stream channel on the
+shared link, and the head-of-line disappears. `_RMS_X_PACKET=1` restores the
+packet flow, which is the A side of the measurement.
+
+Killed by measurement on the way, each its own device run:
+
+| hypothesis | test | result |
+|---|---|---|
+| residual2 is second | `_RMS_RES_ONLY=2` — it is the only round-trip | still hangs |
+| the destination buffer | `_RMS_H_SWAP=1` — `h` in X, output in the scratch | the LATE one still hangs |
+| the arming position | `_RMS_RES2_{PUT,DRAIN}_PHASE=0 _RMS_PH2_PHASE=0` | still hangs |
+| ph0/ph2's band sweeps | `_RMS_FETCH_OFF=1` (@rmsX down to 3 tasks) | still hangs |
+| residual2's descriptor or source | `_RMS_RES2_AS_W=1` — the norm weight's own descriptor | still hangs |
+| a second shim task on `@rmsX` | `_RMS_RT_COMBINED=1` — both residuals in ONE task | still hangs |
+| holding the `@outY` buffer across the band | `_RMS_STG_COPY=1` — copy the round out, release early | still hangs |
+| `@outY` taken before the band | `_RMS_BAND_FIRST=1` | still hangs |
+
+The last two are the near misses: both are about back-pressure, and both are
+powerless because the blockage is one hop upstream, in the switch, not in the
+tile. `_RMS_BAND_FIRST` in particular cannot help — the core takes the band it
+already has buffered and then waits for `@outY`, which is still behind the NEXT
+band on the link.
+
+#### (x) Level 3 is verified
+
+`[hw]`, qwen3-4b, DECODE_BATCH=8, L=128, `batch_equiv.py`:
+
+| | one layer | 36 layers |
+|---|---|---|
+| level 0 | 1.83e-03 | 5.56e-03 |
+| level 2 | 1.83e-03 | 5.56e-03 |
+| **level 3** | **3.86e-03** | **5.56e-03** |
+
+At 36 layers all three produce the SAME output — 1,491 of 2,560 bytes differ
+from the batch-1 reference, 1,623 distinct values, on every level. Gate is
+5e-2.
+
+**What it costs**, same templates, `dispatch_time.py`, median of 25 `[hw]`:
+
+| | ms | per token |
+|---|---|---|
+| level 2 | 166.302 | 20.788 |
+| level 3 | 173.624 | 21.703 |
+
+**4.4%** for streaming the whole residual through DDR twice a layer — 1.11 M
+bf16 per layer of extra shim traffic. Cheap enough that level 3 is not a
+compromise made for batch 16; it is a viable shape in its own right.
+
+#### (xi) The attention core's BD blocks — FIXED
+
+With level 3 working, `BATCH_MAX_RMS` is 16 and the rms tile lands at exactly
+59,456 bytes of a 59,456-byte budget. Batch 16 then failed somewhere else:
+
+```
+'aie.mem' op has more than 16 blocks     <- air.herd @attn_blk, the [2,4] attention block
+```
+
+The rms core is at 9 BD blocks there; the attention cores were over. The cause
+was `_attn_o_put`: `@attnO` was **one put per token, Python-unrolled**, so one BD
+block per token. Its own comment said why it could not fold — the descriptor
+already spends all three dimensions a compute tile has on the un-interleave from
+the kernel's `[q_head, dc, de]` layout to natural `(q_head, dh)`, so the token
+had to ride the stride-1 offset.
+
+**Fixed by moving the un-interleave to the memtile**, which has FOUR BD
+dimensions where a compute tile has three. The CU now sends its whole block
+flat — one op, ONE BD block at any batch — and the o-gather does the transpose
+with the token as its fourth dimension:
+
+```
+src  j = t*DQ_PER_CU + dc*(QH*8) + qh*8 + de     (a_o, sent contiguously)
+dst  p = t*DQ + c*DQ_PER_CU + qh*DH + dc*8 + de
+     sizes [BATCH, DH/8, QH, 8]  strides [DQ, 8, DH, 1]
+```
+
+Same permutation, same data, same order; only which end of the channel describes
+it changed. No kernel edit, so batch 1 is untouched and `check_kernels_inert.py`
+stays satisfied. `_ATTN_O_PERTOKEN=1` restores the old form.
+
+Verified: qwen3-4b batch 8, 36 layers, **5.56e-03 at levels 0, 2 AND 3** — the
+same output as before the change, on all three. The attention change is not
+gated on `RMS_BAND_STREAM`, so all three had to be re-gated, and were.
+
+#### (xii) Three more ceilings between level 3 and a batch-16 BUILD — all cleared
+
+Batch 16 gets past both BD-block limits and then hits three allocation ceilings
+in a row, none of them visible in AIR and each reported by mlir-aie as a bare
+error naming at most one buffer. `tile_budget.py` prints the map instead.
+
+**MEMTILE L2, 512 KB.** `mem_tile(3,1)` wanted 573,440:
+
+```
+buf127  311,296   the DOWN phase's X refeed buffer (BATCH x 9728, refeed_count 5)
+buf138  196,608   the QKV transpose staging (BATCH x 6144)
+buf133..136  4 x 16,384   the KV block buffers
+```
+
+That column was always the fullest — 319,488 (60%) at batch 8 — so this is
+plain doubling, not a placement regression. Nothing else is close: at batch 8,
+5,1 is at 37%, 4,1 at 12%, 2,1 at 6% and the four weight-fan columns at 8%.
+
+Neither big buffer is free to move. `DOWN_PCOL` is pinned by a routing
+constraint the code already documents: with the weight hub on the X column
+(`MAIN_PCOL == XMT_PCOL == 2`, which is qwen3-4b's floorplan) a down→X route
+from col 4 crosses switches already carrying hub traffic, and the pathfinder
+cannot complete it — measured, it fails to build. So the QKV staging moves
+instead, and the search for a column was entirely empirical `[hw]`:
+
+| `QKV_RELAY_COL` | result |
+|---|---|
+| 3 (default) | works, but is the column that overflows |
+| 4 | builds, HANGS with nothing written — at batch 8 too, so it is the column and not the batch |
+| 1, 6 | `'aie.dma_start' op repeat_count 384 is out of range [0, 255]` — the weight-fan columns are excluded for a real reason |
+| **2** | **works**: batch 8 at 3.86e-03, identical to the default |
+
+Column 2 is the X-memtile column, and a col-2 QKV relay was removed once before
+for stalling in vocab mode — the arm guard that replaced it is what makes it
+viable now. It leaves col 2 at 262,144 (50%) and col 3 at 376,832 (72%).
+
+**MEMTILE BD IDS, 24 per channel — SHARED between MM2S and S2MM.** With the
+staging moved, `mem_tile(4,1)` channel 1 held 24 BDs of MM2S and 2 of S2MM. The
+24 were `@toRope`: one put per token again, Python-unrolled. The rows are
+consecutive and M-wide, so B puts at `t*M` ARE one contiguous `BATCH*M` run —
+folded, it is one BD at any batch, and the rope core still gets its M-wide row
+per token (one producer BD feeding B consumer firings, the same shape the shim's
+banded `@rmsX` task already has). `_QKV_ROPE_PERTOKEN=1` restores the old form.
+
+**COMPUTE L1, and the RTP word.** `_L1_ROWTILE_BUDGET` was `65536 - STACK_SIZE`
+and did not account for the per-herd RTP word, which the allocator places AFTER
+every buffer. At batch 16 the rms core lands on 65,536 EXACTLY —
+
+```
+(stack)  6,080     buf122   5,120   w
+buf126  16,384 xb  buf121   5,120   w2
+buf125  16,384 xr  buf123      64   scl
+buf124  16,384 stg ------------------
+                   __air_herd_rtp_2_2 : 0x10000-0x10003   <- past the end
+```
+
+— so it is over by four bytes and nothing says which buffer to blame. The budget
+now reserves `_L1_RTP_RESERVE = 16`, and batch 16 takes the bytes back from
+`DECODE_STACK=6016`.
+
+**16, not 64.** The first attempt reserved 64 and refused levels 0 and 2 at
+batch 8, which put the rms core at 59,424 — 32 under the un-reserved ceiling and
+verified on hardware all day. A ceiling model that rejects a working
+configuration is a worse bug than the one it fixes; the map shows the RTP packed
+with no alignment padding, so 4 is the true cost and 16 is the guard.
+
+With all three cleared, **batch 16 BUILDS**. Levels 0, 2 and 3 all still pass at
+batch 8 / 36 layers at 5.56e-03 `[hw]`.
+
+#### (xiii) Batch 16 builds and hangs
+
+`[hw]`, one layer, `QKV_RELAY_COL=2 DECODE_STACK=6016`: the dispatch times out
+with **nothing written at all** — not X, not Y, not the KV cache — so it stalls
+in wave 0, before the KV append.
+
+What is already excluded:
+
+- **Not the column, and not any of the three fixes above.** Batch 8 with the
+  IDENTICAL settings passes at 3.86e-03.
+- **Not the shim.** Every channel's element count is exactly 2x its batch-8
+  value, or 1x for the weights, with the same task counts (`shim_volume.py`).
+- **Not a descriptor field.** No multi-dimensional BD has an extent over its
+  tile's wrap limit (255 for a core, 1023 for a memtile or shim) and no
+  `repeat_count` is over 255.
+- **Not tile capacity.** Every compute tile has headroom at batch 16 except the
+  rms core, which now fits; no memtile is over L2 or over 24 BDs per channel.
+
+So it is on-chip and early. The next step is the same one that worked for
+residual2: a progress witness that is host-visible, placed to bisect wave 0.
+
+**Level 3 at batch 1 is not a supported configuration** and should not be used
+to judge it: the decode arm's band feed is gated on `RMS_BAND_STREAM >= 3`
+alone while the vocab arm gates on `RMS_BAND_STREAM >= 3 and BATCH > 1`, and
+the banded body is a batched-path construct. A batch-1 level-3 build hangs with
+nothing written, with and without the launch-side folding `[hw]` — that is the
+mismatch, not evidence about level 3's design.
+
+**Superseded, for the record.** Before the `MODEL_TYPE` fix this section
+reported that level 3 "loses the design's context-length dependence" (L=2047
+and L=2048 insts byte-identical). That was measured on llama-kernel templates
+and is withdrawn pending a re-run; it is not currently known to be true.
+
+Older findings, re-read against (iii):
+
+- The `operand #0 does not dominate this use` failure on the second
+  `air.channel.put` to `@rmsX` came with the pass's own warning that **the tile
+  has no spare S2MM channel to move `@rmsW` onto** `[hw]`. That warning was
+  right and is the same wall as (iii); the launch-side op folding that made it
+  compile addressed the symptom. Whether the folding is still needed now that
+  the compute side is fixed has not been re-tested — `_RMS_NO_FOLD=1` restores
+  the pre-fold shape.
+- **"Level 3 loses the design's context-length dependence" (L=2047 and L=2048
+  insts byte-identical) is still withdrawn** — measured on llama-kernel
+  templates, never re-run.
+
+### 5.5 Known-hard mechanisms (kept because they cost real time to find)
+
+`[static]`, all from source or ELF reads:
+
+- **A core tile's DMA BD wrap field is 8 bits per dimension**
+  (`getDmaBdWrapBits`: 8 for core tiles, 10 for mem/shim). `STG_W`=512 does not
+  fit and is silently truncated — no verifier error, deterministic wrong data.
+  This was the root cause of three failed level-2 variants; `_RMS_DMA_CHUNK=64`
+  is the fix.
+- **`air.preserve_shim_dma_order` is a GLOBAL order**, not per-channel. A drain
+  placed early forces every later independent feed to queue behind it.
+- **Two packet flows into one tile from the same side share a physical stream**,
+  and a packet the destination has no credit for blocks everything behind it.
+  `aie.packet_flow` says source and destination, not which stream channel the
+  router picks; when both flows come from the south (a shim below a memtile
+  below the core, as here) they are multiplexed. A CIRCUIT-switched channel gets
+  its own. This is invisible in every AIR-level tool -- both sides balance, the
+  volumes match, the descriptors are right, the locks are right, and the
+  dispatch still hangs. It cost most of a day (§5.4 ix).
+- **`getLockValuePair` counts users across `scf.if` arms** for memtile buffers;
+  the L1 overload counts buffer *instances* instead. A prior theory blaming the
+  latter for a level-2 failure was disproven by reading the source.
+- **A launch-scope `scf.for` deadlocks the shim**, so launch-side feeds are
+  Python-unrolled.
+- **32- vs 64-byte L1 alignment**: a misaligned 512-bit access masks the
+  address rather than faulting.
+- **torch/transformers cannot share a process with an open XRT session** —
+  immediate segfault (0xC0000005) after HF weight loading. All NPU+HF work uses
+  separate processes handing off `.npz` files.
+- **`build_template.sh` skips the Peano version-pin preflight**, and says so:
+  its templates are good for dataflow work and **not for numerics claims**.
+  Every `batch_equiv` / `spec_accept` number in this document rides on them.
+
+## 6. Cost model — now measured on qwen3-4b
+
+This section used to be arithmetic on qwen3-4b's batch-1 terms scaled by
+**llama-3.2-1b's** batch-1→8 curve. It no longer is. Every row below is a
+qwen3-4b dispatch timed on NPU2 `[hw]` — median of 25 after 5 warmup, p10/p90
+within 0.5% of the median, `dispatch_time.py`, L=128, ctx 128.
+
+| template | layers | LM head | batch | median ms |
+|---|---|---|---|---|
+| `nolm`      | 36 | no  | 1 | **50.010** |
+| `decode`    | 36 | yes | 1 | **56.946** |
+| `decode`    | 36 | no  | 8 | **159.572** |
+| `withlm`    | 36 | yes | 8 | **177.511** |
+| `nolmdraft` | 5  | no  | 1 | **7.383** |
+| `draft`     | 5  | yes | 1 | **14.107** |
+| `draft`     | 5  | no  | 8 | **22.472** |
+
+`DECODE_NO_LM_WAVES` is gated on `BATCH > 1`, so a batch-1 template built with
+it still runs the vocab waves; the head-free batch-1 rows use `UNI_WAVE_HI`
+instead. Comparing a batch-1 template built the default way against a batch-8
+one measures the head into the batch ratio and reads 2.80× where the body is
+3.19×.
+
+Solving the two layer counts against each other:
+
+| term | batch 1 | batch 8 | scaling |
+|---|---|---|---|
+| per decoder layer | **1.375 ms** | **4.423 ms** | **3.22×** |
+| fixed | 0.508 ms | 0.359 ms | — |
+| LM head | **6.94 ms** | **17.94 ms** | 2.59× |
+| decode body, 36L | 50.01 ms | 159.57 ms | 3.19× |
+| decode body, 5L | 7.38 ms | 22.47 ms | 3.04× |
+
+The fit is not over-determined by two points: the fixed term comes out at
+0.36-0.51 ms at *both* batches, and the head is measured twice independently —
+6.94 ms off the 36-layer pair and 6.72 ms off the 5-layer pair, the same tied
+head, agreeing to 3%.
+
+**qwen3-4b batches better than llama-3.2-1b**: 3.22× per layer against llama's
+measured 3.74×, for 8× the tokens. The earlier §6 borrowed the llama number and
+was therefore pessimistic by ~16% on the dominant term.
+
+### What that means for DFlash
+
+Baseline, plain autoregressive decode: **56.95 ms/token = 17.56 tok/s** `[hw]`.
+
+One block-8 speculative step:
+
+```
+draft   5 layers @ batch 8 + tied head   22.47 + 17.94  =  40.41 ms
+verify 36 layers @ batch 8 + tied head                  = 177.51 ms
+                                                   step = 217.92 ms
+```
+
+- **Break-even is 3.83 accepted tokens per step** (217.92 / 56.95). Below that
+  DFlash is slower than not doing it.
+- **The marginal cost of one more slot is 20.98 ms = 0.368 of a baseline token
+  step.** So slot *k* pays for itself iff `P(produced ≥ k) > 0.368`. That single
+  number is the whole block-size question, and §3.1 now measures the other side
+  of it.
+
+  *This corrects an earlier 17.22 ms / 0.302 in this section.* That figure was
+  `(177.51 − 56.95) / 7`, the marginal **verify** slot alone. Growing the block
+  grows the *draft* pass too — it drafts the whole block — and that adds
+  `(40.41 − 14.11) / 7` = 3.76 ms. The full per-slot cost is
+  `17.22 + 3.76 = 20.98 ms`, and the step time is
+  `step(B) = 71.05 + 20.98·(B−1)` ms, which reproduces the measured 217.9 at
+  B=8. Understating the slot cost by 18% made every block size look better than
+  it is; §3.1 uses the corrected number.
+
+| accepted + bonus per step | ms/token | tok/s | vs baseline |
+|---|---|---|---|
+| 3.5 | 62.3 | 16.1 | 0.91× |
+| 4.0 | 54.5 | 18.4 | 1.05× |
+| 5.0 | 43.6 | 22.9 | 1.31× |
+| 6.0 | 36.3 | 27.5 | 1.57× |
+| 7.0 | 31.1 | 32.1 | 1.83× |
+
+§3.1 supplies the distribution this table needs, so the band above collapses to
+a number: a block-8 step is **1.24× on math and on code, 0.88× on chat** — the
+opposite-verdict problem §7 item 5 names, now measured on both sides.
+
+**This also reprices batch 16, downward, past 1.0×.** At 0.368 baseline steps
+per slot, slots 9-16 pay only where `P(produced ≥ k) > 0.368`, and §3.1 measures
+that curve at 0.20 falling to 0.06 across exactly that range. Block 16 comes out
+at **0.90× / 0.89× / 0.57×** — slower than not speculating at all. §5.4 (iii)
+shows what batch 16 costs to build; this says the return is negative, and it is
+now measured rather than estimated.
+
+**Batching helps the projection and does not help attention** `[hw]`, llama:
+per-layer cost scales 3.74× for 8× the tokens (the `aie::mmul<8,8,8>` intrinsic
+engages at batch ≥ 8; batch 1 runs a degenerate `rowA==1` path), while
+attention scales **8.33×** — worse than linear, since each token still walks
+its own keys. On a batch-8 llama dispatch the layer body is 65%, attention 16%,
+LM head 16%. The equivalent qwen3-4b split has not been measured (it needs the
+four-family decomposition `decode_cost.py` does, and a batched qwen driver);
+what is measured here is the total, which is the term the cost model uses.
+
+## 7. What would have to be true for this to be worth building
+
+In order, cheapest first:
+
+1. ~~Time qwen3-4b batch 8, target and drafter, on device.~~ **Done** — §6.
+   `dispatch_time.py`, both models, head-free and with-head at both batches.
+2. ~~Re-run the acceptance measurement keeping the per-block HISTOGRAM.~~
+   **Done** — §3.1. Blocks 16, 8 and 4, 60 prompts each, distribution kept.
+   It settled the block-size question outright, and against item 3.
+3. ~~**Batch 16, if item 2 says so**~~ — **item 2 says no.** Block 16 is
+   0.90×/0.89×/0.57× on math/code/chat: slower than not speculating. Slots 9-16
+   return `P(produced ≥ k)` of 0.20 down to 0.06 against a 0.368 bar. Batch 8
+   already works and is the best configuration that exists (1.24× on math and
+   code), so **build the loop on batch 8**.
+
+   The batch-16 wave-0 hang (§5.4 xiii) is therefore an unclaimed bug, not a
+   blocker — worth recording, not worth chasing. Level 3 itself is kept: it is
+   verified, byte-identical to levels 0 and 2 at 36 layers, and it costs 4.4%,
+   but nothing needed today depends on it. Level 2 remains the default.
+
+   What item 2 *did* open is smaller and better-defined: **block 4 is worth
+   between 0.84× and 1.36×**, and both ends are pinned by things that can be
+   settled. It needs a `size_C=32` de-tiling variant in
+   `proj_qmm_mm_flush_row` (the batch set is currently {1, 8, 16, 24, 32} —
+   `q4k_mm.h` is already bit-exact at batch 4, only the de-tiling is not), and
+   then a `dispatch_time.py` run at batch 4 to replace the interpolated step
+   time. One bounded kernel change and one timing run, against a possible +10%
+   over batch 8 — or a clean negative.
+4. **The loop itself.** Draft and verify are separate xclbins with different
+   `UNI_DEC`; alternating them per block has a switching cost that has never
+   been measured, and §6's 217.9 ms step assumes it is zero. §3.1 makes the
+   stake sharp: at block 8, math produces 4.73 tokens per step, so the step can
+   absorb `4.73 × 56.95 − 217.92` = **51 ms of swap before block 8 stops paying
+   at all** (code: 53 ms).
+
+   **§3.2 may have removed this term rather than measured it.** The mask is now
+   selectable per dispatch from one device program, and the layer loop is a
+   rolled `scf.for` whose device is wave-invariant — so draft and verify plausibly
+   differ only in the wave range and the weight BO, both host-side, with no
+   xclbin swap and no PDI reload to pay for. That is not yet demonstrated end to
+   end (the drafter still needs §3.2's missing pieces before there are two
+   passes to alternate), but the thing that looked like it forced two device
+   programs no longer does.
+5. **The workload question**, which no measurement can answer: at the block
+   size that actually wins, math and code are 1.24× and chat is 0.88×. The two
+   give opposite verdicts, and no amount of further measurement decides which
+   one the deployment is.
+
+## 8. Reproducing what is here
 
 ```bash
+# qwen3-4b batch 1, end to end (the verified path)
+cd programming_examples/llms/qwen3_4b_q4nx && make run
+
+# qwen3-4b batch 8, target then drafter (both pass -- see 5.3b)
 cd programming_examples/fused_decode
-python3 check_kernels_inert.py        # exit 0 = every shipping kernel unchanged
-python3 check_kernels_inert.py -v     # ... and where the first difference is
-```
+for M in qwen3-4b qwen3-4b-draft; do
+  DECODE_MODEL=$M VOCAB_CHUNK_I2=30 DECODE_STACK=6080 ./build_template.sh 8 128
+  DECODE_MODEL=$M VOCAB_CHUNK_I2=30 DECODE_STACK=6080 ./build_template.sh 1 128
+  DECODE_MODEL=$M DECODE_STACK=6080 python3 batch_equiv.py \
+      --model $M --vocab-chunk-i2 30 --batch 8 --L 128 --tokens 0
+done
 
-The `DECODE_HIDDEN_TAPS` no-op gate, which is the one that matters when touching
-the builder — it must print nothing:
+# is a template's layer output actually being written? (the 5.3 probe)
+DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 python3 _x_hole.py
 
-```bash
+# RMS_BAND_STREAM level 2 -- verified, and byte-identical to level 0 at batch 8
+DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 DECODE_STACK=6080 RMS_BAND_STREAM=2     ./build_template.sh 8 128
+RMS_BAND_STREAM=2 DECODE_STACK=6080 python3 batch_equiv.py --model qwen3-4b     --vocab-chunk-i2 30 --batch 8 --L 128 --tokens 0
+
+# level 3, and the knobs that bisect it (5.4). UNI_DEC_OVERRIDE=1 is the fast
+# repro -- one layer, hangs identically, and both level 0 and level 2 pass there.
+UNI_DEC_OVERRIDE=1 RMS_BAND_STREAM=3 ...      # one-layer repro
+#
+# THE HEAD-OF-LINE A/B (5.4 ix). One line apart, and the whole difference is
+# whether @rmsX gets its own physical stream channel:
+_RMS_X_PACKET=1                               # @rmsX back on the packet flow: HANGS
+#                                             # (default at level 3 is circuit: PASSES)
+#
+# The bisection that got there. GET/PUT split the round-trip's two halves;
+# _RES2_PUT_{FIRST,MID} is the progress witness that placed the stall:
+_RMS_BANDS_GET=1  _RMS_BANDS_PUT=12           # residual2 puts back, never gets
+_RMS_BANDS_GET=12 _RMS_BANDS_PUT=1            # residual2 gets, never puts back
+_RMS_RES_ONLY=N                               # shorthand for setting both to N
+_RMS_RES2_PUT_FIRST=1                         # witness ahead of BOTH gets
+_RMS_RES2_PUT_MID=1                           # witness between the two gets
+_RMS_RT_COMBINED=1                            # both residuals' bands in ONE shim task
+_RMS_RES2_AS_W=1                              # residual2's bands, weight descriptor
+_RMS_STG_COPY=1                               # release the @outY buffer before the band
+_RMS_BAND_FIRST=1                             # take the @rmsX band before the @outY round
+_RMS_H_SWAP=1                                 # h in X, layer output in the scratch
+_RMS_{PH2,RES2_PUT,RES2_DRAIN}_PHASE=<p>      # which weight boundary arms each feed
+_RMS_LATE_RT=1                                # every banded feed after the weight loop
+_RMS_RT_PER_BAND=1                            # five put/drain pairs, not one folded pair
+_RMS_FETCH_OFF=1                              # drop ph0/ph2's band sweeps entirely
+_RMS_NO_FOLD=1                                # one shim put per band (1:1 packets)
+_RMS_PH0_ONLY=1                               # feed ph0 and nothing else
+_RMS_W_ON_X=1 RMS_BAND_STREAM=2               # weights on @rmsX, no banding
+_ATTN_O_PERTOKEN=1                            # @attnO one put per token (5.4 xi)
+_QKV_ROPE_PERTOKEN=1                          # @toRope one put per token (5.4 xii)
+QKV_RELAY_COL=<c>                             # which column the QKV staging lands on
+DOWN_PCOL=<c>                                 # ... and the down memtile (routing-pinned)
+
+# every knob above changes the DESIGN, so check the emitted IR before believing
+# a device result -- three runs in this work produced confident-looking wrong
+# conclusions from a patch that silently did not apply or that changed a second
+# thing (5.4 iv).
+# what each shim channel really moves after lowering (catches a dropped
+# descriptor dimension, which check_channel_balance.py cannot see):
+python3 shim_volume.py --per-wave 36
+
+# the emitted start/await ORDER. An await whose consumer has not been started
+# yet is a deadlock, and the await positions are synthesized during lowering --
+# they are in no Python file. This is how (vi) and (viii) were found:
+python3 shim_schedule.py --channels rmsX layerOut inW0c0
+
+# what is on each tile against the three ceilings that bite at high batch --
+# 512 KB of L2, 24 BD ids per memtile channel (MM2S and S2MM SHARE the pool),
+# and 64 KB of L1 including the stack and the per-herd RTP word. mlir-aie
+# reports each as a bare error naming at most one buffer:
+python3 tile_budget.py --stack 6080
+
+# batch 16 (needs level 3 and the two knobs its ceilings forced):
+QKV_RELAY_COL=2 DECODE_STACK=6016 RMS_BAND_STREAM=3 ./build_template.sh 16 128
+
+# the section 6 timings. Seven templates; RENAME each as it is built --
+# build_template.sh always writes decode_b<B>_L<N>. UNI_WAVE_HI, not
+# DECODE_NO_LM_WAVES, is what drops the head at batch 1 (see 6).
 cd programming_examples/fused_decode
-E="DECODE_MODEL=llama-3.2-1b VOCAB_CHUNK_I2=18 LM_HEAD=0 NLAYERS=1 \
-   DECODE_GOLDEN=1 UNIFIED=1 DECODE_GOLDEN_L=2048 W_DUAL_CHAN=1 \
-   FUSED_DECODE_EMIT_ONLY=1"
-# The reference copy has to live HERE, not in /tmp: it imports proj_qmm_pack
-# and reads models/ by relative path.
-git show HEAD:programming_examples/fused_decode/fused_decode.py > _fd_head.py
-env $E python3 _fd_head.py                            > /tmp/a.mlir
-env $E DECODE_HIDDEN_TAPS=0 python3 fused_decode.py   > /tmp/b.mlir
-diff /tmp/a.mlir /tmp/b.mlir && rm _fd_head.py
+E="VOCAB_CHUNK_I2=30 DECODE_STACK=6080 RMS_BAND_STREAM=0"
+env $E DECODE_MODEL=qwen3-4b       UNI_WAVE_HI=36        ./build_template.sh 1 128  # nolm
+env $E DECODE_MODEL=qwen3-4b                             ./build_template.sh 1 128  # decode b1 (+head)
+env $E DECODE_MODEL=qwen3-4b                             ./build_template.sh 8 128  # decode b8
+env $E DECODE_MODEL=qwen3-4b       DECODE_NO_LM_WAVES=0  ./build_template.sh 8 128  # withlm
+env $E DECODE_MODEL=qwen3-4b-draft UNI_WAVE_HI=5         ./build_template.sh 1 128  # nolmdraft
+env $E DECODE_MODEL=qwen3-4b-draft                       ./build_template.sh 1 128  # draft b1 (+head)
+env $E DECODE_MODEL=qwen3-4b-draft                       ./build_template.sh 8 128  # draft b8
+DECODE_STACK=6080 python3 dispatch_time.py --model qwen3-4b --vocab-chunk-i2 30 \
+    --batches 1 8 --L 128 --prefix decode
+
+# acceptance rate, real upstream code, real datasets (CPU, no NPU)
+cd programming_examples/llms/qwen3_4b_q4nx
+python3 dflash_phase2_upstream_sweep_large.py           # the means (section 3)
+
+# the DISTRIBUTION (section 3.1), which is what decides the block size. ~20 min
+# per block size on CPU. Writes the raw per-block lengths after every prompt, so
+# it can be killed and the partial result is still analyzable:
+python3 dflash_acceptance_hist.py --n 20 --block 16 --out dflash_acceptance_hist.json
+python3 dflash_acceptance_hist.py --n 20 --block  8 --out dflash_acceptance_hist_b8.json
+python3 dflash_acceptance_hist.py --n 20 --block  4 --out dflash_acceptance_hist_b4.json
+python3 dflash_acceptance_hist.py --analyze dflash_acceptance_hist.json   # no models loaded
+
+# the drafter's two non-decode projections, on device (section 3.3, 3.4).
+# All of these need the DRAFTER checkpoint, and the target's for the tied head.
+python3 dflash_draft_decomp.py        # the two structural claims, CPU
+python3 qwen3_4b_draft_weights.py     # weight-reader self-check
+python3 dflash_fc_gate.py             # fc, bf16, 2 launches
+python3 dflash_ctxkv_gate.py --split  # context k/v + k_norm, bf16, 15 launches
+python3 dflash_int4.py                # AWQ round-trip on the real fc, CPU
+python3 dflash_int4_fc_gate.py        # fc, int4, 4 launches   (--synthetic: no ckpt)
+python3 dflash_ctxkv_int4_gate.py     # context k/v + k_norm + RoPE, int4, 20 launches
+python3 dflash_draft_prepass_gate.py  # BOTH halves in one func, 24 launches
+# against the REAL drafter (section 3.6). Two processes: torch and XRT segfault
+# together, so the oracle is a dumper.
+python3 dflash_draft_oracle.py --block 0 --block-size 8
+python3 dflash_prepass_oracle_gate.py
+
+# the WHOLE draft pass (section 3.7). The drafter's templates are a different
+# model at the same context length, so they carry their own prefix:
+cd ../../fused_decode
+DECODE_MODEL=qwen3-4b-draft VOCAB_CHUNK_I2=30 W_DUAL_CHAN=1 DECODE_STACK=6080 \
+  DECODE_NO_LM_WAVES=0 DECODE_MASK_BIDIR=1 ./build_template.sh 8 16   # and 15
+for L in 15 16; do for e in xclbin insts.bin; do \
+  mv decode_b8_L$L.$e ../llms/qwen3_4b_q4nx/draft_b8_L$L.$e; done; done
+cd -
+python3 dflash_draft_gate.py                 # pre-pass -> KV seed -> draft
+python3 dflash_draft_gate.py --seed-oracle   # attribution, not a gate
+
+# the VERIFY pass on the shipping driver (section 3.5). Needs batch-8 templates
+# in this directory first. The model's own Makefile builds them with the
+# -DPROJ_MM_BATCH the batched projection needs and restores the batch-1 objects
+# afterwards -- but it also runs the Peano pin preflight, which this sandbox
+# cannot satisfy (the pinned nightly is gone from the index):
+make compile-decode-batch DBATCH=8 LBUILD=16
+# ... so the numbers in 3.5 came from build_template.sh, which skips that
+# preflight deliberately. That is only defensible because the skip was CHECKED:
+# a batch-1 pair built this way is bit-identical to the shipping Makefile one.
+cd ../../fused_decode
+DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 W_DUAL_CHAN=1 DECODE_STACK=6080 \
+  DECODE_NO_LM_WAVES=0 ./build_template.sh 8 16     # and again at 15, for the slope
+cp decode_b8_L1{5,6}.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/
+cd -
+python3 dflash_verify_gate.py         # batch 8 vs eight batch-1 steps
+
+# THE LOOP (section 3.8). It needs a TAPS target -- one dispatch has to return
+# both the distributions and the drafter's input -- and both families at a
+# context length a real generation reaches. build_template.sh names a
+# DECODE_HIDDEN_TAPS build `taps_b<B>_L<N>` on its own, and the drafter's
+# decode_b8_* have to be RENAMED on the way over or the target's scan finds
+# them:
+cd ../../fused_decode
+export DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 W_DUAL_CHAN=1 DECODE_STACK=6080 \
+       DECODE_NO_LM_WAVES=0
+DECODE_HIDDEN_TAPS=1 ./build_template.sh 8 128    # and 127 -> taps_b8_L*
+DECODE_MODEL=qwen3-4b-draft DECODE_MASK_BIDIR=1 ./build_template.sh 8 128  # +127
+cd - && make _decode_kernels_only DBATCH=1        # ALWAYS, after any batched build
+python3 dflash_loop.py --no-spec --n-tokens 10    # must emit PARIS_GREEDY 10/10
+python3 dflash_loop.py --n-tokens 32              # the loop, with acceptance
+
+# IS THE ENGINE CAUSAL? (section 3.8). One dispatch pair per L, no drafter, and
+# it fails on the SHIPPING batch-1 template:
+python3 dflash_causal_probe.py --prefix decode_b1_L --split
 ```
 
-#### The batched engine and the real model: a misaligned LUT [measured]
-
-Every gate the batch-8 engine had was SYNTHETIC, and on llama-3.2-1B's own
-weights the engine was wrong: one decode layer's output was 4.2x too large and
-cos 0.12 against a batch-1 dispatch. It was never the batching -- a batch-8
-build from `f83ec020` reproduced the numbers to the digit -- and it was never
-the silu either, which is what the first pass through this concluded.
-
-**The cause.** `chess_storage(...)` expands to NOTHING under Peano
-(`aiebase_chess.h`), so on that toolchain `activation_lut_ab`/`cd` carried no
-alignment at all and got a float's natural 4 bytes. Whether the tables landed
-vector-aligned then fell out of `.data` layout, and the two builds differ
-**[measured, `llvm-readelf -s` on the GLU core ELF]**:
-
-| build | `activation_lut_ab` | mod 32 |
-|---|---|---|
-| batch 1 (1 wave), and the shipping MAX_L=2048 pair | `0x00078400` | 0 |
-| batch 8 (1 wave) | `0x00072804` | **4** |
-
-So `getActivationBf16` returned silu in one build and, in the other, a strictly
-positive roughly affine function of its input -- same source, same core, same
-silicon. Every other table in that header already used the portable
-`alignas(aie::vector_decl_align)`; these four did not. Adding it moves batch 8
-to `0x72840` and emits byte-identical code, so `check_kernels_inert.py` still
-passes: this is data placement, not codegen. The shipping pair rebuilt under the
-fix returns **bitwise identical logits**, because its table was aligned already.
-
-**Why the first diagnosis was wrong**, which is the more useful half of this.
-It said the real gate-up leaves the LUT's `[-8, 8)` domain and that a 1.6%
-input difference becomes 4x out there. Both halves are false, and both were
-inference rather than measurement:
-
-- the gate-up does not leave the domain. On real weights it has rms 0.21 and
-  max 3.5, and **0.00%** of elements are outside **[measured]**.
-- the LUT does not amplify. Push both engines' real gate-ups through it and a
-  2.1% input difference comes out **2.85%** -- gain **1.0x** **[measured]**.
-
-The bisect's `GLU_ROW_PROBE=2` row was also misread. `up - gate` has ~13x the
-rms of `silu(gate)*up`, so it only ever cleared the plumbing for a signal that
-large; it cannot distinguish a fault that scales with the signal from one that
-does not. **A probe has to match the magnitude of the thing it stands in for.**
-`GLU_ROW_PROBE=4` (`gate*up`: no table, real magnitude) is what actually clears
-the plumbing, and `=5` (`silu(gate)` alone) is what fails.
-
-One layer, real weights, real seeded KV, all eight tokens, each against a HOST
-model rather than against another device build **[measured]**:
-
-| probe | batch 1 | batch 8 before | batch 8 after |
-|---|---|---|---|
-| full layer, correct model | 5.4%, cos 0.998 | 95.9%, cos **0.121** | 6.1%, cos 0.998 |
-| `=2` `up - gate` (13x too big) | 6.8%, cos 0.998 | 11.9%, cos 0.993 | unchanged |
-| `=4` `gate*up` (no table) | 6.9%, cos 0.999 | 6.9%, cos 0.998 | unchanged |
-| `=5` `silu(gate)` (table alone) | 7.6%, cos 0.997 | 99.8%, cos **0.084** | 10.3%, cos 0.995 |
-| recovered silu curve vs true | 7.8% | **185%** | 6.1% |
-
-`silu_range.py` is the tool. Two things in it are worth reusing:
-
-- **it validates itself against the batch-1 device before concluding anything.**
-  The host layer model reproduces the batch-1 device output to 5.4%, so when it
-  disagrees with batch 8 the disagreement is the device's. The original bisect
-  compared two device builds against each other and had no such control, which
-  is how a wrong reference survived.
-- **it recovers the device's silu curve by least squares, with no probe tap.**
-  Probe 5's GLU output is `f(gate)` for a SCALAR f. Only `f(gate) @ W_down` ever
-  crosses the shim, but binning the gate into the LUT's own 64 bins makes f 64
-  unknowns against 2048 equations per token -- 16384 in total, heavily
-  overdetermined. That is how the "positive, roughly affine" shape above was
-  read off silicon. The `DECODE_PROBE=4` tap the previous note asked for was
-  never needed.
-
-**Where it stands now.** The batch-8 engine computes the right thing: one layer
-agrees with batch 1 at **3.1%, rms ratio 1.00**. End to end over 16 layers,
-`batch_dispatch_check.py` has every token closest to its OWN reference by a
-wide margin and argmax agreeing on 7 of 8, but the diagonal is 5.7e-2..2.4e-1
-against a 5e-2 tolerance -- so it still reports NOT EQUIVALENT.
-
-That residual is the **projection kernel swap, not a fault**: batch 1 uses the
-v1 GEMV and batch 8 must use the q4k mmul, and `proj_qmm_gate.py` measures them
-**1.599%** apart at the projection output while both sit ~1% from exact fp32
-(0.917% and 1.274%) -- neither is wrong, they are different approximations.
-That 1.6% propagates to 2.1% at the gate-up, 3.1% at one layer output, and
-compounds over 16. **Closing it means putting both paths on the same projection
-kernel**, which is a design change: the builder selects on `BATCH > 1` in
-several places and the buffer choice (`ypair_mm_l1` vs `ypair_l1`,
-`wscr_mm_l1`) goes with it, so it would move the SHIPPING batch-1 numerics and
-needs a full `make verify` behind it. That is the next decision, and it is a
-decision rather than a bug.
-
-#### The batched attention past the first 16-key block [measured, FIXED]
-
-**A batch-8 token was wrong if and only if it needed block index >= 1.** The
-cause was in AIR, not in this design: `allocateSharedL1BufferLocks`
-(`AIRToAIEPass.cpp`) scoped a shared-L1 producer/consumer lock to the
-**outermost** `scf.for` containing a core's accesses. The lock scope decides how
-often the buffer is handed over, so it has to match how often the buffer is
-WRITTEN -- once per iteration of the loop that immediately encloses the access.
-The batched attention loops tokens around 16-key blocks and writes the score
-buffer per block, so it got a per-TOKEN handoff:
-
-    scf.for %t = 0 to 8                       scf.for %blk = 0 to 9
-      use_lock(prod, Acquire)        vs         use_lock(prod, Acquire)
-      scf.for %blk = 0 to 9                     call @attn_qk_blk(...)
-        call @attn_qk_blk_row(...)              use_lock(cons, Release)
-      use_lock(cons, Release)
-          batch 8, before                     batch 1, and batch 8 after
-
-On device that is a race between the two attention cores. With ONE live block
-per token the two cadences agree again and the result is correct, which is
-exactly the observed rule -- and exactly why nothing caught it. **With a single
-enclosing loop the innermost and outermost answers coincide**, so batch-1
-lowering never exercised it and every in-tree AIR test has that shape.
-
-The fix is one word: take the innermost enclosing loop, not the outermost.
-`check-air-mlir` is unchanged by it (487 passed / 20 failed with and without;
-all 20 are pre-existing air-runner failures that do not touch this pass), and
-the batch-1 decode templates rebuild **byte-identical in their instruction
-streams and bitwise-identical in their logits**.
-
-Measured, batch 8, the attention half (`x + oproj`) against a batch-1 dispatch,
-at P=9 where token 7 is the only token whose `L+t` exceeds 16:
-
-    t0..t6   1.9% .. 2.8%   (the projection-kernel floor)   unchanged
-    t7       59.4%  ->  2.1%
-
-and whole-block over context:
-
-| P | rounds | before | after |
-|---|---|---|---|
-| 9 | 2 | argmax 6/8, t7 permuted | argmax 7/8, none permuted |
-| 25 | 3 | argmax 3/8, 6 permuted, `x+oproj` 58.05% | **argmax 8/8**, none permuted, **2.02%** |
-| 100 | 7 | argmax 2/8, top-5 22%, 6 permuted | **1.77%** |
-
-**Why two independent gates both missed it.** Every batch-8 real-model test ran
-at P=6 -- `ATTN_L_BLK` 14, ONE attention round -- and `batch_equiv`'s L=128 runs
-do span many blocks but feed a ZEROED cache where every K and V is the same
-vector, so which block a key came from cannot matter. A single-round test and a
-degenerate-cache test between them covered everything except this. The lesson is
-not "add a longer test": it is that **two gates whose blind spots coincide are
-one gate**, and neither docstring said which axis it was holding fixed.
-
-#### The DFlash loop, measured -- and block 16 does not build [measured]
-
-**Block 16 is not buildable on either model.** `fused_decode.py` has an explicit
-rms-core L1 ceiling and it fires:
-
-    DECODE_BATCH=16 exceeds the rms core's L1 ceiling of 9 for llama-3.2-1b
-    (90176 B of 55296 B): one BATCH*2048 residual buffer, a BATCH*512 staging
-    buffer and 4096 elements of norm weight.
-
-qwen3-4b is worse -- `K=2560` makes the residual `BATCH*5120` bytes -- and its
-ceiling is **7**, so it cannot even do block 8. qwen3-4b at batch 1 builds fine,
-so it is the batching and not the model. **So every block-16 and block-32 row in
-the table above is modelled on a configuration that cannot currently be
-compiled.**
-
-That ceiling used to read 8 for qwen3-4b, and the count behind it was wrong by
-`K` bf16: `_rms_l1_bytes` charged for ONE resident norm weight and the batched
-body holds **two** — `w` (input norm) and `w2` (post-attention norm), allocated
-together at the top of `_rms_batched` and freed together at the bottom, because
-reusing one buffer for both costs the separate lock pair AIR gives the second
-weight and hangs the batched decode in wave 0. One buffer's worth of slack is
-enough to matter exactly once, and this was it: `DECODE_BATCH=8` on qwen3-4b
-passed the friendly check and died in the mlir-aie allocator on tile_2_2
-instead, which reports a byte count and names neither the buffer nor the knob.
-Fixed; llama-3.2-1b's ceiling is unchanged at 9 and no shipping build moves.
-`batch_l1_budget.py` now sums the rms core as a tile role and asserts its total
-against `_rms_l1_bytes`, so the tool and the refusal cannot drift again — before
-this it reported `rms_l1 activation ... max batch alone: 13` for llama-3.2-1b
-and could not see the constraint that actually binds.
-
-**And the ceiling is below 8 on every model except llama-3.2-1b** **[measured]**:
-
-| model | K | ceiling | block 8? |
-|---|---|---|---|
-| llama-3.2-1b | 2048 | **9** | yes |
-| qwen3-4b | 2560 | 7 | no |
-| gemma3-4b | 2560 | 7 | no (also refused: sandwich norm) |
-| llama-3.2-3b | 3072 | 5 | no |
-| phi4-mini | 3072 | 5 | no |
-| qwen2.5-7b | 3584 | 4 | no |
-| qwen3-8b | 4096 | 4 | no |
-| llama-3.1-8b | 4096 | 4 | no |
-
-So **the DFlash target model cannot be batched at all as built** — every batched
-result in this document is llama-3.2-1b, and the smallest batch the projection
-kernel will accept is already past what qwen3-4b's rms core holds. The
-band-streaming change below is what qwen3-4b needs for block 8, never mind 16;
-it takes qwen3-4b to 21.
-
-#### What it would take to build block 16 [measured]
-
-**Not the `@xnorm` staging.** The builder's own message used to say so and it
-was wrong. The three terms at batch 16 on llama-3.2-1b are:
-
-| term | bytes | share | ceiling if it went away |
-|---|---|---|---|
-| residual `BATCH*K` | 65536 | 73% | — |
-| staging `BATCH*STG_W` | 16384 | 18% | **11** |
-| two norm weights | 8192 | 9% | 10 |
-
-Staging to L2 buys 9 -> 11 on llama and 7 -> 8 on qwen3-4b. Neither reaches 16.
-**The residual is the term**, and everything else already fits at 16: the proj
-core is 25.0 of 54 KB (max 39), the attention CU 46.0 of 54 KB (max query tile
-19), rope and glu are row-tiled, and `PROJ_MM_BATCH=16` compiles.
-
-**Why the residual is resident is lifetime, not working set.** The rms core
-already tiles `K` for compute — `rms_chunk_aie` regenerates one 512-wide band at
-a time and `residual_acc_row_aie` adds one band at a time, and neither ever
-touches more than `BATCH*512`. Tiling harder changes nothing, because every band
-is simultaneously *live*: the thing added to band `c` is the o-proj output, and
-that does not exist until every band of the normalized X has gone through a
-reduction over all of `K`, attention has run, and o-proj has come back. One
-band's lifecycle cannot close before the next one's opens. For roughly 80% of a
-layer the residual is idle storage.
-
-**So the residual has to leave L1, and the wire for it already exists.** The
-layer chaining ABI writes residual2 back into the X buffer at offset 0 and the
-next layer's `rmsX` reads offset 0 — the full `BATCH*K` residual **already**
-crosses the shim once per layer on `@layerOut`/`@rmsX`. Making it cross a band
-at a time instead of whole is not a new channel and not a new BD chain; it is
-the per-round shape those transfers had before the BD-compaction comment in
-`_uni_dec` collapsed them ("single full-size drain ... instead of LAYER_RNDS
-per-round gets"). L1 then holds one raw band, one staging band and the two norm
-weights — `2*(b*512 + b*512) + 8192 + 4b`, which caps at **22** on llama-3.2-1b
-and **21** on qwen3-4b. Block 16 fits on both, with room.
-
-The cost is that the residual is re-read per band, and the re-read is multiplied
-by the `@xnorm` re-broadcast count: `XN_REFEED = REFEED[0] = 6` for the input
-norm and `REFEED[GATEUP_PHASE] = 32` for the pre-MLP one, against `K/512 = 4`
-bands. That is `4 + 24 + 4` + `4 + 128 + 4` = **168** `@rmsX` band gets per
-layer where there is one whole-buffer get today, ~2.75 MB per layer at batch 16.
-152 of those 168 are refeeds, and they are removable: the X memtile stages ONE
-chunk (`xmt_l2` is `[BATCH * 2 * COL_BLOCK]`), so the core re-sends the whole
-normalized X on every round. Growing `xmt_l2` to `[BATCH][K]` — 32 KB of a
-512 KB memtile — and letting it do the re-broadcast drops the layer to **24**
-band transfers and removes the same factor from the core->memtile `@xnorm`
-traffic. That is the change the phrase "moving the `@xnorm` staging to L2" was
-reaching for, and it belongs on the memtile rather than in place of the L1
-staging buffer.
-
-Estimate for the whole thing: rms core band loop, X memtile refeed, per-band
-shim puts from two X slots, the ceiling arithmetic, then re-gating batch 1 and
-batch 8 before batch 16 is worth compiling once.
-
-#### And it is probably not worth building [measured]
-
-**Three independent routes say block 16 loses to block 8**, so the ceiling above
-is documented rather than lifted.
-
-1. **The modelled sweep in section 5f**: 1.65x at block 8, **1.06x at block 16**.
-2. **The measured kernel table in 5f**: batch 16 is 235.2 cycles/token against
-   batch 8's 290.9 — a 19% per-token *win*, but only on the projection, which is
-   31% of the verify pass. Attention is the other 69% and it does not amortize.
-3. **The hardware loop measured above.** Split the ctx-1800 dispatches into
-   attention (from the measured per-key slopes: 1.55 ms at batch 1, 8.48 at
-   batch 8) and everything else, then fit the rest as a fixed weight-streaming
-   term plus a per-token term — `W + P = 19.30` at batch 1, `W + 8P = 66.62` at
-   batch 8:
-
-       W = 12.54 ms   65% of a batch-1 decode, amortizable
-       P =  6.76 ms   35% of it, paid per token
-
-   35% paid eight times is what holds the batch-8 verify to 2.2-2.5x instead of
-   8x. Extrapolating to 16 — attention at 9.11 us/key, and the projection either
-   flat or taking the 19% per-token win from (2) — gives `verify(16)` of
-   **117-137 ms** against 75.1. `draft(16)` has only one measured point, so
-   bracket it between "the draft has no per-token cost" (21.8, its batch-8
-   value) and "it is all per-token" (43.6): `iter(16)` is **138-181 ms** against
-   97.19.
-
-Across that whole envelope, block 16 beats block 8 only for `tau16` between
-**7.1 and 9.3** (against this document's `tau8 = 4.99`), or **10.3 to 13.4**
-against the measured self-draft ceiling `tau8 = 7.20`. DFlash's own acceptance
-curve puts `tau16` at **6.00**, and at that acceptance block 16 runs at
-**0.69-0.90x of the batch-1 baseline** — below break-even in every corner,
-including the one where the draft costs nothing per token and the projection
-takes its full win. For block 16 to pay, acceptance would have to hold at ~72%
-of the block having been 62% at block 8, and acceptance falls with block
-position rather than rising.
-
-The lever the same three routes agree on is **attention, not the block size**:
-69% of the verify pass, no amortization, and section 5g measures a 1.55x ceiling
-on it that nobody has claimed yet.
-
-**But build the band-streamed residual anyway — for block 8 on qwen3-4b.** The
-change is the same one; only the target moves. qwen3-4b's rms core holds 7 rows
-and the projection kernel's smallest batch is 8, so the DFlash target cannot run
-a batched verify at ANY size today, and band-streaming takes it to 21. That is
-the difference between "DFlash measured on llama-3.2-1b as a stand-in" and
-"DFlash measured on the model it is for", and it is worth more than a block-size
-sweep whose answer is already 8.
-
-What IS buildable is block 8, and the whole loop measured there on
-llama-3.2-1B -- draft = 5 layers at batch 8 (`UNI_WAVE_HI=5`, the DFlash draft
-shape), verify = all 16 at batch 8:
-
-| ctx | baseline | draft | verify | iter | draft share |
-|---|---|---|---|---|---|
-| 512 | 20.03 ms | 18.94 ms | 67.37 ms | 86.31 ms | 22% |
-| 1800 | 20.89 ms | 21.79 ms | 75.41 ms | 97.19 ms | 22% |
-
-**The draft pass costs almost as much as a full batch-1 decode** (18.94 vs
-20.03 ms) despite running 5 of 16 layers, because it still pays the whole LM
-head and the whole batch-8 attention. Depth is not what the draft is made of.
-
-Speedup against the batch-1 baseline, by accepted tokens:
-
-| tau | ctx 512 | ctx 1800 |
-|---|---|---|
-| 4 | 0.93x | 0.86x |
-| 5 | 1.16x | 1.07x |
-| 6 | 1.39x | 1.29x |
-| 7 | 1.62x | 1.50x |
-| 8 | 1.86x | 1.72x |
-
-**Break-even is tau = 4.31 at ctx 512 and 4.65 at 1800.** At the tau=4.99 this
-document assumes for block 8, that is **1.07-1.16x**, not 1.65x. A perfect
-drafter (tau=8, which is the self-draft upper bound measured above) gives
-1.72-1.86x. The loop is real and it works; whether it pays is entirely a
-question of the drafter's acceptance, and the margin is thinner than modelled.
-
-Not measured, and blocked here rather than skipped: the actual DFlash pairing is
-qwen3-4b target + `z-lab/Qwen3-4B-DFlash-b16` drafter, and neither weight set is
-in the local HF cache (only `FastFlowLM/Llama-3.2-1B-NPU2`), there is no network,
-and `llms/qwen3_4b_q4nx/` carries only requant/weight tooling -- no prefill or
-inference driver. So tau for the real drafter is untested.
-
-#### What it runs at [measured]
-
-llama-3.2-1B q4nx on NPU2, shipping decode templates, median of 15-40 dispatches.
-
-**TTFT is 1.3 s and does not depend on the prompt length** -- the prefill runs a
-fixed 2048-shape GEMM whether the prompt is 128 tokens or 2040:
-
-| prompt | warm TTFT | effective |
-|---|---|---|
-| 128 | 1.265 s | 101 tok/s |
-| 512 | 1.293 s | 396 tok/s |
-| 2040 | 1.338 s | 1525 tok/s |
-
-Warm = weights already resident. The FIRST call adds a one-time ~23 s host
-weight load (1856 MB of per-layer BOs), which is a session cost, not a TTFT.
-
-**Decode is weight-bound and nearly flat in context** -- batch-1 attention is
-about 4% of a dispatch, 0.86 us/key:
-
-| ctx | batch 1 | batch 8, per position | verify speedup |
-|---|---|---|---|
-| 8 | 19.59 ms / **51.1 tok/s** | 7.96 ms | **2.46x** |
-| 512 | 19.79 ms / 50.5 tok/s | 8.35 ms | 2.37x |
-| 1024 | 20.22 ms / 49.5 tok/s | 8.75 ms | 2.31x |
-| 1800 | 20.85 ms / **48.0 tok/s** | 9.39 ms | **2.22x** |
-
-So one batch-8 dispatch covers eight positions in 63.7-75.1 ms against
-156.7-166.8 ms for eight sequential ones. Attention is the term that does not
-amortize, and it shows in the slope. **The verify pass holds better than
-section 5f's roofline predicted (1.65x at block 8); measured it is 2.2-2.5x.**
-That discrepancy is now resolved, and it does not resolve in the roofline's
-favour -- see the next section.
-
-#### Where a dispatch's time actually goes [measured]
-
-`decode_cost.py`. A dispatch is
-`fixed + layers*per_layer(b) + lm_head(b) + ctx*attn(b)`, and only the last term
-had ever been swept -- the context is an RTP, so it is free, and the other three
-need templates built at different `UNI_WAVE_HI`. Four families per batch pin all
-of them. llama-3.2-1b, ctx 8 -> 1800, median of 15 **[measured]**:
-
-| batch | fixed | per layer | x16 | attention | lm head | total |
-|---|---|---|---|---|---|---|
-| 1 | 1.71 | 0.827 | 13.23 | 1.43 | 4.32 | **20.70** |
-| 8 | 2.07 | 3.089 | 49.43 | 11.95 | 12.34 | **75.78** |
-| scaling | 1.21x | **3.74x** | | **8.33x** | 2.86x | 3.66x |
-
-**Attention is 16% of a batch-8 dispatch, not 69%.** The layer body is 65%, the
-LM head 16%. Section 5e's headline -- "it is an attention problem, not a
-projection problem" -- is an artifact of undercharging the projection at batch
-> 1, and the sentence it produced ("making the projections faster cannot move
-this much") is exactly backwards on hardware.
-
-**At batch 1 the roofline is right and at batch 8 it is not.** Per layer it
-predicts 0.826 ms from the memory floor and measures 0.827 -- one part in eight
-hundred. At batch 8 the weights are unchanged, so the model keeps the pass
-memory bound and predicts the same 0.826; it measures **3.089**.
-
-#### The batched layer is dataflow bound, and the projection is 2% of it [measured]
-
-`PROJ_MM_PROBE=1` deletes both the `aie::mmul` and `q4k_unpack_block` from
-`proj_qmm_mm_acc` while every channel, descriptor, lock and DMA stays exactly
-where it was -- the weights are still streamed to the core, they are just not
-looked at. So the delta is the batched projection's entire arithmetic, on all 16
-cores, for a whole layer **[measured]**:
-
-| batch-8 layer | ms/layer | vs memory floor |
-|---|---|---|
-| as built | 3.089 | 3.74x |
-| **with the mmul and the unpack deleted** | **3.017** | 3.65x |
-| the weight-streaming floor | 0.826 | 1.00x |
-
-**The arithmetic costs 0.072 ms of a 3.089 ms layer. Two per cent.** The
-projection kernel this entire effort was built around -- `q4k_mm.h`, the 71
-MAC/cycle result, the batch sweep, the block-size roofline that is priced off
-its cycle counts -- is not what a batched dispatch spends its time on. Nor is
-`bench_q4k_mm.py` wrong: it says the arithmetic should be 0.688 ms/layer, and
-90% of that is genuinely hidden. It is hidden behind something 3.65x larger.
-
-So the layer runs at **3.65x its weight-streaming floor with no arithmetic in
-it at all**, while the same design at batch 1 sits *on* the floor (0.827 against
-0.826). Whatever the batched pass is paying for, it is dataflow, it is not the
-weights, and it appears only above batch 1.
-
-#### What it is not [measured]
-
-Three explanations, each of which fits the shape of the numbers, and all three
-are wrong. Recorded because each one cost a build and would otherwise be
-proposed again.
-
-**Not the `@xnorm` handshake count.** The obvious story: at batch 1 the core
-normalizes once and `refeed()` wraps a bare put, which `air-annotate-refeed`
-collapses into a lock init -- the re-broadcast is the DMA's and the core is not
-in the loop. At batch 8 the normalized batch cannot be materialized (that is why
-the rms core fits at all), so `_rms_batched_norm` regenerates each chunk inside
-the loop and puts it through a **single** `rstg` buffer: compute, put, wait,
-repeat. 152 serialized round trips per layer against batch 1's none, and
-charging the unaccounted 2.19 ms/layer to them gives ~22,600 cycles each --
-plausible for an unpipelined producer -> memtile -> multicast -> release.
-
-`XCHUNK_MUL` tests it directly. It sets how much of a row travels in one
-`@xnorm` transfer, in `COL_BLOCK`s, and it is a *transfer-count* knob and
-nothing else -- the bytes, the `@inX` multicast and every descriptor below
-`COL_BLOCK` are untouched, because the X memtile still splits whatever arrives
-into `COL_BLOCK`-wide broadcasts. At `XCHUNK_MUL=4` the count halves, 152 -> 76.
-Measured **[measured]**:
-
-| | `@xnorm`/layer | ctx 8 | logits |
-|---|---|---|---|
-| `XCHUNK_MUL=2` (as built) | 152 | 52.02 ms | — |
-| `XCHUNK_MUL=4` | **76** | **53.03 ms** | **bitwise identical** |
-
-Half the handshakes, one millisecond *slower*, and the same bits out. Not the
-handshake count. (The knob is inert at its default: batch-1 and batch-8 IR are
-byte-identical to `HEAD`.)
-
-**Not the multicast being replicated.** If `@inX` lowered to 16 separate memtile
-transfers rather than a stream-switch fan-out, X would cost 16x and the
-arithmetic would land almost exactly on the measurement. It does not:
-`aie.air.mlir` has **one** `aie.flow(%mem_tile_1_1, DMA : 0, ...)` per
-destination off a **single** MM2S channel -- 16 flows, one source port. The
-bytes leave the memtile once.
-
-**Not a missing ping-pong,** in the sense of the structure being absent. Both
-consumers on a proj core are already 2-deep rings on separate S2MM ports:
-`S2MM 0` alternates two `memref<2048xbf16>` X blocks (`BATCH*COL_BLOCK`),
-`S2MM 1` two `memref<2560xbf16>` weight blocks. Whether 2-deep is *enough*
-depth is a different question, and the next result answers it.
-
-#### The pipeline has almost no slack [measured]
-
-There is no device trace on this part (the AIE trace unit does not produce
-usable output here) and no cycle counter either: `get_cycles()` is declared in
-Peano's `aie2p_aie_api_compat.h` and has no implementation -- it compiles to a
-call to an undefined symbol, the same shape as the `chess_storage` trap this
-document already walked into once. So the core is timed indirectly: give the
-proj core a known amount of extra work per weight block (`PROJ_DELAY`, a
-volatile add-loop inlined into `proj_qmm_mm_acc`, gated so the shipping kernel
-is unaffected when unset) and see how much of it survives into wall-clock time.
-
-**Calibration, not guesswork.** The delay loop's cost in cycles/iteration is
-read off the disassembly rather than assumed -- a `volatile` accumulator forces
-a load/add/store every iteration, unrolled x2 or x4 depending on `PROJ_DELAY`'s
-divisibility, and both shapes cost **10 cycles/iteration** by direct bundle
-count. At 464 blocks/core/layer x 16 layers = 7424 calls/core, the fully-serial
-prediction is `PROJ_DELAY x 10 x 7424 / 1.57 GHz` = **0.04727 ms per
-`PROJ_DELAY` unit** -- what the added time would be if the injected delay were
-never hidden at all.
-
-Six points, llama-3.2-1b, batch 8, 16 layers, no LM head, ctx 8 **[measured]**:
-
-| `PROJ_DELAY` | ctx-8 ms | extra ms | fully-serial prediction | exposed |
-|---|---|---|---|---|
-| 0 | 51.79 | — | — | — |
-| 50 | 52.37 | 0.58 | 2.36 | 25% |
-| 100 | 53.77 | 1.98 | 4.73 | 42% |
-| 200 | 56.07 | 4.28 | 9.45 | 45% |
-| 400 | 59.32 | 7.53 | 18.91 | 40% |
-| 800 | 74.46 | 22.67 | 37.81 | 60% |
-| 2000 | 136.23 | 84.44 | 94.54 | **89%** |
-
-`D=0` (the macro defined but the loop's trip count zero) reproduces the
-undecorated baseline (51.79 against 52.02), so the instrumentation itself is not
-what is being measured.
-
-**Even a small injected delay mostly shows up, and a large one almost entirely
-does.** At `D=50` -- 2.36 ms of synthetic serial work spread across a 52 ms
-dispatch, under 5% of it -- a full quarter of that shows up in wall time anyway.
-There is no flat region at the start of this table: a real spare-capacity
-cushion (a deep buffer absorbing jitter) would produce one, a flat "exposed ~0%"
-run before a knee. Instead the exposed fraction climbs continuously from 25% to
-89%, which is the signature of **several small, thinly-buffered handshakes**
-rather than one buffer with a fixed amount of slack -- consistent with, though
-not proof of, the 2-deep rings already in place being the actual ceiling: two
-slots hide a little jitter and not much more, and there are enough of them
-chained (X feed, weight feed, egress, across 16 cores and the memtiles between
-them) that the aggregate exposure ramps smoothly rather than snapping at one
-threshold.
-
-**This is the load-bearing result, not the earlier framing.** "12.3 GB/s, cores
-idle 85%" describes the same fact but invites the wrong picture -- idle time
-sitting there unclaimed, free for the taking. What is actually measured is that
-the moment ANY extra serial cost is placed on the critical path, at any size,
-most of it is paid for immediately. The array is not resting on a cushion; it is
-running close to its coupling limit, and the 3.65x is the cost of that coupling
-rather than of any one buffer, kernel, or transfer count -- which is also why
-deleting the arithmetic (`PROJ_MM_PROBE`), halving the transfer count
-(`XCHUNK_MUL`), and ruling out replication and missing rings all failed to move
-it.
-
-**The next experiment this result actually proposes:** deepen a ring past 2 and
-re-run this same sweep. If a 3- or 4-deep `xblk`/`wblk` ring drops the exposed
-fraction at fixed `PROJ_DELAY`, depth was the limiter and the fix is
-buffer-depth, not the memtile re-broadcast scoped for item 11 -- those two
-fixes are not the same change and should not be assumed to be.
-
-#### Depth 3 was tried. It is not the limiter, or not the whole of it [measured]
-
-The proj core's `xblk`/`wblk` ring was rebuilt at depth 3, and it is a real,
-correct build -- 8 of 8 accepted on device against the batch-1 reference
-(`spec_accept.py`, swapped in for the shipping template and swapped back out,
-byte-verified after), not just a compile that happened to succeed. Getting
-there needed two failed attempts first, both worth recording because either
-would be proposed again otherwise:
-
-- **A loop-carried phase** (an `scf.for` `iter_arg` cycling 0/1/2, selecting
-  which of 3 hoisted buffers an `index_switch` fills) built valid IR from
-  Python but failed in `air-opt`'s `air-dependency` pass: *"operand #0 does
-  not dominate this use"*, on both templates. A buffer written from inside a
-  runtime-selected branch has no single last-writer for the pass to hang a
-  release token on.
-- **A `remui`-selected index_switch** with no loop-carried state hit the
-  identical failure, for the identical reason -- the runtime branch, not the
-  carried phase, was what the dependency pass couldn't resolve.
-
-**What worked:** leave the loop exactly as built -- the same single
-alloc/get/compute/dealloc per iteration the ping-pong pass already knows how to
-duplicate -- and pre-tag it with `unroll = 3` before the standard pipeline
-runs. `isPingPongCandidate` (`AIRDependencyScheduleOpt.cpp`) opens with
-`if (forOp->hasAttr("unroll")) return false;`, so an already-labeled loop is
-left alone; the labeling pass's own hardcoded factor-2 assignment never fires,
-and the SEPARATE downstream transform reads the attribute generically. No new
-duplication logic, no hand-built dependency edges -- the existing, tested
-machinery, asked for 3 instead of 2.
-
-Re-running the `PROJ_DELAY` sweep at depth 3, llama-3.2-1b, batch 8, ctx 8
-**[measured]**:
-
-| `PROJ_DELAY` | depth 2 exposed | depth 3 exposed |
-|---|---|---|
-| 50 | 25% | 52% |
-| 200 | 45% | 42% |
-| 800 | 60% | 63% |
-| 2000 | 89% | 90% |
-
-**No consistent reduction.** At 800 and 2000 -- the two points with enough
-signal to trust (7.5-32 ms of injected delay against ~1-2 ms of run-to-run
-noise, confirmed by a repeat at 800: 76.1 then 75.8 ms) -- depth 3 is
-statistically the same as depth 2, not better. At 50 it reads WORSE, which is
-noise (0.6-1.2 ms of signal on a 52 ms base) rather than a real regression, but
-it is certainly not an improvement either.
-
-**So compute-tile ring depth is not the (sole) answer.** It was the cheaper,
-better-scoped half of the hypothesis to test, and it is now closed. What it
-does not rule out: the `inX`/`wL2ToL1` producer side, one level up at the
-memtile, goes through the SAME `air-label-scf-for-to-ping-pong` pass and is
-subject to the identical hardcoded depth-2 default -- deepening the
-COMPUTE-tile destination while the MEMTILE source still only ever has 2
-transfers in flight would show exactly this null result even if depth is part
-of the real answer. That is the next thing to try if depth is still worth
-pursuing, and it is a materially bigger change: the memtile's feed loops
-(`_feed_inX` for X; the weight DMA-from-DDR path for W) are shared
-infrastructure, not a single core's private loop, and broadcast to 16
-destinations rather than serving one.
-
-**Attention does not amortize at all** -- 8.33x for 8 tokens, slightly worse
-than linear. The earlier "5.5x for 8 tokens" came from a slope fitted through
-points that also carried the per-layer term.
-
-**And attention amortizes worst while costing least**, which is the opposite of
-the shape the block-size argument assumed. Every term above is measured at two
-batches only, so the batch-16 column below is an extrapolation and marked as one.
-
-#### Item 11 started: the two-pass scale kernel is validated [measured]
-
-Item 13 (the 3.65x gap) and item 11 (qwen3-4b cannot batch at all) are
-independent; work moved to item 11 since qwen3-4b's ceiling is the harder
-constraint to leave unaddressed.
-
-**The plan (see "So the residual has to leave L1" above): stop holding the
-whole `[BATCH][K]` residual resident, round-trip it band by band through DDR
-on the existing `rmsX`/`layerOut` channels.** Two things had to be true for
-this to work, and only one is built so far.
-
-**Built and validated: the per-row scale can be computed a band at a time.**
-`rms_rsqrt` needs a sum-of-squares over the WHOLE row, which a banded design
-can't compute from one band alone. `rms_scale_row_partial_aie` (accumulates
-one band's contribution) + `rms_scale_row_finalize_aie` (closes it out with
-the existing fast-inverse-sqrt tail) replace that in two kernel calls instead
-of one. Landed behind `RMS_BAND_STREAM` (default off), with `xb` still the
-full resident buffer for now -- this validates the two-pass ARITHMETIC in
-isolation from the harder DMA change below. Gated:
-
-- Off, batch-1 AND batch-8/7 IR is byte-identical to before this work started
-  (checked by hand against the pre-item-11 commit; an unused FuncOp
-  declaration still prints a line, so the declarations themselves are gated
-  on the flag too, not just their call sites).
-- On, llama-3.2-1b batch 8 (below today's ceiling of 9, so this isolates "does
-  the new scale path work" from "does it unlock a new ceiling"): compiles
-  clean through `aircc`, no verifier errors. On device, `spec_accept.py
-  --batch 8 --blocks 3`: **8/8 accepted on every block, identical to the
-  unbanded baseline** -- the two-pass scale produces the same greedy
-  decisions as the one-pass `rms_scale_row_aie`. No hang; the lock-credit
-  signature this exact restructuring has hit four times before did not
-  reappear, because the new calls stayed inside the existing single-op-per-
-  loop shape (`_accumulate`'s and `_rms_batched_norm`'s established pattern)
-  rather than duplicating a channel op across `scf.if` arms.
-
-**Not built yet: shrinking `xb` itself.** This needs `xb` to become one
-`STG_W`-wide band, round-tripped through DDR at four points in the layer
-(ph0 read, residual1 write-back, ph2 read, residual2/layerOut write) instead
-of staying resident for the whole pass. The scale pre-pass above already
-shows the shape this takes: a full band sweep BEFORE the existing
-refeed-major chunk loop can start, because the consumer side (`@xnorm`'s
-projection cores) reads refeed-major/chunk-minor and can't be reordered to
-band-major without breaking their own sequential consumption -- so a band is
-re-fetched from DDR on every refeed visit, not cached across them (this is
-the "168 `@rmsX` band gets/layer" already priced in above; the scale pre-pass
-adds one more full sweep on top of that).
-
-**The blocker found this session: there is no spare packet id for a new
-channel.** The rms core's S2MM0 already carries 4 packet ids at its stated
-limit (`rmsX`, `rmsW`, `rmsW2`, the o-proj/down relay) -- a genuinely NEW
-channel for the intra-layer write-back-then-reread (the intermediate `h`
-after residual1, needed again for ph2's norm) can't be added there. The way
-through is what the earlier estimate called "per-band shim puts from two X
-slots": reuse `rmsX`/`layerOut` themselves, and give the launch-scope
-orchestration (`_x_in()`/`_x_out()`, currently one offset per layer) a SECOND
-offset within the same DDR `X` buffer for the intra-layer scratch round-trip,
-so `layerOut` mid-layer writes `h` to the scratch offset and `rmsX` later
-reads it back from there, while the FINAL write still goes to `_x_out()`
-exactly as today. This is new launch-scope choreography, not just a
-compute-tile change, and is the next thing to design -- with the ordering
-guarantee it needs (the scratch write must land before the later read of it)
-checked against how AIR's dependency pass treats two offsets into the same
-memref, not assumed.
-
-#### Level 2: three failed variants, then the actual cause [measured, FIXED]
-
-Level 2 bands the INITIAL `rmsX` read too (`xb` still full-size -- this only
-tests that the launch side's banded feed lands data correctly, before
-attempting the harder scratch round-trip above). Three variants, all compiled
-clean, all tested on device, none correct:
-
-- **Variant A**: compute-tile side wraps the 4 band gets in an `scf.for` with
-  a static trip count. AIR folds this into ONE 3-D `air.channel.get` (`[4, 8,
-  512]` / `[512, 2048, 1]`, confirmed in `air_project/placed.air.mlir`)
-  against the launch side's four separate, textually distinct
-  `air.channel.put`s (Python-unrolled -- a launch-scope `scf.for` deadlocks
-  the shim, see `_feed_wcols`). **No hang, WRONG DATA**: `spec_accept.py
-  --batch 8` went from 8/8 to 0/8 accepted, plausible-looking garbage rather
-  than NaN or a crash.
-- **Variant B**: Python-unroll the compute-tile side too, matching the launch
-  side 1:1 (4 gets against 4 puts, confirmed in placed.air.mlir). **Hung**
-  (`ERT_CMD_STATE_TIMEOUT`). The device recovered cleanly afterward -- a
-  known-good build ran correctly right after -- so this is the design, not a
-  wedged rig.
-- **Variant C**: neither side loops. ONE static 3-D op on BOTH ends (`[4, 8,
-  512]` / `[512, 2048, 1]`, op count 1-vs-1, confirmed in placed.air.mlir) --
-  the same shape AIR folds A's consumer side into anyway, just written that
-  way on the producer side too instead of Python-unrolling to 4. **No hang,
-  WRONG DATA -- and BYTE-IDENTICAL wrong data to variant A**: the same
-  first-mismatch token values at every position, across two producer-side op
-  counts (1 and 4).
-
-C's match to A rules out op-count/synchronization as the cause of the
-wrong-data failure mode: two different producer shapes produced the
-IDENTICAL wrong answer against the same consumer shape, so the bug is
-deterministic and specific to the 3-D descriptor itself, not a race or a
-credit mismatch. A prior theory (the previously-documented lock-credit
-hazard, `getLockValuePair`'s op-instance counting) is now DISPROVEN for this
-case by direct source reading: that mechanism applies to the overload used
-for MEMTILE buffers; `xb` is an L1 (compute-tile) buffer, which goes through
-a DIFFERENT overload that counts distinct buffer INSTANCES, not textual op
-count -- and `xb` is one `AllocOp` reused every way, so its lock credit is
-provably identical (1) whether the get is 1 op or 4. That mechanism does not
-explain variant B's hang either.
-
-**Current leads, unconfirmed:**
-- For the wrong-data failure (A and C): the 3-D `(offsets, sizes, strides)`
-  triple's dimension-order semantics -- whether dimension 0 is outermost or
-  innermost, and whether the L3 (launch/shim) and L1 (compute-tile) lowering
-  paths agree on that convention -- being wrong in the same way regardless of
-  producer op count would explain a deterministic, reproducible bug like this.
-  Reading `AIRToAIEPass.cpp`'s / `AIRRtToNpuPass.cpp`'s actual BD-generation
-  code for both lowering paths is the next step.
-- For variant B's hang: BD chains are grouped per PHYSICAL DMA channel,
-  shared with `rmsW`/`rmsW2`/the o-proj-down relay on `rmsX`'s S2MM0 port --
-  growing `rmsX` from 1 BD to 4 changes its position/length inside that
-  SHARED chain relative to the other three channels' BDs, which A and C
-  (both still 1 BD) do not. Not traced to a confirmed causal chain.
-
-A follow-up investigation traced the actual dimension-order semantics through
-both the L1 and L3 lowering paths (`AIRToAIESchedulingUtils.cpp`'s
-`getWrapsAndStrides`, `AIRLoweringPass.cpp`, `AIRRtToNpuPass.cpp`, and
-mlir-aie's own dimension-reversal code in `AIERT.cpp`/`AIEDMATasksToNPU.cpp`)
-and found dimension 0 = outermost consistently on BOTH ends -- ruling that
-theory out too.
-
-**The actual cause: a core (compute) tile's DMA BD has an 8-BIT wrap field
-PER DIMENSION.** `AIETargetModel.h`'s `getDmaBdWrapBits` returns 8 for core
-tiles, 10 for mem/shim tiles, once `sizes`/`strides` are given explicitly
-(not the plain-length path a whole-buffer transfer with no explicit strides
-takes). This is the SAME limit `_rms_batched_norm`'s own pre-existing comment
-already named for a different channel: *"a compute tile's wrap field is 8
-bits, so the 3-D chunk-major form the MEMTILE producers use would not be
-legal here."* Every one of variants A/B/C used `STG_W` (512) as a BD
-dimension's extent -- 512 does not fit in 8 bits. A truncated/wrapped size
-field is silently accepted (no verifier error) and produces a deterministic
-but wrong hardware iteration count -- exactly matching A and C's identical
-wrong data, and plausibly B's hang too (B's 2-D per-op shape `[BATCH,
-STG_W]` still has 512 as a wrap-encoded extent).
-
-**Variant D fixes it**: keep the DMA transfer granularity separate from
-`STG_W` (which stays 512 for the scale/chunk kernels' own pointer
-arithmetic, unaffected since that's plain C, not a channel op). Introduce
-`_RMS_DMA_CHUNK = 64` -- matching `PAIR_PAY`, an extent already proven to
-work in a 3-D pattern elsewhere (`outy_tokmajor`) -- and do the SAME
-one-static-3-D-op-per-end shape as variant C, just shaped `[32, 8, 64]` /
-`[64, 2048, 1]` instead of `[4, 8, 512]` / `[512, 2048, 1]`. **Verified on
-device**: `spec_accept.py --batch 8 --blocks 3` -- 8/8 accepted on every
-block, identical to the unbanded baseline. `check_channel_balance.py` and
-`l1_align.py` both clean. Confirms the wrap-field theory outright: same
-logical transfer, same op count, only the per-dimension extent changed, and
-that alone took it from reproducibly wrong to correct.
-
-Level 2 (banding the initial `rmsX` read, `xb` still full-size) is now
-validated. The harder part -- shrinking `xb` to one resident band and
-round-tripping it through the DDR scratch slot across residual1/ph2/
-residual2 (see "So the residual has to leave L1" above) -- still needs the
-same `_RMS_DMA_CHUNK`-not-`STG_W` discipline applied to every new transfer
-it adds, and remains unbuilt.
-
-**Kernel prerequisite, built and verified unused:**
-`rms_chunk_aie`/`residual_acc_row_aie` hardcode a `MODEL_DIM` stride for the
-side that's about to shrink (`x`/`acc` respectively) -- correct only while
-that buffer is the whole resident row. `rms_chunk_banded_aie`/
-`residual_acc_row_banded_aie` take an n-strided band instead (row_stride=n,
-offset 0 -- the caller's fetch already selected the band). `w` is unchanged
-in the chunk variant: the norm weight stays fully resident at every level.
-Existing symbols verified byte-identical; new ones unused so far.
-
-**A scratch DDR slot turned out to be unnecessary.** The first plan for
-level 3 (scaffolded, then reverted -- see the commit history) added a
-second `BATCH*K` DDR slot for the intra-layer `h` round-trip. On reflection:
-without `HIDDEN_TAPS`, `_x_in() == _x_out()` (the in-place chain), so
-residual1's write of `h` can land at `_x_in()`'s own address, in place,
-exactly like the unbanded design's whole-buffer write already does -- one
-band at a time instead of all of them. ph2/residual2 then re-read/re-write
-that SAME address; the final residual2 write is the same op the unbanded
-design already does. No new DDR region, no new addressing scheme, and the
-rms core's already-full packet-id budget never enters into it.
-`RMS_BAND_STREAM>=3` refuses `DECODE_HIDDEN_TAPS` instead of silently
-corrupting a hidden-state tap -- the one case this doesn't cover.
-
-**The concrete visit sequence, worked out but not yet implemented.** `xb`
-shrinks to `[BATCH][STG_W]`, refetched fresh (from `_x_in()`, always -- see
-above) at each of six phases, in this order:
-
-1. **ph0 scale pre-pass**: `nband` (= `K/STG_W`) fetches, each a full band,
-   feeding `rms_scale_row_partial_aie`/`_finalize_aie` (already built, level
-   1) -- unchanged from level 1/2 except the source is now a fresh fetch
-   each time, not a read of an already-resident `xb`.
-2. **ph0 regen**: `XN_REFEED * nchunk` (`nchunk = K/XCHUNK`) fetches, one
-   per `_rms_batched_norm`'s existing chunk-loop visit -- a NEW get inside
-   that loop (today it only reads an already-resident `xb`; it will need its
-   own `ChannelGet` from `_x_in()` at that chunk's offset, matching the
-   pattern the level-2 scale-band fetch already established, generalized to
-   a dynamic loop-variable offset).
-3. **residual1**: `nband` visits (== `OPROJ_RNDS`, since `STG_W == PAYLOAD`
-   for both models in scope -- assert this rather than assume it, per the
-   band/round-alignment note above), each: fetch band `r` from `_x_in()`,
-   get the projection round from `outY` (unchanged), add via
-   `residual_acc_row_banded_aie`, write the band back to `_x_in()` (in
-   place -- see above).
-4. **ph2 scale pre-pass**: `nband` fetches, now reading the UPDATED `h` that
-   residual1 just wrote back to `_x_in()`.
-5. **ph2 regen**: `GATEUP_REFEED * nchunk` fetches, same shape as step 2.
-6. **residual2**: `nband` visits, same shape as step 3, but the final write
-   goes through `_layer_out`'s existing `_x_out()` address (equal to
-   `_x_in()` without `HIDDEN_TAPS`, so mechanically the same write).
-
-**Why this is the harder half, concretely, not just in general terms:**
-every fetch above needs a MATCHING launch-scope feed, in the SAME order,
-same count -- and per the level-2 lesson, every one of them needs
-`_RMS_DMA_CHUNK`-sized sub-dimensions, not `STG_W` or `XCHUNK` directly (a
-compute tile's BD wrap field is 8 bits regardless of which named width is
-used). The regen steps (2, 5) can't fold into a `for_` loop on the launch
-side (a launch-scope `scf.for` deadlocks the shim -- `_feed_wcols`), so they
-Python-unroll to `XN_REFEED*nchunk` (e.g. 6*8=48 for ph0) and
-`GATEUP_REFEED*nchunk` (e.g. 32*8=256 for ph2) separate static ops each --
-hundreds of new, individually small, order-sensitive launch-scope puts,
-which is exactly the class of change that has taken multiple device
-iterations to get right every other time this session touched `rmsX`.
-
-**Checked, not assumed: there is no way to fold the regen phases into fewer
-ops.** The tempting shortcut -- fetch the whole row (or whole band) ONCE per
-refeed via a bigger static op, instead of once per chunk -- does not reduce
-`xb`'s L1 footprint at all: L1 usage is set by the buffer's DECLARED size,
-not by how often it gets refilled, so refilling a `[BATCH][K]`-typed buffer
-`XN_REFEED` times costs exactly what it costs today. And folding the refeed
-count itself into a BD dimension (a stride-0 "repeat" dimension) has no room:
-covering one `_RMS_DMA_CHUNK`-safe sweep of `K` already spends all 3 of a
-core tile's BD dimensions (chunk-subdivision, batch, element) -- there is no
-4th slot for a repeat dimension, and batch/element can't merge with it (rows
-are `K`-strided apart in DDR, not contiguous with the chunk sub-tiling). The
-per-chunk-per-refeed fetch count is inherent to keeping `xb` genuinely small,
-not an implementation shortcut this session missed.
-
-Kernel prerequisites for all six phases are now built (`rms_chunk_banded_aie`,
-`residual_acc_row_banded_aie`, `rms_scale_row_partial_banded_aie` -- each a
-thin wrapper giving the shared logic a band-sized MLIR type, since
-`func.call` needs an exact type match and one symbol can't carry two
-declared signatures).
-
-#### Level 3 built and IR-correct, but does not compile: a port-sharing limit, not a bug in this session's code [measured]
-
-The full six-phase restructuring above was implemented: `xb` shrinks to
-`rstg_l1` (`[BATCH][STG_W]`), `_rms_batched_norm`'s scale pre-pass and regen
-loop both refetch it fresh (`_rms_band_get`), `_accumulate` round-trips each
-residual band through `layerOut`/`rmsX` in place (`_rms_band_put_back` +
-`_rms_band_get`), and the launch side (`_uni_dec`/`_uni_voc`) gained matching
-Python-unrolled feed/drain helpers (`_rms_x_put_band`, `_rms_x_feed_ph`,
-`_rms_layerout_drain_band`, `_rms_residual_roundtrip`). Emitted IR was checked
-directly (`FUSED_DECODE_EMIT_ONLY=1`) against the design: the band gets/puts
-carry exactly the intended `[STG_W/64, BATCH, 64]` / `[64, STG_W-or-K, 1]`
-shapes, band-outer/token-inner ordering for the scale pass, and one
-`residual_acc_row_banded_aie` call per token per round. Levels 0/1/2 were
-re-diffed against pre-session `HEAD` at `DECODE_BATCH=8` (all three flag
-values, not just the batch-1 `check_batch1_noop.py` gate) and are
-byte-identical -- the level-3 additions did not perturb the levels that
-already work.
-
-**It does not get past `air-to-aie`.** `aircc` (and a manual `air-opt
--air-to-aie` reproduction on the exact pre-lowering IR, isolated via
-`XRTBackend(debug_ir=True)`'s `debug_ir/pass_047_after_air-verify-hierarchy-
-locality.mlir`) fails with `operand #0 does not dominate this use` on the
-**second** `air.channel.put` to `@rmsX`. This is not about repetition, chunk
-count, or the residual/ph2 additions specifically -- it reproduces with the
-regen counts forced to 0 (`_RMS_DEBUG_NREFEED` env override, tested then
-reverted), i.e. with nothing but ph0's 4 non-repeating band puts on the
-decode arm. **Two separate textual `air.channel.put` ops to the same packet
-channel within one launch invocation is enough to break the lowering**,
-regardless of level 3's other machinery.
-
-Immediately before the failure, the pass emits its own warning naming the
-actual mechanism:
-
-> compute-tile S2MM channel 0 multiplexes 2 flows over 13 transfers, but
-> control-flow paths deliver different BD sequences: the ring was built for
-> one path's transfers and will slip on the others... Equalize the paths so
-> each delivers the same transfers
-
-`rmsX` and `rmsW` (and, by the same construction, `layerOut`/`outY`) share a
-physical S2MM port on the rms compute tile -- there are only 2 S2MM ports and
-more than 2 logical `air.channel`s need one. `AIRToAIEPass` handles this by
-merging the sharers into one physical BD "ring," built on the assumption
-that every control-flow path through the tile's program delivers the **same
-number of transfers** on that ring. Levels 0-2 satisfy this trivially: `rmsX`
-is exactly one op (whole-row or one 3-D op), on both arms, unconditionally.
-Level 3 breaks it two ways at once:
-
-1. **Op count, not just transfer count, differs by arm.** `_rms_batched_norm`
-   (the shared body) contributes the same *textual* op count to both arms
-   regardless of level. But `_accumulate`'s new `_rms_band_get`/
-   `_rms_band_put_back` calls sit inside `_if_decode`'s `scf.if` -- decode
-   gets `2*nband` extra `rmsX`/`layerOut` ops (residual1 + residual2) that
-   vocab's control-flow path never executes, and, unlike level 0-2's single
-   `layerOut` put in that same `scf.if` (which the ring-merger already
-   tolerates as a 1-vs-0 op-count difference), level 3 puts **multiple**
-   band ops there -- 1-vs-0 compiles; N-vs-0 (or, per the reproduction
-   above, even 2-vs-anything on the *shared* portion) does not.
-2. **Two same-channel puts in one control path is already enough**, per the
-   minimal repro -- independent of the arm asymmetry in (1). Whatever
-   invariant the ring-builder relies on for `npu_dma_packet` channels breaks
-   the moment a second textual put to the same channel appears in one
-   invocation, which every level-3 phase (ph0's own `nband` scale-prepass
-   puts, before any regen or residual code runs at all) introduces.
-
-This sharpens, rather than repeats, the pre-existing lock-credit hazard
-`_rms_batched`'s own docstring already documents (`getLockValuePair` counting
-channel ops across `scf.if` arms): that mechanism is about **runtime
-semaphore credit** and was a **deadlock risk**. This is a **different**
-mechanism (BD-ring construction for tiles sharing physical DMA ports) and a
-**compile-time failure**, not a runtime one. Both point the same direction --
-`rmsX`/`layerOut`'s "one op per role" discipline is not a style preference,
-it is load-bearing for two independent reasons -- but this one is a hard
-wall: level 3's core design (per-band, per-phase separate channel ops)
-inherently multiplies the op count on a port `rmsW`/`outY` already share,
-and multiplying it is exactly what's disallowed.
-
-**What a fix would need, not yet attempted:** every arm's control-flow path
-through the rms tile's program would have to deliver the *same* number of
-`rmsX`/`layerOut` transfers, which likely means moving residual1/ph2/
-residual2 **out of** `_if_decode`'s `scf.if` entirely (unconditional for both
-arms, with vocab's copies reduced to zero-length no-ops -- the same
-`_n = _i32(PAYLOAD if _add else 0)` trick `_accumulate` already uses for
-`DECODE_ACC_STOP`). That collides with the OTHER documented constraint right
-next to it: `_accumulate`'s outer loop bound has to stay **static** ("the
-demux id analysis does need" it, per `_rms_batched`'s docstring), so making
-it unconditional means vocab's arm would need `nband` **static** `outY` gets
-too -- which requires the o-proj/down projection cores (a different herd
-entirely) to also deliver `nband` matching (dummy, zero-length) transfers on
-`outY` for the vocab arm, something they do not do today. This is a
-cascading, cross-herd redesign, not a local patch to `_rms_batched`, and it
-has not been scoped in the detail levels 1/2's fixes were.
-
-The draft templates the loop was measured on return **all-zero logits** -- they
-run `UNI_WAVE_HI=5` and the vocab waves live at `[UNI_DEC, UNI_WAVES)`, so they
-never ran. DFlash's draft is a batched multi-head guess that has to produce
-tokens, so it pays the head. Re-priced from the table above, at ctx 1800:
-
-| | block 8 | block 16 *(extrapolated)* |
-|---|---|---|
-| verify (16 layers + head) | 75.78 | 138.75 |
-| draft (5 layers + head) | 33.59 | 59.85 |
-| iteration | **109.37** | **198.60** |
-| break-even tau | **5.28** | **9.59** |
-
-Against a 20.70 ms/token baseline. Two things fall out:
-
-- **Block 8's break-even is 5.28, and this document's assumed `tau8 = 4.99` is
-  below it** -- 0.94x, a loss. The earlier 4.65 came from a draft that was not
-  paying for its LM head.
-- Block 16 needs `tau16 > 1.82 * tau8` to beat block 8. At `tau8 = 7.20`, the
-  measured self-draft ceiling, that is **13.1 of 16**.
-
-**This is llama-3.2-1b standing in for qwen3-4b and the substitution flatters
-the head.** 16 layers against 36 makes the LM head 16% of a dispatch here and
-much less there, so qwen3-4b's break-even is lower than 5.28. What transfers is
-not the number, it is the shape: the layer body does not amortize the way the
-kernel bench says, attention does not amortize at all, and both push the
-block-size optimum **down**, not up.
-
-#### What the batched verify costs, in accepted tokens [measured]
-
-`spec_accept.py` counts ACCEPT/REJECT decisions rather than logit distances,
-because a speculative decoder consumes decisions and a logit difference that
-never moves one is free. The draft is self-drafted by the batch-1 engine, so a
-batch-1 verifier accepts every token by construction, the lossless ceiling is
-exactly B, and no reference run or draft-model quality enters. With both faults
-fixed, over 15 blocks of 8 on llama-3.2-1B **[measured]**:
-
-    mean accepted   7.20 of 8      90.0% of the lossless ceiling
-    full blocks     12 of 15
-    standalone      7.20 -> 6.53   if each engine carries its OWN KV (--drift)
-
-**So the projection kernel swap costs 10%,** not the 87.5% the same measurement
-reported before the attention fix -- which is the whole reason to count accepted
-tokens rather than argue from logit distances. `batch_dispatch_check.py` still
-reports NOT EQUIVALENT because its 5e-2 tolerance is on logit rms, and that is
-now a statement about the GEMV-vs-mmul difference alone.
-
-Whether to close the last 10% by putting both paths on the same projection
-kernel is the open decision (item 10). It buys at most 1.11x on the accepted
-length and it moves SHIPPING batch-1 numerics, so it needs `make verify` behind
-it.
-
-### Gotchas that cost time before
-
-- **DECODE_BATCH must be a multiple of 8.** `aie::mmul<8,8,8>`'s A tile is 8
-  rows and `q4k_mm.h` asserts `rowA == 1`, so 8, 16 and 32 compile and 2 and 4
-  fail at `static_assert`. **Only block 8 is actually reachable**: below 8 the
-  kernel refuses, above 8 the rms core's L1 does, and 9-15 are not multiples of
-  8 — so there is neither a small-batch control build to bisect with nor an
-  intermediate block size to test "does a bigger block help" cheaply. The next
-  step up from 8 is 16, and 16 is the change described under "What it would take
-  to build block 16".
-- **`chess_storage(...)` is a NO-OP under Peano.** It expands to nothing in
-  `aiebase_chess.h`, so anything relying on it for alignment gets whatever the
-  type naturally has. The failure is not a fault and not deterministic across
-  builds: the object lands aligned or not depending on `.data` layout, so the
-  same source is correct in one build and silently wrong in another. Use
-  `alignas(aie::vector_decl_align)`. This cost a day and produced an entire
-  wrong theory before anyone read the address.
-- **A probe has to match the MAGNITUDE of what it stands in for.** Replacing
-  `silu(gate)*up` with `up - gate` to "remove the nonlinearity" also multiplies
-  the signal by ~13, and the resulting pass cleared the plumbing for a signal
-  that size while the real fault lived below it. A probe that changes two things
-  at once answers neither question. `gate*up` was the right probe and is one
-  character of difference.
-- **Compare against a HOST model, not against another device build.** Two device
-  builds disagreeing tells you they disagree, not which one is wrong; a bad
-  reference then reads as a fault in the thing under test. Build the host model
-  first, validate it against the path you already trust (`silu_range.py`'s
-  control reproduces the batch-1 device to 5.4%), and only then point it at the
-  suspect.
-- **A batch-1 reference must seed the KV once, not per token.** Re-seeding
-  before each dispatch zeroes the positions the batched run legitimately has, so
-  token 0 comes out right and the rest degrade with `t` -- which looks exactly
-  like an intra-block KV fault in the engine. `batch_dispatch_check.py` seeds
-  once and lets each dispatch append its own.
-- **`build_template.sh` always writes `decode_b<B>_L<N>`.** Building any probe
-  variant at the same batch and length silently eats the model template, and
-  nothing warns. Move the result immediately or back the pair up first.
-- **A buffer's SIZE decides its neighbour's ALIGNMENT.** mlir-aie packs
-  compute-tile buffers end to end and only aligns them to the tile load/store
-  bus width — 32 bytes on AIE2p — while `aie::mmul`'s C tile is moved in 512-bit
-  chunks that need 64. So one odd-sized buffer silently misaligns the next one,
-  and a misaligned 512-bit access on AIE2 **does not fault, it shifts**: the
-  data lands 32 bytes low and the tail is never written. Keep L1 buffer sizes a
-  multiple of 64 bytes and run `l1_align.py`. This cost the most time of
-  anything in this document, because the symptom (`(1 + t/2)/8`) reads like a
-  token permutation and sends you into the DMA descriptors, which were fine.
-- **Dump the operand and dump the accumulator before theorising about either.**
-  `PROJ_MM_PROBE=1` ships the A operand instead of multiplying and
-  `PROJ_FLUSH_PROBE=4` ships `y_acc` raw with scalar loads. One run each said
-  "the feed is perfect, the accumulator is shifted by one vector" — which is
-  most of the answer, and neither took longer than a build.
-- **A shared buffer across two arms doubles a lock credit.** AIR sizes a
-  compute-tile buffer's credit from how many channel ops write it against how
-  many read it, counting across `scf.if` / `index_switch` arms because it cannot
-  know they are exclusive. Sharing a buffer between a decode arm and a vocab arm
-  therefore makes the DMA wait for two core releases per fire while the core
-  issues one. The symptom is a hang with no message; the evidence is `%c2_i32`
-  where a working build has `%c1_i32`, in the tile's `aie.mem` block. Keep a
-  shared buffer one-directional (write-only or read-only to the DMA) — that case
-  returns `{1,1}` without counting — or keep the op counts equal.
-- **Two templates are only comparable if their `UNI_WAVE_HI` matches.** It is
-  not a numerics knob but it moves `batch_equiv`'s answer 7x. Check
-  `ls -l <prefix>_b8_L*.insts.bin`: 9,352 bytes is `UNI_WAVE_HI=1`, 149,392 is
-  unset. A stale template from a previous session is the easy way to A/B two
-  different designs and call the difference a regression.
-- **`sizeof(q4k_block_t)` is 9216 and a packed block is 5120** **[measured]**.
-  `uint4` is byte-addressed, so `uint4 qs[8192]` reserves double. Never write
-  `A + b` on a `q4k_block_t *`; step blocks on the `bf16` side with
-  `Q4K_BLOCK_BF16`. Every production call site already does, which is why this
-  survived unnoticed.
-- **A static check cannot see an operand-role swap.** The weights-as-B rework in
-  section 5 changed the unpack, the layouts and the header, and left
-  `q4k_mm_block` calling `q4k_mmul(W, B, C)`. It compiled, it benchmarked
-  identically — bundle counts depend on the template arguments, not on which
-  pointer feeds which slot — and it was wrong. Only the device gate caught it.
-  Re-run `q4k_mm_gate.py` after touching `q4k_mm.h`, always.
-- **Do not model AIE bf16 with `astype(bfloat16)`.** The core rounds toward
-  −∞ and `aie::mmul` multiplies in bfp16, so a round-to-nearest fp32 reference
-  disagrees with correct hardware — by 43% of unpacked weights, and by enough
-  in a dot product to read as a 12% error. `q4k_mm_gate.py` carries both models
-  (`bf16_rd`, `bfp16_ebs8`); reuse them rather than re-deriving them.
-- **Random test data is not representative data.** Drawing `scale` and `min`
-  independently gives dequantized weights a large positive mean, and with a
-  biased rounding that turns into an 11% bias that real q4k weights do not have.
-  Quantize an actual matrix with the min/max rule instead (section 5d).
-- **`make compile-decode` cannot run on this box.** `preflight-peano` requires
-  llvm-aie `21.0.0.2026080601+f4a72c27`; that build exists only as a manylinux
-  wheel and the newest Windows wheel is `2026080301`, already installed. The
-  decode templates in `fused_decode/` were built by bypassing only that prereq:
-  `make -o preflight-peano _compile_decode_build`. The `llvm-link < 23` gate is
-  separate, still enforced, and satisfied by the LLVM 22 shim in
-  `~/air-win-build/llvm-link-shim` (must be on PATH).
-- **Full unroll does not scale.** `bench_q4k_mm.py` straight-lines every loop so
-  static bundles equal cycles. That is ~3 min at kcol 256, ~22 min at kcol 512,
-  ~35 min at `--mrows 64`, and did not finish in 40 min for the native-bf16
-  variant. Larger shapes need a rolled build with trip-count weighting instead.
-- **Count the whole core, not the kernel's buffers.** Section 5 first priced the
-  kcol-512 fold at "48 KB of 64, feasible but tight" by adding up only the two
-  buffers the kernel itself declares. The proj core also carries `rcache`,
-  `wblk`, `yacc` and `ypair`, which is another 17.5 KB at batch 16, and 10 KB of
-  that 64 is stack. It does not fit. `batch_l1_budget.py --scratch-rows/--scratch-cols`
-  exists so this gets counted against the real core.
-- **Diffing two builds does not work here.** DecodeInstsGen recovers slopes by
-  diffing runtime instruction streams; in object code the trip count sits in a
-  register, so both builds emit an identical body and the difference is zero.
-- **A fully-inlined multi-chunk body will not compile.** Two `[[clang::always_inline]]`
-  copies of an unrolled matmul need a frame past AIE2's 16-bit load/store
-  displacement field: `immediate operand value -33152 is out of range
-  [-32768, -64]`, from the AIE2 assembly printer. It fails at kcol 128 as well
-  as 256, so it is frame size rather than code size and a smaller shape does not
-  help. This is what blocks the `--chunks` experiment (section 5).
-- **Clang outlines the unrolled bodies, and that changes what you measure.** At
-  full unroll each `q4k_mmul` body is ~1800 bundles, past clang's inlining size
-  heuristic, so it emits **one** shared `.text.<mangled>` section and calls it.
-  That is why `bench_q4k_mm.py` counts per section rather than per symbol (the
-  `extern "C"` wrappers are bare tail-jumps of 2 bundles) — but it also means a
-  function that calls two bodies costs exactly 2x, with no cross-body
-  scheduling, no matter what the source looks like. Measuring anything about
-  *adjacency* needs `[[clang::always_inline]]` at the call site; without it you
-  are measuring the outliner. `q4k_mm_chunked` does this deliberately.
-- **`clang-format` is not installed**, so the three new C++ files are unverified
-  against that CI gate. `black` is, and passes.
-
----
-
-## Answer
-
-DFlash keeps prefill and decode. It changes decode only.
-
-- **Prefill: unchanged.** Same feed-forward prefill we run today, plus one
-  addition — save the hidden states at layers 1, 9, 17, 25, 33.
-- **Decode: replaced** by a draft/verify loop. Both steps are superkernel calls
-  at a batch instead of batch 1.
-
-One new kernel to build: the superkernel's projection matmul, batched. It exists
-and is validated (section 5d).
-
-**The batch is 4-8, not 16, and the speedup is ~1.6-2.8x, not 4.9x** (section
-5f). Batch 16 was chosen from a roofline that counted projection weight traffic
-and left attention out; attention is the one term that does not amortize over a
-batch, and putting it back moves both numbers. Everything else in this document
-still holds — it is the block size and the headline that change.
-
----
-
-## 1. What DFlash is
-
-A speculative decoding method. A small model drafts a block of tokens, the real
-model checks them all in one pass, and you keep the correct prefix. Output is
-identical to normal decoding (lossless) because the real model decides.
-
-The drafter is a diffusion model, which matters for one reason only: it emits
-all 16 tokens in a **single** forward pass instead of one at a time.
-
-Checkpoint named in the request: `z-lab/Qwen3-4B-DFlash-b16`. Its config
-**[measured]**:
-
-```json
-"block_size": 16,                  "num_hidden_layers": 5,
-"hidden_size": 2560,               "intermediate_size": 9728,
-"num_attention_heads": 32,         "num_key_value_heads": 8,
-"head_dim": 128,                   "rope_theta": 1000000,
-"vocab_size": 151936,              "tie_word_embeddings": true,
-"dtype": "bfloat16",
-"dflash_config": { "mask_token_id": 151669,
-                   "target_layer_ids": [1, 9, 17, 25, 33] }
-```
-
-`b16` is the **block size**, not bfloat16 (the HF model card gets this wrong).
-
-Two facts that shape everything:
-
-1. **The drafter is 5 Qwen3-4B layers.** Same hidden size, same intermediate
-   size, same head counts, same rope theta. Nothing new to design.
-2. **The drafter ships in bf16**, not 4-bit. `"dtype": "bfloat16"`, no
-   quantization config.
-
-Context fusion is one linear plus a norm **[measured]**, from the model code:
-
-```python
-self.fc = nn.Linear(len(self.target_layer_ids) * config.hidden_size, config.hidden_size)   # 12800 -> 2560
-target_hidden = self.hidden_norm(self.fc(target_hidden))
-```
-
-Embedding and LM head are the target's (tied).
-
----
-
-## 2. What changes
-
-**Prefill.** Unchanged. It already runs the whole prompt through the
-feed-forward path. The only addition is dumping hidden states at 5 layers,
-which prefill already exposes per layer.
-
-**Decode.** Today:
-
-```
-1 superkernel call (36 layers, batch 1)  ->  1 token
-```
-
-With DFlash:
-
-```
-loop:
-  draft   : superkernel call,  5 layers, batch 16  -> 16 guesses
-  verify  : superkernel call, 36 layers, batch 16  -> check all 16 at once
-  accept  : keep correct prefix (~6), discard the rest
-```
-
-2 calls -> ~6 tokens instead of 1 call -> 1 token.
-
-Draft and verify are the same engine at different depths (5 vs 36 layers). One
-kernel, built once, used twice.
-
----
-
-## 3. Why the superkernel and not prefill
-
-Prefill also does batched matmul, so it is a fair question. Three reasons it
-loses:
-
-| | superkernel | prefill |
-|---|---|---|
-| weight format | q4nx, **0.625 B/param** [measured] | bf16, 2.0 B/param — 3.2x more bytes |
-| KV cache | reads + appends it | cannot read one at all |
-| NPU calls, 36 layers | **1** [measured] | **252** (7 ELFs/layer x 36) [measured] |
-
-The call count decides it. At 50-200 us per NPU call, 252 calls is **13-50 ms**
-of pure overhead **[estimated]** against a 54.7 ms verify pass **[measured, see
-section 5]**. Prefill gets away with it at batch 2048 because the overhead
-spreads over 2048 rows; at batch 16 it spreads over 16.
-
----
-
-## 4. The one kernel to build
-
-The superkernel's projection matmul does one token at a time. It needs to do 16.
-
-**Today** (`kernels/q4_k.h`, `_qmm_q4k_bf16<M=32, N=256>`) — the activation is a
-vector, not a tile. `M`=32 is weight rows, `N`=256 is the contraction:
-
-```cpp
-aie::vector<bf16, 32> b_col = aie::load_v<32>(it_B);        // 32 activations
-aie::vector<uint4, pr*8> a_cc_0 = aie::load_v<pr*8>(qs_ptr);
-aie::vector<float, pr*8> a_cc_f32_0 = aie::to_float(a_cc_0, 0);   // unpack 4-bit
-```
-
-One multiply per unpacked weight. Measured rate: 512 MACs per 140 bundles =
-**3.7 MAC/cycle/core** **[measured]**.
-
-**Prefill** (`matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc`) uses the
-native AIE matmul:
-
-```cpp
-constexpr int r = 8, s = 8, t = 8;
-using MMUL = aie::mmul<r, s, t, T_in, T_in, accauto>;   // 2x2 register-blocked
-```
-
-Measured rate: 9797 GFLOP/s across 32 cores = **98 MAC/cycle/core**
-**[measured]**.
-
-**26x gap.** So do not widen the existing loop — that keeps the slow form.
-Build: unpack the 32x256 weight block once into bf16, then `aie::mmul` it
-against a 256x16 activation tile. The 4-bit unpacking cost then spreads over 16
-rows instead of being paid per row.
-
-### Does it fit on the tile?
-
-Yes. Projection core L1 today **[measured]**, from `fused_decode.py:1038`:
-
-| buffer | batch 1 | batch 16 |
-|---|---|---|
-| `xblk_l1` `[256]` bf16 | 512 B | 8 KB |
-| `wblk_l1` `[2560]` bf16 | 5 KB | 5 KB (unchanged) |
-| `yacc_l1` `[32]` f32 | 128 B | 2 KB |
-| `rcache_l1` | ~0.5 KB | ~10 KB |
-| `ypair_l1` `[80]` bf16 | 160 B | 2.0 KB |
-| **total** | **~6 KB** | **25.5 KB of 64 KB** [measured, section 5b] |
-| + unpacked weight tile (new) | — | **+16 KB → 41.5 KB** |
-
-The activation was never held whole on the tile — it streams in 256-element
-chunks. The K-wide buffers (`rms_l1[K]`, `qkv_l1[M]`, `ropeq_l1[DQ_PADDED]`) are
-on the rms/rope/glu tiles, not here.
-
-The last row is the one thing this kernel adds that the GEMV does not need: the
-unpacked weight tile `aie::mmul` reads from. It still fits — 41.5 KB against a
-54 KB budget — but see section 5b, because it is what caps the batch.
-
-### The rest of the superkernel
-
-- **Attention**: `aq_l1 + ao_l1` at batch 16 is 64 KB, and the whole CU is 86 KB
-  **[measured]** — over the tile budget. Tile the queries 8 at a time and keep
-  the KV block loaded. The KV block is shared by every query in the tile, so it
-  is read once — this is a win, not just a cost. Per-model figures in section 5b.
-- **Output packing**: widen the packet rather than repeating it, and give the
-  group gather one extra dimension so the emitter-major blocks land token-major.
-  Every descriptor stays legal to batch 511. Worked through in section 5c.
-- **rms/rope/glu tiles**: loop over the 16 rows instead of holding them.
-- **`rcache`**: becomes per-row.
-- **Attention mask**: verify needs an intra-block causal mask that does not
-  exist today, and draft needs none at all. Section 6, step 2.
-- Unchanged: weight streaming, region-major KV, layer fusion, `DecodeInstsGen`
-  instruction patching.
-
----
-
-## 5. Is it worth it — memory bound or compute bound?
-
-Today **[measured]**: prefill is compute bound, decode is memory bound.
-
-Arithmetic intensity at batch M on q4nx weights is `3.2 x M` FLOP/byte (from
-0.625 B/param). So:
-
-| | batch | FLOP/byte | bound |
-|---|---|---|---|
-| prefill | 2048 | ~2048 | compute |
-| decode | 1 | 3.2 | memory |
-| **DFlash draft/verify** | **16** | **51.2** | **at the crossover** |
-
-### Measured: the crossover is at batch 14.8, just below the block size
-
-The kernel is built (`kernels/q4k_mm.h`) and swept (`bench_q4k_mm.py`). Cycles
-per 32x256 weight block on one core, fully unrolled so static bundle count
-equals dynamic cycles **[measured]**:
-
-| batch | unpack | mmul | total | MAC/cycle | cycles/token |
-|---|---|---|---|---|---|
-| 1 (today's GEMV) | — | — | 2240 | 3.7 | 2240 |
-| 16 | 1409 | 1965 | 3374 | 38.8 | **211** |
-| 32 | 1409 | 3533 | 4942 | 53.0 | 154 |
-
-`cycles/block = 1806 + 98.0 x batch` from the two points; the unpack-only build
-measures 1409 directly, well under that intercept because the multiply itself
-carries a fixed ~400-cycle term at these shapes rather than being proportional
-to the batch.
-
-**Batch 16 costs 10.6x fewer cycles per token than the batch-1 GEMV** (211 vs
-2240), because the unpack is paid once for 16 tokens instead of once per token.
-It is still 41.8% of the block cost at batch 16.
-
-Against the memory side, using llama-3.2-1B q4nx (9440 blocks/core/token, 1.57
-GHz, 19.6 ms/token measured on a Krackan box):
-
-| | compute | memory | bound |
-|---|---|---|---|
-| batch 1 (today) | 13.5 ms | 19.6 ms | memory |
-| **batch 16** | **20.3 ms** | 19.6 ms | **compute** |
-| batch 32 | 29.7 ms | 19.6 ms | compute |
-
-**Crossover at batch 14.8**, and DFlash's block size is 16 — so batch 16 sits
-just *outside* it, compute bound by about 3.5%.
-
-> **This corrects an earlier figure in this document.** The first sweep put the
-> crossover at 16.7 with batch 16 inside it. Two later fixes to the kernel moved
-> it, both described under "the correct layout is not free" below: the multiply
-> costs 10% more at batch 16 in the operand order the layout derivation forced,
-> and the unpack costs more again. The numbers above are the corrected ones and
-> are still a **lower bound** — they use the cheap wrong-layout unpack, which is
-> the only one that can be fully unrolled.
-
-Being 3.5% over the memory floor is not a problem for DFlash — the traffic-based
-speedup in section 5's result table is optimistic by about that much, and 4.87x
-does not become 4.7x in any way that changes a decision. What it does remove is
-the margin: there is no longer slack to absorb DMA stalls, so the open question
-about static counts under real memory pressure now matters more, not less.
-
-Two consequences:
-
-- **Block size 16 is right for this hardware, and there is no headroom above
-  it.** A b32 checkpoint would be compute bound (29.7 vs 19.6 ms) and would not
-  return proportionally more.
-- DFlash's own advice to use `block_size <= 5` for quantized targets does not
-  apply here. That is a GPU kernel property; on NPU2 the measurement says 16.
-
-Caveats on the measurement. Bundle counts are issue slots: they assume no DMA
-stall, so this bounds the compute side and nothing else. The 19.6 ms memory
-figure is measured wall time at batch 1, which also contains whatever stalls
-exist, so using it as a pure memory floor is approximate. The kernel itself is
-now numerically validated on device (section 5d).
-
-One number to note: the batched kernel reaches **38.8 MAC/cycle/core at batch
-16, not the prefill's 98**. K=256 per block is short and the 2x2 blocking has
-little to reuse across it. The crossover lands as high as 14.8 only because the
-unpack term is large enough to dominate.
-
-### The correct layout is not free
-
-The first version of this kernel unpacked weights into whatever order fell out
-of the packed nibbles and multiplied them, which measures the right *number* of
-operations but not the right kernel. Deriving the real layout — from q4_k.h's
-packed order on one side and `q4k_mmul`'s pointer walk on the other — changed
-three things and cost about 6%.
-
-**A real bug, first.** The scale/min group was indexed by the global unpack step
-rather than the step within the row half. Any block with `MROWS > 16` therefore
-read past the end of its scale array on the second half: at 32x256, step 32 asks
-for group 8 of 8. Fixing it moves the unrolled unpack 1397 → **1409**, which is
-the honest cost of the index arithmetic being right.
-
-**The weights had to become the B operand.** `aie::mmul<r,s,t>` takes B as
-`[s][t]` row-major — `[contraction][output]` — and that is exactly the order a
-128-nibble chunk already has. Taking the weights as A instead needs an 8x16
-transpose per chunk, and **`aie::transpose` cannot do it**: the 16-bit
-specialization on AIE2 covers 32, 16 and 8 elements, and a 128-lane bf16 vector
-fails to instantiate. So the kernel computes `Yt = Xt * Wt` and the split into
-two output tiles is two `aie::filter_even/odd` calls with a chunk size of 8.
-
-That swap is what costs the 10% **[measured]**:
-
-| mmul cycles | old (weights as A) | new (weights as B) | 2x2 shape old → new |
-|---|---|---|---|
-| batch 16 | 1787 | **1965** (+10.0%) | 4x2 → 2x4 |
-| batch 32 | 3533 | 3533 (unchanged) | 4x4 → 4x4 |
-
-Batch 32 being *identical* is the check on the explanation: at batch 32 the
-register blocking is 4x4 either way, so there is nothing to lose. At batch 16 it
-flips from 4x2 to 2x4 and that asymmetry is the whole difference.
-
-**Two side effects, one good and one bad.** The good one: `Yt` is **token-major**,
-which is the order the egress consumer wants — it removes the 2D group gather
-section 5c worked out. The bad one: `Xt` now has to arrive tile-blocked the way
-`mm_aie2p`'s A operand is, tile `(z,i)` at `(i*rowA + z)*64`, which a plain
-`[BATCH][KCOL]` buffer is not. That is a strided memtile BD rather than compute,
-and the memtile has the dimensions spare (section 5c), but it is not nothing.
-
-**The 10% cannot be recovered on the host, and the reason is the scale
-broadcast.** The obvious idea is that all of this is permutation, permutation is
-free at requant time, and `pack_q4k_cascade` already permutes heavily — so pack
-in mmul-A order for batched builds and keep the cheaper 4x2 blocking. It does
-not work, for a reason independent of how the host packs:
-
-`q4k_unpack_step` applies scales by replicating a 16-lane scale vector across
-the 128-lane chunk, so lane `l` gets `s16[l % 16]`. That is only correct if the
-chunk's row index *is* `l % 16` — column-major within 16 rows, which is exactly
-mmul's **B** order. In A order a contiguous 128 elements are two row-major 8x8
-tiles, so `row(l) = 8*(l/64) + (l%64)/8`, and lanes 0 and 16 have the same
-`l % 16` but different rows. `s16[0]` would have to hold two different scales at
-once. No packing order fixes that, because it is a property of the broadcast,
-not of the data **[measured — enumerated over all 128 lanes]**.
-
-Storing scales pre-expanded instead would take a 32x256 block from 5120 to
-36864 bytes, 7.2x, on a decode that is memory bound. That is not a trade worth
-discussing.
-
-So **B is forced, not preferred**, and the 10% is the price of the kernel being
-correct rather than an artifact to optimise away.
-
-Nor can re-blocking recover it. The 2x2 register blocking is a choice — at batch
-16 it runs one z iteration and two j iterations, and covering all four B tiles at
-once would cut loads per mac from 1 to 0.75. Built and measured **[measured]**:
-
-| | 2x2 | 2x4 | |
-|---|---|---|---|
-| batch 16 | 1965 | 2035 | +3.6% |
-| batch 32 | 3533 | 3786 | +7.2% |
-
-Eight accumulators cost more than the loads they save, at both batches.
-`q4k_mmul_2x4` is kept in the header so the idea is not re-tried.
-
-One more thing that did not work, worth recording because it is the obvious way
-to write this: making the blocking a template parameter with `MMUL C[RB][CB]`
-and unrolled index loops. The accumulators go to the stack rather than
-registers and the frame overflows the same displacement field as everywhere else
-in this document — `immediate operand value -52032 is out of range`. The
-accumulators have to be named locals, so each blocking has to be spelled out.
-
-The correct unpack also costs more than the wrong one, and by how much is only
-loosely known: it **cannot be fully unrolled** — that crashes the Peano backend
-(`Register not in mBMs`, AIE2P assembly printer) — while the rolled form, which
-is what a real build uses, compiles fine. Rolled static size is **87 bundles
-against 68** for the contiguous store. That is not a cycle count and 64
-iterations do not multiply it, so the only honest statement is that the totals
-above are a lower bound. `bench_q4k_mm.py --noperm` restores the wrong-but-
-unrollable unpack, which is how the exact numbers above are still obtainable.
-
-### Folding two blocks per call buys margin, but not as built
-
-Running the same sweep with two q4k blocks folded into one `q4k_mmul` call
-(`--kcol 512`), normalised back to a 32x256 block **[measured]**:
-
-**These fold numbers predate the layout fix** and are quoted against the
-pre-fix baseline (mmul 1787 at batch 16). The *relative* gains should carry —
-folding changes the contraction, the layout fix changed the operand roles, and
-they act on different things — but nothing here has been re-measured since, so
-treat the absolute columns as historical.
-
-| per 32x256 block, batch 16 | kcol 256 | kcol 512 | |
-|---|---|---|---|
-| unpack | 1397 | 1389 | unchanged, as expected |
-| mmul | 1787 | 1547 | **-13.4%** |
-| total | 3184 | 2936 | **-7.8%** |
-| MAC/cycle | 41.2 | 44.6 | +8.3% |
-
-The unpack term is identical, which is the cross-check that the normalisation is
-right — folding cannot change the per-weight unpack cost. The gain is entirely
-in the multiply, from a longer contraction giving the 2x2 blocking more to reuse.
-
-Effect on the roofline, on the pre-fix baseline: compute at batch 16 dropped
-from 19.1 to **17.6 ms** against the 19.6 ms memory floor, moving that
-crossover from 16.7 to about **19.3** **[estimated from the single batch-16
-fold-2 point]**. Applying the same -7.8% to the corrected 20.3 ms gives 18.7 ms,
-which would put batch 16 back inside the memory floor — so the fold is now the
-thing that would restore the margin the layout fix removed, rather than a
-nice-to-have. It still does not fit L1.
-
-**As written, it does not fit.** The kernel's own two buffers are 48 KB of 64 —
-a 32 KB unpacked tile and a 16 KB activation tile — but the proj core is not
-empty around them. Counting the whole core it is **57.5 KB against a 54 KB
-budget** **[measured]**, and that is still with `xblk` at its 256-column size;
-at 512 columns it is 65.5 KB. The ceiling is batch 9, under the 16 DFlash needs.
-The `rcache` (9.5 KB at batch 16) and `wblk` (5 KB) are what a kernel-only count
-leaves out.
-
-There may be a way to keep the gain inside the budget, and it turns on a
-question that is **not yet settled: where the 13.4% actually comes from.** Two
-candidates, with opposite consequences:
-
-- **Accumulator traffic.** `q4k_mmul` does `load_v(pC)` on entry and
-  `store_v(pC)` on exit, so two kcol-256 calls pay that twice where one kcol-512
-  call pays it once. If this is the cause, the fix is to hoist the accumulator
-  and the gain survives at a 16 KB scratch.
-- **Scheduling window.** The bench builds are fully unrolled, so there is no
-  loop overhead to amortise at all; a longer straight-line body simply gives the
-  VLIW scheduler more independent work to pack. If this is the cause, then two
-  adjacent kcol-256 bodies in one function already get it, and no restructuring
-  is needed — just don't put a function boundary between them.
-
-`q4k_mm_chunked` in `q4k_mm.h` is the discriminating experiment: N contraction
-chunks through **one** KCOL-wide scratch, accumulated into one C, with
-`[[clang::always_inline]]` at the call sites so the two bodies land adjacent
-instead of being outlined and shared. `bench_q4k_mm.py --chunks 2` runs it.
-
-**It does not build, and the reason is a hard backend limit** **[measured]**:
-
-```
-fatal error: error in backend: immediate operand value -33152 is out of range
-                               [-32768, -64]
-Running pass 'AIE2 Assembly Printer' on function
-                               q4k_mm_chunked<32, 128, 16, 2>
-```
-
-Two inlined fully-unrolled bodies need a frame past what AIE2's 16-bit
-load/store displacement field can address. It fails even at kcol **128**, where
-the two chunks together are half the code of the kcol-256 single body that
-compiles fine — so this is frame size, not code size, and shrinking the shape
-does not get around it. Same family as the Peano 9-bit immediate that forced
-`tile_n=16` on `llama32_1b_int4` (section 6, step 1).
-
-Rolling the loop instead would compile, but then the trip count lives in a
-register and both variants emit an identical body — the failure mode already
-documented for build-diffing. **So the static-bundle method cannot answer this
-question at all**, and the mechanism stays open until the kernel is wired in and
-timed on device. Both folds stay parked behind it.
-
-Worth keeping for the real kernel regardless: a fully-inlined multi-chunk body
-overflows the AIE2 frame-offset immediate. Anything that tries to inline several
-unrolled matmul bodies into one core function will hit this.
-
-Guessing this mechanism instead of measuring it is how the BFP16 flag was got
-backwards earlier (section 5), so it is left open here rather than asserted.
-
-Note also that the fully-unrolled bench build at kcol 512 took ~22 minutes to
-compile; that is a property of the measurement method, not of the kernel.
-
-## 5b. Does batch 16 fit in L1? (measured)
-
-The compute side says batch 16 is affordable. The other half of step 2 is
-whether the tiles have room for 16 rows of activations. `batch_l1_budget.py`
-reads the real buffer shapes out of `fused_decode.py` per model and reports it.
-At batch 16, against 64 KB minus the model's `DECODE_STACK` **[measured]**:
-
-| model | proj core | max batch | attention CU | max query tile | qkv_l1 max batch |
-|---|---|---|---|---|---|
-| **qwen3-4b** (DFlash target) | 25.5 KB FITS | 38 | 86.0 KB OVER | **8** | **4** |
-| llama-3.2-1b | 25.0 KB FITS | 39 | 46.0 KB **FITS** | 19 | 9 |
-| llama-3.2-3b | 25.0 KB FITS | 39 | 86.0 KB OVER | 8 | 5 |
-| gemma3-4b | 26.0 KB FITS | 37 | 84.0 KB OVER | 8 | 6 |
-| phi4-mini | 25.0 KB FITS | 39 | 86.0 KB OVER | 8 | 5 |
-| qwen2.5-7b | 34.5 KB FITS | 26 | 78.0 KB OVER | 10 | 6 |
-| qwen3-8b | 29.0 KB FITS | 35 | 86.0 KB OVER | 9 | 4 |
-| llama-3.1-8b | 31.0 KB FITS | 32 | 86.0 KB OVER | 9 | 4 |
-
-Three findings:
-
-- **The proj cores need no L1 work for the activations.** They fit batch 16 on
-  every model with room for 26-39. That is the tile doing the weight-streaming
-  work, and it confirms the premise of section 4 from the other direction: the
-  activation buffers there are a 256-element chunk and a 32-element accumulator,
-  not anything K-wide.
-
-  The new kernel does add one buffer, though, and the table above does not
-  include it: `q4k_unpack_block` has to materialise the unpacked weight tile
-  before `aie::mmul` can read it, and today's GEMV never does. At the 32x256
-  shape section 5 benchmarks that is **16 KB**, taking qwen3-4b's proj core from
-  25.5 to **41.5 KB** and its ceiling from batch 38 to **25** **[measured]**.
-  Batch 16 still fits with 12 KB to spare, so this changes no verdict — but it is
-  the single largest buffer on the core once it exists, and it, not the batch,
-  is what sets the ceiling.
-
-  It is also tunable rather than fixed. The mmul contracts over the columns, so
-  the tile can be chunked and accumulated at the same total unpack cost: 32x128
-  is 33.5 KB (ceiling 31) and 32x64 is 29.5 KB (ceiling 35) **[measured]**.
-- **Attention needs a query tile of 8** on every head_dim>=128 model; only
-  llama-3.2-1b (head_dim 64) fits a full 16. The cost is small: `ak`/`av` hold
-  the KV *block*, shared by every query in the tile and unscaled, so tiling by 8
-  means reading that block from L2 twice instead of once. DDR traffic is
-  unchanged, which is the part that matters.
-- **rms/rope/glu need row tiling**, at 4-9 rows depending on model, with
-  `qkv_l1` the tightest. These do elementwise and reduction work on activations,
-  so tiling costs loop overhead and L2 traffic rather than DDR.
-
-## 5c. Does the wire survive batch 16? (measured)
-
-The remaining piece of step 2 is what the batch does to the data moving in and
-out of the proj cores. `batch_wire.py` reports it. Sizes are **[measured]** from
-the builder; the descriptor limits are read out of mlir-aie's AIE2p target model
-(`AIETargetModel.h`).
-
-**Out.** There are two ways to carry a block of tokens through the egress:
-**widen** the packet B times, or **repeat** it B times per round. Widen is the
-one to build — it leaves `N_ROUNDS`, the BD count and the host instruction
-stream untouched, where repeat multiplies all three, and the builder already
-names shim BD exhaustion as a live constraint on round count.
-
-Every descriptor on that path is legal at batch 16, on all eight models
-**[measured]**:
-
-| descriptor | tile | batch 1 | batch 16 | limit |
-|---|---|---|---|---|
-| `outA` put | core | 514 elem | 514 elem | 16383 words |
-| `outA` get | memtile | 130 elem, 1D | 514 elem, **2D** | 4 dims, wrap 1024 |
-| `toMain` put | memtile | 130 elem | 2050 elem | 131071 words |
-| `outY` put | memtile | 514 elem | 8194 elem | 131071 words |
-
-The path is identical on every model, because `PAYLOAD = N_PAIRS * PAIR_ROWS *
-ROW_BLOCK` is `NCX*NCY*ROW_BLOCK = 512` whichever side of the paired/non-paired
-split a model falls on. Headroom is to **batch 511**, bound by the `outY` BD
-length. Egress L2 peaks at 16 KB of 512 KB on the busiest memtile column.
-
-The one thing that actually changes is the `outA` gather, and it changes by one
-dimension. An emitter sends its B blocks back to back, but the consumer wants
-token-major, so the group memtile has to land them strided: `sizes=[16, 32]`,
-`strides=[128, 1]`. Both wraps are under the memtile's 1024 and the step is
-under 2^17, so it is a legal 2D memtile BD — 4 dims are available and 2 are
-used. The routing header also stops mattering: 0.39% of the packet at batch 1,
-0.024% at batch 16.
-
-**In, and this is the one that bites.** The `_gemv` inner loop pairs one X chunk
-with one weight block, and only X scales with the batch **[measured]**:
-
-| per inner-loop step | batch 1 | batch 16 |
-|---|---|---|
-| W chunk (a packed q4k block) | 5120 B | 5120 B |
-| X chunk (`COL_BLOCK` x batch) | 512 B | 8192 B |
-| X / W | 0.10 | **1.60** |
-
-**X overtakes W at batch 10** — `BLOCK_BF16`/`COL_BLOCK` = 2560/256, exactly.
-Above that the proj core's input port carries more activation than weight, which
-inverts the assumption the whole engine was built on. Per layer per core it is
-6.31 MB of X against 3.94 MB of W at batch 16, up from 0.39 MB against 3.94 MB.
-
-It is affordable, but not by much. Combining the byte count with the measured
-cycles/block line from section 5 (`1438 + 109.1*b`), the X broadcast needs
-**2.57 B/cycle** at batch 16 and 3.32 at batch 32. Both are under a 32-bit
-stream, and because bytes and cycles are both linear in the batch the demand
-approaches an asymptote of `COL_BLOCK*2 / 109.1` = **4.69 B/cycle** rather than
-growing without bound — so the broadcast saturates at **batch 76** and never
-before. That last figure divides a measured slope by an assumed stream width;
-the stream width is a flag on the tool, not something measured here.
-
-The fix, if it is ever needed, is **not** the fold-2 variant from section 5.
-That folds two blocks along the *contraction*, and two column blocks need two
-different X chunks, so W and X both double and the ratio does not move at all —
-`--kcol 512` buys roofline margin and nothing here (and, per section 5, does not
-fit L1 in the form it was measured).
-
-Folding along the *rows* does move it, and it is now measured rather than
-extrapolated: `bench_q4k_mm.py --mrows 64 --batches 16` gives 2753 unpack + 3233
-mmul = **5986 cycles** per 64x256 block **[measured]**. Normalised back to a
-32x256 block that is:
-
-| per 32x256 block, batch 16 | MROWS 32 | MROWS 64 | |
-|---|---|---|---|
-| unpack | 1397 | 1376 | -1.5%, i.e. unchanged — the cross-check |
-| mmul | 1787 | 1616 | **-9.5%** |
-| total | 3184 | 2993 | **-6.0%** |
-| MAC/cycle | 41.2 | 43.8 | +6.3% |
-
-As with the contraction fold, **these predate the layout fix** (section 5) and
-are quoted against the pre-fix 1787 baseline. Note also that MROWS 64 at batch
-16 gives a 2x8 register blocking, which is *more* asymmetric than the 2x4 the
-fix landed on — so re-measuring it after the fix is worth doing before relying
-on the -9.5%.
-
-So row folding buys about as much compute as the contraction fold did (-6.0%
-against -7.8%) *and* halves the X feed. Crossover goes from batch 10 to 20,
-demand at batch 16 from 2.57 to **1.37 B/cycle**, and the asymptote from 4.69 to
-**2.63** — under the stream width, so the broadcast stops being a limit at any
-batch.
-
-Worth noting the two cycle lines are not related by a factor of two. Fitting the
-measured points gives `1438 + 109.1*b` at MROWS 32 and `2876 + 194.4*b` at
-MROWS 64: the intercept doubles exactly, as unpack must, but the slope comes in
-at 194.4 rather than 218.2 because the longer row block gives the 2x2 register
-blocking more to reuse. `batch_wire.py` takes the line as `--cyc0/--cyc1` rather
-than deriving one from the other.
-
-It is not free in L1, and the interaction with the unpack scratch above is the
-thing to watch. `MROWS=64` at the full 256-column contraction wants a 32 KB
-scratch, which puts the proj core at 57.5 KB and **over** the 54 KB budget
-**[measured]**. Chunk the contraction to 64 columns and the same fold costs
-33.5 KB with a ceiling of batch 31 — comfortable on capacity.
-
-But chunking the contraction shortens what each `q4k_mmul` call accumulates
-over, and section 5 measured that exact effect in the other direction: going
-from 256 to 512 columns cut the multiply 13.4%. Chunking to 64 may give that
-back. Whether it does is the same question section 5 leaves open for
-`q4k_mm_chunked` — and that experiment does not build, so it stays open in both
-directions until there is on-device timing. Both folds are parked behind the
-same measurement.
-
-### The bf16 drafter is not cheap
-
-The drafter is 13% of the target's parameters but ships in bf16, which is 3.2x
-denser than q4nx. Bodies only (the LM head is counted separately in the table
-above, where it turns out to matter more than this does):
-
-| | params | format | body traffic |
-|---|---|---|---|
-| drafter | 0.54 B | bf16 as shipped | **1.009 GB** |
-| drafter | 0.54 B | if quantized to q4nx | 0.315 GB |
-| target | ~4.0 B | q4nx | 2.271 GB |
-
-All three **[measured]** from the builder via `dflash_traffic.py`. As shipped the
-drafter body is 44% of the target body. Quantizing it to q4nx is also required
-to run it on the superkernel at all (same approach `qwen25_7b_q4nx` uses), since
-that engine only takes q4nx weights.
-
-Note the asymmetry: quantizing the **drafter** cannot break correctness — the
-target still decides — it only lowers the acceptance rate. Quantizing the
-**target** changes what "correct" means and also lowers acceptance, because the
-drafter was trained against the bf16 target.
-
-### End result, from builder geometry
-
-Now that `fused_decode.py` has `qwen3-4b` and `qwen3-4b-draft` entries, the
-weight traffic comes off the builder instead of being estimated. `dflash_traffic.py`
-reports it. Bytes are **[measured]** from the builder; the 46 GB/s and tau=6 are
-inputs.
-
-| | GB | ms @ 46 GB/s |
-|---|---|---|
-| target body, 36 layers | 2.271 | 49.4 |
-| LM head | 0.246 | 5.3 |
-| **verify pass** | **2.517** | **54.7** |
-| draft body, 5 layers (q4nx) | 0.315 | 6.9 |
-| `fc`, 5 taps → 1 (q4nx) | 0.020 | 0.4 |
-| LM head (tied) | 0.246 | 5.3 |
-| **draft pass** | **0.582** | **12.6** |
-| **per iteration** | **3.098** | **67.4** |
-
-| at tau=6 | ms/token | tok/s | vs today |
-|---|---|---|---|
-| Qwen3-4B q4nx decode today | 54.7 | 18.3 | 1x |
-| DFlash, bf16 drafter (as shipped) | 13.9 | 71.9 | **3.94x** |
-| DFlash, drafter quantized to q4nx | 11.2 | 89.1 | **4.87x** |
-
-Three things this surfaced that parameter counting did not:
-
-- **The LM head is 42% of the q4nx draft pass** (0.246 GB against a 0.315 GB
-  body). A 0.5 B drafter and a 389 M-parameter head are comparable objects, and
-  the draft pays for the head just as the verify does. It is 19% of the draft
-  pass when the drafter body is bf16.
-- **The `fc` linear is not a rounding error, though it nearly is.** DFlash's
-  context fusion is `Linear(5*2560, 2560)` = 32.8 M parameters, a **third of a
-  whole Qwen3-4B layer**, and it is easy to omit from a layer-count estimate. At
-  q4nx it is 6.5% of the drafter body and moves the headline from 4.91x (before
-  it was counted) to 4.87x; in bf16 it would be 21% of a q4nx body. It also
-  **decomposes for free** — `fc(concat(h1..h5)) == sum_i W_i @ h_i` — so it is
-  five accumulating hidden→hidden projections at `I2=5, J2=5`, a shape qwen3-4b
-  already has.
-
-  Both forms are legal, though: the undecomposed 12800-wide contraction gives
-  `J2 = 12800/512 = 25`, an integer, so the proj phases *can* express it. The
-  reason to prefer the decomposition is L1, not legality —
-  `RCACHE_LEN = 2*max(J2P)*8`, so a `J2=25` phase raises the per-core reduce
-  cache from 304 to 400 elements, **+3.0 KB at batch 16** **[measured]**, on a
-  core already at 41.5 KB of 54. Reusing an existing `J2` costs nothing.
-- **Break-even is at tau = 1.23** (1.52 with the bf16 drafter). The loop pays
-  for itself if barely more than one token per block survives verification. That
-  is the strongest robustness result here: the open question about acceptance
-  rate on a quantized target scales the *size* of the win but has to be
-  catastrophic to eliminate it. At tau=3 -- half the paper's rate -- q4nx still
-  gives 2.44x.
-
-KV traffic is excluded throughout, which understates DFlash: it is unchanged per
-call and a batched call reads it once for the whole block, so the advantage grows
-with context.
-
-### What it costs to keep resident
-
-Traffic is one thing; DFlash also runs **two models at once**, and both keep a
-KV cache. At context 2048, from the builder **[measured]**:
-
-| | q4nx drafter | bf16 drafter |
-|---|---|---|
-| target weights | 2400 MB | 2400 MB |
-| drafter weights + `fc` | 320 MB | 965 MB |
-| target KV | 288 MB | 288 MB |
-| drafter KV | 40 MB | 40 MB |
-| **total** | **3048 MB** | **3693 MB** |
-| added over a plain decode | +13% | +37% |
-
-This is a second and independent reason to quantize the drafter, beyond the
-throughput one: on a laptop where the NPU shares system memory, 645 MB is a
-real difference, and it buys the 4.87x instead of 3.94x at the same time. The
-drafter's own KV cache is 40 MB and easy to forget — it is a full-depth cache
-over the accepted prefix, just five layers deep instead of thirty-six.
-
----
-
-## 5d. Is the kernel correct? (measured, on device)
-
-Everything above section 5 is a cost model. None of it says the kernel computes
-the right answer, and until now nothing did — the kernel uses AIE intrinsics, so
-it will not run on the host, and its layout was *derived* from two independent
-sources rather than checked against one. `q4k_mm_gate.py` closes that: one core,
-one herd, weights and activations in, `Yt` out, compared against numpy.
-
-**The comparison is `==`, in every mode.** That is worth stating plainly because
-it was not obviously achievable. A layout bug does not perturb an answer, it
-permutes it, so a tolerance wide enough to pass is wide enough to hide one. It
-passes bit-exactly at batch 16 and 32, one and two blocks, several seeds
-**[measured]**.
-
-**It found two faults on the first run, and neither was visible to any static
-check.** Both produce a plausible wrong answer rather than a crash:
-
-- **The operands were in the wrong roles.** Section 5's layout fix moved the
-  weights from `aie::mmul`'s A operand to its B operand — the unpack was
-  rewritten, the header was rewritten, and `q4k_mm_block` went on calling
-  `q4k_mmul(W, B, C)` with the weights first. The layout half of the swap
-  landed; the call sites did not.
-- **`sizeof(q4k_block_t)` is 9216, not 5120** **[measured]**. `uint4` is
-  byte-addressed — `load_v<N>` reads N nibbles but pointer arithmetic counts
-  bytes — so `uint4 qs[8192]` reserves twice the space it uses. It has never
-  mattered, because every production call site casts a `bf16*` at the boundary
-  and steps blocks on the `bf16` side. It bites the moment new code writes
-  `A + b`, which lands 4096 bytes into the next block's nibbles and reads them
-  as scales. `q4k_mm.h` now carries `Q4K_BLOCK_BF16` and a static_assert that
-  fires if the struct is ever made exact.
-
-Getting to `==` required measuring two properties of the arithmetic that a
-datasheet would not have given up, both now modelled in the gate:
-
-| property | what it is | how it was found |
-|---|---|---|
-| `aie::mmul` multiplies in **bfp16** | groups of 8 share an exponent taken from the group max, 7 significant bits each | fitted until it reproduced 512/512 elements bit-for-bit |
-| every bf16 rounding on the core goes **toward −∞** | not to nearest; floor, not toward-zero | round-to-nearest matches 4890/8192 unpacked weights, floor matches 8192/8192 |
-
-The rounding mode is the part with consequences. Rounding down costs half an ulp
-*every time, in the same direction*, so its contribution to a dot product is
-linear in K and proportional to the **mean** of the operands rather than their
-magnitude. That makes the accuracy answer depend entirely on the data:
-
-| weights | K=256 | K=512 |
-|---|---|---|
-| independently drawn scale and min (large positive mean) | −7.7% bias | −11.2% bias |
-| real q4k min/max codec (centred) | 1.3% rms, no bias | 1.3% rms, no bias |
-
-**Same kernel, same build, only the test data changed.** The first row is what a
-plausible-looking random codec produces and it is not representative; q4k puts
-`min` at the group minimum, so dequantized weights are centred wherever the
-weights are, and the bias cancels. **1.3% rms, flat in contraction depth, is
-the number to carry forward** — the batched path costs about that much accuracy
-against an exact fp32 matmul of the same inputs.
-
-The instrument that settled the layout question is kept as `mmul_probe.py`: one
-`aie::mmul` per probe with operands chosen so the answer names its own layout
-(`A = 1..64, B = I` gives back A in A's order). It confirms plain row-major
-`A[r][s]`, `B[s][t]`, `C[r][t]` **[measured]**, which is what let the fault be
-localised to the call site instead of the API. Reach for it before re-deriving
-anything about tile order.
-
-### And does it agree with the GEMV it replaces?
-
-That is a separate question, and `q4k_mm_gate.py` cannot answer it: the two
-kernels do genuinely different arithmetic for the same result. The GEMV never
-builds `W` — it factors the `+min` term out as `min[r,g] * (sum of x over group
-g)`, which is what `b_col_reduce_add` and the whole `rc`/`fill` cache exist for.
-The batched path materializes `w = q*scale + min` elementwise, because
-`aie::mmul` needs a real B operand, and then multiplies in bfp16. Same maths on
-paper; different roundings, in different places, in different precisions.
-
-`proj_qmm_gate.py` runs **both, in one launch, off the same L1 weights and the
-same activations**, so a difference is attributable to the kernels and nothing
-else. Measured **[measured]**:
-
-| | batch 16, K=256 | batch 16, K=512 | **batch 8, K=256** | **batch 8, K=512** |
-|---|---|---|---|---|
-| GEMV vs exact fp32 | 0.917% rms | 1.005% rms | 0.907% rms | 0.951% rms |
-| batched vs exact fp32 | 1.274% rms | 1.456% rms | 1.279% rms | 1.401% rms |
-| GEMV vs batched | 1.599% rms | 1.711% rms | 1.570% rms | 1.664% rms |
-| ratio | 1.39x | 1.45x | **1.41x** | **1.47x** |
-
-**Batch 8 was added after the block size moved, and it had to be: the gate only
-ever ran at 16.** It refused to run below 16 on a stale guard — `q4k_mmul`'s
-`BATCH % 16 == 0` assert, which `q4k_mmul_any` had already made obsolete — so
-the block size the analysis recommends was the one block size the projection
-was never checked at. It passes, and at the same error as 16.
-
-That check also found the real limit, which is not in `q4k_mm.h` at all:
-**`proj_qmm_mm_flush_row` de-tiles for `aie::mmul<8,8,8>` and breaks at batch
-4.** It reads C tile `(z, j)` at `(j*RA + z)*64` with `RA = BATCH/8` — correct
-at 8, 16 and 32, where it coincides with `q4k_mmul_small`'s layout at `RA == 1`.
-At batch 4 the tile is `aie::mmul<4,8,8>`, `size_C` is 32 not 64, and `RA`
-integer-divides to **zero**, so every `j` reads tile 0. It would have compiled
-and returned a plausible wrong answer. Now a `static_assert` and a gate refusal;
-`q4k_mm.h` itself is bit-exact at batch 4 and `q4k_mm_gate.py --batch 4` covers
-it. **If the block size ever moves to 4, that flush needs a `size_C=32`
-variant.**
-
-**The batched path costs about 1.4x the GEMV's error, and that ratio is roughly
-flat in contraction depth and in the batch.** Both are near-unbiased and both are around 1%. That
-is the price of the swap, stated as a number rather than assumed either way —
-and the framing that matters is the third row: swapping moves the projection
-output by ~1.7% rms, which is a real change, not a rounding difference. Whether
-1.4x matters is a question for `llms/verify/` on a real model, not for a kernel
-test.
-
-Worth noting what the same gate says about the *incumbent*: the shipping GEMV is
-itself ~1% off exact fp32. Neither path is the truth.
-
-What the gates do **not** cover: one core, one row-block, no cascade, no egress,
-no DMA pressure. They settle the arithmetic and the layout of the swap. The
-engine around them is the rest of step 2.
-
----
-
-## 5e. Attention does not amortize, and it changes the answer (measured)
-
-Section 5's roofline counts **projection weight blocks and nothing else**. That
-is only sound if attention is small on the compute side, and it is not — for a
-reason that is specific to batching and invisible at batch 1:
-
-| | at batch 16 |
-|---|---|
-| projections | 16 tokens share one weight block. Compute scales, DDR traffic does not. *This is the entire point of batching.* |
-| attention | every query re-reads the whole KV cache. 16 queries is 16x the `attn_qk`/`attn_kv` calls. **Nothing is shared.** |
-
-One term amortizes and the other does not, so their ratio at batch 16 is 16x
-what it is at batch 1. A term that is 19% of batch-1 compute is not 19% of
-batch-16 compute. `bench_attn.py` measures it, by the same bundle-counting
-method as section 5.
-
-**First, a measurement trap that had to be cleared.** Attention's contraction
-loops run `colQ = DH/8` times with the trip count in a register, so a rolled
-build reports one *loop body* — and reports the **same number for DH=64 and
-DH=128**, which is how you can tell it is not measuring a call. `attn_kv_blk` is
-320 bundles rolled and **1500 unrolled** **[measured]**, a 4.7x undercount. The
-kernels now carry `ATTN_BENCH_UNROLL` (bench-only, engine builds rolled) and the
-tool prints both columns.
-
-Per 16-key block, per attention CU, unrolled **[measured]**:
-
-| | rolled | unrolled | |
-|---|---|---|---|
-| `attn_qk_blk` | 749 | 868 | llama-3.2-1b, DH=64 |
-| `attn_kv_blk` | 320 | 1500 | |
-| per block | 1069 | **2368** | 2.2x |
-| `attn_qk_blk` | 749 | 1343 | qwen3-4b, DH=128 |
-| `attn_kv_blk` | 320 | 2917 | |
-
-That is ~7 MAC/cycle/core — against the 98 the prefill matmul reaches and the
-38.8 the batched q4k kernel reaches. Attention is the slowest thing on the chip
-per MAC, and batching multiplies how much of it there is.
-
-**The roofline with the term put back**, llama-3.2-1b at P=2048, 1.57 GHz
-**[measured]**:
-
-| batch | proj | attn | serial | overlap | memory |
-|---|---|---|---|---|---|
-| 1 | 13.47 | 3.11 | 16.58 | 13.47 | 19.60 |
-| 16 | 20.29 | **49.81** | **70.10** | 49.81 | 19.60 |
-| 32 | 29.71 | 99.62 | 129.33 | 99.62 | 19.60 |
-
-`serial` is the phase structure as built — qkv proj → attention → o proj → glu,
-each a barrier, so the terms add. `overlap` is a bound nothing achieves, with
-attention hiding entirely behind the projections. **At batch 16 both exceed the
-memory floor.**
-
-| | section 5 | with attention |
-|---|---|---|
-| crossover (largest batch still memory bound) | 14.8 | **2.4** |
-| batch 16 vs the memory floor | 1.04x | **3.58x** |
-| attention's share of batch-16 compute | not counted | **71%** |
-
-The batch-1 row is the model's one check against reality, and it passes: 16.6 ms
-of compute against a **measured** 19.6 ms wall time, memory bound with 15%
-slack, which is what the decode is known to be.
-
-### What this does and does not overturn
-
-It does **not** say batching is pointless. Batch 16 still delivers 16 tokens in
-70 ms against 314 ms one at a time — **4.5x** **[estimated]**. It says the win is
-bounded by *compute*, not by the weight stream, so **`dflash_traffic.py`'s
-traffic-only model overstates the headline**, and by much more than the 3.5%
-section 5 allowed for. The 4.87x in section 5 should be read as an upper bound
-until the verify pass is re-priced against `max(compute, memory)` rather than
-memory alone.
-
-It also moves where the effort belongs. Two things follow directly:
-
-- **Batch 16 is probably not the right batch.** The crossover is 2.4 and the
-  returns above it are sublinear in a way the traffic model hides. DFlash's
-  `block_size` is a free parameter; the paper's own advice for quantized targets
-  is `block_size <= 5`, which section 5 dismissed on the strength of the
-  projections-only roofline. That dismissal no longer stands.
-- **Attention is the thing to optimize, not the projections.** At 7 MAC/cycle it
-  is 13x off the mmul the same chip runs elsewhere, and the batched case has an
-  obvious lever the batch-1 case does not: 16 queries share one K block, so the
-  `aie::transpose` per B tile and the K load can be hoisted across the batch by
-  putting tokens in the mmul's R dimension. Unmeasured, but it is where the 71%
-  is.
-
----
-
-## 5f. So what block size? (measured inputs, modelled composition)
-
-Section 5e says the batch-16 roofline was wrong. It does not by itself say what
-the right batch is, because that is not a compute question alone — a bigger block
-only pays if the drafter's extra tokens are *accepted*. `dflash_blocksize.py`
-composes the two: each pass priced as `max(memory, compute)`, acceptance modelled
-the standard speculative-decoding way, block size swept.
-
-Acceptance is an **input**, not a prediction, exactly as `tau` is in
-`dflash_traffic.py`. Modelled as a per-token probability `alpha` with
-`E[accepted] = (1 - alpha^(b+1)) / (1 - alpha)`, and calibrated so that
-`b = 16` reproduces the `tau = 6` the rest of this document assumes — so the
-sweep is comparable to the earlier analysis rather than independently
-pessimistic.
-
-**First, the model is validated where a measurement exists.** Pointed at
-llama-3.2-1b it derives **9440 projection blocks per core per token** — the same
-number section 5 quotes from an independent count — and predicts a 16.8 ms floor
-against a **measured** 19.6 ms wall time. 14% under, which is what an
-issue-slot model with no DMA stalls should be **[measured]**.
-
-### The kernel's cost is not linear in the batch
-
-The first version of this sweep priced the projection with the fitted line
-`1806 + 98*b`. That fit is wrong below batch 16, and not slightly — **the kernel
-changes shape**. `q4k_mmul`'s 2x2 blocking needs `rowA = BATCH/8` to be even, so
-it stops at 16; below that `q4k_mmul_small` runs `rowA = 1` with a 1x4 blocking,
-and batch 4 drops to `aie::mmul<4,8,8>`, whose emulated path grows A to 64 lanes
-and splits the accumulator in two. Measured, one build, per 32x256 block
-**[measured]**:
-
-| batch | mmul | +unpack | cycles/token | MAC/cycle (mmul only) |
-|---|---|---|---|---|
-| 4 | 1589 | 2998 | 749.5 | 20.6 |
-| **8** | **918** | 2327 | 290.9 | **71.4** |
-| 16 | 2354 | 3763 | 235.2 | 55.7 |
-| 32 | 3533 | 4942 | 154.4 | 74.2 |
-
-**Batch 8 does twice batch 4's work in 58% of the cycles.** `aie::mmul<4,8,8>`
-is a bad shape and 1x4 at `rowA = 1` is a good one — 71.4 MAC/cycle is the best
-figure this kernel has produced at any batch, against the 38.8 that batch 16 was
-originally reported at.
-
-One caveat on that table: batch 16 reads 2354 here against **1965** measured
-before `q4k_mmul_any` existed. The dispatcher is `always_inline` and compiles
-away, but its presence still moved clang's inlining decisions. Within a single
-build the four rows are consistently inlined and comparable; across builds they
-are not. This is the same outlining hazard the gotchas already list, and it is
-why `bench_q4k_mm.py` now looks for the body in three places and says which one
-it found.
-
-### The sweep, from measurements rather than a fit
-
-qwen3-4b target, qwen3-4b-draft drafter, 46 GB/s, 1.57 GHz, compute serial. Only
-the batches that have been measured are swept, because interpolating across a
-kernel-shape change is what produced the wrong answer the first time:
-
-| block | verify ms | draft ms | iter ms | tau | ms/token | speedup | bound |
-|---|---|---|---|---|---|---|---|
-| 1 | 56.3 | 12.6 | 69.0 | 1.84 | 37.4 | 1.50x | compute |
-| 4 | 108.7 | 20.5 | 129.2 | 3.65 | 35.4 | 1.59x | compute |
-| **8** | 145.6 | 24.4 | 170.0 | 4.99 | 34.1 | **1.65x** | compute |
-| 16 | 273.7 | 44.8 | 318.5 | 6.00 | 53.1 | **1.06x** | compute |
-| 32 | 496.8 | 77.9 | 574.7 | 6.32 | 90.9 | 0.62x | compute |
-
-**Block 8, at 1.65x.** Block 16's verify pass is 5.0x its memory floor — that is
-the work the traffic-only model does not charge for, and it is how 4.87x and
-1.06x come out of the same weights.
-
-Under the overlap bound (attention hidden entirely behind the projections,
-unattainable) the optimum moves to **4 at 2.77x**. So the honest range is
-**block 4-8 and 1.6-2.8x**, and every variant tried lands inside it.
-
-### It is an attention problem, not a projection problem
-
-> **Overturned by measurement.** On device at batch 8, attention is **16%** of a
-> dispatch and the layer body is 65% — see "Where a dispatch's time actually
-> goes". The 69% below is a share of a total whose projection term is measured
-> **3.7x too low**: this model keeps the pass memory bound at batch 8 because
-> the weights are unchanged, and predicts 0.826 ms/layer where the hardware
-> spends 3.089. It is right to one part in eight hundred at batch 1, so what
-> follows is sound for the batch-1 decode and wrong for every batched claim
-> built on it. The conclusion it produced — that making the projections faster
-> cannot move this much — is backwards.
-
-At the winning block size the verify pass splits **45.5 ms projection against
-100.0 ms attention** **[measured]** — attention is **69%** of it. The block size
-is being set almost entirely by a kernel running at ~7 MAC/cycle while the
-matmul beside it runs at 71.
-
-That reframes the remaining work. Making the projections faster cannot move this
-much; making attention amortize over the batch could move some of it. ~~16 queries
-share one K block, so the per-tile `aie::transpose` and the K load can be hoisted
-by putting tokens in the mmul's R dimension.~~ **Now measured — section 5g. The
-transpose is free; the tile loads are the hoistable part; the ceiling is 1.55x on
-qwen3-4b, and it does not change the block size.**
-
-### What is modelled and what is measured
-
-Measured: the projection line, the GEMV, the attention cost, the bandwidth, all
-the sizes off the builder, and the 9440/19.6 ms cross-check. Modelled: the
-composition — that passes are `max(memory, compute)`, that compute is
-`proj + attn` serial, and the acceptance curve. `alpha` is an input.
-
-The one number that could still move this a lot is **acceptance on a quantized
-target**, which remains unmeasured (section 7) — but it moves the *height* of
-the curve, not where its maximum is, because acceptance is monotone in the block
-size while the cost turns over.
-
----
-
-## 5g. How much of attention can a batch actually amortize? (measured)
-
-Section 5e ended by naming a lever: 16 queries share one K block, so put tokens
-in the mmul's R dimension and the per-tile `aie::transpose` and the K load hoist
-out of the per-token path. That was **reasoning, not measurement** — and it is
-the kind of reasoning this document has already been wrong with twice. The
-question it skips is *how much of attention is hoistable at all*, and that has a
-measurable answer, so measure it before building anything.
-
-**Method.** Split each call in two. Work that exists once per *(token, key
-block)* — the online-softmax `update`, the y accumulator traffic, the MACs — a
-batch can never remove. Work that depends only on the *key block* — the K and V
-tile loads, the transposes — b tokens pay once. Then whatever the kernel looks
-like, it is bounded by
-
-```
-per-token cost at batch b  =  PER_TOKEN + PER_BLOCK / b
-ceiling                    =  (PER_TOKEN + PER_BLOCK) / PER_TOKEN
-```
-
-`bench_attn_batch.py` prices each piece by `#ifdef`-ing it out and taking the
-bundle delta, at bench_attn.py's flags and **unrolled**. The knobs live in
-`aie_kernel_utils.h`; `check_kernels_inert.py` proves they changed no shipping
-code.
-
-Per 16-key block, unrolled **[measured]**:
-
-| piece | llama-3.2-1b | qwen3-4b | amortizes? |
-|---|---|---|---|
-| K tile loads (`attn_qk`) | 240 | 615 | over a batch |
-| K transposes (`attn_qk`) | **−22** | 25 | over a batch |
-| softmax `update` (`attn_qk`) | 478 | 528 | **no — per token** |
-| V tile loads (`attn_kv`) | 395 | 863 | over a batch |
-| y rescale pass (`attn_kv`) | 575 | 1160 | **no — per token** |
-| `calculate_l` (`attn_kv`) | 21 | 37 | **no — per token** |
-| **per KV block (hoistable)** | **635 (27%)** | **1503 (35%)** | |
-| **per token (the floor)** | **1733 (73%)** | **2757 (65%)** | |
-
-**The transpose is free.** Removing it made llama's kernel 22 bundles *slower* —
-scheduling noise around zero. It hides in issue slots next to the MACs. So the
-lever section 5e named was pointed at the one piece that costs nothing; the
-hoistable work is the **tile loads**.
-
-**The softmax is the floor and it is large.** `update` alone is 55% of
-`attn_qk_blk` on llama. It runs once per *(token, head, key block)* — an
-`exp`, a running max, a rescale — and no arrangement of the mmul shares it
-across tokens, because each token has its own softmax state.
-
-**The ceiling, and what it is worth:**
-
-| | llama-3.2-1b | qwen3-4b |
-|---|---|---|
-| block 8 | 1.31x | **1.45x** |
-| block 16 | 1.34x | 1.49x |
-| b → ∞ | 1.37x | **1.55x** |
-
-qwen3-4b does better because DH=128 doubles `colQ`, which doubles the tile loads
-while leaving `update` where it is. **Every one of these is an upper bound**, and
-loosely so: 64 vector loads cannot really cost 615 bundles, so what the knob
-deletes is also the address arithmetic and the load-use chain pacing the
-schedule. A real batched kernel lands below the table.
-
-**End to end it is worth about a quarter, and it does not change the block
-size** (`dflash_blocksize.py --attn-hoistable 1503`):
-
-| | block 4 | block 8 | block 16 |
-|---|---|---|---|
-| as built | 1.59x | **1.65x** | 1.06x |
-| with a perfect hoist | 1.80x | **2.08x** | 1.39x |
-
-So: worth doing, bounded at +26% on the headline, and **not a prerequisite for
-anything**. Block 8 is the optimum either way, which means step 2's builder
-wiring is not blocked on it.
-
-**One asymmetry the bundle counts do not show.** Batching attention means one
-call spanning several tokens, and verify's tokens have *different* causal
-lengths — `L_eff(t) = P+t+1` — where `L` is a single RTP per dispatch. So the
-lever is clean on the **draft** pass, whose `L` is uniform, and on **verify** it
-additionally requires a per-query mask inside the kernel. Verify is 36 layers
-against draft's 5, so the half that is hard is the half that pays. Costed
-separately, not as one 1.55x (section 6, step 2).
-
-### The bigger attention lever is not batching
-
-The two largest per-token pieces are the softmax `update` and the **y rescale
-pass**, and the second one is not irreducible arithmetic — it is an L1 round
-trip. `attn_fv` loads the whole y accumulator, multiplies by the flash
-correction, stores it, and then the mac pass loads it *again* and stores it
-*again*. On qwen3-4b that pass is 1160 bundles, **27% of all attention**, and it
-is paid at batch 1 too — it would speed up the shipping decode, not just DFlash.
-
-It exists because the 16-key block loop lives in the AIR herd, so y cannot stay
-in registers across blocks. Two ways at it, neither tried: fold the correction
-into the mac pass's existing `yprev` load (the two passes were split to dodge a
-Peano spill defect — see the comment in `attn_fv`), or handle several key blocks
-per call so the round trip is paid once per 4 blocks instead of once per block.
-
-Not attempted here: it is a restructure of the two kernels carrying the most
-Peano-workaround comments in the tree, and it is orthogonal to DFlash.
-
----
-
-## 6. Build order
-
-1. ~~**Benchmark the new matmul first.**~~ **DONE — gate passed.** Built as
-   `kernels/q4k_mm.h` + `kernels/q4k_mm_bench.cc`, swept by `bench_q4k_mm.py`.
-   Result in section 5: 10.6x fewer cycles per token at batch 16, crossover at
-   batch 14.8, so batch 16 is compute bound by about 3.5% — enough to build on,
-   with no margin left over. Reproduce with:
-
-   ```
-   python3 programming_examples/fused_decode/bench_q4k_mm.py           # mmul only
-   python3 programming_examples/fused_decode/bench_q4k_mm.py --noperm  # + intercept
-   ```
-
-   The gate was worth having. This repo built a batched 4-bit matmul once
-   before, for `llms/llama32_1b_int4`, and it came out **8x slower than bf16**
-   (698 vs 84 ms/layer) **[measured]**, blocked by the memtile budget capping
-   `herd_m=2` at K=8192 and a Peano 9-bit immediate forcing `tile_n=16`. Same
-   hardware. Going through `aie::mmul` on an unpacked block avoids both.
-
-   **The numeric gate is now built and passing** — `q4k_mm_gate.py`, section 5d.
-   It found two real faults on the first run. Bundle counts are unchanged by the
-   fixes **[measured]**, so every number above still stands.
-
-   Still open from this step: 38.8 MAC/cycle is well under prefill's 98.
-
-2. **Batch the rest of the superkernel** — attention query tiling, output
-   packing, rms/rope/glu row loop, `rcache`. **The kernel half is built and
-   gated; the builder wiring is not.**
-
-   **Build for block 8, not 16** (section 5f). That is not a small edit to the
-   plan — `q4k_mmul`'s 2x2 blocking `static_assert`s `BATCH % 16 == 0`, because
-   `rowA = BATCH/8` has to be even, so **the batch the analysis recommends is one
-   the kernel refused to compile**. `q4k_mmul_small` now covers it: `rowA` is 1,
-   so the blocking moves entirely into the weight rows (1x4, four accumulators,
-   same register pressure). Gated bit-exactly at batch 4 and 8 **[measured]** —
-   the layout derivation generalised without change.
-
-   It is also *faster*, which was not the reason for building it: 918 mmul
-   bundles at batch 8 against 2354 at batch 16, i.e. **71.4 MAC/cycle, the best
-   this kernel has managed at any batch** **[measured]**. Batch 4 is the bad
-   shape, not batch 8 — `aie::mmul<4,8,8>`'s emulated path grows A to 64 lanes
-   and splits the accumulator, and costs 1589 bundles for a quarter of the work.
-
-   Everything sizing-related gets easier: at block 8 the activation tile is half
-   what sections 5b and 5c priced, the X feed sits below the crossover at batch
-   10, and the egress had headroom to batch 511 anyway.
-
-   **`DECODE_BATCH` exists in the builder now**, and with it the sizing rules
-   the rest of this step has to respect. It is a strict no-op at 1 — emitted IR
-   byte-identical to `HEAD` on both `llama-3.2-1b` and `qwen3-4b` **[measured]**
-   — and it carries three things worth having before any wiring lands:
-
-   - The **L1 ceilings as hard failures**, not as guidance. `DECODE_BATCH=26`
-     exits naming the buffer and the tool that priced it. Overshooting L1 does
-     not produce a slow build, it produces an aiecc failure naming nothing.
-   - `ROW_TILE`, **derived** rather than hardcoded, from the widest of `qkv_l1`
-     / `ropeq_l1` / `rms_l1` against the tile budget. At block 8 on qwen3-4b it
-     comes out **4** — which independently reproduces `batch_l1_budget.py`'s
-     measured `qkv_l1` limit, from a different calculation in a different file.
-   - `ATTN_QTILE`, capped at 8 because the attention CU measures 51.0 KB of a
-     54 KB budget there. It fits with **nothing spare**.
-
-   What the build still has to do:
-
-   - ~~**Proj cores: one new buffer.**~~ **Kernel DONE and gated** —
-     `proj_qmm_mm_zero` / `_acc` / `_flush_row` in `proj_qmm.cc`, behind
-     `-DPROJ_MM_BATCH`, so a build that does not ask for it is unchanged.
-     Same three-entry-point split as the GEMV, for the same alloc-sinking
-     reason. Compared against the GEMV on device in section 5d at batch 8 and
-     16. **Builder wiring DONE**: both proj cores — `_core_blk` (paired,
-     `PAIR_ROWS==2`, llama) and `_core_blk_np` (non-paired, `PAIR_ROWS==1`,
-     gemma and **qwen3-4b, the DFlash target**) — select the batched kernels at
-     `DECODE_BATCH>1`. At batch 8 on qwen3-4b the emitted IR contains no
-     batch-1 projection call at all **[measured]**, and at batch 1 it is
-     byte-identical to `HEAD` on both models.
-
-     Wiring only one of the two cores would have looked right and done
-     nothing: the paired core is the one the code reads as "the" proj core, and
-     it is the one the DFlash target does *not* use.
-
-     Two things the analysis had not surfaced, both found while writing it:
-     **the reduce cache goes away entirely** (`rc`, `fill`, `proj_qmm_rc_arm`
-     are all machinery for the `+min` factorisation the batched path does not
-     use), and **the flush has to de-tile** — `aie::mmul` leaves the
-     accumulator in C tile order, so one token's 32 rows are four 8-float runs
-     64 floats apart, where the GEMV's accumulator was already contiguous.
-     Net L1: 608 bytes of `rc` traded for a 16 KB scratch. That scratch is
-     independent of the batch — it holds one unpacked *weight* block — so it
-     sets the ceiling at 25 regardless, and block 8 clears it with room —
-     31.3 KB of the 54 KB budget **[measured]**.
-   - **Egress: widen, do not repeat.** One packet per round, B times longer.
-     `N_ROUNDS`, BD count and instruction stream all stay put. Legal on all
-     eight models, headroom to batch 511.
-
-     **The descriptors are derived and checked** — `egress_bd.py`. And there
-     are **two** of them, not one: the `outA` gather into the *group* memtile
-     *and* the `toMain` gather into the *main* memtile. Fixing only the first
-     leaves each group's slab token-major internally while the groups stay laid
-     end to end, so a token's `PAYLOAD` row is still in `N_GRP` pieces — and it
-     would look right in any single-group test. On qwen3-4b at block 8:
-
-     | level | offsets | sizes | strides |
-     |---|---|---|---|
-     | `outA` → group, emitter k | `[0, HDR+k*32]` | `[8, 32]` | `[128, 1]` |
-     | `toMain` → main, group g | `[0, HDR+g*128]` | `[8, 128]` | `[512, 1]` |
-
-     Checked three ways: exactly-once coverage of the payload, **token t's row
-     byte-identical to the row batch 1 produces** (the invariant that lets
-     everything downstream ignore the batch), and batch 1 collapsing to today's
-     1-D descriptors — which it does, reproducing the builder's existing `66 /
-     64 / 1` and `258 / 256 / 1` exactly. That collapse is the check that the
-     derivation matches the code rather than only itself.
-   - ~~**X feed: watch it.**~~ **Not a concern at block 8.** The activation
-     chunk only overtakes the weight chunk at batch 10; at 8 it is **0.80** of
-     the weight chunk and needs **1.77 of 4.0 B/cycle** per broadcast stream,
-     where at 16 it was 1.60 **[measured]**. The tightest number in the step
-     stopped being tight when the block size did. If it does bite, `MROWS=64`
-     removes it outright — not `--kcol 512`, which does not touch this ratio.
-   - **Attention: query tile of 8**, on qwen3-4b and every other head_dim>=128
-     model. Costs a second read of the KV block from L2; no extra DDR traffic.
-   - ~~**Attention: a new mask.**~~ **Already there** — see below. It is an RTP
-     value, not a kernel change — *provided attention stays per-token*. See
-     "What the shipping q4nx models already answer" below for the case where it
-     does not.
-   - **Attention: it is now the dominant cost.** Section 5e — 71% of batch-16
-     compute, and the reason the block size had to be settled before building
-     more. Batching it is worth at most 1.45x at block 8 and blocks nothing
-     (section 5g), so it is not a dependency of this step.
-   - **rms/rope/glu: row tiling at 4**, set by `qkv_l1` on qwen3-4b. This is a
-     TILE, not the block size: `qkv_l1` wants 96 KB for 8 tokens against a
-     54 KB budget, so block 8 runs these phases as two sub-tiles of 4.
-     `ropeq_l1` (64 KB, fits 6) and `rms_l1` (40 KB, fits 10) also exceed a
-     whole block of 8 and ride the same tiling **[measured,
-     `batch_l1_budget.py --model qwen3-4b --batch 8 -v`]**.
-   - **Attention query tile 8 is exactly at the ceiling** — 51.0 KB of 54 KB,
-     max query tile 8 **[measured]**. It fits, with nothing spare, so any
-     future per-CU L1 addition on the attention path has to be paid for.
-   - **rope needs B cos/sin LUTs, not one.** See below.
-   - **The KV append gains a dimension.** See below.
-
-   ### What the shipping q4nx models already answer
-
-   Every q4nx/q4 model in `llms/` drives this same superkernel, so its decode
-   wiring is the reference for what batching has to change. Reading it moved
-   three items and added two.
-
-   **Cheaper than the list assumed: rms / rope / glu need no kernel change at
-   all.** Every one of these leaves is strictly per-row — `rms_norm_aie(y, x, w)`
-   normalises one `MODEL_DIM` row, `pseduo_glu<L>` takes gate at `x + L/2` of a
-   single row, `rope_compute` ropes one token's qkv. So "row tiling at 4" is
-   `B` calls at a row stride, not a restructure. The tile exists only because
-   `qkv_l1` cannot hold 8 rows.
-
-   **Missing: rope is per-POSITION, and a block spans B positions.** The driver
-   patches a 64-word cos/sin LUT into the RMS BO every single token
-   (`r_bo.write(lut, _rms_lut_off*2)` in `llama32_1b_q4nx_inference.py`,
-   position `p`). A block of B tokens sits at positions `P..P+B-1`, so it needs
-   **B LUT slabs**, with rope called at `rope_w + t*ROPE_W_LEN`. The L1 side is
-   already priced — `batch_l1_budget.py` scales `ropelut_l1` with the batch —
-   but the host upload and the builder's rope feed are not, and nothing else in
-   this document mentions it.
-
-   **Missing: the KV append gains a dimension.** Today it is one slot,
-   `sizes=[NGRP, REGION_W] strides=[REGION_STRIDE, 1]` at `(L-1)*REGION_W`. B
-   tokens append B consecutive slots, so it becomes 3-D. Now derived and
-   checked like the other two — `kvappend_bd.py`; on qwen3-4b at block 8,
-   `offsets=[p,0,0] sizes=[8,2,512] strides=[512,1048576,1]`.
-
-   **It carries a hazard the other two do not**, and it is the reason this one
-   needed writing rather than reasoning. `p*REGION_W` is a valid slot only
-   while `p < ATTN_MAXL`, and position `ATTN_MAXL` of region g **is** position 0
-   of region g+1. At batch 1 the cache can overrun by one and the driver's
-   window bookkeeping prevents it; at batch B it can overrun by B, and the
-   overrun does not fault — it writes into the next group's live KV, which a
-   real attention CU is reading. Wrong logits, no error. Measured on
-   llama-3.2-1b at block 8 with 3 slots left: **2560 of 4096 elements land in
-   the next group's region** **[measured]**. `check_bounds()` refuses it, and
-   the builder needs the same guard.
-
-   Writing the checker also settled a convention the builder relies on twice
-   and documents nowhere: **AIR left-pads a short `offsets` list with zeros**
-   (`air::canonicalizeWrapAndStrideList`, `mlir/lib/Util/Util.cpp`), so a
-   rank-deficient list is **right**-aligned and a single offset lands on the
-   stride-1 dimension as a flat element offset. That is how the existing
-   one-offset-against-two-sizes KV append is correct. Read it as left-aligned
-   and a flat offset silently picks up the outermost stride — here, a factor of
-   `REGION_STRIDE`.
-
-   **Incomplete: "the mask is just an RTP scalar" holds only while attention is
-   per-token.** `L_c` is ONE value for the whole dispatch — a DYNSEQ RTP patched
-   into the instruction stream. Verify needs `L_eff(t) = P+t+1`, which is B
-   different values inside one dispatch. Two cases, and they differ a lot:
-
-   | | how L varies | cost |
-   |---|---|---|
-   | attention called per token | `L_c + t`, an `arith.addi` on the loop IV | ~free, as claimed |
-   | attention batched into the mmul's R dimension (section 5g) | one call spans B different L | **per-query mask, in the kernel** |
-
-   So section 5g's lever is clean for **draft** (`L_eff = P+16` for every token,
-   uniform) and not for **verify** — and verify is the expensive pass, 36 layers
-   against 5. The pass where batching attention is hardest is the pass where it
-   would pay most. That does not change 5g's conclusion (bounded at 1.45x,
-   blocks nothing) but it does mean the two halves of the lever should be costed
-   separately.
-
-   One piece of luck inside that: `L` currently serves two purposes — the
-   core-side loop bound via `_core_rounds(Lh)` and the mask inside
-   `attn_qk_blk` — and at batch B they must diverge, uniform `ceil((P+B)/16)`
-   for the loop against per-token `L` for the mask. **The kernel already
-   tolerates exactly that**: `attn_qk_blk` returns early on `rem <= 0`, so
-   handing it a loop bound larger than its own `L` is the built-in behaviour,
-   not a change.
-
-   **Reusable rather than rebuilt.** `DecodeInstsGen` specialises one xclbin to
-   any L by patching only the L-dependent words, locating them by diffing two
-   same-`ATTN_MAXL` builds and interpolating a slope — verified byte-exact
-   against native per-L builds. The batched build's KV-append offset and RTP-L
-   are the same kind of word and get the same treatment. `decode_geometry.py`
-   reads BO sizes off the builder, so it will track the batched X and Y sizes
-   for free. `respace_kv` is precedent for host-side KV relayout, which is what
-   DFlash's rollback on rejected tokens is.
-
-   **No prior art for multiple tokens per dispatch.** The `gemms` / `gemv` split
-   in `llms/shared/builders/` is prefill against decode in the *multi-launch*
-   engine, not this one; nothing has ever pushed more than one token through the
-   superkernel. Which is also why no equivalence harness exists to borrow — the
-   batch-equivalence gate has to be built.
-
-   ### The mask turned out to already exist
-
-   **This was the item flagged as most likely to be missed, and it needs no
-   kernel change at all.** `attn_qk_blk` carries exactly the right mask, for an
-   unrelated reason:
-
-   ```cpp
-   int rem = L - blk * 16;
-   if (rem <= 0) return;
-   rem = (rem < 16) ? rem : 16;
-   aie::mask<16> mask = aie::le(idx, rem);     // idx = 1..16
-   ```
-
-   That is a **tail** mask — it trims the ragged last KV block when the context
-   is not a multiple of 16 — and with `idx` starting at 1 it keeps global keys
-   `0..L-1`. `L` is already "number of cached positions this token attends to"
-   (the builder's own wording; `DECODE_GOLDEN_L=1` is position 0 attending to
-   itself). So a per-query triangular mask is a per-query **value of L**:
-
-   | pass | `L_eff(t)` | effect |
-   |---|---|---|
-   | verify (target) | `P + t + 1` | token t sees `0..P+t` — causal |
-   | draft (DFlash) | `P + 16` | every token sees the block — bidirectional |
-
-   One engine, two passes, an RTP scalar apart. `_core_rounds(Lh)` already
-   derives the block count from the same scalar, so the loop bound follows for
-   free, and DFlash needs `DECODE_DYNSEQ` for KV rollback anyway.
-
-   `batch_attn_mask.py --check` models the kernel's arithmetic and asserts the
-   key set is exactly causal, across prefixes on both sides of a 16-boundary and
-   every t **[measured]**. It is a guard on an index convention rather than a
-   device run — the claim is read off three lines — but it is what fails if
-   someone makes `idx` 0-based or redefines what `L` counts.
-
-   What the mask does **not** make free is the attention itself: 16 queries is
-   16x the calls, and section 5e is what that costs. Push a uniform
-   `ceil((P+16)/16)` blocks for all 16 tokens rather than a per-token count —
-   the same shim BD for every token, at most one wasted block each, and at
-   P=2048 exactly zero **[measured]**.
-
-3. ~~**Hidden state taps** at layers 1, 9, 17, 25, 33.~~ **DONE — built, behind
-   `DECODE_HIDDEN_TAPS=1`.** It turned out to be an offset change, not new
-   machinery: the taps already crossed the shim on every layer, they were just
-   overwritten in place.
-
-   Every layer ends with a `layerOut` drain of the rms residual2 (`h + down`),
-   which is the layer's hidden state, written back into the `X` BO so the next
-   layer reads it. The drain is exactly `K` elements on all eight models
-   **[measured]** — `LAYER_RNDS * PAYLOAD == K`, e.g. qwen3-4b 5 x 512 = 2560:
-
-   ```python
-   ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])           # read
-   ChannelGet("layerOut", X, offsets=[0], sizes=[LAYER_RNDS*PAYLOAD])   # write
-   ```
-
-   Both offsets were the literal `0` — the chaining ABI is in-place, so layer
-   L+1 overwrote layer L's hidden state before anyone could read it. The change
-   gives layer `iv` the read slot `iv` and the write slot `iv+1`, so the chain is
-   unbroken and the history survives. Emitted IR at `DECODE_HIDDEN_TAPS=1`
-   **[measured]**:
-
-   ```mlir
-   %7  = arith.muli %arg15, %c2048              // read  slot iv
-   air.channel.put @rmsX[] (%arg10[%7]    [2048] [1]) : memref<34816xbf16>
-   %81 = arith.muli %arg15, %c2048
-   %82 = arith.addi %81,    %c2048              // write slot iv+1
-   air.channel.get @layerOut[%c0] (%arg10[%82] [2048] [1]) : memref<34816xbf16>
-   ```
-
-   The LM head reads the last slot, a compile-time `UNI_DEC*K` = 32768, since its
-   own wave index is past `UNI_DEC`. At the last layer, `iv=15`, the write lands
-   at 32768+2048 = 34816 — exactly the buffer end, in bounds with nothing spare.
-
-   The cost is DDR footprint and nothing else: the `X` BO goes from `K` to
-   `(UNI_DEC+1)*K`, which is **185 KB** for qwen3-4b **[measured]** (68-296 KB
-   across the eight models). No extra shim traffic, no extra BDs, same drain
-   count — the bytes were already being written, just to the same address every
-   time.
-
-   Verified **[measured]**:
-
-   - **Byte-identical IR at `DECODE_HIDDEN_TAPS=0`** against `git HEAD`, on
-     llama-3.2-1b, gemma3-4b and qwen2.5-7b, via the `FUSED_DECODE_EMIT_ONLY`
-     hook the file provides for exactly this. The default path is untouched.
-   - Builds with taps on for llama-3.2-1b, qwen3-4b, gemma3-4b and qwen2.5-7b,
-     and in the `LM_HEAD=1` and `DECODE_DYNSEQ=1` configurations — the latter
-     mattering because DFlash needs dynseq anyway for KV rollback (step 6).
-   - `decode_geometry.py --check` still passes.
-
-   Not verified: this is an IR-level check, not a run. The write/read pair relies
-   on `air.preserve_shim_dma_order` for chaining, and the dependency is still
-   real at distinct offsets in the same BO, so the ordering should still carry —
-   but that wants a device run to confirm, and the host side has to allocate the
-   larger `X` BO and read the tap slots back.
-
-   As a side effect this also gives the llms per-layer cosine lens the data it
-   currently has no source for on fused decodes.
-
-4. **Qwen3-4B q4nx.** `_MODELS` entry **DONE** — added to `fused_decode.py` and
-   it passes every builder assert. Derivation, all forced rather than chosen:
-
-   - `PAIR_ROWS=1`, because the paired egress needs each phase output divisible
-     by `ROW_BLOCK*NCX*NCY*PAIR_ROWS` = 1024 and the o/down phases emit K=2560,
-     giving 2.5. Non-paired (512) is exact. Same reason qwen2.5-7b is non-paired.
-   - `I2P = [6144, 2560, 19456, 2560]/512 = [12, 5, 38, 5]`
-   - `J2P = [2560, 4096, 2560, 9728]/512 = [5, 8, 5, 19]` — note J2P[1] is
-     **DQ**/512, not K/512, because the decoupled q dim makes the o-proj contract
-     4096 -> 2560.
-   - `VOCAB_CHUNK_I2=30`, `UNI_LM=10`: padded vocab 153600 -> 4800 rowblocks, so
-     `UNI_LM*VOCAB_I2 = 300`; K/PAYLOAD = 5 must divide `VOCAB_RNDS`, so VOCAB_I2
-     is a multiple of 5; 30 is the largest under the tested envelope.
-
-   Cross-check: the builder reports `W_LAYER = 31,539,200`, and an independent
-   parameter count of one Qwen3-4B layer (100.93 M params x 2560/8192) gives the
-   same number. That is the check that the phase geometry is right rather than
-   merely self-consistent; `GLU_OUT` also comes out at 9728, the model's true
-   intermediate size.
-
-   **The q4nx weight loader is now written too**, as
-   `llms/qwen3_4b_q4nx/{qwen3_4b_q4nx_weights,qwen3_4b_q4nx_requant}.py`.
-
-   It was a smaller job than it looked. `qwen3_8b_q4nx_requant.py` already does
-   Qwen3 and is written against the builder rather than the model — it takes
-   `fd` as an argument and reads `GROUP`, `NCX`, `NCY`, `NPH`, the phase
-   indices, `GLU_CHUNK`, `W_LAYER`, `UNI_LM` and `pack_q4k_cascade` out of it,
-   and keys the dual-channel layout off `fd.W_DUAL_CHAN` so the pack cannot
-   disagree with the xclbin. Pointing it at the `qwen3-4b` entry supplies all of
-   that. The weights module likewise **re-parameterizes** the 8B one rather than
-   copying 421 lines: the codec, header parsing, accessors and reference forward
-   are all written against `_PROJ`, so a subclass overriding `_PROJ` re-targets
-   them.
-
-   **One structural delta, and it is the opposite of 8B: Qwen3-4B ties its
-   embeddings** where Qwen3-8B does not — `llms/qwen3_4b/qwen3_4b_weights.py`'s
-   `LlamaConfig` is the repo's own Qwen3-4B and every dimension here came from
-   it. So the head is the bf16 embedding matrix, the llama path, not the
-   `lm_head.weight` branch 8B takes — that tensor is not in the bundle at all,
-   so inheriting 8B's accessor would raise on a missing key. Everything else
-   (two norms per layer, per-head qk-norm riding in the rope slab, no qkv bias)
-   is the same. Only `D` (2560 vs 4096) and `INTER` (9728 vs 12288) change.
-
-   **Gated without the model bundle** — which matters, because the bundle is a
-   gated download and a packer that disagrees with the xclbin about phase row
-   counts produces a cache that loads fine and decodes garbage. Every projection
-   shape is checked against the builder's own phase geometry **[measured]**:
-
-   ```
-   $ python3 qwen3_4b_q4nx_requant.py --check
-     OK  hidden K                  2560    2560      OK  phase 0 rows   6144  6144
-     OK  vocab                   151936  151936      OK  phase 1 rows   2560  2560
-     OK  layers UNI_DEC              36      36      OK  phase 2 rows  19456 19456
-     OK  qkv out (phase 0 M)       6144    6144      OK  phase 3 rows   2560  2560
-     OK  o-proj contract DQ        4096    4096
-     OK  GLU_OUT vs INTER          9728    9728
-     OK  head_dim DH                128     128
-   SELF-CHECK PASS
-   ```
-
-   That the phase rows agree is an independent confirmation of the `_MODELS`
-   entry as well: `I2P` was derived from the model dims, and this derives the
-   model dims from a different source and gets the same answer.
-
-   Still to do: quantizing the drafter, and running the requant itself — it
-   needs the `model.q4nx` bundle, which is not available on this box
-   (huggingface.co fails certificate verification here).
-
-   A consequence worth noting for DFlash specifically: with a tied target head
-   and a drafter that also ties to it, there is exactly **one** head matrix in
-   the whole system, read once per draft pass and once per verify pass.
-
-5. **Drafter instance.** `UNI_DEC=5` on the same engine — the `_MODELS` entry is
-   **DONE** — plus mask-token embedding, the `fc` linear, `hidden_norm`, and a
-   5-layer KV cache that rolls back on rejection alongside the target's.
-
-   Three of those four are cheaper than they look:
-
-   - **`fc`**: expressible as an extra proj phase at `I2=5, J2=5`, five
-     accumulating passes. Both forms legal; decompose for the L1 reason in
-     section 5. The accumulate-across-passes mechanism already exists — it is
-     what the down phase's refeed does.
-   - **`hidden_norm`**: one more RMSNorm on a tile that already runs two (four
-     on Gemma), so the rms core has the shape for it.
-   - **mask-token embedding**: a host-side gather. The engine takes `X` as an
-     input already; filling a block's 16 slots with the mask embedding costs
-     nothing on device.
-
-   The KV cache is the one with real cost: 5 layers x `ATTN_MAXL*KVSZ_TOK` =
-   **40 MB** at context 2048 **[measured]**, a full-depth cache over the accepted
-   prefix. It rolls back the same way the target's does — see step 6.
-
-6. **Host loop and gate.** Draft/verify/accept/bonus. DFlash is lossless, so the
-   gate is stricter than the usual top-5 check: the speculative run must
-   reproduce the target's greedy token stream **exactly**. Any difference is a
-   bug.
-
-   **KV rollback is free, on one condition:** build with `DECODE_DYNSEQ=1`. That
-   variant already exists and already ships — five models have a
-   `compile-decode-dynseq` make target for it. It takes the context length as a
-   dispatch-time scalar, so the KV append lands at a runtime slot
-   `(L-1)*REGION_W` rather than a baked address. Rejecting `16-tau` tokens is
-   then just passing a smaller `L` on the next call: the stale entries past `L`
-   are never read, and the existing tail mask already handles the ragged final
-   block. No cache surgery, no compaction pass. Without dynseq the slot is a
-   compile-time constant and none of this works, so it is a hard prerequisite
-   rather than a preference.
-
-   The batched append itself is one extra dimension and lands exactly on the
-   limit **[measured]**: today it is a 2D shim BD, `sizes=[NGRP, REGION_W] =
-   [2, 512]`; at batch 16 it becomes `[2, 16, 512]`, which is **3 of the 3
-   dimensions a shim BD has** on AIE2p. It fits, with nothing left over — worth
-   knowing before anything else tries to claim a dimension on that transfer.
-
----
-
-## 7. Open questions
-
-- ~~**Is the batched matmul numerically correct?**~~ **Answered: yes, bit-exactly
-  on device** (section 5d). It was not, when the question was written — the
-  operands were in the wrong roles.
-- ~~**Does it agree with the GEMV it replaces?**~~ **Answered: to 1.7% rms, at
-  1.4x the GEMV's own error** (section 5d), measured with both kernels in one
-  launch off the same weights. Not a rounding difference; a real change to the
-  projection output.
-- **Does 1.3% rms per projection matter end to end?** Unmeasured. It is a
-  per-matmul figure on one 32x256 block pair, not a per-token one, and the
-  thing that decides it is the `llms/verify/` top-k gate on a real model — which
-  needs step 2 built first. Worth knowing that the error is unbiased and flat in
-  K, so it should not compound across the 36 layers the way a biased one would.
-- **What block size is actually optimal?** Now the first question, not a
-  settled one. Section 5e puts the memory/compute crossover at 2.4 and section 5
-  put it at 14.8; the truth for a DFlash *iteration* needs
-  `dflash_traffic.py` re-priced against `max(compute, memory)` per pass instead
-  of memory alone, which is not built. Until then read 4.87x as an upper bound.
-- ~~**Can batched attention be made to amortize?**~~ **Answered: partly, and by
-  less than the 71% suggests.** 35% of attention is per-KV-block and hoistable
-  on qwen3-4b; the rest is softmax and y accumulator traffic that is per token
-  by construction. Ceiling 1.55x on the term, 2.08x end to end, block size
-  unchanged (section 5g). The `aie::transpose` named here previously is free.
-- **Can the y rescale round trip be removed?** Untried, and it is now the
-  largest single piece of attention on qwen3-4b — 1160 bundles, 27% of the
-  whole, paid at batch 1 as well as batched, so it would speed up the shipping
-  decode too. Fold it into the mac pass's existing `yprev` load, or handle
-  several key blocks per call. Both run into the Peano spill defect the two
-  passes were split to dodge (section 5g).
-- **Acceptance rate on a quantized target.** Still unmeasured, and still the
-  input every headline number depends on. But it is now **bounded**: break-even
-  is at tau = 1.23, and half the paper's rate still gives 2.44x (section 5).
-  It scales the win; it does not decide feasibility.
-- **Does a Qwen3-8B DFlash drafter exist?** No longer blocking — `qwen3-4b` and
-  `qwen3-4b-draft` builder entries exist and validate, so the 4B path is open.
-  Not found in z-lab's public listing, which shows Qwen3.5 and Qwen3.8 variants.
-- **Is quantizing the drafter worth it?** Yes on both axes, against an unknown
-  acceptance cost: 4.87x against 3.94x (~24% throughput) **and** 645 MB less
-  resident DDR, 3048 against 3693 MB (section 5). It is required anyway to run
-  the drafter on the superkernel at all, since that engine only takes q4nx.
-- ~~**Is the LM head worth trimming for the draft pass?**~~ **Answered: no.**
-  It is 42% of the q4nx draft pass, but the draft pass is only 19% of the
-  iteration, so the whole head is 8% of the total and trimming it cannot buy
-  more than that. Measured with `dflash_traffic.py --draft-head-frac`
-  **[measured]**: cutting the draft head to a quarter of the vocabulary moves
-  4.87x to 5.18x, and deleting nine tenths of it gets 5.25x.
-
-  | draft head | speedup at tau=6 | break-even tau |
-  |---|---|---|
-  | full | 4.87x | 1.23 |
-  | 50% | 5.07x | 1.18 |
-  | 25% | 5.18x | 1.16 |
-  | 10% | 5.25x | 1.14 |
-
-  A 6% gain is not worth restricting what the drafter can propose, since that
-  costs acceptance rate directly and tau is the term with real leverage. Build
-  the full tied head.
-- ~~**Can `aie::mmul` hold 98 MAC/cycle/core on freshly unpacked weights?**~~
-  **Answered: no — 38.8 at batch 16** **[measured]**. (The BFP16 numbers just
-  below were taken before the layout fix and are quoted against the pre-fix
-  1787-cycle multiply; the conclusion is a 3.9x ratio, which the fix does not
-  touch.)
-
-  I guessed the gap was the BFP16 emulation converting both operands per `mac`
-  with only colB=2 reuse. **That guess was wrong.** Compiling the same kernel
-  without `AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16` **[measured]**:
-
-  | `q4k_mmul<32,256,16>` | bundles | MAC/cycle |
-  |---|---|---|
-  | with BFP16 emulation | 1787 | 41.2 |
-  | native bf16 mmul | **11088** | **10.5** |
-
-  BFP16 emulation is not the cost, it is a **3.9x speedup** on the multiply, and
-  removing it drops the crossover from 16.7 to **2.7** — far below block 16,
-  which would sink the whole approach. It is already on by default in
-  `PEANO_KBASE`; the finding is that it must stay on. (Same arithmetic as
-  section 5, using the one batch-16 point and a proportional slope; that method
-  reproduces 16.7 exactly for the BFP16-on case, which is what licenses it here.)
-
-  Prefill's 98 MAC/cycle is measured with the same flag, so the remaining gap is
-  shape, not codec: K=256 per call is short and colB=2 gives the 2x2 blocking
-  little to reuse. Both levers tested so far are reuse levers and both moved it
-  the right way (folding +8%, batch 16 -> 32 +29%), which is consistent.
-- **Does the static bundle count survive real DMA pressure?** The sweep counts
-  issue slots with no stalls, and after the layout fix batch 16 is already
-  **over** the memory floor (20.3 vs 19.6 ms), with no slack at all to absorb
-  stalls. This was the question with a 0.5 ms cushion; now it has none. Needs an
-  on-device timing run, not a static count.
-- **Numeric validation of the batched kernel.** The layout is now *derived*
-  rather than arbitrary — see "the correct layout is not free" in section 5 —
-  and fixing it caught a real out-of-bounds scale index on the way. What is
-  still missing is a gate: nothing has been compared against `_qmm_q4k_bf16` on
-  the same weights. The kernels use AIE intrinsics and will not run on the host,
-  so this needs a device run.
-- **Where the fold gain comes from — accumulator traffic or scheduling window.**
-  It decides whether either fold is usable inside the L1 budget, and the
-  discriminating experiment (`--chunks 2`) does not compile: two inlined
-  unrolled bodies overflow the AIE2 frame-offset immediate, and the rolled
-  alternative makes both variants emit identical code. **The static-bundle
-  method cannot answer this**; it needs on-device timing, which is the same
-  thing the DMA-pressure question needs. Until then both folds are parked and
-  the plain 32x256 kernel is what step 2 should be built on — it is the one that
-  fits L1 with 12 KB spare and is already measured.
-
----
+Three traps in that last group, each of which cost real time:
+`shared.infra.external_kernels.compile_mv_int4_bf16` builds the **GEMV** and the
+object links and runs inside the GEMM; `XRTBackend` needs `stack_size=16384` or
+the same module returns rel ≈ 0.85 with no diagnostic; and multi-launch needs
+`output_format="elf"` — on xclbin the launches' instruction streams collide with
+`edge 'air.insts.bin' produced duplicate output path`, then a bare
+`pipeline failed` many stages later while every intermediate `.ll` compiles by
+hand.
+
+The `--block 8` and `--block 4` runs are the reason the block-8 number is a
+measurement and not an extrapolation: they say the b16 checkpoint runs at
+smaller blocks without retraining, and that truncating a block-16 histogram
+predicts them to within 4%.
+
+`build_template.sh` **always** writes `decode_b<B>_L<N>` and the gates read
+whatever is in the directory. Rename or rebuild deliberately: a llama template
+left in place will be dispatched against qwen3-4b geometry and produce
+plausible, meaningless numbers. This happened during the work above.
+
+## 9. Corrections — claims removed in this rewrite
+
+Recorded so they are not re-derived from the old text.
+
+- **"Level 2 verified on real qwen3-4b hardware at `DECODE_BATCH=8`, 8/8
+  accepted."** False, three ways. The source passage names no model and is
+  llama-3.2-1b (it quotes K=2048 BD shapes; `spec_accept.py` is llama-only);
+  it mis-quoted the *level 3* heading as level 2; and qwen3-4b at batch 8 was
+  refused by the builder at the time, a fact the same document stated
+  elsewhere. This claim was used to argue the next step was low-risk.
+- **"Level 3 built and IR-correct, but does not compile."** The "IR-correct"
+  half is disproven — level 3 loses L-dependence (§5.4).
+- **"Level 3 is batch-16-only."** It is not; level 3 exists to give qwen3-4b
+  block 8, and the `air-to-aie` failure reproduces with regen counts forced
+  to 0.
+- **"At batch 8 on qwen3-4b the emitted IR contains no batch-1 projection call
+  at all [measured]."** Cannot be true: qwen3-4b at batch 8 exited before
+  emitting IR until the change in §5.2. Same for the family of batch-8
+  qwen3-4b sizing claims around it — those are legitimate *sizing rules*
+  `[static]`, not evidence of a build.
+- **"54304 B of 55296 at batch 8, so `BATCH_MAX_RMS` is exactly 8"** for
+  qwen3-4b. Stale: that count charged one resident norm weight where the body
+  holds two. Corrected count is 59,424 B and the ceiling is 7.
+- **Attention is 69-71% of a batched dispatch `[measured]`.** It was a
+  roofline, mis-tagged as measured, and it is wrong: on device it is **16%** of
+  a batch-8 llama dispatch. The conclusion it produced — "making the
+  projections faster cannot move this much" — is backwards.
+- **Four mutually inconsistent break-even τ values** (1.23 traffic-only; 4.31/
+  4.65 with the draft not paying its LM head; 5.28/9.59 llama; 4.81/8.90
+  qwen3-4b). Only the last is qwen3-4b's, and earlier text applied llama's 5.28
+  to qwen3-4b's baseline.
+- **tok/s estimates of ~30.5 and "~2.0x"**. They divided by *llama's* 198.6 ms
+  iteration while comparing against *qwen3-4b's* 14.99 tok/s baseline. §6
+  supersedes them, with the opposite conclusion.
+- **"No network access" / "no inference driver in `llms/qwen3_4b_q4nx/`" /
+  "HIDDEN_TAPS not verified" / "no numeric gate for the batched kernel".** All
+  overtaken by later work in the same document.
+
+The pre-rewrite text is in git history; it is a log of how the work went, not a
+record of what is true.
 
 ## References
 
-- [arXiv:2602.06036](https://arxiv.org/abs/2602.06036) · [z-lab/dflash](https://github.com/z-lab/dflash) · [Qwen3-4B-DFlash-b16](https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16)
+[arXiv:2602.06036](https://arxiv.org/abs/2602.06036) ·
+[z-lab/dflash](https://github.com/z-lab/dflash) ·
+[Qwen3-4B-DFlash-b16](https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16)
 
-In tree: [`fused_decode/`](../programming_examples/fused_decode/) (superkernel,
-`kernels/q4_k.h`, `_MODELS`),
-[`matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc`](../programming_examples/matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc)
-(the matmul to copy),
-[`llms/qwen3_4b/ARCHITECTURE.md`](../programming_examples/llms/qwen3_4b/ARCHITECTURE.md)
-(target geometry, 7 ELFs/layer),
-[`llms/qwen3_8b_q4nx/README.md`](../programming_examples/llms/qwen3_8b_q4nx/README.md)
-(measured prefill and decode),
-[`llms/llama32_1b_int4/README.md`](../programming_examples/llms/llama32_1b_int4/README.md)
-(the batched 4-bit precedent).
+In tree: [`fused_decode/`](../programming_examples/fused_decode/),
+[`llms/qwen3_4b_q4nx/`](../programming_examples/llms/qwen3_4b_q4nx/),
+[`llms/llama32_1b_q4nx/`](../programming_examples/llms/llama32_1b_q4nx/)
+(where every batched measurement before this rewrite was taken).
