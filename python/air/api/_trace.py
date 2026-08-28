@@ -1573,8 +1573,19 @@ def _peak_bytes(entries):
     return here
 
 
-def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
-    """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
+def alloc(shape, dtype, scope=None, vector=None, column=None, split=True, _hoisted=False):
+    """Allocate a tile: L1 in a herd body, or L2 in a segment body.
+
+    ``column`` pins an L2 buffer to one memtile column and ``split=False`` keeps
+    it whole. Both are placement, not semantics -- the kernel computes the same
+    thing either way -- but on a design that fills the array they decide whether
+    it routes at all. flash_attention's temporal-causal variant is the worked
+    case: its K/V broadcast buffer sits alone on a central column so its
+    switchbox carries nothing else, its four Q relays pin to the even columns so
+    place-tiles spreads them instead of piling 32 buffer descriptors on one
+    MM2S, and those relays are unsplit because ``air-split-l2-memref`` would
+    otherwise partition each into per-tile slices and overflow the shim.
+    """
     _require_allocatable(dtype, "air.alloc")
     from ._cond import current_arm_path
 
@@ -1751,6 +1762,28 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     # Which branch arm this was allocated in, for _peak_bytes above. Set as an
     # attribute rather than a Buffer field: it concerns the budget only, and
     # nothing that reads a Buffer elsewhere should have to know about it.
+    if column is not None or not split:
+        from air.ir import IntegerAttr, UnitAttr
+        from air.extras import types as T2
+
+        if space != "L2":
+            raise ValueError(
+                f"air.alloc(column=/split=) place a memtile buffer, and this is "
+                f"an {space} allocation. Only <segment>.private() buffers live "
+                "in a memtile"
+            )
+        if column is not None:
+            if not isinstance(column, int) or column < 0:
+                raise TypeError(
+                    f"air.alloc(column=...) takes a memtile column index, got "
+                    f"{column!r}"
+                )
+            op.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                T2.i32(), column
+            )
+        if not split:
+            op.operation.attributes["air.no_split"] = UnitAttr.get()
+
     buf.arm_path = arm_path if space in ("L1", "L2") else ()
     holder.register_buffer(buf)
     if space == "L1" and scope.kind not in ("shared", "per_core"):
