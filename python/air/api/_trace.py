@@ -253,7 +253,8 @@ def open_launch_region(launch, tensors, counts, body):
     def launch_body(*largs):
         launch.opened = True
         launch.leaves = [
-            Leaf(largs[axis], f"l{axis}") for axis in range(len(launch.ctx.grid))
+            Leaf(largs[axis], f"l{axis}", spatial=True)
+            for axis in range(len(launch.ctx.grid))
         ]
         launch.coords = [IndexExpr({leaf: 1}, 0) for leaf in launch.leaves]
         first_operand = 2 * len(counts)
@@ -1039,7 +1040,8 @@ class SegmentContext:
             n = len(sizes)
             declared = len(segment_self.dims)
             segment_self.leaves = [
-                Leaf(v, f"u{axis}") for axis, v in enumerate(args[:declared])
+                Leaf(v, f"u{axis}", spatial=True)
+                for axis, v in enumerate(args[:declared])
             ]
             coords = [IndexExpr({leaf: 1}, 0) for leaf in segment_self.leaves]
             bound = args[2 * n :]
@@ -1417,7 +1419,8 @@ class HerdContext:
             # herd-shared buffer is indexed by this: it has one slab per core,
             # not one per logical tile.
             herd_self._coords = [
-                IndexExpr.leaf(c, f"c{axis}") for axis, c in enumerate(phys_coords)
+                IndexExpr.leaf(c, f"c{axis}", spatial=True)
+                for axis, c in enumerate(phys_coords)
             ]
             # Where a reduction's scratch accumulator is allocated, whatever
             # loop or branch the reduction itself sits in. See scratch().
@@ -1427,7 +1430,10 @@ class HerdContext:
             def run(strip_ivs):
                 tile_ids = []
                 for axis, phys in enumerate(phys_coords):
-                    tile = IndexExpr.leaf(phys, f"t{axis}") * herd_self.repeats[axis]
+                    tile = (
+                        IndexExpr.leaf(phys, f"t{axis}", spatial=True)
+                        * herd_self.repeats[axis]
+                    )
                     if herd_self.repeats[axis] > 1:
                         tile = tile + IndexExpr.leaf(strip_ivs[axis], f"i{axis}")
                     tile_ids.append(tile)
@@ -1573,7 +1579,9 @@ def _peak_bytes(entries):
     return here
 
 
-def alloc(shape, dtype, scope=None, vector=None, column=None, split=True, _hoisted=False):
+def alloc(
+    shape, dtype, scope=None, vector=None, column=None, split=True, _hoisted=False
+):
     """Allocate a tile: L1 in a herd body, or L2 in a segment body.
 
     ``column`` pins an L2 buffer to one memtile column and ``split=False`` keeps

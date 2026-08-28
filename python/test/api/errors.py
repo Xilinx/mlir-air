@@ -551,9 +551,12 @@ def _():
 
 
 # CHECK-LABEL: TEST: sequential_bound_from_tile_coordinate
-# A loop bound is resolved at trace time; a tile coordinate is an SSA value and
-# cannot be one.
-# CHECK: TypeError: air.sequential(stop=...) takes a Python integer
+# A bound may now be an enclosing loop's variable -- scf.for takes SSA bounds --
+# but not a tile coordinate. That differs between cores, and the body is traced
+# once for all of them, so each would run a different number of trips and
+# anything with a channel operation in it would deadlock on the ones that run
+# fewer.
+# CHECK: TypeError: {{.*}}built from a tile coordinate
 @expect(TypeError, "sequential_bound_from_tile_coordinate")
 def _():
     def body(h, tx, ty, A, B, C):

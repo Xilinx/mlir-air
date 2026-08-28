@@ -247,3 +247,43 @@ def a_launch_grid_has_no_rank_cap():
                     air.ops.store(b, OUT)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_sequential_bound_may_come_from_an_enclosing_loop
+# scf.for takes SSA bounds, so a trip count need not be known at trace time.
+# What it costs is only the checks that wanted one -- and a bound built from a
+# *tile coordinate* is still refused, because that differs between cores: the
+# body is traced once for all of them, so each would run a different number of
+# trips and anything with a channel operation in it would deadlock on the ones
+# that run fewer. A loop variable is uniform.
+#
+# flash_attention's temporal-causal variant is the consumer: its inner loop runs
+# the round's causal prefix, (lx + 1) * NQ blocks, and folding the round axis
+# into a loop is what keeps the core inside AIE2P program memory.
+# CHECK: scf.for %[[LX:.*]] = %c0{{.*}} to %c4
+# CHECK: affine.apply #{{.*}}[%[[LX]]]
+# The inner bound is that value rather than a constant, which is the point.
+# CHECK: scf.for %{{.*}} = %c0{{.*}} to %{{[0-9]+}} step
+@run
+def a_sequential_bound_may_come_from_an_enclosing_loop():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch(name="dynbound") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    b = air.alloc([64], bf16, scope=h.private())
+                    air.ops.load(b, A)
+                    for lx in air.sequential(0, 4):
+                        for _blk in air.sequential(0, (lx + 1) * 8):
+                            pass
+                    air.ops.store(b, OUT)
+
+    print(launch.mlir())

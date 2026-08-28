@@ -79,6 +79,35 @@ def sequential(start, stop=None, step=None, name=None):
     if step is None:
         step = 1
 
+    from ._index import IndexExpr as _IndexExpr
+
+    # A bound may be an index expression -- a coordinate, or an enclosing loop's
+    # variable. scf.for takes SSA bounds, so nothing here has to fold: what it
+    # costs is that the trip count is no longer known at trace time, which only
+    # the checks below wanted. flash_attention's temporal-causal variant is the
+    # case: its inner loop runs the round's causal prefix, (lx + 1) * NQ blocks,
+    # and folding the round axis is what keeps the core inside program memory.
+    dynamic = isinstance(stop, _IndexExpr) and not isinstance(stop.materialize(), int)
+    if dynamic and any(leaf.spatial for leaf in stop.terms):
+        # A tile coordinate differs between cores, so a bound built from one
+        # gives each core a different trip count. The body is traced once and
+        # stands for all of them, and anything with a channel operation in it
+        # would then deadlock on the cores that run fewer trips. A loop variable
+        # is uniform and is allowed.
+        raise TypeError(
+            "air.sequential(stop=...) takes a Python integer, an air.symbol, or "
+            "an enclosing loop's variable; this bound is built from a tile "
+            "coordinate, which differs between cores and would give each a "
+            "different trip count"
+        )
+    if dynamic:
+        lo = _as_bound(start, "start")
+        st = _as_bound(step, "step")
+        if st <= 0:
+            raise ValueError(f"air.sequential needs a positive step, got {st}")
+        yield from _dynamic_sequential(lo, stop, st, name)
+        return
+
     lo, hi, st = (
         _as_bound(v, n) for v, n in ((start, "start"), (stop, "stop"), (step, "step"))
     )
@@ -109,6 +138,28 @@ def sequential(start, stop=None, step=None, name=None):
             # Terminate the region either way: leaving a block without a
             # terminator turns a diagnosable "you broke out of a loop" into an
             # MLIR verifier crash somewhere else entirely.
+            yield_([])
+
+
+def _dynamic_sequential(lo, stop, st, name):
+    """An air.sequential whose upper bound is only known at run time."""
+    from air.dialects import arith
+    from air.dialects.scf import for_ as scf_for, yield_
+    from air.ir import IndexType
+
+    global _ABORTED
+
+    hi = stop.materialize()
+    lo_v = arith.ConstantOp(IndexType.get(), lo)
+    st_v = arith.ConstantOp(IndexType.get(), st)
+    for iv in scf_for(lo_v, hi, st_v):
+        completed = False
+        try:
+            yield IndexExpr.leaf(iv, name or "k")
+            completed = True
+        finally:
+            if not completed:
+                _ABORTED.append("air.sequential")
             yield_([])
 
 
