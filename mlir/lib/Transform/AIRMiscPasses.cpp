@@ -1659,7 +1659,8 @@ FailureOr<Value> tileChannelOpByFactor(
     // variables (e.g. row = iv * tile + batch * rows_per_batch) carries two.
     // Size the map from the expression rather than assuming a single symbol,
     // or AffineMap::get asserts on an invalid map.
-    auto mapForExpr = [](AffineExpr e, MLIRContext *ctx) {
+    // AffineMap::get takes its context from the expression, so no ctx here.
+    auto mapForExpr = [](AffineExpr e) {
       unsigned numSyms = 0;
       e.walk([&](AffineExpr sub) {
         if (auto sym = dyn_cast<AffineSymbolExpr>(sub))
@@ -1685,18 +1686,17 @@ FailureOr<Value> tileChannelOpByFactor(
                   getAffineConstantExpr(const_in, ctx), 1, 0);
             }
             AffineExpr add = originalExpr + original_map.getResult(0);
-            return mapForExpr(add, ctx);
+            return mapForExpr(add);
           }
           AffineExpr add = originalExpr + getAffineConstantExpr(const_in, ctx);
-          return mapForExpr(add, ctx);
+          return mapForExpr(add);
         };
     auto composeAffineExprFromSizes = [mapForExpr](AffineExpr originalExpr,
                                                    int originalMemrefSize,
-                                                   int factor, int i,
-                                                   MLIRContext *ctx) {
+                                                   int factor, int i) {
       AffineExpr add =
           originalExpr + i * llvm::divideCeilSigned(originalMemrefSize, factor);
-      return mapForExpr(add, ctx);
+      return mapForExpr(add);
     };
 
     AffineMap map;
@@ -1708,7 +1708,7 @@ FailureOr<Value> tileChannelOpByFactor(
           originalExpr, splitInfoAffineMap, splitInfoSplitOffset, ctx);
     } else
       map = composeAffineExprFromSizes(originalExpr, originalMemrefSize, factor,
-                                       i, ctx);
+                                       i);
     newApplyOp = affine::AffineApplyOp::create(rewriter, loc, map,
                                                originalApplyOperands);
     if (affineApplyOp)
