@@ -30,29 +30,27 @@ the instruction stream for any `L`, byte-identical to a native per-L build.
 | `proj_qmm_pack.py` | numpy Q4NX block packer + dequant reference |
 | `kernels/` | Peano decode kernel sources (`proj_qmm`, `rms_residual`, `glu`, `rope`, `attn_qk`, `attn_kv`, headers) |
 | `models/` | model spec headers |
-| `fused_decode_qwen.py` | The Qwen2.5-3B variant of the builder (see below) |
-| `qwen25_3b_requant.py` | Q4_0 quantizer + weight cache for the Qwen decode |
-| `qwen_prefill_to_decode.py` | Hands `llms/qwen25_3b_q4`'s prefill KV to the Qwen decode |
+| `q4_0_codec.py` | HF safetensors reader, Q4_0 quantizer and vectorized cascade packer, shared by the Q4_0 models |
 
-### Why Qwen2.5-3B has its own builder
+### Two on-device weight formats, one builder
 
-`fused_decode.py` covers Llama-3.2-1B/3B, Gemma3-4B, Phi-4-mini, Qwen3-8B and
-Qwen2.5-7B, selected by `DECODE_MODEL`. Qwen2.5-**3B** is a separate file because
-its **on-device weight format differs**, not because its weights are packaged
-differently -- and note the split is by codec, not by model family: Qwen2.5-7B is
-Q4NX and so sits in the left column with Llama and Gemma.
+`fused_decode.py` covers every model, selected by `DECODE_MODEL`. What differs
+between them is the **on-device weight format**, and the split is by codec, not
+by model family: Qwen2.5-7B is Q4NX and sits with Llama and Gemma, while
+Qwen2.5-3B and LFM2-1.2B are Q4_0.
 
-| | `fused_decode.py` (Q4NX) | `fused_decode_qwen.py` (Qwen2.5-3B) |
+| | Q4NX (default) | Q4_0 |
 |---|---|---|
 | device format | unsigned int4 **+ per-group min** | signed int4, **scale only** |
 | dequant | `w = scale*q + min` | `w = q*scale` |
 | kernel build | (default) | `-DQ4_0` |
 
 Both come from `kernels/q4_k.h`, which carries the two forms under `#ifndef
-Q4_0`; in-tree the switch is set by [`models/qwen2.5-3b.h`](models/qwen2.5-3b.h).
-This mirrors FastFlowLM, whose own Qwen design sets `#define Q4_0` in its
-`Qwen2_5/decoding_3b/models/qwen2_3b.h` while its Llama and Gemma designs leave
-it undefined.
+Q4_0`; in-tree the switch is set per model, e.g.
+[`models/qwen2.5-3b.h`](models/qwen2.5-3b.h). This follows the shipped bundles:
+FastFlowLM's Qwen2.5-3B `model.q4nx` has an all-zero `mins` field in every
+tensor and signed nibbles, and its own design sets `#define Q4_0` to match,
+while its Llama and Gemma designs leave it undefined.
 
 ### The Q4_0 branch splits again, on the toolchain
 
@@ -145,13 +143,6 @@ directories normal rather than a mistake, so the build writes a `.decode_windows
 and `DecodeInstsGen` rejects a directory whose calibrated set does not match it. A stray
 pair fails loudly instead of silently changing which window is selected.
 
-### Not applicable to `fused_decode_qwen.py`
-
-Qwen's decode is a sliding window of exactly `ATTN_L`: `seed_kv` fills it with the *last*
-`ATTN_L` positions, the hand-off asserts `ctx >= ATTN_L`, and the kernel appends at slot
-`ATTN_L-1`. The cache is fully occupied at every step, so there is no padding to stop
-streaming at any window size -- nothing for the staircase to reclaim.
-
 ## Dual-MM2S weight feed (`W_DUAL_CHAN`, on by default)
 
 Batch-1 decode is a weight-streaming problem: every token reads every weight once,
@@ -183,13 +174,14 @@ dashboard numbers come from the Krackan Point runner instead):
 | Llama-3.2-1B | 46.2 tok/s | 52.3 tok/s | **1.13x** |
 | Llama-3.2-3B | 18.8 tok/s | 22.5 tok/s | **1.20x** |
 | Gemma3-4B | 15.2 tok/s | 17.1 tok/s | **1.12x** |
-| Qwen2.5-3B | 105.1 ms/tok | 105.5 ms/tok | none |
 
-Qwen gains nothing, and that is expected: it streams 1.91 GB/token at ~105 ms =
+The retired Qwen-only builder gained nothing from the second channel (105.1 vs
+105.5 ms/tok), and that was expected: it streamed 1.91 GB/token at ~105 ms =
 **18.2 GB/s**, while the Llama-1B design already sustains 35.7 GB/s on four
-channels. Qwen's decode is not weight-bandwidth-bound (its layers do not
-pipeline), so doubling the channels cannot help. Check GB/s before assuming the
-feed is the bottleneck.
+channels. Its layers did not pipeline, so it was not weight-bandwidth-bound and
+doubling the channels could not help. Check GB/s before assuming the feed is the
+bottleneck. Qwen2.5-3B now runs on this builder and has not been re-measured
+single-channel.
 
 ## Reproducibility (toolchain)
 

@@ -225,7 +225,7 @@ def main():
     )
     a = ap.parse_args()
 
-    from qwen25_3b_requant import HFModel, requant_q4_0  # noqa: E402
+    from q4_0_codec import HFModel, requant_q4_0  # noqa: E402
     from lfm2_requant import HF_REPO  # noqa: E402
     from lfm2_1_2b_q4nx_weights import dequant_q4_0  # noqa: E402
 

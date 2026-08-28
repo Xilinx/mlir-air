@@ -45,8 +45,6 @@ BENCH_EXE = FUSED_DECODE / "bench_decode.exe"
 
 # "[bench] n=20  mean 14.488 ms  sd ...  (69.02 tok/s)"
 BENCH_RE = re.compile(r"^\[bench\].*?mean\s+([\d.]+)\s*ms.*?\(([\d.]+)\s*tok/s\)", re.M)
-# bench_qwen.py's summary line: "CSV,<ctx>,<ms>,...,<tok_s>"
-QWEN_CSV_RE = re.compile(r"^CSV,[^,]*,([\d.]+),[^,]*,[^,]*,([\d.]+)", re.M)
 
 # Device-side "the dispatch did not complete" evidence. Deliberately specific:
 # an earlier version matched a bare "timeout", which also matches the shell's
@@ -166,24 +164,6 @@ def bench_decode(workdir, ctx, args):
     return r.stdout + r.stderr, BENCH_RE.search(r.stdout + r.stderr)
 
 
-def bench_qwen(workdir, ctx, args):
-    env = dict(os.environ, QWEN_NLAYERS=str(args.n_layers), W_DUAL_CHAN="1")
-    r = _run(
-        [
-            sys.executable,
-            str(HERE / "bench_qwen_decode.py"),
-            str(ctx),
-            str(workdir),
-            str(args.iters),
-            str(args.warmup),
-        ],
-        cwd=FUSED_DECODE,
-        timeout=1800,
-        env=env,
-    )
-    return r.stdout + r.stderr, QWEN_CSV_RE.search(r.stdout + r.stderr)
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -206,9 +186,6 @@ def main():
         default="",
         help="contexts allowed to fail without failing the run",
     )
-    p.add_argument(
-        "--driver", choices=("bench_decode", "bench_qwen"), default="bench_decode"
-    )
     p.add_argument("--bench-model", help="DECODE_MODEL for bench_decode geometry")
     p.add_argument("--vocab-chunk-i2", help="VOCAB_CHUNK_I2 for bench_decode geometry")
     p.add_argument(
@@ -217,8 +194,7 @@ def main():
     p.add_argument(
         "--n-layers",
         type=int,
-        help="decoder layers: sizes the weight BO for bench_decode, and the "
-        "layer count for bench_qwen (default 36)",
+        help="decoder layers: sizes the weight BO for bench_decode",
     )
     p.add_argument(
         "--builder-env",
@@ -257,39 +233,36 @@ def main():
     contexts = [int(c) for c in a.contexts.split(",") if c.strip()]
     expect_fail = {int(c) for c in a.expect_fail.split(",") if c.strip()}
 
-    if a.driver == "bench_decode":
+    if not BENCH_EXE.exists():
+        # `make clean` in any model dir removes this; rebuild rather than
+        # letting every cell fail with a shell "No such file" that reads
+        # like a device fault.
+        env = dict(os.environ)
+        if not env.get("XILINX_XRT") and a.xrt_dir:
+            env["XILINX_XRT"] = a.xrt_dir
+        r = _run(
+            ["make", "-f", str(FUSED_DECODE / "Makefile"), "bench-decode-exe"]
+            + _make_vars(a),
+            env=env,
+        )
         if not BENCH_EXE.exists():
-            # `make clean` in any model dir removes this; rebuild rather than
-            # letting every cell fail with a shell "No such file" that reads
-            # like a device fault.
-            env = dict(os.environ)
-            if not env.get("XILINX_XRT") and a.xrt_dir:
-                env["XILINX_XRT"] = a.xrt_dir
-            r = _run(
-                ["make", "-f", str(FUSED_DECODE / "Makefile"), "bench-decode-exe"]
-                + _make_vars(a),
-                env=env,
+            print(
+                f"FATAL: cannot build {BENCH_EXE}\n{r.stdout}{r.stderr}",
+                file=sys.stderr,
             )
-            if not BENCH_EXE.exists():
-                print(
-                    f"FATAL: cannot build {BENCH_EXE}\n{r.stdout}{r.stderr}",
-                    file=sys.stderr,
-                )
-                return 2
-        for f in ("bench_model", "vocab_chunk_i2"):
-            if getattr(a, f) is None:
-                p.error(f"--driver bench_decode needs --{f.replace('_', '-')}")
-        # No default layer count here. The weight BO is sized from it, and a
-        # wrong size does not fail -- it benches a differently shaped dispatch
-        # and reports a plausible number, so a lit that omits it must not
-        # silently inherit some other model's depth.
-        if a.n_layers is None and a.w_elems is None:
-            p.error("--driver bench_decode needs --n-layers (or --w-elems)")
-    elif a.n_layers is None:
-        a.n_layers = 36  # bench_qwen's model, qwen2.5-3B
+            return 2
+    for f in ("bench_model", "vocab_chunk_i2"):
+        if getattr(a, f) is None:
+            p.error(f"bench_decode needs --{f.replace('_', '-')}")
+    # No default layer count here. The weight BO is sized from it, and a wrong
+    # size does not fail -- it benches a differently shaped dispatch and reports
+    # a plausible number, so a lit that omits it must not silently inherit some
+    # other model's depth.
+    if a.n_layers is None and a.w_elems is None:
+        p.error("bench_decode needs --n-layers (or --w-elems)")
 
-    # Absolute: bench_qwen runs with cwd=fused_decode and bench_decode with
-    # cwd=workdir, so a relative path resolves differently for the two drivers.
+    # Absolute: bench_decode runs with cwd=workdir, so a relative path would
+    # resolve against the caller's directory instead.
     a.workdir = a.workdir.resolve()
     a.workdir.mkdir(parents=True, exist_ok=True)
     points, seen_md5, hard_fail = [], {}, False
@@ -321,8 +294,7 @@ def main():
                 )
             else:
                 seen_md5[h] = ctx
-                runner = bench_decode if a.driver == "bench_decode" else bench_qwen
-                out, m = runner(wd, ctx, a)
+                out, m = bench_decode(wd, ctx, a)
                 (wd / "bench.log").write_text(out)
                 if m:
                     rec["ms_per_token"] = float(m.group(1))
@@ -369,7 +341,6 @@ def main():
                 "run_params": {
                     "iters": a.iters,
                     "warmup": a.warmup,
-                    "driver": a.driver,
                 },
                 "points": points,
             },
