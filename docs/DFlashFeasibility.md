@@ -1231,12 +1231,21 @@ and a descriptor's `i2` is the second quantity, so a wave's egress rounds **are*
 its `i2` while the core's own loop runs `i2/PAIR_ROWS`. They coincide here and
 would not on a paired model.
 
-### 3.15 Where the X comes from: both candidates refuted, at compile time
+### 3.15 Where the X comes from: the reuse constraint, restated by the compiler
 
-§3.14 concluded the taps should ride `@xnorm` from the launch side. **That does
-not compile, and neither does the alternative** `[static]`. Both were tried on
-the real six-wave configuration; the failures are cheap, early, and they decide
-the question rather than leaving it to device iteration.
+**The constraint this fold was accepted under, which belongs in writing here and
+was not:** it adds **no data paths**. Every wave rides channels and BDs the
+decode program already has, and an arm changes *counts*, *DDR offsets* and
+*which kernel is called* — never the set of channel ops. That is what makes the
+pre-pass free: the engine is already built, and 36.9 MB is 1.4% of what the
+verify pass streams through it.
+
+§3.14 then concluded the taps should ride `@xnorm` from the launch side, which
+quietly breaks that constraint — it needs a shim DMA allocation `@xnorm` does not
+have. **It does not compile, and neither does the alternative it appears to ask
+for** `[static]`. Both were tried on the real six-wave configuration; the
+failures are cheap, early, and they decide the question rather than leaving it to
+device iteration.
 
 **1. The launch-side put on `@xnorm`.**
 
@@ -1273,13 +1282,22 @@ sharper — *an arm may vary a memtile feed's count, and a channel it names alon
 does not survive to be allocated at all.* The lock-credit hazard is what happens
 when the arm's op does survive; this is what happens when it does not.
 
-**So the X has to arrive on `@xnorm` from a producer that already puts there.**
-Of the four — the rms core (twice), the o memtile, the GLU down buffer — only the
-rms core has a route to DDR, on the shim's `@rmsX` at its input. Its arm then
-selects a *copy* kernel where the decode arm selects a *norm* kernel, over the
-same channel ops with different counts. That is §3.13's option (a), rejected in
-§3.14 for a reason that turns out not to be the operative one: a CallOp is not a
-channel op, so swapping the kernel is a count and a kernel, not a program.
+**So the X has to arrive on `@xnorm` from a producer that already puts there** —
+which is the no-new-paths constraint above, arrived at the expensive way. Of the
+four producers (the rms core twice, the o memtile, the GLU down buffer) only the
+rms core has a route to DDR, on the shim's `@rmsX` at its input. All three legs
+already exist, and the emitted IR says so `[static]`:
+
+| leg | op today | what an extra wave changes |
+|---|---|---|
+| shim → rms core | `@rmsX` put, `%arg10[0] [20480] [1]` | DDR offset and length |
+| rms core in | one `@rmsX` get, count-free, tile DMA channel 0 | how many times it fires |
+| rms core → X memtile | `@xnorm` put, `[BATCH*XCHUNK]` | the refeed count |
+
+Its arm then selects a *copy* kernel where the decode arm selects a *norm*
+kernel, over those same ops: a CallOp is not a channel op, so swapping it is a
+kernel and a count, not a program. That is §3.13's option (a), rejected in §3.14
+for a reason that turns out not to be the operative one.
 
 Remaining, and all of it now on the compute tiles: the rms core forwarding the
 taps onto `@xnorm`, the rms core's `hidden_norm` on `fc`'s output into X slot 37,
