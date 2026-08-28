@@ -15,26 +15,22 @@
 // CHECK-DAG:   aie.objectfifo @[[VAL_4:.*]](%[[VAL_2]], {%[[VAL_3]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK-DAG:   aie.objectfifo @[[VAL_5:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_6:.*]] = aie.core(%[[VAL_3]]) {
-// CHECK:     %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_4]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_8:.*]] = aie.objectfifo.subview.access %[[VAL_7]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_4]](Consume, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_4]](Consume, 1)
 // CHECK:     aie.end
 // CHECK:   }
 // CHECK:   %[[VAL_9:.*]] = aie.core(%[[VAL_2]]) {
-// CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_4]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_11:.*]] = aie.objectfifo.subview.access %[[VAL_10]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_4]](Produce, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_4]](Produce, 1)
 // CHECK:     aie.end
 // CHECK:   }
 // CHECK:   %[[VAL_12:.*]] = aie.core(%[[VAL_1]]) {
-// CHECK:     %[[VAL_13:.*]] = aie.objectfifo.acquire @[[VAL_5]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_14:.*]] = aie.objectfifo.subview.access %[[VAL_13]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_13:.*]] = aie.objectfifo.acquire @[[VAL_5]](Consume, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_5]](Consume, 1)
 // CHECK:     aie.end
 // CHECK:   }
 // CHECK:   %[[VAL_15:.*]] = aie.core(%[[VAL_0]]) {
-// CHECK:     %[[VAL_16:.*]] = aie.objectfifo.acquire @[[VAL_5]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_17:.*]] = aie.objectfifo.subview.access %[[VAL_16]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_16:.*]] = aie.objectfifo.acquire @[[VAL_5]](Produce, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_5]](Produce, 1)
 // CHECK:     aie.end
 // CHECK:   }

@@ -16,14 +16,12 @@
 // CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]([] [])
 // CHECK:    aie.objectfifo @air_channel_1(%[[MEMTILE]], {%[[CORE_5_4]], %[[CORE_5_3]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.core(%[[CORE_5_4]]) {
-// CHECK:      aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      aie.objectfifo.subview.access %{{.*}}[0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectfifo.acquire @air_channel_1(Consume, 1) : memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
 // CHECK:    }
 // CHECK:    aie.core(%[[CORE_5_3]]) {
-// CHECK:      aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      aie.objectfifo.subview.access %{{.*}}[0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectfifo.acquire @air_channel_1(Consume, 1) : memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
 // CHECK:    }
