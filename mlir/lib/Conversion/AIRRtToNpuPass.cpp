@@ -661,8 +661,23 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
             contiguous = false;
           below *= sz;
         }
+        // A dimension ABOVE the runtime one breaks the single linear run the
+        // `len` operand encodes -- unless its stride is zero. A zero-stride
+        // dimension contributes nothing to addressing: it re-runs the same
+        // descriptor, and repeat_count already carries it (dim 0 below, dims
+        // 1-2 in the dimLayouts loop, which folds them the same way). The
+        // dynamic-length BD is emitted with no dimensions at all, so leaving
+        // such a dimension out of the linear run is not an approximation.
+        //
+        // This is what a batched decode's KV readback looks like: lengths
+        // [B, ceil(L/16), 16, 512] with strides [0, 8192, 512, 1], one runtime
+        // block count and a zero outer stride because every token of the block
+        // re-reads the same context. Requiring length 1 above the runtime
+        // dimension rejected it, which is why DECODE_DYNSEQ built only at
+        // batch 1.
         for (unsigned i = 0; i < dim; i++)
-          if (*getConstantIntValue(mixedLengths[i]) != 1)
+          if (*getConstantIntValue(mixedLengths[i]) != 1 &&
+              *getConstantIntValue(mixedStrides[i]) != 0)
             contiguous = false;
         int64_t thisStride = *getConstantIntValue(mixedStrides[dim]);
         if (contiguous && thisStride == below) {
@@ -878,7 +893,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id=*/nullptr, pktAttr,
-          /*burst_length=*/nullptr, /*iteration=*/nullptr,
+          /*out_of_order_id=*/nullptr,
+          /*burst_length=*/nullptr, /*axcache=*/nullptr,
+          /*iteration=*/nullptr,
           /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
     } else if (dynOffsetI32) {
@@ -2809,11 +2826,32 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           unsigned idx = 0;
           for (auto &o : blk)
             order[&o] = idx++;
-          // Tagged readback starts, in program order.
-          SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
+          // The L3 buffer a configure task's BD touches, or null when it cannot
+          // be determined. The barrier is a SAME-BUFFER ordering (see the
+          // comment above: "a shared-DDR readback ... must observe values
+          // written by ... appends into that same DDR buffer"), so the append
+          // and the readback have to be matched on it. Without the check, an
+          // append's await is moved before the first tagged readback of ANY
+          // buffer -- which is not just imprecise, it deadlocks: a design whose
+          // drain into buffer A is only producible after a feed issued later
+          // than an unrelated readback of buffer B has that drain awaited
+          // before the feed goes out, and the dispatch hangs with nothing
+          // written. (RMS_BAND_STREAM>=3 in programming_examples/fused_decode:
+          // @layerOut appends into X, @inKV_K reads the KV cache.)
+          auto cfgBuffer = [](AIEX::DMAConfigureTaskForOp c) -> Value {
+            Value v = nullptr;
+            c.walk([&](AIE::DMABDOp bd) {
+              if (!v)
+                v = bd.getBuffer();
+            });
+            return v;
+          };
+          // Tagged readback starts, in program order, each with the buffer it
+          // reads back.
+          SmallVector<std::pair<AIEX::DMAStartTaskOp, Value>> barrierStarts;
           for (auto c : awaitCfgs) {
             if (auto s = getStart(c))
-              barrierStarts.push_back(s);
+              barrierStarts.push_back({s, cfgBuffer(c)});
             else
               c->emitWarning("air.await_appends: tagged readback has no "
                              "dma_start_task; the "
@@ -2833,9 +2871,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             anyAppendAwait = true;
             AIEX::DMAStartTaskOp aStart = getStart(cfg);
             unsigned apos = order[aStart ? aStart.getOperation() : &o];
+            Value aBuf = cfgBuffer(cfg);
             AIEX::DMAStartTaskOp target = nullptr;
             unsigned best = std::numeric_limits<unsigned>::max();
-            for (auto s : barrierStarts) {
+            for (auto [s, rBuf] : barrierStarts) {
+              // Same buffer only. Unknown on either side falls back to the
+              // old, buffer-blind behaviour: the barrier stays conservative
+              // when it cannot prove the two are unrelated.
+              if (aBuf && rBuf && aBuf != rBuf)
+                continue;
               unsigned sp = order[s.getOperation()];
               if (sp > apos && sp < best) {
                 best = sp;
@@ -2846,7 +2890,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               aAwait->moveBefore(target);
           }
           if (!anyAppendAwait && !barrierStarts.empty())
-            barrierStarts.front()->emitWarning(
+            barrierStarts.front().first->emitWarning(
                 "air.await_appends: readback tagged but no air.append_barrier "
                 "appends found to await; no ordering was enforced");
         }
@@ -3615,6 +3659,51 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (auto *def = st.getTask().getDefiningOp())
         startOf[def] = st;
     });
+
+    // A segment is one (block, launch wave): a rolled body is one block and one
+    // wave, a flattened multi-wave body is one block and several waves.
+    auto waveOf = [](AIEX::DMAConfigureTaskForOp ct) -> int64_t {
+      if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
+        return a.getInt();
+      return -1;
+    };
+    // The last start among ALL paced channels in each segment. The tail drain
+    // anchors here rather than after the individual channel's own last start:
+    // both honour the fence (everything drained before the next segment
+    // begins), but the per-channel anchor also serializes channels that have to
+    // be in flight TOGETHER, and a one-task channel then awaits itself
+    // immediately after its own start -- a synchronous feed, which deadlocks
+    // when the transfer can only complete if its consumer runs and the consumer
+    // is waiting on a sibling channel that has not been issued yet. See the
+    // drain site below for the measured case.
+    //
+    // COALESCED FEEDS COUNT TOWARDS THE ANCHOR, even though they are paced by
+    // the cross-channel phase barrier rather than by paceSegment. The anchor is
+    // only asking "where does this segment stop issuing", and a coalesced
+    // weight feed issued after the last paced start is still part of the
+    // segment -- excluding it drains the paced channels while the segment is
+    // still going, which is the same synchronous-feed deadlock one step out.
+    // Measured (fused_decode RMS_BAND_STREAM>=3): the last @rmsX task is
+    // residual2's band feed, and the core takes those bands only after the DOWN
+    // projection has produced its output. Anchored at that feed's own start the
+    // drain awaits it BEFORE the down weight feed is issued, so the projection
+    // never runs and the dispatch hangs with the layer output unwritten. The
+    // anchor only ever moves LATER within the same segment, so the fence it
+    // provides -- everything drained before the next segment's first start --
+    // is unchanged.
+    llvm::DenseMap<std::pair<Block *, int64_t>, AIEX::DMAStartTaskOp>
+        segLastStart;
+    for (auto &kv : groups)
+      for (auto ct : kv.second) {
+        auto st = startOf.lookup(ct.getOperation());
+        if (!st)
+          continue;
+        auto key = std::make_pair(st->getBlock(), waveOf(ct));
+        auto it = segLastStart.find(key);
+        if (it == segLastStart.end() ||
+            it->second->isBeforeInBlock(st.getOperation()))
+          segLastStart[key] = st;
+      }
     // `fenceEnd` forces the segment's in-flight tail to be fully drained after
     // its last start (a per-iteration fence) even when the segment fits in
     // flight; used for the per-iteration segments of a fused multi-iteration
@@ -3654,8 +3743,41 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             "dma_start_task; drain awaits were not inserted");
         return;
       }
-      OpBuilder b(lastStart);
-      b.setInsertionPointAfter(lastStart);
+      // Drain after the last start in the SEGMENT, not after this channel's own
+      // last start. Both honour the fence -- everything is drained before the
+      // next segment's first start, which for a rolled body is the back edge --
+      // but the per-channel anchor additionally serializes channels that have
+      // to be in flight TOGETHER.
+      //
+      // A one-task segment is the sharp case: drainStart == 0, so the task is
+      // awaited immediately after its own start, turning a fire-and-forget feed
+      // into a synchronous one. That deadlocks whenever the transfer can only
+      // complete if its consumer runs and the consumer needs a SIBLING channel
+      // that has not been issued yet.
+      //
+      // Measured: the LFM2 hybrid's KV read-back is four one-task channels
+      // (K/V for two CU pairs) consumed by four CU pairs in parallel. The
+      // per-channel anchor emitted
+      //     cfg K_0; start K_0; await K_0; cfg V_0; await V_0; cfg K_1; ...
+      // so CU0 could not drain K_0 until V_0 arrived, and V_0 was not issued
+      // until K_0 completed. It survived while a whole region still fit in the
+      // memtile ring plus the CUs' own buffering -- up to 5 blocks, ATTN_MAXL
+      // 80 -- and cold-deadlocked from 6 blocks (96) upward at every ring
+      // depth. Anchoring at the end of the segment puts all four in flight
+      // together, which is what this same design already did whenever the feeds
+      // happened to coalesce instead of being paced.
+      //
+      // The SEGMENT, not the block: a flattened multi-wave body is several
+      // segments in ONE block, and draining at the block end there would let an
+      // earlier wave's in-flight set straddle the next wave.
+      AIEX::DMAStartTaskOp anchor = lastStart;
+      auto segIt = segLastStart.find(
+          std::make_pair(lastStart->getBlock(), waveOf(tasks[0])));
+      if (segIt != segLastStart.end() &&
+          anchor->isBeforeInBlock(segIt->second.getOperation()))
+        anchor = segIt->second;
+      OpBuilder b(anchor);
+      b.setInsertionPointAfter(anchor);
       unsigned drainStart = (n > depth) ? n - depth : 0;
       for (unsigned j = drainStart; j < n; j++) {
         AIEX::DMAConfigureTaskForOp tj = tasks[j];
@@ -3762,12 +3884,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // block and one wave, so only the block boundary fires; an already
         // flattened multi-wave block is still paced and fenced per wave, so no
         // channel's in-flight set straddles an iteration boundary.
+        // waveOf is shared with the segment-anchor map built above, so the
+        // segmentation here and the drain anchor there cannot drift apart.
         int64_t segWave = -1;
-        auto waveOf = [](AIEX::DMAConfigureTaskForOp ct) -> int64_t {
-          if (auto a = ct->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
-            return a.getInt();
-          return -1;
-        };
         for (auto ct : tasks) {
           if (ct->getBlock() != segBlock || waveOf(ct) != segWave) {
             flush();
@@ -4391,7 +4510,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* d0_zero_before */ 0, /* d1_zero_before */ 0,
             /* d2_zero_before */ 0,
             /* d0_zero_after */ 0, /* d1_zero_after */ 0,
-            /* d2_zero_after */ 0);
+            /* d2_zero_after */ 0, /* burst_length */ 0,
+            /* axcache */ nullptr);
         uint32_t addr = (dstColIndex << target_model.getColumnShift()) |
                         (0x1D004 + bdID * 0x20);
         {

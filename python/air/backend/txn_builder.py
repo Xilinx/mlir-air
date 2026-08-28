@@ -111,13 +111,25 @@ class TxnBuilder:
         return sorted(self.signatures)
 
     def _shim_source(self):
-        lines = [f'#include "{self.header}"', "#include <cstring>", ""]
+        # `extern "C"` gives the symbol a C name; on Windows it does NOT put it
+        # in the DLL's export table, and ctypes then fails with a bare
+        # "function not found" on a library that compiled and loaded cleanly.
+        lines = [
+            f'#include "{self.header}"',
+            "#include <cstring>",
+            "#ifdef _WIN32",
+            '#define AIR_TXN_EXPORT extern "C" __declspec(dllexport)',
+            "#else",
+            '#define AIR_TXN_EXPORT extern "C"',
+            "#endif",
+            "",
+        ]
         for name, params in self.signatures.items():
             args = ", ".join(f"{ty} a{i}" for i, (ty, _) in enumerate(params))
             # Two-call protocol: pass cap=0 to size the stream, then again with
             # a buffer. The builder is cheap enough that sizing twice is fine.
             lines += [
-                f"extern \"C\" long air_txn_{name}({args}{', ' if args else ''}"
+                f"AIR_TXN_EXPORT long air_txn_{name}({args}{', ' if args else ''}"
                 "unsigned int *out, unsigned long cap) {",
                 f"  auto r = generate_txn_{name}("
                 + ", ".join(f"a{i}" for i in range(len(params)))
@@ -142,19 +154,43 @@ class TxnBuilder:
             )
         os.makedirs(workdir, exist_ok=True)
         cpp = os.path.join(workdir, "shim.cpp")
-        so = os.path.join(workdir, "shim.so")
+        # AIR_TXN_CXX names the host C++ compiler. It defaults to g++, which is
+        # what a Linux build has; a Windows build generally does not, and the
+        # failure is a bare `FileNotFoundError: [WinError 2]` from subprocess
+        # with nothing naming the missing tool. MSVC is recognised by name and
+        # driven with its own flags, since it rejects every one of g++'s.
+        cxx = os.environ.get("AIR_TXN_CXX", "g++")
+        msvc = os.path.basename(cxx).lower() in ("cl", "cl.exe")
+        so = os.path.join(workdir, "shim.dll" if msvc else "shim.so")
         with open(cpp, "w") as f:
             f.write(src)
         if not os.path.exists(so):
-            cmd = ["g++", "-O2", "-fPIC", "-shared", "-std=c++17", cpp, "-o", so]
-            for d in self._include_dirs:
-                cmd += ["-I", d]
+            if msvc:
+                cmd = [cxx, "/nologo", "/O2", "/LD", "/EHsc", "/std:c++17", cpp]
+                for d in self._include_dirs:
+                    cmd += ["/I", d]
+                # /Fe: and /Fo: keep the object and the DLL inside workdir; cl
+                # otherwise writes them next to the CWD.
+                cmd += [f"/Fe:{so}", f"/Fo:{os.path.join(workdir, '')}"]
+            else:
+                cmd = [cxx, "-O2", "-fPIC", "-shared", "-std=c++17", cpp, "-o", so]
+                for d in self._include_dirs:
+                    cmd += ["-I", d]
             if self.verbose:
                 print("TxnBuilder:", " ".join(cmd))
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True)
+            except FileNotFoundError:
+                raise TxnBuilderError(
+                    f"host C++ compiler {cxx!r} not found. A DYNSEQ build's "
+                    f"instruction stream is assembled by a compiled shim, so "
+                    f"one is needed at DISPATCH time, not just at build time. "
+                    f"Set AIR_TXN_CXX to a compiler on PATH (cl.exe is "
+                    f"recognised and driven with MSVC flags)."
+                )
             if result.returncode != 0:
                 raise TxnBuilderError(
-                    f"building the TXN builder failed:\n{result.stderr}"
+                    f"building the TXN builder failed:\n{result.stdout}\n{result.stderr}"
                 )
         self.so_path = so
         self._lib = ctypes.CDLL(so)
