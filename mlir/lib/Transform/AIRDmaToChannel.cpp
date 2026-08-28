@@ -1131,6 +1131,121 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   return pickSameArm ? pickSameArm : pick;
 }
 
+// How many tiles of `hier_op` actually execute `getput`?
+//
+// A DMA carries one multiplicity, the CONSUMER's: it sits inside the hierarchy,
+// under whatever scf.if chain selects a tile. The PRODUCER's multiplicity has
+// to be derived, and it is derivable -- it is the number of tiles satisfying
+// the guard. Wrapping a one-tile transfer in an scf.parallel over the whole
+// iteration space issues it once per tile instead of once.
+//
+// Do NOT read this off `broadcast_set`. That attribute is the herd's BOUNDING
+// BOX -- for a 2x4 herd it is literally `0 <= s0 <= 1, 0 <= s1 <= 3`, with no
+// equalities -- so it says "all tiles" no matter what the guards say. The guard
+// lives in the scf.if chain, still intact around the external half here because
+// that half is created in the DMA's own position.
+//
+// Herd extents are compile-time constants, so enumerate rather than reach for
+// affine machinery: it is exact, and it handles the else-branch case
+// (`ty < 2` then `not (ty == 0)` gives `ty == 1`) that constraint solving needs
+// integer reasoning for. Returns nullopt for anything that is not a constant
+// comparison against a hierarchy induction variable, which keeps every existing
+// design on the old path.
+static std::optional<int64_t>
+countExecutingTiles(air::ChannelInterface getput,
+                    air::HierarchyInterface hier_op) {
+  SmallVector<int64_t> extents;
+  for (auto sz : hier_op.getSizeOperands()) {
+    auto c = getConstantIntValue(sz);
+    if (!c || *c <= 0 || *c > 64)
+      return std::nullopt;
+    extents.push_back(*c);
+  }
+  if (extents.empty())
+    return std::nullopt;
+  auto ids = hier_op.getIds();
+  auto dimOf = [&](Value v) -> std::optional<unsigned> {
+    for (unsigned i = 0; i < ids.size(); i++)
+      if (ids[i] == v)
+        return i;
+    return std::nullopt;
+  };
+
+  struct Guard {
+    unsigned dim;
+    arith::CmpIPredicate pred;
+    int64_t rhs;
+    bool inThen;
+  };
+  SmallVector<Guard> guards;
+  Operation *child = getput.getOperation();
+  for (Operation *p = child->getParentOp(); p && p != hier_op.getOperation();
+       child = p, p = p->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(p);
+    if (!ifOp)
+      continue;
+    auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp)
+      return std::nullopt;
+    auto d = dimOf(cmp.getLhs());
+    auto rhs = getConstantIntValue(cmp.getRhs());
+    if (!d || !rhs)
+      return std::nullopt;
+    guards.push_back(
+        {*d, cmp.getPredicate(), *rhs,
+         ifOp.getThenRegion().isAncestor(child->getParentRegion())});
+  }
+  if (guards.empty())
+    return std::nullopt;
+
+  int64_t total = 1;
+  for (auto e : extents)
+    total *= e;
+  int64_t hits = 0;
+  SmallVector<int64_t> iv(extents.size(), 0);
+  for (int64_t flat = 0; flat < total; flat++) {
+    int64_t r = flat;
+    for (int i = (int)extents.size() - 1; i >= 0; i--) {
+      iv[i] = r % extents[i];
+      r /= extents[i];
+    }
+    bool ok = true;
+    for (auto &g : guards) {
+      int64_t v = iv[g.dim];
+      bool t;
+      switch (g.pred) {
+      case arith::CmpIPredicate::eq:
+        t = v == g.rhs;
+        break;
+      case arith::CmpIPredicate::ne:
+        t = v != g.rhs;
+        break;
+      case arith::CmpIPredicate::slt:
+        t = v < g.rhs;
+        break;
+      case arith::CmpIPredicate::sle:
+        t = v <= g.rhs;
+        break;
+      case arith::CmpIPredicate::sgt:
+        t = v > g.rhs;
+        break;
+      case arith::CmpIPredicate::sge:
+        t = v >= g.rhs;
+        break;
+      default:
+        return std::nullopt;
+      }
+      if (t != g.inThen) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok)
+      hits++;
+  }
+  return hits;
+}
+
 // Hoist the "external" half of the data movement out by one level of air
 // hierarchy, based on the memory space that it is operating on.
 template <typename AIRHierOpTy>
@@ -1291,9 +1406,14 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     if (anchored) {
       // The anchor fixes position and control context. Wrapping the iteration
       // space in an scf.parallel here would move it back to the hierarchy op.
-    } else if (llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
-                 return air::getChannelDeclarationThroughSymbol(getput)
-                     ->hasAttr("broadcast_shape");
+    } else if (llvm::any_of(externalGetPuts,
+                            [](air::ChannelInterface getput) {
+                              return air::getChannelDeclarationThroughSymbol(
+                                         getput)
+                                  ->hasAttr("broadcast_shape");
+                            }) ||
+               llvm::all_of(externalGetPuts, [&](air::ChannelInterface getput) {
+                 return countExecutingTiles(getput, hier_op) == 1;
                }))
       insertionPointAtHierOp = rewriter.saveInsertionPoint();
     else {
