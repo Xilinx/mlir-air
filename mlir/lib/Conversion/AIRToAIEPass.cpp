@@ -1261,24 +1261,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       continue;
     }
 
-    // Find the INNERMOST scf.for that contains ALL accessing ops.
-    //
-    // INNERMOST, not outermost, and the difference is a correctness bug rather
-    // than a tuning choice. The lock scope decides how often the buffer is
-    // handed over, so it has to match how often the buffer is WRITTEN, and the
-    // accessing ops are written once per iteration of the loop that immediately
-    // encloses them. Picking an outer loop lets the producer overwrite the
-    // buffer once per inner iteration and hand over only once per outer one --
-    // the consumer then sees whichever write happened last, with no ordering
-    // against its own reads.
-    //
-    // With a single enclosing loop the two answers coincide, which is why this
-    // survived: a herd body whose accesses sit in one loop is the common shape.
-    // It shows up the moment a second level appears -- fused_decode's batched
-    // attention loops tokens around blocks, writes the score buffer per block,
-    // and got a per-TOKEN handoff. Every token that spanned more than one
-    // 16-key block came back wrong, and a token that spanned exactly one was
-    // correct because then the two cadences agree again.
+    // Find the OUTERMOST scf.for that contains ALL accessing ops
     Operation *candidate = info.accessingOps[0]->getParentOp();
     while (candidate && candidate != coreOp.getOperation()) {
       if (isa<scf::ForOp>(candidate)) {
@@ -1289,10 +1272,8 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
             break;
           }
         }
-        if (containsAll) {
+        if (containsAll)
           info.lockScope = candidate;
-          break; // tightest scope wins
-        }
       }
       candidate = candidate->getParentOp();
     }
@@ -4986,16 +4967,32 @@ public:
     // arrivals onto a spare channel of the same tile.
     tile_dma_alloc.repairS2MMChains(memcpy_flows);
 
-    // Step 3c: the mirror check on the producer side. Nothing to repair there
-    // -- moving a producer to another MM2S would change which port its flows
-    // leave from -- so a chain that cannot stay in step is rejected rather
-    // than emitted as a design that hangs.
+    // Step 3c: packet multiplexing exists to exceed a tile's channel count, but
+    // the allocator applies it before it ever looks for a free channel, so a
+    // core can carry two independently-produced flows on one BD ring with its
+    // other channel idle -- an arrival-order dependence nothing in the design
+    // establishes, and a head-of-line deadlock when it goes the wrong way.
+    // Spread what is left over the channels still free.
+    //
+    // After the repair, not before: the repair answers a sharper question (this
+    // chain provably cannot stay in step) and picks its channel accordingly, so
+    // letting the spread move first only overwrites a better-informed decision
+    // with a positional one -- measurably, on three of the shipping decode
+    // models, whose BD rings changed shape for no gain.
+    tile_dma_alloc.spreadCollapsedPacketChannels(memcpy_flows);
+
+    // Step 3d: the mirror check on the producer side. What is left after the
+    // spread above is a chain the tile has no room to separate, and there is
+    // nothing further to repair -- moving a producer to another MM2S would
+    // change which port its flows leave from -- so a chain that still cannot
+    // stay in step is rejected rather than emitted as a design that hangs.
     if (failed(tile_dma_alloc.verifyMM2SChains()))
       return failure();
 
-    // Step 3d: packet multiplexing exists to exceed a tile's channel count,
-    // but the allocator applies it before it ever looks for a free channel, so
-    // a shim can carry four flows on MM2S 0 with MM2S 1 idle. Redistribute
+    // Step 3e: the same redistribution at the shim, where the cost of a
+    // needless collapse is not order but port diversity: flows squeezed
+    // through one switchbox slave port deny the pathfinder the routes a
+    // same-id convergent group elsewhere on the column needs. Redistribute
     // onto the free channels now that every allocation is known; collapse that
     // is load-bearing (bundled sub-channels, broadcasts, pinned/dedicated
     // flows) is left alone.
@@ -6494,13 +6491,15 @@ public:
         if (!channel_head) {
           channel_head = start_bb;
           auto b = OpBuilder::atBlockBegin(channel_head);
-          startOp = AIE::DMAStartOp::create(b, loc, dir, chan, rep,
-                                            /*pad_value*/ 0, first_bd, end_bb);
+          startOp =
+              AIE::DMAStartOp::create(b, loc, dir, chan, rep,
+                                      /*pad_value*/ 0,
+                                      /*out_of_order*/ false, first_bd, end_bb);
         } else {
           auto b = OpBuilder::atBlockBegin(start_bb);
           startOp = AIE::DMAStartOp::create(
-              b, loc, dir, chan, rep, /*pad_value*/ 0, first_bd,
-              channel_head->getTerminator()->getSuccessor(1));
+              b, loc, dir, chan, rep, /*pad_value*/ 0, /*out_of_order*/ false,
+              first_bd, channel_head->getTerminator()->getSuccessor(1));
           channel_head->getTerminator()->setSuccessor(start_bb, 1);
           channel_head = start_bb;
         }
