@@ -14,7 +14,6 @@ runner can never disagree about how a numpy dtype maps onto the device.
 
 import numpy as np
 from ml_dtypes import bfloat16
-from ml_dtypes import int4 as ml_int4
 
 __all__ = [
     "DType",
@@ -120,6 +119,16 @@ class DType:
 
     @property
     def itemsize(self):
+        if self.np_dtype is None:
+            # A sub-byte type has no honest answer: numpy would store an i4 in a
+            # whole byte and report 1, which is the number that made i4 -> i8
+            # look like a same-size conversion in the first place. Callers that
+            # mean "how wide" want `bits`; the ones that mean "how much memory"
+            # only ever see allocatable types.
+            raise TypeError(
+                f"{self} has no byte size: it is {self.bits} bits and no buffer "
+                f"can hold one. Use .bits for the width"
+            )
         return np.dtype(self.np_dtype).itemsize
 
     def mlir(self):
@@ -158,7 +167,13 @@ f32 = DType("f32", np.float32, 16, is_float=True)
 # quantised weights inside them. numpy has no sub-byte storage, so ml_dtypes'
 # int4 stands in for the data type while `bits=4` carries the width that
 # actually matters.
-i4 = DType("i4", ml_int4, 64, is_float=False, bits=4, allocatable=False)
+# `np_dtype=None`: there is deliberately no numpy type behind this one. numpy
+# has no sub-byte storage, and ml_dtypes' int4 -- the obvious stand-in -- would
+# make importing air.api fail on any older ml_dtypes that predates it, for a
+# type most kernels never name. Nothing needs it: `mlir()` builds the MLIR type
+# from `bits`, `type_mapper` is never reached, and `itemsize` is only ever asked
+# of a type a buffer can hold.
+i4 = DType("i4", None, 64, is_float=False, bits=4, allocatable=False)
 i8 = DType("i8", np.int8, 32, is_float=False)
 i16 = DType("i16", np.int16, 16, is_float=False)
 i32 = DType("i32", np.int32, 16, is_float=False)

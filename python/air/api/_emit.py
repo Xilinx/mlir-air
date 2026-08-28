@@ -589,6 +589,8 @@ def emit_elementwise(dst, expr):
     width = dst.vector_width
     vectorized = bool(shape) and width > 0 and shape[-1] % width == 0
 
+    _check_repack(expr, dst, shape, width)
+
     if vectorized:
         _emit_vector(dst, expr, width)
     else:
@@ -598,6 +600,51 @@ def emit_elementwise(dst, expr):
 # ---------------------------------------------------------------------------
 # Loop nest construction
 # ---------------------------------------------------------------------------
+
+
+def _has_repack(node):
+    """Is there a lane-count-changing bitcast anywhere in this expression?"""
+    return _is_repack(node) or any(_has_repack(a) for a in node.args)
+
+
+def _check_repack(expr, dst, shape, width):
+    """A repacking bitcast constrains the whole assignment, so say so up front.
+
+    Raised here rather than where the read is built. The operand is indexed from
+    its region's start alone -- there is no induction variable in the right
+    units to advance it, the destination's are in the other type's -- so more
+    than one trip would read the same run of memory every time. Emission has
+    already opened the loop nest by the time the read happens, and raising from
+    inside it leaves a block with no terminator and a trace too broken to print,
+    which buries the real message under an MLIR verifier error.
+    """
+    if not _has_repack(expr):
+        return
+    if not shape or width <= 0 or shape[-1] % width:
+        raise NotImplementedError(
+            "air.api.ops.bitcast that changes the lane count needs the vector "
+            f"path, and this assignment takes the scalar one: its destination "
+            f"{shape} is not a multiple of its vector width {width}. "
+            "Reinterpreting one element at a time is not the same operation -- "
+            "the whole point is that a run of memory holds a different number "
+            "of them"
+        )
+    trips = 1
+    for extent in shape[:-1]:
+        trips *= extent
+    trips *= shape[-1] // width
+    if trips != 1:
+        raise NotImplementedError(
+            f"air.api.ops.bitcast reinterprets a run of memory, so the "
+            f"assignment it appears in has to cover exactly one vector. This "
+            f"destination is {shape} at a width of {width}, which is {trips} "
+            f"trips of the nest, and the reinterpreted operand is indexed from "
+            f"its region's start alone -- it would read the same {width} "
+            f"elements every trip. Write the loop yourself with air.sequential "
+            f"and assign one vector per trip. Every axis counts, not just the "
+            f"innermost: a {(4, width)} destination is four trips even though "
+            f"its innermost extent is exactly one vector"
+        )
 
 
 def _nest(bounds, body):
@@ -992,19 +1039,9 @@ def _emit_vector(dst, expr, width):
             # A repacking bitcast's operand: fewer buffer elements than the
             # destination has, covering the same run of memory. `_leaf_index`
             # sees an extent that does not match the destination's and pins the
-            # axis at the region's own base -- which is the right index only
-            # while the nest makes a single trip, so require that rather than
-            # rely on it.
-            if shape[-1] != width:
-                raise NotImplementedError(
-                    f"air.api.ops.bitcast reinterprets a run of memory, so the "
-                    f"assignment it appears in has to cover exactly one vector: "
-                    f"this destination is {shape[-1]} elements at a width of "
-                    f"{width}, which is {shape[-1] // width} trips, and the "
-                    f"reinterpreted operand would not advance between them. "
-                    f"Write the loop yourself with air.sequential and assign "
-                    f"{width} elements per trip"
-                )
+            # axis at the region's own base, which is the right index only while
+            # the nest makes a single trip -- checked by `_check_repack` before
+            # any of this was emitted.
             return _result(
                 transfer_read(
                     region.vec_ty,

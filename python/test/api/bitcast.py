@@ -180,3 +180,54 @@ def the_refusals_say_what_the_operation_means():
                     ops.store(o, O)
 
     launch.mlir()
+
+
+# CHECK-LABEL: TEST: a_repack_is_refused_when_the_nest_makes_more_than_one_trip
+# The reinterpreted operand is indexed from its region's start alone -- there is
+# no induction variable in the right units to advance it -- so more than one
+# trip would read the same run of memory every time and quietly produce the
+# first vector's worth of output everywhere.
+#
+# The guard has to count *every* axis. Checking only the innermost let a
+# [4, 64] destination through at a width of 64: its innermost extent is exactly
+# one vector, and it is still four trips.
+# CHECK: two-dimensional destination: NotImplementedError: {{.*}}4 trips
+@run
+def a_repack_is_refused_when_the_nest_makes_more_than_one_trip():
+    P = air.tensor([128], i8)
+    O = air.tensor([4, 64], i8)
+
+    with air.launch(name="trips") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    p = air.alloc([128], i8, scope=h.private())
+                    o = air.alloc([4, 64], i8, scope=h.private(), vector=64)
+                    ops.load(p, P)
+                    expect(
+                        "two-dimensional destination",
+                        lambda: o.__setitem__(
+                            slice(None),
+                            ops.cast(ops.bitcast(p[0:32], i4), i8, signed=False),
+                        ),
+                    )
+                    ops.store(o, O)
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: i4_carries_no_numpy_dtype
+# Deliberately: numpy has no sub-byte storage, and ml_dtypes' int4 -- the
+# obvious stand-in -- would make importing air.api fail on any older ml_dtypes
+# that predates it, for a type most kernels never name. Nothing needs it, and
+# asking for a byte size says so rather than answering 1.
+# CHECK: np_dtype None bits 4
+# CHECK: itemsize: TypeError: {{.*}}no byte size
+@run
+def i4_carries_no_numpy_dtype():
+    print("np_dtype", i4.np_dtype, "bits", i4.bits)
+    expect("itemsize", lambda: i4.itemsize)

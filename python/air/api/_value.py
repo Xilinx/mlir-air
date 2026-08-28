@@ -844,10 +844,10 @@ def _check_shift_amount(amount, value, op):
             f"and MLIR would make it poison, which is silent. Shift by a "
             f"non-negative amount, or use the opposite operator"
         )
-    if dtype is not None and count >= dtype.itemsize * 8:
+    if dtype is not None and count >= dtype.bits:
         raise ValueError(
             f"shift count {count} is not less than the width of {dtype} "
-            f"({dtype.itemsize * 8} bits) in '{spelling}': Python would give "
+            f"({dtype.bits} bits) in '{spelling}': Python would give "
             f"{'0 or -1' if op == 'shr' else 'a wider integer'} but MLIR makes "
             f"it poison, which is silent. Shift by less than the width"
         )

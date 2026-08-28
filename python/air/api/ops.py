@@ -1029,7 +1029,7 @@ def switch(index, values):
                 f"got {type(v).__name__}. Choosing between *buffers* would run "
                 "one of two loop nests, which is ops.branch"
             )
-    return _Switch(coerce_index(index), [float(v) for v in values])
+    return _Switch(coerce_index(index), list(values))
 
 
 class _Switch:
@@ -1041,18 +1041,44 @@ class _Switch:
         self.index = index
         self.values = values
 
+    def _typed(self, value, dtype):
+        """``value`` in the destination's element type, or a refusal.
+
+        The values are kept exactly as written until here, because which type
+        they should be built in is the *destination's* and a switch is written
+        before the destination is known. Coercing at construction -- everything
+        to float, as this did first -- reached arith.ConstantOp with a Python
+        float for an integer type, which fails inside FloatAttr with "expected
+        floating point type" and names neither the switch nor the value.
+        """
+        if dtype.is_float:
+            return float(value)
+        if isinstance(value, float):
+            # A whole-number float is a harmless way to write an integer, and
+            # the elementwise emitter accepts one for the same reason. Anything
+            # else would silently truncate.
+            if not value.is_integer():
+                raise ValueError(
+                    f"air.api.ops.switch: {value} is not an integer, but the "
+                    f"expression it is used in has element type {dtype}. It "
+                    f"would be truncated"
+                )
+            return int(value)
+        return int(value)
+
     def materialize(self, dtype):
         from air.dialects import arith
         from air.dialects.scf import index_switch, yield_
+
+        values = [self._typed(v, dtype) for v in self.values]
 
         index = self.index.materialize()
         if isinstance(index, int):
             # A constant index needs no switch at all, and folding it leaves the
             # same IR as writing the value out by hand.
-            picked = self.values[min(index, len(self.values) - 1)]
+            picked = values[min(index, len(values) - 1)]
             return arith.ConstantOp(dtype.mlir(), picked).result
 
-        values = self.values
         result = index_switch(
             [dtype.mlir()],
             index,

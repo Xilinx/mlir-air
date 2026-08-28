@@ -135,3 +135,71 @@ def the_three_choices_name_each_other():
     # The body runs when the module is built, which is where the diagnostics
     # above are raised; the module itself is not what this test pins.
     launch.mlir()
+
+
+# CHECK-LABEL: TEST: switch_builds_its_constants_in_the_destinations_type
+# The values are kept exactly as written until the destination is known, because
+# which type to build them in is the destination's and a switch is written
+# before that. Coercing at construction -- everything to float, as this did
+# first -- reached arith.ConstantOp with a Python float for an integer type and
+# failed inside FloatAttr with "expected floating point type", naming neither
+# the switch nor the value.
+# CHECK: scf.index_switch %{{.*}} -> i32
+# CHECK: arith.constant 1 : i32
+# CHECK: arith.constant 10 : i32
+@run
+def switch_builds_its_constants_in_the_destinations_type():
+    from air.api.types import i32
+
+    A = air.tensor([64], i32)
+    OUT = air.tensor([64], i32)
+
+    with air.launch(name="swi") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([64], i32, scope=h.private(), vector=16)
+                    ops.load(a, A)
+                    for step in air.sequential(0, 2):
+                        a[:] = a[:] + ops.switch(step, [1, 10])
+                    ops.store(a, OUT)
+
+    print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_fractional_value_in_an_integer_switch_is_refused
+# A whole-number float is a harmless way to write an integer and the elementwise
+# emitter accepts one; anything else would be truncated, so it is refused rather
+# than rounded.
+# CHECK: fractional: ValueError: {{.*}}not an integer
+@run
+def a_fractional_value_in_an_integer_switch_is_refused():
+    from air.api.types import i32
+
+    A = air.tensor([64], i32)
+    OUT = air.tensor([64], i32)
+
+    with air.launch(name="swf") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([64], i32, scope=h.private(), vector=16)
+                    ops.load(a, A)
+                    for step in air.sequential(0, 2):
+                        expect(
+                            "fractional",
+                            lambda: a.__setitem__(
+                                slice(None), a[:] + ops.switch(step, [1, 10.5])
+                            ),
+                        )
+                    ops.store(a, OUT)
+
+    launch.mlir()
