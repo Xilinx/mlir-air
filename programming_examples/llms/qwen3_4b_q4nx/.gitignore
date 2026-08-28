@@ -1,0 +1,49 @@
+# Build / kernel cache artifacts
+build_peano/
+build_chess/
+__pycache__/
+*.pyc
+_q4nx_*/
+.wcache/
+kernel_cache/
+air_project/
+
+# Compiled kernels + decode templates (reproduced by `make compile-decode`; never committed).
+*.o
+*.ll
+*.xclbin
+*.insts.bin
+*.txn.h
+
+# Stray artifacts from running the driver outside build_*/ (xrt.py +
+# external_kernels.py write these to CWD by design).
+air.mlir
+air.elf
+
+# Golden / weight caches produced at runtime (external data; see README.md).
+*.npz
+diag_cache/
+
+# build-flag stamp: makes the decode-template skip W_DUAL_CHAN-aware
+.decode_flags
+
+# Staircase window manifest (which ATTN_MAXL pairs this dir holds).
+.decode_windows
+
+# DFlash: the upstream reference implementation is vendored for the oracle and
+# the prompt selection (dflash_draft_oracle.py, dflash_tokenize.py). It is a
+# third-party checkout, not ours to carry.
+_dflash_upstream/
+
+# DFlash scratch: recorded device states, oracle dumps, per-run captures and
+# the ad-hoc probe directories. Every one is reproduced by the script named in
+# docs/DFlashFeasibility.md section 8.
+_*.txt
+_*.err
+_*_test/
+_decode_cost/
+dflash_phase2_*_data/
+hidden_taps_test/
+fixed_test/
+l1_test/
+nodual_test/

@@ -37,6 +37,8 @@ if _Q8B not in sys.path:
 from qwen3_8b_q4nx_weights import (  # noqa: E402
     Q4nxModel as _Q4nxModel8B,
     _bf,
+    _proj_dims,
+    forward_prompt,
     generate_rope_lut,
     resolve_q4nx_model,
     rope_w_layer,
@@ -89,6 +91,56 @@ class Q4nxModel(_Q4nxModel8B):
         return embed_in, norm, embed_in
 
 
+def load_q4nx_weights(model_source, config=None):
+    """Load Qwen3-4B weights from a `model.q4nx` bundle into a LlamaWeights.
+
+    Mirrors qwen3_8b_q4nx_weights.load_q4nx_weights exactly (that function is
+    already config/`_PROJ`-driven, not restated here) except for the source
+    class/config and the TIED lm_head, which `Q4nxModel.embed_norm_lmhead`
+    above already returns as `embed_in` -- so `lm_head` below is the SAME
+    array object as `embed_table`, not a separate Q4NX tensor."""
+    from qwen3_4b_weights import LayerWeights, LlamaWeights
+    from ml_dtypes import bfloat16
+
+    if config is None:
+        config = qwen3_4b_q4nx_config()
+
+    qm = Q4nxModel(model_source)
+    dims = _proj_dims(config)
+    assert dims == {
+        k: (m, kk) for k, (_, m, kk) in Q4nxModel._PROJ.items()
+    }, "config dims disagree with the bundle's projection table"
+    embed, norm, lm_head = qm.embed_norm_lmhead()
+
+    layers = []
+    for k in range(config.n_layers):
+        w = qm.layer_weights(k)  # each [K, out] bf16
+        rms_in, rms_post = qm.layer_rms(k)
+        qn, kn = qm.layer_qk_norm(k)
+        layers.append(
+            LayerWeights(
+                attn_norm=np.asarray(rms_in, bfloat16),
+                wq=np.asarray(w["q"], bfloat16),
+                wk=np.asarray(w["k"], bfloat16),
+                wv=np.asarray(w["v"], bfloat16),
+                wo=np.asarray(w["o"], bfloat16),
+                ffn_norm=np.asarray(rms_post, bfloat16),
+                w_gate=np.asarray(w["gate"], bfloat16),
+                w_up=np.asarray(w["up"], bfloat16),
+                w_down=np.asarray(w["down"], bfloat16),
+                q_norm=np.asarray(qn, bfloat16),
+                k_norm=np.asarray(kn, bfloat16),
+            )
+        )
+
+    return LlamaWeights(
+        embed_table=np.asarray(embed, bfloat16),
+        layers=layers,
+        final_norm=np.asarray(norm, bfloat16),
+        lm_head=np.asarray(lm_head, bfloat16),
+    )
+
+
 def qwen3_4b_q4nx_config(n_layers=NUM_LAYERS):
     """The qwen3_4b LlamaConfig, which is already Qwen3-4B -- only the tie flag
     is restated, to make it explicit at this call site rather than a default."""
@@ -113,6 +165,8 @@ def qwen3_4b_q4nx_config(n_layers=NUM_LAYERS):
 __all__ = [
     "Q4nxModel",
     "qwen3_4b_q4nx_config",
+    "load_q4nx_weights",
+    "forward_prompt",
     "resolve_q4nx_model",
     "generate_rope_lut",
     "rope_w_layer",
