@@ -388,16 +388,17 @@ def build_module(
     # Splitting each block's halves by row instead gives twelve 2-tile gathers,
     # which do fit the five remaining columns; see _out_col for the assignment.
     _row_split_out = q_tiles_per_core == 1 and (lq // lqp) > 4
-    # _out_col's table below is a hand-checked column budget for NB == 3 (the
-    # GQA 3:1 shape, e.g. Llama-3.2-3B). At NB == 4 (GQA 4:1 at head_dim 128,
-    # e.g. Llama-3-8B) the herd spans all 8 columns, so the twelve gathers
-    # become sixteen over seven non-K/V columns and the assignment does not
-    # carry over. Fail here with the reason rather than letting _out_col raise
-    # KeyError halfway through building the module.
-    if _row_split_out and NB != 3:
+    # _out_col's table below is a hand-checked column budget for NB == 3 (GQA
+    # 3:1, e.g. Llama-3.2-3B) and NB == 4 (GQA 4:1, e.g. Llama-3.2-1B), where
+    # the herd spans all 8 columns and sixteen gathers share seven non-K/V
+    # columns. Smaller NB leaves the herd narrower than the table assumes, so
+    # fail here with the reason rather than letting _out_col raise KeyError
+    # halfway through building the module.
+    if _row_split_out and NB not in (3, 4):
         raise NotImplementedError(
             f"the row-split output placement past 4 rounds is only mapped for "
-            f"NB == 3 (num_heads / num_kv_heads == 3); got NB={NB} from "
+            f"the GQA ratio NB = num_heads / num_kv_heads to be 3 or 4; "
+            f"got NB={NB} from "
             f"num_heads={num_heads}, num_kv_heads={num_kv_heads}. Either keep "
             f"lq <= 4 * lqp (= {4 * lqp}) so the four-tile gathers are used, "
             f"or extend _out_col with a verified column budget for this NB."
@@ -929,13 +930,37 @@ def build_module(
                 # channel is the one with no BD-ID headroom.
                 def _out_col(b, i):
                     if _row_split_out:
-                        # Twelve 2-flow gathers over the five non-K/V columns.
-                        # Every column stays inside both its six S2MM ports and
-                        # its six MM2S channels (cols 0/2/4 spend four of those
-                        # on the Q broadcast), and each block's spill lands on a
-                        # column adjacent to its own pair so the gather still
-                        # routes: block 1 reaches col 1 and col 4, both one hop
-                        # from its tiles in cols 2 and 3.
+                        if NB == 4:
+                            # Sixteen 2-flow gathers, and the herd spans all 8
+                            # columns, so every block keeps its own pair and
+                            # splits its four slices 2/2. Two per column stays
+                            # inside both budgets: four of the six S2MM ports,
+                            # and one MM2S each against the two the Q broadcast
+                            # leaves free on cols 0/2/4/6.
+                            #
+                            # Sixteen gathers need eight memtiles, so col 3
+                            # carries two even though it is the K/V column --
+                            # which is what makes this FIT rather than what
+                            # breaks it. A shim logical tile is grouped by
+                            # source memtile and holds two S2MM, so col 3's
+                            # gathers land on the SAME shim logical tile that
+                            # already carries KIn/VIn on its two MM2S, for
+                            # eight shim logical tiles total. Spilling off col 3
+                            # instead leaves some column with three gathers,
+                            # whose odd one needs a second shim tile: ten
+                            # logical tiles against the eight physical ones
+                            # merge-logical-tiles=false allows, which fails
+                            # placement outright.
+                            return 2 * b + (i // 2)
+                        # NB == 3: twelve 2-flow gathers over the FIVE non-K/V
+                        # columns (the herd is only six wide, so there is no
+                        # eighth memtile to absorb col 3's share and it stays
+                        # private). Every column stays inside both its six S2MM
+                        # ports and its six MM2S channels (cols 0/2/4 spend four
+                        # of those on the Q broadcast), and each block's spill
+                        # lands on a column adjacent to its own pair so the
+                        # gather still routes: block 1 reaches col 1 and col 4,
+                        # both one hop from its tiles in cols 2 and 3.
                         return {
                             0: [0, 0, 1, 1],
                             1: [2, 2, 1, 4],
