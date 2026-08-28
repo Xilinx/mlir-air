@@ -193,6 +193,7 @@ from proj_qmm_pack import (
 # table; every constant below DERIVES from these names, so a model is defined by
 # its entry alone. DECODE_MODEL selects it (default llama-3.2-1b). The llama entry
 # reproduces the original hardcoded values BYTE-IDENTICALLY (no-op).
+import json as _json
 import os as _os
 
 _MODELS = {
@@ -1072,7 +1073,52 @@ assert UNI_LM == N_VOCAB_CHUNKS, (
     f"UNI_LM={UNI_LM} must equal N_VOCAB_CHUNKS={N_VOCAB_CHUNKS} "
     f"(VOCAB_CHUNK_I2={VOCAB_I2}); their product covers the padded vocab"
 )
-UNI_WAVES = UNI_DEC + UNI_LM
+# EXTRA WAVES: launch iterations that are neither a decode layer nor an LM-head
+# chunk. A third arm, on the same terms as the vocab one -- ONE phase, scalars
+# only (see the proj core's `_sel`: an index_switch over the DATAFLOW would push
+# the tile past 16 BDs, so an arm may only ever select I2/J2/dest, never a
+# channel op). Their weights come from their OWN BO, appended after the existing
+# args exactly as W_SPLIT's groups are, so x/w/rms/y/kvc binding positions do
+# not move.
+#
+# Deliberately generic: the caller says what shape each wave is and where its
+# slab starts, and nothing here knows what the waves compute. The DFlash
+# pre-pass is the first user (programming_examples/llms/qwen3_4b_q4nx/
+# dflash_prepass_waves.py builds this list); it is a projection like any other,
+# and it is not this file's business that it belongs to a different model.
+#
+#   DECODE_EXTRA_WAVES='[{"name":"fc","i2":5,"j2":25,"iter_lo":0,"w_off":0,
+#                         "x_src":"taps","dest":"rms"}, ...]'
+#
+# EMPTY BY DEFAULT, and the emitted IR must be byte-identical when it is empty.
+_EXTRA_WAVES_JSON = _os.environ.get("DECODE_EXTRA_WAVES", "")
+EXTRA_WAVES = _json.loads(_EXTRA_WAVES_JSON) if _EXTRA_WAVES_JSON else []
+_EXTRA_KEYS = {"name", "i2", "j2", "iter_lo", "w_off", "x_src", "dest"}
+for _w in EXTRA_WAVES:
+    if set(_w) != _EXTRA_KEYS:
+        raise SystemExit(
+            f"DECODE_EXTRA_WAVES entry {_w.get('name', '?')} has keys "
+            f"{sorted(_w)}; expected {sorted(_EXTRA_KEYS)}"
+        )
+    if _w["x_src"] not in ("taps", "xnorm"):
+        raise SystemExit(f"extra wave {_w['name']}: x_src must be taps or xnorm")
+    if _w["dest"] not in DEST_NAMES:
+        raise SystemExit(
+            f"extra wave {_w['name']}: dest {_w['dest']!r} is not one of the "
+            f"model's demux destinations {sorted(set(DEST_NAMES))}"
+        )
+N_EXTRA = len(EXTRA_WAVES)
+if N_EXTRA:
+    # The config surface and the wave count land before the arm wiring does, so
+    # that the "empty list is byte-identical" property can be gated on its own.
+    # Without this guard a non-empty list builds a design whose extra waves take
+    # the DECODE arm: every tile runs a 4-phase layer against a weight slab that
+    # is not one, which does not fail -- it returns a plausible wrong answer.
+    raise SystemExit(
+        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries but the arm wiring is not in "
+        f"yet (docs/DFlashFeasibility.md section 3.13, stage 2b). Unset it."
+    )
+UNI_WAVES = UNI_DEC + UNI_LM + N_EXTRA
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
 # waves the fused launch loop drives). Used to split the fused sequence into a
 # decode-part [0,UNI_DEC) and a vocab-part [UNI_DEC,UNI_WAVES) that share ONE CDO,
