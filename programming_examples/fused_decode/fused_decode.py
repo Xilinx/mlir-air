@@ -1169,31 +1169,27 @@ for _w in EXTRA_WAVES:
 # phases targeting that consumer get.
 EXTRA_DEST = [DEMUX.index(_w["dest"]) for _w in EXTRA_WAVES]
 # The arm lands in pieces, so the guard names what is still missing rather than
-# refusing the whole flag. Today an extra wave gets its arm, its weight feed, its
-# proj scalars and its egress. Two things are missing, and both are on the COMPUTE
-# TILES rather than in the plumbing:
+# refusing the whole flag. An extra wave now gets its arm, its weight feed, its
+# proj scalars, its egress, and its X (the rms core forwards the tap, see
+# _uni_extra). What it does NOT have is a consumer for a `rope` dest: the rope
+# core still runs a decode-shaped get count and would stall on rounds a
+# context-K/V wave never produces.
 #
-#   the X source   the launch-side @xnorm put below does not compile, and neither
-#                  does a dedicated shim channel -- see the comment on that put,
-#                  which records both failures. The X has to be forwarded by the
-#                  rms core, which is not written.
-#   the consumer   the demux delivers the wave's rounds to the rms or rope core,
-#                  and those cores still run a decode-shaped get count, so they
-#                  stall on rounds the wave never produces.
-#
-# DECODE_EXTRA_WAVES_PARTIAL=1 emits it anyway, for reading the IR. It is not a
-# runnable configuration -- it does not even reach a device -- and the message
-# says so.
+# An `rms` dest works today. The rms core's residual1 takes the wave's rounds --
+# fc's egress is exactly OPROJ_RNDS, so that pass needs no count change at all --
+# and @layerOut drains the result. What lands there is `tap + W.tap/rms(tap)`,
+# because the accumulate adds into the same buffer the X arrived in; the host
+# subtracts the tap it wrote and multiplies rms(tap) back. Exact, and it needs no
+# kernel mode that does not already exist.
 EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
-if N_EXTRA and not EXTRA_PARTIAL:
+_EXTRA_UNWIRED = sorted({_w["dest"] for _w in EXTRA_WAVES} - {"rms"})
+if _EXTRA_UNWIRED and not EXTRA_PARTIAL:
     raise SystemExit(
-        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the launch and memtile side "
-        f"is wired (arm, weight feed, proj scalars, egress) but the compute "
-        f"tiles are not -- the rms core neither forwards the wave's X onto "
-        f"@xnorm nor consumes its output, and the rope core does not either "
-        f"(docs/DFlashFeasibility.md section 3.14). Set "
-        f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection -- it will "
-        f"NOT compile past air-to-aie -- or unset DECODE_EXTRA_WAVES."
+        f"DECODE_EXTRA_WAVES has waves with dest {_EXTRA_UNWIRED}, whose consumer "
+        f"is not wired -- that core still runs a decode-shaped round count and "
+        f"would stall. Only dest 'rms' is runnable today "
+        f"(docs/DFlashFeasibility.md section 3.15). Set "
+        f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection anyway."
     )
 UNI_WAVES = UNI_DEC + UNI_LM + N_EXTRA
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
@@ -1696,6 +1692,20 @@ GLU_TILE = _tile_for(GLU_SLICE)
 # chunk out, or one projection round in (both [BATCH][w], token-major).
 STG_W = max(XCHUNK, PAYLOAD)
 
+# How many times the rms core re-emits its resident X row on @xnorm. The X
+# memtile wants i2 * (EXTRA_K/XCHUNK) chunks and the core emits one per
+# (refeed, chunk) visit over K/XCHUNK chunks, so this is what makes the two
+# agree -- the same accounting the decode arm's XN_REFEED does.
+EXTRA_NREFEED = []
+for _i, _w in enumerate(EXTRA_WAVES):
+    _ch = _w["i2"] * (EXTRA_K[_i] // XCHUNK)
+    if _ch % (K // XCHUNK):
+        raise SystemExit(
+            f"extra wave {_w['name']}: {_ch} X chunks is not a whole number of "
+            f"{K // XCHUNK}-chunk re-feeds"
+        )
+    EXTRA_NREFEED.append(_ch // (K // XCHUNK))
+
 # RMS_BAND_STREAM level 2's DMA transfer granularity for banding rmsX, kept
 # SEPARATE from STG_W. AIETargetModel::getBDMaxDims/getDmaBdWrapBits
 # (mlir-aie, AIETargetModel.h) give a core (compute) tile's DMA BD an 8-bit
@@ -2074,6 +2084,17 @@ def build_module():
                 # shipping buffer moves. llms/bench/decode_geometry.py adds the
                 # same term from the same symbol.
                 + RMS_TAIL_SLACK
+                # An extra wave's X is RAW -- it is a projection input, not a
+                # layer's activation -- but the only producer on @xnorm with a
+                # route to DDR is the rms core, whose regen multiplies by the
+                # norm weight. Feed it a run of ONES and rms_chunk degenerates to
+                # the strided gather it already is:
+                #   y[t*n+i] = x[t*K + c*n + i] * w[c*n+i] * scales[t]
+                # so w == 1 leaves only the per-row scales[t], which the host
+                # divides back out (it wrote the tap, so it knows rms(tap)).
+                # That is what makes the X forwarding need NO kernel change at
+                # all -- see _uni_extra.
+                + (K if N_EXTRA else 0)
             ],
             bf16,
         )
@@ -3852,6 +3873,9 @@ def build_module():
                             UNI_DEC * RMS_LAYER
                             + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN * BATCH
                         )
+                        # The ones run appended to the rms BO (see rms_l3). The
+                        # host fills it; nothing in the decode path reads it.
+                        _rms_ones_off = _final_norm_off + K + RMS_TAIL_SLACK
 
                         def _uni_voc():
                             _wsel[0] = None  # lm-head buffer, statically known
@@ -4084,93 +4108,66 @@ def build_module():
                                 _colspan,
                                 EXTRA_NSTEPS[k],
                             )
-                            # X, straight from DDR onto @xnorm. REFUTED, AND
-                            # LEFT HERE ONLY BECAUSE THE GUARD ABOVE STOPS THIS
-                            # PATH FROM BUILDING -- it does not compile, and
-                            # neither does the alternative. Both failures were
-                            # measured, and together they say where the X has to
-                            # come from instead.
+                            # X: the tap row on @rmsX, and ONES on @rmsW.
                             #
-                            # 1. This put:
-                            #      'air.channel.put' op failed to link to any
-                            #      shim dma allocation
-                            #    @xnorm's producers are all on-array, so the
-                            #    channel has no shim side for the allocator to
-                            #    pair a launch-scope put with
-                            #    (AIRToAIEPass.cpp, allocateShimDmas). A channel
-                            #    is L3->L2 or L2->L2, not both.
+                            # It cannot come straight from DDR onto @xnorm, and
+                            # it cannot have a shim channel of its own. Both were
+                            # built and both are refused:
                             #
-                            # 2. A dedicated @tapsX shim->X-memtile channel,
-                            #    which is what 1 seems to ask for:
-                            #      'air.channel.put' op failed to get S2MM tile
-                            #      for L3 allocation
-                            #    with the flow holding 5 producers and ZERO
-                            #    receivers. Dumping the device at flow
-                            #    construction shows why: the X memtile's
-                            #    arm-switched feed is collapsed to ONE relay
-                            #    structure before flows are built -- one
-                            #    @xnorm -> @inX loop at the decode trip count,
-                            #    with the vocab arm's copy gone too. Any channel
-                            #    named only in a non-surviving arm is simply not
-                            #    in the device by then.
+                            #   launch put on @xnorm
+                            #     'air.channel.put' op failed to link to any shim
+                            #     dma allocation -- @xnorm's producers are all
+                            #     on-array, so it has no shim side to pair a
+                            #     launch-scope put with. A channel is L3->L2 or
+                            #     L2->L2, not both.
+                            #   a dedicated @tapsX shim->X-memtile channel
+                            #     'air.channel.put' op failed to get S2MM tile
+                            #     for L3 allocation, the flow holding 5 producers
+                            #     and ZERO receivers. The X memtile's arm-switched
+                            #     feed is collapsed to ONE relay structure before
+                            #     flows are built, so a channel named only in a
+                            #     non-surviving arm is not in the device by then.
                             #
-                            # That is the count-not-program rule again, one hop
-                            # out and sharper than the lock-credit form: an arm
-                            # may vary a memtile feed's COUNT, and a channel it
-                            # names alone does not survive to be allocated. So
-                            # an extra wave's X has to arrive on @xnorm from a
-                            # producer that ALREADY puts there -- the rms core,
-                            # which has the shim's @rmsX on its input side, is
-                            # the only one with a route to DDR. Its arm then
-                            # selects a copy kernel instead of a norm kernel
-                            # over the same channel ops, which is a kernel and a
-                            # count, not a program.
-                            _nsl = EXTRA_X_NSLOT[k]
-                            _xw = EXTRA_K[k]
-                            _sl0 = EXTRA_WAVES[k]["x_slot"] * BATCH * K
-                            _sst = EXTRA_WAVES[k]["x_stride"] * BATCH * K
-                            # Python-unrolled, not refeed()'d: a launch-scope
-                            # scf.for deadlocks the shim sequence (the vocab
-                            # weight feed carries the same note). I2 copies is
-                            # what the proj cores consume -- one pass of the
-                            # wave's K per row-block iteration.
-                            for _ in range(EXTRA_WAVES[k]["i2"]):
-                                if BATCH == 1:
-                                    ChannelPut(
-                                        "xnorm",
-                                        X,
-                                        offsets=[idx(_sl0), idx(0), idx(0)],
-                                        sizes=[
-                                            idx(_nsl),
-                                            idx(K // XCHUNK),
-                                            idx(XCHUNK),
-                                        ],
-                                        strides=[idx(_sst), idx(XCHUNK), idx(1)],
-                                    )
-                                else:
-                                    # Chunk-major, token-minor, exactly as the
-                                    # on-chip producers put it (_xnorm_put): the
-                                    # X memtile takes BATCH*XCHUNK per get, so a
-                                    # chunk has to arrive whole and token-major
-                                    # inside itself. The extra dimension over
-                                    # the slots is what a 4-D shim BD is for.
-                                    ChannelPut(
-                                        "xnorm",
-                                        X,
-                                        offsets=[idx(_sl0), idx(0), idx(0), idx(0)],
-                                        sizes=[
-                                            idx(_nsl),
-                                            idx(K // XCHUNK),
-                                            idx(BATCH),
-                                            idx(XCHUNK),
-                                        ],
-                                        strides=[
-                                            idx(_sst),
-                                            idx(XCHUNK),
-                                            idx(K),
-                                            idx(1),
-                                        ],
-                                    )
+                            # So it arrives on @xnorm from a producer already
+                            # there, and only the rms core has a route to DDR --
+                            # the shim's @rmsX at its input, which is these three
+                            # puts, in the core's own ring order [row, w, w2].
+                            #
+                            # And it needs NO KERNEL CHANGE, because rms_chunk is
+                            # already the strided gather this wants:
+                            #   y[t*n+i] = x[t*K + c*n + i] * w[c*n+i] * scales[t]
+                            # Feed w == 1 and only the per-row scales[t] is left,
+                            # which the host divides back out -- it wrote the tap,
+                            # so it knows rms(tap). The alternative was a third
+                            # arm inside rms_scale_row_aie, and a scalar the host
+                            # already holds is cheaper than a branch on the tile
+                            # whose budget this whole discipline protects.
+                            ChannelPut(
+                                "rmsX",
+                                X,
+                                offsets=[EXTRA_WAVES[k]["x_slot"] * BATCH * K],
+                                sizes=[BATCH * K],
+                                strides=[1],
+                            )
+                            ChannelPut(
+                                "rmsW",
+                                RMS,
+                                offsets=[_rms_ones_off],
+                                sizes=[K],
+                                strides=[1],
+                            )
+                            if POST_RMS:
+                                # Consumed and discarded by the shared body, as
+                                # on the vocab arm: rmsW2 packet-muxes onto the
+                                # same shim MM2S as rmsX, and a hole in that
+                                # group stalls the tail.
+                                ChannelPut(
+                                    "rmsW2",
+                                    RMS,
+                                    offsets=[0],
+                                    sizes=[K],
+                                    strides=[1],
+                                )
                             yield_([])
 
                         def _uni_dec():
@@ -7882,18 +7879,36 @@ def build_module():
                                 IntegerAttr.get(i32, v), None
                             ).result
 
-                        def _cnt(voc, dec):
-                            """An arm-selected loop bound."""
+                        def _cnt(voc, dec, ex=None):
+                            """An arm-selected loop bound.
+
+                            `ex` is the per-extra-wave value, one per wave; the
+                            arm is 2+k for extra wave k. Only ever a COUNT --
+                            every arm runs the same ops over the same buffers.
+                            """
+                            if not N_EXTRA:
+                                return index_switch(
+                                    [idx_t],
+                                    arith.index_cast(idx_t, _arm),
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_(
+                                        [idx(voc)]
+                                    ),
+                                    default_body_builder=lambda op: yield_([idx(dec)]),
+                                )
+                            assert ex is not None and len(ex) == N_EXTRA
                             return index_switch(
                                 [idx_t],
                                 arith.index_cast(idx_t, _arm),
-                                [0],
-                                case_body_builder=lambda op, i, cv: yield_([idx(voc)]),
+                                [0] + [2 + k for k in range(N_EXTRA)],
+                                case_body_builder=lambda op, i, cv: yield_(
+                                    [idx(voc if cv == 0 else ex[cv - 2])]
+                                ),
                                 default_body_builder=lambda op: yield_([idx(dec)]),
                             )
 
-                        def _if_decode(body):
-                            """Run `body` on the decode arm only.
+                        def _if_decode(body, decode_only=False):
+                            """Run `body` on the decode arm (and extra waves).
 
                             air.arm_select marks this as an ARM select rather
                             than ordinary control flow, so a static analysis
@@ -7902,16 +7917,21 @@ def build_module():
                             as extra decode traffic and calls @outY unbalanced
                             -- the same thing it already does for the
                             index_switch arms, which it knows about by op name.
+
+                            `decode_only` narrows it from "not the vocab arm" to
+                            "the decode arm", which is how an extra wave skips a
+                            residual pass it has no rounds for. A PREDICATE, not
+                            a dynamic bound: the @outY gets inside keep their
+                            STATIC trip counts, which the demux id analysis
+                            needs (see _accumulate). Making the count dynamic
+                            instead would take that away.
                             """
-                            _if = IfOp(
-                                arith.cmpi(
-                                    arith.CmpIPredicate.ne,
-                                    _arm,
-                                    _i32(0),
-                                ),
-                                [],
-                                has_else=False,
+                            _pred = (
+                                arith.cmpi(arith.CmpIPredicate.eq, _arm, _i32(1))
+                                if decode_only
+                                else arith.cmpi(arith.CmpIPredicate.ne, _arm, _i32(0))
                             )
+                            _if = IfOp(_pred, [], has_else=False)
                             _if.operation.attributes["air.arm_select"] = UnitAttr.get()
                             with InsertionPoint(_if.thenRegion.blocks[0]):
                                 body()
@@ -8228,7 +8248,7 @@ def build_module():
                             _w_row_get(w)
                             if POST_RMS:
                                 _w_row_get(w2)
-                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
+                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED))
                         elif RMS_W_ON_X:
                             # BOTH weights first, back to back, before anything
                             # else touches the band buffer -- and in the SAME
@@ -8258,10 +8278,10 @@ def build_module():
                             if POST_RMS:
                                 _rms_band_get(xb)
                                 CallOp(band_to_weight_aie, [w2, xb, _i32(K)])
-                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
+                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED))
                         else:
                             ChannelGet("rmsW", w, indices=[idx(0)])
-                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED))
+                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED))
                             if POST_RMS:
                                 # Swap in the post-attention weight BEFORE the
                                 # first o-proj get, not after: rmsW2 packet-muxes
@@ -8289,10 +8309,12 @@ def build_module():
                         # is what the lock credit counts.
                         _emit_norm(
                             w2 if POST_RMS else w,
-                            _cnt(0, REFEED[GATEUP_PHASE]),
+                            _cnt(0, REFEED[GATEUP_PHASE], [0] * N_EXTRA),
                         )
                         # residual2: layer output = h + down, in place.
-                        _if_decode(lambda: _accumulate(DOWN_RNDS, 2))
+                        _if_decode(
+                            lambda: _accumulate(DOWN_RNDS, 2), decode_only=bool(N_EXTRA)
+                        )
                         _if_decode(_layer_out)
                         for _b in (
                             ([w2] if POST_RMS else [])
