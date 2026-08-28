@@ -60,6 +60,7 @@ __all__ = [
     "reduce_add",
     "reduce_max",
     "argmax",
+    "switch",
     "relu",
     "tanh",
     "exp",
@@ -845,6 +846,104 @@ def reduce_max(x):
     side.
     """
     return _reduce("reduce_max", "max", x)
+
+
+def switch(index, values):
+    """Pick one of ``values`` by a runtime ``index``.
+
+        addend = air.api.ops.switch(step, [1.0, 10.0])
+        acc[:] = acc[:] + addend
+
+    An **expression**, not a statement: it yields the chosen value, the way a
+    Rust ``match`` or a C# switch expression does, and not the way C's statement
+    does. The N-way *statement* -- run one of N bodies for their effects -- is
+    nested ``ops.branch``, which is why this name is not taken by it.
+
+    Against its neighbours: ``ops.switch`` keys on an integer, ``ops.select``
+    keys on a per-element mask, and ``ops.branch`` keys on a single condition
+    and runs statements. Both arms of a select are evaluated and one is kept;
+    here exactly one case runs, because it lowers to ``scf.index_switch`` in its
+    value-returning form.
+
+    The index is a coordinate or a loop variable, and the values are compile-time
+    scalars: the case bodies are constants, so there is nothing to evaluate in
+    the arm that does not run. An out-of-range index selects the last value,
+    which is ``scf.index_switch``'s ``default`` and matches numpy's ``mode`` of
+    ``clip`` only at the top end -- so keep the index in range.
+
+    Emitted where it is written, not inside whatever elementwise loop consumes
+    it: it does not depend on the loop's induction variables, and hoisting it is
+    what the hand-written kernels do.
+    """
+    from ._cond import Condition
+    from ._index import coerce_index
+    from ._value import Buffer, BufferExpr, BufferSlice
+
+    # Name the neighbour rather than complaining about a type. The three are
+    # told apart by what they key on, and handing one the other's key is the
+    # likely mistake.
+    if isinstance(index, Condition):
+        raise TypeError(
+            "air.api.ops.switch keys on an integer, but this is a condition. "
+            "To pick a value with a condition use ops.select(cond, a, b); to "
+            "run statements under one use `with ops.branch(cond):`"
+        )
+    if isinstance(index, (Buffer, BufferExpr, BufferSlice)):
+        raise TypeError(
+            "air.api.ops.switch keys on a single integer -- a coordinate or a "
+            "loop variable -- but this is a buffer. A per-element choice is "
+            "ops.select(mask, a, b)"
+        )
+    if not values:
+        raise ValueError("air.api.ops.switch needs at least one value to pick from")
+    if len(values) == 1:
+        raise ValueError(
+            "air.api.ops.switch was given one value, so there is nothing to "
+            "choose: use the value itself"
+        )
+    for v in values:
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            raise TypeError(
+                f"air.api.ops.switch takes compile-time scalars to pick from, "
+                f"got {type(v).__name__}. Choosing between *buffers* would run "
+                "one of two loop nests, which is ops.branch"
+            )
+    return _Switch(coerce_index(index), [float(v) for v in values])
+
+
+class _Switch:
+    """A pending ops.switch; the dtype comes from the buffer it is used with."""
+
+    __slots__ = ("index", "values")
+
+    def __init__(self, index, values):
+        self.index = index
+        self.values = values
+
+    def materialize(self, dtype):
+        from air.dialects import arith
+        from air.dialects.scf import index_switch, yield_
+
+        index = self.index.materialize()
+        if isinstance(index, int):
+            # A constant index needs no switch at all, and folding it leaves the
+            # same IR as writing the value out by hand.
+            picked = self.values[min(index, len(self.values) - 1)]
+            return arith.ConstantOp(dtype.mlir(), picked).result
+
+        values = self.values
+        result = index_switch(
+            [dtype.mlir()],
+            index,
+            list(range(len(values) - 1)),
+            case_body_builder=lambda op, i, cv: yield_(
+                [arith.ConstantOp(dtype.mlir(), values[i]).result]
+            ),
+            default_body_builder=lambda op: yield_(
+                [arith.ConstantOp(dtype.mlir(), values[-1]).result]
+            ),
+        )
+        return result[0] if isinstance(result, (list, tuple)) else result
 
 
 def argmax(x):

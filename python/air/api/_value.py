@@ -940,6 +940,12 @@ class BufferExpr:
             # buffer's element type -- which is what the hand-written channel
             # examples spell as arith.index_cast(T.i32(), ty).
             return BufferExpr("scalar", scalar=value)
+        from .ops import _Switch
+
+        if isinstance(value, _Switch):
+            # Resolved to an SSA value by _resolve_switches, once the
+            # destination's element type is known.
+            return BufferExpr("scalar", scalar=value)
         if isinstance(value, BufferSlice):
             # A plain region reads elementwise; a view, a strided region or a
             # dynamic offset does not, and _as_leaf says which.

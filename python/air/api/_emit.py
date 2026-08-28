@@ -429,8 +429,30 @@ def _regions_in(node, dtype, out):
     return out
 
 
+def _resolve_switches(node, dtype):
+    """Emit any ops.switch in the tree, before the loop nest is built.
+
+    A choice does not depend on the nest's induction variables, so its
+    scf.index_switch belongs above the loop -- one switch per assignment rather
+    than one per trip, which is where the hand-written kernels put it. It also
+    cannot be emitted any earlier than this: the element type it yields is the
+    destination's, and ops.switch is written before the destination is known.
+    """
+    from .ops import _Switch
+
+    if node.kind == "scalar" and isinstance(node.scalar, _Switch):
+        node.scalar = node.scalar.materialize(dtype)
+        return
+    if node.kind == "cast":
+        _resolve_switches(node.args[0], node.args[0].element_dtype() or dtype)
+        return
+    for arg in node.args:
+        _resolve_switches(arg, dtype)
+
+
 def emit_elementwise(dst, expr):
     """Emit ``dst[:] = expr`` as a loop nest over ``dst``'s shape."""
+    _resolve_switches(expr, dst.dtype)
     # A reduction is the one right-hand side whose shape is not the
     # destination's, so it is dispatched before the elementwise shape check
     # rather than being taught to it.
@@ -982,6 +1004,12 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
     if node.kind == "scalar":
         value = node.scalar
         from ._index import IndexExpr
+
+        # An already-typed SSA value -- what ops.switch returns, having emitted
+        # its scf.index_switch where it was written rather than inside this
+        # loop. It is the element type already, so it only needs splatting.
+        if not isinstance(value, (int, float, IndexExpr)):
+            return _result(broadcast(vec_ty, value)) if vectorized else value
 
         if isinstance(value, IndexExpr):
             # Materialise first: a constant expression folds back to a Python
