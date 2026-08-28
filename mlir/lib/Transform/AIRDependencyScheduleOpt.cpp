@@ -4530,16 +4530,13 @@ public:
       }
     }
 
-    // Collect channel interface ops to fuse and erase for NFL (loop-based)
-    // merges.
-    llvm::SetVector<Operation *> nfl_merge_destinations, nfl_erased_ops;
+    // Collect the channel interface ops to fuse. The ops to *erase* are
+    // deliberately not collected here -- see the NFL branch below.
+    llvm::SetVector<Operation *> nfl_merge_destinations;
     for (auto &[destChan, srcChan] : nfl_merge_pairs) {
       auto [toFuse, toErase] = getChannelIfOpsFusableByFor(destChan, srcChan);
       for (auto chanIf : toFuse) {
         nfl_merge_destinations.insert(chanIf);
-      }
-      for (auto chanIf : toErase) {
-        nfl_erased_ops.insert(chanIf);
       }
     }
     // Find minimal enclosing regions for the destinations that need wrapping.
@@ -4564,7 +4561,20 @@ public:
       // Found enclosing regions → wrap them with scf.for loops.
       wrapRegionsWithForLoops(rewriter, nfl_merge_regions);
       invalidateChannelIndex();
-      // Erase obsolete ops (nfl_erased_ops) and replace async semantics.
+      // Re-derive the ops to erase, rather than reusing a list collected
+      // before the wrap. wrapRegionsWithForLoops clones each region's parent
+      // into a new scf.for and then erases the original, which destroys every
+      // op inside it -- so any pointer taken beforehand to a channel op in one
+      // of those regions is dangling by now, and the isAsyncOp below reads
+      // freed memory. The channels themselves survive the wrap, so asking them
+      // again is both safe and the same question.
+      llvm::SetVector<Operation *> nfl_erased_ops;
+      for (auto &[destChan, srcChan] : nfl_merge_pairs) {
+        auto [toFuse, toErase] = getChannelIfOpsFusableByFor(destChan, srcChan);
+        for (auto chanIf : toErase)
+          nfl_erased_ops.insert(chanIf);
+      }
+      // Erase obsolete ops and replace async semantics.
       for (auto e : nfl_erased_ops) {
         if (air::isAsyncOp(e)) {
           IRMapping remap;
