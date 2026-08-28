@@ -485,7 +485,9 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         OptionalAttr<DenseI32ArrayAttr>:$pad_before,
         OptionalAttr<DenseI32ArrayAttr>:$pad_after,
         OptionalAttr<I64Attr>:$src_rank,
-        OptionalAttr<I64Attr>:$dst_rank
+        OptionalAttr<I64Attr>:$dst_rank,
+        OptionalAttr<FlatSymbolRefAttr>:$channel,
+        OptionalAttr<DenseI64ArrayAttr>:$channel_indices
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
@@ -510,6 +512,29 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     allocations and require an enclosing `air.rank`. Lowering for these
     attributes will be added by a future GPU pass (planned: `air-cross-rank-
     dma-to-mgpu`); this PR introduces only the IR surface and verifier rules.
+
+    The optional `channel` attribute names the `air.channel` that
+    `air-dma-to-channel` should lower this copy onto. Without it that pass
+    mints a fresh single-put/single-get channel per DMA, which makes three
+    things unsayable: that two copies are the *same* channel (a convergent
+    multi-producer feed), that a channel carries author-chosen properties
+    (`channel_type`, `broadcast_shape`, `air.shared_resident_ring`,
+    `air.tile_dma_channel`), and any stable name to anchor those properties to.
+    Naming a channel here says "lower onto this declaration"; the declaration
+    stays in the front end, where those properties are written.
+
+    The named `air.channel` must already be declared in the enclosing symbol
+    table. Several `air.dma_memcpy_nd` ops may name one channel: each
+    contributes its own put/get pair, and the channel then has as many
+    producers (or consumers) as there are ops naming it. Ordering between them
+    is not implied by this attribute — it comes from the async token graph and
+    from `air-enforce-channel-fifo-order`.
+
+    `channel_indices` selects a sub-channel of a bundled declaration. It is a
+    static index list only. When absent, `air-dma-to-channel` infers the index
+    from the enclosing spatial iteration (herd or `scf.parallel`) exactly as it
+    does for an unnamed channel, which is the right answer whenever the index
+    *is* the spatial index; give it explicitly only when it is not.
   }];
   let extraClassDeclaration = [{
     Value getSrcMemref() { return getSrc(); }
@@ -557,6 +582,11 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     }
     bool hasCrossRank() {
       return getSrcRank().has_value() || getDstRank().has_value();
+    }
+    /// True when this copy names the air.channel it must lower onto, rather
+    /// than letting air-dma-to-channel mint a fresh one.
+    bool hasNamedChannel() {
+      return getChannelAttr() != nullptr;
     }
   }];
   let builders = [

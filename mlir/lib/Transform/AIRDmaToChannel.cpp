@@ -502,7 +502,7 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
   return channel_op;
 }
 
-static void replaceAIRDmaWithAIRChannelPairs(
+static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     OpBuilder &builder, air::MemorySpace innerMemorySpace,
     air::DmaMemcpyNdOp op,
     SmallVector<air::ChannelInterface, 1> &internalGetPutVector,
@@ -536,9 +536,38 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   // Create channel symbol
   auto module = op->getParentOfType<ModuleOp>();
-  std::string cname = air::createChannelName(module);
 
-  if (op->hasAttr("broadcast_set")) {
+  // A DMA naming a channel lowers onto THAT declaration instead of a fresh one.
+  // This is what lets several DMAs share one channel (a convergent
+  // multi-producer feed), and what keeps author-written channel properties --
+  // channel_type, broadcast_shape, air.shared_resident_ring,
+  // air.tile_dma_channel -- attached to a symbol the front end controls.
+  //
+  // The declaration is never created here. A name with nothing behind it is a
+  // typo, and minting an empty channel for it would convert that typo into a
+  // silent point-to-point circuit flow that deadlocks much further downstream,
+  // in air-to-aie, with no trace of where the name came from.
+  air::ChannelOp namedChanOp = nullptr;
+  if (op.hasNamedChannel()) {
+    namedChanOp = air::getChannelDeclarationThroughSymbol(op.getOperation(),
+                                                          op.getChannelAttr());
+    if (!namedChanOp)
+      return op.emitOpError()
+             << "names channel " << op.getChannelAttr()
+             << ", which is not declared in any enclosing symbol table";
+  }
+  std::string cname = namedChanOp ? namedChanOp.getSymName().str()
+                                  : air::createChannelName(module);
+
+  if (namedChanOp) {
+    // The declaration already carries its bundle shape and every property the
+    // front end wrote on it; re-deriving either would overwrite the reason for
+    // naming it in the first place.
+    if (op->hasAttr("broadcast_set"))
+      op->emitWarning("Attribute broadcast_set is set on a DMA that names a "
+                      "channel. The named declaration's own broadcast_shape is "
+                      "used, and the specialized set is ignored.");
+  } else if (op->hasAttr("broadcast_set")) {
     // If the data movement is subject to a broadcasting pattern, then
     // specialize each broadcast source in a bundle into a separate channel.
     // Infer broadcast shape from integer set, if broadcast_set attribute is
@@ -582,7 +611,17 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   SmallVector<Value, 1> channel_idx_internal{};
   SmallVector<Value, 1> channel_idx_external{};
-  if (op->hasAttr("broadcast_set")) {
+  if (auto staticIndices = op.getChannelIndices()) {
+    // An explicit index overrides the spatial inference below. It is what a
+    // sub-channel of a bundle is selected with when the index is NOT the
+    // enclosing spatial index -- e.g. a per-column weight feed inside a loop
+    // whose IV is not the column. Both halves index the same sub-channel.
+    for (int64_t idx : *staticIndices) {
+      auto c = arith::ConstantIndexOp::create(builder, loc, idx);
+      channel_idx_internal.push_back(c);
+      channel_idx_external.push_back(c);
+    }
+  } else if (op->hasAttr("broadcast_set")) {
     // If broadcasting, let internal channel inherit affine.if's operands
     auto parent_affine_if_op = op->getParentOfType<affine::AffineIfOp>();
     for (auto operand : parent_affine_if_op->getOperands()) {
@@ -599,6 +638,28 @@ static void replaceAIRDmaWithAIRChannelPairs(
     for (auto iv : parent_par_op.getInductionVars()) {
       channel_idx_internal.push_back(iv);
       channel_idx_external.push_back(iv);
+    }
+  }
+
+  // For a named channel the DECLARATION fixes the bundle rank, and the spatial
+  // inference above knows nothing about it -- it counts enclosing herd /
+  // scf.parallel dimensions. Those agree only when the bundle *is* the spatial
+  // iteration. When they disagree, indexing a rank-N bundle with M != N indices
+  // is malformed IR that survives all the way to air-to-aie, so resolve it
+  // here.
+  if (namedChanOp && !op.getChannelIndices()) {
+    size_t declRank = namedChanOp.getSize().size();
+    if (declRank == 0) {
+      // Unbundled: a single flow, addressed with no index.
+      channel_idx_internal.clear();
+      channel_idx_external.clear();
+    } else if (declRank != channel_idx_internal.size()) {
+      return op.emitOpError()
+             << "names channel @" << namedChanOp.getSymName() << ", declared "
+             << "with " << declRank << " bundle dimension(s), but the "
+             << "enclosing spatial iteration supplies "
+             << channel_idx_internal.size()
+             << ". Give the sub-channel explicitly with channel_indices.";
     }
   }
 
@@ -644,12 +705,12 @@ static void replaceAIRDmaWithAIRChannelPairs(
   }
 
   if (!internalGetPut) {
-    op->emitOpError("has unexpected memref memory space at internal-side");
-    return;
+    return op->emitOpError(
+        "has unexpected memref memory space at internal-side");
   }
   if (!externalGetPut) {
-    op->emitOpError("has unexpected memref memory space at external-side");
-    return;
+    return op->emitOpError(
+        "has unexpected memref memory space at external-side");
   }
 
   // Replace all uses to dma token with internal put/get token
@@ -670,6 +731,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
+  return success();
 }
 
 // Check whether an channel op is within a matching air hierarchy (launch for
@@ -766,8 +828,9 @@ class AIRDmaToAIRChannelConversion
     SmallVector<air::ChannelInterface, 1> externalGetPut;
     SmallVector<air::ChannelInterface, 1> internalGetPut;
 
-    replaceAIRDmaWithAIRChannelPairs(rewriter, innerMemorySpace, op,
-                                     internalGetPut, externalGetPut);
+    if (failed(replaceAIRDmaWithAIRChannelPairs(
+            rewriter, innerMemorySpace, op, internalGetPut, externalGetPut)))
+      return failure();
 
     rewriter.eraseOp(op);
 
@@ -1494,7 +1557,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     air_dma_demotion.add<AIRDemoteDmaToAIRHierarchyConversion>(context);
     if (failed(applyPartialConversion(module, target_0,
                                       std::move(air_dma_demotion)))) {
-      emitError(UnknownLoc::get(context), "error\n");
+      // No diagnostic here: applyPartialConversion already reported the
+      // op it could not legalize, and the failing pattern reported why.
+      // A contentless error on top of those only obscures them.
       signalPassFailure();
     }
 
@@ -1525,7 +1590,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     air_dma_conversion.add<AIRDmaToAIRChannelConversion>(context);
     if (failed(applyPartialConversion(module, target_1,
                                       std::move(air_dma_conversion)))) {
-      emitError(UnknownLoc::get(context), "error\n");
+      // No diagnostic here: applyPartialConversion already reported the
+      // op it could not legalize, and the failing pattern reported why.
+      // A contentless error on top of those only obscures them.
       signalPassFailure();
     }
 

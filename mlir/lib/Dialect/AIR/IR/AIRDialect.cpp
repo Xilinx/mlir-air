@@ -2920,7 +2920,9 @@ void air::DmaMemcpyNdOp::build(
         dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
         dynSrcStrides, staticDstOffsets, staticDstSizes, staticDstStrides,
         staticSrcOffsets, staticSrcSizes, staticSrcStrides, pad_before,
-        pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr());
+        pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr(),
+        /*channel=*/FlatSymbolRefAttr(), /*channel_indices=*/
+        DenseI64ArrayAttr());
 }
 
 void air::DmaMemcpyNdOp::build(
@@ -2935,7 +2937,8 @@ void air::DmaMemcpyNdOp::build(
         allDynamic(b, dst_strides.size()), allDynamic(b, src_offsets.size()),
         allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
         pad_before, pad_after, /*src_rank=*/IntegerAttr(),
-        /*dst_rank=*/IntegerAttr());
+        /*dst_rank=*/IntegerAttr(), /*channel=*/FlatSymbolRefAttr(),
+        /*channel_indices=*/DenseI64ArrayAttr());
 }
 
 void air::ChannelPutOp::build(
@@ -3152,6 +3155,51 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
     if (getDstRank().has_value() &&
         failed(requireSymmetricAlloc(getDst(), "dst")))
       return failure();
+  }
+
+  // Named-channel lowering (see the `channel` attribute in AIR.td).
+  auto chanIndices = getChannelIndices();
+  if (chanIndices.has_value() && !hasNamedChannel())
+    return emitOpError("channel_indices requires a channel attribute: there is "
+                       "no bundle to index without a named channel");
+  if (hasNamedChannel()) {
+    // Resolving the declaration is deliberately NOT required here. An
+    // unresolvable name is diagnosed by air-dma-to-channel, which can say what
+    // it was looking for; failing in the verifier instead would make the op
+    // unbuildable before its channel is declared, which is an ordering trap for
+    // any pass that creates the two in the other order.
+    // Resolved inline rather than through
+    // air::getChannelDeclarationThroughSymbol: that lives in the Util library,
+    // which depends on this dialect, so calling it from here would invert the
+    // layering.
+    air::ChannelOp chanOp = nullptr;
+    for (Operation *p = (*this)->getParentOp(); p && !chanOp;
+         p = p->getParentOp()) {
+      if (!p->hasTrait<OpTrait::SymbolTable>())
+        continue;
+      chanOp = dyn_cast_if_present<air::ChannelOp>(
+          mlir::SymbolTable::lookupSymbolIn(p, getChannelAttr()));
+    }
+    if (chanOp && chanIndices.has_value()) {
+      auto declSize = chanOp.getSize();
+      if ((size_t)chanIndices->size() != declSize.size())
+        return emitOpError() << "channel_indices has " << chanIndices->size()
+                             << " entries but @" << chanOp.getSymName()
+                             << " is declared with " << declSize.size()
+                             << " bundle dimensions";
+      for (size_t i = 0; i < chanIndices->size(); i++) {
+        int64_t idx = (*chanIndices)[i];
+        auto boundAttr = llvm::dyn_cast<IntegerAttr>(declSize[i]);
+        if (!boundAttr)
+          continue;
+        int64_t bound = boundAttr.getInt();
+        if (idx < 0 || idx >= bound)
+          return emitOpError()
+                 << "channel_indices[" << i << "] = " << idx
+                 << " is out of bounds for @" << chanOp.getSymName()
+                 << " bundle dimension " << i << " of size " << bound;
+      }
+    }
   }
   return success();
 }
