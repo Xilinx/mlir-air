@@ -189,6 +189,34 @@ def _pins_an_axis(shape, dst_shape):
     return any(extent != dst_shape[i + offset] for i, extent in enumerate(shape))
 
 
+def _is_repack(node):
+    """Is this bitcast one that changes the lane count?
+
+    A same-width bitcast is a relabelling and behaves exactly like a cast. A
+    repack -- 32 bytes read as 64 half-bytes -- changes how many elements a run
+    of memory holds, so its operand is read at a different lane count from the
+    rest of the nest and cannot share the per-dtype region table.
+    """
+    if node.kind != "bitcast":
+        return False
+    return node.args[0].element_dtype().bits != node.dtype.bits
+
+
+def _pins_for(node, dst_shape):
+    """Does any leaf under ``node`` need the shared zero index constant?
+
+    Walks the tree rather than ``leaves()`` because a repacking bitcast's
+    operand is not indexed like an ordinary leaf: its extent never matches the
+    destination's, so ``_leaf_index`` always takes the pinned branch, which
+    reaches for the constant whenever the region starts at 0.
+    """
+    if _is_repack(node):
+        return True
+    if node.kind == "buffer":
+        return _pins_an_axis(node.buffer.shape, dst_shape)
+    return any(_pins_for(a, dst_shape) for a in node.args)
+
+
 def _zero_index_if(needed):
     """An index-typed 0 for the pinned axes of a broadcast, or None.
 
@@ -253,6 +281,22 @@ def _leaf_index(leaf, dst_shape, ivs, zero):
         else:
             index.append(_result(arith.AddIOp(iv, _materialize_index(start))))
     return index
+
+
+def _pinned_index(leaf, zero):
+    """Every axis at the region's own start -- no induction variable anywhere.
+
+    What a repacking bitcast's operand needs. It covers the same run of memory
+    as the destination but counts it in different units, so the destination's
+    induction variables are in the wrong units to index it; the emitter requires
+    such an assignment to be a single trip precisely so that the start is the
+    whole answer.
+    """
+    sizes, dropped, base = _axes_of(leaf)
+    return [
+        zero if base is None or _is_zero(base[i]) else _materialize_index(base[i])
+        for i in range(len(sizes))
+    ]
 
 
 def _dst_index(dst, ivs):
@@ -369,10 +413,46 @@ def _check_region(node, dst, dtype, expected=None):
     # with "destination has shape (1, 1) but operand has shape (1, 64)".
     if node.kind == "reduce":
         raise _nested_reduction(node)
-    if node.kind == "cast":
+    if _is_repack(node):
+        # The operand covers the same run of memory as the destination but
+        # counts it in different units, so it is its *reinterpreted* extent that
+        # has to broadcast -- 32 bytes present as 64 half-bytes. Checking the
+        # buffer's own shape would reject every correct use.
+        leaf = node.args[0].buffer
+        ratio = node.args[0].element_dtype().bits // node.dtype.bits
+        presented = tuple(leaf.shape[:-1]) + (leaf.shape[-1] * ratio,)
+        if _broadcast_offset(presented, dst.shape) is None:
+            raise ValueError(
+                f"shape mismatch in elementwise assignment: destination has "
+                f"shape {dst.shape} but the bitcast operand {leaf.shape} of "
+                f"{node.args[0].element_dtype()} reinterprets as {presented} of "
+                f"{node.dtype}, which does not broadcast to it"
+            )
+        if leaf.dtype is not node.args[0].element_dtype():
+            raise ValueError(
+                f"dtype mismatch in elementwise assignment: the bitcast "
+                f"reinterprets from {node.args[0].element_dtype()} but operand "
+                f"is {leaf.dtype}"
+            )
+        if leaf.value is None:
+            raise RuntimeError(
+                "buffer used before allocation; air.alloc() must be called "
+                "inside the herd body that uses it"
+            )
+        return
+
+    if node.kind in ("cast", "bitcast"):
         source = node.args[0].element_dtype()
+        what = "cast" if node.kind == "cast" else "bitcast"
         _check_region(
-            node.args[0], dst, source, expected=f"the cast converts from {source}"
+            node.args[0],
+            dst,
+            source,
+            expected=(
+                f"the {what} reinterprets from {source}"
+                if what == "bitcast"
+                else f"the cast converts from {source}"
+            ),
         )
         return
     if node.kind == "buffer":
@@ -421,8 +501,13 @@ def _regions_in(node, dtype, out):
     """
     if dtype is not None and dtype not in out:
         out.append(dtype)
-    if node.kind == "cast":
+    if node.kind == "cast" or (node.kind == "bitcast" and not _is_repack(node)):
         _regions_in(node.args[0], node.args[0].element_dtype(), out)
+        return out
+    if node.kind == "bitcast":
+        # A repack reads its operand at its own lane count -- 32 bytes where the
+        # destination steps 64 half-bytes -- so its region cannot come from this
+        # table, which holds one lane count for the whole nest. _eval builds it.
         return out
     for arg in node.args:
         _regions_in(arg, dtype, out)
@@ -654,7 +739,15 @@ def _emit_reduce(dst, expr):
     # The same broadcast-aware read the elementwise path uses: a leaf with the
     # reduced axis's full extent is a vector read, and one of extent 1 there is
     # a single element splatted across the vector.
-    def load(buf, at, region):
+    def load(buf, at, region, packed=False):
+        if packed:
+            raise NotImplementedError(
+                "air.api.ops.bitcast that changes the lane count cannot appear "
+                "inside a reduction or an argmax: those walk the reduced axis "
+                "themselves, and a reinterpretation changes how many elements "
+                "that axis has. Assign the reinterpreted values to a buffer "
+                "first, then reduce it"
+            )
         index = _leaf_index(buf, src_shape, at, zero)
         if buf.shape and buf.shape[-1] == src_shape[-1]:
             return _result(
@@ -805,7 +898,15 @@ def _emit_argmax(dst, expr):
     zero = _result(arith.ConstantOp(IndexType.get(), 0))
     bounds = [(0, extent, 1) for extent in src_shape[:-1]]
 
-    def load(buf, ivs, region):
+    def load(buf, ivs, region, packed=False):
+        if packed:
+            raise NotImplementedError(
+                "air.api.ops.bitcast that changes the lane count cannot appear "
+                "inside a reduction or an argmax: those walk the reduced axis "
+                "themselves, and a reinterpretation changes how many elements "
+                "that axis has. Assign the reinterpreted values to a buffer "
+                "first, then reduce it"
+            )
         return _result(memref_load(buf.value, _leaf_index(buf, src_shape, ivs, zero)))
 
     def at(ivs, column):
@@ -884,11 +985,36 @@ def _emit_vector(dst, expr, width):
 
     # Hoisted above the nest, like the padding constants, so a broadcast costs
     # one constant for the whole kernel rather than one per trip.
-    zero = _zero_index_if(
-        any(_pins_an_axis(leaf.shape, shape) for leaf in expr.leaves())
-    )
+    zero = _zero_index_if(_pins_for(expr, shape))
 
-    def load(buf, ivs, region):
+    def load(buf, ivs, region, packed=False):
+        if packed:
+            # A repacking bitcast's operand: fewer buffer elements than the
+            # destination has, covering the same run of memory. `_leaf_index`
+            # sees an extent that does not match the destination's and pins the
+            # axis at the region's own base -- which is the right index only
+            # while the nest makes a single trip, so require that rather than
+            # rely on it.
+            if shape[-1] != width:
+                raise NotImplementedError(
+                    f"air.api.ops.bitcast reinterprets a run of memory, so the "
+                    f"assignment it appears in has to cover exactly one vector: "
+                    f"this destination is {shape[-1]} elements at a width of "
+                    f"{width}, which is {shape[-1] // width} trips, and the "
+                    f"reinterpreted operand would not advance between them. "
+                    f"Write the loop yourself with air.sequential and assign "
+                    f"{width} elements per trip"
+                )
+            return _result(
+                transfer_read(
+                    region.vec_ty,
+                    buf.value,
+                    _pinned_index(buf, zero),
+                    _minor(len(_axes_of(buf)[0])),
+                    region.pad,
+                    [True],
+                )
+            )
         index = _leaf_index(buf, shape, ivs, zero)
         if buf.shape and buf.shape[-1] == shape[-1]:
             # The operand has the destination's innermost extent, so the vector
@@ -924,11 +1050,14 @@ def _emit_scalar(dst, expr):
     regions = {d: _Region(d, 0, False) for d in _regions_in(expr, dst.dtype, [])}
     bounds = [(0, extent, 1) for extent in shape]
 
-    zero = _zero_index_if(
-        any(_pins_an_axis(leaf.shape, shape) for leaf in expr.leaves())
-    )
+    zero = _zero_index_if(_pins_for(expr, shape))
 
-    def load(buf, ivs, region):
+    def load(buf, ivs, region, packed=False):
+        if packed:
+            raise NotImplementedError(
+                "air.api.ops.bitcast that changes the lane count needs the "
+                "vector path; this assignment fell back to a scalar loop"
+            )
         return _result(memref_load(buf.value, _leaf_index(buf, shape, ivs, zero)))
 
     def body(ivs):
@@ -998,8 +1127,49 @@ def _eval(node, ivs, region, regions, vectorized, load, reads=None):
         # again here keeps the rule in one place rather than trusting a flag
         # threaded down from the call site.
         narrowing_ok = _clamped_into(node.args[0], region.dtype)
-        build = _conversion_op(source, region.dtype, narrowing_ok=narrowing_ok)
+        build = _conversion_op(
+            source, region.dtype, narrowing_ok=narrowing_ok, signed=node.signed
+        )
         return _result(build(vec_ty if vectorized else ety, operand))
+
+    if node.kind == "bitcast":
+        from air.dialects.vector import bitcast as vector_bitcast
+
+        source = node.args[0].element_dtype()
+        if not _is_repack(node):
+            # Same width: a relabelling, and the lane count is untouched, so it
+            # rides the ordinary region machinery exactly as a cast does.
+            operand = recur(node.args[0], regions[source])
+            build = vector_bitcast if vectorized else arith.BitcastOp
+            return _result(build(vec_ty if vectorized else ety, operand))
+
+        # A repack. The operand is a buffer region (ops.bitcast enforces that),
+        # read at the lane count its own type gives the same run of memory: 32
+        # i8 where the destination steps 64 i4.
+        if not vectorized:
+            raise NotImplementedError(
+                f"air.api.ops.bitcast from {source} to {node.dtype} needs the "
+                f"vector path, and this assignment fell back to a scalar loop "
+                f"-- its destination tile is not a multiple of its vector "
+                f"width. Reinterpreting one element at a time is not the same "
+                f"operation: the whole point is that a run of memory holds a "
+                f"different number of them"
+            )
+        ratio = source.bits // node.dtype.bits
+        lanes = vec_ty.shape[0]
+        if lanes % ratio:
+            raise ValueError(
+                f"air.api.ops.bitcast from {source} to {node.dtype}: the "
+                f"destination is {lanes} lanes wide, which is not a whole "
+                f"number of {ratio}-element groups, so the reinterpreted run "
+                f"does not line up with a vector"
+            )
+        leaf = node.args[0].buffer
+        src_region = _Region(source, lanes // ratio, True)
+        # Through `load`, not a transfer_read here: the destination shape and
+        # the shared zero constant live in that closure, and so does the check
+        # that the reinterpreted run lines up with a single trip of the nest.
+        return _result(vector_bitcast(vec_ty, load(leaf, ivs, src_region, True)))
 
     if node.kind == "scalar":
         value = node.scalar

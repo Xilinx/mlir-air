@@ -14,12 +14,14 @@ runner can never disagree about how a numpy dtype maps onto the device.
 
 import numpy as np
 from ml_dtypes import bfloat16
+from ml_dtypes import int4 as ml_int4
 
 __all__ = [
     "DType",
     "bf16",
     "f16",
     "f32",
+    "i4",
     "i8",
     "i16",
     "i32",
@@ -80,6 +82,8 @@ class DType:
         is_float,
         is_unsigned=False,
         computes=True,
+        bits=None,
+        allocatable=True,
     ):
         self.name = name
         self.np_dtype = np_dtype
@@ -101,6 +105,18 @@ class DType:
         # shape of restriction as `is_unsigned` above, enforced at the same four
         # call sites -- see `require_computable`.
         self.computes = computes
+        # Width in bits. Everything but i4 is a whole number of bytes and takes
+        # it from numpy; i4 cannot, because numpy has no sub-byte storage and
+        # reports an itemsize of 1 for it. Widening and narrowing are decided on
+        # `bits`, not on `itemsize`, so that i4 -> i8 reads as the widening it
+        # is rather than as a same-size conversion with no op.
+        self.bits = bits if bits is not None else np.dtype(np_dtype).itemsize * 8
+        # False for a type a buffer cannot hold. i4 is the only one: a DMA moves
+        # whole bytes, the L1 budget is in bytes, and nothing in this tree wants
+        # a nibble-addressed memref. It exists to name the *result* of
+        # ops.bitcast -- half-bytes read out of a byte buffer -- and lives only
+        # inside one expression.
+        self.allocatable = allocatable
 
     @property
     def itemsize(self):
@@ -112,6 +128,14 @@ class DType:
         # air.api must stay cheap for callers that only want the type objects.
         from air.backend.xrt_runner import type_mapper
 
+        if self.bits % 8:
+            # type_mapper is keyed on numpy dtypes and cross-checks the MLIR
+            # width against numpy's itemsize, which a sub-byte type fails by
+            # construction: numpy stores an int4 in a whole byte. Build it
+            # directly.
+            from air.ir import IntegerType
+
+            return IntegerType.get_signless(self.bits)
         return type_mapper(self.np_dtype)
 
     def __repr__(self):
@@ -128,6 +152,13 @@ bf16 = DType("bf16", bfloat16, 16, is_float=True)
 # the type can still describe f16 *data* being moved, which does work.
 f16 = DType("f16", np.float16, 16, is_float=True, computes=False)
 f32 = DType("f32", np.float32, 16, is_float=True)
+# Half a byte. Not a type a buffer can hold -- a DMA moves whole bytes and the
+# L1 budget is counted in them -- but the type a *packed* buffer's contents are,
+# and so the type `ops.bitcast` names when it reinterprets bytes as the pairs of
+# quantised weights inside them. numpy has no sub-byte storage, so ml_dtypes'
+# int4 stands in for the data type while `bits=4` carries the width that
+# actually matters.
+i4 = DType("i4", ml_int4, 64, is_float=False, bits=4, allocatable=False)
 i8 = DType("i8", np.int8, 32, is_float=False)
 i16 = DType("i16", np.int16, 16, is_float=False)
 i32 = DType("i32", np.int32, 16, is_float=False)

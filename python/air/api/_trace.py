@@ -1525,8 +1525,21 @@ def herd(iterable, name=None, shape=None, target=None, link_with=None):
     )
 
 
+def _require_allocatable(dtype, what):
+    """Refuse an element type no buffer can hold. Only i4 is such a type."""
+    if getattr(dtype, "allocatable", True):
+        return
+    raise TypeError(
+        f"{what} cannot have element type {dtype}: a DMA moves whole bytes and "
+        f"the L1 budget is counted in them, so there is no buffer of half-bytes "
+        f"to allocate. {dtype} names what packed *bytes* contain -- read them "
+        f"as a byte buffer and reinterpret with air.api.ops.bitcast"
+    )
+
+
 def tensor(shape, dtype, name=None):
     """Declare a host-visible L3 array; becomes a kernel argument."""
+    _require_allocatable(dtype, "air.tensor")
     t = Tensor(shape, dtype, name=name or infer_name(f"t{len(PENDING_TENSORS)}"))
     PENDING_TENSORS.append(t)
     return t
@@ -1534,6 +1547,7 @@ def tensor(shape, dtype, name=None):
 
 def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
+    _require_allocatable(dtype, "air.alloc")
     from air.ir import IntegerAttr, MemRefType
     from air.dialects.air import MemorySpace
     from air.dialects.memref import AllocOp

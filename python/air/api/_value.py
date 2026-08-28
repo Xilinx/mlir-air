@@ -860,9 +860,18 @@ class BufferExpr:
     once and emits a single vectorised loop.
     """
 
-    __slots__ = ("kind", "op", "args", "buffer", "scalar", "dtype")
+    __slots__ = ("kind", "op", "args", "buffer", "scalar", "dtype", "signed")
 
-    def __init__(self, kind, op=None, args=(), buffer=None, scalar=None, dtype=None):
+    def __init__(
+        self,
+        kind,
+        op=None,
+        args=(),
+        buffer=None,
+        scalar=None,
+        dtype=None,
+        signed=True,
+    ):
         # "buffer" | "scalar" | "unary" | "binary" | "fma" evaluate to the
         # element type; "compare" evaluates to i1 and only ops.select consumes
         # it; "select" takes (compare, value, value) back to the element type;
@@ -886,6 +895,12 @@ class BufferExpr:
         # *to*. Every other node adopts the type of the region it sits in, which
         # is what ``element_dtype`` below reports.
         self.dtype = dtype
+        # Set on a widening "cast" node only: whether the source's top bit is a
+        # sign to replicate (arith.extsi) or a value bit to zero-fill
+        # (arith.extui). Signedness lives on the *operation* rather than on the
+        # type, because MLIR's arith ops take signless integers -- a byte is
+        # just eight bits until something widens it and has to decide.
+        self.signed = signed
 
     @staticmethod
     def leaf(buffer):
@@ -907,7 +922,7 @@ class BufferExpr:
         """
         if self.kind == "buffer":
             return self.buffer.dtype
-        if self.kind == "cast":
+        if self.kind in ("cast", "bitcast"):
             return self.dtype
         if self.kind == "scalar":
             return None
@@ -1111,6 +1126,8 @@ class BufferExpr:
             return repr(self.scalar)
         if self.kind == "cast":
             return f"cast({self.args[0]!r}, {self.dtype!r})"
+        if self.kind == "bitcast":
+            return f"bitcast({self.args[0]!r}, {self.dtype!r})"
         if self.kind == "unary":
             return f"{self.op}({self.args[0]!r})"
         if self.kind == "select":
