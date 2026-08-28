@@ -950,6 +950,11 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # X are. Guarded on DYNSEQ_APPEND: with a runtime context length the append
 # offset depends on the L RTP, which would have to be threaded in as well.
 APPEND_DMA = not DYNSEQ_APPEND
+# And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
+# get on an L2 buffer, which air-dma-to-channel handles natively -- the only
+# obstacle was that the L2 buffer is allocated after the rope herd, so it does
+# not dominate it. Allocating it up front is the whole change; no new op.
+ROPEQ_DMA = True
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3194,7 +3199,9 @@ def build_module():
                     # the fix for the fused vocab deadlock: in vocab mode dest0
                     # never flows, and an idle compute-tile S2MM does NOT stall the
                     # col-2 memtile that the vocab X-feed/rms share.
-                    def _rope_body(_arm, a_qkv=None, rms=None, kvc=None, kiv=None):
+                    def _rope_body(
+                        _arm, a_qkv=None, rms=None, kvc=None, kiv=None, qmt=None
+                    ):
                         # a_qkv given => the caller owns the buffer and has
                         # already filled it (the hybrid hands rope the ph0
                         # landing). None => rope allocates and fills its own.
@@ -3268,14 +3275,34 @@ def build_module():
                         # natural [qh,dh] -> [dc,qh,de], the kernel's q layout.
                         # q (whole 2048) -> q broadcast memtile (1 rope MM2S);
                         # the memtile fans out per-CU reordered (reference mem_5_1).
-                        ChannelPut(
-                            "ropeQ",
-                            a_q,
-                            indices=[idx(0)],
-                            offsets=[idx(0)],
-                            sizes=[idx(DQ_PADDED)],
-                            strides=[idx(1)],
-                        )
+                        if ROPEQ_DMA and qmt is not None:
+                            # rope's Q broadcast, spelled as a DMA naming @ropeQ. Unlike
+                            # the other feeds this one never touches the shim: it is
+                            # L1 -> L2, so the derived half lands at SEGMENT scope. The
+                            # anchor still matters, because the get has to precede the
+                            # per-CU fan-out that reads the same buffer.
+                            DmaMemcpyNd(
+                                qmt,
+                                a_q,
+                                dst_offsets=[0],
+                                dst_sizes=[DQ_PADDED],
+                                dst_strides=[1],
+                                src_offsets=[0],
+                                src_sizes=[DQ_PADDED],
+                                src_strides=[1],
+                                channel="ropeQ",
+                                channel_indices=[0],
+                                hoist_before="toAttnQ",
+                            )
+                        else:
+                            ChannelPut(
+                                "ropeQ",
+                                a_q,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(DQ_PADDED)],
+                                strides=[idx(1)],
+                            )
                         if MULTIBLK:
                             # the reference append: this token's roped K (all heads) and
                             # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
@@ -3381,6 +3408,17 @@ def build_module():
                         DeallocOp(a_k)
                         DeallocOp(a_v)
 
+                    # The q broadcast memtile buffer, hoisted ahead of the rope
+                    # herd so it DOMINATES it and can be passed in as an operand.
+                    # That is what lets rope's Q feed be spelled as a DMA naming
+                    # @ropeQ: a DMA names both endpoints in one place, and this
+                    # is the only place both are visible. Allocated at segment
+                    # scope rather than inside the decode arm for the same
+                    # reason -- the rope herd is a sibling of that arm.
+                    _qmtb_pre = None
+                    if ATTN_SUBSYS and not HYBRID_MIXER and ROPEQ_DMA:
+                        _qmtb_pre = AllocOp(qmt_l2, [], [])
+                        _qmtb_pre.operation.attributes["air.no_split"] = UnitAttr.get()
                     if ATTN_SUBSYS and not HYBRID_MIXER:
                         # BUG FIX (later43c): the rope arm MUST track the mode like
                         # proj/rms (0 in vocab). Hardcoded 1 kept rope in _dec()
@@ -3389,19 +3427,25 @@ def build_module():
                         # the LM launch waits on -> TIMEOUT.
                         _arm_rope = _seg_arm
 
-                        _rope_opers = [_arm_rope, _seg_RMS] + (
-                            [_seg_KVC, _seg_iv]
-                            if (_seg_KVC is not None and _seg_iv is not None)
-                            else ([_seg_KVC] if _seg_KVC is not None else [])
+                        _rope_opers = (
+                            [_arm_rope, _seg_RMS]
+                            + (
+                                [_seg_KVC, _seg_iv]
+                                if (_seg_KVC is not None and _seg_iv is not None)
+                                else ([_seg_KVC] if _seg_KVC is not None else [])
+                            )
+                            + ([_qmtb_pre] if _qmtb_pre is not None else [])
                         )
+                        _n_kv = len(_rope_opers) - 2 - (1 if _qmtb_pre else 0)
 
                         @herd(name="rope", sizes=[1, 1], operands=_rope_opers)
-                        def rope_h(tx, ty, _sx, _sy, _arm, _rms, *_kv):
-                            _kvc = _kv[0] if _kv else None
-                            _kiv = _kv[1] if len(_kv) > 1 else None
+                        def rope_h(tx, ty, _sx, _sy, _arm, _rms, *_rest):
+                            _kvc = _rest[0] if _n_kv > 0 else None
+                            _kiv = _rest[1] if _n_kv > 1 else None
+                            _qmt = _rest[_n_kv] if len(_rest) > _n_kv else None
 
                             def _dec():
-                                _rope_body(_arm, rms=_rms, kvc=_kvc, kiv=_kiv)
+                                _rope_body(_arm, rms=_rms, kvc=_kvc, kiv=_kiv, qmt=_qmt)
                                 yield_([])
 
                             def _voc():
@@ -3728,6 +3772,14 @@ def build_module():
                         # q broadcast memtile (reference mem_5_1): get rope q (2048),
                         # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
                         def _qmtb_dec():
+                            if _qmtb_pre is not None:
+                                # Allocated ahead of the rope herd and filled by
+                                # the @ropeQ DMA inside it, so the get here is
+                                # derived and the hand-written one is gone. The
+                                # buffer outlives the arm, so it is not
+                                # deallocated here either.
+                                _qmtb_fan(_qmtb_pre, dealloc=False)
+                                return
                             qmtb = AllocOp(qmt_l2, [], [])
                             # Pinned: the derived column is template-length
                             # dependent (qwen3-4b at ATTN_MAXL=128 lands on
@@ -3737,6 +3789,9 @@ def build_module():
                             )
                             qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet("ropeQ", qmtb, indices=[idx(0)])
+                            _qmtb_fan(qmtb)
+
+                        def _qmtb_fan(qmtb, dealloc=True):
                             for c in range(N_ATTN_CU):
                                 ChannelPut(
                                     "toAttnQ",
@@ -3763,7 +3818,8 @@ def build_module():
                                     ],
                                     strides=[idx(8), idx(DH), idx(1)],
                                 )
-                            DeallocOp(qmtb)
+                            if dealloc:
+                                DeallocOp(qmtb)
 
                         # gate-off 2026-07-15b: q-broadcast is decode-only (vocab attn idle).
                         if _seg_arm_i is not None:
