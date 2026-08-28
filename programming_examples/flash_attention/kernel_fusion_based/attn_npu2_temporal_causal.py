@@ -313,14 +313,29 @@ def build_module(
     _merge_out_into_kv = num_lq_iters > 4
     # The causal triangle gives every round its own DIFFERENT-sized K/V shim
     # transfer, so the round count IS the number of simultaneously in-flight
-    # tasks on that MM2S channel. Measured on NPU2: up to 6 rounds run, 7 and
-    # 8 deadlock. Past the limit, stream the FULL prefix every round instead --
-    # the per-round BDs become identical, AIR folds them into ONE repeated
-    # task, and the in-core causal mask (q_block = lx*NQ + s) still discards
-    # the extra K blocks, so the result is unchanged. The price is the causal
-    # DMA/compute saving (2x the K/V work at large round counts), which is
-    # what buys the design the ability to run at all past 6 rounds.
-    _MAX_ROUNDS_IN_FLIGHT = 6
+    # tasks on that MM2S channel. Past the limit, stream the FULL prefix every
+    # round instead -- the per-round BDs become identical, AIR folds them into
+    # ONE repeated task, and the in-core causal mask (q_block = lx*NQ + s) still
+    # discards the extra K blocks, so the result is unchanged. The price is the
+    # causal DMA/compute saving (2x the K/V work at large round counts), which
+    # is what buys the design the ability to run at all past the limit.
+    #
+    # The limit was 6 when this design landed (7 and 8 deadlocked). 8 runs now
+    # that the shim-BD rebalance is in -- which is in turn a hard prerequisite
+    # for these lengths compiling at all -- and 8 rounds is what a 4096 prefill
+    # needs at lqp=512. Restoring the triangle there is worth 12% of prefill
+    # TTFT on llama-3.2-1B (2251 -> 1981 ms; flash_attn 48.6 -> 31.7 ms/layer),
+    # because attention is the only quadratic term and the uniform fallback was
+    # making a 2x-work cliff appear exactly at the length that crossed 6.
+    #
+    # Raising this further will not help until an R > 8 shape compiles at all:
+    # both R=16 configurations (lq 8192 at lqp 512, and lq 4096 at lqp 256 /
+    # dk 128) fail to build today, uniform prefix included. When one does, the
+    # better shape than another bump is to QUANTIZE the prefix -- group rounds
+    # and have each round stream its group's last prefix, which the mask makes
+    # correct for any group size and which holds the work at (G+1)/2G of the
+    # square (0.56 at G=8) instead of collapsing to 1.0.
+    _MAX_ROUNDS_IN_FLIGHT = 8
     _uniform_cps = num_lq_iters > _MAX_ROUNDS_IN_FLIGHT
     _cps_blocks = lambda lx: (num_lq_iters if _uniform_cps else lx + 1) * NQ
     tile_size_q = lqp // num_q_tiles
