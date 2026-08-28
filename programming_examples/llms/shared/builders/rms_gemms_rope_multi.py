@@ -41,6 +41,24 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32, i32
+
+
+def _api_dtype(np_dtype):
+    """The air.api dtype for a numpy dtype, for builders that take np dtypes.
+
+    The llms/ builders are all called with ml_dtypes.bfloat16; the map is
+    explicit rather than a getattr so an unsupported dtype names itself here
+    instead of failing later inside the emitter.
+    """
+    for np_t, api_t in ((bfloat16, bf16), (np.float32, f32)):
+        if np_dtype is np_t:
+            return api_t
+    raise TypeError(f"no air.api dtype for {np_dtype!r}")
+
+
 from shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
@@ -57,13 +75,13 @@ range_ = for_
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x, rope_dim=None):
+def _build_rope_2d(
+    outer_rows, outer_cols, embed_dim, np_dtype, herd_x, rope_dim=None, target="npu2"
+):
     """Build a RoPE launch with 2D in/out args (for GEMM type compatibility).
 
-    The outer 2D shape (outer_rows, outer_cols) matches the GEMM output type.
-    Inside the launch, collapse_shape flattens to 1D, and the RoPE herd
-    processes the flat array with embed_dim-wide rows.
+    The outer 2D shape (outer_rows, outer_cols) matches the GEMM output type;
+    the RoPE herd walks the same memory as flat ``embed_dim``-wide rows.
 
     Func signature:
       (in_2d: [outer_rows, outer_cols], lut_1d: [total], out_2d: [outer_rows, outer_cols])
@@ -78,128 +96,81 @@ def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x, rope_dim
                     calls `rope_partial` and passes the tail through. The LUT row
                     stays embed_dim wide -- [cos|sin|unused] -- so every DMA shape
                     and row offset below is identical either way.
-    """
-    from air.dialects.memref import collapse_shape as memref_collapse_shape
+        target:     NPU generation to build for. These are prefill builders, so
+                    npu2; it is a parameter because build() needs one and the
+                    caller str()s the result straight into a stitched module.
 
-    xrt_dtype = type_mapper(np_dtype)
+    The predecessor spelled the row offset as a hand-built AffineMap over three
+    symbols and the flattening as an explicit memref.collapse_shape at launch
+    scope. Here the offset is Python arithmetic on the tile coordinates and the
+    flattening is ``.reshape(total)`` -- a view, so it moves nothing and emits
+    no op; the 2-D operand simply carries a rank-1 access pattern. Both spellings
+    compile to a byte-identical air.insts.bin.
+    """
+    assert embed_dim % 16 == 0, "embed_dim must be divisible by 16"
     total = outer_rows * outer_cols
+    assert total % embed_dim == 0
     rope_rows = total // embed_dim  # actual RoPE rows (n_heads * seq_len)
     herd_y = 1
     total_tiles = herd_x * herd_y
-
-    assert embed_dim % 16 == 0, "embed_dim must be divisible by 16"
-    assert total % embed_dim == 0
     assert rope_rows % total_tiles == 0
+    rows_per_tile = rope_rows // total_tiles
 
-    l3_2d_ty = MemRefType.get([outer_rows, outer_cols], xrt_dtype)
-    l3_1d_ty = MemRefType.get([total], xrt_dtype)
-
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get(
-        shape=[embed_dim], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-
-    _partial = rope_dim is not None and rope_dim != embed_dim
-    if _partial:
+    partial = rope_dim is not None and rope_dim != embed_dim
+    if partial:
         assert 0 < rope_dim < embed_dim and rope_dim % 32 == 0, (
             f"rope_dim {rope_dim} must be a positive multiple of 32 below "
             f"embed_dim {embed_dim} (each half must vectorize by 16)"
         )
-    _rope_args = [l1RowTy, l1RowTy, l1RowTy, T.i32()] + ([T.i32()] if _partial else [])
-    rope_func = FuncOp(
-        "rope_partial" if _partial else "rope",
-        (_rope_args, []),
-        visibility="private",
-    )
-    rope_func.attributes["link_with"] = StringAttr.get("rope.o")
-    rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
-    rows_per_tile = rope_rows // total_tiles
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([outer_rows, outer_cols], dtype)
+    LUT = air.tensor([total], dtype)
+    OUT = air.tensor([outer_rows, outer_cols], dtype)
 
-    # Affine map: row_offset = (local_row + tile_id * rows_per_tile) * embed_dim
-    row_offset_map = AffineMap.get(
-        0,
-        3,  # s0=local_row, s1=_tx, s2=_ty
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),  # local_row
-                    AffineExpr.get_mul(
-                        AffineExpr.get_add(
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),  # _tx
-                                AffineConstantExpr.get(herd_y),
-                            ),
-                            AffineSymbolExpr.get(2),  # _ty
-                        ),
-                        AffineConstantExpr.get(rows_per_tile),
-                    ),
-                ),
-                AffineConstantExpr.get(embed_dim),
-            )
-        ],
+    rope = air.extern(
+        "rope_partial" if partial else "rope",
+        link_with="rope.o",
+        scalars=[i32, i32] if partial else [i32],
     )
 
-    @FuncOp.from_py_func(l3_2d_ty, l3_1d_ty, l3_2d_ty)
-    def rope_2d(arg0_2d, arg1_lut, arg2_2d):
-        @launch(operands=[arg0_2d, arg1_lut, arg2_2d])
-        def rope_launch(l_in_2d, l_lut, l_out_2d):
-            in_flat = memref_collapse_shape(l3_1d_ty, l_in_2d, [[0, 1]])
-            out_flat = memref_collapse_shape(l3_1d_ty, l_out_2d, [[0, 1]])
+    with air.launch(name="rope_2d") as launch:
 
-            @segment(name="rope_seg", operands=[in_flat, l_lut, out_flat])
-            def rope_seg(s_in, s_lut, s_out):
-                @herd(
-                    name="rope_herd",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_in, s_lut, s_out],
-                )
-                def rope_body(_tx, _ty, _sx, _sy, h_in, h_lut, h_out):
-                    l1_in = AllocOp(l1RowTy, [], [])
-                    l1_lut = AllocOp(l1RowTy, [], [])
-                    l1_out = AllocOp(l1RowTy, [], [])
+        @launch.body
+        def _():
+            with air.segment(name="rope_seg") as seg:
 
-                    dim_i32 = ConstantOp(T.i32(), embed_dim)
-                    rope_i32 = ConstantOp(T.i32(), rope_dim) if _partial else None
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="rope_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
 
-                    for local_row in range_(rows_per_tile):
-                        row_offset = affine_apply(row_offset_map, [local_row, _tx, _ty])
+                        @h.body
+                        def _(tx, ty):
+                            l1_in = air.alloc([embed_dim], dtype, scope=h.private())
+                            l1_lut = air.alloc([embed_dim], dtype, scope=h.private())
+                            l1_out = air.alloc([embed_dim], dtype, scope=h.private())
 
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[row_offset],
-                            src_sizes=[embed_dim],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_lut,
-                            h_lut,
-                            src_offsets=[row_offset],
-                            src_sizes=[embed_dim],
-                            src_strides=[1],
-                        )
+                            in_flat = IN.reshape(total)
+                            out_flat = OUT.reshape(total)
 
-                        CallOp(
-                            rope_func,
-                            [l1_in, l1_lut, l1_out, dim_i32]
-                            + ([rope_i32] if _partial else []),
-                        )
+                            for local_row in air.sequential(0, rows_per_tile):
+                                row = (
+                                    local_row + (tx * herd_y + ty) * rows_per_tile
+                                ) * embed_dim
 
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[row_offset],
-                            dst_sizes=[embed_dim],
-                            dst_strides=[1],
-                        )
-                        yield_([])
+                                ops.load(l1_in, in_flat[row : row + embed_dim])
+                                ops.load(l1_lut, LUT[row : row + embed_dim])
+                                if partial:
+                                    rope(l1_in, l1_lut, l1_out, embed_dim, rope_dim)
+                                else:
+                                    rope(l1_in, l1_lut, l1_out, embed_dim)
+                                ops.store(l1_out, out_flat[row : row + embed_dim])
 
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_lut)
-                    DeallocOp(l1_out)
-
-                rope_body.attributes["link_with"] = StringAttr.get("rope.o")
+    return launch.build(target=target)
 
 
 # ---------------------------------------------------------------------------

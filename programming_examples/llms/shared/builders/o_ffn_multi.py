@@ -47,6 +47,10 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import type_mapper
 from air.backend.xrt import XRTBackend
 
+from air import api as air
+from air.api import ops
+from shared.builders.rms_gemms_rope_multi import _api_dtype
+
 from shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
@@ -62,114 +66,109 @@ range_ = for_
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_add_2d_to_2d(rows, cols, np_dtype, vector_size=16, herd_x=8, herd_y=1):
-    """Eltwise add (bf16): all 3 args are 2D memrefs, collapsed to 1D inside launch.
+def _build_add(
+    rows,
+    cols,
+    np_dtype,
+    vector_size,
+    herd_x,
+    herd_y,
+    out_2d,
+    target,
+    func_name=None,
+    seg_name="add_seg",
+    herd_name="add_herd",
+):
+    """The residual/FFN eltwise add, shared by the 2D->2D and 2D->1D entry points.
 
-    Unlike the standard _build_add_2d (2D inputs, 1D output), this version keeps the
-    OUTPUT as 2D too, so subsequent launches can read it as 2D without expand_shape.
-    The collapse_shape inside the launch gives a 1D view for the DMA writes — same
-    bytes in DDR, just different type. Used for the residual add (proj + x_residual),
-    both bf16 (the fused-cast GEMM already produced bf16).
+    Both spell the same kernel; they differ only in whether the output func arg
+    keeps the 2-D shape (so a following launch can read it without an
+    expand_shape) or is already flat. The two names are kept because the
+    stitcher matches on the func symbol -- eltwise_add_2d and eltwise_add.
+
+    func_name / seg_name / herd_name exist for the same reason. The qwen
+    prefills stitch two adds into one ELF and so need distinct symbols
+    (@res_add for the attention residual, @down_add for the FFN one, with
+    radd_/dadd_ segment and herd names to match); they each carried their own
+    copy of this builder to get them. The symbols are the only difference.
+
+    The predecessor built the inner vector loop by hand: a memref.subview per
+    operand, two vector.transfer_reads against an identity permutation map and a
+    zero padding constant, an arith.addf, and a transfer_write. That is what
+    ``out[:] = a[:] + b[:]`` means, so it is written that way, and the offset --
+    a 3-symbol AffineMap in the predecessor -- is arithmetic on the coordinates.
     """
-    from air.dialects.memref import collapse_shape as memref_collapse_shape
-
-    xrt_dtype = type_mapper(np_dtype)
     n = rows * cols
-    l3_2d_ty = MemRefType.get([rows, cols], xrt_dtype)
-    l3_1d_ty = MemRefType.get([n], xrt_dtype)
     total_tiles = herd_x * herd_y
+    assert n % total_tiles == 0
     chunk_size = n // total_tiles
     tile_n = cols
-    l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1_ty = MemRefType.get([tile_n], xrt_dtype, memory_space=l1_space)
-    vec_ty = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    assert chunk_size % tile_n == 0
+    assert tile_n % vector_size == 0
 
-    @FuncOp.from_py_func(l3_2d_ty, l3_2d_ty, l3_2d_ty)
-    def eltwise_add_2d(arg0_2d, arg1_2d, arg2_2d):
-        @launch(operands=[arg0_2d, arg1_2d, arg2_2d])
-        def add_launch(l_a, l_b, l_out):
-            a_flat = memref_collapse_shape(l3_1d_ty, l_a, [[0, 1]])
-            b_flat = memref_collapse_shape(l3_1d_ty, l_b, [[0, 1]])
-            out_flat = memref_collapse_shape(l3_1d_ty, l_out, [[0, 1]])
+    dtype = _api_dtype(np_dtype)
+    A = air.tensor([rows, cols], dtype)
+    B = air.tensor([rows, cols], dtype)
+    OUT = air.tensor([rows, cols], dtype) if out_2d else air.tensor([n], dtype)
 
-            @segment(name="add_seg", operands=[a_flat, b_flat, out_flat])
-            def add_seg(s_a, s_b, s_out):
-                offset_map = AffineMap.get(
-                    0,
-                    3,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineExpr.get_add(
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(herd_y),
-                                    ),
-                                    AffineSymbolExpr.get(2),
-                                ),
-                                AffineConstantExpr.get(chunk_size),
-                            ),
-                        )
-                    ],
-                )
+    name = func_name or ("eltwise_add_2d" if out_2d else "eltwise_add")
 
-                @herd(
-                    name="add_herd",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_a, s_b, s_out],
-                )
-                def add_body(_tx, _ty, _sx, _sy, h_a, h_b, h_out):
-                    l1_a = AllocOp(l1_ty, [], [])
-                    l1_b = AllocOp(l1_ty, [], [])
-                    l1_out = AllocOp(l1_ty, [], [])
-                    c0 = arith.ConstantOp.create_index(0)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
+    with air.launch(name=name) as launch:
 
-                    for loop_iv in range_(0, chunk_size, tile_n):
-                        offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
-                        dma_memcpy_nd(
-                            l1_a,
-                            h_a,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_b,
-                            h_b,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        for j in range_(0, tile_n, vector_size):
-                            sub_a = subview(l1_a.result, [j], [vector_size], [1])
-                            sub_b = subview(l1_b.result, [j], [vector_size], [1])
-                            sub_out = subview(l1_out.result, [j], [vector_size], [1])
-                            v_a = transfer_read(
-                                vec_ty, sub_a, [c0], identity_map, cst0, [True]
+        @launch.body
+        def _():
+            with air.segment(name=seg_name) as seg:
+
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name=herd_name,
+                        shape=(herd_x, herd_y),
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            l1_a = air.alloc(
+                                [tile_n], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_b = transfer_read(
-                                vec_ty, sub_b, [c0], identity_map, cst0, [True]
+                            l1_b = air.alloc(
+                                [tile_n], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sum = arith.addf(v_a, v_b)
-                            transfer_write(
-                                None, v_sum, sub_out, [c0], identity_map, [True]
+                            l1_out = air.alloc(
+                                [tile_n], dtype, scope=h.private(), vector=vector_size
                             )
-                            yield_([])
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[offset],
-                            dst_sizes=[tile_n],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-                    DeallocOp(l1_a)
-                    DeallocOp(l1_b)
-                    DeallocOp(l1_out)
+
+                            a_flat = A.reshape(n)
+                            b_flat = B.reshape(n)
+                            out_flat = OUT.reshape(n) if out_2d else OUT
+
+                            for iv in air.sequential(0, chunk_size, tile_n):
+                                off = iv + (tx * herd_y + ty) * chunk_size
+                                ops.load(l1_a, a_flat[off : off + tile_n])
+                                ops.load(l1_b, b_flat[off : off + tile_n])
+                                l1_out[:] = l1_a[:] + l1_b[:]
+                                ops.store(l1_out, out_flat[off : off + tile_n])
+
+    return launch.build(target=target)
+
+
+def _build_add_2d_to_2d(
+    rows, cols, np_dtype, vector_size=16, herd_x=8, herd_y=1, target="npu2"
+):
+    """Eltwise add with all three args 2-D, flattened to 1-D views inside.
+
+    Keeping the OUTPUT 2-D lets a following launch read it without an
+    expand_shape. Used for the residual add (proj + x_residual), both bf16.
+    """
+    return _build_add(rows, cols, np_dtype, vector_size, herd_x, herd_y, True, target)
+
+
+def _build_add_2d_to_1d(
+    rows, cols, np_dtype, vector_size=16, total_tiles=8, target="npu2"
+):
+    """Eltwise add with 2-D inputs and a flat output. The FFN add."""
+    return _build_add(rows, cols, np_dtype, vector_size, total_tiles, 1, False, target)
 
 
 # ---------------------------------------------------------------------------
@@ -372,101 +371,12 @@ def _build_o_ffn(
     # L8: FFN Add (2D inputs, 1D output — same as ffn_full's add)
     print("  [8/8] FFN Add (2D -> 1D)...")
 
-    @module_builder
-    def _build_add_2d_to_1d():
-        from air.dialects.memref import collapse_shape as memref_collapse_shape
+    # The FFN add is the shared _build_add_2d_to_1d above; this used to be a
+    # nested near-copy that closed over seq_len/emb_dim/n_total instead of
+    # taking them, which is why the four out-of-tree copies of it are the
+    # parameterised ones. Same kernel, same func symbol (@eltwise_add).
 
-        xrt_dtype = type_mapper(bfloat16)
-        l3_2d_ty = MemRefType.get([seq_len, emb_dim], xrt_dtype)
-        l3_1d_ty = MemRefType.get([n_total], xrt_dtype)
-        total_tiles = 8
-        chunk_size = n_total // total_tiles
-        tile_n = emb_dim
-        l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-        l1_ty = MemRefType.get([tile_n], xrt_dtype, memory_space=l1_space)
-        vec_ty = VectorType.get([16], xrt_dtype)
-        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-        @FuncOp.from_py_func(l3_2d_ty, l3_2d_ty, l3_1d_ty)
-        def eltwise_add(a_2d, b_2d, out_1d):
-            @launch(operands=[a_2d, b_2d, out_1d])
-            def add_launch(l_a, l_b, l_out):
-                a_flat = memref_collapse_shape(l3_1d_ty, l_a, [[0, 1]])
-                b_flat = memref_collapse_shape(l3_1d_ty, l_b, [[0, 1]])
-
-                @segment(name="add_seg", operands=[a_flat, b_flat, l_out])
-                def add_seg(s_a, s_b, s_out):
-                    offset_map = AffineMap.get(
-                        0,
-                        3,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineExpr.get_add(
-                                        AffineExpr.get_mul(
-                                            AffineSymbolExpr.get(1),
-                                            AffineConstantExpr.get(1),
-                                        ),
-                                        AffineSymbolExpr.get(2),
-                                    ),
-                                    AffineConstantExpr.get(chunk_size),
-                                ),
-                            )
-                        ],
-                    )
-
-                    @herd(name="add_herd", sizes=[8, 1], operands=[s_a, s_b, s_out])
-                    def add_body(_tx, _ty, _sx, _sy, h_a, h_b, h_out):
-                        l1_a = AllocOp(l1_ty, [], [])
-                        l1_b = AllocOp(l1_ty, [], [])
-                        l1_out = AllocOp(l1_ty, [], [])
-                        c0 = arith.ConstantOp.create_index(0)
-                        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                        for loop_iv in range_(0, chunk_size, tile_n):
-                            offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
-                            dma_memcpy_nd(
-                                l1_a,
-                                h_a,
-                                src_offsets=[offset],
-                                src_sizes=[tile_n],
-                                src_strides=[1],
-                            )
-                            dma_memcpy_nd(
-                                l1_b,
-                                h_b,
-                                src_offsets=[offset],
-                                src_sizes=[tile_n],
-                                src_strides=[1],
-                            )
-                            for j in range_(0, tile_n, 16):
-                                sub_a = subview(l1_a.result, [j], [16], [1])
-                                sub_b = subview(l1_b.result, [j], [16], [1])
-                                sub_out = subview(l1_out.result, [j], [16], [1])
-                                v_a = transfer_read(
-                                    vec_ty, sub_a, [c0], identity_map, cst0, [True]
-                                )
-                                v_b = transfer_read(
-                                    vec_ty, sub_b, [c0], identity_map, cst0, [True]
-                                )
-                                v_sum = arith.addf(v_a, v_b)
-                                transfer_write(
-                                    None, v_sum, sub_out, [c0], identity_map, [True]
-                                )
-                                yield_([])
-                            dma_memcpy_nd(
-                                h_out,
-                                l1_out,
-                                dst_offsets=[offset],
-                                dst_sizes=[tile_n],
-                                dst_strides=[1],
-                            )
-                            yield_([])
-                        DeallocOp(l1_a)
-                        DeallocOp(l1_b)
-                        DeallocOp(l1_out)
-
-    ffn_add_ir = str(_build_add_2d_to_1d())
+    ffn_add_ir = str(_build_add_2d_to_1d(seq_len, emb_dim, bfloat16))
 
     if print_kernels:
         for name, ir in [
@@ -756,3 +666,116 @@ if __name__ == "__main__":
         exit(0)
     print("FAIL!")
     exit(1)
+
+
+def build_named_add(
+    rows,
+    cols,
+    np_dtype,
+    func_name,
+    seg_name,
+    herd_name,
+    out_2d,
+    vector_size=16,
+    herd_x=8,
+    herd_y=1,
+    target="npu2",
+):
+    """The eltwise add under a caller-chosen func/segment/herd symbol.
+
+    Exists because a stitched ELF holding two adds needs two distinct func
+    symbols; the qwen prefills each carried a private copy of the whole builder
+    to get @res_add and @down_add. Same kernel, byte-identical instructions.
+    """
+    return _build_add(
+        rows,
+        cols,
+        np_dtype,
+        vector_size,
+        herd_x,
+        herd_y,
+        out_2d,
+        target,
+        func_name=func_name,
+        seg_name=seg_name,
+        herd_name=herd_name,
+    )
+
+
+def build_padded_add(
+    rows,
+    cols,
+    a_cols,
+    np_dtype,
+    func_name,
+    seg_name,
+    herd_name,
+    out_2d,
+    vector_size=16,
+    herd_x=8,
+    herd_y=1,
+    target="npu2",
+):
+    """The eltwise add where the FIRST input is an N-padded GEMM output.
+
+    `A` keeps its 2-D `[rows, a_cols]` shape and each row is read as
+    `A[r, 0:cols]` -- an integer subscript drops the row axis and the slice
+    keeps the column one, so the region is rank 1 with a row stride of a_cols.
+    That is the predecessor's `src_offsets=[r, 0] / src_sizes=[1, cols] /
+    src_strides=[a_cols, 1]`. `B` and the output are flat and indexed at
+    `r * cols`, so only `A` pays for the padding.
+
+    Separate from build_named_add because that one takes a single column count
+    for both inputs; passing the padded width there would silently change the
+    func signature.
+    """
+    total_tiles = herd_x * herd_y
+    assert rows % total_tiles == 0, (rows, total_tiles)
+    assert cols % vector_size == 0, (cols, vector_size)
+    rows_per_tile = rows // total_tiles
+
+    dtype = _api_dtype(np_dtype)
+    A = air.tensor([rows, a_cols], dtype)
+    B = air.tensor([rows, cols], dtype)
+    OUT = (
+        air.tensor([rows, cols], dtype) if out_2d else air.tensor([rows * cols], dtype)
+    )
+
+    with air.launch(name=func_name) as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name=seg_name) as seg:
+
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name=herd_name,
+                        shape=(herd_x, herd_y),
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            l1_a = air.alloc(
+                                [cols], dtype, scope=h.private(), vector=vector_size
+                            )
+                            l1_b = air.alloc(
+                                [cols], dtype, scope=h.private(), vector=vector_size
+                            )
+                            l1_out = air.alloc(
+                                [cols], dtype, scope=h.private(), vector=vector_size
+                            )
+
+                            b_flat = B.reshape(rows * cols)
+                            out_flat = OUT.reshape(rows * cols) if out_2d else OUT
+
+                            for iv in air.sequential(0, rows_per_tile):
+                                r = (tx * herd_y + ty) * rows_per_tile + iv
+                                off = r * cols
+                                ops.load(l1_a, A[r, 0:cols])
+                                ops.load(l1_b, b_flat[off : off + cols])
+                                l1_out[:] = l1_a[:] + l1_b[:]
+                                ops.store(l1_out, out_flat[off : off + cols])
+
+    return launch.build(target=target)

@@ -85,343 +85,160 @@ from air.dialects.func import FuncOp
 from air.dialects.scf import for_ as range_, yield_
 from air.backend.xrt_runner import type_mapper
 
+from air import api as air
+from air.api import ops
+from air.api.types import f32
+from shared.builders.rms_gemms_rope_multi import _api_dtype
 
-@module_builder
+
 def _build_qknorm_2d(
-    outer_rows, outer_cols, head_dim, np_dtype, eps, herd_x, vector_size=16
+    outer_rows,
+    outer_cols,
+    head_dim,
+    np_dtype,
+    eps,
+    herd_x,
+    vector_size=16,
+    target="npu2",
 ):
-    """Build a per-head RMSNorm launch with 2D in/out args.
-
-    The outer 2D shape (outer_rows=seq_len, outer_cols=q_dim or kv_dim) matches
-    the GEMM output type. Inside the launch the buffers are collapse_shape'd to
-    1D and the herd processes total/head_dim rows of head_dim each, RMSNorm-ing
-    each row with the shared weight (head_dim,).
+    """Per-head RMSNorm over a 2D tensor walked as flat head_dim-wide rows.
 
     Func signature:
-      (in_2d: [outer_rows, outer_cols], weight_1d: [head_dim], out_2d: [outer_rows, outer_cols])
+      (in_2d: [outer_rows, outer_cols], weight: [head_dim], out_2d: same as in)
+
+    Same row walk as _build_rope_2d, with a normalise in place of the rotate.
+    The accumulate is f32 -- the square is widened before the reduction and the
+    rsqrt runs in f32 -- which is where this differs from _build_rms_1d's bf16
+    accumulate; that is numerics, so it is kept.
     """
-    xrt_dtype = type_mapper(np_dtype)
+    assert head_dim % vector_size == 0, (head_dim, vector_size)
     total = outer_rows * outer_cols
-    rope_rows = total // head_dim  # n_heads * seq_len
+    assert total % head_dim == 0
+    rope_rows = total // head_dim
     herd_y = 1
     total_tiles = herd_x * herd_y
-    assert head_dim % vector_size == 0
-    assert total % head_dim == 0
     assert rope_rows % total_tiles == 0
     rows_per_tile = rope_rows // total_tiles
 
-    f32 = F32Type.get()
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    vecTyF32 = VectorType.get([vector_size], f32)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([outer_rows, outer_cols], dtype)
+    WT = air.tensor([head_dim], dtype)
+    OUT = air.tensor([outer_rows, outer_cols], dtype)
 
-    l3_2d_ty = MemRefType.get([outer_rows, outer_cols], xrt_dtype)
-    l3_1d_ty = MemRefType.get([total], xrt_dtype)
-    l3_w_ty = MemRefType.get([head_dim], xrt_dtype)
+    with air.launch(name="qknorm_2d") as launch:
 
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get([head_dim], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTyF32 = MemRefType.get([vector_size], f32, memory_space=l1_mem_space)
-    l1SqTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
+        @launch.body
+        def _():
+            with air.segment(name="qkn_seg") as seg:
 
-    # row_offset = (local_row + tile_id * rows_per_tile) * head_dim
-    row_offset_map = AffineMap.get(
-        0,
-        3,
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),
-                    AffineExpr.get_mul(
-                        AffineExpr.get_add(
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(herd_y),
-                            ),
-                            AffineSymbolExpr.get(2),
-                        ),
-                        AffineConstantExpr.get(rows_per_tile),
-                    ),
-                ),
-                AffineConstantExpr.get(head_dim),
-            )
-        ],
-    )
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="qkn_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
 
-    @FuncOp.from_py_func(l3_2d_ty, l3_w_ty, l3_2d_ty)
-    def qknorm_2d(arg0_2d, arg1_w, arg2_2d):
-        @launch(operands=[arg0_2d, arg1_w, arg2_2d])
-        def qkn_launch(l_in_2d, l_w, l_out_2d):
-            in_flat = memref_collapse_shape(l3_1d_ty, l_in_2d, [[0, 1]])
-            out_flat = memref_collapse_shape(l3_1d_ty, l_out_2d, [[0, 1]])
-
-            @segment(name="qkn_seg", operands=[in_flat, l_w, out_flat])
-            def qkn_seg(s_in, s_w, s_out):
-                @herd(
-                    name="qkn_herd", sizes=[herd_x, herd_y], operands=[s_in, s_w, s_out]
-                )
-                def qkn_body(_tx, _ty, _sx, _sy, h_in, h_w, h_out):
-                    l1_in = AllocOp(l1RowTy, [], [])
-                    l1_out = AllocOp(l1RowTy, [], [])
-                    l1_w = AllocOp(l1RowTy, [], [])
-                    l1_acc = AllocOp(l1VecTyF32, [], [])
-                    l1_sq = AllocOp(l1SqTy, [], [])
-
-                    c0 = arith.ConstantOp.create_index(0)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                    cst0_f32 = arith.ConstantOp(f32, 0.0)
-                    n_f = arith.ConstantOp(f32, float(head_dim))
-                    eps_f = arith.ConstantOp(f32, eps)
-                    v_zero_f32 = BroadcastOp(vecTyF32, cst0_f32)
-
-                    # weight DMA once per tile (broadcast across rows).
-                    dma_memcpy_nd(
-                        l1_w,
-                        h_w,
-                        src_offsets=[0],
-                        src_sizes=[head_dim],
-                        src_strides=[1],
-                    )
-
-                    for local_row in range_(rows_per_tile):
-                        row_off = affine_apply(row_offset_map, [local_row, _tx, _ty])
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[row_off],
-                            src_sizes=[head_dim],
-                            src_strides=[1],
-                        )
-
-                        # sum of x^2 in f32.
-                        transfer_write(
-                            None, v_zero_f32, l1_acc, [c0], identity_map, [True]
-                        )
-                        for j in range_(0, head_dim, vector_size):
-                            sub_in = subview(l1_in.result, [j], [vector_size], [1])
-                            v_x = transfer_read(
-                                vecTy, sub_in, [c0], identity_map, cst0, [True]
+                        @h.body
+                        def _(tx, ty):
+                            row = air.alloc(
+                                [head_dim], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sq = arith.mulf(v_x, v_x)
-                            transfer_write(
-                                None, v_sq, l1_sq, [c0], identity_map, [True]
+                            wt = air.alloc(
+                                [head_dim], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sq_rd = transfer_read(
-                                vecTy, l1_sq, [c0], identity_map, cst0, [True]
+                            out = air.alloc(
+                                [head_dim], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
-                            v_acc = transfer_read(
-                                vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
+                            acc = air.alloc(
+                                [1], f32, scope=h.private(), vector=vector_size
                             )
-                            v_sum = arith.addf(v_acc, v_sq_f32)
-                            transfer_write(
-                                None, v_sum, l1_acc, [c0], identity_map, [True]
+                            rstd = air.alloc(
+                                [1], dtype, scope=h.private(), vector=vector_size
                             )
-                            yield_([])
 
-                        v_final = transfer_read(
-                            vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
-                        )
-                        total_sum = vector_reduction(f32, "add", v_final)
-                        rms = arith.divf(total_sum, n_f)
-                        rms_eps = arith.addf(rms, eps_f)
-                        rstd_f32 = math_dialect.rsqrt(rms_eps)
-                        rstd = arith.truncf(xrt_dtype, rstd_f32)
-                        v_rstd = BroadcastOp(vecTy, rstd)
+                            ops.load(wt, WT[:])
+                            in_flat = IN.reshape(total)
+                            out_flat = OUT.reshape(total)
 
-                        for j in range_(0, head_dim, vector_size):
-                            sub_in = subview(l1_in.result, [j], [vector_size], [1])
-                            sub_w = subview(l1_w.result, [j], [vector_size], [1])
-                            sub_out = subview(l1_out.result, [j], [vector_size], [1])
-                            v_x = transfer_read(
-                                vecTy, sub_in, [c0], identity_map, cst0, [True]
-                            )
-                            v_w = transfer_read(
-                                vecTy, sub_w, [c0], identity_map, cst0, [True]
-                            )
-                            v_normed = arith.mulf(v_x, v_rstd)
-                            v_weighted = arith.mulf(v_normed, v_w)
-                            transfer_write(
-                                None, v_weighted, sub_out, [c0], identity_map, [True]
-                            )
-                            yield_([])
+                            for local_row in air.sequential(0, rows_per_tile):
+                                r = (
+                                    local_row + (tx * herd_y + ty) * rows_per_tile
+                                ) * head_dim
+                                ops.load(row, in_flat[r : r + head_dim])
+                                acc[:] = ops.reduce_add(ops.cast(row[:] * row[:], f32))
+                                rstd[:] = ops.cast(
+                                    ops.rsqrt(acc[:] / head_dim + eps), dtype
+                                )
+                                out[:] = row[:] * rstd[:] * wt[:]
+                                ops.store(out, out_flat[r : r + head_dim])
 
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[row_off],
-                            dst_sizes=[head_dim],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_out)
-                    DeallocOp(l1_w)
-                    DeallocOp(l1_acc)
-                    DeallocOp(l1_sq)
+    return launch.build(target=target)
 
 
-@module_builder
-def _build_qknorm_1d(n_rows, head_dim, np_dtype, eps, herd_x=8, vector_size=16):
-    """Decode per-head RMSNorm with 1D func args (M=1 token).
-
-    Func signature: (in_1d: [n_rows*head_dim], weight: [head_dim], out_1d: [n_rows*head_dim]).
-    The herd processes n_rows rows (= n_heads or n_kv_heads) of head_dim each.
-    Mirrors _build_qknorm_2d math but with no collapse (args are already 1D).
-    """
-    xrt_dtype = type_mapper(np_dtype)
-    total = n_rows * head_dim
+def _build_qknorm_1d(
+    n_rows, head_dim, np_dtype, eps, herd_x=8, vector_size=16, target="npu2"
+):
+    """Per-head RMSNorm with flat func args (decode). See _build_qknorm_2d."""
+    assert head_dim % vector_size == 0, (head_dim, vector_size)
     herd_y = 1
     total_tiles = herd_x * herd_y
-    assert head_dim % vector_size == 0
     assert n_rows % total_tiles == 0
     rows_per_tile = n_rows // total_tiles
+    total = n_rows * head_dim
 
-    f32 = F32Type.get()
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    vecTyF32 = VectorType.get([vector_size], f32)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([total], dtype)
+    WT = air.tensor([head_dim], dtype)
+    OUT = air.tensor([total], dtype)
 
-    l3_1d_ty = MemRefType.get([total], xrt_dtype)
-    l3_w_ty = MemRefType.get([head_dim], xrt_dtype)
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get([head_dim], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTyF32 = MemRefType.get([vector_size], f32, memory_space=l1_mem_space)
-    l1SqTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
+    with air.launch(name="qknorm_1d") as launch:
 
-    row_offset_map = AffineMap.get(
-        0,
-        3,
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),
-                    AffineExpr.get_mul(
-                        AffineExpr.get_add(
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(herd_y),
-                            ),
-                            AffineSymbolExpr.get(2),
-                        ),
-                        AffineConstantExpr.get(rows_per_tile),
-                    ),
-                ),
-                AffineConstantExpr.get(head_dim),
-            )
-        ],
-    )
+        @launch.body
+        def _():
+            with air.segment(name="qkn1_seg") as seg:
 
-    @FuncOp.from_py_func(l3_1d_ty, l3_w_ty, l3_1d_ty)
-    def qknorm_1d(arg0_in, arg1_w, arg2_out):
-        @launch(operands=[arg0_in, arg1_w, arg2_out])
-        def qkn_launch(l_in, l_w, l_out):
-            @segment(name="qkn1_seg", operands=[l_in, l_w, l_out])
-            def qkn_seg(s_in, s_w, s_out):
-                @herd(
-                    name="qkn1_herd",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_in, s_w, s_out],
-                )
-                def qkn_body(_tx, _ty, _sx, _sy, h_in, h_w, h_out):
-                    l1_in = AllocOp(l1RowTy, [], [])
-                    l1_out = AllocOp(l1RowTy, [], [])
-                    l1_w = AllocOp(l1RowTy, [], [])
-                    l1_acc = AllocOp(l1VecTyF32, [], [])
-                    l1_sq = AllocOp(l1SqTy, [], [])
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="qkn1_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
 
-                    c0 = arith.ConstantOp.create_index(0)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                    cst0_f32 = arith.ConstantOp(f32, 0.0)
-                    n_f = arith.ConstantOp(f32, float(head_dim))
-                    eps_f = arith.ConstantOp(f32, eps)
-                    v_zero_f32 = BroadcastOp(vecTyF32, cst0_f32)
-
-                    dma_memcpy_nd(
-                        l1_w,
-                        h_w,
-                        src_offsets=[0],
-                        src_sizes=[head_dim],
-                        src_strides=[1],
-                    )
-
-                    for local_row in range_(rows_per_tile):
-                        row_off = affine_apply(row_offset_map, [local_row, _tx, _ty])
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[row_off],
-                            src_sizes=[head_dim],
-                            src_strides=[1],
-                        )
-
-                        transfer_write(
-                            None, v_zero_f32, l1_acc, [c0], identity_map, [True]
-                        )
-                        for j in range_(0, head_dim, vector_size):
-                            sub_in = subview(l1_in.result, [j], [vector_size], [1])
-                            v_x = transfer_read(
-                                vecTy, sub_in, [c0], identity_map, cst0, [True]
+                        @h.body
+                        def _(tx, ty):
+                            row = air.alloc(
+                                [head_dim], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sq = arith.mulf(v_x, v_x)
-                            transfer_write(
-                                None, v_sq, l1_sq, [c0], identity_map, [True]
+                            wt = air.alloc(
+                                [head_dim], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sq_rd = transfer_read(
-                                vecTy, l1_sq, [c0], identity_map, cst0, [True]
+                            out = air.alloc(
+                                [head_dim], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_sq_f32 = arith.extf(vecTyF32, v_sq_rd)
-                            v_acc = transfer_read(
-                                vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
+                            acc = air.alloc(
+                                [1], f32, scope=h.private(), vector=vector_size
                             )
-                            v_sum = arith.addf(v_acc, v_sq_f32)
-                            transfer_write(
-                                None, v_sum, l1_acc, [c0], identity_map, [True]
+                            rstd = air.alloc(
+                                [1], dtype, scope=h.private(), vector=vector_size
                             )
-                            yield_([])
 
-                        v_final = transfer_read(
-                            vecTyF32, l1_acc, [c0], identity_map, cst0_f32, [True]
-                        )
-                        total_sum = vector_reduction(f32, "add", v_final)
-                        rms = arith.divf(total_sum, n_f)
-                        rms_eps = arith.addf(rms, eps_f)
-                        rstd_f32 = math_dialect.rsqrt(rms_eps)
-                        rstd = arith.truncf(xrt_dtype, rstd_f32)
-                        v_rstd = BroadcastOp(vecTy, rstd)
+                            ops.load(wt, WT[:])
 
-                        for j in range_(0, head_dim, vector_size):
-                            sub_in = subview(l1_in.result, [j], [vector_size], [1])
-                            sub_w = subview(l1_w.result, [j], [vector_size], [1])
-                            sub_out = subview(l1_out.result, [j], [vector_size], [1])
-                            v_x = transfer_read(
-                                vecTy, sub_in, [c0], identity_map, cst0, [True]
-                            )
-                            v_w = transfer_read(
-                                vecTy, sub_w, [c0], identity_map, cst0, [True]
-                            )
-                            v_normed = arith.mulf(v_x, v_rstd)
-                            v_weighted = arith.mulf(v_normed, v_w)
-                            transfer_write(
-                                None, v_weighted, sub_out, [c0], identity_map, [True]
-                            )
-                            yield_([])
+                            for local_row in air.sequential(0, rows_per_tile):
+                                r = (
+                                    local_row + (tx * herd_y + ty) * rows_per_tile
+                                ) * head_dim
+                                ops.load(row, IN[r : r + head_dim])
+                                acc[:] = ops.reduce_add(ops.cast(row[:] * row[:], f32))
+                                rstd[:] = ops.cast(
+                                    ops.rsqrt(acc[:] / head_dim + eps), dtype
+                                )
+                                out[:] = row[:] * rstd[:] * wt[:]
+                                ops.store(out, OUT[r : r + head_dim])
 
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[row_off],
-                            dst_sizes=[head_dim],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_out)
-                    DeallocOp(l1_w)
-                    DeallocOp(l1_acc)
-                    DeallocOp(l1_sq)
+    return launch.build(target=target)
 
 
 def build_rms_qkv_qknorm_rope_module(
