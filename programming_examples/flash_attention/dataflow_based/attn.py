@@ -72,6 +72,25 @@ def build_module(
     """
     mmul_m, mmul_k, mmul_n = [8, 8, 8] if arch == "aie2p" else [4, 8, 4]
 
+    if dv != dk:
+        # Refused rather than attempted. The two are separate parameters and
+        # the shapes below name whichever one they carry, but one buffer is
+        # genuinely dimensioned by both: v_l1 is [dk, lkp], the shape the
+        # matmul kernel's signature fixes, holding a [lkp, dv] tile that the
+        # DMA has already reordered. Splitting dk from dv means reshaping that
+        # and re-deriving the packed access pattern around it, which is a
+        # change to the kernel contract rather than to this file.
+        #
+        # The predecessor took dv too and used it for nothing: every one of its
+        # types was built from dk, including memref_input_v_lk_dv, so dv != dk
+        # produced a kernel whose V operand had the wrong shape. Failing here
+        # says so, instead of surfacing as a slice out of bounds during tracing.
+        raise ValueError(
+            f"dk={dk} and dv={dv} must be equal; this kernel has only ever been "
+            "built and run with dv == dk, and its V tile is shaped by the "
+            "matmul kernel's signature rather than by dv"
+        )
+
     ncs = num_cascade_stages
     cps = (lk // lkp) // ncs  # K/V chunks each column walks
     tq = lq
@@ -83,7 +102,7 @@ def build_module(
     # host passes one. The pipeline folds it into G before the max, so nothing
     # in the body reads it while the mask is zero.
     air.tensor([lq, lk], bf16)  # the mask, read only by the pipeline (see above)
-    OUT = air.tensor([lq, dk], bf16)
+    OUT = air.tensor([lq, dv], bf16)
 
     # Q and K share the L3->L2 bundle: they are never in flight together, Q
     # being staged once before the loop and K once per trip.
@@ -163,14 +182,14 @@ def build_module(
                         air.alloc([lkp, dv], bf16, scope=seg.private())
                         for _ in range(ncs)
                     ]
-                    result_l2 = air.alloc([lq, dk], bf16, scope=seg.private())
+                    result_l2 = air.alloc([lq, dv], bf16, scope=seg.private())
 
                     # The running state of the online softmax. per_core, not
                     # shared: each column keeps its own whole copy, and it has
                     # to outlive the herd that writes it.
                     up = air.alloc([tq, 1], bf16, scope=seg.per_core())
                     sp = air.alloc([tq, 1], bf16, scope=seg.per_core())
-                    Gp = air.alloc([tq, dk], bf16, scope=seg.per_core())
+                    Gp = air.alloc([tq, dv], bf16, scope=seg.per_core())
                     a_l1 = air.alloc([tq, dk], bf16, scope=seg.per_core())
 
                     for c in range(ncs):
@@ -296,7 +315,7 @@ def build_module(
                                 )
                                 air.dealloc(g_copy)
 
-                                gv = air.alloc([tq, dk], bf16, scope=h_soft.private())
+                                gv = air.alloc([tq, dv], bf16, scope=h_soft.private())
                                 gv_back.get(gv, indices=[tx, ty])
                                 accum_gp(gv, Gp)
                                 air.dealloc(gv)
@@ -322,7 +341,7 @@ def build_module(
                             def _(tx, ty):
                                 v_l1 = air.alloc([dk, lkp], bf16, scope=h_gv.private())
                                 g = air.alloc([tq * lkp], bf16, scope=h_gv.private())
-                                acc = air.alloc([tq, dk], bf16, scope=h_gv.private())
+                                acc = air.alloc([tq, dv], bf16, scope=h_gv.private())
                                 zero_gp(acc)
                                 g_to_matmul.get(g, indices=[tx, ty])
                                 l2_v.get(v_l1, indices=[tx, ty])
@@ -358,7 +377,7 @@ def build_module(
                                 and only one of them runs on any given core.
                                 """
                                 gp_in = air.alloc(
-                                    [tq, dk], bf16, scope=h_merge.private()
+                                    [tq, dv], bf16, scope=h_merge.private()
                                 )
                                 up_in = air.alloc(
                                     [tq, 1], bf16, scope=h_merge.private()
