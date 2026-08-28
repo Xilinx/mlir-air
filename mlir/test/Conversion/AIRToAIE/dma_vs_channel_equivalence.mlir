@@ -49,4 +49,12 @@
 // RUN: air-opt %S/Inputs/equiv_l2_chan.mlir --pass-pipeline='builtin.module(air-dependency,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.l2.chan
 // RUN: diff %t.l2.dma %t.l2.chan
 
+// A broadcast feed. This pair needs air-broadcast-detection and
+// air-specialize-dma-broadcast ahead of air-dma-to-channel, and compares the
+// device only: the two forms reach the same fan-out by different routes (the
+// DMA form derives the guard, the channel form is written with it).
+// RUN: air-opt %S/Inputs/equiv_bc_dma.mlir  --pass-pipeline='builtin.module(air-dependency,air-broadcast-detection,air-specialize-dma-broadcast,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.bc.dma
+// RUN: air-opt %S/Inputs/equiv_bc_chan.mlir --pass-pipeline='builtin.module(air-dependency,air-broadcast-detection,air-specialize-dma-broadcast,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.bc.chan
+// RUN: diff %t.bc.dma %t.bc.chan
+
 // This file is a driver for the pairs in Inputs/; it holds no IR of its own.

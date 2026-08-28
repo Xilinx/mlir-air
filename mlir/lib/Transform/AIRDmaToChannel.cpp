@@ -563,10 +563,44 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     // The declaration already carries its bundle shape and every property the
     // front end wrote on it; re-deriving either would overwrite the reason for
     // naming it in the first place.
-    if (op->hasAttr("broadcast_set"))
-      op->emitWarning("Attribute broadcast_set is set on a DMA that names a "
-                      "channel. The named declaration's own broadcast_shape is "
-                      "used, and the specialized set is ignored.");
+    //
+    // A broadcast still works when the channel is named: the set is forwarded
+    // to the put below, and the internal indices come from the affine.if that
+    // guards it, exactly as for an unnamed channel. Only the SHAPE comes from
+    // the declaration rather than being derived from the set. So say nothing
+    // while the two agree, and report it when they do not -- a declaration
+    // whose fan-out disagrees with the guard that implements it is a real bug,
+    // and silently preferring either one hides it.
+    if (auto setAttr =
+            op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
+      SmallVector<int, 2> lbs_int = {-1, -1};
+      SmallVector<int, 2> ubs_int = {-1, -1};
+      air::getSizesFromIntegerSet(ctx, setAttr.getValue(), lbs_int, ubs_int);
+      SmallVector<int64_t, 2> fromSet = {ubs_int[0] - lbs_int[0] + 1,
+                                         ubs_int[1] - lbs_int[1] + 1};
+      SmallVector<int64_t, 2> declared;
+      if (auto bs = namedChanOp.getBroadcastShape())
+        for (auto d : bs)
+          if (auto i = llvm::dyn_cast<IntegerAttr>(d))
+            declared.push_back(i.getInt());
+      if (declared != fromSet) {
+        auto fmt = [](ArrayRef<int64_t> v) {
+          std::string s;
+          llvm::raw_string_ostream os(s);
+          os << "[";
+          llvm::interleaveComma(v, os);
+          os << "]";
+          return s;
+        };
+        std::string declStr = fmt(declared), setStr = fmt(fromSet);
+        op->emitWarning()
+            << "broadcast_set on this DMA implies a fan-out of " << setStr
+            << ", but the channel it names, @" << namedChanOp.getSymName()
+            << ", declares broadcast_shape " << declStr
+            << ". The declaration wins; the guard is unchanged, so the two "
+               "disagree on device.";
+      }
+    }
   } else if (op->hasAttr("broadcast_set")) {
     // If the data movement is subject to a broadcasting pattern, then
     // specialize each broadcast source in a bundle into a separate channel.
