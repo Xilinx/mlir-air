@@ -922,6 +922,15 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   }
 
   os << ",air-dma-to-channel,canonicalize,cse";
+  // Second half of air-annotate-append-barrier, for the same reason
+  // air-annotate-packet-ids runs twice. The early slot only sees the channel
+  // spelling: when an append is written as an air.dma_memcpy_nd its two L3
+  // endpoints do not share a block until dma-to-channel has hoisted the
+  // external half out to launch scope, so there is no pair to find yet. Run it
+  // again now that there is. Re-tagging the pairs the first run already found
+  // is a no-op -- the attributes are units and the pairing is the same -- so
+  // this only ever adds the pairs that were previously invisible.
+  os << ",air-annotate-append-barrier";
   os << ",air-dependency-canonicalize,canonicalize,cse";
   os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
 
