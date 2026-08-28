@@ -57,4 +57,18 @@
 // RUN: air-opt %S/Inputs/equiv_bc_chan.mlir --pass-pipeline='builtin.module(air-dependency,air-broadcast-detection,air-specialize-dma-broadcast,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.bc.chan
 // RUN: diff %t.bc.dma %t.bc.chan
 
+// A 4x4 herd: 16 tiles, to check nothing was special about 2x2.
+// RUN: air-opt %S/Inputs/equiv_b4_dma.mlir --pass-pipeline='builtin.module(air-dependency,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.b4.dma
+// RUN: air-opt %S/Inputs/equiv_b4_chan.mlir --pass-pipeline='builtin.module(air-dependency,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.b4.chan
+// RUN: diff %t.b4.dma %t.b4.chan
+
+// Three L3-bound channels into one column, which is over the 2-per-column shim
+// DMA limit, so air-dma-to-channel's pressure estimator auto-upgrades them to
+// packet flows. Worth pinning because that estimator REWRITES the channel
+// declarations -- including ones the front end wrote and named -- and it has to
+// reach the same verdict from either spelling.
+// RUN: air-opt %S/Inputs/equiv_pk_dma.mlir --pass-pipeline='builtin.module(air-dependency,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.pk.dma
+// RUN: air-opt %S/Inputs/equiv_pk_chan.mlir --pass-pipeline='builtin.module(air-dependency,air-dma-to-channel,canonicalize,cse,air-dependency-canonicalize,canonicalize,cse,air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0},canonicalize,cse)' | air-opt --pass-pipeline='builtin.module(air-to-aie{emit-while-loop=true row-offset=2 col-offset=0 device=npu2})' | awk '/aie.device/,/^  }$/' > %t.pk.chan
+// RUN: diff %t.pk.dma %t.pk.chan
+
 // This file is a driver for the pairs in Inputs/; it holds no IR of its own.
