@@ -899,6 +899,8 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   // block, so it is the only one whose position is a free choice.
   if (auto anchor = op.getHoistAfterAttr())
     externalGetPut->setAttr("air.hoist_after", anchor);
+  if (auto anchor = op.getHoistBeforeAttr())
+    externalGetPut->setAttr("air.hoist_before", anchor);
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
@@ -1015,10 +1017,16 @@ class AIRDmaToAIRChannelConversion
 // nothing is anchored or the anchor names a channel with no endpoint out here.
 static Operation *
 findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
-                     Operation *hier_op) {
+                     Operation *hier_op, bool &placeBefore) {
   FlatSymbolRefAttr anchor;
+  placeBefore = false;
   for (auto getput : externalGetPuts) {
     auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+    if (!a) {
+      a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
+      if (a)
+        placeBefore = true;
+    }
     if (!a)
       continue;
     // One shared insertion point is used for the whole batch, so only honour
@@ -1056,7 +1064,8 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   };
   int wantArm = -1;
   for (auto getput : externalGetPuts)
-    if (getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after"))
+    if (getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after") ||
+        getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before"))
       wantArm = armOf(getput.getOperation());
 
   Operation *last = nullptr, *lastSameArm = nullptr;
@@ -1108,8 +1117,9 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
 
     // Resolve the issue-order anchor up front: it decides whether the enclosing
     // control ops are pulled in and rebuilt at all.
-    Operation *anchorOp =
-        findIssueOrderAnchor(externalGetPuts, hier_op.getOperation());
+    bool placeBefore = false;
+    Operation *anchorOp = findIssueOrderAnchor(
+        externalGetPuts, hier_op.getOperation(), placeBefore);
 
     // Get backward slices to the target "external" side channel ops, to be
     // hoisted together.
@@ -1220,7 +1230,10 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // anchor's position and its control context (no new guard is synthesised;
     // if the anchor sits in a switch arm, so does this).
     if (anchorOp) {
-      rewriter.setInsertionPointAfter(anchorOp);
+      if (placeBefore)
+        rewriter.setInsertionPoint(anchorOp);
+      else
+        rewriter.setInsertionPointAfter(anchorOp);
       insertionPointAtHierOp = rewriter.saveInsertionPoint();
       anchored = true;
     }
@@ -1381,8 +1394,10 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       // The anchor is a front-end directive, not output metadata. Drop it once
       // it has been honoured, but only then -- an unanchored hoist has to carry
       // it further out (herd -> segment -> launch) to be honoured later.
-      if (anchored)
+      if (anchored) {
         cloned->removeAttr("air.hoist_after");
+        cloned->removeAttr("air.hoist_before");
+      }
     }
 
     // Remove the original "external" side puts and gets.

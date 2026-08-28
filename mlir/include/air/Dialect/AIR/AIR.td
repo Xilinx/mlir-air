@@ -488,7 +488,8 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         OptionalAttr<I64Attr>:$dst_rank,
         OptionalAttr<FlatSymbolRefAttr>:$channel,
         OptionalAttr<DenseI64ArrayAttr>:$channel_indices,
-        OptionalAttr<FlatSymbolRefAttr>:$hoist_after
+        OptionalAttr<FlatSymbolRefAttr>:$hoist_after,
+        OptionalAttr<FlatSymbolRefAttr>:$hoist_before
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{

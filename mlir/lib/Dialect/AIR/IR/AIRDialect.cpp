@@ -2923,7 +2923,8 @@ void air::DmaMemcpyNdOp::build(
         pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr(),
         /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
-        /*hoist_after=*/FlatSymbolRefAttr());
+        /*hoist_after=*/FlatSymbolRefAttr(),
+        /*hoist_before=*/FlatSymbolRefAttr());
 }
 
 void air::DmaMemcpyNdOp::build(
@@ -2940,7 +2941,8 @@ void air::DmaMemcpyNdOp::build(
         pad_before, pad_after, /*src_rank=*/IntegerAttr(),
         /*dst_rank=*/IntegerAttr(), /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
-        /*hoist_after=*/FlatSymbolRefAttr());
+        /*hoist_after=*/FlatSymbolRefAttr(),
+        /*hoist_before=*/FlatSymbolRefAttr());
 }
 
 void air::ChannelPutOp::build(

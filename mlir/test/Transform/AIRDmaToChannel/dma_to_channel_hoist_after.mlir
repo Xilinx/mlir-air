@@ -88,3 +88,37 @@ func.func @unanchored(%arg0: memref<64x64xi32>) {
   }
   return
 }
+
+// -----
+
+// hoist_before is the mirror: place the derived op immediately BEFORE the
+// anchor's endpoint. Needed when the hand-written producer was FIRST in its
+// block, where there is nothing to sit after.
+// CHECK-LABEL: func.func @anchored_before
+// CHECK: air.channel.put{{.*}}@c
+// CHECK-NEXT: air.channel.put{{.*}}@anchor
+air.channel @c []
+air.channel @anchor [1]
+func.func @anchored_before(%arg0: memref<64x64xi32>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%ls=%c1) args(%la=%arg0) : memref<64x64xi32> {
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %c1_l = arith.constant 1 : index
+    air.channel.put @anchor[%c0] (%la[%c0, %c0] [%c32, %c32] [%c64, %c1_l]) : (memref<64x64xi32>)
+    air.segment @seg args(%sa=%la) : memref<64x64xi32> {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%sa) : memref<64x64xi32> {
+        %c0_h = arith.constant 0 : index
+        %c32_h = arith.constant 32 : index
+        %c64_h = arith.constant 64 : index
+        %c1_h = arith.constant 1 : index
+        %alloc = memref.alloc() : memref<32x32xi32, 2>
+        air.dma_memcpy_nd (%alloc[] [] [], %a[%c0_h, %c0_h] [%c32_h, %c32_h] [%c64_h, %c1_h]) {id = 1 : i32, channel = @c, hoist_before = @anchor} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+        memref.dealloc %alloc : memref<32x32xi32, 2>
+      }
+    }
+  }
+  return
+}

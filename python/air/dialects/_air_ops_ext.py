@@ -352,6 +352,7 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         channel=None,
         channel_indices=None,
         hoist_after=None,
+        hoist_before=None,
     ):
         if channel is None and channel_indices is not None:
             raise ValueError("channel_indices requires channel")
@@ -406,6 +407,10 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         if hoist_after is not None:
             self.operation.attributes["hoist_after"] = FlatSymbolRefAttr.get(
                 hoist_after
+            )
+        if hoist_before is not None:
+            self.operation.attributes["hoist_before"] = FlatSymbolRefAttr.get(
+                hoist_before
             )
 
 
