@@ -1108,15 +1108,41 @@ for _w in EXTRA_WAVES:
             f"model's demux destinations {sorted(set(DEST_NAMES))}"
         )
 N_EXTRA = len(EXTRA_WAVES)
-if N_EXTRA:
-    # The config surface and the wave count land before the arm wiring does, so
-    # that the "empty list is byte-identical" property can be gated on its own.
-    # Without this guard a non-empty list builds a design whose extra waves take
-    # the DECODE arm: every tile runs a 4-phase layer against a weight slab that
-    # is not one, which does not fail -- it returns a plausible wrong answer.
+# Per-wave geometry, in the same units the decode phases use: a wave covers
+# I2 row-block iterations of 2*J2 column-blocks over all NCX*NCY cores, its
+# column share is that divided by NCX, and the feed walks it NCY blocks at a
+# time. `w_off` is where the wave's slab starts in the extra BO, which the
+# caller chose -- this only derives the extent so the memref can be sized.
+EXTRA_BLOCKS = [w["i2"] * 2 * w["j2"] * NCX * NCY for w in EXTRA_WAVES]
+EXTRA_PER_COL = [b // NCX for b in EXTRA_BLOCKS]
+EXTRA_NSTEPS = [p // NCY for p in EXTRA_PER_COL]
+EXTRA_W_ELEMS = max(
+    (w["w_off"] + b * BLOCK_BF16 for w, b in zip(EXTRA_WAVES, EXTRA_BLOCKS)),
+    default=0,
+)
+for _i, _w in enumerate(EXTRA_WAVES):
+    if EXTRA_PER_COL[_i] % NCY:
+        raise SystemExit(
+            f"extra wave {_w['name']}: {EXTRA_BLOCKS[_i]} blocks is "
+            f"{EXTRA_PER_COL[_i]} per column, which {NCY} rows do not divide"
+        )
+# The arm lands in pieces, so the guard names what is still missing rather than
+# refusing the whole flag. Today the extra waves get their weight feed and their
+# arm, and NOT their X source, their egress or their per-wave proj scalars -- so
+# a build would run them against an unfed X and a decode-shaped phase count. It
+# would not fail; it would return a plausible wrong answer, which is exactly the
+# failure this whole section exists to stop shipping.
+#
+# DECODE_EXTRA_WAVES_PARTIAL=1 emits it anyway, for reading the IR. It is not a
+# runnable configuration and the message says so.
+EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
+if N_EXTRA and not EXTRA_PARTIAL:
     raise SystemExit(
-        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries but the arm wiring is not in "
-        f"yet (docs/DFlashFeasibility.md section 3.13, stage 2b). Unset it."
+        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the arm and the weight feed "
+        f"are wired but the X source, the egress and the proj scalars are not "
+        f"(docs/DFlashFeasibility.md section 3.14). Set "
+        f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection -- it will not "
+        f"compute the right thing -- or unset DECODE_EXTRA_WAVES."
     )
 UNI_WAVES = UNI_DEC + UNI_LM + N_EXTRA
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
@@ -1948,6 +1974,15 @@ def build_module():
             if W_SPLIT
             else []
         )
+        # The extra waves' weights, appended LAST for the same reason W_SPLIT's
+        # groups are appended at all: every existing host binding position stays
+        # where it is. They get their own buffer rather than a tail on w_l3
+        # because they are not this model's weights -- the DFlash pre-pass reads
+        # the DRAFTER's fc and k/v while running in the target's program -- so
+        # concatenating them would put a second model inside the target's
+        # requant cache.
+        if N_EXTRA:
+            _w_extra = _w_extra + [MemRefType.get([EXTRA_W_ELEMS], bf16)]
         # rms weight (K). MULTIBLK appends the rope region AFTER all UNI_DEC rms slabs so
         # the score-path test gets a KNOWN q (q_roped = proj_q) WITHOUT corrupting
         # rms_w[0:K] (which proj_q depends on). Llama: ONE shared per-position LUT
@@ -2910,6 +2945,8 @@ def build_module():
                 # one a weight feed names is decided per-wave inside _feed_wcol; see
                 # _wsel below.
                 _WBUFS = [_la[4 + a] for a in WARG] if W_SPLIT else [W]
+                # The extra waves' buffer is the last appended arg either way.
+                _WEXTRA = _la[4 + WARG[-1]] if N_EXTRA else None
                 # None => the caller is on the statically-known lm-head buffer; a
                 # Value => a runtime group index into _WBUFS[0:N_WGRP].
                 _wsel = [None]
@@ -3096,7 +3133,12 @@ def build_module():
                                 Wb,
                             )
 
-                    if not W_SPLIT:
+                    if _wsel[0] == "extra":
+                        # Extra waves: their buffer is a compile-time choice, like
+                        # the lm-head's -- there is exactly one and the arm has
+                        # already selected the slab offset.
+                        _fan(_WEXTRA)
+                    elif not W_SPLIT:
                         _fan(W)
                     elif _wsel[0] is None:
                         # vocab waves: the lm-head buffer is a compile-time choice.
@@ -3150,11 +3192,51 @@ def build_module():
                         _u0 = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
                         if a_iv is None:
                             _uarm = _u1
-                        else:
+                        elif not N_EXTRA:
                             _ucmp = arith.cmpi(
                                 arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)
                             )
                             _uarm = arith.select(_ucmp, _u1, _u0)
+                        else:
+                            # THE ARM CARRIES THE WAVE INDEX, not just the mode:
+                            # 1 = decode, 0 = LM head, 2+k = extra wave k.
+                            #
+                            # It has to. Every consumer of the arm may select a
+                            # SCALAR and never a program (see _rms_batched: AIR
+                            # counts channel ops naming a buffer across scf.if
+                            # arms, so a second arm doubles the lock credit and
+                            # the design hangs in wave 0). The extra waves have
+                            # different I2/J2/dest from each other, so a plain
+                            # "is this an extra wave" bit would leave the proj
+                            # core unable to tell WHICH -- and the only way to
+                            # tell it without a second RTP is to widen this one.
+                            # The arm is already a herd operand on every tile,
+                            # so this is free.
+                            _uarm = arith.select(
+                                arith.cmpi(
+                                    arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)
+                                ),
+                                _u1,
+                                arith.select(
+                                    arith.cmpi(
+                                        arith.CmpIPredicate.slt,
+                                        a_iv,
+                                        idx(UNI_DEC + UNI_LM),
+                                    ),
+                                    _u0,
+                                    arith.addi(
+                                        arith.index_cast(
+                                            i32,
+                                            arith.subi(
+                                                a_iv, idx(UNI_DEC + UNI_LM)
+                                            ),
+                                        ),
+                                        arith.ConstantOp(
+                                            IntegerAttr.get(i32, 2), None
+                                        ).result,
+                                    ),
+                                ),
+                            )
                         _uarm_i = arith.index_cast(idx_t, _uarm)
 
                         def _rms_x_put_band(base, b, src=None):
@@ -3923,6 +4005,28 @@ def build_module():
                                 )
                             yield_([])
 
+                        def _uni_extra(k):
+                            """Extra wave k's host feed. ONE phase, like vocab.
+
+                            Python-unrolled per wave rather than parameterized at
+                            runtime, because `_feed_wcols` takes its step count as
+                            a Python int -- it unrolls the puts, and the extra
+                            waves do not share a step count (the DFlash pre-pass's
+                            fc is 250 steps per column against the context K/V's
+                            40). The arms cost instruction stream and not BD ids:
+                            `inW` puts are issue_token=false so the shim reuses BD
+                            IDs, which is the same property that lets a decode
+                            wave issue ~464 puts per column.
+                            """
+                            _wsel[0] = "extra"
+                            _colspan = EXTRA_PER_COL[k] * blk
+                            _feed_wcols(
+                                idx(EXTRA_WAVES[k]["w_off"]),
+                                _colspan,
+                                EXTRA_NSTEPS[k],
+                            )
+                            yield_([])
+
                         def _uni_dec():
                             _wsel[0] = _wgi  # runtime group index (None if unsplit)
                             # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
@@ -4547,13 +4651,32 @@ def build_module():
                                 )
                             yield_([])
 
-                        index_switch(
-                            [],
-                            _uarm_i,
-                            [0],
-                            case_body_builder=lambda op, i, cv: _uni_voc(),
-                            default_body_builder=lambda op: _uni_dec(),
-                        )
+                        if not N_EXTRA:
+                            index_switch(
+                                [],
+                                _uarm_i,
+                                [0],
+                                case_body_builder=lambda op, i, cv: _uni_voc(),
+                                default_body_builder=lambda op: _uni_dec(),
+                            )
+                        else:
+                            # arm 0 = LM head, 2+k = extra wave k, default = decode.
+                            # Decode stays the DEFAULT arm so its (much larger)
+                            # body is emitted exactly where it was. Each of these
+                            # emits its own scf.yield, as the two-arm form's
+                            # bodies already did.
+                            _cases = [0] + [2 + k for k in range(N_EXTRA)]
+
+                            def _case(cv):
+                                return _uni_voc() if cv == 0 else _uni_extra(cv - 2)
+
+                            index_switch(
+                                [],
+                                _uarm_i,
+                                _cases,
+                                case_body_builder=lambda op, i, cv: _case(cv),
+                                default_body_builder=lambda op: _uni_dec(),
+                            )
                 # (No GLU host drain: the GLU output is consumed on-chip by the down
                 # phase. The down output egresses via the rms layer output above.)
 
@@ -4617,11 +4740,42 @@ def build_module():
                         _seg_cmp = arith.cmpi(
                             arith.CmpIPredicate.slt, _seg_iv, idx(UNI_DEC)
                         )
-                        _seg_arm = arith.select(
-                            _seg_cmp,
-                            arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
-                            arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
-                        )
+                        if not N_EXTRA:
+                            _seg_arm = arith.select(
+                                _seg_cmp,
+                                arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
+                                arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
+                            )
+                        else:
+                            # Same encoding as the launch's _uarm: 1 decode, 0 LM
+                            # head, 2+k extra wave k. The memtile and the herds
+                            # take it from here, so all three scopes agree by
+                            # construction rather than by two copies of a rule.
+                            _seg_arm = arith.select(
+                                _seg_cmp,
+                                arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
+                                arith.select(
+                                    arith.cmpi(
+                                        arith.CmpIPredicate.slt,
+                                        _seg_iv,
+                                        idx(UNI_DEC + UNI_LM),
+                                    ),
+                                    arith.ConstantOp(
+                                        IntegerAttr.get(i32, 0), None
+                                    ).result,
+                                    arith.addi(
+                                        arith.index_cast(
+                                            i32,
+                                            arith.subi(
+                                                _seg_iv, idx(UNI_DEC + UNI_LM)
+                                            ),
+                                        ),
+                                        arith.ConstantOp(
+                                            IntegerAttr.get(i32, 2), None
+                                        ).result,
+                                    ),
+                                ),
+                            )
                         _seg_arm_i = arith.index_cast(idx_t, _seg_arm)
                     else:
                         _seg_cmp = None
