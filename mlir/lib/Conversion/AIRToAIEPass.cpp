@@ -1205,6 +1205,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     bool coreIsProducer;
     bool coreIsConsumer;
     Operation *lockScope;
+    // Every scf.for that contains ALL of this core's accesses, innermost
+    // first. lockScope is chosen from it once every core's nesting is known.
+    SmallVector<Operation *> loopScopes;
   };
   SmallVector<PerCoreLockInfo> coreInfos;
 
@@ -1261,7 +1264,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       continue;
     }
 
-    // Find the OUTERMOST scf.for that contains ALL accessing ops
+    // Collect every scf.for that contains ALL accessing ops, innermost first.
+    // Which one becomes the lock scope is decided below, once every core's
+    // nesting is known -- the choice has to be the same depth on all of them.
     Operation *candidate = info.accessingOps[0]->getParentOp();
     while (candidate && candidate != coreOp.getOperation()) {
       if (isa<scf::ForOp>(candidate)) {
@@ -1273,11 +1278,51 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
           }
         }
         if (containsAll)
-          info.lockScope = candidate;
+          info.loopScopes.push_back(candidate);
       }
       candidate = candidate->getParentOp();
     }
     coreInfos.push_back(info);
+  }
+
+  // Pick the lock scope: the DEEPEST loop every participating core can reach,
+  // counted from its outermost containing loop.
+  //
+  // Depth matters because the locks bracket one loop body, so the buffer is
+  // handed over once per iteration of whatever loop is chosen. A scope LOOSER
+  // than the accesses lets the producer write the buffer several times before
+  // the consumer reads it once -- a lost update, not a stall, so it corrupts
+  // silently. That is the same hazard the hoisting rule below names, one level
+  // in.
+  //
+  // Measured on programming_examples/fused_decode at DECODE_BATCH=8: the
+  // attention score buffer is written by attn_qk_blk_row on one core and read
+  // by attn_kv_blk on its neighbour, both inside `for token { for block {} }`.
+  // Both loops contain every access, so taking the outermost gave one handover
+  // per TOKEN while the cores exchanged one buffer per BLOCK, and every block
+  // of a token saw the last block's scores. Tokens whose context fit in a
+  // single 16-key block were unaffected, which is why it only appeared past a
+  // 16-token context.
+  //
+  // Counting from the outermost rather than simply taking each core's
+  // innermost keeps the cadence equal across cores: a core nested one level
+  // deeper than another must not cycle the lock more often, or the two
+  // deadlock. When the cores disagree completely (one has no containing loop
+  // at all) nothing is aligned and each core keeps its outermost, which is the
+  // behaviour this replaced.
+  {
+    size_t commonDepth = SIZE_MAX;
+    for (auto &info : coreInfos)
+      if (!info.accessingOps.empty())
+        commonDepth = std::min(commonDepth, info.loopScopes.size());
+    for (auto &info : coreInfos) {
+      if (info.loopScopes.empty())
+        continue;
+      // commonDepth == 0: some core has no common enclosing loop, so there is
+      // no shared depth to align on. Keep the outermost.
+      size_t depth = commonDepth ? commonDepth : 1;
+      info.lockScope = info.loopScopes[info.loopScopes.size() - depth];
+    }
   }
 
   // Detect cross-core scope asymmetry that needs hoisting to core-body level.
@@ -1404,7 +1449,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
     // Step 3: Insert locks at the determined scope
     if (lockScope) {
-      // Place at start/end of the outermost enclosing scf.for body
+      // Place at start/end of the chosen enclosing scf.for body
       auto forOp = cast<scf::ForOp>(lockScope);
       OpBuilder builder(forOp);
       builder.setInsertionPointToStart(forOp.getBody());
