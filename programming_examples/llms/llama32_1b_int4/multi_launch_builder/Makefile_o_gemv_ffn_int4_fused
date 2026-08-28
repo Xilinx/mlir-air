@@ -19,7 +19,12 @@ N_CORES    ?= 8
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
-PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf $(WARNING_FLAGS) -DNDEBUG -I $(AIEOPT_DIR)/include
+# -D__AIE_API_AIE_ADF_HPP__ suppresses aie_api's aie_adf.hpp, which pulls in
+# the chess-only <adf.h>; without it the peano build of mv_int4_bf16.cc fails
+# outright. The other three Makefiles that compile this same kernel
+# (matrix_vector_multiplication/int4_awq, matrix_multiplication/int4_awq,
+# decode_ffn_swiglu) all set it; this one did not.
+PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf $(WARNING_FLAGS) -DNDEBUG -I $(AIEOPT_DIR)/include -D__AIE_API_AIE_ADF_HPP__
 
 PY_ARGS = --emb-dim $(EMB_DIM) --hidden-dim $(HIDDEN_DIM) \
           --gs $(GS) --m-tile $(M_TILE) --k-chunk $(K_CHUNK) \
