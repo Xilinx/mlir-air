@@ -216,3 +216,34 @@ def a_parallel_grid_is_one_forall_with_one_iv_per_axis():
                     air.ops.store(staged, OUT)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_launch_grid_has_no_rank_cap
+# air.launch's sizes are Variadic<Index>, so the op takes as many axes as it is
+# given and the DSL should not invent a limit. This carried one of two, then of
+# three -- the second time on the grounds that three was as deep as anything had
+# run, which is a fact about the examples rather than about the op.
+#
+# flash_attention needs three, splitting the value dimension across a third
+# axis when dv exceeds one tile. Four is here to pin that nothing caps it.
+# CHECK: air.launch (%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) in (%{{.*}}=%c2{{.*}}, %{{.*}}=%c3{{.*}}, %{{.*}}=%c2{{.*}}, %{{.*}}=%c2{{.*}})
+@run
+def a_launch_grid_has_no_rank_cap():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch([range(2), range(3), range(2), range(2)], name="deep") as launch:
+
+        @launch.body
+        def _(w, x, y, z):
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    b = air.alloc([64], bf16, scope=h.private())
+                    air.ops.load(b, A)
+                    air.ops.store(b, OUT)
+
+    print(launch.mlir())

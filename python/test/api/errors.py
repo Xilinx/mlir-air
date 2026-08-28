@@ -762,25 +762,6 @@ def _():
     air.segment(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
 
 
-# CHECK-LABEL: TEST: launch_grid_too_deep
-# Three is allowed: flash_attention/kernel_fusion_based splits the value
-# dimension across a third launch axis when dv exceeds one tile, and the whole
-# grid is one iteration space rather than a loop around a 2-D one. Four has
-# never been compiled by anything, so the limit sits there -- on evidence, the
-# way the vector widths in types.py do, not on principle.
-# CHECK: NotImplementedError: air.launch is 1-D, 2-D or 3-D; got 4-D
-@expect(NotImplementedError, "launch_grid_too_deep")
-def _():
-    air.launch(
-        product(
-            range(0, 128, 64),
-            range(0, 128, 64),
-            range(0, 128, 64),
-            range(0, 128, 64),
-        )
-    )
-
-
 # CHECK-LABEL: TEST: launch_body_arity
 # The launch's coordinates arrive in the launch body, so its arity has to match
 # the grid it was given -- the same rule air.herd and air.segment follow.

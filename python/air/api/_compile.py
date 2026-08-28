@@ -47,17 +47,11 @@ class LaunchContext:
         # is one replay of everything inside, so outer tiling belongs here:
         # a segment's L2 staging is refilled per point. air.segment and
         # air.herd each own a separate one; see LaunchState.
+        # No rank cap: air.launch's sizes are Variadic<Index>, so the op takes
+        # as many axes as it is given. This carried a limit of two, then of
+        # three, and both were the DSL inventing a constraint the dialect does
+        # not have.
         self.dims = parse_grid(grid) if grid is not None else ()
-        if len(self.dims) > 3:
-            # Three because the attention kernels run a 3-D launch on hardware
-            # and four has never been compiled by anything. The limit is
-            # evidence rather than principle -- air.launch itself takes as many
-            # sizes as it is given, and this prints a 4-D one perfectly well,
-            # which is not the same as it working.
-            raise NotImplementedError(
-                f"air.launch is 1-D, 2-D or 3-D; got {len(self.dims)}-D. Three "
-                "is as deep as anything in this tree has run"
-            )
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
         self.name = name
