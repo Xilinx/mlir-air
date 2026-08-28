@@ -46,6 +46,7 @@ if _LLMS_DIR not in sys.path:
     sys.path.insert(0, _LLMS_DIR)
 
 from qwen25_0_5b_weights import LlamaConfig
+from shared.builders.o_ffn_multi import build_named_add, build_padded_add
 from qwen25_0_5b_cpu_helpers import attention_reference
 
 # ---------------------------------------------------------------------------
