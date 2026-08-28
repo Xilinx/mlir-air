@@ -1,7 +1,7 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// QWEN2.5-3B Q4_0 decode throughput vs context length, into
+// QWEN2.5-3B Q4NX decode throughput vs context length, into
 // qwen25_3b_q4.sweep.json (collected by the nightly LLM benchmark).
 //
 // Complements run_npu2_profile.lit rather than repeating it: that test profiles
@@ -26,7 +26,7 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name qwen25_3b_q4 --makefile %S/Makefile --template-dir %S --driver bench_qwen --n-layers 36 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out qwen25_3b_q4.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name qwen25_3b_q4 --makefile %S/Makefile --template-dir %S --bench-model qwen2.5-3b --vocab-chunk-i2 12 --n-layers 36 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out qwen25_3b_q4.sweep.json
 // RUN: FileCheck %s < qwen25_3b_q4.sweep.json
 // CHECK: "model": "qwen25_3b_q4"
 // CHECK: "axis": "context_len"

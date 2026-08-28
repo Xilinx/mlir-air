@@ -1,4 +1,4 @@
-# Qwen2.5-3B Q4_0 Prefill on AMD NPU2 (MLIR-AIR)
+# Qwen2.5-3B Q4_0 Prefill + Fused Decode on AMD NPU2 (MLIR-AIR)
 
 This implementation reimplements the corresponding AMD NPU LLM design,
 originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM)
@@ -20,14 +20,16 @@ relationship `llama32_1b_q4nx` has to `llama32_1b`); this example supplies the
 |---|---|
 | First token, `"The capital of France is"`, 36 layers on NPU2 | **argmax 12095 = `" Paris"`** — PASS |
 | Warm TTFT @ seq_len=2048 | **4.17 s** (491 tok/s prefill), NPU-dispatch 4.17 s, host 5 ms |
-| End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **30.3 tok/s** device-only decode (`LBUILD=256`; 28.2 at the 2048 default) |
-| Top-k token-set inclusion vs HF bf16 (`make verify-full`) | **8/8 prompts PASS** (shared prompt file) — the CI gate |
+| End-to-end NPU prefill -> NPU fused decode, 36 layers, no reference model | coherent text, **23.2 tok/s** logits-out (`LBUILD=2048`) |
+| Top-k token-set inclusion vs HF bf16 (`make verify`) | **2/2 prompts PASS** — the CI gate |
 
-The 36 transformer layers run on the NPU for both prefill and decode. The final
-RMSNorm + LM-head projection and the argmax still run on the host each decode
-token; moving them on-device is a performance item, not a correctness one.
+The 36 transformer layers **and the LM head** run on the NPU, for both prefill
+and decode: one dispatch per token produces vocab logits, and only the argmax is
+left on the host. The retired Qwen-only builder stopped at the final hidden
+state and projected the 152k-row head on the CPU, which is why its published
+25.3 tok/s was a *device-only* number against 4.5 tok/s end to end.
 
-Prefill measured 2026-08-06, decode re-measured 2026-08-18, both on a quiet
+Prefill measured 2026-08-06, decode re-measured 2026-08-27, both on a quiet
 (load < 0.1) **AMD Ryzen AI 7 350 (Krackan Point)**, XRT 2.21.75. Verify the box
 is idle before trusting any timing here — a busy host makes this
 DDR-bandwidth-bound workload ~30% slower. The part matters as much as the load:
@@ -36,27 +38,29 @@ box is not comparable to these.
 
 ## Quant codec: Q4_0, not Q4NX
 
-What differs for Qwen is the **on-device** format, not the weight bundle.
-FastFlowLM ships Qwen2.5-3B as a `model.q4nx` bundle in the same per-block
-affine encoding as Llama and Gemma (`w = scale*q + min`, unsigned nibbles,
-32x256 blocks). But their Qwen decode design sets `#define Q4_0` (their
-`Qwen2_5/decoding_3b/models/qwen2_3b.h`), which switches the kernel to a
-**symmetric signed-int4**
-form (`w = q*scale`, `q ∈ [-8,7]`, `scale = amax/8`, per 32-element group along
-the reduction dim). The AIR port mirrors that, so its kernels are built
-`-DQ4_0` too.
+FastFlowLM ships Qwen2.5-3B as a `model.q4nx` bundle, but the bundle carries the
+**Q4_0** variant of that container, not the affine Q4NX one Llama and Gemma use:
+the `mins` field is exactly zero in every tensor of all 36 layers plus the
+lm_head, and the nibbles are signed (`w = q*scale`, `q ∈ [-8,7]`, per 32-element
+group along the reduction dim; the scale may be negative, the llama.cpp
+`d = max/-8` convention). Reading it as affine gives rel_l2 ≈ 2.8 against the
+reference — noise. Their decode design sets `#define Q4_0`
+(`Qwen2_5/decoding_3b/models/qwen2_3b.h`) to match, and so does this port.
 
-That mismatch is why this example ignores the bundle and quantizes the
-full-precision HF checkpoint directly. For Llama and Gemma the bundle and the
-device agree — affine to affine, same groups, same 4 bits — so the host
-dequant/requant round-trip lands back on the same grid. Symmetric cannot
-represent an offset range, so feeding it affine 4-bit weights would quantize
-twice and lose more than starting from fp does.
+The bundle also folds an AWQ-style per-input-channel smoothing into the weights:
+the RMSNorm weight absorbs `s` while q/k/v are divided by it, and the GLU's `up`
+rows are scaled by `t` with `down`'s columns divided by it. Both are exact
+rewrites, so the bundle is self-consistent and a tensor-by-tensor comparison
+against the HF checkpoint disagrees by design. Nothing in the loader needs to
+know `s` or `t`.
 
-The quantizer is `fused_decode/qwen25_3b_requant.requant_q4_0` — the same
-function that builds the fused-decode Qwen weight cache — so **the prefill and
-the fused NPU decode see bit-identical weight values**, and the prefill's KV
-cache is a valid decode input.
+Because the shipped codes are already in the block geometry the decode cascade
+wants, they are carried through **untouched** — only re-ordered into the
+device's stream order. There is no dequant/requant round trip to lose accuracy
+to, and the prefill and the fused decode see bit-identical weight values, so the
+prefill's KV cache is a valid decode input. Pointing `MODEL=` at a
+full-precision HF checkpoint instead still works; it is quantized once, on load,
+through the same `q4_0_codec.requant_q4_0`.
 
 Layer-0 quant error (rel L2 vs bf16), `make weights`:
 
@@ -82,9 +86,9 @@ QKV bias, no QK-norm.
 make compile          # build/cache the prefill ELFs (no weights, no NPU)
 make compile-decode   # build the fused decode kernels + decode_L<N> templates (no weights)
 make run              # first-token gate -> " Paris"
-make gen              # end-to-end: NPU prefill -> KV hand-off -> NPU fused decode
+make gen              # end-to-end: NPU prefill -> NPU fused decode
 make bench BENCH_L=2048   # warm TTFT + per-ELF profile
-make weights          # Q4_0 quant-error report, layer 0
+make weights          # Q4_0 weight-load smoke, layer 0
 ```
 
 Correctness gates (CI runs these via `run_npu2_*.lit`):
@@ -99,7 +103,7 @@ make diagnosis        # single-prompt lens through the shared runner (informatio
 This is the same gate, on the same shared prompt file, as the other three Q4NX
 examples: at the first token where NPU and HF bf16 disagree, each side's pick
 must be in the other's top-5. [`verify_adapter.py`](verify_adapter.py) binds the
-Q4_0 prefill and the fused decode to the shared runner contract.
+prefill and the fused decode to the shared runner contract.
 
 This example used to carry its own 5-prompt file and score 4/5, which is why it
 used to gate on something else. The prompt file is the whole difference —
@@ -144,26 +148,23 @@ writes of intermediates, are the open optimization targets.
 
 ## Hand-off to the fused NPU decode
 
-`--dump-kv` writes the per-layer roped-K / biased-V cache, which
-[`../../fused_decode/qwen_prefill_to_decode.py`](../../fused_decode/qwen_prefill_to_decode.py)
-feeds straight into the fused single-dispatch Qwen decode. Both halves quantize
-with the same Q4_0 codec, so the prefill's K/V are exactly what the decode's own
-rope core would have appended at those positions, and the hand-off is a slice
-(both sides are `[tokens, 256]` head-major) rather than a shuffle.
+The prefill's per-layer roped-K / raw-V cache seeds the decode's device-resident
+KV cache directly. Both halves read the same Q4_0 weights, so the prefill's K/V
+are exactly what the decode's own rope core would have appended at those
+positions, and the hand-off is a slice (both sides are `[tokens, 256]`
+head-major) rather than a shuffle.
 
-`make compile-decode && make gen` drives the whole thing. By hand:
+`make compile-decode && make gen` drives the whole thing;
+[`qwen25_3b_q4_inference.py`](qwen25_3b_q4_inference.py) is the driver, and it
+sets the engine's geometry itself before importing `fused_decode.py`, so the
+runner cannot be handed a different model than the xclbin was built for.
 
-```bash
-python3 qwen25_3b_q4_prefill.py --dump-kv /tmp/kv.npz --prompt "<32+ tokens>"
-cd ../../fused_decode
-QWEN_NLAYERS=36 python3 fused_decode_qwen.py           # 36-layer xclbin
-QWEN_NLAYERS=36 python3 qwen_prefill_to_decode.py --kv /tmp/kv.npz --n-gen 16
-```
-
-`QWEN_NLAYERS` must be exported for **both** commands: `fused_decode_qwen` reads
-its geometry from the environment at import and defaults to 1 layer (a fast
-lowering check), so omitting it packs a 1-layer weight stream for a 36-layer
-xclbin.
+**Attention placement.** Qwen2.5-3B is the only model in the engine's table with
+2 KV heads, so its attention herd is 2 compute units in a single column rather
+than the usual 4 across two. Which column is load-bearing: swept on NPU2, cols
+0/1/2/6/7 do not build, col 3 reaches `COMPLETED` about 1 run in 10 and the rest
+time out at a random position, and cols 4 and 5 are both 20/20 over 29
+dispatches. `ATTN_PCOL` (default 4) is the knob, so the sweep can be repeated.
 
 **Context.** The decode grows a KV cache inside a build-time cap. The attention
 herd takes the context length `L` as a scalar operand, which AIR gives an RTP slot
@@ -179,10 +180,11 @@ than 32 tokens and silently dropped the head of a longer one. `make compile-deco
 LBUILD=<N>` sets the cap; it costs two builds, one L apart, to calibrate the
 slope. The default is **2048**, matching the three Llama/Gemma Q4NX decodes.
 
-Measured: prompt *"The capital city of France is called Paris, ... that stands
-right in the middle of"* -> *" the city. It is called the Eiffel Tower, and it
-was built"*. Same box and power mode, 16-token `make gen`, output byte-identical
-in all four cells:
+Measured on the **retired Qwen-only builder** (device-only, LM head on the
+host), 16-token `make gen`, same box and power mode, output byte-identical in
+all four cells. Kept for the `Q4_SFIX_MODE` ratio, which is a property of the
+kernel and still holds; the absolute numbers are not comparable to the
+logits-out rate in Status above and have not been re-measured:
 
 | `LBUILD` | device | `NONATTN_EXTRA=-DQ4_SFIX_MODE=0` |
 |---|---|---|
@@ -203,9 +205,10 @@ is also what this table used to report.
 
 | File | Purpose |
 |---|---|
-| `qwen25_3b_q4_weights.py` | Q4_0 requant/dequant loader → the `qwen25_3b` `LlamaWeights` container |
+| `qwen25_3b_q4_weights.py` | Q4_0 bundle loader/dequant → the `qwen25_3b` `LlamaWeights` container |
 | `qwen25_3b_q4_prefill.py` | `Qwen25Q4Prefill` — compile/preload/prefill/KV-cache/bench |
 | `Makefile` | compile / compile-decode / run / gen / verify / verify-full / bench / weights / clean |
 | `verify_adapter.py` | Binds the prefill + fused decode to the shared `verify/` runner contract |
 | `run_npu2_*.lit` | CI gates: prefill compile, decode compile, verify, profile |
-| `../../fused_decode/qwen_prefill_to_decode.py` | `QwenFusedDecoder` (KV hand-off + per-token dispatch) and its CLI |
+| `qwen25_3b_q4_inference.py` | `FusedDecoder` (KV seed + per-token dispatch) and the generate / REPL CLI |
+| `qwen25_3b_q4_requant.py` | Cascade-packs the bundle's Q4_0 blocks into the decode weight cache |

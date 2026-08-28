@@ -12,10 +12,11 @@
 # with per-layer resident BOs (weights written once).
 #
 # Deltas vs the Llama Q4NX example, all model-driven:
-#   codec   Q4_0 symmetric signed-int4 (Qwen kernels are -DQ4_0) instead of the
-#           Q4NX affine codec; quantized straight from the HF bf16 checkpoint
-#           because no pre-quantized Qwen2.5-3B bundle exists. Same values the
-#           fused_decode Qwen weight cache uses -> prefill and decode agree.
+#   codec   Q4_0 (signed nibbles, w = q*scale, the block's `mins` unused), read
+#           from FastFlowLM's shipped model.q4nx -- the .q4nx CONTAINER carries
+#           the Q4_0 variant for this model, which is why the kernels are built
+#           -DQ4_0. Same values the fused_decode weight cache uses, so prefill
+#           and decode agree. See qwen25_3b_q4_weights.py's header.
 #   shape   36 layers, 16 heads x head_dim 128, 2 kv heads (GQA group 8),
 #           hidden 11008, vocab 151936, rope_theta 1e6, tied lm_head.
 #   bias    q/k/v projection bias (bf16, unquantized), fused into the NPU
@@ -28,7 +29,10 @@
 # logit) -- same constraint as the Llama Q4NX example.
 #
 # Weight source (env-overridable):
-#   QWEN_Q4_MODEL_SOURCE : HF repo id or a local dir of the bf16 checkpoint.
+#   Q4NX_MODEL_SOURCE : model.q4nx bundle (repo id / dir / path), or a
+#                       full-precision HF checkpoint, quantized on load. Named
+#                       for the .q4nx container it points at, shared with the
+#                       other q4nx examples -- not for the codec inside it.
 import argparse
 import os
 import sys
@@ -58,7 +62,10 @@ from qwen25_3b_q4_weights import (  # noqa: E402
     load_q4_weights,
 )
 
-MODEL_DEFAULT = os.environ.get("QWEN_Q4_MODEL_SOURCE", "Qwen/Qwen2.5-3B-Instruct")
+MODEL_DEFAULT = os.environ.get(
+    "Q4NX_MODEL_SOURCE",
+    os.environ.get("QWEN_Q4_MODEL_SOURCE", "FastFlowLM/Qwen2.5-3B-Instruct-NPU2"),
+)
 EPS = 1e-6
 
 # On-device LM head GEMV: 19 partitions of M=8192 (19*8192=155648 >= VOCAB).
@@ -72,7 +79,7 @@ EXPECT_FIRST = 12095  # " Paris"
 
 
 class Qwen25Q4Prefill:
-    """AIR realization of the Q4_0 causal-LM prefill interface (Qwen2.5-3B)."""
+    """AIR realization of the Q4NX causal-LM prefill interface (Qwen2.5-3B)."""
 
     def __init__(self, seq_len=2048, n_layers=36, cache_dir=None, verbose=False):
         self.seq = seq_len
@@ -144,8 +151,9 @@ class Qwen25Q4Prefill:
 
     # ---- causal_lm interface ----
     def load_weights(self, model=None):
-        """Q4_0-quantize the HF bf16 checkpoint, dequant to bf16 on the host,
-        and pre-load every projection into resident per-layer BOs."""
+        """Load the Q4NX weights (bundle, or an HF checkpoint quantized on load),
+        dequant to bf16 on the host, and pre-load every projection into resident
+        per-layer BOs."""
         model = model or MODEL_DEFAULT
         self._weights = load_q4_weights(
             model, config=self.config, n_layers=self.n_layers

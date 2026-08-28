@@ -68,7 +68,7 @@ for _p in (_LLMS_DIR, os.path.join(_PROG_DIR, "fused_decode")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from qwen25_3b_requant import HFModel, requant_q4_0  # noqa: E402
+from q4_0_codec import HFModel, requant_q4_0  # noqa: E402
 from proj_qmm_pack import GROUP  # noqa: E402
 
 DEFAULT_HF_REPO = "LiquidAI/LFM2-1.2B"
