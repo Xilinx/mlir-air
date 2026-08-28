@@ -70,7 +70,9 @@ def main():
     device_taps = dec.last_taps  # [X_SLOTS, K], slot k = output after k layers
 
     np.savez(out_path, taps=device_taps, prompt=np.array(prompt), first=first, P=P)
-    print(f"[hidden_taps_device] saved {device_taps.shape} taps -> {out_path}", flush=True)
+    print(
+        f"[hidden_taps_device] saved {device_taps.shape} taps -> {out_path}", flush=True
+    )
     return 0
 
 

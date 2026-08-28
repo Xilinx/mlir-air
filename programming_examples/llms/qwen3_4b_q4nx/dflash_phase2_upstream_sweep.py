@@ -33,24 +33,42 @@ DRAFT_ID = "z-lab/Qwen3-4B-DFlash-b16"
 MAX_NEW_TOKENS = 200
 
 PROMPTS = [
-    ("math", "Natalia sold clips to 48 of her friends in April, and then she sold half "
-              "as many clips in May. How many clips did Natalia sell altogether in April "
-              "and May?\nPlease reason step by step, and put your final answer within \\boxed{}."),
-    ("math", "A robe takes 2 bolts of blue fiber and half that much white fiber. "
-              "How many bolts in total does it take?\nPlease reason step by step, "
-              "and put your final answer within \\boxed{}."),
-    ("math", "If a train travels 60 miles in 1.5 hours, what is its average speed in "
-              "miles per hour? Please reason step by step, and put your final answer "
-              "within \\boxed{}."),
-    ("code", "Write a solution to the following problem and make sure that it passes "
-              "the tests:\n```python\ndef fibonacci(n: int) -> int:\n    \"\"\"Return "
-              "the n-th Fibonacci number.\"\"\"\n```"),
-    ("code", "Write a solution to the following problem and make sure that it passes "
-              "the tests:\n```python\ndef is_palindrome(s: str) -> bool:\n    \"\"\"Return "
-              "True if s reads the same forwards and backwards.\"\"\"\n```"),
-    ("code", "Write a solution to the following problem and make sure that it passes "
-              "the tests:\n```python\ndef merge_sorted(a: list, b: list) -> list:\n    "
-              "\"\"\"Merge two sorted lists into one sorted list.\"\"\"\n```"),
+    (
+        "math",
+        "Natalia sold clips to 48 of her friends in April, and then she sold half "
+        "as many clips in May. How many clips did Natalia sell altogether in April "
+        "and May?\nPlease reason step by step, and put your final answer within \\boxed{}.",
+    ),
+    (
+        "math",
+        "A robe takes 2 bolts of blue fiber and half that much white fiber. "
+        "How many bolts in total does it take?\nPlease reason step by step, "
+        "and put your final answer within \\boxed{}.",
+    ),
+    (
+        "math",
+        "If a train travels 60 miles in 1.5 hours, what is its average speed in "
+        "miles per hour? Please reason step by step, and put your final answer "
+        "within \\boxed{}.",
+    ),
+    (
+        "code",
+        "Write a solution to the following problem and make sure that it passes "
+        'the tests:\n```python\ndef fibonacci(n: int) -> int:\n    """Return '
+        'the n-th Fibonacci number."""\n```',
+    ),
+    (
+        "code",
+        "Write a solution to the following problem and make sure that it passes "
+        'the tests:\n```python\ndef is_palindrome(s: str) -> bool:\n    """Return '
+        'True if s reads the same forwards and backwards."""\n```',
+    ),
+    (
+        "code",
+        "Write a solution to the following problem and make sure that it passes "
+        "the tests:\n```python\ndef merge_sorted(a: list, b: list) -> list:\n    "
+        '"""Merge two sorted lists into one sorted list."""\n```',
+    ),
     ("chat", "What are the main benefits of regular exercise?"),
     ("chat", "Explain the water cycle in simple terms."),
     ("chat", "Write a short poem about the ocean."),
@@ -58,7 +76,9 @@ PROMPTS = [
 
 
 def _load_upstream_model_module():
-    spec = importlib.util.spec_from_file_location("dflash_upstream_model", str(_UPSTREAM / "model.py"))
+    spec = importlib.util.spec_from_file_location(
+        "dflash_upstream_model", str(_UPSTREAM / "model.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -73,13 +93,17 @@ def main():
     m._cuda_time = lambda: _time.perf_counter()  # CPU-only
 
     print(f"[sweep] loading target {TARGET_ID} (bf16, CPU, sdpa)...", flush=True)
-    target = AutoModelForCausalLM.from_pretrained(TARGET_ID, attn_implementation="sdpa", dtype=torch.bfloat16)
+    target = AutoModelForCausalLM.from_pretrained(
+        TARGET_ID, attn_implementation="sdpa", dtype=torch.bfloat16
+    )
     target.eval()
     tokenizer = AutoTokenizer.from_pretrained(TARGET_ID)
 
     print(f"[sweep] loading draft {DRAFT_ID} via upstream model.py...", flush=True)
     config = AutoConfig.from_pretrained(DRAFT_ID)
-    draft = m.DFlashDraftModel.from_pretrained(DRAFT_ID, config=config, attn_implementation="sdpa", dtype=torch.bfloat16)
+    draft = m.DFlashDraftModel.from_pretrained(
+        DRAFT_ID, config=config, attn_implementation="sdpa", dtype=torch.bfloat16
+    )
     draft.eval()
     stop_ids = [tokenizer.eos_token_id] if tokenizer.eos_token_id is not None else None
 
@@ -95,8 +119,16 @@ def main():
         print(f"\n[sweep] === {i} [{category}]: {question[:60]!r}... ===", flush=True)
         t0 = _time.perf_counter()
         result = m.dflash_generate(
-            draft, target, input_ids, MAX_NEW_TOKENS, stop_ids,
-            temperature=0.0, top_p=1.0, top_k=0, block_size=16, return_stats=True,
+            draft,
+            target,
+            input_ids,
+            MAX_NEW_TOKENS,
+            stop_ids,
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            block_size=16,
+            return_stats=True,
         )
         lens = result.acceptance_lengths
         mean = sum(lens) / len(lens) if lens else 0.0
@@ -118,12 +150,16 @@ def main():
     for category, lens in by_cat.items():
         n = len(lens)
         mean = sum(lens) / n if n else 0.0
-        print(f"  {category:<8} n_blocks={n:>3}  mean={mean:.2f}/16 ({100*mean/16:.1f}%)")
+        print(
+            f"  {category:<8} n_blocks={n:>3}  mean={mean:.2f}/16 ({100*mean/16:.1f}%)"
+        )
     if grand:
         n = len(grand)
         mean = sum(grand) / n
         print("-" * 70)
-        print(f"  {'OVERALL':<8} n_blocks={n:>3}  mean={mean:.2f}/16 ({100*mean/16:.1f}%)")
+        print(
+            f"  {'OVERALL':<8} n_blocks={n:>3}  mean={mean:.2f}/16 ({100*mean/16:.1f}%)"
+        )
     return 0
 
 

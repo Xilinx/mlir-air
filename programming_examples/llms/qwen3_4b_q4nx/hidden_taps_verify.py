@@ -70,7 +70,9 @@ def main():
         device_npz = str(Path(td) / "device_taps.npz")
         hf_npz = str(Path(td) / "hf_taps.npz")
 
-        print("[hidden_taps_verify] === subprocess 1/2: device dispatch ===", flush=True)
+        print(
+            "[hidden_taps_verify] === subprocess 1/2: device dispatch ===", flush=True
+        )
         r1 = subprocess.run(
             [sys.executable, str(_HERE / "hidden_taps_device.py"), device_npz],
             cwd=str(_HERE),
@@ -91,7 +93,9 @@ def main():
             else:
                 r1.check_returncode()
 
-        print("[hidden_taps_verify] === subprocess 2/2: HF bf16 reference ===", flush=True)
+        print(
+            "[hidden_taps_verify] === subprocess 2/2: HF bf16 reference ===", flush=True
+        )
         r2 = subprocess.run(
             [
                 sys.executable,

@@ -44,11 +44,20 @@ N_TOKENS = 96
 def run_device(idx, prompt_text, out_npz):
     print(f"\n[sweep] === prompt {idx}: {prompt_text!r} -- device ===", flush=True)
     r = subprocess.run(
-        [sys.executable, str(_HERE / "dflash_phase2_device.py"), str(out_npz), str(N_TOKENS), prompt_text],
+        [
+            sys.executable,
+            str(_HERE / "dflash_phase2_device.py"),
+            str(out_npz),
+            str(N_TOKENS),
+            prompt_text,
+        ],
         cwd=str(_HERE),
     )
     if r.returncode != 0 and not out_npz.exists():
-        print(f"[sweep] prompt {idx} device recording FAILED (exit {r.returncode}), skipping", flush=True)
+        print(
+            f"[sweep] prompt {idx} device recording FAILED (exit {r.returncode}), skipping",
+            flush=True,
+        )
         return False
     if r.returncode != 0:
         print(
@@ -69,11 +78,17 @@ def run_replay(idx, out_npz):
     )
     print(r.stdout[-2000:], flush=True)
     if r.returncode != 0:
-        print(f"[sweep] prompt {idx} replay FAILED (exit {r.returncode}):\n{r.stderr[-2000:]}", flush=True)
+        print(
+            f"[sweep] prompt {idx} replay FAILED (exit {r.returncode}):\n{r.stderr[-2000:]}",
+            flush=True,
+        )
         return None
     m = re.search(r"accepted lengths: \[([^\]]*)\]", r.stdout)
     if not m:
-        print(f"[sweep] prompt {idx}: could not parse accepted lengths from replay output", flush=True)
+        print(
+            f"[sweep] prompt {idx}: could not parse accepted lengths from replay output",
+            flush=True,
+        )
         return None
     lens = [int(x) for x in m.group(1).split(",") if x.strip()]
     return lens

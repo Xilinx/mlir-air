@@ -166,7 +166,10 @@ def main():
         prompt = list(PARIS_PROMPT)
     P = len(prompt)
 
-    print("[dflash_phase2_device] numpy-prefill oracle (KV seed + prompt taps)...", flush=True)
+    print(
+        "[dflash_phase2_device] numpy-prefill oracle (KV seed + prompt taps)...",
+        flush=True,
+    )
     qm = gw.Q4nxModel(model)
     Kc, Vc, logits, prompt_taps = forward_prompt_with_taps(qm, prompt, TAP_SLOTS)
     first = int(logits[-1].argmax())
@@ -174,7 +177,10 @@ def main():
     # [P, 5, K] in TAP_SLOTS order -- extract_context_feature's own concat order.
     prompt_taps_arr = np.stack([prompt_taps[s] for s in TAP_SLOTS], axis=1)
 
-    print(f"[dflash_phase2_device] opening HIDDEN_TAPS decode template (N_TOKENS={n_tokens})...", flush=True)
+    print(
+        f"[dflash_phase2_device] opening HIDDEN_TAPS decode template (N_TOKENS={n_tokens})...",
+        flush=True,
+    )
     dec = HiddenTapsFusedDecoder(model=model, max_L=P + n_tokens)
     dec.seed_kv(Kc, Vc, P)
 

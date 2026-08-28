@@ -51,11 +51,15 @@ def main():
     past = None
     prompt_taps = []
     with torch.no_grad():
-        out = model(input_ids, output_hidden_states=True, use_cache=True, return_dict=True)
+        out = model(
+            input_ids, output_hidden_states=True, use_cache=True, return_dict=True
+        )
     past = out.past_key_values
     hs = out.hidden_states  # tuple len 37: [0]=embed, [k]=raw output of layer k-1
     for p in range(P):
-        prompt_taps.append(np.stack([hs[s][0, p, :].float().numpy() for s in TAP_SLOTS], axis=0))
+        prompt_taps.append(
+            np.stack([hs[s][0, p, :].float().numpy() for s in TAP_SLOTS], axis=0)
+        )
     prompt_taps_arr = np.stack(prompt_taps, axis=0)  # [P, 5, K]
 
     first = int(out.logits[0, -1].argmax())
@@ -76,7 +80,9 @@ def main():
             )
             past = step_out.past_key_values
             hs = step_out.hidden_states
-            gen_taps.append(np.stack([hs[s][0, -1, :].float().numpy() for s in TAP_SLOTS], axis=0))
+            gen_taps.append(
+                np.stack([hs[s][0, -1, :].float().numpy() for s in TAP_SLOTS], axis=0)
+            )
             pred = int(step_out.logits[0, -1].argmax())
             if pred in EOS_IDS:
                 print(f"[bf16_reference] pos{P+i} -> EOS ({pred}), stop", flush=True)

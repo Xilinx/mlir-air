@@ -117,7 +117,10 @@ def main():
         row = prompt_taps[pos] if pos < P else gen_taps[pos - P]  # [5, K]
         return row.reshape(-1).astype(np.float32)  # [5*K], TAP_SLOTS order
 
-    print("[dflash_phase2_replay] loading real drafter: z-lab/Qwen3-4B-DFlash-b16 ...", flush=True)
+    print(
+        "[dflash_phase2_replay] loading real drafter: z-lab/Qwen3-4B-DFlash-b16 ...",
+        flush=True,
+    )
     import torch
     from transformers import AutoModel
 
@@ -129,20 +132,36 @@ def main():
     assert list(model.target_layer_ids) == TARGET_LAYER_IDS, model.target_layer_ids
 
     if embed_source == "q4nx":
-        print("[dflash_phase2_replay] loading target's tied embedding (Q4NX-dequantized)...", flush=True)
+        print(
+            "[dflash_phase2_replay] loading target's tied embedding (Q4NX-dequantized)...",
+            flush=True,
+        )
         import qwen3_4b_q4nx_weights as gw
 
         qm = gw.Q4nxModel("FastFlowLM/Qwen3-4B-NPU2")
         embed, _final_norm, lm_head = qm.embed_norm_lmhead()  # tied: lm_head is embed
-        embed_table = torch.from_numpy(np.asarray(embed, dtype=np.float32)).to(torch.bfloat16)
-        lm_head_t = torch.from_numpy(np.asarray(lm_head, dtype=np.float32))  # f32 for the final matmul
+        embed_table = torch.from_numpy(np.asarray(embed, dtype=np.float32)).to(
+            torch.bfloat16
+        )
+        lm_head_t = torch.from_numpy(
+            np.asarray(lm_head, dtype=np.float32)
+        )  # f32 for the final matmul
     else:
-        print("[dflash_phase2_replay] loading target's tied embedding (clean bf16, Qwen/Qwen3-4B)...", flush=True)
+        print(
+            "[dflash_phase2_replay] loading target's tied embedding (clean bf16, Qwen/Qwen3-4B)...",
+            flush=True,
+        )
         from transformers import AutoModelForCausalLM
 
-        bf16_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-4B", dtype=torch.bfloat16)
-        embed_table = bf16_model.get_input_embeddings().weight.detach()  # [VOCAB, D] bf16
-        lm_head_t = bf16_model.get_output_embeddings().weight.detach().to(torch.float32)  # [VOCAB, D]
+        bf16_model = AutoModelForCausalLM.from_pretrained(
+            "Qwen/Qwen3-4B", dtype=torch.bfloat16
+        )
+        embed_table = (
+            bf16_model.get_input_embeddings().weight.detach()
+        )  # [VOCAB, D] bf16
+        lm_head_t = (
+            bf16_model.get_output_embeddings().weight.detach().to(torch.float32)
+        )  # [VOCAB, D]
         del bf16_model
 
     cache = SimpleCropCache(len(model.layers))
@@ -159,7 +178,9 @@ def main():
                 break
 
             ctx_rows = np.stack([taps_at(p) for p in ctx_positions], axis=0)
-            target_hidden_raw = torch.as_tensor(ctx_rows, dtype=torch.bfloat16).unsqueeze(0)
+            target_hidden_raw = torch.as_tensor(
+                ctx_rows, dtype=torch.bfloat16
+            ).unsqueeze(0)
             block_ids = [token_at(start)] + [mask_token_id] * (block_len - 1)
             noise_embedding = embed_table[block_ids].unsqueeze(0)
             position_ids = torch.tensor(
@@ -175,7 +196,9 @@ def main():
             )
             cache.crop_keep_first(start)  # dflash.py's own crop(start), pre-increment
 
-            draft_logits = hidden[0, 1:, :].to(torch.float32) @ lm_head_t.T  # [block_len-1, vocab]
+            draft_logits = (
+                hidden[0, 1:, :].to(torch.float32) @ lm_head_t.T
+            )  # [block_len-1, vocab]
             draft_guess = draft_logits.argmax(dim=-1).tolist()
 
             true_next = [token_at(start + 1 + i) for i in range(block_len - 1)]
@@ -197,7 +220,9 @@ def main():
             block_i += 1
 
     accepted_lens = np.array(accepted_lens)
-    print(f"\n[dflash_phase2_replay] {len(accepted_lens)} blocks, block_size={BLOCK_SIZE}")
+    print(
+        f"\n[dflash_phase2_replay] {len(accepted_lens)} blocks, block_size={BLOCK_SIZE}"
+    )
     print(f"[dflash_phase2_replay] accepted lengths: {accepted_lens.tolist()}")
     print(
         f"[dflash_phase2_replay] mean accepted = {accepted_lens.mean():.2f} of {BLOCK_SIZE} "

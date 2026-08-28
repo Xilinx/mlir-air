@@ -15,6 +15,7 @@ two-template compare:
 
     TEMPLATE=decode_b1_L128 python3 _x_hole.py
 """
+
 import os
 import sys
 import numpy as np
@@ -56,9 +57,9 @@ def main():
         same = int((got == src).sum())
         r = float(np.sqrt(np.mean(BE.as_f32(got).astype(np.float64) ** 2)))
         verdict = (
-            "ALL ZERO" if nz == PAY
-            else "UNTOUCHED (host fill)" if same == PAY
-            else "written"
+            "ALL ZERO"
+            if nz == PAY
+            else "UNTOUCHED (host fill)" if same == PAY else "written"
         )
         print(f"  {c:>5} {nz:>7} {same:>13} {r:>10.4g}  {verdict}")
     return 0

@@ -25,7 +25,10 @@ def main():
     import torch
     from transformers import AutoModelForCausalLM
 
-    print("[hidden_taps_hf_ref] loading HF reference: Qwen/Qwen3-4B (bf16, CPU)...", flush=True)
+    print(
+        "[hidden_taps_hf_ref] loading HF reference: Qwen/Qwen3-4B (bf16, CPU)...",
+        flush=True,
+    )
     model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-4B", dtype=torch.bfloat16)
     model.eval()
     input_ids = torch.tensor(sequence, dtype=torch.long).unsqueeze(0)
@@ -33,7 +36,9 @@ def main():
         out = model(
             input_ids, output_hidden_states=True, use_cache=False, return_dict=True
         )
-    hs = out.hidden_states  # tuple len n_layers+1: [0]=embed, [k]=raw output of layer k-1
+    hs = (
+        out.hidden_states
+    )  # tuple len n_layers+1: [0]=embed, [k]=raw output of layer k-1
     taps = {str(s): hs[s][0, -1, :].float().numpy() for s in slots}
     np.savez(out_path, **taps)
     print(f"[hidden_taps_hf_ref] saved {len(taps)} slots -> {out_path}", flush=True)
