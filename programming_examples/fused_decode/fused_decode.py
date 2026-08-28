@@ -107,6 +107,7 @@ from air.dialects.air import (
     Channel,
     ChannelGet,
     ChannelPut,
+    DmaMemcpyNd,
     MemorySpace,
     T,
     herd,
@@ -526,6 +527,12 @@ CONV_MIXER = MODEL["DEST"][0].split("#")[0] in ("conv", "mix")
 # ATTN_LAYERS is the wave-index schedule; it is irregular, so it is a LIST.
 ATTN_LAYERS = tuple(MODEL.get("ATTN_LAYERS", ()))
 HYBRID_MIXER = bool(ATTN_LAYERS)
+# Spell the rope LUT feed as an air.dma_memcpy_nd naming @ropeLUT and let
+# air-dma-to-channel derive the shim put, instead of writing a put/get pair.
+# Only the dedicated @rope herd carries RMS as an operand; a HYBRID build runs
+# _rope_body on the conv mixer's stage tile, which does not, so that build keeps
+# the hand-written pair.
+ROPELUT_DMA = not HYBRID_MIXER
 # The mixer -> CU broadcast exists exactly when a hybrid has a mixer. A get with
 # no put is "channel op not in pairs" at emit time, so the decl, the put and the
 # four gets all key off this one predicate.
@@ -2407,12 +2414,20 @@ def build_module():
                             # unchanged.
                             def _emit_mixer_feeds():
                                 _mix_gate(
-                                    lambda: ChannelPut(
-                                        "ropeLUT",
-                                        RMS,
-                                        offsets=[_rope_off],
-                                        sizes=[ROPE_LUT_LEN],
-                                        strides=[1],
+                                    # ROPELUT_DMA: the rope core spells this feed
+                                    # as an air.dma_memcpy_nd naming @ropeLUT, so
+                                    # air-dma-to-channel derives this put and
+                                    # writing it here as well would double it.
+                                    (
+                                        (lambda: None)
+                                        if ROPELUT_DMA
+                                        else lambda: ChannelPut(
+                                            "ropeLUT",
+                                            RMS,
+                                            offsets=[_rope_off],
+                                            sizes=[ROPE_LUT_LEN],
+                                            strides=[1],
+                                        )
                                     ),
                                     lambda: ChannelPut(
                                         "convW",
@@ -2792,15 +2807,26 @@ def build_module():
                     if (HYBRID_MIXER and a_iv is not None)
                     else None
                 )
+                # RMS reaches segment scope because the rope LUT feed is spelled
+                # as an air.dma_memcpy_nd naming @ropeLUT, and a DMA has to name
+                # BOTH endpoints in one place -- air-dma-to-channel derives the
+                # shim put from it. The explicit put/get form does not need this,
+                # which is why no other L3 buffer is a segment operand.
                 _seg_opers = (
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
+                    + [RMS]
                     + ([L_rt] if DYNSEQ else [])
+                )
+                # Index of RMS above; keeps _sa[-1] meaning L_rt for DYNSEQ.
+                _seg_rms_idx = (1 if a_iv is not None else 0) + (
+                    1 if _seg_arm_rt is not None else 0
                 )
 
                 @segment(name="seg", operands=_seg_opers)
                 def seg(*_sa):
                     _seg_iv = _sa[0] if a_iv is not None else None
+                    _seg_RMS = _sa[_seg_rms_idx]
                     # The context length reaches the attention herd from here, as a
                     # herd operand: an RTP slot the instruction stream writes per
                     # dispatch, not a constant folded into the core ELF.
@@ -3136,7 +3162,7 @@ def build_module():
                     # the fix for the fused vocab deadlock: in vocab mode dest0
                     # never flows, and an idle compute-tile S2MM does NOT stall the
                     # col-2 memtile that the vocab X-feed/rms share.
-                    def _rope_body(_arm, a_qkv=None):
+                    def _rope_body(_arm, a_qkv=None, rms=None):
                         # a_qkv given => the caller owns the buffer and has
                         # already filled it (the hybrid hands rope the ph0
                         # landing). None => rope allocates and fills its own.
@@ -3161,7 +3187,40 @@ def build_module():
                                 strides=[idx(1)],
                             )
                         a_lut = AllocOp(ropelut_l1, [], [])
-                        ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
+                        # _rope_off is a launch-scope expression, and a herd is
+                        # IsolatedFromAbove, so recompute the offset here. It is
+                        # only recomputable when it does not depend on a_iv --
+                        # i.e. when the rope weights are NOT per-layer. When they
+                        # are, threading a_iv in would be the price, and the
+                        # hand-written pair stays instead.
+                        _rope_off_h = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                        if (
+                            ROPELUT_DMA
+                            and rms is not None
+                            and not (ROPE_W_PER_LAYER and MULTIBLK)
+                        ):
+                            # Spelled as a DMA naming @ropeLUT rather than as a
+                            # get with a matching put at launch scope: the pass
+                            # hoists the shim put out for us. The declaration is
+                            # untouched, so channel_type and the placement pins
+                            # on it survive.
+                            DmaMemcpyNd(
+                                a_lut,
+                                rms,
+                                src_offsets=[_rope_off_h],
+                                src_sizes=[ROPE_LUT_LEN],
+                                src_strides=[1],
+                                channel="ropeLUT",
+                                channel_indices=[0],
+                                # Keep this feed's shim BD where the hand-written
+                                # put had it: straight after @rmsW, ahead of the
+                                # weight stream. Without it the derived put lands
+                                # at the herd's position, slot 6 -> 18, and the
+                                # rope core deadlocks waiting on its LUT.
+                                hoist_after="rmsW",
+                            )
+                        else:
+                            ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
                         a_q = AllocOp(ropeq_l1, [], [])
                         a_k = AllocOp(ropekv_l1, [], [])
                         a_v = AllocOp(ropekv_l1, [], [])
@@ -3243,10 +3302,10 @@ def build_module():
                         # the LM launch waits on -> TIMEOUT.
                         _arm_rope = _seg_arm
 
-                        @herd(name="rope", sizes=[1, 1], operands=[_arm_rope])
-                        def rope_h(tx, ty, _sx, _sy, _arm):
+                        @herd(name="rope", sizes=[1, 1], operands=[_arm_rope, _seg_RMS])
+                        def rope_h(tx, ty, _sx, _sy, _arm, _rms):
                             def _dec():
-                                _rope_body(_arm)
+                                _rope_body(_arm, rms=_rms)
                                 yield_([])
 
                             def _voc():

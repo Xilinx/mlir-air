@@ -894,6 +894,11 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
                           StringAttr::get(op->getContext(), "external"));
   if (op->hasAttr("broadcast_set"))
     externalGetPut->setAttr("broadcast_set", op->getAttr("broadcast_set"));
+  // Carry the issue-order anchor onto the EXTERNAL half only. It is the
+  // producer/consumer that leaves the hierarchy and lands in the destination
+  // block, so it is the only one whose position is a free choice.
+  if (auto anchor = op.getHoistAfterAttr())
+    externalGetPut->setAttr("air.hoist_after", anchor);
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
@@ -1004,6 +1009,73 @@ class AIRDmaToAIRChannelConversion
   }
 };
 
+// Find the op named by an "air.hoist_after" anchor on any of the external
+// channel ops: the LAST endpoint of that channel in the region the hierarchy op
+// lives in, skipping anything inside the hierarchy op itself. Returns null when
+// nothing is anchored or the anchor names a channel with no endpoint out here.
+static Operation *
+findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
+                     Operation *hier_op) {
+  FlatSymbolRefAttr anchor;
+  for (auto getput : externalGetPuts) {
+    auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+    if (!a)
+      continue;
+    // One shared insertion point is used for the whole batch, so only honour
+    // the anchor when the batch agrees on it.
+    if (anchor && anchor != a)
+      return nullptr;
+    anchor = a;
+  }
+  if (!anchor)
+    return nullptr;
+
+  // Only endpoints at the SAME hierarchy level count. Without this the herd
+  // -level hoist would match an endpoint of the anchor channel sitting inside a
+  // SIBLING herd, and drop the transfer in there.
+  auto *hierParent =
+      hier_op->getParentOfType<air::HierarchyInterface>()
+          ? hier_op->getParentOfType<air::HierarchyInterface>().getOperation()
+          : nullptr;
+  // Which arm of an enclosing scf.index_switch an op sits in, or -1 if none.
+  // scf.index_switch numbers its DEFAULT region 0 and its cases 1..n, but
+  // prints the cases first -- so "last in walk order" is NOT "last in program
+  // order", and picking by walk order lands a decode-only feed in the vocab
+  // arm. Match the arm instead, which is what the front end means.
+  auto armOf = [](Operation *o) -> int {
+    for (Operation *p = o->getParentOp(); p; p = p->getParentOp()) {
+      if (isa<air::HierarchyInterface>(p))
+        return -1;
+      if (auto sw = dyn_cast<scf::IndexSwitchOp>(p))
+        for (unsigned r = 0; r < p->getNumRegions(); r++)
+          if (p->getRegion(r).isAncestor(o->getParentRegion()) ||
+              &p->getRegion(r) == o->getParentRegion())
+            return (int)r;
+    }
+    return -1;
+  };
+  int wantArm = -1;
+  for (auto getput : externalGetPuts)
+    if (getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after"))
+      wantArm = armOf(getput.getOperation());
+
+  Operation *last = nullptr, *lastSameArm = nullptr;
+  hier_op->getParentRegion()->walk([&](air::ChannelInterface o) {
+    if (hier_op->isAncestor(o.getOperation()))
+      return WalkResult::advance();
+    if (o.getChanName() != anchor.getAttr())
+      return WalkResult::advance();
+    auto oParent = o->getParentOfType<air::HierarchyInterface>();
+    if ((oParent ? oParent.getOperation() : nullptr) != hierParent)
+      return WalkResult::advance();
+    last = o.getOperation();
+    if (armOf(o.getOperation()) == wantArm)
+      lastSameArm = o.getOperation();
+    return WalkResult::advance();
+  });
+  return lastSameArm ? lastSameArm : last;
+}
+
 // Hoist the "external" half of the data movement out by one level of air
 // hierarchy, based on the memory space that it is operating on.
 template <typename AIRHierOpTy>
@@ -1034,6 +1106,11 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     if (externalGetPuts.empty())
       return failure();
 
+    // Resolve the issue-order anchor up front: it decides whether the enclosing
+    // control ops are pulled in and rebuilt at all.
+    Operation *anchorOp =
+        findIssueOrderAnchor(externalGetPuts, hier_op.getOperation());
+
     // Get backward slices to the target "external" side channel ops, to be
     // hoisted together.
     SetVector<Operation *> backwardSlice;
@@ -1041,12 +1118,17 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     for (auto op : externalGetPuts) {
       (void)getBackwardSlice(op.getOperation(), &backwardSlice, bsOptions);
 
-      for (auto parent = op->getParentOp();
-           !isa<air::HierarchyInterface>(parent);
-           parent = parent->getParentOp()) {
-        (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
-        backwardSlice.insert(parent);
-      }
+      // Anchored: the op is placed inside the anchor's control context, so the
+      // guards it sits under on the hierarchy side must NOT come along -- their
+      // conditions are defined in the region being left behind, which is what
+      // "using value defined outside the region" reports.
+      if (!anchorOp)
+        for (auto parent = op->getParentOp();
+             !isa<air::HierarchyInterface>(parent);
+             parent = parent->getParentOp()) {
+          (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
+          backwardSlice.insert(parent);
+        }
     }
     // Get constant values used by backward slices, and add to backward
     // slices. Collect into a temporary first: inserting into backwardSlice
@@ -1100,18 +1182,26 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // partner is left unpaired, surfacing 30-odd passes later in
     // air-verify-hierarchy-locality. Label the ancestors up to the hierarchy op
     // being hoisted out of, so the structure is rebuilt around the target.
-    for (auto getput : externalGetPuts) {
-      for (Operation *p = getput->getParentOp();
-           p && p != hier_op.getOperation(); p = p->getParentOp()) {
-        if (isa<air::HierarchyInterface>(p))
-          break;
-        if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp,
-                LoopLikeOpInterface>(p))
-          p->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    //
+    // Skipped when anchored: the op is being placed INSIDE the anchor's control
+    // context, so rebuilding the hierarchy-side guards would both duplicate
+    // that context and reference conditions defined in the region being left
+    // behind.
+    if (!anchorOp) {
+      for (auto getput : externalGetPuts) {
+        for (Operation *p = getput->getParentOp();
+             p && p != hier_op.getOperation(); p = p->getParentOp()) {
+          if (isa<air::HierarchyInterface>(p))
+            break;
+          if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp,
+                  LoopLikeOpInterface>(p))
+            p->setAttr("hoist", StringAttr::get(ctx, "dep"));
+        }
       }
     }
 
     // Hoist hierarchy op into scf op
+    bool anchored = false;
     Operation *scf_loop = nullptr;
     mlir::OpBuilder::InsertPoint
         insertionPointAtHierOp; // To keep a record of the insertion point as
@@ -1120,14 +1210,32 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     rewriter.setInsertionPoint(hier_op);
     insertionPointAtHierOp = rewriter.saveInsertionPoint();
 
+    // Issue-order anchor. By default the external half lands immediately before
+    // the hierarchy op, i.e. after every producer the front end wrote by hand.
+    // On a launch carrying air.preserve_shim_dma_order that reorders the shim
+    // BD queue, which is load-bearing in real designs -- moving one feed from
+    // slot 6 to slot 18 behind a weight stream is enough to deadlock a core
+    // waiting on it. When the front end names an anchor, place the op straight
+    // after that channel's LAST endpoint instead, so it inherits both the
+    // anchor's position and its control context (no new guard is synthesised;
+    // if the anchor sits in a switch arm, so does this).
+    if (anchorOp) {
+      rewriter.setInsertionPointAfter(anchorOp);
+      insertionPointAtHierOp = rewriter.saveInsertionPoint();
+      anchored = true;
+    }
+
     // Check if broadcasting happens for any "external" side channel ops. If so,
     // the hoisted scf parallel should respect the broadcast shape instead. If
     // broadcasting is detected, then hoist and specialize each data movement
     // (i.e. do not hoist the air.hierarchy iteration space.)
-    if (llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
-          return air::getChannelDeclarationThroughSymbol(getput)->hasAttr(
-              "broadcast_shape");
-        }))
+    if (anchored) {
+      // The anchor fixes position and control context. Wrapping the iteration
+      // space in an scf.parallel here would move it back to the hierarchy op.
+    } else if (llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
+                 return air::getChannelDeclarationThroughSymbol(getput)
+                     ->hasAttr("broadcast_shape");
+               }))
       insertionPointAtHierOp = rewriter.saveInsertionPoint();
     else {
       if (hier_op.getNumDims()) {
@@ -1148,7 +1256,32 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // Hoist ops to "external" side code region, by cloning with remap.
     SmallVector<Operation *> clonedOps;
     IRMapping remap;
-    if (auto scf_par = dyn_cast_or_null<scf::ParallelOp>(scf_loop)) {
+    if (anchored) {
+      // Anchored: clone ONLY the external ops and what feeds them, straight in
+      // at the anchor. cloneOpsInBlock is not usable here -- it walks the
+      // hierarchy's top-level block and turns everything unlabelled into a
+      // wait_all, so an op nested in a guard whose ancestors are deliberately
+      // not labelled (they belong to the context being left behind) would be
+      // dropped and its partner left unpaired.
+      rewriter.restoreInsertionPoint(insertionPointAtHierOp);
+      int arg_idx = 0;
+      for (auto arg : hier_op.getKernelArguments())
+        remap.map(arg, hier_op.getKernelOperand(arg_idx++));
+
+      SetVector<Operation *> toClone;
+      for (auto *b : backwardSlice)
+        if (!isa<air::ChannelInterface>(b) &&
+            !b->hasTrait<OpTrait::IsTerminator>() && b->getNumRegions() == 0)
+          toClone.insert(b);
+      // getBackwardSlice fills the SetVector defs-before-uses, so its own order
+      // is already a valid clone order.
+      for (auto *b : toClone)
+        rewriter.clone(*b, remap);
+      for (auto getput : externalGetPuts)
+        clonedOps.push_back(rewriter.clone(*getput.getOperation(), remap));
+      if (clonedOps.empty())
+        return failure();
+    } else if (auto scf_par = dyn_cast_or_null<scf::ParallelOp>(scf_loop)) {
       // If air.hierarchy is hoisted into an scf.parallel loop.
 
       // Remap the air.hierarchy to the hoisted scf.parallel.
@@ -1245,6 +1378,11 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     for (auto cloned : clonedOps) {
       if (cloned->hasAttr("hoist"))
         cloned->removeAttr("hoist");
+      // The anchor is a front-end directive, not output metadata. Drop it once
+      // it has been honoured, but only then -- an unanchored hoist has to carry
+      // it further out (herd -> segment -> launch) to be honoured later.
+      if (anchored)
+        cloned->removeAttr("air.hoist_after");
     }
 
     // Remove the original "external" side puts and gets.

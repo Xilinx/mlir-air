@@ -351,6 +351,7 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         pad_after=None,
         channel=None,
         channel_indices=None,
+        hoist_after=None,
     ):
         if channel is None and channel_indices is not None:
             raise ValueError("channel_indices requires channel")
@@ -399,6 +400,12 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         if channel_indices is not None:
             self.operation.attributes["channel_indices"] = DenseI64ArrayAttr.get(
                 channel_indices
+            )
+        # Issue-order anchor: place the derived external half straight after this
+        # channel's last endpoint, instead of at the consumer hierarchy.
+        if hoist_after is not None:
+            self.operation.attributes["hoist_after"] = FlatSymbolRefAttr.get(
+                hoist_after
             )
 
 

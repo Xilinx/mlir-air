@@ -2921,8 +2921,9 @@ void air::DmaMemcpyNdOp::build(
         dynSrcStrides, staticDstOffsets, staticDstSizes, staticDstStrides,
         staticSrcOffsets, staticSrcSizes, staticSrcStrides, pad_before,
         pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr(),
-        /*channel=*/FlatSymbolRefAttr(), /*channel_indices=*/
-        DenseI64ArrayAttr());
+        /*channel=*/FlatSymbolRefAttr(),
+        /*channel_indices=*/DenseI64ArrayAttr(),
+        /*hoist_after=*/FlatSymbolRefAttr());
 }
 
 void air::DmaMemcpyNdOp::build(
@@ -2938,7 +2939,8 @@ void air::DmaMemcpyNdOp::build(
         allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
         pad_before, pad_after, /*src_rank=*/IntegerAttr(),
         /*dst_rank=*/IntegerAttr(), /*channel=*/FlatSymbolRefAttr(),
-        /*channel_indices=*/DenseI64ArrayAttr());
+        /*channel_indices=*/DenseI64ArrayAttr(),
+        /*hoist_after=*/FlatSymbolRefAttr());
 }
 
 void air::ChannelPutOp::build(

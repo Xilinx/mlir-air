@@ -487,7 +487,8 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         OptionalAttr<I64Attr>:$src_rank,
         OptionalAttr<I64Attr>:$dst_rank,
         OptionalAttr<FlatSymbolRefAttr>:$channel,
-        OptionalAttr<DenseI64ArrayAttr>:$channel_indices
+        OptionalAttr<DenseI64ArrayAttr>:$channel_indices,
+        OptionalAttr<FlatSymbolRefAttr>:$hoist_after
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
@@ -585,6 +586,14 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     }
     /// True when this copy names the air.channel it must lower onto, rather
     /// than letting air-dma-to-channel mint a fresh one.
+    /// The channel this transfer's hoisted external half must be issued after.
+    /// air-dma-to-channel derives the external half at the consumer hierarchy's
+    /// position, which is after every producer the front end wrote by hand. On a
+    /// launch carrying air.preserve_shim_dma_order that reorders the shim BD
+    /// queue. Naming an anchor places the derived op immediately after that
+    /// channel's last endpoint instead, inheriting its control context.
+    FlatSymbolRefAttr getHoistAnchor() { return getHoistAfterAttr(); }
+
     bool hasNamedChannel() {
       return getChannelAttr() != nullptr;
     }
