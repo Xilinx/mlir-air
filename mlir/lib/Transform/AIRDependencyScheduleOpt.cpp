@@ -4500,6 +4500,53 @@ public:
       return res;
     };
 
+    // True when every op of one channel sits in the `then` arm of some scf.if
+    // and every op of the other sits in that same if's `else` arm. NFL fusion
+    // rewrites two channels into one loop and keeps only the destination's
+    // ops, on the understanding that the new loop's trip count is what
+    // distinguishes the two. Complementary arms break that understanding: the
+    // condition is invariant in the loop being created, so the surviving arm
+    // runs on every trip and the erased arm's data is simply never moved. The
+    // symptom is silent -- op counts, channel counts and call counts all stay
+    // the same, and only the flows for the dropped channel go missing.
+    //
+    // Not reachable from the raw-bindings examples, which spell a per-core
+    // guard as affine.if; air.api spells it as scf.if, and its two arms then
+    // look to checkIfTemporalMergeable like two independently loop-nested
+    // channels. Skipping is always safe: fusion here is an optimization.
+    // The arm index (0 = then, 1 = else) of the nearest enclosing scf.if that
+    // `op` and `other` have in common, or nullopt when they share none.
+    auto armIn = [](Operation *op, scf::IfOp ifOp) -> std::optional<unsigned> {
+      for (Operation *q = op; q; q = q->getParentOp())
+        if (q->getParentOp() == ifOp.getOperation())
+          return q->getBlock() == ifOp.thenBlock() ? 0u : 1u;
+      return std::nullopt;
+    };
+    auto inComplementaryArmsOfOneIf = [&armIn](air::ChannelOp a,
+                                               air::ChannelOp b) -> bool {
+      SmallVector<Operation *> aOps, bOps;
+      for (auto p : air::getChannelPutOpThroughSymbol(a))
+        aOps.push_back(p);
+      for (auto p : air::getChannelPutOpThroughSymbol(b))
+        bOps.push_back(p);
+      for (auto *x : aOps) {
+        for (Operation *p = x->getParentOp(); p; p = p->getParentOp()) {
+          auto ifOp = dyn_cast<scf::IfOp>(p);
+          if (!ifOp)
+            continue;
+          auto armA = armIn(x, ifOp);
+          if (!armA)
+            continue;
+          for (auto *y : bOps) {
+            auto armB = armIn(y, ifOp);
+            if (armB && *armA != *armB)
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+
     // Identify mergeable channel pairs and classify fusion type.
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
@@ -4523,6 +4570,8 @@ public:
           // scf.for). Skip if either channel's ops sit inside a multi-result
           // scf.if, which wrapRegionsWithForLoops cannot safely wrap.
           if (opInMultiResultIfOp(chanA) || opInMultiResultIfOp(chanB))
+            continue;
+          if (inComplementaryArmsOfOneIf(chanA, chanB))
             continue;
           chan_merge_map[chanB] = chanA;
           nfl_merge_pairs.push_back(std::make_pair(chanA, chanB));
