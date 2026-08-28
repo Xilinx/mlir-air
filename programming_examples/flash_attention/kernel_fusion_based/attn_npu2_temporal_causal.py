@@ -138,6 +138,12 @@ def build_module(
     _uniform_cps = num_lq_iters > _MAX_ROUNDS_IN_FLIGHT
 
     def cps_blocks(lx):
+        """The round's causal prefix, in K blocks.
+
+        ``lx`` is a Python int while the round axis is unrolled and a loop
+        variable once it is folded; the arithmetic is the same either way, and
+        air.sequential takes the result as a run-time bound in the second case.
+        """
         return (num_lq_iters if _uniform_cps else lx + 1) * NQ
 
     _dk_dma = dk if full_d_dma else dk_tile
@@ -171,6 +177,20 @@ def build_module(
     )
 
     _row_split_out = q_tiles_per_core == 1 and num_lq_iters > 4
+    # out_col's table below is a hand-checked column budget for NB == 3 (GQA
+    # 3:1) and NB == 4 (GQA 4:1), where the herd spans all 8 columns and sixteen
+    # gathers share the seven non-K/V ones. A smaller NB leaves the herd
+    # narrower than the table assumes, so fail here with the reason rather than
+    # building a module on an unverified placement.
+    if _row_split_out and NB not in (3, 4):
+        raise NotImplementedError(
+            f"the row-split output placement past 4 rounds is only mapped for "
+            f"the GQA ratio NB = num_heads / num_kv_heads to be 3 or 4; got "
+            f"NB={NB} from num_heads={num_heads}, num_kv_heads={num_kv_heads}. "
+            f"Either keep lq <= 4 * lqp (= {4 * lqp}) so the four-tile gathers "
+            f"are used, or extend out_col with a verified column budget for "
+            f"this NB."
+        )
     if _row_split_out:
         out_slices = [
             ("lo", 0, 0, 1),
@@ -543,8 +563,21 @@ def build_module(
 
                         @h.body
                         def _(tx, ty):
-                            for lx in range(num_lq_iters):
-                                slot = lx % n_ob
+                            # The round axis is unrolled in Python while it is
+                            # small, so cps_lx is a build-time constant and the
+                            # DMA skip exists at all. That makes .text scale
+                            # with the round count against 16 KB of AIE2P
+                            # program memory, so past the threshold it folds
+                            # into one scf.for with a run-time causal bound --
+                            # which costs the accumulator ping-pong, since a
+                            # dynamic slot cannot index a buffer list.
+                            core_rounds = (
+                                air.sequential(0, num_lq_iters)
+                                if fold_core_rounds
+                                else range(num_lq_iters)
+                            )
+                            for lx in core_rounds:
+                                slot = 0 if fold_core_rounds else lx % n_ob
                                 gps_j = [
                                     (
                                         qpair
