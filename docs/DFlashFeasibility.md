@@ -40,6 +40,7 @@ what was removed and why, so the same errors are not re-derived.
 | what quantizing the drafter costs in ACCEPTANCE | **measured: ~16%** — 3.981 tok/verify against the bf16 drafter's 4.73 (§3.12) |
 | **on-device draft + verify loop** | **runs end to end; speculative == non-speculative** `[hw]` (§3.8) |
 | **the batch-8 verify pass beyond a 16-token context** | **fixed** — a shared-L1 lock was taken one loop level too high (§3.10, §3.11) |
+| **the pre-pass (the third PDI)** | **weight-bandwidth-bound at 0.46 GB/s, 118.5 ms/block** (§3.13); layout + format gated on CPU, engine hook inert, arm wiring open (§3.14) |
 | **the verify pass being exact** | **fixed** — a BFP16 shared exponent spanned the context boundary (§3.9) |
 | DFlash speedup with the DEVICE drafter | **measured: 0.69×** at 3.981 tok/verify against a 328.3 ms step; 0.92× with the pre-pass hidden (§3.12) |
 
@@ -1172,6 +1173,74 @@ at 198.8 ms — 3.49 baseline tokens for eight — and to the 0.75 tokens of
 acceptance that quantizing the drafter costs (§3.12). Neither is reachable by
 tuning the third PDI, which is the argument for deleting it in one step rather
 than optimizing it in several.
+
+### 3.14 Folding it in: the layout, and what the engine will and will not allow
+
+`dflash_prepass_waves.py` is the new builder. It owns every DFlash-specific
+decision so `fused_decode.py` — the conventional-LLM engine — takes only a
+generic hook and carries no DFlash code.
+
+**Six waves, not ten**, which corrects §3.13's own sketch. `fc` is **one**
+2560×12800 projection at I2=5 J2=25, not five accumulating 2560×2560 ones:
+accumulating across input column-blocks is what the proj cores already do, and
+`qwen3_4b_draft_requant.py` already packs it that way as `W_fc`. The context K/V
+needs nothing packed at all — it is the drafter's own `k_proj`/`v_proj`, already
+inside each layer's phase-0 `concat([Wq;Wk;Wv])` slab.
+
+| wave | M | K | I2 | J2 | iter_lo | blocks | MB | X | dest |
+|---|---|---|---|---|---|---|---|---|---|
+| fc | 2560 | 12800 | 5 | 25 | 0 | 4000 | 20.5 | taps | rms |
+| ctxkv0–4 | 2048 | 2560 | 4 | 5 | **8** | 640 | 3.3 ea | xnorm | rope |
+
+36.9 MB, **0.58 of a drafter layer slab** — which is where §3.13's ~3.4 ms came
+from, now derived rather than estimated.
+
+**Both CPU gates pass** `[cpu]`, on the shipped cache rather than a second copy
+made by the same code:
+
+- **Layout.** The K/V window is *derived*: under `iter_major` a row-iteration
+  owns a contiguous `NCX*NCY*ROW_BLOCK`-row span, so K and V are iterations
+  8–11. fc reads back at **4.29e-02** and the window at **5.75e-02** against a
+  6.67e-02 quantization step. The negative control is the point — the same
+  window against `q`'s rows reads **1.218e+00**. A layout error looks like that,
+  not like the line above it.
+- **Format.** q4k instead of AWQ int4, through the numpy chain §3.6 already
+  validated the *order* of. q4k is **not worse — it is better at every stage but
+  one** (`target_hidden` 9.16e-02 against int4's 1.06e-01, cos ≥ 0.995), which
+  is what a group of 32 against AWQ's 128 should do.
+
+**The hook is inert.** `DECODE_EXTRA_WAVES` is a validated JSON list; unset, the
+emitted AIR is byte-identical at batch 1 and batch 8 `[static]`.
+
+**What the engine will not allow, and it decides the last open question.** An
+extra wave is a third arm, and an arm may select **a count and never a program**.
+That is not style — `_rms_batched`'s header records the measurement: AIR derives
+a buffer's lock credit from how many channel ops *name* it, counting across
+`scf.if` arms because it cannot know they are exclusive, so a second arm doubled
+the credit on `@layerOut`'s MM2S and `@outY`'s S2MM and decode hung in wave 0
+with the KV written and the layer output never landing. The memtile's X feed
+already obeys the same discipline: both its arms call `_feed_inX("xnorm", n)`
+and differ only in `n`.
+
+So §3.13's two candidates for `fc`'s raw 12800-wide X both fail. Routing it
+through the rms core with `rms_copy_aie` instead of `rms_norm_aie` is a
+different *program* on the tightest tile in the design. A dedicated `@tapsX`
+channel into the X memtile is a different program on the memtile, which is the
+same doubled-credit hazard one hop out.
+
+**What is left is to put the taps on `@xnorm` from the launch side.** `@xnorm`
+is already a convergent packet channel with four producers (the rms core twice,
+the o memtile, the GLU down buffer), consumed by the X memtile in phase-time
+order; a fifth, time-disjoint producer is that same pattern. The memtile then
+changes by a count only, and the rms core is not touched at all for the X
+source. It is legal in the direction that matters — a channel with several
+producers is refused only when the *consumer* is the shim (§5.4's `@layerOut`
+finding), and here it is a memtile.
+
+Remaining, and it needs device iteration rather than analysis: the arm-2 wiring
+across the launch feed, the two memtile counts, the proj core's scalars, the rms
+core's `hidden_norm` on `fc`'s output, and the rope core's `k_norm`/RoPE into
+`appendK`/`appendV` at the drafter's KV base.
 
 ## 4. qwen3-4b at batch 1: verified
 
