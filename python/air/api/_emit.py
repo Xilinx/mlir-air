@@ -655,7 +655,9 @@ def _emit_reduce(dst, expr):
                 operand, ivs + [zero], regions[dtype], regions, True, load, reads
             )
             scalar = _result(reduction(dtype.mlir(), kind, value))
-            memref_store(scalar, dst.value, ivs + [zero] if keepdims else ivs)
+            memref_store(
+                scalar, dst.value, _dst_index(dst, ivs + [zero] if keepdims else ivs)
+            )
 
         _nest(bounds, body)
         return
@@ -700,7 +702,9 @@ def _emit_reduce(dst, expr):
             yield_([])
 
         scalar = _result(reduction(dtype.mlir(), kind, read_acc()))
-        memref_store(scalar, dst.value, ivs + [zero] if keepdims else ivs)
+        memref_store(
+            scalar, dst.value, _dst_index(dst, ivs + [zero] if keepdims else ivs)
+        )
 
     _nest(bounds, body)
 

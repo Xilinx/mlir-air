@@ -351,3 +351,42 @@ def argmax_compares_in_the_cast_type():
                     air.ops.store(o, OUT[0:32])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_reduction_stores_at_the_destination_region_offset
+# The destination of a reduction is written through the same index arithmetic
+# as every other assignment: the region's own offset, plus the induction
+# variable of whatever nest surrounds it.
+#
+# It was not. The store index was built from the reduction's own collapsed-axis
+# nest alone and dropped the destination's base entirely, so
+# `part[row : row + 1] = reduce_add(...)` inside a loop over `row` wrote every
+# row to `part[0]`. It compiles, it runs, and the earlier rows are silently
+# lost -- which is why this is pinned rather than left to the one example that
+# happens to exercise it (matrix_vector_multiplication/bf16_cascade, whose
+# cascade stage reduces one row at a time into a shared partial-sum buffer).
+# CHECK: scf.for %[[ROW:.*]] =
+# CHECK: vector.reduction <add>
+# CHECK: %[[AT:.*]] = arith.addi %{{.*}}, %[[ROW]]
+# CHECK: memref.store %{{.*}}, %{{.*}}[%[[AT]]]
+@run
+def a_reduction_stores_at_the_destination_region_offset():
+    A = air.tensor([4, 16], bf16)
+    OUT = air.tensor([4], bf16)
+
+    with air.launch(name="rro") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    a = air.alloc([4, 16], bf16, scope=h.private())
+                    part = air.alloc([4], bf16, scope=h.private())
+                    air.ops.load(a, A[0:4, :])
+                    for row in air.sequential(0, 4):
+                        part[row : row + 1] = air.ops.reduce_add(a[row, :])
+                    air.ops.store(part, OUT[0:4])
+
+    print(launch.mlir())
