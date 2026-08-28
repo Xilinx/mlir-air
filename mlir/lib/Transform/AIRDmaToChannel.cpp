@@ -222,7 +222,15 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
     if (hasAsyncTokenResult) {
       // Collect async tokens produced by cloned ops to create a wait_all.
       SmallVector<Value> asyncDeps;
+      // Only ops landing directly in the destination block can be waited on
+      // here. cloneOpsInBlock returns what it cloned at EVERY depth -- that is
+      // how the caller finds channel ops buried in a hoisted loop body -- so if
+      // a branch held a loop, its interior tokens are in `clonedOps` too, and
+      // waiting on one produces "operand #N does not dominate this use".
+      Block *destBlk = builder.getInsertionBlock();
       for (auto *clonedOp : clonedOps) {
+        if (clonedOp->getBlock() != destBlk)
+          continue;
         if (auto asyncOp =
                 dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
           if (auto token = asyncOp.getAsyncToken())
@@ -296,7 +304,15 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
     air::WaitAllOp waitAllOp;
     if (hasAsyncTokenResult) {
       SmallVector<Value> asyncDeps;
+      // Only ops landing directly in the destination block can be waited on
+      // here. cloneOpsInBlock returns what it cloned at EVERY depth -- that is
+      // how the caller finds channel ops buried in a hoisted loop body -- so if
+      // a branch held a loop, its interior tokens are in `clonedOps` too, and
+      // waiting on one produces "operand #N does not dominate this use".
+      Block *destBlk = builder.getInsertionBlock();
       for (auto *clonedOp : clonedOps) {
+        if (clonedOp->getBlock() != destBlk)
+          continue;
         if (auto asyncOp =
                 dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
           if (auto token = asyncOp.getAsyncToken())
@@ -443,11 +459,23 @@ air::cloneIndexSwitchUsingRemap(OpBuilder builder, IRMapping &remap,
     }
     // Every arm must yield a token, including one that got nothing: an empty
     // air.wait_all is the identity the other arms' tokens are typed against.
+    //
+    // Collect the deps from the destination BLOCK, not from `cloned`.
+    // cloneOpsInBlock returns the ops it cloned at EVERY depth -- that is how
+    // the caller finds channel ops buried in a hoisted loop body (see the
+    // clonedOps scan in AIRHoistExternalAIRChannelPattern) -- so an arm holding
+    // a loop would otherwise yield tokens defined inside that loop's region and
+    // fail verification with "operand #N does not dominate this use". One
+    // switch is enough to hit this; it needs no second level of nesting.
+    //
+    // Taking only the tokens still unused in this block yields exactly what the
+    // arm has left outstanding: a nested loop contributes its own result, and
+    // the ops inside it stay where they belong.
     SmallVector<Value> deps;
-    for (auto *op : cloned)
-      if (auto async = dyn_cast_if_present<air::AsyncOpInterface>(op))
-        if (auto tok = async.getAsyncToken())
-          deps.push_back(tok);
+    for (Operation &op : dst.front())
+      for (Value res : op.getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
+          deps.push_back(res);
     auto wa = air::WaitAllOp::create(builder, loc,
                                      air::AsyncTokenType::get(ctx), deps);
     wa->setAttr("hoist", StringAttr::get(ctx, "dep"));
