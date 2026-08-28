@@ -729,18 +729,6 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   if (op->hasAttr("broadcast_set"))
     externalGetPut->setAttr("broadcast_set", op->getAttr("broadcast_set"));
 
-  // A re-feed count recognized on the DMA (air-annotate-refeed, at the front of
-  // the placement pipeline) belongs on the producing half. air-to-aie reads it
-  // off the put to scale the core-side release. An L2 source carries its count
-  // on the backing alloc instead, and air-annotate-refeed has already put it
-  // there, so there is nothing on the DMA to forward in that case.
-  if (auto rc = op->getAttr(air::attrs::RefeedCount)) {
-    auto producer = isa<air::ChannelPutOp>(externalGetPut.getOperation())
-                        ? externalGetPut
-                        : internalGetPut;
-    producer->setAttr(air::attrs::RefeedCount, rc);
-  }
-
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
   return success();

@@ -3377,39 +3377,21 @@ static memref::AllocOp getBackingAlloc(Value v) {
   return term->getOperand(idx - 1).getDefiningOp<memref::AllocOp>();
 }
 
-// The op a refeed loop body re-sends: an air.channel.put, or an
-// air.dma_memcpy_nd that air-dma-to-channel will later turn into one. This pass
-// runs at the FRONT of the placement pipeline, before air-dma-to-channel, so a
-// re-feed written over a DMA has to be recognized in its DMA form or it is
-// never recognized at all -- and air-opt-memtile-dma-bds would go on to erase
-// the loop as a redundant single-BD wrapper, silently dropping the re-sends.
-static bool isRefeedTransfer(Operation *op) {
-  return isa<air::ChannelPutOp, air::DmaMemcpyNdOp>(op);
-}
-
-// The memref a refeed transfer re-reads. For a put that is the operand it
-// sends; for a DMA it is the source side, since the destination is the
-// consumer's landing buffer.
-static Value getRefeedSourceMemref(Operation *op) {
-  if (auto put = dyn_cast<air::ChannelPutOp>(op))
-    return put.getSrcMemref();
-  return cast<air::DmaMemcpyNdOp>(op).getSrcMemref();
-}
-
 // A refeed loop re-sends ONE resident buffer N times. Its body does nothing but
-// the transfer, so nothing rewrites the source between sends, and no data
-// operand depends on the induction variable, so every send reads the same
-// bytes. Returns the transfer, or null if `loopOp` is not that shape.
-static Operation *matchRefeedLoop(Operation *loopOp, Block *body, Value iv) {
-  // Pure ops are tolerated and hoisted with the transfer: a front end
-  // materializes index constants at its own insertion point, i.e. inside the
-  // loop, and no canonicalizer need have run before this pass.
-  Operation *put = nullptr;
+// the put, so nothing rewrites the source between sends, and no data operand
+// depends on the induction variable, so every send reads the same bytes.
+// Returns the put, or null if `loopOp` is not that shape.
+static air::ChannelPutOp matchRefeedLoop(Operation *loopOp, Block *body,
+                                         Value iv) {
+  // Pure ops are tolerated and hoisted with the put: a front end materializes
+  // the put's index constants at its own insertion point, i.e. inside the loop,
+  // and no canonicalizer need have run before this pass.
+  air::ChannelPutOp put = nullptr;
   for (auto &op : body->without_terminator()) {
-    if (isRefeedTransfer(&op)) {
+    if (auto p = dyn_cast<air::ChannelPutOp>(&op)) {
       if (put)
-        return nullptr; // more than one: not a single re-broadcast
-      put = &op;
+        return nullptr; // more than one put: not a single re-broadcast
+      put = p;
       continue;
     }
     if (!isMemoryEffectFree(&op))
@@ -3420,13 +3402,12 @@ static Operation *matchRefeedLoop(Operation *loopOp, Block *body, Value iv) {
   }
   if (!put)
     return nullptr;
-  auto putAsync = cast<air::AsyncOpInterface>(put);
   // The async dependency is exempt from the invariance check: it is the carried
   // token, a block argument by construction, re-spliced when the loop is
   // erased.
   llvm::SmallPtrSet<Value, 2> deps;
-  deps.insert(putAsync.getAsyncDependencies().begin(),
-              putAsync.getAsyncDependencies().end());
+  deps.insert(put.getAsyncDependencies().begin(),
+              put.getAsyncDependencies().end());
   for (auto operand : put->getOperands()) {
     if (deps.contains(operand))
       continue;
@@ -3439,21 +3420,20 @@ static Operation *matchRefeedLoop(Operation *loopOp, Block *body, Value iv) {
       return nullptr;
   }
   auto forOp = dyn_cast<scf::ForOp>(loopOp);
-  if (putAsync.getAsyncToken()) {
-    // Async form: the loop must carry exactly the transfer's token and yield
-    // it, and the transfer must depend on nothing else, or hoisting drops an
-    // edge.
+  if (put.getAsyncToken()) {
+    // Async form: the loop must carry exactly the put's token and yield it,
+    // and the put must depend on nothing else, or hoisting drops an edge.
     if (!forOp || forOp.getNumRegionIterArgs() != 1)
       return nullptr;
     auto yield = dyn_cast<scf::YieldOp>(body->getTerminator());
     if (!yield || yield->getNumOperands() != 1 ||
-        yield->getOperand(0) != put->getResult(0))
+        yield->getOperand(0) != put.getResult(0))
       return nullptr;
-    if (putAsync.getAsyncDependencies().size() != 1 ||
-        putAsync.getAsyncDependencies()[0] != forOp.getRegionIterArg(0))
+    if (put.getAsyncDependencies().size() != 1 ||
+        put.getAsyncDependencies()[0] != forOp.getRegionIterArg(0))
       return nullptr;
   } else if (loopOp->getNumResults())
-    return nullptr; // loop-carried values with a non-async transfer
+    return nullptr; // loop-carried values with a non-async put
   return put;
 }
 
@@ -3463,17 +3443,13 @@ static Operation *matchRefeedLoop(Operation *loopOp, Block *body, Value iv) {
 // buffer, which AllocL2BuffersPattern propagates from the alloc, while a core
 // (L1) producer's count scales the core-side release, which
 // allocateCoreLocksPerMemcpyOp reads off the put.
-static FailureOr<Operation *> getRefeedCarrier(Operation *put) {
-  Value src = getRefeedSourceMemref(put);
-  auto memrefTy = dyn_cast<MemRefType>(src.getType());
+static FailureOr<Operation *> getRefeedCarrier(air::ChannelPutOp put) {
+  auto memrefTy = dyn_cast<MemRefType>(put.getSrcMemref().getType());
   if (!memrefTy || !air::isL2(memrefTy))
-    // Not L2: the count rides the transfer itself. For a DMA that means it
-    // rides the DMA, and air-dma-to-channel forwards it onto the put it
-    // generates -- the op allocateCoreLocksPerMemcpyOp will read.
-    return put;
-  auto alloc = getBackingAlloc(src);
+    return put.getOperation();
+  auto alloc = getBackingAlloc(put.getSrcMemref());
   if (!alloc)
-    // Writing the count on the transfer would be silently ineffective here: the
+    // Writing the count on the put would be silently ineffective here: the
     // memtile mechanism only reads the buffer, so the fill lock would keep its
     // default init and the array would deadlock on device. Refuse.
     return put->emitOpError(
@@ -3493,12 +3469,13 @@ static FailureOr<Operation *> getRefeedCarrier(Operation *put) {
 // put re-folded means the two trip counts compose, M x N sends, not M + N.
 // Which case this is cannot be read off the carrier, only off whether this run
 // has folded a loop around THIS put before.
-static void accumulateRefeed(Operation *carrier, Operation *put, int64_t n,
+static void accumulateRefeed(Operation *carrier, air::ChannelPutOp put,
+                             int64_t n,
                              llvm::DenseMap<Operation *, int64_t> &perPut) {
-  auto it = perPut.find(put);
+  auto it = perPut.find(put.getOperation());
   int64_t prev = (it == perPut.end()) ? 0 : it->second;
   int64_t updated = prev ? prev * n : n;
-  perPut[put] = updated;
+  perPut[put.getOperation()] = updated;
 
   int64_t onCarrier = 0;
   if (auto a = carrier->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
@@ -3569,15 +3546,10 @@ void AIRAnnotateRefeedPass::runOnOperation() {
       bodyOps.push_back(&op);
     for (auto *op : bodyOps)
       op->moveBefore(loopOp);
-    if (cast<air::AsyncOpInterface>(put).getAsyncToken()) {
+    if (put.getAsyncToken()) {
       auto forOp = cast<scf::ForOp>(loopOp);
-      // The mutable dependency range is on the concrete op, not the interface.
-      if (auto p = dyn_cast<air::ChannelPutOp>(put))
-        p.getAsyncDependenciesMutable().assign(forOp.getInitArgs()[0]);
-      else
-        cast<air::DmaMemcpyNdOp>(put).getAsyncDependenciesMutable().assign(
-            forOp.getInitArgs()[0]);
-      forOp.getResult(0).replaceAllUsesWith(put->getResult(0));
+      put.getAsyncDependenciesMutable().assign(forOp.getInitArgs()[0]);
+      forOp.getResult(0).replaceAllUsesWith(put.getResult(0));
     }
     loopOp->erase();
 
