@@ -380,9 +380,12 @@ class XRTBackend(AirBackend):
                 if hasattr(air_module, "build")
                 else ""
             )
+            # Quote the type name: it is dotted, so a bare sentence-ending
+            # period reads as another component of it.
             raise AirBackendError(
                 f"XRTBackend.compile expects an MLIR module, got "
-                f"{type(air_module).__module__}.{type(air_module).__name__}.{hint}"
+                f"'{type(air_module).__module__}.{type(air_module).__name__}'."
+                f"{hint}"
             )
 
         # Determine target device: use explicit parameter if provided, otherwise auto-detect

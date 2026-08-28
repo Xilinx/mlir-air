@@ -84,24 +84,34 @@ def check(modpath, fnname, kwargs, importer):
     mod = __import__(modpath, fromlist=[fnname])
     built = getattr(mod, fnname)(**kwargs)
     text = str(built)
-    # Assert it is non-empty before asking whether it looks like MLIR: the
-    # failure mode this guards is a one-line object repr, and "does not contain
-    # air.launch" would also be true of the empty string.
-    assert text.strip(), f"{modpath}.{fnname} stringified to nothing"
-    # Reparse rather than pattern-match: this is exactly what aircc does with
-    # the file, so a text that survives it is a text aircc will accept. Pinning
-    # a substring instead would be a guess about which air ops the builder is
-    # expected to emit, which is not what this test is about -- layer_norm has
-    # no air.launch at all.
-    ok = isinstance(built, air.ir.Module)
-    if ok:
-        with air.ir.Context(), air.ir.Location.unknown():
-            air.ir.Module.parse(text)
+    # Every failure is reported through the status line rather than by raising
+    # here, so the run always says *which* builder is wrong. Raising first
+    # would leave the reader with a traceback and a half-finished table -- and
+    # the whole point of this test is to name the builder, since the
+    # diagnostic it stands in for (a parse error in air.mlir) does not.
+    if not isinstance(built, air.ir.Module):
+        why = "NOT MLIR"
+    elif not text.strip():
+        # Checked before the parse: an empty module is what an emitter that
+        # silently traced nothing produces, and MLIR parses "" quite happily.
+        why = "EMPTY"
+    else:
+        # Reparse rather than pattern-match: this is exactly what aircc does
+        # with the file, so a text that survives it is a text aircc will
+        # accept. Pinning a substring instead would be a guess about which air
+        # ops the builder should emit, which is not what this test is about --
+        # layer_norm has no air.launch at all.
+        try:
+            with air.ir.Context(), air.ir.Location.unknown():
+                air.ir.Module.parse(text)
+            why = "MLIR"
+        except Exception as e:  # noqa: BLE001 -- the message is the report
+            why = f"UNPARSABLE ({type(e).__name__}: {str(e).splitlines()[0]})"
     print(
-        f"{modpath}.{fnname}: {'MLIR' if ok else 'NOT MLIR'} "
+        f"{modpath}.{fnname}: {why} "
         f"({type(built).__name__}, {len(text.splitlines())} lines) <- {importer}"
     )
-    return ok
+    return why == "MLIR"
 
 
 # CHECK: conv1d_depthwise.conv1d_depthwise.build_module: MLIR
