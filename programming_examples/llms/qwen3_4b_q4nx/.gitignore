@@ -47,3 +47,6 @@ hidden_taps_test/
 fixed_test/
 l1_test/
 nodual_test/
+
+# DFlash scratch probes: superseded by the committed dflash_*.py diagnostics.
+_*.py

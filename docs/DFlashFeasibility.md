@@ -1096,6 +1096,83 @@ at this acceptance rate; hiding it *and* recovering §3.1's bf16 acceptance
 pre-pass, and is now clearly an upper bound that neither half of the pair
 reaches.
 
+### 3.13 The third PDI: 118 ms/block, and it should be deleted rather than tuned
+
+The pre-pass is the largest line in a speculative step after the verify pass —
+**82.0 ms of dispatch plus 36.5 ms of ELF load/unload per block**, 36% of the
+328.3 ms step. `dflash_prepass_cost.py` tests the three candidate explanations
+`[hw]`; two of them are wrong, which is why it is worth writing down.
+
+**Not the way it is called.** `air/backend/xrt.py`'s invoker allocates a fresh
+BO per argument on *every* call, copies each host array into it twice, and syncs
+all of them back afterwards — and the pre-pass passes all its weights as
+arguments: 45 args, 33.7 MB per dispatch, **92% of it constant weights**, moved
+in both directions every block. That is the obvious answer and it is not the
+answer. Of the 81 ms, **68 ms is device time**; the whole host side is 13 ms.
+
+**Not the 24 launches.** Varying the drafter layer count moves both the launch
+count and the weight bytes, and the result is a straight line through the
+origin against **bytes**:
+
+| drafter layers | launches | weight MB | device ms | GB/s |
+|---|---|---|---|---|
+| 1 | 8 | 19.90 | 42.7 | 0.47 |
+| 3 | 16 | 25.38 | 55.1 | 0.46 |
+| 5 | 24 | 30.87 | 68.9 | 0.45 |
+
+Same rate at 8, 16 and 24 launches; the intercept is within noise of zero. The
+launches cost nothing measurable and fusing them would gain nothing.
+
+**It is weight bandwidth, at 0.46 GB/s.** The batch-8 verify pass streams the
+model's ~2.26 GB in 198.8 ms — about **11 GB/s** — and batch-1 decode, which is
+bandwidth-bound by definition, does 56.95 ms/token on the same weights, near
+**39 GB/s**. The pre-pass runs 24–85× below what this silicon does a few
+milliseconds earlier in the same loop, because it streams **30.9 MB of constant
+weights through a generic int4 GEMM on four cores, once per block, to produce at
+most eight rows.**
+
+Widening that GEMM is not a parameter change. `HERD_N` is the **row** extent and
+NPU2 has four compute rows, so `HERD_N=4` already saturates the single column it
+uses; 8 and 16 fail placement outright. Going wider means more *columns*
+(`HERD_M > 1`), which `dflash_int4`'s L2 A-stage assert blocks at fc's K — the
+stage is `herd_m · tile_m · K · 2` bytes and already spends 400 KB of a 512 KB
+memtile at `herd_m=1`. Even a perfect four-column rewrite is ~4×, i.e. 68 → 17
+ms, which is still six times the cost of not having a third PDI at all.
+
+**So: fold `fc` and the context K/V into the target's program as trailing
+waves.** Three reasons it belongs there rather than in the drafter's:
+
+- The taps it consumes are produced by the verify pass that just ran, so it
+  keeps them on device and drops an 819 KB host round trip as well.
+- Rows are free — the pass is weight-bound, not row-bound — so computing all
+  eight slots and discarding the rejected ones costs nothing, and the host no
+  longer has to know which were accepted before the pre-pass can start.
+- Three device programs is what forces the load/unload; two do not.
+
+The shapes already fit the engine. §3.3 established that
+`fc(concat(h₁..h₅)) = Σᵢ Wᵢ·hᵢ` is **five accumulating 2560→2560 projections** —
+the shape the proj cores already run, accumulated across phases — and
+`k_proj`/`v_proj` at 2560→1024 is the drafter's own projection shape. What it
+costs is requantizing those eleven matrices from AWQ int4 to the cascade's q4k
+(§3.4 keeps the two conventions deliberately separate). §3.7's result says there
+is slack for that: re-seeding with the oracle's bf16 context rows instead of the
+int4 pre-pass left **all seven draft tokens identical**.
+
+What it is worth: 30.9 MB is **1.4%** of what the verify pass already streams,
+so ~3 ms rather than 118.5.
+
+| | step | break-even | at 3.981 accepted |
+|---|---|---|---|
+| today | 328.3 ms | 5.76 | 0.69× |
+| pre-pass folded in | ~250 ms | 4.39 | **0.91×** |
+
+**Which is still short of 1.0, and that is the point of measuring it.** A free
+pre-pass does not make DFlash pay here; it moves the question to the verify pass
+at 198.8 ms — 3.49 baseline tokens for eight — and to the 0.75 tokens of
+acceptance that quantizing the drafter costs (§3.12). Neither is reachable by
+tuning the third PDI, which is the argument for deleting it in one step rather
+than optimizing it in several.
+
 ## 4. qwen3-4b at batch 1: verified
 
 The target model works end to end on NPU2 `[hw]`:
