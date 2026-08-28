@@ -92,10 +92,15 @@ def run(f):
 # core, not once per core.
 # CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %[[SA]][0, 0] [4, 64] [64, 1]) : (memref<4x64xi32, 1 : i32>, memref<4x64xi32>)
 #
-# The herd is nested inside, and carries the L2 buffers as operands after the
-# tensors -- it is IsolatedFromAbove too, so a memtile buffer cannot simply be
-# referenced from within it.
-# CHECK: air.herd @herd_0 tile (%[[TX:.*]], %{{.*}}) in ({{.*}}) args({{.*}}) : memref<4x64xi32>, memref<4x64xi32>, memref<4x64xi32, 1 : i32>, memref<4x64xi32, 1 : i32>
+# The herd is nested inside, and carries the L2 buffers as operands -- it is
+# IsolatedFromAbove too, so a memtile buffer cannot simply be referenced from
+# within it. It carries *only* those: this body never touches the two L3
+# tensors, and an operand it does not touch is not free. The tracer has to
+# name every candidate when it creates the op, because that is before the body
+# has run, but it drops the ones the body turned out not to use once it has --
+# air-dependency reads a dead operand as a data dependency and would serialise
+# this herd against every other one staged from the same segment.
+# CHECK: air.herd @herd_0 tile (%[[TX:.*]], %{{.*}}) in ({{.*}}) args({{.*}}) : memref<4x64xi32, 1 : i32>, memref<4x64xi32, 1 : i32>
 # CHECK: memref.alloc() : memref<64xi32, 2 : i32>
 #
 # L2 -> L1, one window per core: the tile coordinate becomes the offset, and
@@ -130,3 +135,54 @@ def staged_passthrough():
 @run
 def staged_f32():
     print(build(dtype=f32).mlir())
+
+
+# CHECK-LABEL: TEST: per_core_reaches_each_herd_whole
+# <segment>.shared() and <segment>.per_core() differ in what the cores see. A
+# shared buffer is one allocation the cores divide between them: it carries a
+# leading dimension per herd axis, and a kernel reached through air.extern is
+# handed a memref.subview of this core's slab. A per_core buffer is not
+# divided -- every core gets its own copy of the whole shape, and the kernel
+# receives it entire.
+#
+# The shape below is flash_attention/dataflow_based's: a [lq, 1] running
+# maximum carried across two separate herds of a 2-D herd grid. shared() cannot
+# express it at all -- both its dimensions would be cores, leaving nothing for
+# the tile -- which is the case checked in api/errors.py.
+# CHECK: %[[UP:.*]] = memref.alloc() : memref<64x1xbf16, 2 : i32>
+# CHECK: air.herd @h {{.*}}%[[A0:.*]]=%[[UP]]{{.*}} memref<64x1xbf16, 2 : i32>
+# CHECK: func.call @zero_fill_sp_bf16(%[[A0]]) : (memref<64x1xbf16, 2 : i32>)
+# CHECK: air.herd @h {{.*}}%[[A1:.*]]=%[[UP]]{{.*}} memref<64x1xbf16, 2 : i32>
+# CHECK: func.call @zero_fill_sp_bf16(%[[A1]]) : (memref<64x1xbf16, 2 : i32>)
+# CHECK-NOT: memref.subview
+@run
+def per_core_reaches_each_herd_whole():
+    from air.api.types import bf16
+
+    B = air.tensor([64, 1], bf16)
+    fill = air.extern("zero_fill_sp_bf16", link_with="attn.o")
+
+    with air.launch(name="carried") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    up = air.alloc([64, 1], bf16, scope=seg.per_core())
+
+                    with air.herd([range(1), range(4)], name="h", shape=(1, 4)) as h0:
+
+                        @h0.body
+                        def _(tx, ty):
+                            fill(up)
+
+                    with air.herd([range(1), range(4)], name="h", shape=(1, 4)) as h1:
+
+                        @h1.body
+                        def _(tx, ty):
+                            fill(up)
+                            air.ops.store(up, B)
+
+    print(launch.mlir())

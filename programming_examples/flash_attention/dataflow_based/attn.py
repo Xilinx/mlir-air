@@ -1,25 +1,53 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-from math import cos, sin, sqrt, exp
+"""Flash attention as a dataflow pipeline across a cascade of cores.
 
-import air
-from air.ir import *
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import *
-from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.scf import for_, yield_
-from air.dialects import scf, affine, arith
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+The kernel is online softmax, split over ``num_cascade_stages`` columns. Each
+column walks its own share of the K/V sequence and keeps three running values --
+a per-row maximum ``up``, a per-row sum ``sp``, and the unnormalised output
+``Gp``. When the sequence is exhausted the columns merge pairwise down the
+cascade, rescaling each side by ``exp(local_max - merged_max)``, and column 0
+divides through and writes the result out.
+
+Three things here are worth reading as DSL rather than as attention:
+
+* **``seg.per_core()``** is what lets ``up``/``sp``/``Gp`` survive from one herd
+  to the next. They are L1, but a buffer allocated in a herd body dies with that
+  body, and these are written by three separate herds. Unlike ``seg.shared()``
+  they are not divided between the cores -- every core keeps its own whole copy.
+* **The micro-tiled L2->L1 transfers are one idiom, not three.** Q, K and V each
+  become ``reshape(outer_m, mm, outer_k, kk).transpose(2, 0, 1, 3)``; only which
+  extents play which role differs. See ``_packed``.
+* **The cascade select is nested ``ops.branch`` on the column coordinate.** The
+  predecessor wrote one ``affine.if`` over a two-constraint ``IntegerSet``;
+  ``air-to-aie`` specialises both forms away once the herd is unrolled and the
+  coordinate is a literal (``SpecializeScfIfPattern`` sits beside
+  ``SpecializeAffineIfPattern``), so the cores see the same code either way.
+"""
+
+import argparse
+from math import sqrt
+
+import numpy as np
 from ml_dtypes import bfloat16
 
-range_ = for_
+from air import api as air
+from air.api.types import bf16, i32
+
+KERNEL = "attn.o"
 
 
-@module_builder
+def _packed(buf, outer_m, mm, outer_k, kk):
+    """A [M, K] L2 buffer walked in the block order the matmul kernel wants.
+
+    The hand-written access pattern is ``sizes=[outer_k, outer_m, mm, kk]`` with
+    ``strides=[kk, K*mm, K, 1]``: blocks down the K axis first, then down M,
+    then the block itself. Splitting both axes and permuting reaches exactly
+    that, and nothing moves -- it is a view.
+    """
+    return buf.reshape(outer_m, mm, outer_k, kk).transpose(2, 0, 1, 3)
+
+
 def build_module(
     lk=3072,
     lkp=96,
@@ -30,677 +58,409 @@ def build_module(
     num_cascade_stages=4,
     arch="aie2",
 ):
-    """Build the attention module using Python bindings
+    """Build the attention module.
 
     Args:
-        lk: Total sequence length for K/V matrices (default: 3072)
-        lkp: Chunk size for K/V processing (default: 96)
-        lq: Sequence length for Q matrix (default: 128)
-        dk: Key dimension (default: 64)
-        dv: Value dimension (default: 64)
-        num_q_tiles: Number of tiles to partition Q sequence into (default: 4)
-        num_cascade_stages: Number of cascade pipeline stages (default: 4)
-        arch: Target architecture, "aie2" or "aie2p" (default: "aie2")
+        lk: total sequence length for K/V
+        lkp: chunk of the K/V sequence handled per step
+        lq: sequence length for Q
+        dk: key dimension
+        dv: value dimension
+        num_q_tiles: retained for the caller's signature; the Q tile is lq
+        num_cascade_stages: columns in the cascade
+        arch: "aie2" or "aie2p", which picks the matmul block shape
     """
+    mmul_m, mmul_k, mmul_n = [8, 8, 8] if arch == "aie2p" else [4, 8, 4]
 
-    bf16 = Type.parse("bf16")
-    i32 = IntegerType.get_signless(32)
-    index_type = IndexType.get()
+    if dv != dk:
+        # Refused rather than attempted. The two are separate parameters and
+        # the shapes below name whichever one they carry, but one buffer is
+        # genuinely dimensioned by both: v_l1 is [dk, lkp], the shape the
+        # matmul kernel's signature fixes, holding a [lkp, dv] tile that the
+        # DMA has already reordered. Splitting dk from dv means reshaping that
+        # and re-deriving the packed access pattern around it, which is a
+        # change to the kernel contract rather than to this file.
+        #
+        # The predecessor took dv too and used it for nothing: every one of its
+        # types was built from dk, including memref_input_v_lk_dv, so dv != dk
+        # produced a kernel whose V operand had the wrong shape. Failing here
+        # says so, instead of surfacing as a slice out of bounds during tracing.
+        raise ValueError(
+            f"dk={dk} and dv={dv} must be equal; this kernel has only ever been "
+            "built and run with dv == dk, and its V tile is shaped by the "
+            "matmul kernel's signature rather than by dv"
+        )
 
-    # Architecture-specific matrix multiplication dimensions
-    if arch == "aie2p":
-        mmul_mkn = [8, 8, 8]  # For aie2p
-    else:
-        mmul_mkn = [4, 8, 4]  # For aie2
-    mmul_m, mmul_k, mmul_n = mmul_mkn
+    ncs = num_cascade_stages
+    cps = (lk // lkp) // ncs  # K/V chunks each column walks
+    tq = lq
 
-    # Derived parameters
-    num_chunks = lk // lkp
-    chunks_per_stage = num_chunks // num_cascade_stages
-    tile_size_q = lq
+    Q = air.tensor([lq, dk], bf16)
+    K = air.tensor([dk, lk], bf16)
+    V = air.tensor([lk, dv], bf16)
+    # Declared because the kernel's interface takes an additive mask, and the
+    # host passes one. The pipeline folds it into G before the max, so nothing
+    # in the body reads it while the mask is zero.
+    air.tensor([lq, lk], bf16)  # the mask, read only by the pipeline (see above)
+    OUT = air.tensor([lq, dv], bf16)
 
-    # Memory spaces: L1 = 2 : i32, L2 = 1 : i32
-    l1_space = IntegerAttr.get(i32, 2)  # L1 uses memory space 2
-    l2_space = IntegerAttr.get(i32, 1)  # L2 uses memory space 1
+    # Q and K share the L3->L2 bundle: they are never in flight together, Q
+    # being staged once before the loop and K once per trip.
+    l3_qk = air.channel("L3ToL2Chan1", size=[1, ncs])
+    l3_v = air.channel("L3ToL2Chan3", size=[1, ncs])
+    l2_q = air.channel("L2ToL1Chan1", size=[1, ncs])
+    l2_k = air.channel("L2ToL1Chan2", size=[1, ncs])
+    l2_v = air.channel("L2ToL1Chan3", size=[1, ncs])
+    out_l2 = air.channel("L1ToL2Chan1")
+    out_l3 = air.channel("L2ToL3Chan1")
+    g_to_softmax = air.channel("L1ToL1Chan1", size=[1, ncs])
+    g_to_matmul = air.channel("L1ToL1Chan2", size=[1, ncs])
+    gv_back = air.channel("L1ToL1Chan3", size=[1, ncs])
+    cascade = air.channel("cascade", size=[1, ncs - 1], channel_type="npu_cascade")
 
-    # L1 MemRefTypes (memory space 2 : i32) - used in herd bodies
-    memref_lqp_dv_l1 = MemRefType.get([tile_size_q, dk], bf16, memory_space=l1_space)
-    memref_lqp_l1 = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
-    memref_lqp_lkp_l1 = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
-    memref_dv_lkp_l1 = MemRefType.get([dk, lkp], bf16, memory_space=l1_space)
-    memref_lqp_lkp_l1 = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
+    zero_gp = air.extern("zero_fill_gp_bf16", link_with=KERNEL)
+    zero_sp = air.extern("zero_fill_sp_bf16", link_with=KERNEL)
+    zero_g = air.extern("zero_fill_g_bf16", link_with=KERNEL)
+    neg_inf_up = air.extern("neg_inf_fill_up_bf16", link_with=KERNEL)
+    matmul_a_b = air.extern("matmul_a_b_bf16", link_with=KERNEL)
+    matmul_g_b = air.extern("matmul_g_b_bf16", link_with=KERNEL)
+    max_g = air.extern("max_g_bf16", link_with=KERNEL)
+    maximum_up_u = air.extern("maximum_up_u_bf16", link_with=KERNEL)
+    exp_g_minus_u = air.extern("exp_g_minus_u", link_with=KERNEL)
+    exp_up_minus_u = air.extern("exp_up_minus_u", link_with=KERNEL)
+    mul_r_gp = air.extern("mul_r_gp", link_with=KERNEL)
+    sum_g = air.extern("sum_g", link_with=KERNEL)
+    accum_sp_r_s = air.extern("accum_sp_r_s", link_with=KERNEL)
+    copy_row = air.extern("vector_copy_32elems", link_with=KERNEL, scalars=[i32])
+    div_gp_sp = air.extern("div_gp_sp", link_with=KERNEL)
+    copy_g = air.extern("vector_copy_32x96elems", link_with=KERNEL, scalars=[i32])
+    add_gp_g = air.extern("add_gp_g", link_with=KERNEL)
+    accum_gp = air.extern("vector_accum_32x64elems", link_with=KERNEL)
 
-    # L2 MemRefTypes (memory space 1 : i32) - segment allocations
-    memref_lqp_dk_l2 = MemRefType.get([tile_size_q, dk], bf16, memory_space=l2_space)
-    memref_dk_lkp_l2 = MemRefType.get([dk, lkp], bf16, memory_space=l2_space)
-    memref_lkp_dv_l2 = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
-    memref_output_lq_dv_l2 = MemRefType.get([lq, dk], bf16, memory_space=l2_space)
+    with air.launch([range(1), range(1)], name="attention_bf16") as launch:
 
-    # L3 MemRefTypes (no memory space annotation = default L3)
-    memref_input_q_lq_dk = MemRefType.get([lq, dk], bf16)
-    memref_output_lq_dv = MemRefType.get([lq, dk], bf16)
-    memref_input_k_dk_lk = MemRefType.get([dk, lk], bf16)
-    memref_input_v_lk_dv = MemRefType.get([lk, dk], bf16)
-    memref_input_m_lq_lk = MemRefType.get([lq, lk], bf16)
+        @launch.body
+        def _(li, lj):
+            # One Q tile per column. air.parallel rather than a Python loop:
+            # the trips share a set of buffer descriptors, where unrolling
+            # would spend one shim DMA per column.
+            for c in air.parallel(0, ncs):
+                l3_qk.put(Q[c * tq : c * tq + tq, :], indices=[0, c])
 
-    # Helper function to create external function declarations
-    def external_func(name, inputs, outputs=None, link_with=None, visibility="private"):
-        if outputs is None:
-            outputs = []
-        func_type = FunctionType.get(inputs, outputs)
-        func = FuncOp(name=name, type=func_type, visibility=visibility)
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-        if link_with:
-            func.attributes["link_with"] = StringAttr.get(link_with)
-        return func
-
-    # External function declarations
-    external_func("zero_fill_gp_bf16", [memref_lqp_dv_l1], link_with="attn.o")
-    external_func("zero_fill_sp_bf16", [memref_lqp_l1], link_with="attn.o")
-    external_func("zero_fill_g_bf16", [memref_lqp_lkp_l1], link_with="attn.o")
-    external_func("neg_inf_fill_up_bf16", [memref_lqp_l1], link_with="attn.o")
-    external_func(
-        "matmul_a_b_bf16",
-        [memref_lqp_dv_l1, memref_dv_lkp_l1, memref_lqp_lkp_l1],
-        link_with="attn.o",
-    )
-    external_func(
-        "matmul_g_b_bf16",
-        [memref_lqp_lkp_l1, memref_dv_lkp_l1, memref_lqp_dv_l1],
-        link_with="attn.o",
-    )
-    external_func("max_g_bf16", [memref_lqp_lkp_l1, memref_lqp_l1], link_with="attn.o")
-    external_func(
-        "maximum_up_u_bf16", [memref_lqp_l1, memref_lqp_l1], link_with="attn.o"
-    )
-    external_func(
-        "exp_g_minus_u", [memref_lqp_l1, memref_lqp_lkp_l1], link_with="attn.o"
-    )
-    external_func(
-        "exp_up_minus_u",
-        [memref_lqp_l1, memref_lqp_l1, memref_lqp_l1],
-        link_with="attn.o",
-    )
-    external_func("mul_r_gp", [memref_lqp_l1, memref_lqp_dv_l1], link_with="attn.o")
-    external_func("sum_g", [memref_lqp_lkp_l1, memref_lqp_l1], link_with="attn.o")
-    external_func(
-        "accum_sp_r_s",
-        [memref_lqp_l1, memref_lqp_l1, memref_lqp_l1],
-        link_with="attn.o",
-    )
-    external_func(
-        "vector_copy_32elems", [i32, memref_lqp_l1, memref_lqp_l1], link_with="attn.o"
-    )
-    external_func("div_gp_sp", [memref_lqp_l1, memref_lqp_dv_l1], link_with="attn.o")
-    external_func(
-        "vector_copy_32x96elems",
-        [i32, memref_lqp_lkp_l1, memref_lqp_lkp_l1],
-        link_with="attn.o",
-    )
-    external_func("add_gp_g", [memref_lqp_dv_l1, memref_lqp_dv_l1], link_with="attn.o")
-    external_func(
-        "vector_accum_32x64elems",
-        [memref_lqp_dv_l1, memref_lqp_dv_l1],
-        link_with="attn.o",
-    )
-
-    # Channel declarations
-    Channel("L3ToL2Chan1", size=[1, num_cascade_stages])
-    Channel("L3ToL2Chan3", size=[1, num_cascade_stages])
-    Channel("L2ToL1Chan1", size=[1, num_cascade_stages])
-    Channel("L2ToL1Chan2", size=[1, num_cascade_stages])
-    Channel("L2ToL1Chan3", size=[1, num_cascade_stages])
-    Channel("L1ToL2Chan1", size=[])
-    Channel("L1ToL2Chan2", size=[])
-    Channel("L2ToL3Chan1", size=[])
-    Channel("L2ToL3Chan2", size=[])
-    Channel("L1ToL1Chan1", size=[1, num_cascade_stages])
-    Channel("L1ToL1Chan2", size=[1, num_cascade_stages])
-    Channel("L1ToL1Chan3", size=[1, num_cascade_stages])
-    chan_cascade = Channel("cascade", size=[1, num_cascade_stages - 1])
-    chan_cascade.attributes["channel_type"] = StringAttr.get("npu_cascade")
-
-    # Main attention function
-    @FuncOp.from_py_func(
-        memref_input_q_lq_dk,
-        memref_input_k_dk_lk,
-        memref_input_v_lk_dv,
-        memref_input_m_lq_lk,
-        memref_output_lq_dv,
-    )
-    def attention_bf16(arg0, arg1, arg2, arg3, arg4):
-        c1 = ConstantOp(index_type, 1)
-
-        @launch(operands=[arg0, arg1, arg2, arg3, arg4], sizes=[c1, c1])
-        def launch_body(arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13):
-            # Affine map for Q partitioning
-            affine_map_tileq = AffineMap.get(
-                0,
-                1,
-                [
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0), AffineConstantExpr.get(tile_size_q)
-                    )
-                ],
-            )
-
-            # scf.parallel for L3 to L2 Q matrix transfers
-            par_1 = scf.ForallOp(
-                lower_bounds=[0], upper_bounds=[num_cascade_stages], steps=[1]
-            )
-            with InsertionPoint(par_1.body):
-                apply = affine_apply(affine_map_tileq, [par_1.induction_variables[0]])
-                ChannelPut(
-                    "L3ToL2Chan1",
-                    arg9,
-                    indices=[0, par_1.induction_variables[0]],
-                    offsets=[apply, 0],
-                    sizes=[tile_size_q, dk],
-                    strides=[dk, 1],
-                )
-                scf.InParallelOp()
-
-            # L3 to L2 channel puts for K matrix
-            for i in range(num_cascade_stages):
-                ChannelPut(
-                    "L3ToL2Chan1",
-                    arg10,
-                    indices=[0, i],
-                    offsets=[0, 0, i * lkp],
-                    sizes=[chunks_per_stage, dk, lkp],
-                    strides=[lkp * num_cascade_stages, lk, 1],
+            # K arrives column-major in chunks: column c takes every ncs'th
+            # chunk, which is a slice of the middle axis once lk is split into
+            # (chunk, column, position).
+            for c in range(ncs):
+                l3_qk.put(
+                    K.reshape(dk, cps, ncs * lkp)[
+                        :, :, c * lkp : (c + 1) * lkp
+                    ].transpose(1, 0, 2),
+                    indices=[0, c],
                 )
 
-            # L3 to L2 channel puts for V matrix
-            for i in range(num_cascade_stages):
-                ChannelPut(
-                    "L3ToL2Chan3",
-                    arg11,
-                    indices=[0, i],
-                    offsets=[0, i * lkp, 0],
-                    sizes=[chunks_per_stage, lkp, dv],
-                    strides=[lkp * num_cascade_stages * dv, dv, 1],
+            # V is the same split on its own sequence axis, and needs no
+            # permutation: it is already chunk-major.
+            for c in range(ncs):
+                l3_v.put(
+                    V.reshape(cps, ncs * lkp, dv)[:, c * lkp : (c + 1) * lkp, :],
+                    indices=[0, c],
                 )
 
-            @segment(name="attention_seg", operands=[])
-            def segment_body():
-                # L2 allocations (32x64 Q buffers for 4 columns)
-                alloc = AllocOp(memref_lqp_dk_l2, [], [])
-                alloc_col1 = AllocOp(memref_lqp_dk_l2, [], [])
-                alloc_col2 = AllocOp(memref_lqp_dk_l2, [], [])
-                alloc_col3 = AllocOp(memref_lqp_dk_l2, [], [])
+            with air.segment(name="attention_seg") as seg:
 
-                # K matrix buffers (64x96)
-                alloc_2 = AllocOp(memref_dk_lkp_l2, [], [])
-                alloc_21 = AllocOp(memref_dk_lkp_l2, [], [])
-                alloc_22 = AllocOp(memref_dk_lkp_l2, [], [])
-                alloc_23 = AllocOp(memref_dk_lkp_l2, [], [])
+                @seg.body
+                def _():
+                    q_l2 = [
+                        air.alloc([tq, dk], bf16, scope=seg.private())
+                        for _ in range(ncs)
+                    ]
+                    k_l2 = [
+                        air.alloc([dk, lkp], bf16, scope=seg.private())
+                        for _ in range(ncs)
+                    ]
+                    v_l2 = [
+                        air.alloc([lkp, dv], bf16, scope=seg.private())
+                        for _ in range(ncs)
+                    ]
+                    result_l2 = air.alloc([lq, dv], bf16, scope=seg.private())
 
-                # V matrix buffers (96x64)
-                alloc_3 = AllocOp(memref_lkp_dv_l2, [], [])
-                alloc_31 = AllocOp(memref_lkp_dv_l2, [], [])
-                alloc_32 = AllocOp(memref_lkp_dv_l2, [], [])
-                alloc_33 = AllocOp(memref_lkp_dv_l2, [], [])
+                    # The running state of the online softmax. per_core, not
+                    # shared: each column keeps its own whole copy, and it has
+                    # to outlive the herd that writes it.
+                    up = air.alloc([tq, 1], bf16, scope=seg.per_core())
+                    sp = air.alloc([tq, 1], bf16, scope=seg.per_core())
+                    Gp = air.alloc([tq, dv], bf16, scope=seg.per_core())
+                    a_l1 = air.alloc([tq, dk], bf16, scope=seg.per_core())
 
-                # Output buffer
-                alloc_5 = AllocOp(memref_output_lq_dv_l2, [], [])
-
-                # L1 allocations
-                up = AllocOp(memref_lqp_l1, [], [])
-                sp = AllocOp(memref_lqp_l1, [], [])
-                Gp = AllocOp(memref_lqp_dv_l1, [], [])
-                alloc_6 = AllocOp(memref_lqp_dv_l1, [], [])
-
-                # L3 to L2 channel gets for Q matrix
-                for i in range(num_cascade_stages):
-                    ChannelGet(
-                        "L3ToL2Chan1",
-                        [alloc, alloc_col1, alloc_col2, alloc_col3][i].result,
-                        indices=[0, i],
-                    )
-
-                # L2 to L1 channel puts for Q matrix
-                # Memory [tile_size_q, dk] tiled for matmul: Q is M dimension, dk is K dimension
-                for i in range(num_cascade_stages):
-                    ChannelPut(
-                        "L2ToL1Chan1",
-                        [alloc, alloc_col1, alloc_col2, alloc_col3][i].result,
-                        indices=[0, i],
-                        offsets=[0, 0, 0, 0],
-                        sizes=[dk // mmul_k, tile_size_q // mmul_m, mmul_m, mmul_k],
-                        strides=[mmul_k, dk * mmul_m, dk, 1],
-                    )
-
-                # Herd0 - initialization
-                @herd(
-                    name="herd_0",
-                    sizes=[1, num_cascade_stages],
-                    operands=[alloc_6],
-                    link_with="attn.o",
-                )
-                def herd_body_init(arg22, arg23, arg24, arg25, arg26):
-                    ChannelGet("L2ToL1Chan1", arg26, indices=[arg22, arg23])
-
-                # Herd1 - initialization
-                @herd(
-                    name="herd_1",
-                    sizes=[1, num_cascade_stages],
-                    operands=[up, sp, Gp],
-                    link_with="attn.o",
-                )
-                def herd_body_init(arg22, arg23, arg24, arg25, arg27, arg28, arg29):
-                    CallOp([], "zero_fill_gp_bf16", [arg29])
-                    CallOp([], "zero_fill_sp_bf16", [arg28])
-                    CallOp([], "neg_inf_fill_up_bf16", [arg27])
-
-                # Main loop over lk chunks
-                for arg21 in range_(0, chunks_per_stage, 1):
-                    # Channel gets for K and V matrices
-                    for i in range(num_cascade_stages):
-                        ChannelGet(
-                            "L3ToL2Chan1",
-                            [alloc_2, alloc_21, alloc_22, alloc_23][i].result,
-                            indices=[0, i],
-                        )
-                        ChannelGet(
-                            "L3ToL2Chan3",
-                            [alloc_3, alloc_31, alloc_32, alloc_33][i].result,
-                            indices=[0, i],
+                    for c in range(ncs):
+                        l3_qk.get(q_l2[c], indices=[0, c])
+                    for c in range(ncs):
+                        l2_q.put(
+                            _packed(
+                                q_l2[c], tq // mmul_m, mmul_m, dk // mmul_k, mmul_k
+                            ),
+                            indices=[0, c],
                         )
 
-                    # Channel puts for K matrix to L1
-                    # Memory [dk, lkp] tiled for matmul: dk is K dimension, lkp is N dimension
-                    for i in range(num_cascade_stages):
-                        ChannelPut(
-                            "L2ToL1Chan2",
-                            [alloc_2, alloc_21, alloc_22, alloc_23][i].result,
-                            indices=[0, i],
-                            offsets=[0, 0, 0, 0],
-                            sizes=[lkp // mmul_n, dk // mmul_k, mmul_k, mmul_n],
-                            strides=[mmul_n, lkp * mmul_k, lkp, 1],
-                        )
-
-                    # Channel puts for V matrix to L1
-                    # Memory [lkp, dk] tiled for matmul: lkp is K dimension, dk is N dimension
-                    for i in range(num_cascade_stages):
-                        ChannelPut(
-                            "L2ToL1Chan3",
-                            [alloc_3, alloc_31, alloc_32, alloc_33][i].result,
-                            indices=[0, i],
-                            offsets=[0, 0, 0, 0],
-                            sizes=[dv // mmul_n, lkp // mmul_k, mmul_k, mmul_n],
-                            strides=[mmul_n, dv * mmul_k, dv, 1],
-                        )
-
-                    # Herd0 - computation inside loop
-                    @herd(
+                    # Q into each column's L1, once.
+                    with air.herd(
+                        [range(1), range(ncs)],
                         name="herd_0",
-                        sizes=[1, num_cascade_stages],
-                        operands=[alloc_6],
-                        link_with="attn.o",
-                    )
-                    def herd_body_compute(arg22, arg23, arg24, arg25, arg26):
-                        alloc_56 = AllocOp(memref_dv_lkp_l1, [], [])
-                        G_l1 = AllocOp(memref_lqp_lkp_l1, [], [])
+                        shape=(1, ncs),
+                        link_with=KERNEL,
+                    ) as h_q:
 
-                        CallOp([], "zero_fill_g_bf16", [G_l1.result])
-                        ChannelGet(
-                            "L2ToL1Chan2", alloc_56.result, indices=[arg22, arg23]
-                        )
-                        CallOp(
-                            [], "matmul_a_b_bf16", [arg26, alloc_56.result, G_l1.result]
-                        )
-                        ChannelPut(
-                            "L1ToL1Chan1",
-                            G_l1.result,
-                            indices=[arg22, arg23],
-                            offsets=[0, 0, 0],
-                            sizes=[tile_size_q, lkp // mmul_n, mmul_n],
-                            strides=[mmul_n, tile_size_q * mmul_n, 1],
-                        )
-                        DeallocOp(alloc_56)
-                        DeallocOp(G_l1)
+                        @h_q.body
+                        def _(tx, ty):
+                            l2_q.get(a_l1, indices=[tx, ty])
 
-                    # Herd1 - computation inside loop
-                    @herd(
+                    with air.herd(
+                        [range(1), range(ncs)],
                         name="herd_1",
-                        sizes=[1, num_cascade_stages],
-                        operands=[up, sp, Gp],
-                        link_with="attn.o",
-                    )
-                    def herd_body_compute(
-                        arg22, arg23, arg24, arg25, arg27, arg28, arg29
-                    ):
-                        u_l1 = AllocOp(memref_lqp_l1, [], [])
-                        s_l1 = AllocOp(memref_lqp_l1, [], [])
-                        r_l1 = AllocOp(memref_lqp_l1, [], [])
-                        G_l1 = AllocOp(memref_lqp_lkp_l1, [], [])
+                        shape=(1, ncs),
+                        link_with=KERNEL,
+                    ) as h_init:
 
-                        ChannelGet("L1ToL1Chan1", G_l1.result, indices=[arg22, arg23])
+                        @h_init.body
+                        def _(tx, ty):
+                            zero_gp(Gp)
+                            zero_sp(sp)
+                            neg_inf_up(up)
 
-                        c0_i32 = ConstantOp(i32, 0)
-                        CallOp([], "max_g_bf16", [G_l1.result, u_l1.result])
-                        CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
-                        CallOp([], "exp_g_minus_u", [u_l1.result, G_l1.result])
-                        CallOp([], "exp_up_minus_u", [arg27, u_l1.result, r_l1.result])
-                        CallOp([], "mul_r_gp", [r_l1.result, arg29])
-
-                        G_copy_l1 = AllocOp(memref_lqp_lkp_l1, [], [])
-                        CallOp(
-                            [],
-                            "vector_copy_32x96elems",
-                            [c0_i32, G_l1.result, G_copy_l1.result],
-                        )
-                        ChannelPut(
-                            "L1ToL1Chan2",
-                            G_copy_l1.result,
-                            indices=[arg22, arg23],
-                            offsets=[0, 0, 0],
-                            sizes=[lkp // mmul_k, tile_size_q, mmul_k],
-                            strides=[mmul_k, lkp, 1],
-                        )
-                        DeallocOp(G_copy_l1)
-
-                        mmult_res = AllocOp(memref_lqp_dv_l1, [], [])
-                        ChannelGet(
-                            "L1ToL1Chan3", mmult_res.result, indices=[arg22, arg23]
-                        )
-                        CallOp([], "vector_accum_32x64elems", [mmult_res.result, arg29])
-                        DeallocOp(mmult_res)
-
-                        CallOp([], "sum_g", [G_l1.result, s_l1.result])
-                        CallOp([], "accum_sp_r_s", [arg28, r_l1.result, s_l1.result])
-                        CallOp([], "vector_copy_32elems", [c0_i32, s_l1.result, arg28])
-                        CallOp([], "vector_copy_32elems", [c0_i32, u_l1.result, arg27])
-
-                        DeallocOp(u_l1)
-                        DeallocOp(s_l1)
-                        DeallocOp(r_l1)
-                        DeallocOp(G_l1)
-
-                    # Herd2 - computation inside loop
-                    @herd(
-                        name="herd_2", sizes=[1, num_cascade_stages], link_with="attn.o"
-                    )
-                    def herd_body_compute(arg22, arg23, arg24, arg25):
-                        alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
-                        G_l1 = AllocOp(memref_lqp_lkp_l1, [], [])
-                        arg29 = AllocOp(memref_lqp_dv_l1, [], [])
-
-                        CallOp([], "zero_fill_gp_bf16", [arg29])
-
-                        ChannelGet("L1ToL1Chan2", G_l1.result, indices=[arg22, arg23])
-                        ChannelGet(
-                            "L2ToL1Chan3", alloc_57.result, indices=[arg22, arg23]
-                        )
-                        CallOp(
-                            [], "matmul_g_b_bf16", [G_l1.result, alloc_57.result, arg29]
-                        )
-                        ChannelPut(
-                            "L1ToL1Chan3",
-                            arg29,
-                            indices=[arg22, arg23],
-                            offsets=[0, 0, 0],
-                            sizes=[tile_size_q, dv // mmul_n, mmul_n],
-                            strides=[mmul_n, tile_size_q * mmul_n, 1],
-                        )
-                        DeallocOp(alloc_57)
-                        DeallocOp(G_l1)
-                        DeallocOp(arg29)
-
-                    yield_([])
-
-                # Herd1 - final processing with cascade and affine.if
-                @herd(
-                    name="herd_1",
-                    sizes=[1, num_cascade_stages],
-                    operands=[up, sp, Gp],
-                    link_with="attn.o",
-                )
-                def herd_body_final(arg22, arg23, arg24, arg25, arg27, arg28, arg29):
-                    c1 = ConstantOp(index_type, 1)
-                    r_l1 = AllocOp(memref_lqp_l1, [], [])
-
-                    # affine.if for last cascade stage
-                    affine_set_last = IntegerSet.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(-num_cascade_stages + 1),
-                            ),
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_add(
-                                AffineConstantExpr.get(num_cascade_stages - 1),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(0), AffineConstantExpr.get(-1)
+                    for _chunk in air.sequential(0, cps):
+                        for c in range(ncs):
+                            l3_qk.get(k_l2[c], indices=[0, c])
+                            l3_v.get(v_l2[c], indices=[0, c])
+                        for c in range(ncs):
+                            l2_k.put(
+                                _packed(
+                                    k_l2[c], dk // mmul_k, mmul_k, lkp // mmul_n, mmul_n
                                 ),
-                            ),
-                        ],
-                        [True, False, False],
-                    )
-
-                    affine_if_last = affine.AffineIfOp(
-                        affine_set_last, cond_operands=[arg22, arg23], has_else=True
-                    )
-                    with InsertionPoint(affine_if_last.then_block):
-                        # Last cascade stage: just send to next stage (no receive)
-                        subi = arith.SubIOp(arg23, c1)
-                        ChannelPut("cascade", arg29, indices=[arg22, subi])
-                        ChannelPut("cascade", arg27, indices=[arg22, subi])
-                        ChannelPut("cascade", arg28, indices=[arg22, subi])
-                        affine.AffineYieldOp([])
-
-                    with InsertionPoint(affine_if_last.else_block):
-                        # affine.if for middle cascade stages
-                        affine_set_middle = IntegerSet.get(
-                            0,
-                            2,
-                            [
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(1), AffineConstantExpr.get(-1)
+                                indices=[0, c],
+                            )
+                        for c in range(ncs):
+                            l2_v.put(
+                                _packed(
+                                    v_l2[c], lkp // mmul_k, mmul_k, dv // mmul_n, mmul_n
                                 ),
-                                AffineExpr.get_add(
-                                    AffineConstantExpr.get(num_cascade_stages - 2),
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(-1),
+                                indices=[0, c],
+                            )
+
+                        # G = Q @ K
+                        with air.herd(
+                            [range(1), range(ncs)],
+                            name="herd_0",
+                            shape=(1, ncs),
+                            link_with=KERNEL,
+                        ) as h_qk:
+
+                            @h_qk.body
+                            def _(tx, ty):
+                                k_l1 = air.alloc([dk, lkp], bf16, scope=h_qk.private())
+                                g = air.alloc([tq * lkp], bf16, scope=h_qk.private())
+                                zero_g(g)
+                                l2_k.get(k_l1, indices=[tx, ty])
+                                matmul_a_b(a_l1, k_l1, g)
+                                # G leaves in block order, not row order: the
+                                # consumer reads one n-block down every row
+                                # before moving to the next block. Splitting
+                                # the flat buffer with the block axis outermost
+                                # and swapping it with the row axis reaches
+                                # sizes [tq, lkp/n, n] over strides [n, tq*n,
+                                # 1] -- a view, nothing moves.
+                                g_to_softmax.put(
+                                    g.reshape(lkp // mmul_n, tq, mmul_n).transpose(
+                                        1, 0, 2
                                     ),
-                                ),
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_add(
-                                    AffineConstantExpr.get(num_cascade_stages - 1),
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(0),
-                                        AffineConstantExpr.get(-1),
+                                    indices=[tx, ty],
+                                )
+                                # Released here rather than at last use: the
+                                # predecessor batches its frees at the end of
+                                # the body, and herd fusion is sensitive to
+                                # what sits between two herds.
+                                air.dealloc(k_l1)
+                                air.dealloc(g)
+
+                        # Online softmax over this chunk, and accumulate G @ V.
+                        with air.herd(
+                            [range(1), range(ncs)],
+                            name="herd_1",
+                            shape=(1, ncs),
+                            link_with=KERNEL,
+                        ) as h_soft:
+
+                            @h_soft.body
+                            def _(tx, ty):
+                                u = air.alloc([tq, 1], bf16, scope=h_soft.private())
+                                s = air.alloc([tq, 1], bf16, scope=h_soft.private())
+                                r = air.alloc([tq, 1], bf16, scope=h_soft.private())
+                                g = air.alloc([tq * lkp], bf16, scope=h_soft.private())
+
+                                g_to_softmax.get(g, indices=[tx, ty])
+                                max_g(g, u)
+                                maximum_up_u(up, u)
+                                exp_g_minus_u(u, g)
+                                exp_up_minus_u(up, u, r)
+                                mul_r_gp(r, Gp)
+
+                                g_copy = air.alloc(
+                                    [tq * lkp], bf16, scope=h_soft.private()
+                                )
+                                copy_g(0, g, g_copy)
+                                g_to_matmul.put(
+                                    g_copy.reshape(tq, lkp // mmul_k, mmul_k).transpose(
+                                        1, 0, 2
                                     ),
-                                ),
-                            ],
-                            [False, False, False, False],
-                        )
+                                    indices=[tx, ty],
+                                )
+                                air.dealloc(g_copy)
 
-                        affine_if_middle = affine.AffineIfOp(
-                            affine_set_middle,
-                            cond_operands=[arg22, arg23],
-                            has_else=True,
-                        )
-                        with InsertionPoint(affine_if_middle.then_block):
-                            # Middle cascade stages: receive from previous, process, and send to next
-                            Gp_cascade = AllocOp(memref_lqp_dv_l1, [], [])
-                            up_cascade = AllocOp(memref_lqp_l1, [], [])
-                            sp_cascade = AllocOp(memref_lqp_l1, [], [])
-                            ChannelGet(
-                                "cascade", Gp_cascade.result, indices=[arg22, arg23]
-                            )
-                            ChannelGet(
-                                "cascade", up_cascade.result, indices=[arg22, arg23]
-                            )
-                            ChannelGet(
-                                "cascade", sp_cascade.result, indices=[arg22, arg23]
-                            )
+                                gv = air.alloc([tq, dv], bf16, scope=h_soft.private())
+                                gv_back.get(gv, indices=[tx, ty])
+                                accum_gp(gv, Gp)
+                                air.dealloc(gv)
 
-                            # Save local max before maximum overwrites arg27
-                            up_B_saved = AllocOp(memref_lqp_l1, [], [])
-                            c0_i32_m = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_m, arg27, up_B_saved.result],
-                            )
+                                sum_g(g, s)
+                                accum_sp_r_s(sp, r, s)
+                                copy_row(0, s, sp)
+                                copy_row(0, u, up)
+                                air.dealloc(u)
+                                air.dealloc(s)
+                                air.dealloc(r)
+                                air.dealloc(g)
 
-                            # arg27 = max(up_cascade, arg27) = new_max
-                            CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
+                        # G @ V, on its own core so it overlaps the softmax.
+                        with air.herd(
+                            [range(1), range(ncs)],
+                            name="herd_2",
+                            shape=(1, ncs),
+                            link_with=KERNEL,
+                        ) as h_gv:
 
-                            # r_A = exp(up_cascade - new_max)
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_cascade.result, arg27, r_l1.result],
-                            )
-                            # r_B = exp(up_B_saved - new_max)
-                            r_B = AllocOp(memref_lqp_l1, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_B_saved.result, arg27, r_B.result],
-                            )
+                            @h_gv.body
+                            def _(tx, ty):
+                                v_l1 = air.alloc([dk, lkp], bf16, scope=h_gv.private())
+                                g = air.alloc([tq * lkp], bf16, scope=h_gv.private())
+                                acc = air.alloc([tq, dv], bf16, scope=h_gv.private())
+                                zero_gp(acc)
+                                g_to_matmul.get(g, indices=[tx, ty])
+                                l2_v.get(v_l1, indices=[tx, ty])
+                                matmul_g_b(g, v_l1, acc)
+                                gv_back.put(
+                                    acc.reshape(dv // mmul_n, tq, mmul_n).transpose(
+                                        1, 0, 2
+                                    ),
+                                    indices=[tx, ty],
+                                )
+                                air.dealloc(v_l1)
+                                air.dealloc(g)
+                                air.dealloc(acc)
 
-                            # Rescale both sides
-                            CallOp([], "mul_r_gp", [r_l1.result, Gp_cascade.result])
-                            CallOp([], "mul_r_gp", [r_B.result, arg29])
+                    # Merge the columns down the cascade.
+                    with air.herd(
+                        [range(1), range(ncs)],
+                        name="herd_1",
+                        shape=(1, ncs),
+                        link_with=KERNEL,
+                    ) as h_merge:
 
-                            # Merge Gp
-                            CallOp([], "add_gp_g", [arg29, Gp_cascade.result])
+                        @h_merge.body
+                        def _(tx, ty):
+                            r = air.alloc([tq, 1], bf16, scope=h_merge.private())
 
-                            # sp merge: sp_A * r_A + sp_B * r_B
-                            sp_temp = AllocOp(memref_lqp_l1, [], [])
-                            CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_cascade.result, r_l1.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [arg28, r_B.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_m, sp_temp.result, sp_cascade.result],
-                            )
+                            def merge():
+                                """Fold the column above into this one.
 
-                            subi = arith.SubIOp(arg23, c1)
-                            ChannelPut(
-                                "cascade", Gp_cascade.result, indices=[arg22, subi]
-                            )
-                            ChannelPut("cascade", arg27, indices=[arg22, subi])
-                            ChannelPut(
-                                "cascade", sp_cascade.result, indices=[arg22, subi]
-                            )
-                            DeallocOp(up_B_saved)
-                            DeallocOp(r_B)
-                            DeallocOp(sp_temp)
-                            affine.AffineYieldOp([])
+                                A Python function, so each call emits its own
+                                copy of the body -- which is what is wanted
+                                here: the two arms below are separate regions
+                                and only one of them runs on any given core.
+                                """
+                                gp_in = air.alloc(
+                                    [tq, dv], bf16, scope=h_merge.private()
+                                )
+                                up_in = air.alloc(
+                                    [tq, 1], bf16, scope=h_merge.private()
+                                )
+                                sp_in = air.alloc(
+                                    [tq, 1], bf16, scope=h_merge.private()
+                                )
+                                cascade.get(gp_in, indices=[tx, ty])
+                                cascade.get(up_in, indices=[tx, ty])
+                                cascade.get(sp_in, indices=[tx, ty])
 
-                        with InsertionPoint(affine_if_middle.else_block):
-                            # First cascade stage (index 0): receive from previous, process, and output result
-                            Gp_cascade = AllocOp(memref_lqp_dv_l1, [], [])
-                            up_cascade = AllocOp(memref_lqp_l1, [], [])
-                            sp_cascade = AllocOp(memref_lqp_l1, [], [])
-                            ChannelGet(
-                                "cascade", Gp_cascade.result, indices=[arg22, arg23]
-                            )
-                            ChannelGet(
-                                "cascade", up_cascade.result, indices=[arg22, arg23]
-                            )
-                            ChannelGet(
-                                "cascade", sp_cascade.result, indices=[arg22, arg23]
-                            )
+                                # maximum_up_u overwrites up, so keep the local
+                                # maximum before merging it away.
+                                up_mine = air.alloc(
+                                    [tq, 1], bf16, scope=h_merge.private()
+                                )
+                                copy_row(0, up, up_mine)
+                                maximum_up_u(up_in, up)
 
-                            # Save local max before maximum overwrites arg27
-                            up_B_saved = AllocOp(memref_lqp_l1, [], [])
-                            c0_i32_f = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_f, arg27, up_B_saved.result],
-                            )
+                                r_b = air.alloc([tq, 1], bf16, scope=h_merge.private())
+                                exp_up_minus_u(up_in, up, r)
+                                exp_up_minus_u(up_mine, up, r_b)
+                                mul_r_gp(r, gp_in)
+                                mul_r_gp(r_b, Gp)
+                                add_gp_g(Gp, gp_in)
 
-                            # arg27 = max(up_cascade, arg27) = new_max
-                            CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
+                                sp_merged = air.alloc(
+                                    [tq, 1], bf16, scope=h_merge.private()
+                                )
+                                zero_sp(sp_merged)
+                                accum_sp_r_s(sp_in, r, sp_merged)
+                                accum_sp_r_s(sp, r_b, sp_merged)
+                                copy_row(0, sp_merged, sp_in)
+                                air.dealloc(up_mine)
+                                air.dealloc(r_b)
+                                air.dealloc(sp_merged)
+                                return gp_in, sp_in
 
-                            # r_A = exp(up_cascade - new_max)
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_cascade.result, arg27, r_l1.result],
-                            )
-                            # r_B = exp(up_B_saved - new_max)
-                            r_B = AllocOp(memref_lqp_l1, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_B_saved.result, arg27, r_B.result],
-                            )
+                            with air.ops.branch(ty == ncs - 1) as last:
+                                # The tail has nobody above it: hand its state
+                                # down and stop.
+                                cascade.put(Gp, indices=[tx, ty - 1])
+                                cascade.put(up, indices=[tx, ty - 1])
+                                cascade.put(sp, indices=[tx, ty - 1])
 
-                            # Rescale both sides
-                            CallOp([], "mul_r_gp", [r_l1.result, Gp_cascade.result])
-                            CallOp([], "mul_r_gp", [r_B.result, arg29])
+                            with last.otherwise():
+                                # ty is not the tail here, so the predecessor's
+                                # 1 <= ty <= ncs-2 is just ty >= 1.
+                                with air.ops.branch(ty >= 1) as middle:
+                                    gp_in, sp_in = merge()
+                                    cascade.put(gp_in, indices=[tx, ty - 1])
+                                    cascade.put(up, indices=[tx, ty - 1])
+                                    cascade.put(sp_in, indices=[tx, ty - 1])
+                                with middle.otherwise():
+                                    # Column 0 owns the answer.
+                                    gp_in, sp_in = merge()
+                                    div_gp_sp(sp_in, gp_in)
+                                    out_l2.put(gp_in)
 
-                            # Merge Gp
-                            CallOp([], "add_gp_g", [arg29, Gp_cascade.result])
+                    out_l2.get(result_l2[0:tq, 0:dv])
+                    out_l3.put(result_l2)
 
-                            # sp merge: sp_A * r_A + sp_B * r_B
-                            sp_temp = AllocOp(memref_lqp_l1, [], [])
-                            CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_cascade.result, r_l1.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [arg28, r_B.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_f, sp_temp.result, sp_cascade.result],
-                            )
+            out_l3.get(OUT)
 
-                            # Final normalization
-                            CallOp(
-                                [], "div_gp_sp", [sp_cascade.result, Gp_cascade.result]
-                            )
-                            DeallocOp(up_B_saved)
-                            DeallocOp(r_B)
-                            DeallocOp(sp_temp)
+    return launch.build()
 
-                            ChannelPut(
-                                "L1ToL2Chan1", Gp_cascade.result, indices=[arg22, 0]
-                            )
-                            affine.AffineYieldOp([])
-                        affine.AffineYieldOp([])
 
-                # Parallel gather results from L1 to L2
-                ChannelGet(
-                    "L1ToL2Chan1",
-                    alloc_5.result,
-                    indices=[],
-                    offsets=[0, 0],
-                    sizes=[tile_size_q, dv],
-                    strides=[dv, 1],
-                )
-
-                # L2 to L3 transfer
-                ChannelPut("L2ToL3Chan1", alloc_5.result, indices=[])
-
-            # Get from L2 to L3
-            ChannelGet("L2ToL3Chan1", arg13, indices=[])
+def _reference(q, k, v, m, lq, lkp, lk, dv):
+    """Online softmax in fp32, rounded to bf16 the way the kernel accumulates."""
+    Gp = np.zeros((lq, dv), dtype=bfloat16)
+    up = np.full((lq, 1), -np.inf, dtype=bfloat16)
+    sp = np.zeros((lq, 1), dtype=bfloat16)
+    for j in range(lk // lkp):
+        G = (q @ k[:, j * lkp : (j + 1) * lkp] + m[:, j * lkp : (j + 1) * lkp]).astype(
+            bfloat16
+        )
+        u = np.maximum(np.max(G, axis=-1, keepdims=True).astype(bfloat16), up)
+        G = np.exp(G - u).astype(bfloat16)
+        r = np.exp(up - u).astype(bfloat16)
+        Gp = (G @ v[j * lkp : (j + 1) * lkp, :] + Gp * r).astype(bfloat16)
+        s = np.sum(G, axis=-1, keepdims=True).astype(bfloat16) + sp * r
+        sp, up = s, u
+    return (Gp / sp).astype(bfloat16)
 
 
 if __name__ == "__main__":
@@ -733,86 +493,42 @@ if __name__ == "__main__":
         default="aie2",
         help="Target architecture (default: aie2)",
     )
-
     args = parser.parse_args()
 
     lk, lkp, lq, dk, dv = args.lk, args.lkp, args.lq, args.dk, args.dv
 
-    mlir_module = build_module(
-        lk=lk,
-        lkp=lkp,
-        lq=lq,
-        dk=dk,
-        dv=dv,
-        num_q_tiles=4,
-        num_cascade_stages=4,
-        arch=args.arch,
+    module = build_module(
+        lk=lk, lkp=lkp, lq=lq, dk=dk, dv=dv, num_cascade_stages=4, arch=args.arch
     )
-
     if args.print_module_only:
-        print(mlir_module)
+        print(module)
         exit(0)
 
-    # Import XRT dependencies only when running tests
-    from air.backend.xrt_runner import XRTRunner, type_mapper
-    from air.backend.xrt import XRTBackend
-    from air.extras import types as extrasT
-    from ml_dtypes import bfloat16
+    from air.backend.xrt_runner import XRTRunner
 
-    INPUT_DATATYPE = VM_ACC_DATATYPE = OUTPUT_DATATYPE = bfloat16
+    input_q = np.arange(0, lq * dk, dtype=bfloat16).reshape(lq, dk) / (lq * dk) * 2
+    input_k = np.arange(0, dk * lk, dtype=bfloat16).reshape(dk, lk) / (dk * lk) * 2
+    input_v = np.arange(0, lk * dv, dtype=bfloat16).reshape(lk, dv) / (lk * dv) * 2
+    input_m = np.zeros((lq, lk), dtype=bfloat16)
+    input_q = (input_q.astype(bfloat16) / sqrt(dk)).astype(bfloat16)
+    input_k = input_k.astype(bfloat16)
+    input_v = input_v.astype(bfloat16)
 
-    input_q = (
-        np.arange(0, lq * dk, dtype=INPUT_DATATYPE).reshape(lq, dk) / (lq * dk) * 2
-    )
-    input_q = input_q.astype(INPUT_DATATYPE)
-    input_k = (
-        np.arange(0, dk * lk, dtype=INPUT_DATATYPE).reshape(dk, lk) / (dk * lk) * 2
-    )
-    input_k = input_k.astype(INPUT_DATATYPE)
-    input_m = np.zeros((lq, lk), dtype=INPUT_DATATYPE)
-    input_v = (
-        np.arange(0, lk * dv, dtype=INPUT_DATATYPE).reshape(lk, dv) / (lk * dv) * 2
-    )
-    input_v = input_v.astype(INPUT_DATATYPE)
-
-    input_q_scaled = (input_q / sqrt(dk)).astype(INPUT_DATATYPE)
-    A = input_q_scaled
-    Gp = np.zeros((lq, dv), dtype=VM_ACC_DATATYPE)
-    up = np.full((lq, 1), -np.inf, dtype=VM_ACC_DATATYPE)
-    sp = np.zeros((lq, 1), dtype=VM_ACC_DATATYPE)
-    for j in range(0, lk // lkp):
-        G = input_m[:, j * lkp : (j + 1) * lkp]
-        B = input_k[:, j * lkp : (j + 1) * lkp]
-        G = A @ B + G
-        G = G.astype(VM_ACC_DATATYPE)
-        u = np.max(G, axis=-1, keepdims=True).astype(VM_ACC_DATATYPE)
-        u = np.maximum(u, up)
-        G = np.exp(G - u)
-        G = G.astype(VM_ACC_DATATYPE)
-        B = input_v[j * lkp : (j + 1) * lkp, :]
-        r = np.exp(up - u).astype(VM_ACC_DATATYPE)
-        Gp = Gp * r
-        Gp = G @ B + Gp
-        Gp = Gp.astype(VM_ACC_DATATYPE)
-        s = np.sum(G, axis=-1, keepdims=True).astype(VM_ACC_DATATYPE)
-        s += sp * r
-        sp, up = s, u
-
-    lazy_attn_output = (Gp / sp).astype(OUTPUT_DATATYPE)
+    expected = _reference(input_q, input_k, input_v, input_m, lq, lkp, lk, dv)
 
     runner = XRTRunner(
         omit_while_true_loop=False,
         omit_pingpong=True,
-        verbose=False,
+        verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
         output_format=args.output_format,
         instance_name="attention_bf16",
     )
     exit(
         runner.run_test(
-            mlir_module,
-            inputs=[input_q_scaled, input_k, input_v, input_m],
-            expected_outputs=[lazy_attn_output],
+            module,
+            inputs=[input_q, input_k, input_v, input_m],
+            expected_outputs=[expected],
             rtol=1e-1,
         )
     )
