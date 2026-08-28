@@ -354,7 +354,14 @@ jobs:
 
           rc=0
           pushd build_assert
-          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep' }}"
+          # A scheduled run has no `inputs`, and workflow_dispatch defaults are
+          # NOT applied to it -- so this literal, not the `default:` above, is
+          # what the nightly actually runs. The two must be kept in step: when
+          # they drifted, the schedule silently dropped a whole suite and still
+          # reported green, because publishing is guarded on `event_name ==
+          # 'schedule'` (true) while the missing results file is skipped by an
+          # `if [ -f ... ]`. Neither check can see a suite that never ran.
+          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep' }}"
           echo "running suites: $SUITES"
           want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
