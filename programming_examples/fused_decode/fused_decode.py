@@ -2250,7 +2250,6 @@ def build_module():
                             # weights; drain VOCAB_SIZE_PADDED logits into Y. No attn/rope/
                             # glu/KV feeds (those herds are parked -- RTP-unarmed -- so they
                             # need no input; feeding them would only back-pressure).
-                            ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
                             # real-lm-head final norm (model.norm.weight): a DEDICATED slot
                             # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
                             # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
@@ -2342,7 +2341,6 @@ def build_module():
                             # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state).
-                            ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
@@ -2815,7 +2813,7 @@ def build_module():
                 _seg_opers = (
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
-                    + [RMS]
+                    + [RMS, X]
                     + ([L_rt] if DYNSEQ else [])
                 )
                 # Index of RMS above; keeps _sa[-1] meaning L_rt for DYNSEQ.
@@ -2827,6 +2825,8 @@ def build_module():
                 def seg(*_sa):
                     _seg_iv = _sa[0] if a_iv is not None else None
                     _seg_RMS = _sa[_seg_rms_idx]
+                    # X follows RMS, for the @rmsX feed spelled as a DMA.
+                    _seg_X = _sa[_seg_rms_idx + 1]
                     # The context length reaches the attention herd from here, as a
                     # herd operand: an RTP slot the instruction stream writes per
                     # dispatch, not a constant folded into the core ELF.
@@ -4829,7 +4829,7 @@ def build_module():
 
                         refeed(XN_REFEED, _put)
 
-                    def _rms_body(tx, ty, _sx, _sy, _arm):
+                    def _rms_body(tx, ty, _sx, _sy, _arm, _x):
                         # DIAGNOSTIC (later43e): make rms SINGLE-mode in the LM_HEAD build
                         # (standalone form). The dual-mode index_switch over DATAFLOW puts
                         # BOTH branches' channel ops in the rms mem block -> doubled BDs on
@@ -4852,7 +4852,21 @@ def build_module():
                                 rms_norm_hi_aie if N_NORMS >= 4 else rms_norm_aie
                             )
                             a_xl = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsX", a_xl, indices=[idx(0)])
+                            # @rmsX spelled as a DMA: air-dma-to-channel derives the shim
+                            # put from it, so the hand-written launch-scope put is gone.
+                            # hoist_before pins the derived put to the slot that put had --
+                            # opening the arm, immediately ahead of @rmsW -- so the shim BD
+                            # order this design depends on is unchanged.
+                            DmaMemcpyNd(
+                                a_xl,
+                                _x,
+                                src_offsets=[0],
+                                src_sizes=[K],
+                                src_strides=[1],
+                                channel="rmsX",
+                                channel_indices=[0],
+                                hoist_before="rmsW",
+                            )
                             a_wl = AllocOp(_rms_w_ty, [], [])
                             ChannelGet("rmsW", a_wl, indices=[idx(0)])
                             if POST_RMS:
@@ -4987,7 +5001,7 @@ def build_module():
                             yield_([])  # index_switch case terminator
 
                         def _rms_decode():
-                            _rms_decode_body(_arm)
+                            _rms_decode_body(_arm, _x)
                             yield_([])  # index_switch default terminator
 
                         _arm_i = arith.index_cast(idx_t, _arm)
@@ -4999,7 +5013,7 @@ def build_module():
                             default_body_builder=lambda op: _rms_decode(),
                         )
 
-                    def _rms_decode_body(_arm):
+                    def _rms_decode_body(_arm, _x):
                         if N_NORMS >= 4:
                             # ===== Gemma sandwich (4 norms) =====================
                             # input / post_attn / pre_ffn / post_ffn. The two "post"
@@ -5014,7 +5028,21 @@ def build_module():
                             # the lo/hi kernels. o-proj & down share g_sub, their norm-out
                             # g_subn; residual2 reuses g_x (dead after residual1).
                             g_x = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsX", g_x, indices=[idx(0)])
+                            # @rmsX spelled as a DMA: air-dma-to-channel derives the shim
+                            # put from it, so the hand-written launch-scope put is gone.
+                            # hoist_before pins the derived put to the slot that put had --
+                            # opening the arm, immediately ahead of @rmsW -- so the shim BD
+                            # order this design depends on is unchanged.
+                            DmaMemcpyNd(
+                                g_x,
+                                _x,
+                                src_offsets=[0],
+                                src_sizes=[K],
+                                src_strides=[1],
+                                channel="rmsX",
+                                channel_indices=[0],
+                                hoist_before="rmsW",
+                            )
                             g_wa = AllocOp(rms_w2k_l1, [], [])
                             ChannelGet("rmsW", g_wa, indices=[idx(0)])
                             g_wb = AllocOp(rms_w2k_l1, [], [])
@@ -5078,7 +5106,21 @@ def build_module():
                             DeallocOp(g_x)
                             return
                         a_x = AllocOp(rms_l1, [], [])
-                        ChannelGet("rmsX", a_x, indices=[idx(0)])
+                        # @rmsX spelled as a DMA: air-dma-to-channel derives the shim
+                        # put from it, so the hand-written launch-scope put is gone.
+                        # hoist_before pins the derived put to the slot that put had --
+                        # opening the arm, immediately ahead of @rmsW -- so the shim BD
+                        # order this design depends on is unchanged.
+                        DmaMemcpyNd(
+                            a_x,
+                            _x,
+                            src_offsets=[0],
+                            src_sizes=[K],
+                            src_strides=[1],
+                            channel="rmsX",
+                            channel_indices=[0],
+                            hoist_before="rmsW",
+                        )
                         a_w = AllocOp(rms_l1, [], [])
                         ChannelGet("rmsW", a_w, indices=[idx(0)])
                         a_w2 = None
@@ -5165,7 +5207,7 @@ def build_module():
                             )
                             DeallocOp(a_r2)
 
-                    rms_h = herd(name="rms", sizes=[1, 1], operands=[_arm_rms])(
+                    rms_h = herd(name="rms", sizes=[1, 1], operands=[_arm_rms, _seg_X])(
                         _rms_body
                     )
                     rms_h.attributes["link_with"] = StringAttr.get("rms_residual.o")
