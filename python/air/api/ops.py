@@ -48,6 +48,7 @@ __all__ = [
     "copy",
     "fill",
     "cast",
+    "bitcast",
     "maximum",
     "minimum",
     # equal/not_equal/select were added with the comparison operators and were
@@ -60,6 +61,7 @@ __all__ = [
     "reduce_add",
     "reduce_max",
     "argmax",
+    "switch",
     "relu",
     "tanh",
     "exp",
@@ -377,7 +379,7 @@ def _elementwise(name, key, a, b):
     return BufferExpr("binary", op=key, args=(a, b))
 
 
-def cast(x, dtype):
+def cast(x, dtype, signed=True):
     """Convert an elementwise expression to another element type.
 
         l1_out[:] = air.api.ops.cast(l1_in[:], air.api.i32)
@@ -403,6 +405,16 @@ def cast(x, dtype):
       half of all inputs, so compare with a tolerance.
     * **Narrowing between integer types is refused**, not supported-with-caveats.
       See ``_conversion_op`` below for the measurement.
+
+    ``signed=False`` widens an integer by zero-filling (``arith.extui``) rather
+    than by replicating the top bit (``arith.extsi``). It applies only to an
+    integer widening, and it is not a property of the source type: MLIR's arith
+    ops take *signless* integers, so a byte is eight bits until something widens
+    it and has to decide what the top one meant. A byte holding 0xB4 widens to
+    -76 signed and to 180 unsigned, and nothing about the buffer says which was
+    intended -- the two examples that pack data into bytes want the second, and
+    every other caller wants the first, which is why it is a per-cast argument
+    with a signed default rather than a second set of element types.
     """
     from .types import DType
 
@@ -458,13 +470,104 @@ def cast(x, dtype):
     require_signless(dtype, "air.api.ops.cast")
     if not _clamped_into(expr, dtype):
         # raises here, at the call site, not at emit
-        _conversion_op(source, dtype)
-    return BufferExpr("cast", args=(expr,), dtype=dtype)
+        _conversion_op(source, dtype, signed=signed)
+    elif not signed:
+        # _clamped_into proved a *narrowing* safe, and unsigned has no meaning
+        # there: trunci keeps the low bits whatever the top one meant.
+        _conversion_op(source, dtype, signed=signed)
+    return BufferExpr("cast", args=(expr,), dtype=dtype, signed=signed)
+
+
+def bitcast(x, dtype):
+    """Reinterpret the bits of ``x`` as ``dtype``, changing no bits at all.
+
+        scale  = air.api.ops.bitcast(bits[:], air.api.bf16)     # same width
+        nibble = air.api.ops.bitcast(q[b : b + 32], air.api.i4)  # 32 -> 64 lanes
+
+    The sibling of :func:`cast`, and the distinction is the whole of it: ``cast``
+    preserves the *value* and changes the representation -- 5 becomes 5.0 --
+    while ``bitcast`` preserves the representation and lets the value fall where
+    it may. Reach for it when a buffer's element type is a container rather than
+    a meaning: bytes holding a packed float, or holding two quantised weights.
+
+    Two forms, told apart by the widths.
+
+    **Same width** is a relabelling: ``i16`` bits read as ``bf16``. It applies to
+    any expression, because nothing about the shape moves -- an AWQ scale
+    arrives as two bytes, is assembled with a shift and an or, and is a bf16
+    only once it is bitcast. This lowers to ``arith.bitcast``, or to
+    ``vector.bitcast`` where the surrounding expression is vectorised.
+
+    **Different width** re-counts the lanes: 32 bytes are 64 half-bytes. That
+    changes how many elements a fixed run of memory holds, so it is allowed only
+    directly on a buffer region -- ``q[b : b + 32]``, not on something computed.
+    That is not a limitation so much as what the operation means: it
+    reinterprets *memory*, and a computed value has no memory to reinterpret.
+    The narrower type is a container's contents, so it must divide the wider one
+    exactly.
+
+    The i4 case is the reason this exists, and it has to be spelled exactly this
+    way. ``mlir-aie``'s ``LowerExtUIOfBitcastI4ToUnpackPattern`` matches a
+    ``vector.bitcast`` from ``vector<Nxi8>`` to ``vector<2Nxi4>`` feeding an
+    ``arith.extui`` to ``vector<2Nxi8>``, with 2N of 64 or 128, and rewrites the
+    pair into ``aievec.unpack`` -- one hardware instruction. Unpacking by hand
+    with a mask and a shift computes the same numbers and misses it entirely, so
+    the shape of this op is not a matter of taste.
+    """
+    from .types import DType
+
+    if not isinstance(dtype, DType):
+        raise TypeError(
+            f"air.api.ops.bitcast needs an air.api element type as its second "
+            f"argument (air.api.i4, air.api.bf16, ...), got {dtype!r}"
+        )
+    expr = BufferExpr.coerce(x)
+    source = expr.element_dtype()
+    if source is None:
+        raise TypeError(
+            "air.api.ops.bitcast needs an expression with an element type to "
+            f"reinterpret; {x!r} has none. A bare scalar is already built in "
+            "whatever type surrounds it"
+        )
+    if source is dtype:
+        return expr
+    require_signless(source, "air.api.ops.bitcast")
+    require_signless(dtype, "air.api.ops.bitcast")
+
+    if source.bits == dtype.bits:
+        return BufferExpr("bitcast", args=(expr,), dtype=dtype)
+
+    # Width-changing. The lane count moves, so this has to happen at the read.
+    if expr.kind != "buffer":
+        raise TypeError(
+            f"air.api.ops.bitcast from {source} to {dtype} changes how many "
+            f"elements a run of memory holds ({source.bits} bits each becoming "
+            f"{dtype.bits}), so it reinterprets memory rather than a value and "
+            f"has to be applied to a buffer region directly -- q[b : b + 32] -- "
+            f"not to something computed from one. A same-width bitcast has no "
+            f"such restriction"
+        )
+    wide, narrow = max(source.bits, dtype.bits), min(source.bits, dtype.bits)
+    if wide % narrow:
+        raise ValueError(
+            f"air.api.ops.bitcast from {source} to {dtype} does not divide "
+            f"evenly ({wide} bits is not a whole number of {narrow}), so a run "
+            f"of one type is not a whole number of the other"
+        )
+    if dtype.bits > source.bits:
+        raise NotImplementedError(
+            f"air.api.ops.bitcast from {source} to the wider {dtype} would "
+            f"*pack* elements together rather than unpack them. Only widening "
+            f"the container -- reading bytes as the smaller things inside them "
+            f"-- has a consumer in this tree, and packing has different "
+            f"alignment rules that nothing has needed yet"
+        )
+    return BufferExpr("bitcast", args=(expr,), dtype=dtype)
 
 
 def _int_range(dtype):
     """The inclusive [lo, hi] a signed integer dtype can represent."""
-    bits = dtype.itemsize * 8
+    bits = dtype.bits
     return -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
 
 
@@ -516,7 +619,7 @@ def _clamped_into(expr, target):
     return lo >= t_lo and hi <= t_hi and lo <= hi
 
 
-def _conversion_op(source, target, narrowing_ok=False):
+def _conversion_op(source, target, narrowing_ok=False, signed=True):
     """The arith op converting ``source`` to ``target``, or a refusal.
 
     Shared by ``cast`` (so a bad pair is rejected where the user wrote it) and
@@ -524,8 +627,27 @@ def _conversion_op(source, target, narrowing_ok=False):
 
     ``narrowing_ok`` is set only for the int -> int narrowing that
     ``_clamped_into`` has proven safe; see the comment on the refusal below.
+
+    ``signed`` selects extsi or extui for an integer widening. It is refused
+    anywhere else rather than ignored: silently accepting ``signed=False`` on a
+    float conversion would read as a promise the op does not keep.
     """
     from air.dialects import arith
+
+    if not signed and (source.is_float or target.is_float):
+        raise TypeError(
+            f"air.api.ops.cast(signed=False) applies to an integer widening, "
+            f"but this converts {source} to {target}. Signedness is what "
+            f"distinguishes arith.extsi from arith.extui; a conversion "
+            f"involving a float type has no such pair"
+        )
+    if not signed and target.bits <= source.bits:
+        raise TypeError(
+            f"air.api.ops.cast(signed=False) applies to a widening, but "
+            f"{target} is no wider than {source}. Narrowing keeps the low bits "
+            f"whatever the top one meant, so there is nothing for signedness "
+            f"to select"
+        )
 
     if source.is_float and target.is_float:
         if target.itemsize > source.itemsize:
@@ -544,8 +666,8 @@ def _conversion_op(source, target, narrowing_ok=False):
         return arith.FPToSIOp
     if target.is_float:
         return arith.SIToFPOp
-    if target.itemsize > source.itemsize:
-        return arith.ExtSIOp
+    if target.bits > source.bits:
+        return arith.ExtSIOp if signed else arith.ExtUIOp
     # Narrowing int -> int. Refused on evidence rather than on principle:
     # measured on npu1, arith.trunci wraps on the scalar path (matching both
     # MLIR's own semantics and numpy) and *saturates* on the vector path --
@@ -845,6 +967,130 @@ def reduce_max(x):
     side.
     """
     return _reduce("reduce_max", "max", x)
+
+
+def switch(index, values):
+    """Pick one of ``values`` by a runtime ``index``.
+
+        addend = air.api.ops.switch(step, [1.0, 10.0])
+        acc[:] = acc[:] + addend
+
+    An **expression**, not a statement: it yields the chosen value, the way a
+    Rust ``match`` or a C# switch expression does, and not the way C's statement
+    does. The N-way *statement* -- run one of N bodies for their effects -- is
+    nested ``ops.branch``, which is why this name is not taken by it.
+
+    Against its neighbours: ``ops.switch`` keys on an integer, ``ops.select``
+    keys on a per-element mask, and ``ops.branch`` keys on a single condition
+    and runs statements. Both arms of a select are evaluated and one is kept;
+    here exactly one case runs, because it lowers to ``scf.index_switch`` in its
+    value-returning form.
+
+    The index is a coordinate or a loop variable, and the values are compile-time
+    scalars: the case bodies are constants, so there is nothing to evaluate in
+    the arm that does not run. An out-of-range index selects the last value,
+    which is ``scf.index_switch``'s ``default`` and matches numpy's ``mode`` of
+    ``clip`` only at the top end -- so keep the index in range.
+
+    Emitted where it is written, not inside whatever elementwise loop consumes
+    it: it does not depend on the loop's induction variables, and hoisting it is
+    what the hand-written kernels do.
+    """
+    from ._cond import Condition
+    from ._index import coerce_index
+    from ._value import Buffer, BufferExpr, BufferSlice
+
+    # Name the neighbour rather than complaining about a type. The three are
+    # told apart by what they key on, and handing one the other's key is the
+    # likely mistake.
+    if isinstance(index, Condition):
+        raise TypeError(
+            "air.api.ops.switch keys on an integer, but this is a condition. "
+            "To pick a value with a condition use ops.select(cond, a, b); to "
+            "run statements under one use `with ops.branch(cond):`"
+        )
+    if isinstance(index, (Buffer, BufferExpr, BufferSlice)):
+        raise TypeError(
+            "air.api.ops.switch keys on a single integer -- a coordinate or a "
+            "loop variable -- but this is a buffer. A per-element choice is "
+            "ops.select(mask, a, b)"
+        )
+    if not values:
+        raise ValueError("air.api.ops.switch needs at least one value to pick from")
+    if len(values) == 1:
+        raise ValueError(
+            "air.api.ops.switch was given one value, so there is nothing to "
+            "choose: use the value itself"
+        )
+    for v in values:
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            raise TypeError(
+                f"air.api.ops.switch takes compile-time scalars to pick from, "
+                f"got {type(v).__name__}. Choosing between *buffers* would run "
+                "one of two loop nests, which is ops.branch"
+            )
+    return _Switch(coerce_index(index), list(values))
+
+
+class _Switch:
+    """A pending ops.switch; the dtype comes from the buffer it is used with."""
+
+    __slots__ = ("index", "values")
+
+    def __init__(self, index, values):
+        self.index = index
+        self.values = values
+
+    def _typed(self, value, dtype):
+        """``value`` in the destination's element type, or a refusal.
+
+        The values are kept exactly as written until here, because which type
+        they should be built in is the *destination's* and a switch is written
+        before the destination is known. Coercing at construction -- everything
+        to float, as this did first -- reached arith.ConstantOp with a Python
+        float for an integer type, which fails inside FloatAttr with "expected
+        floating point type" and names neither the switch nor the value.
+        """
+        if dtype.is_float:
+            return float(value)
+        if isinstance(value, float):
+            # A whole-number float is a harmless way to write an integer, and
+            # the elementwise emitter accepts one for the same reason. Anything
+            # else would silently truncate.
+            if not value.is_integer():
+                raise ValueError(
+                    f"air.api.ops.switch: {value} is not an integer, but the "
+                    f"expression it is used in has element type {dtype}. It "
+                    f"would be truncated"
+                )
+            return int(value)
+        return int(value)
+
+    def materialize(self, dtype):
+        from air.dialects import arith
+        from air.dialects.scf import index_switch, yield_
+
+        values = [self._typed(v, dtype) for v in self.values]
+
+        index = self.index.materialize()
+        if isinstance(index, int):
+            # A constant index needs no switch at all, and folding it leaves the
+            # same IR as writing the value out by hand.
+            picked = values[min(index, len(values) - 1)]
+            return arith.ConstantOp(dtype.mlir(), picked).result
+
+        result = index_switch(
+            [dtype.mlir()],
+            index,
+            list(range(len(values) - 1)),
+            case_body_builder=lambda op, i, cv: yield_(
+                [arith.ConstantOp(dtype.mlir(), values[i]).result]
+            ),
+            default_body_builder=lambda op: yield_(
+                [arith.ConstantOp(dtype.mlir(), values[-1]).result]
+            ),
+        )
+        return result[0] if isinstance(result, (list, tuple)) else result
 
 
 def argmax(x):
