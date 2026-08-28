@@ -3115,24 +3115,21 @@ private:
     AIE::AIEObjectFifoType ofTy =
         cast<AIE::AIEObjectFifoType>(objFifo.getElemType());
     auto elementType = ofTy.getElementType();
-    auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
 
+    // objectfifo.acquire returns the objects themselves, one result per
+    // acquired object, so a single-object acquire is one memref result and
+    // there is no subview to index into.
     rewriter.setInsertionPoint(&op->getBlock()->front());
-    AIE::ObjectFifoAcquireOp producerAcq =
-        AIE::ObjectFifoAcquireOp::create(rewriter, rewriter.getUnknownLoc(),
-                                         acqType, port, objFifo.getName(), 1);
-    rewriter.setInsertionPointAfter(producerAcq);
-    AIE::ObjectFifoSubviewAccessOp producerAccess =
-        AIE::ObjectFifoSubviewAccessOp::create(
-            rewriter, rewriter.getUnknownLoc(), elementType,
-            producerAcq.getSubview(),
-            rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+    AIE::ObjectFifoAcquireOp producerAcq = AIE::ObjectFifoAcquireOp::create(
+        rewriter, rewriter.getUnknownLoc(), TypeRange{elementType},
+        AIE::ObjectFifoPortAttr::get(rewriter.getContext(), port),
+        objFifo.getName());
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast_if_present<memref::AllocOp>(
             op.getMemref().getDefiningOp()))
       rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
-          a.getOperation(), a.getType(), producerAccess.getOutput());
+          a.getOperation(), a.getType(), producerAcq.getObjects().front());
   }
 
   template <typename MyOp>
@@ -3148,8 +3145,10 @@ private:
     for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
       if (auto dealloc = dyn_cast_if_present<memref::DeallocOp>(u)) {
         rewriter.setInsertionPoint(&op->getBlock()->back());
-        AIE::ObjectFifoReleaseOp::create(rewriter, dealloc->getLoc(), port,
-                                         objFifo.getName(), 1);
+        AIE::ObjectFifoReleaseOp::create(
+            rewriter, dealloc->getLoc(),
+            AIE::ObjectFifoPortAttr::get(rewriter.getContext(), port),
+            objFifo.getName(), 1);
         // Delete ops at the end of the rewrite pattern to avoid repeatedly
         // deleting the same op
         erased_deallocs.insert(dealloc.getOperation());

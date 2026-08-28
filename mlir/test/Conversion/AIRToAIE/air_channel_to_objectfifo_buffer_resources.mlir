@@ -13,19 +13,15 @@
 // CHECK-DAG:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK-DAG:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = aie.core(%[[VAL_1]]) {
-// CHECK:     %[[VAL_5:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_2]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_8:.*]] = aie.objectfifo.subview.access %[[VAL_7]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_5:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : memref<32xi32>
+// CHECK:     %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_2]](Consume, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_2]](Consume, 1)
 // CHECK:     aie.objectfifo.release @[[VAL_3]](Consume, 1)
 // CHECK:     aie.end
 // CHECK:   }
 // CHECK:   %[[VAL_9:.*]] = aie.core(%[[VAL_0]]) {
-// CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_3]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_11:.*]] = aie.objectfifo.subview.access %[[VAL_10]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     %[[VAL_12:.*]] = aie.objectfifo.acquire @[[VAL_2]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_13:.*]] = aie.objectfifo.subview.access %[[VAL_12]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_3]](Produce, 1) : memref<32xi32>
+// CHECK:     %[[VAL_12:.*]] = aie.objectfifo.acquire @[[VAL_2]](Produce, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:     aie.objectfifo.release @[[VAL_3]](Produce, 1)
 // CHECK:     aie.end
@@ -69,18 +65,14 @@ aie.device(xcvc1902) {
 // CHECK-DAG:   aie.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK-DAG:   aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = aie.core(%[[VAL_1]]) {
-// CHECK:     %[[VAL_5:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_2]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_8:.*]] = aie.objectfifo.subview.access %[[VAL_7]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_5:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : memref<32xi32>
+// CHECK:     %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_2]](Consume, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_3]](Consume, 1)
 // CHECK:     aie.end
 // CHECK:   }
 // CHECK:   %[[VAL_9:.*]] = aie.core(%[[VAL_0]]) {
-// CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_3]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_11:.*]] = aie.objectfifo.subview.access %[[VAL_10]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     %[[VAL_12:.*]] = aie.objectfifo.acquire @[[VAL_2]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:     %[[VAL_13:.*]] = aie.objectfifo.subview.access %[[VAL_12]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_3]](Produce, 1) : memref<32xi32>
+// CHECK:     %[[VAL_12:.*]] = aie.objectfifo.acquire @[[VAL_2]](Produce, 1) : memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:     aie.end
 // CHECK:   }
