@@ -329,7 +329,12 @@ class Branch:
         if self._op is not None:
             raise RuntimeError(f"ops.branch{self._condition} entered twice")
         self._op = scf.IfOp(self._condition.materialize(), has_else=True)
-        self._then = _Region(self._op.then_block, terminate=True, arm=(id(self), 0))
+        # The Branch itself keys the arm, not id(self): an id is only unique
+        # while the object is alive, and `with ops.branch(...)` binds no name,
+        # so a freed Branch's id can be handed to the next one. Two unrelated
+        # branches would then share a key and _peak_bytes would take a max
+        # across arms that are not alternatives, under-counting L1.
+        self._then = _Region(self._op.then_block, terminate=True, arm=(self, 0))
         self._then.__enter__()
         return self
 
@@ -367,7 +372,7 @@ class Branch:
             )
         self._otherwise_taken = True
         return _Region(
-            InsertionPoint(self._else_terminator), terminate=False, arm=(id(self), 1)
+            InsertionPoint(self._else_terminator), terminate=False, arm=(self, 1)
         )
 
 

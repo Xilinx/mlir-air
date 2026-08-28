@@ -87,7 +87,17 @@ def sequential(start, stop=None, step=None, name=None):
     # the checks below wanted. flash_attention's temporal-causal variant is the
     # case: its inner loop runs the round's causal prefix, (lx + 1) * NQ blocks,
     # and folding the round axis is what keeps the core inside program memory.
-    dynamic = isinstance(stop, _IndexExpr) and not isinstance(stop.materialize(), int)
+    #
+    # as_const() rather than materialize(): asking whether the bound is a
+    # constant must not *emit* anything. materialize() writes an affine.apply
+    # into the block, which is one op leaked on the constant path (a second
+    # apply follows in _dynamic_sequential) and, worse, an op left behind in
+    # the block when the spatial-coordinate check below then raises.
+    if isinstance(stop, _IndexExpr):
+        folded = stop.as_const()
+        if folded is not None:
+            stop = folded
+    dynamic = isinstance(stop, _IndexExpr)
     if dynamic and any(leaf.spatial for leaf in stop.terms):
         # A tile coordinate differs between cores, so a bound built from one
         # gives each core a different trip count. The body is traced once and
