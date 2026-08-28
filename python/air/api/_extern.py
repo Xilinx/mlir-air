@@ -94,7 +94,7 @@ class ExternKernel:
         herd = current_herd()
         trace = active_trace()
 
-        n_scalars = sum(1 for a in args if not isinstance(a, Buffer))
+        n_scalars = sum(1 for a in args if not _is_memref_arg(a))
         if n_scalars != len(self.scalars):
             raise TypeError(
                 f"{self.name} was declared with {len(self.scalars)} scalar "
@@ -104,12 +104,12 @@ class ExternKernel:
 
         values, types, scalars = [], [], iter(self.scalars)
         for pos, arg in enumerate(args):
-            if isinstance(arg, Buffer):
+            if _is_memref_arg(arg):
                 if arg.value is None:
                     raise RuntimeError(
                         f"{self.name}: buffer argument {pos} used before allocation"
                     )
-                value = _core_slab(arg)
+                value = _core_slab(arg) if isinstance(arg, Buffer) else _region(arg)
                 values.append(value)
                 types.append(value.type)
             else:
@@ -137,6 +137,152 @@ class ExternKernel:
         # aircc links one object per herd, so the attribute is a single string.
         herd.require_object(self.link_with, self.name)
         return CallOp(self._decl, values)
+
+
+def _is_memref_arg(arg):
+    """Does ``arg`` become a memref operand rather than a scalar one?"""
+    from ._value import BufferSlice
+
+    return isinstance(arg, (Buffer, BufferSlice))
+
+
+def _region(region):
+    """A sub-region of a buffer, as the ``memref.subview`` a kernel expects.
+
+    ``buf[row, 0:n]`` is a DMA access pattern everywhere else in the DSL --
+    ``ops.load`` and ``ops.store`` read its offsets/sizes/strides and build a
+    transfer. A kernel cannot take an access pattern; it takes a memref. So
+    here, and only here, the same subscript becomes a real ``memref.subview``.
+
+    This is the third way a kernel is handed less than a whole buffer, and the
+    other two are already narrower: ``ops.dot``'s shared accumulator and
+    ``_core_slab`` below both emit a subview the caller does not get to choose,
+    because there is exactly one slab a core may touch. Here the caller does
+    choose, which is the point -- a cascade payload is a fixed-width slice of a
+    wider L1 buffer, and which row it is comes from the loop.
+
+    A *reshape* of the whole buffer is the one view that does correspond to a
+    memref, and goes to :func:`_collapsed` below. A transpose, or a reshape of
+    something narrower than the whole buffer, is refused: those re-describe the
+    order a transfer walks memory and are not a sub-memref of anything.
+    """
+    from air.dialects.memref import subview
+
+    if region.is_view:
+        return _collapsed(region)
+    offsets = [
+        o.materialize() if hasattr(o, "materialize") else o for o in region.offsets
+    ]
+    return subview(
+        region.value,
+        offsets=offsets,
+        sizes=list(region.sizes),
+        strides=[1] * len(region.sizes),
+    )
+
+
+def _collapsed(region, _seen=None):
+    """A whole buffer at a lower rank, as ``memref.collapse_shape``.
+
+    The flash-attention kernels take their accumulator flat -- a ``[chunks, n]``
+    L1 tile handed to ``zero_fill_g_bf16`` as ``[chunks * n]`` -- because the
+    kernel walks it as one run and the rank only matters to the matmul that
+    fills it. ``buf.reshape(n)`` is how the DSL already says "the same elements
+    at a different rank", and for the whole of a contiguous buffer that is
+    exactly what ``memref.collapse_shape`` names.
+
+    Only a *grouping* of the existing axes is a collapse: each target extent has
+    to be the product of a run of consecutive source axes. Splitting an axis --
+    ``[4096]`` back to ``[64, 64]`` -- is ``memref.expand_shape``, a different
+    op with different alignment rules, and it is refused rather than guessed at
+    because nothing in this tree has wanted it.
+    """
+    from air.dialects.memref import collapse_shape
+
+    buffer = region.buffer
+    source = list(buffer.shape)
+    target = list(region.sizes)
+
+    def refuse(why):
+        return TypeError(
+            f"cannot pass this reshaped region to a kernel: {why}. A kernel "
+            f"takes a memref, and the only reshape that is one is a collapse of "
+            f"a whole contiguous buffer onto a grouping of its own axes -- "
+            f"{source} to {target} is not that. Subscript the buffer and pass a "
+            f"sub-region, or pass it whole"
+        )
+
+    if any(_as_int(o) != 0 for o in region.offsets):
+        raise refuse("it starts at an offset, so it is not the whole buffer")
+    if _product(source) != _product(target):
+        raise refuse("it does not cover the whole buffer")
+    if len(target) > len(source):
+        raise refuse("it splits an axis, which is memref.expand_shape")
+    # A permutation has the same extents as a collapse of the same rank, so the
+    # grouping check below cannot tell the two apart -- it would accept
+    # `g.transpose(1, 0)` and emit a collapse that hands the kernel the
+    # *untransposed* buffer. The strides are what distinguish them: a view that
+    # is still walking memory in order has row-major strides for its own sizes.
+    if list(region.strides) != _row_major(target):
+        raise refuse(
+            "it walks the buffer in a different order (a transpose), and "
+            "memref has no view that reorders elements -- only a copy does"
+        )
+    if target == source:
+        # Nothing to collapse. Emitting the op anyway would be a no-op view of
+        # the buffer, which verifies but reads as though something happened.
+        return buffer.value
+
+    # Group consecutive source axes until each product matches a target extent.
+    groups, axis = [], 0
+    for extent in target:
+        run, acc = [], 1
+        while acc < extent and axis < len(source):
+            acc *= source[axis]
+            run.append(axis)
+            axis += 1
+        if acc != extent or not run:
+            raise refuse(
+                f"extent {extent} is not the product of a run of consecutive "
+                f"source axes"
+            )
+        groups.append(run)
+    if axis != len(source):
+        raise refuse("it leaves trailing axes unaccounted for")
+
+    return collapse_shape(_collapsed_type(buffer, target), buffer.value, groups)
+
+
+def _collapsed_type(buffer, shape):
+    """The result memref type of collapsing ``buffer`` to ``shape``."""
+    from air.ir import MemRefType
+
+    memref = buffer.value.type
+    return MemRefType.get(shape, memref.element_type, memory_space=memref.memory_space)
+
+
+def _row_major(shape):
+    """Contiguous strides for ``shape``, innermost first."""
+    strides, acc = [1] * len(shape), 1
+    for i in range(len(shape) - 1, -1, -1):
+        strides[i] = acc
+        acc *= shape[i]
+    return strides
+
+
+def _product(extents):
+    n = 1
+    for e in extents:
+        n *= e
+    return n
+
+
+def _as_int(offset):
+    """An offset as a Python int, or None when it is only known at run time."""
+    if isinstance(offset, int):
+        return offset
+    value = offset.as_const() if hasattr(offset, "as_const") else None
+    return value
 
 
 def _core_slab(buffer):
