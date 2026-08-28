@@ -1591,6 +1591,52 @@ air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
   return wa_op;
 }
 
+// An air.dma_memcpy_nd that NAMES its channel does not touch its L3/L2 side
+// from inside the hierarchy: air-dma-to-channel splits it and hoists that half
+// out to the enclosing scope, where it becomes a transfer of its own with its
+// own dependencies. Counting it as an access BY the hierarchy orders the
+// hierarchy against every other user of the buffer, and with an issue-order
+// anchor the derived half can then be placed BEFORE the op the hierarchy was
+// ordered after
+// -- an edge that outlives its justification.
+static bool dmaHoistsItsL3SideOut(Operation *o) {
+  auto dma = dyn_cast<air::DmaMemcpyNdOp>(o);
+  return dma && dma.getChannelAttr();
+}
+
+// Does anything in `body` READ through `root` (or a view of it)?
+static bool isReadThroughInRegion(Value root, Region &body) {
+  llvm::SmallPtrSet<Value, 4> aliases;
+  SmallVector<Value> worklist{root};
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!aliases.insert(v).second)
+      continue;
+    for (Operation *user : v.getUsers())
+      if (isa<ViewLikeOpInterface>(user))
+        for (Value res : user->getResults())
+          if (isa<BaseMemRefType>(res.getType()))
+            worklist.push_back(res);
+  }
+  bool read = false;
+  body.walk([&](Operation *o) {
+    if (dmaHoistsItsL3SideOut(o))
+      return WalkResult::advance();
+    auto reads = getAllReadAccessedMemrefOperandsFromOp(o);
+    if (failed(reads)) {
+      read = true;
+      return WalkResult::interrupt();
+    }
+    for (auto &entry : *reads)
+      if (aliases.contains(entry.first)) {
+        read = true;
+        return WalkResult::interrupt();
+      }
+    return WalkResult::advance();
+  });
+  return read;
+}
+
 // Get memref operands which are read accessed by op. Each entry has the
 // following format: pair<memref, tuple<offsets, sizes, strides>>.
 FailureOr<SmallVector<MemrefAccessPattern>>
@@ -1638,6 +1684,15 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
     pushMemrefEntryToVector(getMemrefEntry(loadOp.getMemRef()), operands);
   } else if (isa<memref::StoreOp>(op)) {
     // memref.store writes to the memref -- no read of the memref itself
+  } else if (auto hier = dyn_cast_if_present<air::HierarchyInterface>(op)) {
+    // Classify from the body, as for writes.
+    for (unsigned i = 0, e = hier.getNumKernelOperands(); i < e; i++) {
+      Value oper = hier.getKernelOperand(i);
+      if (!isa<BaseMemRefType>(oper.getType()))
+        continue;
+      if (isReadThroughInRegion(hier.getKernelArgument(i), op->getRegion(0)))
+        pushMemrefEntryToVector(getMemrefEntry(oper), operands);
+    }
   } else { // If unknown op, then assume all operands are read.
     for (auto oper : op->getOperands())
       pushMemrefEntryToVector(getMemrefEntry(oper), operands);
@@ -1681,6 +1736,8 @@ static bool isWrittenThroughInRegion(Value root, Region &body) {
 
   bool written = false;
   body.walk([&](Operation *o) {
+    if (dmaHoistsItsL3SideOut(o))
+      return WalkResult::advance();
     auto writes = getAllWriteAccessedMemrefOperandsFromOp(o);
     if (failed(writes)) {
       // Could not classify: assume it writes, matching the conservative

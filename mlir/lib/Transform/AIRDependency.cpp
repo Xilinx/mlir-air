@@ -1037,9 +1037,21 @@ private:
       if (auto hier =
               sink_air_op
                   ->template getParentOfType<air::HierarchyInterface>()) {
-        // Search for deps outside (before) hierarchy op
+        // Search for deps outside (before) hierarchy op.
+        //
+        // Not for a DMA that NAMES its channel: air-dma-to-channel splits it
+        // and hoists the L3/L2 half out of the hierarchy, so the hierarchy
+        // itself never touches that buffer. Ordering the hierarchy against
+        // every other user of it is wrong once the derived half carries an
+        // issue-order anchor -- it can be placed BEFORE the op the hierarchy
+        // was ordered after, leaving an edge that outlives its justification.
+        // Downstream that forces an scf.index_switch to carry an async token
+        // whose arm-terminating air.wait_all air-to-aie cannot legalize.
+        auto sinkDma = dyn_cast<air::DmaMemcpyNdOp>(sink_air_op.getOperation());
+        bool sinkHoistsOut = sinkDma && sinkDma.getChannelAttr();
         for (unsigned hier_operand_id = 0;
-             hier_operand_id < hier.getNumKernelOperands(); hier_operand_id++) {
+             !sinkHoistsOut && hier_operand_id < hier.getNumKernelOperands();
+             hier_operand_id++) {
           if (hier.getKernelArguments()[hier_operand_id] ==
               operand.memrefValue) {
             auto ancestor_op = hier.getKernelOperand(hier_operand_id);

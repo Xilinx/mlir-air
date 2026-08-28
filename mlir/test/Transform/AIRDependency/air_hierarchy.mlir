@@ -50,6 +50,12 @@ module  {
   }
   // Sequential herds sharing the same buffer: second herd must depend on first.
   // traceDeps for HierarchyInterface creates RAW dependency between herds.
+  //
+  // The herd bodies must actually TOUCH the buffer. A hierarchy op's memref
+  // operands are classified by what its body does with them, so two EMPTY herds
+  // do not share the buffer in any sense that needs ordering, and pinning the
+  // dependency on empty bodies pins the old over-approximation rather than the
+  // property this test is named for.
   func.func @sequential_herds_same_buffer() {
     %c1 = arith.constant 1 : index
     air.launch (%arg0, %arg1) in (%arg2=%c1, %arg3=%c1) {
@@ -60,9 +66,14 @@ module  {
         // CHECK: %[[ALLOC:.*]], %[[BUF:.*]] = air.execute
         air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
         // CHECK: %[[HERD1:.*]] = air.herd async [{{.*}}%[[ALLOC]]{{.*}}]
+          %c0_w = arith.constant 0 : index
+          %cst = arith.constant 0 : i32
+          memref.store %cst, %a[%c0_w] : memref<256xi32, 2>
         }
         air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
         // CHECK: %[[HERD2:.*]] = air.herd async [{{.*}}%[[HERD1]]{{.*}}]
+          %c0_r = arith.constant 0 : index
+          %v = memref.load %a[%c0_r] : memref<256xi32, 2>
         }
         memref.dealloc %buf : memref<256xi32, 2>
         // CHECK: air.execute [{{.*}}%[[HERD2]]{{.*}}]
