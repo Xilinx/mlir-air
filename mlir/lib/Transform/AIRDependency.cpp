@@ -552,6 +552,27 @@ private:
         dma_op.getSrcMemref(), dma_op.getMixedSrcOffsets(),
         dma_op.getMixedSrcSizes(), dma_op.getMixedSrcStrides(),
         dma_op.getPadBeforeAttr(), dma_op.getPadAfterAttr());
+
+    // Re-instantiating drops every attribute the builder does not take. That
+    // silently lost `channel` / `channel_indices` (air-dependency runs before
+    // air-dma-to-channel, so a named channel never reached the pass that reads
+    // it) and `src_rank` / `dst_rank` with it. Carry the whole attribute
+    // dictionary across instead of enumerating what is known today; the builder
+    // owns only the operand-segment and access-pattern entries, so those are
+    // the ones to skip. `id` is skipped too -- assignOpId issues a fresh one
+    // below.
+    static constexpr StringLiteral builderOwnedAttrs[] = {
+        "operandSegmentSizes", "static_dst_offsets",
+        "static_dst_sizes",    "static_dst_strides",
+        "static_src_offsets",  "static_src_sizes",
+        "static_src_strides",  "pad_before",
+        "pad_after",           "id"};
+    for (auto namedAttr : dma_op->getAttrs()) {
+      if (llvm::is_contained(builderOwnedAttrs, namedAttr.getName().strref()))
+        continue;
+      new_dmaNd_op->setAttr(namedAttr.getName(), namedAttr.getValue());
+    }
+
     assignOpId(new_dmaNd_op);
 
     // Update op-to-graph map
