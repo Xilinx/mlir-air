@@ -1093,15 +1093,17 @@ assert UNI_LM == N_VOCAB_CHUNKS, (
 # EMPTY BY DEFAULT, and the emitted IR must be byte-identical when it is empty.
 _EXTRA_WAVES_JSON = _os.environ.get("DECODE_EXTRA_WAVES", "")
 EXTRA_WAVES = _json.loads(_EXTRA_WAVES_JSON) if _EXTRA_WAVES_JSON else []
-_EXTRA_KEYS = {"name", "i2", "j2", "iter_lo", "w_off", "x_src", "dest"}
+_EXTRA_KEYS = {"name", "i2", "j2", "iter_lo", "w_off", "x_slot", "x_stride", "dest"}
 for _w in EXTRA_WAVES:
     if set(_w) != _EXTRA_KEYS:
         raise SystemExit(
             f"DECODE_EXTRA_WAVES entry {_w.get('name', '?')} has keys "
             f"{sorted(_w)}; expected {sorted(_EXTRA_KEYS)}"
         )
-    if _w["x_src"] not in ("taps", "xnorm"):
-        raise SystemExit(f"extra wave {_w['name']}: x_src must be taps or xnorm")
+    if _w["x_slot"] < 0 or _w["x_stride"] < 1:
+        raise SystemExit(
+            f"extra wave {_w['name']}: x_slot must be >= 0 and x_stride >= 1"
+        )
     if _w["dest"] not in DEST_NAMES:
         raise SystemExit(
             f"extra wave {_w['name']}: dest {_w['dest']!r} is not one of the "
@@ -1113,6 +1115,9 @@ N_EXTRA = len(EXTRA_WAVES)
 # column share is that divided by NCX, and the feed walks it NCY blocks at a
 # time. `w_off` is where the wave's slab starts in the extra BO, which the
 # caller chose -- this only derives the extent so the memref can be sized.
+# A wave's contraction width, from its own column-block count -- so the X feed
+# and the weight feed cannot disagree about how wide the wave is.
+EXTRA_K = [2 * w["j2"] * COL_BLOCK for w in EXTRA_WAVES]
 EXTRA_BLOCKS = [w["i2"] * 2 * w["j2"] * NCX * NCY for w in EXTRA_WAVES]
 EXTRA_PER_COL = [b // NCX for b in EXTRA_BLOCKS]
 EXTRA_NSTEPS = [p // NCY for p in EXTRA_PER_COL]
@@ -1120,26 +1125,38 @@ EXTRA_W_ELEMS = max(
     (w["w_off"] + b * BLOCK_BF16 for w, b in zip(EXTRA_WAVES, EXTRA_BLOCKS)),
     default=0,
 )
+# An extra wave's X is `n` slots of the X buffer, starting at `x_slot` and
+# stepping `x_stride` slots -- one slot when the wave contracts over K, several
+# when it contracts over a concatenation of them (the DFlash pre-pass's fc reads
+# five hidden-state taps as one 12800-wide row). `n` is derived, so a wave
+# cannot claim an X that is not the width its weights expect.
+EXTRA_X_NSLOT = []
 for _i, _w in enumerate(EXTRA_WAVES):
     if EXTRA_PER_COL[_i] % NCY:
         raise SystemExit(
             f"extra wave {_w['name']}: {EXTRA_BLOCKS[_i]} blocks is "
             f"{EXTRA_PER_COL[_i]} per column, which {NCY} rows do not divide"
         )
+    if EXTRA_K[_i] % K:
+        raise SystemExit(
+            f"extra wave {_w['name']}: K={EXTRA_K[_i]} is not a whole number of "
+            f"{K}-wide X slots"
+        )
+    EXTRA_X_NSLOT.append(EXTRA_K[_i] // K)
 # The arm lands in pieces, so the guard names what is still missing rather than
-# refusing the whole flag. Today the extra waves get their weight feed and their
-# arm, and NOT their X source, their egress or their per-wave proj scalars -- so
-# a build would run them against an unfed X and a decode-shaped phase count. It
-# would not fail; it would return a plausible wrong answer, which is exactly the
-# failure this whole section exists to stop shipping.
+# refusing the whole flag. Today the extra waves get their arm, their weight
+# feed and their X; they do NOT get their egress or their per-wave proj scalars,
+# so the cores would run a decode-shaped phase count against them. That does not
+# fail -- it returns a plausible wrong answer, which is the failure this whole
+# section exists to stop shipping.
 #
 # DECODE_EXTRA_WAVES_PARTIAL=1 emits it anyway, for reading the IR. It is not a
 # runnable configuration and the message says so.
 EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
 if N_EXTRA and not EXTRA_PARTIAL:
     raise SystemExit(
-        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the arm and the weight feed "
-        f"are wired but the X source, the egress and the proj scalars are not "
+        f"DECODE_EXTRA_WAVES has {N_EXTRA} entries; the arm, the weight feed and "
+        f"the X source are wired, the egress and the proj scalars are not "
         f"(docs/DFlashFeasibility.md section 3.14). Set "
         f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection -- it will not "
         f"compute the right thing -- or unset DECODE_EXTRA_WAVES."
@@ -1910,6 +1927,18 @@ Y_LAYER = sum(ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p != 0)  # Y /
 # layers have UNI_DEC+1 boundaries (the prompt embedding in, every layer's output
 # after). The LM head reads the last one, exactly as it reads slot 0 today.
 X_SLOTS = (UNI_DEC + 1) if HIDDEN_TAPS else 1
+# Extra waves read (and their destinations write) X slots too, and one of them
+# is normally past the layer outputs -- a wave that feeds the next one needs
+# somewhere to leave its result. Grow the buffer to whatever they reach rather
+# than adding a knob: the slots are already named in the wave list.
+if N_EXTRA:
+    X_SLOTS = max(
+        [X_SLOTS]
+        + [
+            w["x_slot"] + (n - 1) * w["x_stride"] + 1
+            for w, n in zip(EXTRA_WAVES, EXTRA_X_NSLOT)
+        ]
+    )
 
 
 def build_module():
@@ -4025,6 +4054,63 @@ def build_module():
                                 _colspan,
                                 EXTRA_NSTEPS[k],
                             )
+                            # X, straight from DDR onto @xnorm -- the FIFTH
+                            # producer on a channel that already converges four
+                            # (the rms core twice, the o memtile, the GLU down
+                            # buffer), consumed by the X memtile in phase-time
+                            # order. It has to come from here and not through
+                            # the rms core: an extra wave's X is RAW, and the
+                            # rms core's path normalizes. Making the norm
+                            # arm-conditional would be a second PROGRAM on the
+                            # tightest tile in the design, which is what
+                            # _rms_batched's header says hangs the dispatch.
+                            #
+                            # A channel with several producers is refused only
+                            # when the CONSUMER is the shim (see @layerOut);
+                            # here it is a memtile, which is the case @xnorm is
+                            # already in.
+                            _nsl = EXTRA_X_NSLOT[k]
+                            _xw = EXTRA_K[k]
+                            _sl0 = EXTRA_WAVES[k]["x_slot"] * BATCH * K
+                            _sst = EXTRA_WAVES[k]["x_stride"] * BATCH * K
+                            # Python-unrolled, not refeed()'d: a launch-scope
+                            # scf.for deadlocks the shim sequence (the vocab
+                            # weight feed carries the same note). I2 copies is
+                            # what the proj cores consume -- one pass of the
+                            # wave's K per row-block iteration.
+                            for _ in range(EXTRA_WAVES[k]["i2"]):
+                                if BATCH == 1:
+                                    ChannelPut(
+                                        "xnorm",
+                                        X,
+                                        offsets=[idx(_sl0), idx(0), idx(0)],
+                                        sizes=[idx(_nsl), idx(K // XCHUNK), idx(XCHUNK)],
+                                        strides=[idx(_sst), idx(XCHUNK), idx(1)],
+                                    )
+                                else:
+                                    # Chunk-major, token-minor, exactly as the
+                                    # on-chip producers put it (_xnorm_put): the
+                                    # X memtile takes BATCH*XCHUNK per get, so a
+                                    # chunk has to arrive whole and token-major
+                                    # inside itself. The extra dimension over
+                                    # the slots is what a 4-D shim BD is for.
+                                    ChannelPut(
+                                        "xnorm",
+                                        X,
+                                        offsets=[idx(_sl0), idx(0), idx(0), idx(0)],
+                                        sizes=[
+                                            idx(_nsl),
+                                            idx(K // XCHUNK),
+                                            idx(BATCH),
+                                            idx(XCHUNK),
+                                        ],
+                                        strides=[
+                                            idx(_sst),
+                                            idx(XCHUNK),
+                                            idx(K),
+                                            idx(1),
+                                        ],
+                                    )
                             yield_([])
 
                         def _uni_dec():
@@ -4869,13 +4955,38 @@ def build_module():
                             _feed_inX("xnorm", _xc_dec)
                             yield_([])
 
-                        index_switch(
-                            [],
-                            _seg_arm_i,
-                            [0],
-                            case_body_builder=lambda op, i, cv: _xs_voc(),
-                            default_body_builder=lambda op: _xs_dec(),
-                        )
+                        if not N_EXTRA:
+                            index_switch(
+                                [],
+                                _seg_arm_i,
+                                [0],
+                                case_body_builder=lambda op, i, cv: _xs_voc(),
+                                default_body_builder=lambda op: _xs_dec(),
+                            )
+                        else:
+                            # An extra wave feeds its own K, I2 times -- the same
+                            # count its launch-side @xnorm puts supply. Every arm
+                            # calls the SAME _feed_inX on the SAME channel and
+                            # differs only in the trip count, which is the rule
+                            # this whole mechanism is built around.
+                            _xc_extra = [
+                                w["i2"] * (EXTRA_K[i] // XCHUNK)
+                                for i, w in enumerate(EXTRA_WAVES)
+                            ]
+
+                            def _xs_extra(k):
+                                _feed_inX("xnorm", _xc_extra[k])
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                _seg_arm_i,
+                                [0] + [2 + k for k in range(N_EXTRA)],
+                                case_body_builder=lambda op, i, cv: (
+                                    _xs_voc() if cv == 0 else _xs_extra(cv - 2)
+                                ),
+                                default_body_builder=lambda op: _xs_dec(),
+                            )
                     else:
                         _feed_inX("xnorm", _xc_voc if LM_HEAD else _xc_dec)
 

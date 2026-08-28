@@ -46,6 +46,7 @@ would break `FULL4`) does not apply here: this is a 5th kind of WAVE.
 """
 
 import argparse
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -248,8 +249,30 @@ class WaveSpec:
     j2: int  # column-block PAIRS: 2*j2 == k / COL_BLOCK
     iter_lo: int  # first row-block iteration of the source slab
     w_off: int  # element offset of the slab's column-0 base in the extra BO
-    x_src: str  # "taps" (raw DDR) or "xnorm" (the rms core's output)
+    x_slot: int  # first X-buffer slot this wave contracts over
+    x_stride: int  # slots between them (fc's taps are every 8th)
     dest: str  # "rms" (hidden_norm) or "rope" (k_norm + RoPE)
+
+    def as_config(self):
+        """The subset fused_decode's DECODE_EXTRA_WAVES takes.
+
+        `m` and `k` stay here and are not passed: the engine derives K from
+        `j2` and the X extent from that, so a wave cannot claim an X of one
+        width and weights of another.
+        """
+        return {
+            k_: getattr(self, k_)
+            for k_ in (
+                "name",
+                "i2",
+                "j2",
+                "iter_lo",
+                "w_off",
+                "x_slot",
+                "x_stride",
+                "dest",
+            )
+        }
 
     @property
     def blocks(self):
@@ -270,6 +293,67 @@ def _kv_rows(fd_draft):
     k_rows = DraftWeights._PROJ["k"][1]
     v_rows = DraftWeights._PROJ["v"][1]
     return q_rows, q_rows + k_rows + v_rows
+
+
+def _target_x_slots():
+    """X_SLOTS of the TARGET's build -- one per layer, plus the input.
+
+    Read out of a fused_decode loaded at the target's geometry rather than
+    written down, because it is the number the extra waves have to sit above
+    and the two must not be able to drift apart.
+    """
+    # qwen3_4b_draft_requant._load_fd pins DECODE_MODEL to the drafter, so load
+    # the target the same way it does rather than trying to steer that one.
+    import importlib.util
+
+    saved = {k: v for k, v in os.environ.items() if k.startswith("DECODE_")}
+    for k in list(os.environ):
+        if k.startswith("DECODE_"):
+            os.environ.pop(k, None)
+    os.environ.update(
+        DECODE_MODEL="qwen3-4b",
+        VOCAB_CHUNK_I2="30",
+        LM_HEAD="0",
+        NLAYERS="1",
+        UNIFIED="1",
+        DECODE_GOLDEN="1",
+        DECODE_GOLDEN_L="128",
+    )
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "fused_decode_target_geom",
+            str(_HERE.parent.parent / "fused_decode" / "fused_decode.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.UNI_DEC + 1
+    finally:
+        for k in list(os.environ):
+            if k.startswith("DECODE_"):
+                os.environ.pop(k, None)
+        os.environ.update(saved)
+
+
+def _tap_slots(fd_draft):
+    """(first slot, slot stride) of the target's hidden-state taps.
+
+    The taps live at X slot `lid+1` for each tapped layer id, and the tapped
+    layers are evenly spaced, so the five of them are an arithmetic progression
+    -- which is what lets fc read all 12800 columns as ONE strided descriptor
+    instead of five puts. Asserted rather than assumed: if a checkpoint ever
+    taps unevenly, this has to become several waves and the caller should find
+    out here rather than from a wrong answer.
+    """
+    from dflash_phase2_replay import TARGET_LAYER_IDS
+
+    slots = [lid + 1 for lid in TARGET_LAYER_IDS]
+    step = {b - a for a, b in zip(slots, slots[1:])}
+    if len(step) != 1:
+        raise ValueError(
+            f"tap slots {slots} are not evenly spaced; fc cannot be one "
+            f"strided X read"
+        )
+    return slots[0], step.pop()
 
 
 def wave_specs(fd_draft):
@@ -298,6 +382,22 @@ def wave_specs(fd_draft):
     g_kv = geom_for(qkv_rows, D, fd_draft)
     kv_iter_lo, kv_n_iter = g_kv.iter_window(kv_lo, kv_hi)
 
+    # fc contracts over the five hidden-state taps, which sit at X slots
+    # `lid+1` for the tapped layer ids -- an arithmetic progression, because the
+    # tapped layers are evenly spaced. That is what lets it be one strided read
+    # rather than five: TAP_SLOTS = [2, 10, 18, 26, 34] is slot 2, stride 8.
+    tap0, tap_stride = _tap_slots(fd_draft)
+    # target_hidden -- fc's output and every context-K/V wave's input -- needs a
+    # slot of its own past the layer outputs. The engine grows the X buffer to
+    # whatever the wave list names, so this is a choice made here and nowhere
+    # else.
+    #
+    # PAST THE TARGET'S SLOTS, not the drafter's. These waves are built from the
+    # drafter's geometry but they run inside the TARGET's program, whose X
+    # buffer has one slot per target layer plus the input; the drafter's five
+    # layers would put target_hidden on top of target layer 5's output.
+    th_slot = _target_x_slots()
+
     waves = [
         WaveSpec(
             name="fc",
@@ -307,7 +407,8 @@ def wave_specs(fd_draft):
             j2=g_fc.nbj // 2,
             iter_lo=0,
             w_off=0,
-            x_src="taps",
+            x_slot=tap0,
+            x_stride=tap_stride,
             dest="rms",
         )
     ]
@@ -323,7 +424,8 @@ def wave_specs(fd_draft):
                 j2=g_kv.nbj // 2,
                 iter_lo=kv_iter_lo,
                 w_off=off,
-                x_src="xnorm",
+                x_slot=th_slot,
+                x_stride=1,
                 dest="rope",
             )
         )
@@ -618,14 +720,16 @@ def main():
         )
         print(
             f"  {'wave':<8} {'M':>6} {'K':>6} {'I2':>4} {'J2':>4} "
-            f"{'iter_lo':>7} {'blocks':>7} {'MB':>6}  {'X':<6} {'dest':<5} w_off"
+            f"{'iter_lo':>7} {'blocks':>7} {'MB':>6}  {'X slots':<12} "
+            f"{'dest':<5} w_off"
         )
         for w in waves:
             print(
                 f"  {w.name:<8} {w.m:>6} {w.k:>6} {w.i2:>4} {w.j2:>4} "
                 f"{w.iter_lo:>7} {w.blocks:>7} "
                 f"{w.blocks * BLOCK_BF16 * 2 / 1e6:>6.1f}  "
-                f"{w.x_src:<6} {w.dest:<5} {w.w_off}"
+                f"{f'{w.x_slot}+{w.k // 2560}x{w.x_stride}':<12} "
+                f"{w.dest:<5} {w.w_off}"
             )
     if args.layout:
         print("\n[prepass waves] layout gate")
