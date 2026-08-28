@@ -1654,6 +1654,51 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
   return operands;
 }
 
+// Does anything in `body` write through `root` (or a view of it)?
+//
+// Used to classify an air hierarchy op's memref operands. A hierarchy op is not
+// opaque -- its body is right there -- so falling through to the "unknown op"
+// case and marking every memref operand written manufactures WAR/WAW edges
+// against reads of the same buffer outside it.
+//
+// Nested hierarchy ops are deliberately NOT skipped: getAllWriteAccessed... now
+// handles them too, so walking into a herd inside a segment asks the same
+// question one level down. The recursion is bounded by launch > segment > herd.
+static bool isWrittenThroughInRegion(Value root, Region &body) {
+  // The argument itself plus anything aliasing it through a view-like op.
+  llvm::SmallPtrSet<Value, 4> aliases;
+  SmallVector<Value> worklist{root};
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!aliases.insert(v).second)
+      continue;
+    for (Operation *user : v.getUsers())
+      if (isa<ViewLikeOpInterface>(user))
+        for (Value res : user->getResults())
+          if (isa<BaseMemRefType>(res.getType()))
+            worklist.push_back(res);
+  }
+
+  bool written = false;
+  body.walk([&](Operation *o) {
+    auto writes = getAllWriteAccessedMemrefOperandsFromOp(o);
+    if (failed(writes)) {
+      // Could not classify: assume it writes, matching the conservative
+      // default this helper exists to refine.
+      written = true;
+      return WalkResult::interrupt();
+    }
+    for (auto &entry : *writes) {
+      if (aliases.contains(entry.first)) {
+        written = true;
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return written;
+}
+
 // Get memref operands which are write accessed by op. Each entry has the
 // following format: pair<memref, tuple<offsets, sizes, strides>>.
 FailureOr<SmallVector<MemrefAccessPattern>>
@@ -1702,6 +1747,25 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
     pushMemrefEntryToVector(getMemrefEntry(storeOp.getMemRef()), operands);
   } else if (isa<memref::LoadOp>(op)) {
     // memref.load reads from the memref -- no write access
+  } else if (auto hier = dyn_cast_if_present<air::HierarchyInterface>(op)) {
+    // Classify each memref operand by what the body actually does with the
+    // matching kernel argument. Without this a hierarchy op lands in the
+    // "unknown op" case below and every memref passed into it is treated as
+    // written, which orders it after every prior READER of that buffer.
+    //
+    // That is not academic: spelling a feed as an air.dma_memcpy_nd forces the
+    // L3 buffer to become a hierarchy operand (a DMA has to name both endpoints
+    // in one place), where the equivalent air.channel.put/get pair never passes
+    // it in. The resulting WAR edge against the launch-scope puts that read the
+    // same buffer made the enclosing scf.index_switch carry an async token,
+    // whose arm-terminating air.wait_all air-to-aie then could not legalize.
+    for (unsigned i = 0, e = hier.getNumKernelOperands(); i < e; i++) {
+      Value oper = hier.getKernelOperand(i);
+      if (!isa<BaseMemRefType>(oper.getType()))
+        continue;
+      if (isWrittenThroughInRegion(hier.getKernelArgument(i), op->getRegion(0)))
+        pushMemrefEntryToVector(getMemrefEntry(oper), operands);
+    }
   } else { // If unknown op, then assume all operands and results are written
            // to.
     for (auto oper : llvm::concat<Value>(op->getOperands(), op->getResults()))
