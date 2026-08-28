@@ -1547,9 +1547,38 @@ def tensor(shape, dtype, name=None):
     return t
 
 
+def _peak_bytes(entries):
+    """The most memory live at once, given which branch arm each buffer is in.
+
+    ``entries`` is (arm path, bytes) per buffer, where an arm path is one
+    (branch, index) pair per enclosing ops.branch. Buffers in different arms of
+    the *same* branch never coexist, so they cost the larger of the two rather
+    than both; buffers under different branches are sequential and are summed,
+    which is the conservative reading.
+
+    Summing everything, which this did first, rejects designs that fit:
+    flash_attention's cascade merge allocates a full accumulator tile in each of
+    its two arms, and at dk=dv=128 counting both put a 56 KB body over the 64 KB
+    line. The predecessor compiles and runs that configuration.
+    """
+    here = sum(nbytes for path, nbytes in entries if not path)
+    branches = {}
+    for path, nbytes in entries:
+        if path:
+            branches.setdefault(path[0][0], {}).setdefault(path[0][1], []).append(
+                (path[1:], nbytes)
+            )
+    for arms in branches.values():
+        here += max(_peak_bytes(rest) for rest in arms.values())
+    return here
+
+
 def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     """Allocate a tile: L1 in a herd body, or L2 in a segment body."""
     _require_allocatable(dtype, "air.alloc")
+    from ._cond import current_arm_path
+
+    arm_path = current_arm_path()
     from air.ir import IntegerAttr, MemRefType
     from air.dialects.air import MemorySpace
     from air.dialects.memref import AllocOp
@@ -1665,8 +1694,13 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
     else:
         # A segment holds L2 memtile buffers and herd-shared L1 buffers at once,
         # so each budget only counts its own space.
-        live = (
-            sum(_buffer_bytes(b) for b in holder._buffers if b.space == space) + nbytes
+        live = _peak_bytes(
+            [
+                (getattr(b, "arm_path", ()), _buffer_bytes(b))
+                for b in holder._buffers
+                if b.space == space
+            ]
+            + [(arm_path, nbytes)]
         )
         if space == "L1" and isinstance(owner, HerdContext):
             # A core's 64 KB holds its private tiles *and* its slab of whatever
@@ -1714,6 +1748,10 @@ def alloc(shape, dtype, scope=None, vector=None, _hoisted=False):
         value=op.result,
         space=space,
     )
+    # Which branch arm this was allocated in, for _peak_bytes above. Set as an
+    # attribute rather than a Buffer field: it concerns the budget only, and
+    # nothing that reads a Buffer elsewhere should have to know about it.
+    buf.arm_path = arm_path if space in ("L1", "L2") else ()
     holder.register_buffer(buf)
     if space == "L1" and scope.kind not in ("shared", "per_core"):
         trace = active_trace()

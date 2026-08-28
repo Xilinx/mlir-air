@@ -162,6 +162,17 @@ class Condition:
         )
 
 
+# The branch arm currently being traced, as a list of (branch, arm) pairs --
+# one per enclosing ops.branch. air.alloc stamps it on each buffer so the L1
+# budget can tell "both of these exist" from "only one of these exists".
+_ARM_PATH = []
+
+
+def current_arm_path():
+    """Where in the branch nest the tracer is, as a hashable tuple."""
+    return tuple(_ARM_PATH)
+
+
 class ValueCondition:
     """A comparison between values read out of buffers, awaiting ``ops.branch``.
 
@@ -243,9 +254,12 @@ class _Region:
     it instead.
     """
 
-    def __init__(self, at, terminate):
+    def __init__(self, at, terminate, arm=None):
         self._at = at
         self._terminate = terminate
+        # (branch, index) while this region is open, so air.alloc can tell a
+        # buffer in the then arm from one in the else arm.
+        self._arm = arm
         self.open = False
 
     def __enter__(self):
@@ -254,6 +268,8 @@ class _Region:
         self._ip = InsertionPoint(self._at) if self._terminate else self._at
         self._ip.__enter__()
         self.open = True
+        if self._arm is not None:
+            _ARM_PATH.append(self._arm)
         enter_region()
         return self
 
@@ -266,6 +282,8 @@ class _Region:
         # block with no terminator turns a diagnosable error into a verifier
         # crash somewhere unrelated.
         self.open = False
+        if self._arm is not None:
+            _ARM_PATH.pop()
         exit_region(aborted=exc_type is not None, what="ops.branch")
         if self._terminate:
             yield_([])
@@ -311,7 +329,7 @@ class Branch:
         if self._op is not None:
             raise RuntimeError(f"ops.branch{self._condition} entered twice")
         self._op = scf.IfOp(self._condition.materialize(), has_else=True)
-        self._then = _Region(self._op.then_block, terminate=True)
+        self._then = _Region(self._op.then_block, terminate=True, arm=(id(self), 0))
         self._then.__enter__()
         return self
 
@@ -348,7 +366,9 @@ class Branch:
                 f"ops.branch{self._condition} already has an otherwise() region"
             )
         self._otherwise_taken = True
-        return _Region(InsertionPoint(self._else_terminator), terminate=False)
+        return _Region(
+            InsertionPoint(self._else_terminator), terminate=False, arm=(id(self), 1)
+        )
 
 
 def branch(condition):
