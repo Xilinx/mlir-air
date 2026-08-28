@@ -763,10 +763,22 @@ def _():
 
 
 # CHECK-LABEL: TEST: launch_grid_too_deep
-# CHECK: NotImplementedError: air.launch is 1-D or 2-D; got 3-D
+# Three is allowed: flash_attention/kernel_fusion_based splits the value
+# dimension across a third launch axis when dv exceeds one tile, and the whole
+# grid is one iteration space rather than a loop around a 2-D one. Four has
+# never been compiled by anything, so the limit sits there -- on evidence, the
+# way the vector widths in types.py do, not on principle.
+# CHECK: NotImplementedError: air.launch is 1-D, 2-D or 3-D; got 4-D
 @expect(NotImplementedError, "launch_grid_too_deep")
 def _():
-    air.launch(product(range(0, 128, 64), range(0, 128, 64), range(0, 128, 64)))
+    air.launch(
+        product(
+            range(0, 128, 64),
+            range(0, 128, 64),
+            range(0, 128, 64),
+            range(0, 128, 64),
+        )
+    )
 
 
 # CHECK-LABEL: TEST: launch_body_arity

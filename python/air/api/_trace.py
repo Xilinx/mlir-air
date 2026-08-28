@@ -240,8 +240,9 @@ def current_launch():
 def open_launch_region(launch, tensors, counts, body):
     """Emit air.launch with ``counts`` as its sizes and run ``body`` inside.
 
-    Block arguments are ids + sizes + operands; air.launch is 2-D, so the
-    operands start at index 4.
+    Block arguments are ids + sizes + operands, so the operands start after two
+    entries per axis -- four for the 2-D launch that was the only kind when this
+    was written, six for a 3-D one.
     """
     from air.dialects.air import launch as launch_region
     from air.ir import InsertionPoint
@@ -255,13 +256,14 @@ def open_launch_region(launch, tensors, counts, body):
             Leaf(largs[axis], f"l{axis}") for axis in range(len(launch.ctx.grid))
         ]
         launch.coords = [IndexExpr({leaf: 1}, 0) for leaf in launch.leaves]
+        first_operand = 2 * len(counts)
         saved = [t.value for t in tensors]
-        for t, v in zip(tensors, largs[4:]):
+        for t, v in zip(tensors, largs[first_operand:]):
             t.value = v
         # Captured here, published only once this region closes: while it is
         # open the ordinary insertion point is already right, and the block has
         # no terminator to insert ahead of yet.
-        closed.append((InsertionPoint.current.block, list(largs[4:])))
+        closed.append((InsertionPoint.current.block, list(largs[first_operand:])))
         try:
             body()
         finally:
