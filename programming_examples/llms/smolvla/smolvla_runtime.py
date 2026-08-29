@@ -53,6 +53,14 @@ MODEL_ID = "lerobot/smolvla_base"
 # it. Under build/ so that `make clean` is `rm -rf build/` and nothing else.
 VISION_CACHE_DIR = str(_HERE / "build" / "vision_kernel_cache")
 VISION_SEQ_LEN = 1024
+# SmolVLA feeds 3 camera images per step, and every op except attention is
+# row-independent, so all 3 run stacked along rows through the two fused ELFs.
+# That pays one launch's control-stream replay instead of three (~337 us per
+# GEMM launch on NPU2), worth ~17% of device time. The ELFs are compiled for
+# exactly this count, so `encode` pads a shorter stack by repeating its last
+# patch embedding and discarding the extra rows; more than this many images
+# asserts, because it would need a differently-sized ELF.
+VISION_N_IMAGES = 3
 VISION_KERNELS = {
     "vit_ln_qkv",
     "vit_o_ffn",
@@ -145,7 +153,11 @@ class VisionRuntime:
             self.cache,
             VISION_KERNELS,
             lambda: compile_all_kernels(
-                self.cache, self.cfg, VISION_SEQ_LEN, with_connector=True
+                self.cache,
+                self.cfg,
+                VISION_SEQ_LEN,
+                with_connector=True,
+                n_images=VISION_N_IMAGES,
             ),
             tag="npu-vision",
         )
@@ -182,20 +194,31 @@ class VisionRuntime:
         out = np.empty((len(arrs), 64, self.cfg.connector_out), np.float32)
         per_image_ms = []
         t_enc0 = time.perf_counter()
-        for i, a in enumerate(patch_embeds):
-            ti = time.perf_counter()
-            res = run_vit_encoder(
-                a,
-                self.weights,
-                self.cfg,
-                self.cache,
-                return_per_layer=False,
-                do_connector=True,
-                verbose=False,
-                attn_mode=attn_mode,
-            )
-            out[i] = res["connector"]
-            per_image_ms.append((time.perf_counter() - ti) * 1e3)
+        # Batched: all images stacked along rows through the two fused ELFs,
+        # which are compiled for exactly VISION_N_IMAGES row blocks. Attention
+        # still runs per image inside the block runner. A step with fewer
+        # cameras pads the stack (the padding rows are computed and discarded);
+        # more than VISION_N_IMAGES would need a differently-sized ELF.
+        assert len(arrs) <= VISION_N_IMAGES, (
+            f"{len(arrs)} images but the vision ELFs are built for "
+            f"{VISION_N_IMAGES}; raise VISION_N_IMAGES and recompile"
+        )
+        stack = patch_embeds + [patch_embeds[-1]] * (VISION_N_IMAGES - len(arrs))
+        ti = time.perf_counter()
+        res = run_vit_encoder(
+            np.vstack(stack),
+            self.weights,
+            self.cfg,
+            self.cache,
+            return_per_layer=False,
+            do_connector=True,
+            verbose=False,
+            attn_mode=attn_mode,
+            n_images=VISION_N_IMAGES,
+        )
+        conn = res["connector"]
+        out[:] = conn[: len(arrs)] if VISION_N_IMAGES > 1 else conn
+        per_image_ms = [(time.perf_counter() - ti) * 1e3 / len(arrs)] * len(arrs)
         t_enc = (time.perf_counter() - t_enc0) * 1e3
         self.warmed = True
         if timings is not None:

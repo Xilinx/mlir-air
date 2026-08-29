@@ -304,12 +304,21 @@ def compile_only(cache_dir: str = VISION_CACHE_DIR) -> int:
     from smolvla_vision_encoder import compile_all_kernels
     from smolvla_vision_weights import SigLIPVisionConfig
     from shared.infra.cache import KernelCache, Profiler
+    from smolvla_runtime import VISION_N_IMAGES
 
     cfg = SigLIPVisionConfig()
     cache = KernelCache(cache_dir, verbose=False, profiler=Profiler())
     print(f"Compiling SmolVLA vision kernels into {cache_dir}/ ...")
+    # VISION_N_IMAGES, not 1: the ELFs are shape-specialized on the batched row
+    # count, so building at 1 would leave this check passing on a configuration
+    # the runtime never asks for -- and rebuilding everything on the first run.
     compile_all_kernels(
-        cache, cfg, seq_len=cfg.num_patches, fused=True, with_connector=True
+        cache,
+        cfg,
+        seq_len=cfg.num_patches,
+        fused=True,
+        with_connector=True,
+        n_images=VISION_N_IMAGES,
     )
     cache._save_manifest()
     print(f"Compiled {len(cache.artifacts)} ELFs: {sorted(cache.artifacts)}")

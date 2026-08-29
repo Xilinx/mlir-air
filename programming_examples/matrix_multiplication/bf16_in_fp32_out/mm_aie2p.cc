@@ -43,8 +43,11 @@ static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
   event1();
 }
 
+// colApad is the B k-block stride: >colA when B carries trailing k-blocks the
+// reduction must skip (bias rows riding the weight stream).
 template <typename T_in, typename T_out, unsigned rowA, unsigned colA,
-          unsigned colB, unsigned r, unsigned s, unsigned t>
+          unsigned colB, unsigned r, unsigned s, unsigned t,
+          unsigned colApad = colA>
 static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                                               const T_in *__restrict pB,
                                               T_out *__restrict pC) {
@@ -65,8 +68,8 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
         {
           const T_in *__restrict pA1 = pA + (z)*MMUL::size_A;
           const T_in *__restrict pA2 = pA + ((z + 1)) * MMUL::size_A;
-          const T_in *__restrict pB1 = pB + (j)*colA * MMUL::size_B;
-          const T_in *__restrict pB2 = pB + (j + 1) * colA * MMUL::size_B;
+          const T_in *__restrict pB1 = pB + (j)*colApad * MMUL::size_B;
+          const T_in *__restrict pB2 = pB + (j + 1) * colApad * MMUL::size_B;
 
           aie::vector<T_out, MMUL::size_C> acc_C00 =
               aie::load_v<MMUL::size_C>(pC1);
@@ -123,7 +126,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
 // bf16 MatMul kernel with bf16 outputs using 8x8x8 shape.
 // Not used by default (combos selects bf16_f32 variant instead).
 // Available for configurations that require bf16 output.
-template <unsigned m, unsigned k, unsigned n>
+template <unsigned m, unsigned k, unsigned n, unsigned kpad = k>
 static inline void
 matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                   const bfloat16 *__restrict pB,
@@ -139,14 +142,14 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
 
   ::aie::set_rounding(round_mode);
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
-                                    (n / t), r, s, t>(pA, pB, pC);
+                                    (n / t), r, s, t, (kpad / s)>(pA, pB, pC);
 }
 
 // bf16 MatMul kernel with f32 accumulation output using 8x8x8 shape.
 // Keeps the accumulator as f32 between K-tile iterations, avoiding bf16
 // truncation of partial sums. This gives higher precision at the cost of
 // 2x L1 memory for the C buffer.
-template <unsigned m, unsigned k, unsigned n>
+template <unsigned m, unsigned k, unsigned n, unsigned kpad = k>
 static inline void
 matmul_vectorized_8x8x8_bf16_f32(const bfloat16 *__restrict pA,
                                  const bfloat16 *__restrict pB,
@@ -158,11 +161,12 @@ matmul_vectorized_8x8x8_bf16_f32(const bfloat16 *__restrict pA,
 
   static_assert(m % (2 * r) == 0);
   static_assert(k % s == 0);
+  static_assert(kpad % s == 0);
   static_assert(n % (2 * t) == 0);
 
   ::aie::set_rounding(round_mode);
   return matmul_vectorized_2x2_mmul<bfloat16, float, (m / r), (k / s), (n / t),
-                                    r, s, t>(pA, pB, pC);
+                                    r, s, t, (kpad / s)>(pA, pB, pC);
 }
 
 extern "C" {
@@ -185,6 +189,14 @@ extern "C" {
 
 #ifndef DIM_K
 #define DIM_K 32
+#endif
+
+// B k-block stride. >DIM_K when the weight tile carries trailing rows the
+// reduction must skip -- the bias riding the B stream, so it reaches L1
+// without a second DMA (an AIE2P core tile has only 2 inbound DMA channels
+// and A/B already hold both).
+#ifndef DIM_K_PAD
+#define DIM_K_PAD DIM_K
 #endif
 
 #ifndef DIM_N
@@ -214,7 +226,7 @@ extern "C" {
   void SYM(op_has_no_registered_library_name)(                                 \
       ctype_in * a_in, ctype_in * b_in, ctype_out * c_out) {                   \
     matmul_vectorized_##r##x##s##x##t##_##mlir_type_in##_##mlir_type_out<      \
-        DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
+        DIM_M, DIM_K, DIM_N, DIM_K_PAD>(a_in, b_in, c_out);                    \
   }
 
 #define matmul_scalar_c_func(ctype_in, mlir_type_in, ctype_out, mlir_type_out, \
@@ -258,6 +270,97 @@ combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func)
     void SYM(zero_f32_mn)(float *c) {
   zero_vectorized<float, DIM_M, DIM_N, 32>(c);
 }
+
+// Add the bias carried in the B tile's trailing k-block to the f32 C
+// accumulator (one call on the last K-chunk, before the epilogue cast).
+// B is (n_blk, DIM_K_PAD/8, 8, 8); the pad block holds the bias replicated
+// down its 8 k-rows, so row 0 is the 8 bias values for that n-block. C is
+// (n_blk, m_blk, 8, 8), so within a block the bias pattern repeats every 8
+// lanes and one 16-lane [b0..b7,b0..b7] vector aligns throughout.
+// f32 -> bf16 narrowing that also folds in the bias carried by B's trailing
+// k-block. Runs in the drain herd, which already sweeps C exactly once, so the
+// bias costs no extra pass over the accumulator.
+#if DIM_K_PAD > DIM_K
+void SYM(f32_to_bf16_bias_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+  constexpr unsigned VW = 16, T = 8;
+  constexpr unsigned NB = DIM_N / T, MB = DIM_M / T;
+  for (unsigned jb = 0; jb < NB; jb++) {
+    aie::vector<bfloat16, T> b8 = aie::load_v<T>(b + jb * T);
+    aie::accum<accfloat, VW> bacc;
+    bacc.from_vector(aie::concat(b8, b8));
+    aie::vector<float, VW> vb = bacc.template to_vector<float>();
+    float *ps = src + jb * MB * (T * T);
+    bfloat16 *pd = dst + jb * MB * (T * T);
+    for (unsigned e = 0; e < MB * T * T; e += VW) {
+      aie::vector<float, VW> v = aie::add(aie::load_v<VW>(ps + e), vb);
+      aie::vector<bfloat16, VW> o;
+      for (unsigned q = 0; q < VW; q++)
+        o[q] = (bfloat16)v[q];
+      aie::store_v(pd + e, o);
+    }
+  }
+}
+
+// Bias + GELU-tanh + narrowing in one drain pass, for an FFN's first GEMM:
+//   GELU(x) = 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+// Same math as gelu_and_mul.cc. Every multiply stays in bf16 on purpose:
+// AIE2P has no vector f32 multiply, so an f32 x^3 would emit scalar libcalls.
+// Only the tanh argument widens to f32, via an accfloat accumulator.
+#if DIM_K_PAD > DIM_K
+void SYM(f32_to_bf16_bias_gelu_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+  constexpr unsigned VW = 16, T = 8;
+  constexpr unsigned NB = DIM_N / T, MB = DIM_M / T;
+  const aie::vector<bfloat16, VW> half_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.5f);
+  const aie::vector<bfloat16, VW> one_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)1.0f);
+  const aie::vector<bfloat16, VW> c_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.7978845608f);
+  const aie::vector<bfloat16, VW> beta_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.044715f);
+  for (unsigned jb = 0; jb < NB; jb++) {
+    aie::vector<bfloat16, T> b8 = aie::load_v<T>(b + jb * T);
+    aie::accum<accfloat, VW> bacc;
+    bacc.from_vector(aie::concat(b8, b8));
+    aie::vector<float, VW> vb = bacc.template to_vector<float>();
+    float *ps = src + jb * MB * (T * T);
+    bfloat16 *pd = dst + jb * MB * (T * T);
+    for (unsigned e = 0; e < MB * T * T; e += VW) {
+      aie::vector<float, VW> f = aie::add(aie::load_v<VW>(ps + e), vb);
+      aie::vector<bfloat16, VW> g;
+      for (unsigned q = 0; q < VW; q++)
+        g[q] = (bfloat16)f[q];
+      aie::vector<bfloat16, VW> g2 = aie::mul(g, g);
+      aie::vector<bfloat16, VW> g3 = aie::mul(g2, g);
+      aie::vector<bfloat16, VW> beta_g3 = aie::mul(beta_v, g3);
+      aie::vector<bfloat16, VW> poly = aie::add(g, beta_g3);
+      aie::vector<bfloat16, VW> inner = aie::mul(c_v, poly);
+      aie::accum<accfloat, VW> tanh_in;
+      tanh_in.from_vector(inner);
+      aie::vector<bfloat16, VW> tv =
+          aie::tanh<bfloat16>(tanh_in.template to_vector<float>());
+      aie::vector<bfloat16, VW> gh = aie::mul(half_v, g);
+      aie::vector<bfloat16, VW> opt = aie::add(one_v, tv);
+      aie::vector<bfloat16, VW> out = aie::mul(gh, opt);
+      aie::store_v(pd + e, out);
+    }
+  }
+}
+#endif
+
+// Lift the bias out of B's trailing k-block into a plain [DIM_N] vector.
+// Cheap enough (DIM_N elements) to run on every K sub-chunk, so the compute
+// herd needs no scf.if on the K induction variable: only the final sub-chunk's
+// pad block carries the bias, earlier ones re-copy zeros.
+void SYM(extract_bias_from_b)(bfloat16 *b, bfloat16 *dst) {
+  constexpr unsigned T = 8;
+  constexpr unsigned KB = DIM_K / T, KBP = DIM_K_PAD / T, NB = DIM_N / T;
+  for (unsigned jb = 0; jb < NB; jb++)
+    aie::store_v(dst + jb * T, aie::load_v<T>(b + (jb * KBP + KB) * (T * T)));
+}
+#endif
 
 // f32 -> bf16 narrowing of the L1 C tile (one call after the K-loop).
 void SYM(f32_to_bf16_mn)(float *src, bfloat16 *dst) {

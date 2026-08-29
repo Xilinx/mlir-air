@@ -145,7 +145,13 @@ def compile_gelu_and_mul():
 
 
 def compile_gemm_mm(
-    tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="", out_name="mm.o", bfp16=True
+    tile_m=64,
+    tile_n=128,
+    tile_k_l1=32,
+    sym_suffix="",
+    out_name="mm.o",
+    bfp16=True,
+    tile_k_l1_pad=0,
 ):
     """Compile mm.o from matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc.
 
@@ -182,6 +188,11 @@ def compile_gemm_mm(
     # to document the experiment. Keep bfp16=True.
     if bfp16:
         extra.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
+    # tile_k_l1_pad > tile_k_l1: B carries trailing bias rows the reduction
+    # skips. DIM_K_PAD is what makes `extract_bias_from_b` (compute herd) and
+    # the `f32_to_bf16_bias{,_gelu}_mn` drain casts see the padded stride.
+    if tile_k_l1_pad and tile_k_l1_pad != tile_k_l1:
+        extra.append(f"-DDIM_K_PAD={tile_k_l1_pad}")
     if sym_suffix:
         extra.append(f"-DSYM_SUFFIX={sym_suffix}")
     _compile_kernel(src, out_name, extra_flags=extra, force=True)

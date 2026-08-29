@@ -58,6 +58,8 @@ def build_module(
     drain_chunks=1,
     sym_suffix="",
     link_with_name="mm.o",
+    b_pad_rows=0,
+    epilogue_gelu=False,
 ):
     assert m % (tile_m * herd_m) == 0, (m, tile_m, herd_m)
     assert k % tile_k_l2 == 0
@@ -81,8 +83,29 @@ def build_module(
     # output (drain) dtype is np_dtype_out.
     cast_out = emit_external_call and np_dtype_out == bfloat16
     np_dtype_acc = np.float32 if emit_external_call else np_dtype_out
+    # Bias-on-the-weight-stream: B carries `b_pad_rows` extra K-rows per L1
+    # sub-chunk holding the bias, so it reaches L1 on the existing B DMA. A
+    # second DMA is impossible -- an AIE2P core tile has 2 inbound channels and
+    # A/B hold both. The matmul skips the pad rows (DIM_K_PAD); the compute herd
+    # folds them into the f32 accumulator once, on the last K chunk.
+    #
+    # The fold lives in the drain's f32->bf16 cast, so it only happens on the
+    # cast_out path with an unchunked drain. Anywhere else the compute herd
+    # would still carve the bias rows out of B and nothing would ever add them
+    # -- a silently wrong result rather than a build error.
+    if b_pad_rows:
+        assert cast_out, (
+            "b_pad_rows folds the bias into the f32->bf16 drain cast, so it "
+            "needs the external f32-accumulate path with bf16 output"
+        )
+        assert drain_chunks == 1, (
+            f"b_pad_rows is not implemented for a chunked drain "
+            f"(drain_chunks={drain_chunks})"
+        )
+    tile_k_l1_pad = tile_k_l1 + b_pad_rows
+    tile_k_l2_pad = (tile_k_l2 // tile_k_l1) * tile_k_l1_pad
     a_size = [m, k]
-    b_size = [k, n]
+    b_size = [(k // tile_k_l1) * tile_k_l1_pad, n]
     c_size = [m, n]
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
@@ -130,7 +153,7 @@ def build_module(
         1,
         1,
         tile_n // mmul_mkn[2],
-        tile_k_l1 // mmul_mkn[1],
+        tile_k_l1_pad // mmul_mkn[1],
         mmul_mkn[1],
         mmul_mkn[2],
     ]
@@ -183,6 +206,23 @@ def build_module(
         element_type=xrt_dtype_acc,
         memory_space=l1_mem_space,
     )
+    # Bias path: a small [tile_n] per-PE vector, segment-allocated so BOTH the
+    # compute herd (which lifts it out of B's pad block) and the drain herd
+    # (which folds it into the epilogue cast) can reach it. Hoisting the full
+    # L1 B tile here instead breaks the compute herd's per-PE ping-pong.
+    l1MemrefTyBiasHerd = MemRefType.get(
+        shape=[herd_m, herd_n, tile_n],
+        element_type=xrt_dtype_in,
+        memory_space=l1_mem_space,
+    )
+    l1MemrefTyBiasSub = MemRefType.get(
+        shape=[1, 1, tile_n],
+        element_type=xrt_dtype_in,
+        memory_space=l1_mem_space,
+        layout=StridedLayoutAttr.get(
+            ShapedType.get_dynamic_size(), [herd_n * tile_n, tile_n, 1]
+        ),
+    )
     # bf16 drain buffer (only the external bf16-out path): per-PE contiguous tile,
     # allocated INSIDE the drain herd (herd-local, so it doesn't coexist with the
     # compute herd's A/B). The f32 accumulator subview is cast into it (in
@@ -220,11 +260,23 @@ def build_module(
 
         matmul_func = FuncOp(
             "op_has_no_registered_library_name" + sym_suffix,
-            ([l1MemrefTyA, l1MemrefTyB, l1MemrefTyC], []),
+            (
+                [l1MemrefTyA, l1MemrefTyB, l1MemrefTyC],
+                [],
+            ),
             visibility="private",
         )
         matmul_func.attributes["link_with"] = StringAttr.get(link_with_name)
         matmul_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+
+        if b_pad_rows:
+            extract_bias_func = FuncOp(
+                "extract_bias_from_b" + sym_suffix,
+                ([l1MemrefTyB, l1MemrefTyBiasSub], []),
+                visibility="private",
+            )
+            extract_bias_func.attributes["link_with"] = StringAttr.get(link_with_name)
+            extract_bias_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
         if cast_out:
             # f32 source chunk type (per-PE subview of the f32 accumulator, one
@@ -237,9 +289,25 @@ def build_module(
             )
             if drain_chunks == 1:
                 # f32_to_bf16_mn(float* src, bfloat16* dst): single full-tile cast.
+                # GELU is a pointwise function of the accumulator, so folding it
+                # into the drain costs no operand, no DMA and no extra port.
+                _drain_sym = "f32_to_bf16_mn"
+                if b_pad_rows:
+                    _drain_sym = (
+                        "f32_to_bf16_bias_gelu_mn"
+                        if epilogue_gelu
+                        else "f32_to_bf16_bias_mn"
+                    )
                 f32_to_bf16_func = FuncOp(
-                    "f32_to_bf16_mn" + sym_suffix,
-                    ([l1MemrefTyC, l1MemrefTyCDrain], []),
+                    _drain_sym + sym_suffix,
+                    (
+                        (
+                            [l1MemrefTyC, l1MemrefTyBiasSub, l1MemrefTyCDrain]
+                            if b_pad_rows
+                            else [l1MemrefTyC, l1MemrefTyCDrain]
+                        ),
+                        [],
+                    ),
                     visibility="private",
                 )
             else:
@@ -288,7 +356,7 @@ def build_module(
             ):
                 # L2 MemRefTypes
                 a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
-                b_size_l2 = [1, herd_n, tile_k_l2, tile_n]
+                b_size_l2 = [1, herd_n, tile_k_l2_pad, tile_n]
                 c_size_l2 = [herd_m, herd_n, tile_m, tile_n]
                 l2_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L2)
                 l2MemrefTyA = MemRefType.get(
@@ -310,6 +378,13 @@ def build_module(
                 l2_a_data = AllocOp(l2MemrefTyA, [], [])
                 l2_b_data = AllocOp(l2MemrefTyB, [], [])
                 l2_c_data = AllocOp(l2MemrefTyC, [], [])
+                # Bias path only: hoist L1 B to segment scope so the DRAIN herd
+                # can read the bias out of the pad block. Adding the bias there
+                # costs nothing extra -- the drain already sweeps C exactly once,
+                # whereas doing it in the compute herd repeats the whole C-tile
+                # pass on every K sub-chunk (measured +21.5%).
+                if b_pad_rows:
+                    l1_bias_data = AllocOp(l1MemrefTyBiasHerd, [], [])
                 # L1 memref allocs
                 # l1_a and l1_b are allocated inside the compute herd (the
                 # only herd that uses them) so they have unambiguous per-PE
@@ -400,6 +475,24 @@ def build_module(
                         ],
                     )
                     reduction_offset = affine_apply(reduction_l2_iv_map, [i])
+                    # B's L3 rows are padded per chunk, so it strides by the
+                    # padded extent while A keeps the true one.
+                    if b_pad_rows:
+                        reduction_offset_b = affine_apply(
+                            AffineMap.get(
+                                0,
+                                1,
+                                [
+                                    AffineExpr.get_mul(
+                                        AffineSymbolExpr.get(0),
+                                        AffineConstantExpr.get(tile_k_l2_pad),
+                                    )
+                                ],
+                            ),
+                            [i],
+                        )
+                    else:
+                        reduction_offset_b = reduction_offset
                     dma_memcpy_nd(
                         l2_a_data,
                         l3_a_data_s,
@@ -410,30 +503,23 @@ def build_module(
                     dma_memcpy_nd(
                         l2_b_data,
                         l3_b_data_s,
-                        src_offsets=[0, 0, reduction_offset, launch_offset_y],
-                        src_sizes=[1, herd_n, tile_k_l2, tile_n],
-                        src_strides=[n * tile_k_l2, tile_n, n, 1],
+                        src_offsets=[0, 0, reduction_offset_b, launch_offset_y],
+                        src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
+                        src_strides=[n * tile_k_l2_pad, tile_n, n, 1],
                     )
 
                     @herd(
                         name="herd_0",
                         sizes=[herd_m, herd_n],
-                        operands=[
-                            l1_c_data,
-                            l2_a_data,
-                            l2_b_data,
-                        ],
+                        operands=(
+                            [l1_c_data, l2_a_data, l2_b_data, l1_bias_data]
+                            if b_pad_rows
+                            else [l1_c_data, l2_a_data, l2_b_data]
+                        ),
                         link_with=link_with_name if emit_external_call else None,
                     )
-                    def herd_body(
-                        _tx,
-                        _ty,
-                        _sx,
-                        _sy,
-                        _l1_c,
-                        _l2_a,
-                        _l2_b,
-                    ):
+                    def herd_body(*herd_args):
+                        _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b = herd_args[:7]
                         # L1 A/B allocated inside compute herd: unambiguous per-PE buffers
                         _l1_a = AllocOp(l1MemrefTyA, [], [])
                         _l1_b = AllocOp(l1MemrefTyB, [], [])
@@ -445,15 +531,33 @@ def build_module(
                                 [
                                     AffineExpr.get_mul(
                                         AffineSymbolExpr.get(0),
-                                        AffineConstantExpr.get(tile_k_l1),
+                                        AffineConstantExpr.get(tile_k_l1_pad),
                                     )
                                 ],
                             )
                             reduction_l1_offset = affine_apply(reduction_l1_iv_map, [j])
+                            # A is unpadded, so it advances by the true extent
+                            # while B advances by the padded one.
+                            if b_pad_rows:
+                                reduction_l1_offset_a = affine_apply(
+                                    AffineMap.get(
+                                        0,
+                                        1,
+                                        [
+                                            AffineExpr.get_mul(
+                                                AffineSymbolExpr.get(0),
+                                                AffineConstantExpr.get(tile_k_l1),
+                                            )
+                                        ],
+                                    ),
+                                    [j],
+                                )
+                            else:
+                                reduction_l1_offset_a = reduction_l1_offset
                             dma_memcpy_nd(
                                 _l1_a,
                                 _l2_a,
-                                src_offsets=[_tx, 0, 0, 0, 0, reduction_l1_offset],
+                                src_offsets=[_tx, 0, 0, 0, 0, reduction_l1_offset_a],
                                 src_sizes=[
                                     1,
                                     1,
@@ -479,13 +583,13 @@ def build_module(
                                     1,
                                     1,
                                     tile_n // mmul_mkn[2],
-                                    tile_k_l1 // mmul_mkn[1],
+                                    tile_k_l1_pad // mmul_mkn[1],
                                     mmul_mkn[1],
                                     mmul_mkn[2],
                                 ],
                                 src_strides=[
-                                    herd_n * tile_n * tile_k_l2,
-                                    tile_n * tile_k_l2,
+                                    herd_n * tile_n * tile_k_l2_pad,
+                                    tile_n * tile_k_l2_pad,
                                     mmul_mkn[2],
                                     tile_n * mmul_mkn[1],
                                     tile_n,
@@ -507,6 +611,19 @@ def build_module(
                             )
                             if emit_external_call:
                                 CallOp(matmul_func, [_l1_a, _l1_b, l1_c_subview])
+                                if b_pad_rows:
+                                    CallOp(
+                                        extract_bias_func,
+                                        [
+                                            _l1_b,
+                                            subview(
+                                                herd_args[7],
+                                                offsets=[_tx, _ty, 0],
+                                                sizes=[1, 1, tile_n],
+                                                strides=[1, 1, 1],
+                                            ),
+                                        ],
+                                    )
                             else:
                                 matmul = block_matmul(_l1_a, _l1_b, outs=[l1_c_subview])
                             yield_([])
@@ -522,19 +639,15 @@ def build_module(
                 @herd(
                     name="herd_0",
                     sizes=[herd_m, herd_n],
-                    operands=[l1_c_data, l2_a_data, l2_b_data, l2_c_data],
+                    operands=(
+                        [l1_c_data, l2_a_data, l2_b_data, l2_c_data, l1_bias_data]
+                        if b_pad_rows
+                        else [l1_c_data, l2_a_data, l2_b_data, l2_c_data]
+                    ),
                     link_with=link_with_name if cast_out else None,
                 )
-                def herd_body(
-                    _tx,
-                    _ty,
-                    _sx,
-                    _sy,
-                    _l1_c,
-                    _l2_a,
-                    _l2_b,
-                    _l2_c,
-                ):
+                def herd_body(*drain_args):
+                    _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b, _l2_c = drain_args[:8]
                     if cast_out:
                         # Chunked drain: split the tile_n dim into `drain_chunks` (G)
                         # contiguous segments. Per chunk: subview the f32 accumulator,
@@ -560,7 +673,18 @@ def build_module(
                                 strides=[1, 1, 1, 1, 1, 1],
                             )
                             l1_c_drain = AllocOp(l1MemrefTyCDrain, [], [])
-                            if drain_chunks == 1:
+                            if drain_chunks == 1 and b_pad_rows:
+                                _l1_b_pe = subview(
+                                    drain_args[8],
+                                    offsets=[_tx, _ty, 0],
+                                    sizes=[1, 1, tile_n],
+                                    strides=[1, 1, 1],
+                                )
+                                CallOp(
+                                    f32_to_bf16_func,
+                                    [c_acc_sub, _l1_b_pe, l1_c_drain],
+                                )
+                            elif drain_chunks == 1:
                                 CallOp(f32_to_bf16_func, [c_acc_sub, l1_c_drain])
                             else:
                                 n_i32 = ConstantOp(

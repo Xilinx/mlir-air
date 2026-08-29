@@ -110,6 +110,8 @@ def build_module(
     num_kv_heads=None,
     causal=False,
     num_heads_per_unroll=2,
+    fused_qkv=False,
+    n_images=1,
 ):
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
@@ -220,20 +222,42 @@ def build_module(
     emb_k = num_kv_heads * dk
     emb_v = num_kv_heads * dv
     emb_out = num_heads * dv
-    Q = air.tensor([lq, emb_q], bf16)
-    K = air.tensor([lk, emb_k], bf16)
-    V = air.tensor([lk, emb_v], bf16)
-    GP = air.tensor([lq, emb_out], bf16)
 
+    # fused_qkv: Q|K|V arrive column-concatenated in ONE tensor, because the
+    # projection that produces them is a single wide GEMM -- three launches of
+    # the same shape cost three device reconfigurations, and each head is a
+    # column range either way, so attention reads its blocks straight out of the
+    # wide buffer instead of three copied-apart ones.
+    if fused_qkv:
+        assert lk == lq, "fused_qkv needs self-attention (K/V rows == Q rows)"
+        qkv_cols = emb_q + emb_k + emb_v
+        Q = K = V = air.tensor([n_images * lq, qkv_cols], bf16)
+        q_base, k_base, v_base = 0, emb_q, emb_q + emb_k
+    else:
+        Q = air.tensor([n_images * lq, emb_q], bf16)
+        K = air.tensor([n_images * lk, emb_k], bf16)
+        V = air.tensor([n_images * lk, emb_v], bf16)
+        q_base = k_base = v_base = 0
+    GP = air.tensor([n_images * lq, emb_out], bf16)
+
+    # Independent self-attention problems stacked along ROWS -- SmolVLA attends
+    # over three camera images. They share the value-chunk axis because reload
+    # cost is per launch and only one of the two is ever > 1.
+    assert n_images == 1 or dv_chunks == 1, (
+        f"n_images ({n_images}) and dv_chunks ({dv_chunks}) both need the third "
+        "launch axis"
+    )
     grid = [range(num_lq_iters), range(num_head_groups)]
     if dv_chunks > 1:
         grid.append(range(dv_chunks))
+    elif n_images > 1:
+        grid.append(range(n_images))
 
     with air.launch(grid, name="attention_bf16") as launch:
         # The body is registered at the grid's own arity -- the DSL checks that
         # they agree -- so the third coordinate is bound to 0 when the value
         # dimension fits in one tile and there is no third axis.
-        def run(lx, ly, lz):
+        def run(lx, ly, lz, img):
 
             head_base = ly * H
 
@@ -243,10 +267,10 @@ def build_module(
                     head_idx if gqa_group_size == 1 else head_idx // gqa_group_size
                 )
 
-                q_row = lx * lqp
-                q_col = head_idx * dk
-                k_col = kv_head_idx * dk
-                v_col = kv_head_idx * dv + lz * dv_tile
+                q_row = img * lq + lx * lqp
+                q_col = q_base + head_idx * dk
+                k_col = k_base + kv_head_idx * dk
+                v_col = v_base + kv_head_idx * dv + lz * dv_tile
 
                 # Q: a [lqp, dk] window of the embedding, re-described as NQ
                 # tiles each split into dk_chunks depth slices, with the chunk
@@ -264,7 +288,7 @@ def build_module(
 
                 # K: the same split over this stage's chunks.
                 for s in range(NS):
-                    row = s * lk_per_stage
+                    row = img * lk + s * lk_per_stage
                     qkin[s].put(
                         K[row : row + chunks_per_stage * lkp, k_col : k_col + dk]
                         .reshape(chunks_per_stage, lkp, dk_chunks, dk_tile)
@@ -274,7 +298,7 @@ def build_module(
 
                 # V needs no permutation, only the chunk split.
                 for s in range(NS):
-                    row = s * lk_per_stage
+                    row = img * lk + s * lk_per_stage
                     vin[s].put(
                         V[
                             row : row + chunks_per_stage * lkp,
@@ -563,7 +587,7 @@ def build_module(
 
             for head_local in range(H):
                 head_idx = head_base + head_local
-                out_row = lx * lqp
+                out_row = img * lq + lx * lqp
                 out_col = head_idx * dv + lz * dv_tile
                 gpout.get(
                     GP[out_row : out_row + lqp, out_col : out_col + dv_tile],
@@ -574,13 +598,19 @@ def build_module(
 
             @launch.body
             def _(lx, ly, lz):
-                run(lx, ly, lz)
+                run(lx, ly, lz, 0)
+
+        elif n_images > 1:
+
+            @launch.body
+            def _(lx, ly, li):
+                run(lx, ly, 0, li)
 
         else:
 
             @launch.body
             def _(lx, ly):
-                run(lx, ly, 0)
+                run(lx, ly, 0, 0)
 
     return launch
 
