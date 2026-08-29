@@ -1,0 +1,196 @@
+
+MEMORY
+{
+   program (RX) : ORIGIN = 0, LENGTH = 0x0020000
+   data (!RX) : ORIGIN = 0x7E280, LENGTH = 0x1D80
+}
+ENTRY(__start)
+SECTIONS
+{
+  . = 0x0;
+  .text : {
+     /* the __start symbol has to come at address zero. */
+     *crt0.o(.text*)
+     _ctors_start = .;
+     _init_array_start = .;
+     KEEP(SORT(*.init_array))
+     _ctors_end = .;
+     _init_array_end = .;
+     _dtors_start = .;
+     _dtors_end = .;
+     *(.text*)
+  } > program
+  .data : {
+     *(.data*)
+     *(.rodata*)
+  } > data
+  .comment : {
+     *(.comment*)
+  }
+  .symtab : {
+     *(.symtab)
+  }
+  .shstrtab : {
+     *(.shstrtab)
+  }
+  .strtab : {
+     *(.strtab)
+  }
+  .stack_sizes : {
+     *(.stack_sizes)
+  }
+
+. = 0x70000;
+_sp_start_value_DM_stack = .;
+. += 0x400; /* stack */
+/* No tile with memory exists to the south. */
+. = 0x40000;
+. += 0x10000;
+. = 0x5E000;
+buf31 = .;
+. += 0x80;
+. = 0x52400;
+buf30 = .;
+. += 0x80;
+. = 0x50400;
+buf29 = .;
+. += 0x2000;
+. = 0x54000;
+buf28 = .;
+. += 0x2000;
+. = 0x58000;
+buf27 = .;
+. += 0x2000;
+. = 0x5C000;
+buf26 = .;
+. += 0x2000;
+. = 0x56000;
+buf25 = .;
+. += 0x2000;
+. = 0x5E080;
+buf24 = .;
+. += 0x80;
+. = 0x52480;
+buf23 = .;
+. += 0x80;
+. = 0x5A000;
+buf22 = .;
+. += 0x2000;
+. = 0x5E100;
+buf21 = .;
+. += 0x80;
+. = 0x52500;
+buf20 = .;
+. += 0x80;
+. = 0x5E180;
+buf19 = .;
+. += 0x80;
+. = 0x52580;
+buf18 = .;
+. += 0x80;
+. = 0x5E200;
+buf17 = .;
+. += 0x80;
+. = 0x52600;
+buf16 = .;
+. += 0x80;
+. = 0x6E000;
+buf111 = .;
+. += 0x80;
+. = 0x62400;
+buf110 = .;
+. += 0x80;
+. = 0x60400;
+buf109 = .;
+. += 0x2000;
+. = 0x64000;
+buf108 = .;
+. += 0x2000;
+. = 0x68000;
+buf107 = .;
+. += 0x2000;
+. = 0x6C000;
+buf106 = .;
+. += 0x2000;
+. = 0x66000;
+buf105 = .;
+. += 0x2000;
+. = 0x6E080;
+buf104 = .;
+. += 0x80;
+. = 0x62480;
+buf103 = .;
+. += 0x80;
+. = 0x6A000;
+buf102 = .;
+. += 0x2000;
+. = 0x6E100;
+buf101 = .;
+. += 0x80;
+. = 0x62500;
+buf100 = .;
+. += 0x80;
+. = 0x6E180;
+buf99 = .;
+. += 0x80;
+. = 0x62580;
+buf98 = .;
+. += 0x80;
+. = 0x6E200;
+buf97 = .;
+. += 0x80;
+. = 0x62600;
+buf96 = .;
+. += 0x80;
+. = 0x7E000;
+buf47 = .;
+. += 0x80;
+. = 0x72400;
+buf46 = .;
+. += 0x80;
+. = 0x70400;
+buf45 = .;
+. += 0x2000;
+. = 0x74000;
+buf44 = .;
+. += 0x2000;
+. = 0x78000;
+buf43 = .;
+. += 0x2000;
+. = 0x7C000;
+buf42 = .;
+. += 0x2000;
+. = 0x76000;
+buf41 = .;
+. += 0x2000;
+. = 0x7E080;
+buf40 = .;
+. += 0x80;
+. = 0x72480;
+buf39 = .;
+. += 0x80;
+. = 0x7A000;
+buf38 = .;
+. += 0x2000;
+. = 0x7E100;
+buf37 = .;
+. += 0x80;
+. = 0x72500;
+buf36 = .;
+. += 0x80;
+. = 0x7E180;
+buf35 = .;
+. += 0x80;
+. = 0x72580;
+buf34 = .;
+. += 0x80;
+. = 0x7E200;
+buf33 = .;
+. += 0x80;
+. = 0x72600;
+buf32 = .;
+. += 0x80;
+  .bss : { *(.bss*) } > data
+}
+INPUT(air_project_1h_ref/attn.o)
+PROVIDE(main = core_2_2);

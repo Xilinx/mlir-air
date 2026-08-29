@@ -1,0 +1,18 @@
+air_project_debug/input.mlir:533:9: error: 'scf.forall' op unknown LoopLikeOpInterface op type. Currently supports scf.for and scf.parallel
+        scf.forall (%arg16) in (4) {
+        ^
+air_project_debug/input.mlir:533:9: note: see current operation: 
+"scf.forall"() <{operandSegmentSizes = array<i32: 0, 0, 0, 0>, staticLowerBound = array<i64: 0>, staticStep = array<i64: 1>, staticUpperBound = array<i64: 4>}> ({
+^bb0(%arg17: index):
+  %192 = "affine.apply"(%arg17) <{map = affine_map<()[s0] -> (s0 * 64)>}> : (index) -> index
+  %193 = "arith.constant"() <{value = 0 : index}> : () -> index
+  %194 = "arith.constant"() <{value = 0 : index}> : () -> index
+  %195 = "arith.constant"() <{value = 64 : index}> : () -> index
+  %196 = "arith.constant"() <{value = 64 : index}> : () -> index
+  %197 = "arith.constant"() <{value = 64 : index}> : () -> index
+  %198 = "arith.constant"() <{value = 1 : index}> : () -> index
+  %199 = "air.channel.get"(%5#0, %arg17, %193, %5#1, %192, %194, %195, %196, %197, %198) <{chan_name = @Gp2L2, operandSegmentSizes = array<i32: 1, 2, 1, 2, 2, 2>}> {id = 35 : i32} : (!air.async.token, index, index, memref<256x64xbf16, 1 : i32>, index, index, index, index, index, index) -> !air.async.token
+  "scf.forall.in_parallel"() ({
+  ^bb0:
+  }) : () -> ()
+}) : () -> ()

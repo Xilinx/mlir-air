@@ -1,0 +1,2854 @@
+#!/usr/bin/env python3
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+"""Isolated pipeline stage correlation tests for flash attention.
+
+Tests each stage of the flash attention pipeline in isolation on a
+single AIE tile (1x1 herd, no cascade) to pinpoint where correlation
+drops. Uses the exact same DMA tiling and kernel functions as attn.py/attn.cc.
+
+Tests:
+  matmul_qk  — Q@K^T matmul only (matmul_a_b_bf16)
+  matmul_gv  — G@V matmul only (matmul_g_b_bf16)
+
+Usage:
+    cd programming_examples/flash_attention/kernel_fusion_based/test_cascade
+    make compile-kernel
+    # Copy attn.o: cp ../build_peano/attn.o build_cascade/
+    python3 step_test.py
+    python3 step_test.py --test matmul_qk
+"""
+
+import argparse
+import os
+import sys
+import shutil
+from math import sqrt
+
+import numpy as np
+from ml_dtypes import bfloat16
+import filelock
+
+import air
+from air.ir import *
+from air.dialects.air import *
+from air.dialects.memref import AllocOp, DeallocOp, CollapseShapeOp
+from air.dialects.func import FuncOp, CallOp
+from air.dialects.arith import ConstantOp
+from air.dialects import scf, affine, arith
+from air.dialects.scf import for_ as scf_range
+from air.backend.xrt import XRTBackend
+
+# Dimensions matching flash attention
+TSQ = 64   # tile_size_q
+DK = 64
+DV = 64
+LKP = 64
+M = 8      # mmul_m = mmul_k = mmul_n
+
+
+def external_func(name, inputs, outputs=None, link_with=None, visibility="private"):
+    if outputs is None:
+        outputs = []
+    func_type = FunctionType.get(inputs, outputs)
+    func = FuncOp(name=name, type=func_type, visibility=visibility)
+    func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    if link_with:
+        func.attributes["link_with"] = StringAttr.get(link_with)
+    return func
+
+
+# =========================================================================
+# Test 1: Q@K^T matmul only
+# =========================================================================
+
+@module_builder
+def build_matmul_qk():
+    """Single-tile Q@K^T matmul with same DMA tiling as flash attention."""
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    g_l2_t = MemRefType.get([TSQ, LKP], bf16, memory_space=l2)
+    q_l3_t = MemRefType.get([TSQ, DK], bf16)
+    k_l3_t = MemRefType.get([LKP, DK], bf16)
+    g_l3_t = MemRefType.get([TSQ, LKP], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+
+    Channel("QIn", size=[1])
+    Channel("KIn", size=[1])
+    Channel("GOut", size=[1])
+    Channel("Q2L1", size=[1, 1])
+    Channel("K2L1", size=[1, 1])
+    Channel("G2L2", size=[1, 1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, g_l3_t)
+    def matmul_qk(q_in, k_in, g_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, g_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, g):
+            ChannelPut("QIn", q, indices=[0])
+            ChannelPut("KIn", k, indices=[0])
+            ChannelGet("GOut", g, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                ql2 = AllocOp(q_l2_t, [], [])
+                kl2 = AllocOp(k_l2_t, [], [])
+                gl2 = AllocOp(g_l2_t, [], [])
+                ql1 = AllocOp(q_l1_t, [], [])
+                kl1 = AllocOp(k_l1_t, [], [])
+                gl1 = AllocOp(g_l1_2d, [], [])
+                c1s = ConstantOp(idx, 1)
+
+                # L3->L2
+                ChannelGet("QIn", ql2.result, indices=[0])
+                ChannelGet("KIn", kl2.result, indices=[0])
+
+                # L2->L1: Q tiling (column-major block order)
+                ChannelPut(
+                    "Q2L1", ql2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[DK // M, TSQ // M, M, M],
+                    strides=[M, DK * M, DK, 1],
+                )
+                # L2->L1: K tiling (row-major block order)
+                ChannelPut(
+                    "K2L1", kl2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[LKP // M, DK // M, M, M],
+                    strides=[M * DK, M, DK, 1],
+                )
+                # L1->L2: G untiling
+                ChannelGet("G2L2", gl2.result, indices=[0, 0])
+                # L2->L3
+                ChannelPut("GOut", gl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c1s, c1s],
+                    operands=[ql1, kl1, gl1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, q, k, g):
+                    ChannelGet("Q2L1", q, indices=[tx, ty])
+                    ChannelGet("K2L1", k, indices=[tx, ty])
+                    g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                    CallOp([], "zero_fill_g_bf16", [g1d])
+                    CallOp([], "matmul_a_b_bf16", [q, k, g1d])
+                    # Output G with untiling (col-major 8x8 -> row-major)
+                    ChannelPut(
+                        "G2L2", g, indices=[tx, ty],
+                        offsets=[0, 0, 0, 0],
+                        sizes=[TSQ // M, M, LKP // M, M],
+                        strides=[M * M, M, TSQ * M, 1],
+                    )
+
+                DeallocOp(ql1)
+                DeallocOp(kl1)
+                DeallocOp(gl1)
+                DeallocOp(ql2)
+                DeallocOp(kl2)
+                DeallocOp(gl2)
+
+
+# =========================================================================
+# Test 2: G@V matmul only
+# =========================================================================
+
+@module_builder
+def build_matmul_gv():
+    """Single-tile G@V matmul with same DMA tiling as flash attention."""
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    # G is the softmax output, used as A in the matmul
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    # V is B in the matmul
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    # Output: Gp = G @ V
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    gp_l1_1d = MemRefType.get([TSQ * DK], bf16, memory_space=l1)
+
+    g_l2_t = MemRefType.get([TSQ, LKP], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+
+    g_l3_t = MemRefType.get([TSQ, LKP], bf16)
+    v_l3_t = MemRefType.get([LKP, DK], bf16)
+    gp_l3_t = MemRefType.get([TSQ, DK], bf16)
+
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+
+    Channel("GIn", size=[1])
+    Channel("VIn", size=[1])
+    Channel("GpOut", size=[1])
+    Channel("G2L1", size=[1, 1])
+    Channel("V2L1", size=[1, 1])
+    Channel("Gp2L2", size=[1, 1])
+
+    @FuncOp.from_py_func(g_l3_t, v_l3_t, gp_l3_t)
+    def matmul_gv(g_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[g_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, g, v, gp):
+            ChannelPut("GIn", g, indices=[0])
+            ChannelPut("VIn", v, indices=[0])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                gl2 = AllocOp(g_l2_t, [], [])
+                vl2 = AllocOp(v_l2_t, [], [])
+                gpl2 = AllocOp(gp_l2_t, [], [])
+                gl1 = AllocOp(g_l1_2d, [], [])
+                vl1 = AllocOp(v_l1_t, [], [])
+                gpl1 = AllocOp(gp_l1_t, [], [])
+                c1s = ConstantOp(idx, 1)
+
+                ChannelGet("GIn", gl2.result, indices=[0])
+                ChannelGet("VIn", vl2.result, indices=[0])
+
+                # L2->L1: G tiling — same as Q tiling (G is "A" in the matmul)
+                # G is [TSQ, LKP], same column-major block order as Q
+                ChannelPut(
+                    "G2L1", gl2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[LKP // M, TSQ // M, M, M],
+                    strides=[M, LKP * M, LKP, 1],
+                )
+                # L2->L1: V tiling — same as flash attention V DMA
+                ChannelPut(
+                    "V2L1", vl2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[DV // M, LKP // M, M, M],
+                    strides=[M, DV * M, DV, 1],
+                )
+                # L1->L2: Gp untiling
+                ChannelGet("Gp2L2", gpl2.result, indices=[0, 0])
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c1s, c1s],
+                    operands=[gl1, vl1, gpl1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, g, v, gp):
+                    ChannelGet("G2L1", g, indices=[tx, ty])
+                    ChannelGet("V2L1", v, indices=[tx, ty])
+                    CallOp([], "zero_fill_gp_bf16", [gp])
+                    g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                    CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                    # Output Gp with untiling
+                    ChannelPut(
+                        "Gp2L2", gp, indices=[tx, ty],
+                        offsets=[0, 0, 0, 0],
+                        sizes=[TSQ // M, M, DV // M, M],
+                        strides=[M * M, M, TSQ * M, 1],
+                    )
+
+                DeallocOp(gl1)
+                DeallocOp(vl1)
+                DeallocOp(gpl1)
+                DeallocOp(gl2)
+                DeallocOp(vl2)
+                DeallocOp(gpl2)
+
+
+# =========================================================================
+# Test 3: Full single-chunk attention (QK^T + softmax + GV + div)
+# =========================================================================
+
+@module_builder
+def build_full_chunk():
+    """Single-tile full attention: Q@K^T, softmax, G@V, div. No cascade."""
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([TSQ, DK], bf16)
+    k_l3_t = MemRefType.get([LKP, DK], bf16)
+    v_l3_t = MemRefType.get([LKP, DK], bf16)
+    gp_l3_t = MemRefType.get([TSQ, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+
+    # DMA channel strategy (2 S2MM + 2 MM2S per tile):
+    # S2MM 0: QK shared (Q first, then K, same channel)
+    # S2MM 1: V
+    # MM2S 0: Gp output
+    Channel("QKIn", size=[1])      # L3->L2 for Q then K
+    Channel("VIn", size=[1])       # L3->L2 for V
+    Channel("GpOut", size=[1])     # L2->L3 for Gp
+    Channel("QK2L1", size=[1, 1])  # L2->L1: Q then K (shared, tiled)
+    Channel("V2L1", size=[1, 1])   # L2->L1: V (tiled)
+    Channel("Gp2L2", size=[1, 1]) # L1->L2: Gp (untiled)
+
+    # copy_tile: copies [lqp*dk] bf16 from src to dst
+    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn.o")
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_chunk(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            ChannelPut("QKIn", q, indices=[0])   # Q first
+            ChannelPut("QKIn", k, indices=[0])   # then K
+            ChannelPut("VIn", v, indices=[0])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                qkl2 = AllocOp(q_l2_t, [], [])   # shared L2 for Q/K
+                vl2 = AllocOp(v_l2_t, [], [])
+                gpl2 = AllocOp(gp_l2_t, [], [])
+                q_l1 = AllocOp(q_l1_t, [], [])    # Q saved copy in L1
+                qk_l1 = AllocOp(k_l1_t, [], [])   # shared L1 for DMA recv
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c1s = ConstantOp(idx, 1)
+
+                # Q: L3->L2->L1 (tiled into shared L1 buf)
+                ChannelGet("QKIn", qkl2.result, indices=[0])
+                ChannelPut(
+                    "QK2L1", qkl2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[DK // M, TSQ // M, M, M],
+                    strides=[M, DK * M, DK, 1],
+                )
+                # K: L3->L2->L1 (tiled into same shared L1 buf)
+                ChannelGet("QKIn", qkl2.result, indices=[0])
+                ChannelPut(
+                    "QK2L1", qkl2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[LKP // M, DK // M, M, M],
+                    strides=[M * DK, M, DK, 1],
+                )
+                # V: L3->L2->L1
+                ChannelGet("VIn", vl2.result, indices=[0])
+                ChannelPut(
+                    "V2L1", vl2.result, indices=[0, 0],
+                    offsets=[0, 0, 0, 0],
+                    sizes=[DV // M, LKP // M, M, M],
+                    strides=[M, DV * M, DV, 1],
+                )
+                # Gp: L1->L2->L3
+                ChannelGet("Gp2L2", gpl2.result, indices=[0, 0])
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c1s, c1s],
+                    operands=[q_l1, qk_l1, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, q, qk, v, g, gp, up_buf, sp_buf):
+                    # 1. Get Q (into shared buf), copy to Q buf
+                    ChannelGet("QK2L1", qk, indices=[tx, ty])
+                    CallOp([], "copy_tile", [qk, q])
+
+                    # 2. Get K (into shared buf, overwrites Q data)
+                    ChannelGet("QK2L1", qk, indices=[tx, ty])
+
+                    # 3. Get V
+                    ChannelGet("V2L1", v, indices=[tx, ty])
+
+                    # 4. G = Q @ K^T
+                    g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                    CallOp([], "zero_fill_g_bf16", [g1d])
+                    CallOp([], "matmul_a_b_bf16", [q, qk, g1d])
+
+                    # 5. Init softmax state
+                    CallOp([], "zero_fill_gp_bf16", [gp])
+                    CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                    CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+
+                    # 6. fused_softmax(G, up, s_tmp, r_tmp)
+                    s_tmp = AllocOp(up_l1_t, [], [])
+                    r_tmp = AllocOp(up_l1_t, [], [])
+                    CallOp(
+                        [], "fused_softmax", [g1d, up_buf, s_tmp.result, r_tmp.result]
+                    )
+
+                    # 7. Gp *= r (Gp is zero, so no-op but keeps pipeline correct)
+                    CallOp([], "mul_r_gp", [r_tmp.result, gp])
+
+                    # 8. Gp += softmax(G) @ V
+                    CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+
+                    # 9. sp = sp + sp_prev * r (sp_prev=0, so sp unchanged)
+                    c0_i32 = ConstantOp(i32, 0)
+                    CallOp(
+                        [], "accum_sp_r_s", [sp_buf, r_tmp.result, s_tmp.result]
+                    )
+                    CallOp(
+                        [], "vector_copy_32elems", [c0_i32, s_tmp.result, sp_buf]
+                    )
+
+                    # 10. Gp /= sp
+                    CallOp([], "div_gp_sp", [sp_buf, gp])
+
+                    DeallocOp(s_tmp)
+                    DeallocOp(r_tmp)
+
+                    # 11. Output Gp with untiling
+                    ChannelPut(
+                        "Gp2L2", gp, indices=[tx, ty],
+                        offsets=[0, 0, 0, 0],
+                        sizes=[TSQ // M, M, DV // M, M],
+                        strides=[M * M, M, TSQ * M, 1],
+                    )
+
+                DeallocOp(q_l1)
+                DeallocOp(qk_l1)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                DeallocOp(qkl2)
+                DeallocOp(vl2)
+                DeallocOp(gpl2)
+
+
+# =========================================================================
+# Runner
+# =========================================================================
+
+def corr(a, b):
+    return float(np.corrcoef(a.flatten(), b.flatten())[0, 1])
+
+
+def run_matmul_qk_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: Q@K^T matmul only (matmul_a_b_bf16)")
+    print(f"{'='*60}")
+
+    module = build_matmul_qk()
+    backend = XRTBackend(
+        omit_while_true_loop=True, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="matmul_qk",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (LKP, DK)).astype(bfloat16)
+    G_out = np.zeros((TSQ, LKP), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, G_out)
+
+    npu = results[2].reshape(TSQ, LKP).astype(np.float32)
+    backend.unload()
+
+    # Golden: Q @ K^T
+    ref = Q.astype(np.float32) @ K.astype(np.float32).T
+    c = corr(npu, ref)
+
+    print(f"  Q@K^T correlation: {c:.6f}")
+    print(f"  NPU range : [{npu.min():.2f}, {npu.max():.2f}], mean={npu.mean():.2f}")
+    print(f"  Ref range : [{ref.min():.2f}, {ref.max():.2f}], mean={ref.mean():.2f}")
+    print(f"  max_err   : {np.abs(npu - ref).max():.4f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+def run_matmul_gv_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: G@V matmul only (matmul_g_b_bf16)")
+    print(f"{'='*60}")
+
+    module = build_matmul_gv()
+    backend = XRTBackend(
+        omit_while_true_loop=True, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="matmul_gv",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(123)
+    # G = softmax weights (non-negative, rows sum to ~1)
+    raw = np.random.uniform(0, val_range, (TSQ, LKP)).astype(np.float32)
+    G = (raw / raw.sum(axis=-1, keepdims=True)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (LKP, DV)).astype(bfloat16)
+    Gp_out = np.zeros((TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(G, V, Gp_out)
+
+    npu = results[2].reshape(TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    # Golden: G @ V
+    ref_gv = G.astype(np.float32) @ V.astype(np.float32)
+    c_gv = corr(npu, ref_gv)
+
+    # Also check G @ V^T (the transposed version)
+    ref_gvt = G.astype(np.float32) @ V.astype(np.float32).T
+    c_gvt = corr(npu, ref_gvt)
+
+    print(f"  G@V   correlation: {c_gv:.6f}")
+    print(f"  G@V^T correlation: {c_gvt:.6f}")
+    print(f"  NPU range : [{npu.min():.2f}, {npu.max():.2f}], mean={npu.mean():.2f}")
+    print(f"  Ref G@V   : [{ref_gv.min():.2f}, {ref_gv.max():.2f}], mean={ref_gv.mean():.2f}")
+    print(f"  Ref G@V^T : [{ref_gvt.min():.2f}, {ref_gvt.max():.2f}], mean={ref_gvt.mean():.2f}")
+
+    if c_gvt > c_gv and c_gvt > 0.9:
+        print(f"  *** BUG FOUND: Hardware computes G@V^T instead of G@V! ***")
+    print(f"  {'PASS' if c_gv > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c_gv, c_gvt
+
+
+def run_full_chunk_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: Full single-chunk attention (QK^T + softmax + GV + div)")
+    print(f"{'='*60}")
+
+    module = build_full_chunk()
+    backend = XRTBackend(
+        omit_while_true_loop=True, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_chunk",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (LKP, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (LKP, DV)).astype(bfloat16)
+    Gp_out = np.zeros((TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    # Golden: softmax(Q@K^T / sqrt(dk)) @ V
+    sqrt_dk = sqrt(DK)
+    scores = Q.astype(np.float32) @ K.astype(np.float32).T
+    mx = np.max(scores, axis=-1, keepdims=True)
+    P = np.exp((scores - mx) / sqrt_dk)
+    P = P / np.sum(P, axis=-1, keepdims=True)
+    ref = (P @ V.astype(np.float32)).astype(bfloat16).astype(np.float32)
+    c = corr(npu, ref)
+
+    print(f"  Full chunk correlation: {c:.6f}")
+    print(f"  NPU range : [{npu.min():.3f}, {npu.max():.3f}], mean={npu.mean():.3f}, std={npu.std():.4f}")
+    print(f"  Ref range : [{ref.min():.3f}, {ref.max():.3f}], mean={ref.mean():.3f}, std={ref.std():.4f}")
+    print(f"  max_err   : {np.abs(npu - ref).max():.4f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+@module_builder
+def build_full_4x1():
+    """4x1 herd: 4 q_tiles, each computing full attention independently.
+
+    Herd [4, 1]. Q per-tile, K replicated per tile. No cascade.
+    Each tile gets Q+K on same MM2S port via dma_packet (BD chain
+    guarantees Q-before-K ordering). K is sent 4x (once per port).
+    V uses circuit-switched broadcast on separate S2MM channel.
+    Golden: per-tile attention(Q_sub, K, V).
+    """
+    from air.dialects.affine import apply as affine_apply
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_full = NQ * TSQ
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_full, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([lqp_full, DK], bf16)
+    k_l3_t = MemRefType.get([LKP, DK], bf16)
+    v_l3_t = MemRefType.get([LKP, DK], bf16)
+    gp_l3_t = MemRefType.get([lqp_full, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+
+    # QK: per q_tile, each sub-channel carries Q_i then K on same MM2S port.
+    # BD chain ordering guarantees Q arrives before K at each tile.
+    # Each sub-channel gets its own MM2S port (4 ports total for QK).
+    chan_qk = Channel("QK2L1", size=[NQ, 1])
+    chan_qk.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # V: broadcast (circuit-switched, own S2MM)
+    Channel("V2L1", size=[1, 1], broadcast_shape=[NQ, 1])
+    # L3↔L2
+    Channel("QIn", size=[1])
+    Channel("KIn", size=[1])
+    Channel("VIn", size=[1])
+    # Output
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x1(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            # Send 4 Q sub-tiles
+            affine_map_q = AffineMap.get(0, 1, [
+                AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                   AffineConstantExpr.get(TSQ * DK))
+            ])
+            par_q = scf.ForallOp(lower_bounds=[0], upper_bounds=[NQ], steps=[1])
+            with InsertionPoint(par_q.body):
+                q_off = affine_apply(affine_map_q, [par_q.induction_variables[0]])
+                ChannelPut("QIn", q, indices=[0],
+                           offsets=[0, q_off], sizes=[TSQ, DK], strides=[DK, 1])
+                scf.InParallelOp()
+            ChannelPut("KIn", k, indices=[0])
+            ChannelPut("VIn", v, indices=[0])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                # 4 separate L2 buffers for Q — enables parallel memtile→core DMA
+                ql2_0 = AllocOp(q_l2_t, [], [])
+                ql2_1 = AllocOp(q_l2_t, [], [])
+                ql2_2 = AllocOp(q_l2_t, [], [])
+                ql2_3 = AllocOp(q_l2_t, [], [])
+                kl2 = AllocOp(k_l2_t, [], [])
+                vl2 = AllocOp(v_l2_t, [], [])
+                gpl2 = AllocOp(gp_l2_t, [], [])
+                q_l1 = AllocOp(q_l1_t, [], [])
+                k_l1 = AllocOp(k_l1_t, [], [])
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_1 = ConstantOp(idx, 1)
+                c0s = ConstantOp(idx, 0)
+                c1s_q = ConstantOp(idx, 1)
+                c2s = ConstantOp(idx, 2)
+                c3s = ConstantOp(idx, 3)
+
+                # Q: L3→L2 into 4 separate L2 buffers
+                ChannelGet("QIn", ql2_0.result, indices=[0])
+                ChannelGet("QIn", ql2_1.result, indices=[0])
+                ChannelGet("QIn", ql2_2.result, indices=[0])
+                ChannelGet("QIn", ql2_3.result, indices=[0])
+
+                # K: L3→L2
+                ChannelGet("KIn", kl2.result, indices=[0])
+
+                # QK: L2→L1 per tile. For each tile i, put Q_i then K
+                # on the same sub-channel [i, 0]. BD chain ordering on
+                # each MM2S port guarantees Q arrives before K.
+                ChannelPut("QK2L1", ql2_0.result, indices=[c0s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[DK // M, TSQ // M, M, M],
+                           strides=[M, DK * M, DK, 1])
+                ChannelPut("QK2L1", kl2.result, indices=[c0s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[LKP // M, DK // M, M, M],
+                           strides=[M * DK, M, DK, 1])
+                ChannelPut("QK2L1", ql2_1.result, indices=[c1s_q, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[DK // M, TSQ // M, M, M],
+                           strides=[M, DK * M, DK, 1])
+                ChannelPut("QK2L1", kl2.result, indices=[c1s_q, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[LKP // M, DK // M, M, M],
+                           strides=[M * DK, M, DK, 1])
+                ChannelPut("QK2L1", ql2_2.result, indices=[c2s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[DK // M, TSQ // M, M, M],
+                           strides=[M, DK * M, DK, 1])
+                ChannelPut("QK2L1", kl2.result, indices=[c2s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[LKP // M, DK // M, M, M],
+                           strides=[M * DK, M, DK, 1])
+                ChannelPut("QK2L1", ql2_3.result, indices=[c3s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[DK // M, TSQ // M, M, M],
+                           strides=[M, DK * M, DK, 1])
+                ChannelPut("QK2L1", kl2.result, indices=[c3s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[LKP // M, DK // M, M, M],
+                           strides=[M * DK, M, DK, 1])
+
+                # V: L3→L2→L1 broadcast
+                ChannelGet("VIn", vl2.result, indices=[0])
+                ChannelPut("V2L1", vl2.result, indices=[c0s, c0s],
+                           offsets=[0, 0, 0, 0],
+                           sizes=[DV // M, LKP // M, M, M],
+                           strides=[M, DV * M, DV, 1])
+
+                # Output gather
+                affine_map_tileq = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_tileq, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c_nq, c_1],
+                    operands=[q_l1, k_l1, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, q, k, v, g, gp, up_buf, sp_buf):
+                    # Q and K from same sub-channel QK2L1[tx, ty].
+                    # First get receives Q (first BD), second receives K.
+                    ChannelGet("QK2L1", q, indices=[tx, ty])
+                    ChannelGet("QK2L1", k, indices=[tx, ty])
+                    ChannelGet("V2L1", v, indices=[tx, ty])
+
+                    g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                    CallOp([], "zero_fill_g_bf16", [g1d])
+                    CallOp([], "matmul_a_b_bf16", [q, k, g1d])
+                    CallOp([], "zero_fill_gp_bf16", [gp])
+                    CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                    CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+                    s_tmp = AllocOp(up_l1_t, [], [])
+                    r_tmp = AllocOp(up_l1_t, [], [])
+                    CallOp([], "fused_softmax",
+                           [g1d, up_buf, s_tmp.result, r_tmp.result])
+                    CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                    CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                    c0_i32 = ConstantOp(i32, 0)
+                    CallOp([], "accum_sp_r_s",
+                           [sp_buf, r_tmp.result, s_tmp.result])
+                    CallOp([], "vector_copy_32elems",
+                           [c0_i32, s_tmp.result, sp_buf])
+                    CallOp([], "div_gp_sp", [sp_buf, gp])
+                    DeallocOp(s_tmp)
+                    DeallocOp(r_tmp)
+                    ChannelPut("Gp2L2", gp, indices=[tx, ty],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[TSQ // M, M, DV // M, M],
+                               strides=[M * M, M, TSQ * M, 1])
+
+                DeallocOp(q_l1)
+                DeallocOp(k_l1)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                DeallocOp(ql2_0)
+                DeallocOp(ql2_1)
+                DeallocOp(ql2_2)
+                DeallocOp(ql2_3)
+                DeallocOp(kl2)
+                DeallocOp(vl2)
+                DeallocOp(gpl2)
+
+
+@module_builder
+def build_full_4x2():
+    """4x2 herd: 4 q_tiles × 2 cascade stages.
+
+    Cascade flows north→south: ty=1 (row 3) → ty=0 (row 2).
+    ty=1: first stage — compute partial attention, cascade out gp/up/sp.
+    ty=0: second stage — cascade in, merge, divide, output.
+    Both stages process same K/V (no splitting). Output from ty=0 only
+    (4 tiles → 4 S2MM, within 6 limit).
+    QKV paired per tile on same MM2S port (dma_packet).
+    Per-row L3→L2 channels for multi-memtile distribution.
+    """
+    from air.dialects.affine import apply as affine_apply
+    from air.dialects.air import channel
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    NS = 2
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_out = NQ * TSQ  # output from ty=0 only
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_out, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([NQ * TSQ, DK], bf16)
+    k_l3_t = MemRefType.get([LKP, DK], bf16)
+    v_l3_t = MemRefType.get([LKP, DK], bf16)
+    gp_l3_t = MemRefType.get([lqp_out, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+
+    # QKV: per tile dma_packet
+    chan_qkv = Channel("QKV2L1", size=[NQ, NS])
+    chan_qkv.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # Cascade channels: ty=1 → ty=0 per column
+    channel("cascade_gp", size=[NQ], channel_type="cascade")
+    channel("cascade_up", size=[NQ], channel_type="cascade")
+    channel("cascade_sp", size=[NQ], channel_type="cascade")
+    # Per-row L3→L2 channels
+    Channel("QIn_0", size=[1])
+    Channel("QIn_1", size=[1])
+    Channel("KIn_0", size=[1])
+    Channel("KIn_1", size=[1])
+    Channel("VIn_0", size=[1])
+    Channel("VIn_1", size=[1])
+    # Output from ty=0 only (4 tiles)
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x2(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            affine_map_q = AffineMap.get(0, 1, [
+                AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                   AffineConstantExpr.get(TSQ * DK))
+            ])
+            qin_names = ["QIn_0", "QIn_1"]
+            kin_names = ["KIn_0", "KIn_1"]
+            vin_names = ["VIn_0", "VIn_1"]
+            for row in range(NS):
+                for col in range(NQ):
+                    q_off_val = col * TSQ * DK
+                    ChannelPut(qin_names[row], q, indices=[0],
+                               offsets=[0, q_off_val],
+                               sizes=[TSQ, DK], strides=[DK, 1])
+                ChannelPut(kin_names[row], k, indices=[0])
+                ChannelPut(vin_names[row], v, indices=[0])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                # Per-row L2 buffers for QKV input
+                ql2_r0 = [AllocOp(q_l2_t, [], []) for _ in range(NQ)]
+                kl2_r0 = AllocOp(k_l2_t, [], [])
+                vl2_r0 = AllocOp(v_l2_t, [], [])
+                ql2_r1 = [AllocOp(q_l2_t, [], []) for _ in range(NQ)]
+                kl2_r1 = AllocOp(k_l2_t, [], [])
+                vl2_r1 = AllocOp(v_l2_t, [], [])
+                # Output L2 buffer (ty=0 only, 4 tiles)
+                gpl2 = AllocOp(gp_l2_t, [], [])
+
+                q_l1 = AllocOp(q_l1_t, [], [])
+                k_l1 = AllocOp(k_l1_t, [], [])
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_ns = ConstantOp(idx, NS)
+                c0s = ConstantOp(idx, 0)
+                c1s = ConstantOp(idx, 1)
+                c2s = ConstantOp(idx, 2)
+                c3s = ConstantOp(idx, 3)
+
+                # Q/K/V: L3→L2 via per-row channels
+                for i in range(NQ):
+                    ChannelGet("QIn_0", ql2_r0[i].result, indices=[0])
+                for i in range(NQ):
+                    ChannelGet("QIn_1", ql2_r1[i].result, indices=[0])
+                ChannelGet("KIn_0", kl2_r0.result, indices=[0])
+                ChannelGet("KIn_1", kl2_r1.result, indices=[0])
+                ChannelGet("VIn_0", vl2_r0.result, indices=[0])
+                ChannelGet("VIn_1", vl2_r1.result, indices=[0])
+
+                # QKV: L2→L1 per tile
+                ql2_all = [ql2_r0, ql2_r1]
+                kl2_all = [kl2_r0, kl2_r1]
+                vl2_all = [vl2_r0, vl2_r1]
+                col_consts = [c0s, c1s, c2s, c3s]
+                row_consts = [c0s, c1s]
+                for col in range(NQ):
+                    for row in range(NS):
+                        ChannelPut("QKV2L1", ql2_all[row][col].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DK // M, TSQ // M, M, M],
+                                   strides=[M, DK * M, DK, 1])
+                        ChannelPut("QKV2L1", kl2_all[row].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[LKP // M, DK // M, M, M],
+                                   strides=[M * DK, M, DK, 1])
+                        ChannelPut("QKV2L1", vl2_all[row].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DV // M, LKP // M, M, M],
+                                   strides=[M, DV * M, DV, 1])
+
+                # Output gather from ty=0 only (4 tiles)
+                affine_map_col = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_col, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c_nq, c_ns],
+                    operands=[q_l1, k_l1, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, q, k, v, g, gp, up_buf, sp_buf):
+                    # QKV from dma_packet channel
+                    ChannelGet("QKV2L1", q, indices=[tx, ty])
+                    ChannelGet("QKV2L1", k, indices=[tx, ty])
+                    ChannelGet("QKV2L1", v, indices=[tx, ty])
+
+                    g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                    CallOp([], "zero_fill_g_bf16", [g1d])
+                    CallOp([], "matmul_a_b_bf16", [q, k, g1d])
+
+                    # ty=1 (first stage): init from scratch
+                    #   affine_set ()[s0, s1] : (s0 >= 0, s1 - 1 == 0)
+                    s0 = AffineSymbolExpr.get(0)
+                    s1 = AffineSymbolExpr.get(1)
+                    set_ty1 = IntegerSet.get(0, 2, [s0, s1 - 1], [False, True])
+                    set_ty0 = IntegerSet.get(0, 2, [s0, s1], [False, True])
+
+                    if_init = affine.AffineIfOp(set_ty1, cond_operands=[tx, ty])
+                    with InsertionPoint(if_init.then_block):
+                        CallOp([], "zero_fill_gp_bf16", [gp])
+                        CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                        CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+                        affine.AffineYieldOp([])
+
+                    # ty=0 (second stage): cascade in from ty=1
+                    if_cascade_in = affine.AffineIfOp(set_ty0, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_in.then_block):
+                        ChannelGet("cascade_gp", gp, indices=[tx])
+                        ChannelGet("cascade_up", up_buf, indices=[tx])
+                        ChannelGet("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # Both stages: softmax, rescale, matmul, accum
+                    s_tmp = AllocOp(up_l1_t, [], [])
+                    r_tmp = AllocOp(up_l1_t, [], [])
+                    CallOp([], "fused_softmax",
+                           [g1d, up_buf, s_tmp.result, r_tmp.result])
+                    CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                    CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                    c0_i32 = ConstantOp(i32, 0)
+                    CallOp([], "accum_sp_r_s",
+                           [sp_buf, r_tmp.result, s_tmp.result])
+                    CallOp([], "vector_copy_32elems",
+                           [c0_i32, s_tmp.result, sp_buf])
+
+                    # ty=1: cascade out (no divide, no output)
+                    if_cascade_out = affine.AffineIfOp(set_ty1, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_out.then_block):
+                        ChannelPut("cascade_gp", gp, indices=[tx])
+                        ChannelPut("cascade_up", up_buf, indices=[tx])
+                        ChannelPut("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # ty=0: divide and output
+                    if_output = affine.AffineIfOp(set_ty0, cond_operands=[tx, ty])
+                    with InsertionPoint(if_output.then_block):
+                        CallOp([], "div_gp_sp", [sp_buf, gp])
+                        c0_out = ConstantOp(idx, 0)
+                        ChannelPut("Gp2L2", gp, indices=[tx, c0_out],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[TSQ // M, M, DV // M, M],
+                                   strides=[M * M, M, TSQ * M, 1])
+                        affine.AffineYieldOp([])
+
+                    DeallocOp(s_tmp)
+                    DeallocOp(r_tmp)
+
+                DeallocOp(q_l1)
+                DeallocOp(k_l1)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                for ql2_buf in ql2_r0:
+                    DeallocOp(ql2_buf)
+                for ql2_buf in ql2_r1:
+                    DeallocOp(ql2_buf)
+                DeallocOp(kl2_r0)
+                DeallocOp(kl2_r1)
+                DeallocOp(vl2_r0)
+                DeallocOp(vl2_r1)
+                DeallocOp(gpl2)
+
+
+def run_full_4x2_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x2 — 4 q_tiles × 2 cascade stages")
+    print(f"{'='*60}")
+
+    NQ = 4
+    module = build_full_4x2()
+    backend = XRTBackend(
+        omit_while_true_loop=True, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x2",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (LKP, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (LKP, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    # Golden: per q_tile, attention(Q_sub, K, V).
+    # Both cascade stages process same K/V, so the cascaded merge
+    # produces the same result as single-stage attention.
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x2 correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+@module_builder
+def build_full_4x4():
+    """4x4 herd: 4 q_tiles × 4 cascade stages.
+
+    Same pattern as 4x2 but with NS=4. Cascade chain:
+    ty=3 → ty=2 → ty=1 → ty=0. Output from ty=0 only.
+    4 memtiles (one per row), 4 QKV MM2S ports each.
+    """
+    from air.dialects.affine import apply as affine_apply
+    from air.dialects.air import channel
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    NS = 2
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_out = NQ * TSQ
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_out, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([NQ * TSQ, DK], bf16)
+    k_l3_t = MemRefType.get([LKP, DK], bf16)
+    v_l3_t = MemRefType.get([LKP, DK], bf16)
+    gp_l3_t = MemRefType.get([lqp_out, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+
+    # QKV dma_packet per tile
+    chan_qkv = Channel("QKV2L1", size=[NQ, NS])
+    chan_qkv.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # Cascade channels
+    channel("cascade_gp", size=[NQ], channel_type="cascade")
+    channel("cascade_up", size=[NQ], channel_type="cascade")
+    channel("cascade_sp", size=[NQ], channel_type="cascade")
+    # Per-row L3→L2 channels
+    for r in range(NS):
+        Channel(f"QIn_{r}", size=[1])
+        Channel(f"KIn_{r}", size=[1])
+        Channel(f"VIn_{r}", size=[1])
+    # Output from ty=0 only
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x4(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            affine_map_q = AffineMap.get(0, 1, [
+                AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                   AffineConstantExpr.get(TSQ * DK))
+            ])
+            for row in range(NS):
+                for col in range(NQ):
+                    q_off_val = col * TSQ * DK
+                    ChannelPut(f"QIn_{row}", q, indices=[0],
+                               offsets=[0, q_off_val],
+                               sizes=[TSQ, DK], strides=[DK, 1])
+                ChannelPut(f"KIn_{row}", k, indices=[0])
+                ChannelPut(f"VIn_{row}", v, indices=[0])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                # Per-row L2 buffers
+                ql2 = [[AllocOp(q_l2_t, [], []) for _ in range(NQ)]
+                        for _ in range(NS)]
+                kl2 = [AllocOp(k_l2_t, [], []) for _ in range(NS)]
+                vl2 = [AllocOp(v_l2_t, [], []) for _ in range(NS)]
+                gpl2 = AllocOp(gp_l2_t, [], [])
+
+                q_l1 = AllocOp(q_l1_t, [], [])
+                k_l1 = AllocOp(k_l1_t, [], [])
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_ns = ConstantOp(idx, NS)
+                col_consts = [ConstantOp(idx, i) for i in range(NQ)]
+                row_consts = [ConstantOp(idx, i) for i in range(NS)]
+
+                # Q/K/V: L3→L2 via per-row channels
+                for row in range(NS):
+                    for col in range(NQ):
+                        ChannelGet(f"QIn_{row}", ql2[row][col].result,
+                                   indices=[0])
+                    ChannelGet(f"KIn_{row}", kl2[row].result, indices=[0])
+                    ChannelGet(f"VIn_{row}", vl2[row].result, indices=[0])
+
+                # QKV: L2→L1 per tile
+                for col in range(NQ):
+                    for row in range(NS):
+                        ChannelPut("QKV2L1", ql2[row][col].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DK // M, TSQ // M, M, M],
+                                   strides=[M, DK * M, DK, 1])
+                        ChannelPut("QKV2L1", kl2[row].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[LKP // M, DK // M, M, M],
+                                   strides=[M * DK, M, DK, 1])
+                        ChannelPut("QKV2L1", vl2[row].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DV // M, LKP // M, M, M],
+                                   strides=[M, DV * M, DV, 1])
+
+                # Output gather from ty=0 only
+                affine_map_col = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_col, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c_nq, c_ns],
+                    operands=[q_l1, k_l1, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, hsx, hsy, q, k, v, g, gp, up_buf, sp_buf):
+                    ChannelGet("QKV2L1", q, indices=[tx, ty])
+                    ChannelGet("QKV2L1", k, indices=[tx, ty])
+                    ChannelGet("QKV2L1", v, indices=[tx, ty])
+
+                    g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                    CallOp([], "zero_fill_g_bf16", [g1d])
+                    CallOp([], "matmul_a_b_bf16", [q, k, g1d])
+
+                    s0 = AffineSymbolExpr.get(0)
+                    s1 = AffineSymbolExpr.get(1)
+                    c_ns_m1 = AffineConstantExpr.get(NS - 1)
+                    # ty == NS-1: first cascade stage (init from scratch)
+                    set_first = IntegerSet.get(0, 2, [s0, s1 - c_ns_m1],
+                                               [False, True])
+                    # ty != NS-1 (ty < NS-1): cascade in
+                    set_not_first = IntegerSet.get(
+                        0, 2, [s0, c_ns_m1 - s1 - 1], [False, False])
+                    # ty != 0 (ty > 0): cascade out
+                    set_not_last = IntegerSet.get(
+                        0, 2, [s0, s1 - 1], [False, False])
+                    # ty == 0: last stage (divide + output)
+                    set_last = IntegerSet.get(0, 2, [s0, s1], [False, True])
+
+                    # First stage: init gp/sp/up
+                    if_init = affine.AffineIfOp(
+                        set_first, cond_operands=[tx, ty])
+                    with InsertionPoint(if_init.then_block):
+                        CallOp([], "zero_fill_gp_bf16", [gp])
+                        CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                        CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+                        affine.AffineYieldOp([])
+
+                    # Not first: cascade in
+                    if_cascade_in = affine.AffineIfOp(
+                        set_not_first, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_in.then_block):
+                        ChannelGet("cascade_gp", gp, indices=[tx])
+                        ChannelGet("cascade_up", up_buf, indices=[tx])
+                        ChannelGet("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # All stages: softmax, rescale, matmul, accum
+                    s_tmp = AllocOp(up_l1_t, [], [])
+                    r_tmp = AllocOp(up_l1_t, [], [])
+                    CallOp([], "fused_softmax",
+                           [g1d, up_buf, s_tmp.result, r_tmp.result])
+                    CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                    CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                    c0_i32 = ConstantOp(i32, 0)
+                    CallOp([], "accum_sp_r_s",
+                           [sp_buf, r_tmp.result, s_tmp.result])
+                    CallOp([], "vector_copy_32elems",
+                           [c0_i32, s_tmp.result, sp_buf])
+
+                    # Not last: cascade out
+                    if_cascade_out = affine.AffineIfOp(
+                        set_not_last, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_out.then_block):
+                        ChannelPut("cascade_gp", gp, indices=[tx])
+                        ChannelPut("cascade_up", up_buf, indices=[tx])
+                        ChannelPut("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # Last stage: divide and output
+                    if_output = affine.AffineIfOp(
+                        set_last, cond_operands=[tx, ty])
+                    with InsertionPoint(if_output.then_block):
+                        CallOp([], "div_gp_sp", [sp_buf, gp])
+                        c0_out = ConstantOp(idx, 0)
+                        ChannelPut("Gp2L2", gp, indices=[tx, c0_out],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[TSQ // M, M, DV // M, M],
+                                   strides=[M * M, M, TSQ * M, 1])
+                        affine.AffineYieldOp([])
+
+                    DeallocOp(s_tmp)
+                    DeallocOp(r_tmp)
+
+                DeallocOp(q_l1)
+                DeallocOp(k_l1)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                for row in range(NS):
+                    for ql2_buf in ql2[row]:
+                        DeallocOp(ql2_buf)
+                    DeallocOp(kl2[row])
+                    DeallocOp(vl2[row])
+                DeallocOp(gpl2)
+
+
+@module_builder
+def build_full_4x4_chunked():
+    """4x4 with chunks_per_stage=8 — matches attn.py production config.
+
+    Same as build_full_4x4 but with K/V streaming loop.
+    Each cascade stage processes 8 K/V chunks.
+    QKV paired dma_packet + cascade + per-row L3→L2 channels.
+    """
+    from air.dialects.affine import apply as affine_apply
+    from air.dialects.air import channel
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    NS = 2
+    CHUNKS = 8  # chunks_per_stage
+    LK_PER_STAGE = LKP * CHUNKS  # total K rows per cascade stage
+
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_out = NQ * TSQ
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_out, DK], bf16, memory_space=l2)
+
+    total_lk = LK_PER_STAGE * NS  # total K/V rows across all stages
+    q_l3_t = MemRefType.get([NQ * TSQ, DK], bf16)
+    k_l3_t = MemRefType.get([total_lk, DK], bf16)
+    v_l3_t = MemRefType.get([total_lk, DV], bf16)
+    gp_l3_t = MemRefType.get([lqp_out, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+
+    # QK dma_packet per tile (Q once, then K per chunk)
+    chan_qk = Channel("QK2L1", size=[NQ, NS])
+    chan_qk.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # V broadcast (separate channel, not paired with QK)
+    Channel("V2L1", size=[1, NS], broadcast_shape=[NQ, NS])
+    # Cascade channels
+    channel("cascade_gp", size=[NQ], channel_type="cascade")
+    channel("cascade_up", size=[NQ], channel_type="cascade")
+    channel("cascade_sp", size=[NQ], channel_type="cascade")
+    # Per-row L3→L2 channels. Separate VIn for V (can't share KIn
+    # because launch sends K then V sequentially, but segment
+    # interleaves K/V gets in the chunk loop).
+    for r in range(NS):
+        Channel(f"QIn_{r}", size=[1])
+        Channel(f"KIn_{r}", size=[1])
+        Channel(f"VIn_{r}", size=[1])
+    # Output from ty=0 only
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x4_chunked(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            # Q: per-row, NQ sub-tiles each
+            for row in range(NS):
+                for col in range(NQ):
+                    q_off_val = col * TSQ * DK
+                    ChannelPut(f"QIn_{row}", q, indices=[0],
+                               offsets=[0, q_off_val],
+                               sizes=[TSQ, DK], strides=[DK, 1])
+
+            # K: per-row, all chunks at once (3D transfer)
+            for row in range(NS):
+                k_row_off = row * LK_PER_STAGE * DK
+                ChannelPut(f"KIn_{row}", k, indices=[0],
+                           offsets=[0, 0, k_row_off],
+                           sizes=[CHUNKS, LKP, DK],
+                           strides=[LKP * DK, DK, 1])
+
+            # V: per-row via separate VIn
+            for row in range(NS):
+                v_row_off = row * LK_PER_STAGE * DV
+                ChannelPut(f"VIn_{row}", v, indices=[0],
+                           offsets=[0, 0, v_row_off],
+                           sizes=[CHUNKS, LKP, DV],
+                           strides=[LKP * DV, DV, 1])
+
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                ql2 = [[AllocOp(q_l2_t, [], []) for _ in range(NQ)]
+                        for _ in range(NS)]
+                kl2 = [AllocOp(k_l2_t, [], []) for _ in range(NS)]
+                vl2 = [AllocOp(v_l2_t, [], []) for _ in range(NS)]
+                gpl2 = AllocOp(gp_l2_t, [], [])
+
+                q_l1 = AllocOp(q_l1_t, [], [])
+                k_l1 = AllocOp(k_l1_t, [], [])
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_ns = ConstantOp(idx, NS)
+                col_consts = [ConstantOp(idx, i) for i in range(NQ)]
+                row_consts = [ConstantOp(idx, i) for i in range(NS)]
+
+                # Q: L3→L2 (per-row channels)
+                for row in range(NS):
+                    for col in range(NQ):
+                        ChannelGet(f"QIn_{row}", ql2[row][col].result,
+                                   indices=[0])
+
+                # K/V: L3→L2 (all chunks at once via 3D transfer, outside loop)
+                for row in range(NS):
+                    ChannelGet(f"KIn_{row}", kl2[row].result, indices=[0])
+                    ChannelGet(f"VIn_{row}", vl2[row].result, indices=[0])
+
+                # Q: L2→L1 via QK2L1 (once per q_iter, outside chunk loop)
+                for col in range(NQ):
+                    for row in range(NS):
+                        ChannelPut("QK2L1", ql2[row][col].result,
+                                   indices=[col_consts[col], row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DK // M, TSQ // M, M, M],
+                                   strides=[M, DK * M, DK, 1])
+
+                # K/V: L2→L1 streaming (chunk loop)
+                c_chunks = ConstantOp(idx, CHUNKS)
+                c0_v = ConstantOp(idx, 0)
+                for chunk_iter in scf_range(0, c_chunks, 1):
+                    # K: L2→L1 via QK2L1 (replicated per q_tile)
+                    for col in range(NQ):
+                        for row in range(NS):
+                            ChannelPut("QK2L1", kl2[row].result,
+                                       indices=[col_consts[col], row_consts[row]],
+                                       offsets=[0, 0, 0, 0],
+                                       sizes=[LKP // M, DK // M, M, M],
+                                       strides=[M * DK, M, DK, 1])
+                    # V: L2→L1 via broadcast (1 put per stage)
+                    for row in range(NS):
+                        ChannelPut("V2L1", vl2[row].result,
+                                   indices=[c0_v, row_consts[row]],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DV // M, LKP // M, M, M],
+                                   strides=[M, DV * M, DV, 1])
+                    scf.yield_([])
+
+                # Output gather from ty=0 only
+                affine_map_col = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_col, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c_nq, c_ns],
+                    operands=[q_l1, k_l1, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, hsx, hsy, q, k, v, g, gp, up_buf, sp_buf):
+                    # Q: get once (init) from QK2L1
+                    ChannelGet("QK2L1", q, indices=[tx, ty])
+
+                    s0 = AffineSymbolExpr.get(0)
+                    s1 = AffineSymbolExpr.get(1)
+                    c_ns_m1 = AffineConstantExpr.get(NS - 1)
+                    set_first = IntegerSet.get(0, 2, [s0, s1 - c_ns_m1],
+                                               [False, True])
+                    set_not_first = IntegerSet.get(
+                        0, 2, [s0, c_ns_m1 - s1 - 1], [False, False])
+                    set_not_last = IntegerSet.get(
+                        0, 2, [s0, s1 - 1], [False, False])
+                    set_last = IntegerSet.get(0, 2, [s0, s1], [False, True])
+
+                    # First stage: init gp/sp/up
+                    if_init = affine.AffineIfOp(
+                        set_first, cond_operands=[tx, ty])
+                    with InsertionPoint(if_init.then_block):
+                        CallOp([], "zero_fill_gp_bf16", [gp])
+                        CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                        CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+                        affine.AffineYieldOp([])
+
+                    # Not first: cascade in
+                    if_cascade_in = affine.AffineIfOp(
+                        set_not_first, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_in.then_block):
+                        ChannelGet("cascade_gp", gp, indices=[tx])
+                        ChannelGet("cascade_up", up_buf, indices=[tx])
+                        ChannelGet("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # Chunk loop: K+V get, compute
+                    c_chunks_h = ConstantOp(idx, CHUNKS)
+                    for chunk_iter in scf_range(0, c_chunks_h, 1):
+                        g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                        CallOp([], "zero_fill_g_bf16", [g1d])
+
+                        # K from QK2L1 (same sub-channel as Q)
+                        ChannelGet("QK2L1", k, indices=[tx, ty])
+                        # V from broadcast channel
+                        ChannelGet("V2L1", v, indices=[tx, ty])
+
+                        CallOp([], "matmul_a_b_bf16", [q, k, g1d])
+
+                        s_tmp = AllocOp(up_l1_t, [], [])
+                        r_tmp = AllocOp(up_l1_t, [], [])
+                        CallOp([], "fused_softmax",
+                               [g1d, up_buf, s_tmp.result, r_tmp.result])
+                        CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                        CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                        c0_i32 = ConstantOp(i32, 0)
+                        CallOp([], "accum_sp_r_s",
+                               [sp_buf, r_tmp.result, s_tmp.result])
+                        CallOp([], "vector_copy_32elems",
+                               [c0_i32, s_tmp.result, sp_buf])
+                        DeallocOp(s_tmp)
+                        DeallocOp(r_tmp)
+                        scf.yield_([])
+
+                    # Not last: cascade out
+                    if_cascade_out = affine.AffineIfOp(
+                        set_not_last, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_out.then_block):
+                        ChannelPut("cascade_gp", gp, indices=[tx])
+                        ChannelPut("cascade_up", up_buf, indices=[tx])
+                        ChannelPut("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # Last stage: divide and output
+                    if_output = affine.AffineIfOp(
+                        set_last, cond_operands=[tx, ty])
+                    with InsertionPoint(if_output.then_block):
+                        CallOp([], "div_gp_sp", [sp_buf, gp])
+                        c0_out = ConstantOp(idx, 0)
+                        ChannelPut("Gp2L2", gp, indices=[tx, c0_out],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[TSQ // M, M, DV // M, M],
+                                   strides=[M * M, M, TSQ * M, 1])
+                        affine.AffineYieldOp([])
+
+                DeallocOp(q_l1)
+                DeallocOp(k_l1)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                for row in range(NS):
+                    for ql2_buf in ql2[row]:
+                        DeallocOp(ql2_buf)
+                    DeallocOp(kl2[row])
+                    DeallocOp(vl2[row])
+                DeallocOp(gpl2)
+
+
+def run_full_4x4_chunked_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x4 chunked — 4 q_tiles × 4 stages × 8 chunks")
+    print(f"{'='*60}")
+
+    NQ = 4
+    NS = 2
+    CHUNKS = 8
+    total_lk = LKP * CHUNKS * NS  # 64 * 8 * 4 = 2048
+
+    module = build_full_4x4_chunked()
+    backend = XRTBackend(
+        omit_while_true_loop=False, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x4_chunked",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (total_lk, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (total_lk, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    # Golden: full attention over all K/V chunks
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x4 chunked correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+def run_full_4x4_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x4 — 4 q_tiles × 4 cascade stages")
+    print(f"{'='*60}")
+
+    NQ = 4
+    module = build_full_4x4()
+    backend = XRTBackend(
+        omit_while_true_loop=True, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x4",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (LKP, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (LKP, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x4 correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+@module_builder
+def build_full_4x1_chunked():
+    """4x1 herd with CHUNKS=2 K/V streaming — simplest chunked test.
+
+    Same as build_full_4x1 but each tile processes 2 K/V chunks via
+    online softmax accumulation. No cascade.
+    omit_while_true_loop=False (shared-buffer mode).
+    """
+    from air.dialects.affine import apply as affine_apply
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    CHUNKS = 2
+    total_lk = LKP * CHUNKS  # 64 * 2 = 128
+
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_full = NQ * TSQ
+    q_l2_t = MemRefType.get([TSQ, DK], bf16, memory_space=l2)
+    k_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_full, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([lqp_full, DK], bf16)
+    k_l3_t = MemRefType.get([total_lk, DK], bf16)
+    v_l3_t = MemRefType.get([total_lk, DV], bf16)
+    gp_l3_t = MemRefType.get([lqp_full, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn.o")
+
+    # QK dma_packet per q_tile
+    chan_qk = Channel("QK2L1", size=[NQ, 1])
+    chan_qk.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # V broadcast
+    Channel("V2L1", size=[1, 1], broadcast_shape=[NQ, 1])
+    # L3↔L2
+    Channel("QIn", size=[1])
+    Channel("KIn", size=[1])
+    Channel("VIn", size=[1])
+    # Output
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x1_chunked(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            # Q: 4 sub-tiles
+            affine_map_q = AffineMap.get(0, 1, [
+                AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                   AffineConstantExpr.get(TSQ * DK))
+            ])
+            par_q = scf.ForallOp(lower_bounds=[0], upper_bounds=[NQ], steps=[1])
+            with InsertionPoint(par_q.body):
+                q_off = affine_apply(affine_map_q, [par_q.induction_variables[0]])
+                ChannelPut("QIn", q, indices=[0],
+                           offsets=[0, q_off], sizes=[TSQ, DK], strides=[DK, 1])
+                scf.InParallelOp()
+            # K: 3D transfer (all chunks at once)
+            ChannelPut("KIn", k, indices=[0],
+                       offsets=[0, 0, 0],
+                       sizes=[CHUNKS, LKP, DK],
+                       strides=[LKP * DK, DK, 1])
+            # V: 3D transfer (all chunks at once)
+            ChannelPut("VIn", v, indices=[0],
+                       offsets=[0, 0, 0],
+                       sizes=[CHUNKS, LKP, DV],
+                       strides=[LKP * DV, DV, 1])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                ql2_0 = AllocOp(q_l2_t, [], [])
+                ql2_1 = AllocOp(q_l2_t, [], [])
+                ql2_2 = AllocOp(q_l2_t, [], [])
+                ql2_3 = AllocOp(q_l2_t, [], [])
+                kl2 = AllocOp(k_l2_t, [], [])
+                vl2 = AllocOp(v_l2_t, [], [])
+                gpl2 = AllocOp(gp_l2_t, [], [])
+                q_saved = AllocOp(q_l1_t, [], [])  # persistent Q copy
+                qk_buf = AllocOp(k_l1_t, [], [])   # shared DMA recv for QK
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_1 = ConstantOp(idx, 1)
+                c0s = ConstantOp(idx, 0)
+                c1s = ConstantOp(idx, 1)
+                c2s = ConstantOp(idx, 2)
+                c3s = ConstantOp(idx, 3)
+
+                # Q: L3→L2
+                ChannelGet("QIn", ql2_0.result, indices=[0])
+                ChannelGet("QIn", ql2_1.result, indices=[0])
+                ChannelGet("QIn", ql2_2.result, indices=[0])
+                ChannelGet("QIn", ql2_3.result, indices=[0])
+
+                # QKV chunk loop: Q+K+V L2→L1 all inside loop
+                # (avoids repeat_count which terminates DMA chain)
+                c_chunks = ConstantOp(idx, CHUNKS)
+                for chunk_iter in scf_range(0, c_chunks, 1):
+                    # K/V: L3→L2 (one chunk per iteration)
+                    ChannelGet("KIn", kl2.result, indices=[0])
+                    ChannelGet("VIn", vl2.result, indices=[0])
+                    # Q: L2→L1 (same data every iteration, re-read from L2)
+                    ChannelPut("QK2L1", ql2_0.result, indices=[c0s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[DK // M, TSQ // M, M, M],
+                               strides=[M, DK * M, DK, 1])
+                    ChannelPut("QK2L1", ql2_1.result, indices=[c1s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[DK // M, TSQ // M, M, M],
+                               strides=[M, DK * M, DK, 1])
+                    ChannelPut("QK2L1", ql2_2.result, indices=[c2s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[DK // M, TSQ // M, M, M],
+                               strides=[M, DK * M, DK, 1])
+                    ChannelPut("QK2L1", ql2_3.result, indices=[c3s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[DK // M, TSQ // M, M, M],
+                               strides=[M, DK * M, DK, 1])
+                    # K: L2→L1 via QK2L1 (replicated per q_tile)
+                    ChannelPut("QK2L1", kl2.result, indices=[c0s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[LKP // M, DK // M, M, M],
+                               strides=[M * DK, M, DK, 1])
+                    ChannelPut("QK2L1", kl2.result, indices=[c1s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[LKP // M, DK // M, M, M],
+                               strides=[M * DK, M, DK, 1])
+                    ChannelPut("QK2L1", kl2.result, indices=[c2s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[LKP // M, DK // M, M, M],
+                               strides=[M * DK, M, DK, 1])
+                    ChannelPut("QK2L1", kl2.result, indices=[c3s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[LKP // M, DK // M, M, M],
+                               strides=[M * DK, M, DK, 1])
+                    # V: L2→L1 via broadcast
+                    ChannelPut("V2L1", vl2.result, indices=[c0s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[DV // M, LKP // M, M, M],
+                               strides=[M, DV * M, DV, 1])
+                    scf.yield_([])
+
+                # Output gather
+                affine_map_tileq = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_tileq, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                @herd(
+                    name="h", sizes=[c_nq, c_1],
+                    operands=[q_saved, qk_buf, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, q, qk, v, g, gp, up_buf, sp_buf):
+                    # Init softmax state
+                    CallOp([], "zero_fill_gp_bf16", [gp])
+                    CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                    CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+
+                    # Chunk loop: Q+K+V per iteration
+                    c_chunks_h = ConstantOp(idx, CHUNKS)
+                    for chunk_iter in scf_range(0, c_chunks_h, 1):
+                        g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                        CallOp([], "zero_fill_g_bf16", [g1d])
+                        # Q from QK2L1 (re-sent each iteration)
+                        ChannelGet("QK2L1", qk, indices=[tx, ty])
+                        CallOp([], "copy_tile", [qk, q])
+                        # K from QK2L1 (next BD in chain)
+                        ChannelGet("QK2L1", qk, indices=[tx, ty])
+                        ChannelGet("V2L1", v, indices=[tx, ty])
+                        # Use persistent Q copy and shared buf (now has K)
+                        CallOp([], "matmul_a_b_bf16", [q, qk, g1d])
+                        s_tmp = AllocOp(up_l1_t, [], [])
+                        r_tmp = AllocOp(up_l1_t, [], [])
+                        CallOp([], "fused_softmax",
+                               [g1d, up_buf, s_tmp.result, r_tmp.result])
+                        CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                        CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                        c0_i32 = ConstantOp(i32, 0)
+                        CallOp([], "accum_sp_r_s",
+                               [sp_buf, r_tmp.result, s_tmp.result])
+                        CallOp([], "vector_copy_32elems",
+                               [c0_i32, s_tmp.result, sp_buf])
+                        DeallocOp(s_tmp)
+                        DeallocOp(r_tmp)
+                        scf.yield_([])
+
+                    # Divide and output
+                    CallOp([], "div_gp_sp", [sp_buf, gp])
+                    ChannelPut("Gp2L2", gp, indices=[tx, ty],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[TSQ // M, M, DV // M, M],
+                               strides=[M * M, M, TSQ * M, 1])
+
+                DeallocOp(q_saved)
+                DeallocOp(qk_buf)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                DeallocOp(ql2_0)
+                DeallocOp(ql2_1)
+                DeallocOp(ql2_2)
+                DeallocOp(ql2_3)
+                DeallocOp(kl2)
+                DeallocOp(vl2)
+                DeallocOp(gpl2)
+
+
+def run_full_4x1_chunked_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x1 chunked — 4 q_tiles × 2 K/V chunks, no cascade")
+    print(f"{'='*60}")
+
+    NQ = 4
+    CHUNKS = 2
+    total_lk = LKP * CHUNKS
+
+    module = build_full_4x1_chunked()
+    backend = XRTBackend(
+        omit_while_true_loop=False, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x1_chunked",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (total_lk, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (total_lk, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x1 chunked correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+@module_builder
+def build_full_4x1_direct():
+    """4x1 herd with CHUNKS=1, direct L3→L1 for Q/K (no memtile).
+
+    Q/K use dma_packet channel with puts at launch level and gets at herd
+    level — compiler creates direct shim→tile flows, bypassing memtile.
+    V goes through memtile (broadcast). Gp output through memtile (gather).
+    omit_while_true_loop=False (shared-buffer mode).
+    """
+    from air.dialects.affine import apply as affine_apply
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    CHUNKS = 2
+    total_lk = LKP * CHUNKS  # 128
+
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_full = NQ * TSQ
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_full, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([lqp_full, DK], bf16)
+    k_l3_t = MemRefType.get([total_lk, DK], bf16)
+    v_l3_t = MemRefType.get([total_lk, DV], bf16)
+    gp_l3_t = MemRefType.get([lqp_full, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn.o")
+
+    # QK: L3→L1 direct via dma_packet (no memtile)
+    # Per-tile Q via per-tile indices, K broadcast via broadcast_shape
+    chan_qk = Channel("QK", size=[NQ, 1])
+    chan_qk.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # V: L3→L2→L1 broadcast (through memtile)
+    Channel("V2L1", size=[1, 1], broadcast_shape=[NQ, 1])
+    Channel("VIn", size=[1])
+    # Output: L1→L2→L3
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x1_direct(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            # Q: per-tile sub-tiles via QK channel (L3→L1 direct)
+            # Tiling strides applied at shim (column-major block order for Q)
+            for qt in range(NQ):
+                q_off_val = qt * TSQ * DK
+                ChannelPut("QK", q, indices=[qt, 0],
+                           offsets=[0, 0, 0, q_off_val],
+                           sizes=[DK // M, TSQ // M, M, M],
+                           strides=[M, DK * M, DK, 1])
+            # K: replicated per-tile via QK channel (same data to each tile)
+            # Tiling strides applied at shim (row-major block order for K)
+            for chunk in range(CHUNKS):
+                k_off_val = chunk * LKP * DK
+                for qt in range(NQ):
+                    ChannelPut("QK", k, indices=[qt, 0],
+                               offsets=[0, 0, 0, k_off_val],
+                               sizes=[LKP // M, DK // M, M, M],
+                               strides=[M * DK, M, DK, 1])
+            # V: 3D transfer to memtile
+            ChannelPut("VIn", v, indices=[0],
+                       offsets=[0, 0, 0],
+                       sizes=[CHUNKS, LKP, DV],
+                       strides=[LKP * DV, DV, 1])
+            # Output
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                # V: L3→L2→L1 (broadcast via memtile)
+                vl2 = AllocOp(v_l2_t, [], [])
+                gpl2 = AllocOp(gp_l2_t, [], [])
+                q_saved = AllocOp(q_l1_t, [], [])
+                qk_buf = AllocOp(k_l1_t, [], [])
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_1 = ConstantOp(idx, 1)
+                c0s = ConstantOp(idx, 0)
+
+                # V streaming: L3→L2 + L2→L1 in chunk loop
+                c_chunks = ConstantOp(idx, CHUNKS)
+                for chunk_iter in scf_range(0, c_chunks, 1):
+                    ChannelGet("VIn", vl2.result, indices=[0])
+                    ChannelPut("V2L1", vl2.result, indices=[c0s, c0s],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[DV // M, LKP // M, M, M],
+                               strides=[M, DV * M, DV, 1])
+                    scf.yield_([])
+
+                # Output gather
+                affine_map_tileq = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_tileq, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                # NO Q/K segment-level ops — direct L3→L1
+
+                @herd(
+                    name="h", sizes=[c_nq, c_1],
+                    operands=[q_saved, qk_buf, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, sx, sy, q, qk, v, g, gp, up_buf, sp_buf):
+                    # Q from QK channel (direct L3→L1)
+                    ChannelGet("QK", qk, indices=[tx, ty])
+                    CallOp([], "copy_tile", [qk, q])
+
+                    # Init softmax state
+                    CallOp([], "zero_fill_gp_bf16", [gp])
+                    CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                    CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+
+                    # Chunk loop
+                    c_chunks_h = ConstantOp(idx, CHUNKS)
+                    for chunk_iter in scf_range(0, c_chunks_h, 1):
+                        g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                        CallOp([], "zero_fill_g_bf16", [g1d])
+                        # K from QK channel (direct L3→L1)
+                        ChannelGet("QK", qk, indices=[tx, ty])
+                        # V from memtile broadcast
+                        ChannelGet("V2L1", v, indices=[tx, ty])
+                        CallOp([], "matmul_a_b_bf16", [q, qk, g1d])
+                        s_tmp = AllocOp(up_l1_t, [], [])
+                        r_tmp = AllocOp(up_l1_t, [], [])
+                        CallOp([], "fused_softmax",
+                               [g1d, up_buf, s_tmp.result, r_tmp.result])
+                        CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                        CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                        c0_i32 = ConstantOp(i32, 0)
+                        CallOp([], "accum_sp_r_s",
+                               [sp_buf, r_tmp.result, s_tmp.result])
+                        CallOp([], "vector_copy_32elems",
+                               [c0_i32, s_tmp.result, sp_buf])
+                        DeallocOp(s_tmp)
+                        DeallocOp(r_tmp)
+                        scf.yield_([])
+
+                    # Divide and output
+                    CallOp([], "div_gp_sp", [sp_buf, gp])
+                    ChannelPut("Gp2L2", gp, indices=[tx, ty],
+                               offsets=[0, 0, 0, 0],
+                               sizes=[TSQ // M, M, DV // M, M],
+                               strides=[M * M, M, TSQ * M, 1])
+
+                DeallocOp(q_saved)
+                DeallocOp(qk_buf)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                DeallocOp(vl2)
+                DeallocOp(gpl2)
+
+
+def run_full_4x1_direct_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x1 direct — L3→L1 Q/K, 2 chunks, no memtile for Q/K")
+    print(f"{'='*60}")
+
+    NQ = 4
+    CHUNKS = 2
+    total_lk = LKP * CHUNKS
+
+    module = build_full_4x1_direct()
+    backend = XRTBackend(
+        omit_while_true_loop=False, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x1_direct",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (total_lk, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (total_lk, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x1 direct correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+@module_builder
+def build_full_4x2_direct():
+    """4xNS herd with CHUNKS=2, direct L3→L1 for Q/K, cascade.
+
+    Per-stage QK_s [NQ, 1] dma_packet channels (proven 4x1 pattern).
+    Per-stage V broadcast through memtile.
+    Cascade: gp/up/sp from ty=NS-1 → ty=0.
+    """
+    from air.dialects.affine import apply as affine_apply
+    from air.dialects.air import channel
+
+    bf16 = Type.parse("bf16")
+    i32 = IntegerType.get_signless(32)
+    idx = IndexType.get()
+    l1 = IntegerAttr.get(i32, 2)
+    l2 = IntegerAttr.get(i32, 1)
+
+    NQ = 4
+    NS = 2
+    CHUNKS = 2
+    LK_PER_STAGE = LKP * CHUNKS
+    total_lk = LK_PER_STAGE * NS  # 64 * 2 * 3 = 384
+
+    q_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    k_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    v_l1_t = MemRefType.get([LKP, DK], bf16, memory_space=l1)
+    g_l1_2d = MemRefType.get([TSQ, LKP], bf16, memory_space=l1)
+    g_l1_1d = MemRefType.get([TSQ * LKP], bf16, memory_space=l1)
+    gp_l1_t = MemRefType.get([TSQ, DK], bf16, memory_space=l1)
+    up_l1_t = MemRefType.get([TSQ, 1], bf16, memory_space=l1)
+
+    lqp_out = NQ * TSQ
+    v_l2_t = MemRefType.get([LKP, DK], bf16, memory_space=l2)
+    gp_l2_t = MemRefType.get([lqp_out, DK], bf16, memory_space=l2)
+
+    q_l3_t = MemRefType.get([NQ * TSQ, DK], bf16)
+    k_l3_t = MemRefType.get([total_lk, DK], bf16)
+    v_l3_t = MemRefType.get([total_lk, DV], bf16)
+    gp_l3_t = MemRefType.get([lqp_out, DK], bf16)
+
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("matmul_a_b_bf16", [q_l1_t, k_l1_t, g_l1_1d], link_with="attn.o")
+    external_func("matmul_g_b_bf16", [g_l1_1d, v_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "fused_softmax", [g_l1_1d, up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "accum_sp_r_s", [up_l1_t, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o"
+    )
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn.o")
+
+    # Q: L3→L1 direct, per-column broadcast vertically to all stages
+    chan_q = Channel("Q2L1", size=[NQ, 1], broadcast_shape=[NQ, NS])
+    chan_q.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # K: L3→L1 direct, per-stage broadcast horizontally to all columns
+    chan_k = Channel("K2L1", size=[1, NS], broadcast_shape=[NQ, NS])
+    chan_k.attributes["channel_type"] = StringAttr.get("dma_packet")
+    # V: L3→L2→L1 broadcast per stage
+    for r in range(NS):
+        Channel(f"V2L1_{r}", size=[1, 1], broadcast_shape=[NQ, 1])
+        Channel(f"VIn_{r}", size=[1])
+    # Cascade
+    channel("cascade_gp", size=[NQ], channel_type="cascade")
+    channel("cascade_up", size=[NQ], channel_type="cascade")
+    channel("cascade_sp", size=[NQ], channel_type="cascade")
+    # Output from ty=0 only
+    Channel("Gp2L2", size=[NQ, 1])
+    Channel("GpOut", size=[1])
+
+    @FuncOp.from_py_func(q_l3_t, k_l3_t, v_l3_t, gp_l3_t)
+    def full_4x2_direct(q_in, k_in, v_in, gp_out):
+        c1 = ConstantOp(idx, 1)
+
+        @launch(operands=[q_in, k_in, v_in, gp_out], sizes=[c1, c1])
+        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+            # Q+K interleaved: for each chunk, send Q then K
+            # BD chain ordering on each shim channel: Q→K→Q→K
+            for chunk in range(CHUNKS):
+                # Q: per-column broadcast vertically
+                for qt in range(NQ):
+                    q_off_val = qt * TSQ * DK
+                    ChannelPut("Q2L1", q, indices=[qt, 0],
+                               offsets=[0, 0, 0, q_off_val],
+                               sizes=[DK // M, TSQ // M, M, M],
+                               strides=[M, DK * M, DK, 1])
+                # K: per-stage broadcast horizontally
+                for stage in range(NS):
+                    k_off_val = (stage * LK_PER_STAGE + chunk * LKP) * DK
+                    ChannelPut("K2L1", k, indices=[0, stage],
+                               offsets=[0, 0, 0, k_off_val],
+                               sizes=[LKP // M, DK // M, M, M],
+                               strides=[M * DK, M, DK, 1])
+            # V: per-stage via separate VIn channels
+            for stage in range(NS):
+                v_off_val = stage * LK_PER_STAGE * DV
+                ChannelPut(f"VIn_{stage}", v, indices=[0],
+                           offsets=[0, 0, v_off_val],
+                           sizes=[CHUNKS, LKP, DV],
+                           strides=[LKP * DV, DV, 1])
+            ChannelGet("GpOut", gp, indices=[0])
+            c1l = ConstantOp(idx, 1)
+
+            @segment(name="s", operands=[], sizes=[c1l, c1l])
+            def seg(sx, sy, ssx, ssy):
+                # V: L3→L2→L1 per-stage broadcast
+                vl2 = [AllocOp(v_l2_t, [], []) for _ in range(NS)]
+                gpl2 = AllocOp(gp_l2_t, [], [])
+                q_saved = AllocOp(q_l1_t, [], [])
+                qk_buf = AllocOp(k_l1_t, [], [])
+                v_l1 = AllocOp(v_l1_t, [], [])
+                g_l1 = AllocOp(g_l1_2d, [], [])
+                gp_l1 = AllocOp(gp_l1_t, [], [])
+                up_l1 = AllocOp(up_l1_t, [], [])
+                sp_l1 = AllocOp(up_l1_t, [], [])
+                c_nq = ConstantOp(idx, NQ)
+                c_ns = ConstantOp(idx, NS)
+                c0s = ConstantOp(idx, 0)
+
+                # V streaming per stage
+                c_chunks = ConstantOp(idx, CHUNKS)
+                for stage in range(NS):
+                    for chunk_iter in scf_range(0, c_chunks, 1):
+                        ChannelGet(f"VIn_{stage}", vl2[stage].result, indices=[0])
+                        ChannelPut(f"V2L1_{stage}", vl2[stage].result,
+                                   indices=[c0s, c0s],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[DV // M, LKP // M, M, M],
+                                   strides=[M, DV * M, DV, 1])
+                        scf.yield_([])
+
+                # Output gather from ty=0 only
+                affine_map_col = AffineMap.get(0, 1, [
+                    AffineExpr.get_mul(AffineSymbolExpr.get(0),
+                                       AffineConstantExpr.get(TSQ))
+                ])
+                par_out = scf.ForallOp(
+                    lower_bounds=[0], upper_bounds=[NQ], steps=[1]
+                )
+                with InsertionPoint(par_out.body):
+                    apply_off = affine_apply(
+                        affine_map_col, [par_out.induction_variables[0]]
+                    )
+                    ChannelGet("Gp2L2", gpl2.result,
+                               indices=[par_out.induction_variables[0], 0],
+                               offsets=[apply_off, 0],
+                               sizes=[TSQ, DV], strides=[DV, 1])
+                    scf.InParallelOp()
+                ChannelPut("GpOut", gpl2.result, indices=[0])
+
+                # NO Q/K segment-level ops — direct L3→L1
+
+                @herd(
+                    name="h", sizes=[c_nq, c_ns],
+                    operands=[q_saved, qk_buf, v_l1, g_l1, gp_l1, up_l1, sp_l1],
+                    link_with="attn.o",
+                )
+                def herd_body(tx, ty, hsx, hsy, q, qk, v, g, gp, up_buf, sp_buf):
+                    s0 = AffineSymbolExpr.get(0)
+                    s1 = AffineSymbolExpr.get(1)
+                    c_ns_m1 = AffineConstantExpr.get(NS - 1)
+                    set_first = IntegerSet.get(0, 2, [s0, s1 - c_ns_m1],
+                                               [False, True])
+                    set_not_first = IntegerSet.get(
+                        0, 2, [s0, c_ns_m1 - s1 - 1], [False, False])
+                    set_not_last = IntegerSet.get(
+                        0, 2, [s0, s1 - 1], [False, False])
+                    set_last = IntegerSet.get(0, 2, [s0, s1], [False, True])
+
+                    # Per-stage IntegerSets: ty == s
+                    stage_sets = []
+                    for s in range(NS):
+                        cs = AffineConstantExpr.get(s)
+                        stage_sets.append(
+                            IntegerSet.get(0, 2, [s0, s1 - cs], [False, True]))
+
+                    # First stage: init gp/sp/up
+                    if_init = affine.AffineIfOp(
+                        set_first, cond_operands=[tx, ty])
+                    with InsertionPoint(if_init.then_block):
+                        CallOp([], "zero_fill_gp_bf16", [gp])
+                        CallOp([], "zero_fill_sp_bf16", [sp_buf])
+                        CallOp([], "neg_inf_fill_up_bf16", [up_buf])
+                        affine.AffineYieldOp([])
+
+                    # Not first: cascade in
+                    if_cascade_in = affine.AffineIfOp(
+                        set_not_first, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_in.then_block):
+                        ChannelGet("cascade_gp", gp, indices=[tx])
+                        ChannelGet("cascade_up", up_buf, indices=[tx])
+                        ChannelGet("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # Chunk loop
+                    c_chunks_h = ConstantOp(idx, CHUNKS)
+                    for chunk_iter in scf_range(0, c_chunks_h, 1):
+                        g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
+                        CallOp([], "zero_fill_g_bf16", [g1d])
+                        # Q from Q2L1 (broadcast vert, re-sent each chunk)
+                        ChannelGet("Q2L1", qk, indices=[tx, ty])
+                        CallOp([], "copy_tile", [qk, q])
+                        # K from K2L1 (broadcast horiz)
+                        ChannelGet("K2L1", qk, indices=[tx, ty])
+                        # V from memtile broadcast (per-stage)
+                        for s in range(NS):
+                            if_v = affine.AffineIfOp(
+                                stage_sets[s], cond_operands=[tx, ty])
+                            with InsertionPoint(if_v.then_block):
+                                ChannelGet(f"V2L1_{s}", v, indices=[tx, ty])
+                                affine.AffineYieldOp([])
+                        CallOp([], "matmul_a_b_bf16", [q, qk, g1d])
+                        s_tmp = AllocOp(up_l1_t, [], [])
+                        r_tmp = AllocOp(up_l1_t, [], [])
+                        CallOp([], "fused_softmax",
+                               [g1d, up_buf, s_tmp.result, r_tmp.result])
+                        CallOp([], "mul_r_gp", [r_tmp.result, gp])
+                        CallOp([], "matmul_g_b_bf16", [g1d, v, gp])
+                        c0_i32 = ConstantOp(i32, 0)
+                        CallOp([], "accum_sp_r_s",
+                               [sp_buf, r_tmp.result, s_tmp.result])
+                        CallOp([], "vector_copy_32elems",
+                               [c0_i32, s_tmp.result, sp_buf])
+                        DeallocOp(s_tmp)
+                        DeallocOp(r_tmp)
+                        scf.yield_([])
+
+                    # Not last: cascade out
+                    if_cascade_out = affine.AffineIfOp(
+                        set_not_last, cond_operands=[tx, ty])
+                    with InsertionPoint(if_cascade_out.then_block):
+                        ChannelPut("cascade_gp", gp, indices=[tx])
+                        ChannelPut("cascade_up", up_buf, indices=[tx])
+                        ChannelPut("cascade_sp", sp_buf, indices=[tx])
+                        affine.AffineYieldOp([])
+
+                    # Last stage: divide and output
+                    if_output = affine.AffineIfOp(
+                        set_last, cond_operands=[tx, ty])
+                    with InsertionPoint(if_output.then_block):
+                        CallOp([], "div_gp_sp", [sp_buf, gp])
+                        c0_out = ConstantOp(idx, 0)
+                        ChannelPut("Gp2L2", gp, indices=[tx, c0_out],
+                                   offsets=[0, 0, 0, 0],
+                                   sizes=[TSQ // M, M, DV // M, M],
+                                   strides=[M * M, M, TSQ * M, 1])
+                        affine.AffineYieldOp([])
+
+                DeallocOp(q_saved)
+                DeallocOp(qk_buf)
+                DeallocOp(v_l1)
+                DeallocOp(g_l1)
+                DeallocOp(gp_l1)
+                DeallocOp(up_l1)
+                DeallocOp(sp_l1)
+                for stage in range(NS):
+                    DeallocOp(vl2[stage])
+                DeallocOp(gpl2)
+
+
+def run_full_4x2_direct_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x2 direct — L3→L1 Q/K, 2 stages × 2 chunks, cascade")
+    print(f"{'='*60}")
+
+    NQ = 4
+    NS = 2
+    CHUNKS = 2
+    total_lk = LKP * CHUNKS * NS
+
+    module = build_full_4x2_direct()
+    backend = XRTBackend(
+        omit_while_true_loop=False, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x2_direct",
+    )
+    artifact = backend.compile(module)
+
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (total_lk, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (total_lk, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x2 direct correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+def run_full_4x1_test(val_range=3.0):
+    print(f"\n{'='*60}")
+    print(f"Test: 4x1 — 4 independent q_tiles, no cascade")
+    print(f"{'='*60}")
+
+    module = build_full_4x1()
+    backend = XRTBackend(
+        omit_while_true_loop=True, omit_pingpong="all",
+        runtime_loop_tiling_sizes=[1, 1], output_format="elf",
+        instance_name="full_4x1",
+    )
+    artifact = backend.compile(module)
+
+    NQ = 4
+    np.random.seed(42)
+    Q = np.random.uniform(0, val_range, (NQ * TSQ, DK)).astype(bfloat16)
+    K = np.random.uniform(0, val_range, (LKP, DK)).astype(bfloat16)
+    V = np.random.uniform(0, val_range, (LKP, DV)).astype(bfloat16)
+    Gp_out = np.zeros((NQ * TSQ, DK), dtype=bfloat16)
+
+    with filelock.FileLock("/tmp/npu.lock"):
+        invoker = backend.load(artifact)
+        results = invoker(Q, K, V, Gp_out)
+
+    npu = results[3].reshape(NQ * TSQ, DK).astype(np.float32)
+    backend.unload()
+
+    # Golden: per q_tile, attention(Q_sub, K, V)
+    sqrt_dk = sqrt(DK)
+    ref = np.zeros_like(npu)
+    for qt in range(NQ):
+        Qs = Q[qt * TSQ:(qt + 1) * TSQ].astype(np.float32)
+        Kf = K.astype(np.float32)
+        Vf = V.astype(np.float32)
+        scores = Qs @ Kf.T
+        mx = np.max(scores, axis=-1, keepdims=True)
+        P = np.exp((scores - mx) / sqrt_dk)
+        P = P / np.sum(P, axis=-1, keepdims=True)
+        ref[qt * TSQ:(qt + 1) * TSQ] = (P @ Vf).astype(bfloat16).astype(np.float32)
+
+    c = corr(npu, ref)
+    print(f"  4x1 correlation: {c:.6f}")
+    for qt in range(NQ):
+        n = npu[qt * TSQ:(qt + 1) * TSQ]
+        r = ref[qt * TSQ:(qt + 1) * TSQ]
+        cq = corr(n, r)
+        print(f"    q_tile {qt}: corr={cq:.6f}")
+    print(f"  {'PASS' if c > 0.99 else 'FAIL'} (threshold: corr > 0.99)")
+    return c
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--test", choices=["matmul_qk", "matmul_gv", "full_chunk", "full_4x1", "full_4x1_chunked", "full_4x1_direct", "full_4x2", "full_4x2_direct", "full_4x4", "full_4x4_chunked", "all"],
+        default="all",
+    )
+    parser.add_argument("--val-range", type=float, default=3.0)
+    parser.add_argument("-p", "--print-module-only", action="store_true")
+    args = parser.parse_args()
+
+    if args.print_module_only:
+        if args.test in ["matmul_qk", "all"]:
+            print("=== Q@K^T Matmul Module ===")
+            print(build_matmul_qk())
+        if args.test in ["matmul_gv", "all"]:
+            print("\n=== G@V Matmul Module ===")
+            print(build_matmul_gv())
+        if args.test in ["full_chunk", "all"]:
+            print("\n=== Full Chunk Module ===")
+            print(build_full_chunk())
+        if args.test in ["full_4x1", "all"]:
+            print("\n=== Full 4x1 Module ===")
+            print(build_full_4x1())
+        if args.test in ["full_4x2", "all"]:
+            print("\n=== Full 4x2 Module ===")
+            print(build_full_4x2())
+        if args.test in ["full_4x4", "all"]:
+            print("\n=== Full 4x4 Module ===")
+            print(build_full_4x4())
+        return
+
+    # Ensure attn.o is available
+    build_dir = "build_cascade"
+    os.makedirs(build_dir, exist_ok=True)
+    attn_o_src = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "build_peano", "attn.o"
+    )
+    attn_o_dst = os.path.join(build_dir, "attn.o")
+    if os.path.exists(attn_o_src) and not os.path.exists(attn_o_dst):
+        shutil.copy2(attn_o_src, attn_o_dst)
+        print(f"Copied attn.o from build_peano/")
+    elif not os.path.exists(attn_o_dst):
+        print(f"ERROR: attn.o not found. Run 'make compile-kernel' in the parent dir first.")
+        sys.exit(1)
+
+    orig_dir = os.getcwd()
+    os.chdir(build_dir)
+
+    try:
+        if args.test in ["matmul_qk", "all"]:
+            run_matmul_qk_test(args.val_range)
+
+        if args.test in ["matmul_gv", "all"]:
+            run_matmul_gv_test(args.val_range)
+
+        if args.test in ["full_chunk", "all"]:
+            run_full_chunk_test(args.val_range)
+
+        if args.test in ["full_4x1", "all"]:
+            run_full_4x1_test(args.val_range)
+
+        if args.test in ["full_4x1_chunked", "all"]:
+            run_full_4x1_chunked_test(args.val_range)
+
+        if args.test in ["full_4x1_direct", "all"]:
+            run_full_4x1_direct_test(args.val_range)
+
+        if args.test in ["full_4x2_direct", "all"]:
+            run_full_4x2_direct_test(args.val_range)
+
+        if args.test in ["full_4x2", "all"]:
+            run_full_4x2_test(args.val_range)
+
+        if args.test in ["full_4x4", "all"]:
+            run_full_4x4_test(args.val_range)
+
+        if args.test in ["full_4x4_chunked", "all"]:
+            run_full_4x4_chunked_test(args.val_range)
+
+    finally:
+        os.chdir(orig_dir)
+
+
+if __name__ == "__main__":
+    main()

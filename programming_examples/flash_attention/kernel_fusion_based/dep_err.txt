@@ -1,0 +1,385 @@
+air_project_v2/debug_ir/pass_010_after_cse.mlir:244:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:244:19: note: see current operation: 
+%215 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %221 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 41 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%221) : (!air.async.token) -> ()
+}, {
+  %216 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %220 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 42 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%220) : (!air.async.token) -> ()
+  }, {
+    %217 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %219 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 43 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%219) : (!air.async.token) -> ()
+    }, {
+      %218 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 44 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%218) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%217) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%216) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:244:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:244:19: note: see current operation: 
+%215 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %221 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 41 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%221) : (!air.async.token) -> ()
+}, {
+  %216 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %220 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 42 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%220) : (!air.async.token) -> ()
+  }, {
+    %217 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %219 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 43 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%219) : (!air.async.token) -> ()
+    }, {
+      %218 = "air.channel.get"(%arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 44 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%218) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%217) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%216) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:296:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:296:19: note: see current operation: 
+%199 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %205 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 49 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%205) : (!air.async.token) -> ()
+}, {
+  %200 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %204 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 50 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%204) : (!air.async.token) -> ()
+  }, {
+    %201 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %203 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 51 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%203) : (!air.async.token) -> ()
+    }, {
+      %202 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 52 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%202) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%201) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%200) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:296:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:296:19: note: see current operation: 
+%199 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %205 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 49 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%205) : (!air.async.token) -> ()
+}, {
+  %200 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %204 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 50 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%204) : (!air.async.token) -> ()
+  }, {
+    %201 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %203 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 51 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%203) : (!air.async.token) -> ()
+    }, {
+      %202 = "air.channel.get"(%12, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 52 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%202) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%201) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%200) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:348:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:348:19: note: see current operation: 
+%183 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %189 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 57 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%189) : (!air.async.token) -> ()
+}, {
+  %184 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %188 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 58 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%188) : (!air.async.token) -> ()
+  }, {
+    %185 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %187 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 59 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%187) : (!air.async.token) -> ()
+    }, {
+      %186 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 60 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%186) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%185) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%184) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:348:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:348:19: note: see current operation: 
+%183 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %189 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 57 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%189) : (!air.async.token) -> ()
+}, {
+  %184 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %188 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 58 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%188) : (!air.async.token) -> ()
+  }, {
+    %185 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %187 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 59 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%187) : (!air.async.token) -> ()
+    }, {
+      %186 = "air.channel.get"(%14, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 60 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%186) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%185) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%184) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:400:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:400:19: note: see current operation: 
+%167 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %173 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 65 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%173) : (!air.async.token) -> ()
+}, {
+  %168 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %172 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 66 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%172) : (!air.async.token) -> ()
+  }, {
+    %169 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %171 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 67 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%171) : (!air.async.token) -> ()
+    }, {
+      %170 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 68 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%170) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%169) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%168) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:400:19: error: 'affine.if' op unknown op type
+            %56 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                  ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:400:19: note: see current operation: 
+%167 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %173 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 65 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%173) : (!air.async.token) -> ()
+}, {
+  %168 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %172 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 66 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%172) : (!air.async.token) -> ()
+  }, {
+    %169 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %171 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 67 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%171) : (!air.async.token) -> ()
+    }, {
+      %170 = "air.channel.get"(%16, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 68 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%170) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%169) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%168) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:501:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:501:21: note: see current operation: 
+%140 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %142 = "air.channel.get"(%arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_0_0, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 81 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%142) : (!air.async.token) -> ()
+}, {
+  %141 = "air.channel.get"(%arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_0_1, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 82 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%141) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:501:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:501:21: note: see current operation: 
+%140 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %142 = "air.channel.get"(%arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_0_0, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 81 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%142) : (!air.async.token) -> ()
+}, {
+  %141 = "air.channel.get"(%arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_0_1, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 82 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%141) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:514:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:514:21: note: see current operation: 
+%136 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %138 = "air.channel.get"(%arg13, %107, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_1_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 83 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%138) : (!air.async.token) -> ()
+}, {
+  %137 = "air.channel.get"(%arg13, %107, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_1_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 84 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%137) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:514:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:514:21: note: see current operation: 
+%136 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %138 = "air.channel.get"(%arg13, %107, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_1_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 83 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%138) : (!air.async.token) -> ()
+}, {
+  %137 = "air.channel.get"(%arg13, %107, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_1_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 84 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%137) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:527:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:527:21: note: see current operation: 
+%132 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %134 = "air.channel.get"(%arg13, %108, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_2_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 85 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%134) : (!air.async.token) -> ()
+}, {
+  %133 = "air.channel.get"(%arg13, %108, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_2_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 86 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%133) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:527:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:527:21: note: see current operation: 
+%132 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %134 = "air.channel.get"(%arg13, %108, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_2_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 85 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%134) : (!air.async.token) -> ()
+}, {
+  %133 = "air.channel.get"(%arg13, %108, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_2_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 86 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%133) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:458:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:458:21: note: see current operation: 
+%150 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %156 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 73 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%156) : (!air.async.token) -> ()
+}, {
+  %151 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %155 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 74 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%155) : (!air.async.token) -> ()
+  }, {
+    %152 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %154 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 75 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%154) : (!air.async.token) -> ()
+    }, {
+      %153 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 76 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%153) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%152) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%151) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:458:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:458:21: note: see current operation: 
+%150 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %156 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 73 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%156) : (!air.async.token) -> ()
+}, {
+  %151 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %155 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 74 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%155) : (!air.async.token) -> ()
+  }, {
+    %152 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %154 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 75 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%154) : (!air.async.token) -> ()
+    }, {
+      %153 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 76 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%153) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%152) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%151) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:458:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set1()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:458:21: note: see current operation: 
+%150 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %156 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 73 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%156) : (!air.async.token) -> ()
+}, {
+  %151 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+    %155 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_1, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 74 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+    "affine.yield"(%155) : (!air.async.token) -> ()
+  }, {
+    %152 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+      %154 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_2, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 75 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%154) : (!air.async.token) -> ()
+    }, {
+      %153 = "air.channel.get"(%arg13, %arg11, %arg0, %arg1, %arg5) <{chan_name = @QK2L1_0_3, operandSegmentSizes = array<i32: 1, 3, 1, 0, 0, 0>}> {id = 76 : i32} : (!air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+      "affine.yield"(%153) : (!air.async.token) -> ()
+    }) : (index, index) -> !air.async.token
+    "affine.yield"(%152) : (!air.async.token) -> ()
+  }) : (index, index) -> !air.async.token
+  "affine.yield"(%151) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:540:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:540:21: note: see current operation: 
+%128 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %130 = "air.channel.get"(%arg13, %109, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_3_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 87 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%130) : (!air.async.token) -> ()
+}, {
+  %129 = "air.channel.get"(%arg13, %109, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_3_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 88 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%129) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:540:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:540:21: note: see current operation: 
+%128 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %130 = "air.channel.get"(%arg13, %109, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_3_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 87 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%130) : (!air.async.token) -> ()
+}, {
+  %129 = "air.channel.get"(%arg13, %109, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_3_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 88 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%129) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:540:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:540:21: note: see current operation: 
+%128 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %130 = "air.channel.get"(%arg13, %109, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_3_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 87 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%130) : (!air.async.token) -> ()
+}, {
+  %129 = "air.channel.get"(%arg13, %109, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_3_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 88 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%129) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:501:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:501:21: note: see current operation: 
+%140 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %142 = "air.channel.get"(%arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_0_0, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 81 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%142) : (!air.async.token) -> ()
+}, {
+  %141 = "air.channel.get"(%arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_0_1, operandSegmentSizes = array<i32: 0, 3, 1, 0, 0, 0>}> {id = 82 : i32} : (index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%141) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:514:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:514:21: note: see current operation: 
+%136 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %138 = "air.channel.get"(%arg13, %107, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_1_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 83 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%138) : (!air.async.token) -> ()
+}, {
+  %137 = "air.channel.get"(%arg13, %107, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_1_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 84 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%137) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token
+air_project_v2/debug_ir/pass_010_after_cse.mlir:527:21: error: 'affine.if' op unknown op type
+              %62 = affine.if #set()[%arg16, %arg17] -> !air.async.token {
+                    ^
+air_project_v2/debug_ir/pass_010_after_cse.mlir:527:21: note: see current operation: 
+%132 = "affine.if"(%arg0, %arg1) <{condition = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>}> ({
+  %134 = "air.channel.get"(%arg13, %108, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_2_0, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 85 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%134) : (!air.async.token) -> ()
+}, {
+  %133 = "air.channel.get"(%arg13, %108, %arg11, %arg0, %arg1, %arg6) <{chan_name = @V2L1_2_1, operandSegmentSizes = array<i32: 2, 3, 1, 0, 0, 0>}> {id = 86 : i32} : (!air.async.token, !air.async.token, index, index, index, memref<64x64xbf16, 2 : i32>) -> !air.async.token
+  "affine.yield"(%133) : (!air.async.token) -> ()
+}) : (index, index) -> !air.async.token

@@ -1,0 +1,196 @@
+
+MEMORY
+{
+   program (RX) : ORIGIN = 0, LENGTH = 0x0020000
+   data (!RX) : ORIGIN = 0x7E280, LENGTH = 0x1D80
+}
+ENTRY(__start)
+SECTIONS
+{
+  . = 0x0;
+  .text : {
+     /* the __start symbol has to come at address zero. */
+     *crt0.o(.text*)
+     _ctors_start = .;
+     _init_array_start = .;
+     KEEP(SORT(*.init_array))
+     _ctors_end = .;
+     _init_array_end = .;
+     _dtors_start = .;
+     _dtors_end = .;
+     *(.text*)
+  } > program
+  .data : {
+     *(.data*)
+     *(.rodata*)
+  } > data
+  .comment : {
+     *(.comment*)
+  }
+  .symtab : {
+     *(.symtab)
+  }
+  .shstrtab : {
+     *(.shstrtab)
+  }
+  .strtab : {
+     *(.strtab)
+  }
+  .stack_sizes : {
+     *(.stack_sizes)
+  }
+
+. = 0x70000;
+_sp_start_value_DM_stack = .;
+. += 0x400; /* stack */
+/* No tile with memory exists to the south. */
+. = 0x40000;
+. += 0x10000;
+. = 0x5E000;
+buf251_unroll_1 = .;
+. += 0x80;
+. = 0x52400;
+buf250_unroll_1 = .;
+. += 0x80;
+. = 0x50400;
+buf249_unroll_1 = .;
+. += 0x2000;
+. = 0x54000;
+buf248_unroll_1 = .;
+. += 0x2000;
+. = 0x58000;
+buf247_unroll_1 = .;
+. += 0x2000;
+. = 0x5C000;
+buf246_unroll_1 = .;
+. += 0x2000;
+. = 0x56000;
+buf245_unroll_1 = .;
+. += 0x2000;
+. = 0x5E080;
+buf244_unroll_1 = .;
+. += 0x80;
+. = 0x52480;
+buf243_unroll_1 = .;
+. += 0x80;
+. = 0x5A000;
+buf242_unroll_1 = .;
+. += 0x2000;
+. = 0x5E100;
+buf241_unroll_1 = .;
+. += 0x80;
+. = 0x52500;
+buf240_unroll_1 = .;
+. += 0x80;
+. = 0x5E180;
+buf239_unroll_1 = .;
+. += 0x80;
+. = 0x52580;
+buf238_unroll_1 = .;
+. += 0x80;
+. = 0x5E200;
+buf237_unroll_1 = .;
+. += 0x80;
+. = 0x52600;
+buf236_unroll_1 = .;
+. += 0x80;
+. = 0x6E000;
+buf331_unroll_1 = .;
+. += 0x80;
+. = 0x62400;
+buf330_unroll_1 = .;
+. += 0x80;
+. = 0x60400;
+buf329_unroll_1 = .;
+. += 0x2000;
+. = 0x64000;
+buf328_unroll_1 = .;
+. += 0x2000;
+. = 0x68000;
+buf327_unroll_1 = .;
+. += 0x2000;
+. = 0x6C000;
+buf326_unroll_1 = .;
+. += 0x2000;
+. = 0x66000;
+buf325_unroll_1 = .;
+. += 0x2000;
+. = 0x6E080;
+buf324_unroll_1 = .;
+. += 0x80;
+. = 0x62480;
+buf323_unroll_1 = .;
+. += 0x80;
+. = 0x6A000;
+buf322_unroll_1 = .;
+. += 0x2000;
+. = 0x6E100;
+buf321_unroll_1 = .;
+. += 0x80;
+. = 0x62500;
+buf320_unroll_1 = .;
+. += 0x80;
+. = 0x6E180;
+buf319_unroll_1 = .;
+. += 0x80;
+. = 0x62580;
+buf318_unroll_1 = .;
+. += 0x80;
+. = 0x6E200;
+buf317_unroll_1 = .;
+. += 0x80;
+. = 0x62600;
+buf316_unroll_1 = .;
+. += 0x80;
+. = 0x7E000;
+buf267_unroll_1 = .;
+. += 0x80;
+. = 0x72400;
+buf266_unroll_1 = .;
+. += 0x80;
+. = 0x70400;
+buf265_unroll_1 = .;
+. += 0x2000;
+. = 0x74000;
+buf264_unroll_1 = .;
+. += 0x2000;
+. = 0x78000;
+buf263_unroll_1 = .;
+. += 0x2000;
+. = 0x7C000;
+buf262_unroll_1 = .;
+. += 0x2000;
+. = 0x76000;
+buf261_unroll_1 = .;
+. += 0x2000;
+. = 0x7E080;
+buf260_unroll_1 = .;
+. += 0x80;
+. = 0x72480;
+buf259_unroll_1 = .;
+. += 0x80;
+. = 0x7A000;
+buf258_unroll_1 = .;
+. += 0x2000;
+. = 0x7E100;
+buf257_unroll_1 = .;
+. += 0x80;
+. = 0x72500;
+buf256_unroll_1 = .;
+. += 0x80;
+. = 0x7E180;
+buf255_unroll_1 = .;
+. += 0x80;
+. = 0x72580;
+buf254_unroll_1 = .;
+. += 0x80;
+. = 0x7E200;
+buf253_unroll_1 = .;
+. += 0x80;
+. = 0x72600;
+buf252_unroll_1 = .;
+. += 0x80;
+  .bss : { *(.bss*) } > data
+}
+INPUT(air_project_4h/attn.o)
+PROVIDE(main = core_5_2);

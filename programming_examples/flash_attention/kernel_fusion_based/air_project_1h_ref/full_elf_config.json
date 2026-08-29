@@ -1,0 +1,94 @@
+{
+  "xrt-kernels": [
+    {
+      "PDIs": [
+        {
+          "PDI_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/empty_0.pdi",
+          "id": 1
+        },
+        {
+          "PDI_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/attn_seg.pdi",
+          "id": 2
+        },
+        {
+          "PDI_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/main.pdi",
+          "id": 3
+        }
+      ],
+      "arguments": [
+        {
+          "name": "arg_0",
+          "offset": "0x0",
+          "type": "char *"
+        },
+        {
+          "name": "arg_1",
+          "offset": "0x8",
+          "type": "char *"
+        },
+        {
+          "name": "arg_2",
+          "offset": "0x10",
+          "type": "char *"
+        },
+        {
+          "name": "arg_3",
+          "offset": "0x18",
+          "type": "char *"
+        }
+      ],
+      "instance": [
+        {
+          "TXN_ctrl_code_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/attn_seg_attn_seg_sequence.bin",
+          "id": "attn_seg_sequence"
+        }
+      ],
+      "name": "attn_seg"
+    },
+    {
+      "PDIs": [
+        {
+          "PDI_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/empty_0.pdi",
+          "id": 1
+        },
+        {
+          "PDI_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/attn_seg.pdi",
+          "id": 2
+        },
+        {
+          "PDI_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/main.pdi",
+          "id": 3
+        }
+      ],
+      "arguments": [
+        {
+          "name": "arg_0",
+          "offset": "0x0",
+          "type": "char *"
+        },
+        {
+          "name": "arg_1",
+          "offset": "0x8",
+          "type": "char *"
+        },
+        {
+          "name": "arg_2",
+          "offset": "0x10",
+          "type": "char *"
+        },
+        {
+          "name": "arg_3",
+          "offset": "0x18",
+          "type": "char *"
+        }
+      ],
+      "instance": [
+        {
+          "TXN_ctrl_code_file": "/home/strixminipc/mlir-air/programming_examples/flash_attention/kernel_fusion_based/air_project_1h_ref/main_attention_bf16.bin",
+          "id": "attention_bf16"
+        }
+      ],
+      "name": "main"
+    }
+  ]
+}

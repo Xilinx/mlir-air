@@ -1,0 +1,10 @@
+all:
+{
+  id_code = 0x14ca8093
+  extended_id_code = 0x01
+  image
+  {
+    name=aie_image, id=0x1c000000
+    { type=cdo file=air_project_2h_ref/empty_0_aie_cdo_elfs.bin file=air_project_2h_ref/empty_0_aie_cdo_init.bin file=air_project_2h_ref/empty_0_aie_cdo_enable.bin }
+  }
+}

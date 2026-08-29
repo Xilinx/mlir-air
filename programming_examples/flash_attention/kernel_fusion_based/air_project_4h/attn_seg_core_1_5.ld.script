@@ -1,0 +1,154 @@
+
+MEMORY
+{
+   program (RX) : ORIGIN = 0, LENGTH = 0x0020000
+   data (!RX) : ORIGIN = 0x7E080, LENGTH = 0x1F80
+}
+ENTRY(__start)
+SECTIONS
+{
+  . = 0x0;
+  .text : {
+     /* the __start symbol has to come at address zero. */
+     *crt0.o(.text*)
+     _ctors_start = .;
+     _init_array_start = .;
+     KEEP(SORT(*.init_array))
+     _ctors_end = .;
+     _init_array_end = .;
+     _dtors_start = .;
+     _dtors_end = .;
+     *(.text*)
+  } > program
+  .data : {
+     *(.data*)
+     *(.rodata*)
+  } > data
+  .comment : {
+     *(.comment*)
+  }
+  .symtab : {
+     *(.symtab)
+  }
+  .shstrtab : {
+     *(.shstrtab)
+  }
+  .strtab : {
+     *(.strtab)
+  }
+  .stack_sizes : {
+     *(.stack_sizes)
+  }
+
+. = 0x70000;
+_sp_start_value_DM_stack = .;
+. += 0x400; /* stack */
+. = 0x4E000;
+buf159_unroll_0 = .;
+. += 0x80;
+. = 0x42400;
+buf158_unroll_0 = .;
+. += 0x80;
+. = 0x40400;
+buf157_unroll_0 = .;
+. += 0x2000;
+. = 0x44000;
+buf156_unroll_0 = .;
+. += 0x2000;
+. = 0x48000;
+buf155_unroll_0 = .;
+. += 0x2000;
+. = 0x4C000;
+buf154_unroll_0 = .;
+. += 0x2000;
+. = 0x46000;
+buf153_unroll_0 = .;
+. += 0x2000;
+. = 0x4E080;
+buf152_unroll_0 = .;
+. += 0x80;
+. = 0x42480;
+buf151_unroll_0 = .;
+. += 0x80;
+. = 0x4A000;
+buf150_unroll_0 = .;
+. += 0x2000;
+. = 0x4E100;
+buf149_unroll_0 = .;
+. += 0x80;
+. = 0x42500;
+buf148_unroll_0 = .;
+. += 0x80;
+. = 0x4E180;
+buf147_unroll_0 = .;
+. += 0x80;
+. = 0x42580;
+buf146_unroll_0 = .;
+. += 0x80;
+. = 0x4E200;
+buf145_unroll_0 = .;
+. += 0x80;
+. = 0x42600;
+buf144_unroll_0 = .;
+. += 0x80;
+. = 0x5A000;
+buf200_unroll_0 = .;
+. += 0x80;
+. = 0x5E000;
+buf199_unroll_0 = .;
+. += 0x80;
+. = 0x50400;
+buf198_unroll_0 = .;
+. += 0x2000;
+. = 0x54000;
+buf197_unroll_0 = .;
+. += 0x2000;
+. = 0x58000;
+buf196_unroll_0 = .;
+. += 0x2000;
+. = 0x5C000;
+buf195_unroll_0 = .;
+. += 0x2000;
+. = 0x56000;
+buf194_unroll_0 = .;
+. += 0x2000;
+. = 0x52400;
+buf193_unroll_0 = .;
+. += 0x80;
+. = 0x5A080;
+buf192_unroll_0 = .;
+. += 0x80;
+/* No tile with memory exists to the north. */
+. = 0x60000;
+. += 0x10000;
+. = 0x7A000;
+buf209_unroll_0 = .;
+. += 0x80;
+. = 0x7E000;
+buf208_unroll_0 = .;
+. += 0x80;
+. = 0x70400;
+buf207_unroll_0 = .;
+. += 0x2000;
+. = 0x74000;
+buf206_unroll_0 = .;
+. += 0x2000;
+. = 0x78000;
+buf205_unroll_0 = .;
+. += 0x2000;
+. = 0x7C000;
+buf204_unroll_0 = .;
+. += 0x2000;
+. = 0x76000;
+buf203_unroll_0 = .;
+. += 0x2000;
+. = 0x72400;
+buf202_unroll_0 = .;
+. += 0x80;
+. = 0x7A080;
+buf201_unroll_0 = .;
+. += 0x80;
+  .bss : { *(.bss*) } > data
+}
+INPUT(air_project_4h/attn.o)
+PROVIDE(main = core_1_5);

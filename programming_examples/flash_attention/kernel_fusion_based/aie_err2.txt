@@ -1,0 +1,4 @@
+place2.mlir:73:12: error: 'air.channel.put' op failed to get S2MM tile for L3 allocation.
+      %2 = air.channel.put async  @QK2L1_0_0[%c0, %c0, %c0] (%arg8[%c0, %c0, %c0, %c0, %1] [%c4, %c8, %c8, %c8, %c8] [%c4096, %c8, %c512, %c64, %c1_0]) {id = 1 : i32} : (memref<2x256x64xbf16>)
+           ^
+place2.mlir:73:12: note: see current operation: %267 = "air.channel.put"(%11, %11, %11, %263, %11, %11, %11, %11, %4, %5, %7, %5, %6, %5, %7, %8) <{chan_name = @QK2L1_0_0, operandSegmentSizes = array<i32: 0, 3, 1, 4, 4, 4>}> {id = 1 : i32} : (index, index, index, memref<2x256x64xbf16>, index, index, index, index, index, index, index, index, index, index, index, index) -> !air.async.token
