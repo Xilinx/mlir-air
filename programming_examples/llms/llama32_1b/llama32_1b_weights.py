@@ -392,6 +392,13 @@ def synthetic_weights(
 # ---------------------------------------------------------------------------
 
 
+# llama3 rope scaling (config rope_scaling) for Llama-3.2.
+ROPE_FACTOR = 32.0
+ROPE_LOW_FREQ_FACTOR = 1.0
+ROPE_HIGH_FREQ_FACTOR = 4.0
+ROPE_OLD_CTX = 8192.0
+
+
 def generate_rope_lut(
     config: Optional[LlamaConfig] = None,
     seq_len: int = 2048,
@@ -427,6 +434,22 @@ def generate_rope_lut(
     # Compute inverse frequencies: shape (head_dim/2,)
     dim_indices = np.arange(0, head_dim, 2, dtype=np.float64)
     inv_freq = 1.0 / (theta ** (dim_indices / head_dim))
+
+    # Llama-3.2 specifies rope_type "llama3": high-frequency dims pass through,
+    # low-frequency dims are divided by `factor`, and the band between is
+    # interpolated. Omitting it left prefill on plain RoPE while the fused
+    # decode (_llama3_rope) applied the scaling, so the cached K and the decode
+    # query were rotated on different frequencies -- an error proportional to
+    # position, and the reason long prompts degraded.
+    wl = 2 * np.pi / inv_freq
+    low_wl = ROPE_OLD_CTX / ROPE_LOW_FREQ_FACTOR
+    high_wl = ROPE_OLD_CTX / ROPE_HIGH_FREQ_FACTOR
+    smooth = (ROPE_OLD_CTX / wl - ROPE_LOW_FREQ_FACTOR) / (
+        ROPE_HIGH_FREQ_FACTOR - ROPE_LOW_FREQ_FACTOR
+    )
+    med = (1 - smooth) * (inv_freq / ROPE_FACTOR) + smooth * inv_freq
+    inv_freq = np.where(wl > low_wl, inv_freq / ROPE_FACTOR, inv_freq)
+    inv_freq = np.where((wl <= low_wl) & (wl >= high_wl), med, inv_freq)
 
     # Compute angles: shape (seq_len, head_dim/2)
     positions = np.arange(seq_len, dtype=np.float64)
