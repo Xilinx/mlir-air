@@ -2006,6 +2006,7 @@ X_SLOTS = (UNI_DEC + 1) if HIDDEN_TAPS else 1
 # is normally past the layer outputs -- a wave that feeds the next one needs
 # somewhere to leave its result. Grow the buffer to whatever they reach rather
 # than adding a knob: the slots are already named in the wave list.
+EXTRA_OUT_SLOT = []
 if N_EXTRA:
     X_SLOTS = max(
         [X_SLOTS]
@@ -2014,6 +2015,18 @@ if N_EXTRA:
             for w, n in zip(EXTRA_WAVES, EXTRA_X_NSLOT)
         ]
     )
+    # ONE OUTPUT SLOT PER EXTRA WAVE, past every slot the waves read. An extra
+    # wave drains the rms core's whole BATCH*K row -- it has to, the core's
+    # @layerOut put IS that row and a shorter get would leave the channel
+    # unbalanced -- so waves that touch disjoint COLUMN bands still overwrite
+    # each other's full row if they share a slot. The 25 fc sub-waves sharing
+    # slot 0 leave only the last one's band, over a row of untouched tap.
+    #
+    # Appended here rather than named in the wave list, so a wave descriptor
+    # stays a description of what a wave READS and the engine owns where
+    # results land.
+    EXTRA_OUT_SLOT = [X_SLOTS + k for k in range(N_EXTRA)]
+    X_SLOTS += N_EXTRA
 
 
 def build_module():
@@ -4219,8 +4232,8 @@ def build_module():
                             # of four stalls between the first extra-wave build
                             # and the first one that runs.
                             #
-                            # Same op, same extent, offset 0: an extra wave's
-                            # result lands in X slot 0, where the host reads it.
+                            # Same op, same extent, its OWN slot -- see
+                            # EXTRA_OUT_SLOT for why sharing one is not enough.
                             #
                             # AND IT GOES LAST, after the weights, for the same
                             # reason the X goes first. It is a GET: under
@@ -4245,7 +4258,7 @@ def build_module():
                                     "layerOut",
                                     X,
                                     indices=[idx(0)],
-                                    offsets=[0],
+                                    offsets=[EXTRA_OUT_SLOT[k] * BATCH * K],
                                     sizes=[BATCH * LAYER_RNDS * PAYLOAD],
                                     strides=[1],
                                 )

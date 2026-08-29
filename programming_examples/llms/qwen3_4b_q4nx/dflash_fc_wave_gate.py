@@ -109,57 +109,63 @@ def _load_target_fd(batch, L, no_lm="0"):
     if not m:
         raise RuntimeError("could not find the emitted ABI; did the build fail?")
     abi = [int(x) for x in re.findall(r"memref<(\d+)xbf16>", m.group(1))]
-    return mod, fd_draft, fc[0], abi
+    return mod, fd_draft, fc, abi
 
 
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--prefix", default="decode_b8_L130")
+    ap.add_argument("--prefix", default="decode_b8_L154")
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--L", type=int, default=130)
-    ap.add_argument("--reps", type=int, default=10)
+    ap.add_argument("--L", type=int, default=154)
+    ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--corr", type=float, default=0.99)
     ap.add_argument("--timeout", type=int, default=60000)
-    # A wave cannot be dispatched ALONE: restricting the launch loop to one wave
-    # deadlocks even for a shipping vocab wave in a build with no extra waves at
-    # all (measured). The fc wave is therefore run as the tail of a decode
-    # layer -- UNI_WAVE_LO=0 UNI_WAVE_HI=UNI_DEC+1 with the LM waves off -- so
+    # A wave is dispatched as the TAIL of a full decode+LM sequence, never
+    # alone: restricting the launch loop to a single wave deadlocks even for a
+    # shipping vocab wave in a build with no extra waves at all (measured). So
     # this has to emit the ABI for that same configuration.
-    ap.add_argument("--no-lm-waves", default="1", dest="no_lm_waves")
+    ap.add_argument("--no-lm-waves", default="0", dest="no_lm_waves")
     args = ap.parse_args()
 
+    import ml_dtypes
     import pyxrt
 
-    fd, fd_draft, wave, abi = _load_target_fd(args.batch, args.L, args.no_lm_waves)
+    bf16 = ml_dtypes.bfloat16
+    fd, fd_draft, waves, abi = _load_target_fd(args.batch, args.L, args.no_lm_waves)
     if len(abi) != 6:
         raise RuntimeError(f"expected 6 BOs (x,w,rms,y,kvc,extra), got {abi}")
     B, K = fd.BATCH, fd.K
+    taps = sorted({w.x_slot for w in waves})
     print(
-        f"[fc wave] {wave.name}: M={wave.m} K={wave.k} I2={wave.i2} J2={wave.j2} "
-        f"x_slot={wave.x_slot}  X_SLOTS={fd.X_SLOTS}  extra BO={fd.EXTRA_W_ELEMS}"
+        f"[fc] {len(waves)} sub-waves, {len(taps)} taps at X slots {taps}, "
+        f"M={waves[0].m} K={waves[0].k}  X_SLOTS={fd.X_SLOTS}  "
+        f"extra BO={fd.EXTRA_W_ELEMS}"
     )
 
     # ---- the fc region of the extra BO, straight out of the shipped cache ---
     npz = np.load(_HERE / "_draft_q4nx_w2ch.npz")
-    g_sub = P.geom_for(wave.m, wave.k, fd_draft)
-    slab = P.fc_extra_bo(fd_draft, npz)
-    assert slab.size == fd.EXTRA_W_ELEMS, (slab.size, fd.EXTRA_W_ELEMS)
-    # what the FIRST sub-wave holds, and which output band it lands in
+    g_sub = P.geom_for(waves[0].m, waves[0].k, fd_draft)
+    blob = P.fc_extra_bo(fd_draft, npz)
+    assert blob.size == fd.EXTRA_W_ELEMS, (blob.size, fd.EXTRA_W_ELEMS)
     n_sub = g_sub.n_blocks * BLOCK_BF16
-    sub0 = slab[:n_sub]
-    band = slice(0, wave.m)
 
-    # ---- the tap, and the CPU reference for what the wave should compute ----
-    import ml_dtypes
-
-    bf16 = ml_dtypes.bfloat16
+    # ---- five taps, and the CPU reference for the assembled fc -------------
     rng = np.random.default_rng(0)
-    tap_b = rng.normal(0, 1, (B, K)).astype(bf16)
-    tap_f = tap_b.astype(np.float32)  # exactly what the device will see
-    W = P.dequant_cascade(sub0, wave.m, wave.k, g_sub)  # what the device holds
-    ref = tap_f @ W.T  # [B, M] -- M is ONE row-block iteration, 512 rows
+    tap = {sl: rng.normal(0, 1, (B, K)).astype(bf16) for sl in taps}
+    tapf = {sl: tap[sl].astype(np.float32) for sl in taps}
+    rms = {
+        sl: np.sqrt((tapf[sl] * tapf[sl]).mean(-1, keepdims=True) + 1e-6) for sl in taps
+    }
+    # fc(concat(h_0..h_4)) = sum_s W_s . h_s, and sub-wave (s, t) is rows
+    # [t*M, (t+1)*M) of W_s -- so it contributes output band t of tap s and
+    # nothing else. Build the reference from the SAME bytes the device holds.
+    M = waves[0].m
+    ref = np.zeros((B, fd.LAYER_RNDS * fd.PAYLOAD), np.float32)
+    for k, w in enumerate(waves):
+        Wk = P.dequant_cascade(blob[k * n_sub : (k + 1) * n_sub], w.m, w.k, g_sub)
+        ref[:, w.iter_lo * M : (w.iter_lo + 1) * M] += tapf[w.x_slot] @ Wk.T
 
     # ---- device ------------------------------------------------------------
     dev = pyxrt.device(0)
@@ -173,109 +179,81 @@ def main():
         _HERE.parent.parent / "fused_decode" / f"{args.prefix}.insts.bin",
         dtype=np.uint8,
     )
-
     TO, FROM = pyxrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE, (
         pyxrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
     )
-
-    def mk(n_elems, grp):
-        return pyxrt.bo(dev, int(n_elems) * 2, pyxrt.bo.host_only, kern.group_id(grp))
-
+    bos = [
+        pyxrt.bo(dev, int(n) * 2, pyxrt.bo.host_only, kern.group_id(3 + i))
+        for i, n in enumerate(abi)
+    ]
+    x_bo, e_bo, r_bo = bos[0], bos[5], bos[2]
     ib = pyxrt.bo(dev, insts.nbytes, pyxrt.bo.cacheable, kern.group_id(1))
     ib.write(insts, 0)
     ib.sync(TO)
-
-    x_bo, w_bo, r_bo, y_bo, kvc, e_bo = (mk(n, 3 + i) for i, n in enumerate(abi))
     assert abi[0] == fd.X_SLOTS * B * K, (abi[0], fd.X_SLOTS * B * K)
-    assert abi[5] == fd.EXTRA_W_ELEMS, (abi[5], fd.EXTRA_W_ELEMS)
 
-    # X slot `x_slot` holds the tap; the ones run makes the regen a copy.
     x_host = np.zeros(fd.X_SLOTS * B * K, bf16)
-    x_host[wave.x_slot * B * K : (wave.x_slot + 1) * B * K] = tap_b.reshape(-1)
+    for sl in taps:
+        x_host[sl * B * K : (sl + 1) * B * K] = tap[sl].reshape(-1)
     x_bo.write(x_host.view(np.int16), 0)
-    x_bo.sync(TO)
-
+    # ONES on the norm weight: rms_chunk is already the strided gather this
+    # wants, so w == 1 leaves only the per-row scale the host divides back out.
     r_host = np.zeros(r_bo.size() // 2, bf16)
     r_host[fd.RMS_ONES_OFF : fd.RMS_ONES_OFF + K] = bf16(1.0)
     r_bo.write(r_host.view(np.int16), 0)
-    r_bo.sync(TO)
+    e_bo.write(np.asarray(blob).view(np.int16), 0)
+    for b in (x_bo, r_bo, e_bo):
+        b.sync(TO)
 
-    e_bo.write(np.asarray(slab).view(np.int16), 0)
-    e_bo.sync(TO)
-
-    ms = []
-    timed_out = False
+    ms, st = [], None
     for _ in range(args.reps):
         t0 = time.perf_counter()
-        st = kern(3, ib, insts.size, x_bo, w_bo, r_bo, y_bo, kvc, e_bo).wait(
-            args.timeout
-        )
+        st = kern(3, ib, insts.size, *bos).wait(args.timeout)
         ms.append((time.perf_counter() - t0) * 1e3)
         if not str(st).endswith("COMPLETED"):
-            # Read back anyway. A timeout leaves whatever the device managed to
-            # write, and which BOs moved says where in the chain it stalled --
-            # the only progress signal there is, short of a trace build.
-            timed_out = True
-            print(f"  DISPATCH {st}  -- reading back partial state")
             break
-
-    for _b in (x_bo, y_bo, kvc):
-        _b.sync(FROM)
-    got = np.frombuffer(x_bo.map(), dtype=bf16, count=B * K).astype(np.float32)
-    got = got.reshape(B, K)
-    if timed_out:
-        xall = np.frombuffer(x_bo.map(), dtype=bf16, count=fd.X_SLOTS * B * K)
-        for s_ in range(fd.X_SLOTS):
-            sl = xall[s_ * B * K : (s_ + 1) * B * K].astype(np.float32)
-            tag = (
-                "== tap"
-                if s_ == wave.x_slot and np.allclose(sl, tap_f.reshape(-1))
-                else ""
-            )
-            print(
-                f"  X slot {s_}: nonzero {np.count_nonzero(sl):7d}/{sl.size}  "
-                f"absmax {np.abs(sl).max():.4g} {tag}"
-            )
-        for nm, b in (("Y", y_bo), ("KVC", kvc)):
-            a = np.frombuffer(b.map(), dtype=bf16, count=b.size() // 2)
-            print(f"  {nm}: nonzero {np.count_nonzero(a):d}/{a.size}")
+    x_bo.sync(FROM)
+    xall = np.frombuffer(x_bo.map(), dtype=bf16, count=fd.X_SLOTS * B * K)
+    if not str(st).endswith("COMPLETED"):
+        print(f"  DISPATCH {st}")
+        for sl in range(fd.X_SLOTS):
+            v = xall[sl * B * K : (sl + 1) * B * K].astype(np.float32)
+            if np.count_nonzero(v):
+                print(f"  X slot {sl:3d}: absmax {np.abs(v).max():.4g}")
         return 2
 
-    # (readback - tap) * rms(tap): the norm weight is ones, so the only thing
-    # left on the X the projection saw is the per-row 1/rms the host can undo.
-    # residual1 lands round r of the egress at column band r of every token row,
-    # and an i2=1 wave has exactly round 0 -- so its output is the FIRST
-    # `wave.m` columns and the rest of the row is the untouched tap.
-    r = np.sqrt((tap_f * tap_f).mean(-1, keepdims=True) + 1e-6)
-    fixed = (got[:, band] - tap_f[:, band]) * r
-    ref = ref[:, : fixed.shape[1]]
+    # W.h = (readback - h) * rms(h), band by band: the norm weight is ones, so
+    # the only thing left on the X the projection saw is the per-row 1/rms, and
+    # the residual added the result into the row the tap arrived in.
+    #
+    # AND THE BAND IS ALWAYS 0. residual1 lands egress round r at column band r
+    # of every token row, and an i2=1 wave has exactly round 0 -- the rms core
+    # does not know WHICH output rows the wave computed, only that one round
+    # arrived. So every sub-wave deposits into columns [0, M) of its own slot,
+    # and it is `iter_lo` that says where those M values belong in the answer.
+    got = np.zeros_like(ref)
+    src = slice(0, M)
+    for k, w in enumerate(waves):
+        sl = fd.EXTRA_OUT_SLOT[k]
+        out = xall[sl * B * K : (sl + 1) * B * K].astype(np.float32).reshape(B, K)
+        got[:, w.iter_lo * M : (w.iter_lo + 1) * M] += (
+            out[:, src] - tapf[w.x_slot][:, src]
+        ) * rms[w.x_slot]
 
     def cos(a, b):
         a, b = a.reshape(-1), b.reshape(-1)
         return float(a @ b / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-9))
 
-    _xa = np.frombuffer(x_bo.map(), dtype=bf16, count=fd.X_SLOTS * B * K)
-    for _s in range(fd.X_SLOTS):
-        _sl = _xa[_s * B * K : (_s + 1) * B * K].astype(np.float32)
-        print(
-            f"  X slot {_s}: nonzero {np.count_nonzero(_sl):6d}/{_sl.size}  "
-            f"absmax {np.abs(_sl).max():.4g}"
-            + ("  == tap" if np.allclose(_sl, tap_f.reshape(-1)) else "")
-        )
-    print(
-        f"  readback  |got| max {np.abs(got).max():.4g}  nonzero "
-        f"{np.count_nonzero(got)}/{got.size}  |got-tap| max "
-        f"{np.abs(got - tap_f).max():.4g}   ref |.| max {np.abs(ref).max():.4g}"
-    )
-    rel = float(np.abs(fixed - ref).max() / max(np.abs(ref).max(), 1e-9))
-    c = cos(fixed, ref)
-    mb = n_sub * 2 / 1e6
+    rel = float(np.abs(got - ref).max() / max(np.abs(ref).max(), 1e-9))
+    c = cos(got, ref)
+    mb = fd.EXTRA_W_ELEMS * 2 / 1e6
     med = float(np.median(ms))
-    print(f"  dispatch  median {med:.3f} ms over {args.reps}  (min {min(ms):.3f})")
-    print(f"  weights   {mb:.1f} MB  ->  {mb / med:.2f} GB/s")
-    print(f"  W.tap     rel {rel:.3e}  cos {c:.6f}")
+    print(f"  dispatch  median {med:.3f} ms over {len(ms)}  (min {min(ms):.3f})")
+    print(f"  weights   {mb:.1f} MB over {len(waves)} waves")
+    print(f"  fc        rel {rel:.3e}  cos {c:.6f}")
     ok = c >= args.corr
-    print("\n" + ("PASS" if ok else f"FAIL (cos {c:.6f} < {args.corr})"))
+    print()
+    print("PASS" if ok else f"FAIL (cos {c:.6f} < {args.corr})")
     return 0 if ok else 1
 
 
