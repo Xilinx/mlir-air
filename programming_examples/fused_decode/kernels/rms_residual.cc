@@ -106,6 +106,36 @@ void residual_add(bf16 *restrict y, const bf16 *restrict x_buf,
 
 ///@brief
 
+#ifdef RMS_DELAY
+// CRITICAL-PATH PROBE for the RMS CORE, the mirror of proj_qmm.cc's PROJ_DELAY.
+//
+// WHY THIS CORE. The projection is 16 cores wide, but rms is ONE tile, and its
+// work is proportional to BATCH*K: it norms every token, regenerates every
+// @xnorm refeed chunk for the projection engine, and consumes both residual
+// stages. Nothing about it parallelises with the batch, so it is the natural
+// candidate for a batch-8 serial bottleneck -- and unlike the projection, its
+// cost has never been separated from the dispatch.
+//
+// Read the caveats above PROJ_DELAY in proj_qmm.cc before reading a sweep of
+// this: register-only work hides in spare VLIW slots at small counts, so a
+// shallow response near zero is not proof of slack. What a 1:1 response DOES
+// show is that this core is on the critical path.
+//
+// Xorshift, not a multiply-add: s = a*s + c is affine and Peano composes N of
+// them into one.
+static volatile unsigned rms_probe_seed = 2463534242u;
+static volatile unsigned rms_probe_sink;
+static inline void rms_probe_delay() {
+  unsigned s = rms_probe_seed;
+  for (int i = 0; i < RMS_DELAY; i++) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+  }
+  rms_probe_sink = s;
+}
+#endif
+
 extern "C" {
 
 // AIR-friendly pure-compute entry points (no in-kernel locks; AIR owns sync),
@@ -288,6 +318,9 @@ static inline void rms_chunk(bf16 *restrict y, bf16 *restrict x,
 
 void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
                    float *restrict scales, int batch, int c, int n) {
+#ifdef RMS_DELAY
+  rms_probe_delay();
+#endif
 #ifdef RMS_CHUNK_PROBE
   // Diagnostic builds only: make row t of the X feed the CONSTANT (t+1)/8, so
   // every projection output row comes out proportional to t+1. Reading the KV
