@@ -309,6 +309,27 @@ void proj_qmm_mm_acc(bf16 *__restrict x_tile, bf16 *__restrict w,
   (void)ws;
   for (int m = 0; m < PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE; m++)
     y_acc[m] = (float)x_tile[m];
+#elif defined(PROJ_MM_PROBE) && PROJ_MM_PROBE == 2
+  // TIMING ONLY -- split q4k_mm_block in half to see which half the core's
+  // per-block time is in. 2 keeps the multiply and drops the dequantize, so
+  // the mmul reads whatever the scratch already held; 3 keeps the dequantize
+  // and drops the multiply, leaving y_acc at the zero proj_qmm_mm_zero wrote.
+  // The results are garbage by construction and only the DISPATCH TIME means
+  // anything.
+  //
+  // Worth doing only because the PROJ_DELAY sweep showed the projection core
+  // has no slack at batch 8: with a knee at zero, core time removed shows up in
+  // the dispatch 1:1, so this subtraction is a measurement rather than an
+  // upper bound. Note 1 is NOT the third point of this partition -- its
+  // 256-element scalar store loop is comparable in cost to what it replaces.
+  q4k_mmul_any<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE, PROJ_MM_BATCH>(
+      x_tile, ws, y_acc);
+  (void)w;
+#elif defined(PROJ_MM_PROBE) && PROJ_MM_PROBE == 3
+  q4k_unpack_block<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE>(
+      (const q4k_block_t *)w, ws);
+  (void)x_tile;
+  (void)y_acc;
 #else
   q4k_mm_block<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE, PROJ_MM_BATCH>(
       (const q4k_block_t *)w, x_tile, y_acc, ws);
