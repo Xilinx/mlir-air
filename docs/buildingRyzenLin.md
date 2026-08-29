@@ -6,7 +6,7 @@ The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source b
 
 ### Prerequisites
 
-- **Python 3.10–3.14**
+- **Python 3.11–3.14**
 - **pip**
 - **XRT** (optional, required only for running on hardware) — see [mlir-aie's XRT install instructions](https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt)
 
@@ -87,7 +87,7 @@ This path builds MLIR-AIR from source but installs LLVM, MLIR-AIE, and Peano fro
 
 ### Prerequisites
 
-- **Python 3.10+** (required by the wheels)
+- **Python 3.11+**
 - **gcc >= 11**
 - **pip** (Python package manager)
 - **XRT** (optional, required only for running on hardware)
@@ -174,7 +174,7 @@ This path builds MLIR-AIR from source but installs LLVM, MLIR-AIE, and Peano fro
 
 ### Notes
 
-- The script expects Python 3.10+ and gcc >= 11.
+- The script expects Python 3.11+ and gcc >= 11.
 - For LIT tests, you may need to set `-DLLVM_EXTERNAL_LIT` to the path of your `lit` executable.
 - The script installs dependencies using pip and downloads wheels from the official release pages.
 - For advanced troubleshooting or custom builds, see the legacy instructions below.
