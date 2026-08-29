@@ -80,15 +80,17 @@ module {
 // CHECK:      %[[A14:.*]] = arith.constant 119308 : i32
 // CHECK:      %[[V14:.*]] = arith.constant 14 : i32
 // CHECK:      aiex.npu.write32(%[[A14]], %[[V14]]) {column = 0 : i32, row = 0 : i32}
+// The timer-sync broadcast goes to the traced CORE, not to (0, 0): row 0 is the
+// shim, and 0x34000/0x3404C/0x34008 are Core Module registers.
 // CHECK:      %[[A15:.*]] = arith.constant 212992 : i32
 // CHECK:      %[[V15:.*]] = arith.constant 32512 : i32
-// CHECK:      aiex.npu.write32(%[[A15]], %[[V15]]) {column = 0 : i32, row = 0 : i32}
+// CHECK:      aiex.npu.write32(%[[A15]], %[[V15]]) {column = 0 : i32, row = 2 : i32}
 // CHECK:      %[[A16:.*]] = arith.constant 213068 : i32
 // CHECK:      %[[V16:.*]] = arith.constant 127 : i32
-// CHECK:      aiex.npu.write32(%[[A16]], %[[V16]]) {column = 0 : i32, row = 0 : i32}
+// CHECK:      aiex.npu.write32(%[[A16]], %[[V16]]) {column = 0 : i32, row = 2 : i32}
 // CHECK:      %[[A17:.*]] = arith.constant 213000 : i32
 // CHECK:      %[[V17:.*]] = arith.constant 127 : i32
-// CHECK:      aiex.npu.write32(%[[A17]], %[[V17]]) {column = 0 : i32, row = 0 : i32}
+// CHECK:      aiex.npu.write32(%[[A17]], %[[V17]]) {column = 0 : i32, row = 2 : i32}
 
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
