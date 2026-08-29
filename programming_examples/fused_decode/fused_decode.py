@@ -949,7 +949,16 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # reaches the rope herd, so KVC is threaded through the segment the way RMS and
 # X are. Guarded on DYNSEQ_APPEND: with a runtime context length the append
 # offset depends on the L RTP, which would have to be threaded in as well.
-APPEND_DMA = not DYNSEQ_APPEND
+# Also gated off for HYBRID, as @ropeLUT is. The derived append needs an anchor
+# to keep its shim BD where the hand-written get had it, and `inKV_K` -- the
+# right answer on an attention-only build, where the readback sits right after
+# the append -- is 40 shim slots away on a hybrid one, whose two ph0 waves put
+# the readbacks in the second block. Anchoring there dragged the SECOND wave's
+# @ropeLUT task from slot 66 up to slot 28 and the device timed out at decode
+# pos 8, which is the same failure shape as the slot 6->18 move recorded for
+# @ropeLUT itself. The fix is a per-build anchor, not this flag; until that
+# exists a hybrid build keeps the hand-written pair.
+APPEND_DMA = not DYNSEQ_APPEND and not HYBRID_MIXER
 # And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
 # get on an L2 buffer, which air-dma-to-channel handles natively -- the only
 # obstacle was that the L2 buffer is allocated after the rope herd, so it does
@@ -3821,7 +3830,17 @@ def build_module():
                             _qmtb_fan(qmtb)
 
                         def _qmtb_fan(qmtb, dealloc=True):
-                            for c in range(0 if TOATTNQ_DMA else N_ATTN_CU):
+                            # Suppress the hand-written fan only when the DMA
+                            # form is actually in effect. _qmtb_pre is None on a
+                            # HYBRID build (the staging buffer is allocated only
+                            # for `ATTN_SUBSYS and not HYBRID_MIXER`), and there
+                            # the consumer falls back to a ChannelGet -- keying
+                            # this on the flag alone left those gets unpaired.
+                            for c in range(
+                                0
+                                if (TOATTNQ_DMA and _qmtb_pre is not None)
+                                else N_ATTN_CU
+                            ):
                                 ChannelPut(
                                     "toAttnQ",
                                     qmtb,
@@ -4650,7 +4669,14 @@ def build_module():
                             )
 
                         def _src_attn():
-                            for c in range(0 if ATTNO_DMA else N_ATTN_CU):
+                            # Same coupling as the @toAttnQ fan above: keyed on
+                            # the buffer, not the flag, so a HYBRID build keeps its
+                            # hand-written puts.
+                            for c in range(
+                                0
+                                if (ATTNO_DMA and _omtb_pre is not None)
+                                else N_ATTN_CU
+                            ):
                                 ChannelGet(
                                     "attnO",
                                     omtb,
