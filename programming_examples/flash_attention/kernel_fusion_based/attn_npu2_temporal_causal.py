@@ -314,13 +314,20 @@ def build_launch(
                                 indices=[row_slot, i],
                             )
 
-            # K and V: one round's causal prefix, cps_lx blocks of lkp rows.
-            for lx in air.sequential(0, num_lq_iters):
-                cps_lx = num_lq_iters * NQ if _uniform_cps else None
+            # K and V: one round's causal prefix, cps_blocks(lx) blocks of lkp
+            # rows. That count is a transfer SIZE and air.api needs those
+            # static, so a varying prefix unrolls the round axis in Python --
+            # matching the memtile relay and the core, which consume exactly
+            # cps_blocks(lx) per round. Over-sending here does not merely waste
+            # bandwidth, it desynchronises the stream.
+            kv_rounds = (
+                air.sequential(0, num_lq_iters) if _uniform_cps else range(num_lq_iters)
+            )
+            for lx in kv_rounds:
                 for kv_local in range(num_heads_per_unroll):
                     k_col = ly * (num_heads_per_unroll * dk) + kv_local * dk
                     v_col = ly * (num_heads_per_unroll * dv) + kv_local * dv
-                    rows = (cps_lx if cps_lx is not None else num_lq_iters * NQ) * lkp
+                    rows = cps_blocks(lx) * lkp
                     if full_d_dma:
                         kin.put(
                             K[0:rows, k_col : k_col + dk].reshape(rows // lkp, lkp, dk),
