@@ -111,7 +111,13 @@ jobs:
 
           # Weight/config/tokenizer files only. (*.q4nx = the FastFlowLM Q4NX
           # bundle used by llama32_1b_q4nx.)
-          ALLOW = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken", "*.q4nx"]
+          # *.jinja: newer HF repos ship the chat template as a separate
+          # chat_template.jinja instead of a "chat_template" key in
+          # tokenizer_config.json. Without it apply_chat_template raises
+          # "tokenizer.chat_template is not set", which is what fails
+          # lfm2_1_2b_q4nx profile -- LiquidAI/LFM2-1.2B has only the file.
+          ALLOW = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken",
+                   "*.q4nx", "*.jinja"]
           # Skip files transformers/our loader never use but that otherwise make
           # snapshot_download report the snapshot "incomplete" if they fail to
           # fetch on the flaky link: the Llama `original/` dir (sentencepiece +
