@@ -18,7 +18,7 @@ def build(M, N, tile, herd_shape=None, dtype=bf16):
     B = air.tensor([M, N], dtype)
     C = air.tensor([M, N], dtype)
 
-    with air.launch(name="eltwise_add") as launch:
+    with air.launch(name="eltwise_add", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -45,7 +45,7 @@ def build_1d(N, tile, herd_shape=None, dtype=bf16):
     B = air.tensor([N], dtype)
     C = air.tensor([N], dtype)
 
-    with air.launch(name="eltwise_add_1d") as launch:
+    with air.launch(name="eltwise_add_1d", target="npu1") as launch:
 
         @launch.body
         def _():

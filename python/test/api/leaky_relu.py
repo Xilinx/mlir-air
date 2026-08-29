@@ -21,7 +21,7 @@ def build(N, tile, alpha, herd_shape=None, dtype=bf16, vector=None):
     x = air.tensor([N], dtype)
     out = air.tensor([N], dtype)
 
-    with air.launch(name="leaky_relu") as launch:
+    with air.launch(name="leaky_relu", target="npu1") as launch:
 
         @launch.body
         def _():

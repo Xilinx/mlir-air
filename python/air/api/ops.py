@@ -307,15 +307,23 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
 
 
 def fill(buf, value):
-    """Set every element of a buffer to a scalar, as one ``linalg.fill``.
+    """Set every element of a buffer to a scalar.
 
-    This is what zeroes an accumulator before a reduction loop. It is a separate
-    op rather than a spelling of ``buf[:] = 0.0`` because the two lower
-    differently and the difference matters: the elementwise path builds a loop
-    nest with a store per element, which for a blocked accumulator is tens of
-    thousands of scalar stores and a documented cause of NPU timeouts. Zeroing
-    has no elementwise structure worth preserving, and which of the two you get
-    should not depend on the buffer's shape.
+    This is what zeroes an accumulator before a reduction loop.
+
+    It emits the elementwise store loop, which vectorises, and falls back to
+    ``linalg.fill`` only where that loop cannot go: a herd-shared accumulator,
+    whose fill covers one core's slab and not the whole memref; a rank-0
+    buffer, which has no ``[:]`` to write through; and an L2 buffer, which is a
+    memtile with no core to run a loop on -- ``buf[:] =`` refuses one outright,
+    so the fallback is what keeps an L2 fill working at all.
+
+    It used to be ``linalg.fill`` always, on the grounds that the elementwise
+    path costs "a store per element". That is what ``linalg.fill`` itself lowers
+    to here -- an 8192-element bf16 fill became 8192 scalar stores, against 256
+    vector stores for the same fill written by hand -- so the note described the
+    branch it was recommending. Measured on the int4 decode block, where the
+    scalar form is ~29 us of a 110 us regression.
     """
     from air.dialects.arith import ConstantOp
     from air.dialects.linalg import fill as linalg_fill
@@ -336,11 +344,15 @@ def fill(buf, value):
             "expression assign it, e.g. buf[:] = a[:] + b[:]"
         )
     scalar = float(value) if buf.dtype.is_float else int(value)
-    cst = ConstantOp(buf.dtype.mlir(), scalar)
 
     # A herd-shared accumulator is one memref spanning every core, so a core
     # must fill only its own slab -- the same subview ops.dot accumulates into.
     shared = getattr(buf.scope, "kind", None) == "shared"
+    if not shared and buf.shape and buf.space == "L1":
+        buf[:] = scalar
+        return Token()
+
+    cst = ConstantOp(buf.dtype.mlir(), scalar)
     out = accumulator_subview(buf) if shared else buf.value
     return Token(linalg_fill(cst, outs=[out]))
 

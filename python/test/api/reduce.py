@@ -32,7 +32,7 @@ def build(
     A = air.tensor([M, N], dtype)
     OUT = air.tensor([M], dtype)
 
-    with air.launch(name="red") as launch:
+    with air.launch(name="red", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -112,7 +112,7 @@ def keepdims_stores_at_the_collapsed_index():
     A = air.tensor([M, N], bf16)
     OUT = air.tensor([M, 1], bf16)
 
-    with air.launch(name="red") as launch:
+    with air.launch(name="red", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -146,7 +146,7 @@ def keepdims_stores_into_a_rank_1_output():
     A = air.tensor([M, N], bf16)
     OUT = air.tensor([M], bf16)
 
-    with air.launch(name="red") as launch:
+    with air.launch(name="red", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -239,7 +239,7 @@ def operands_broadcast_against_each_other():
     A = air.tensor([256, 16], bf16)
     OUT = air.tensor([256], bf16)
 
-    with air.launch(name="bc") as launch:
+    with air.launch(name="bc", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -279,7 +279,7 @@ def build_argmax(cols, reduced):
     A = air.tensor([32, cols], f32)
     OUT = air.tensor([32], i32)
 
-    with air.launch(name="am") as launch:
+    with air.launch(name="am", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -336,7 +336,7 @@ def argmax_compares_in_the_cast_type():
     A = air.tensor([32, 16], bf16)
     OUT = air.tensor([32], i32)
 
-    with air.launch(name="amc") as launch:
+    with air.launch(name="amc", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -374,7 +374,7 @@ def a_reduction_stores_at_the_destination_region_offset():
     A = air.tensor([4, 16], bf16)
     OUT = air.tensor([4], bf16)
 
-    with air.launch(name="rro") as launch:
+    with air.launch(name="rro", target="npu1") as launch:
 
         @launch.body
         def _():

@@ -23,7 +23,7 @@ def build(N, tile, alpha, herd_shape=None, dtype=bf16, vector=None):
     y = air.tensor([N], dtype)
     out = air.tensor([N], dtype)
 
-    with air.launch(name="axpy") as launch:
+    with air.launch(name="axpy", target="npu1") as launch:
 
         @launch.body
         def _():

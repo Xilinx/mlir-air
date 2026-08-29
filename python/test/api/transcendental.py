@@ -30,7 +30,7 @@ def build(N, tile, body, dtype=bf16, herd_shape=None, vector=None, link_with=Non
     x = air.tensor([N], dtype)
     out = air.tensor([N], dtype)
 
-    with air.launch(name="tr") as launch:
+    with air.launch(name="tr", target="npu1") as launch:
 
         @launch.body
         def _():
