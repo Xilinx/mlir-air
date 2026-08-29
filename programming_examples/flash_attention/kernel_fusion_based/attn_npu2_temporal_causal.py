@@ -115,11 +115,12 @@ def build_launch(
     # fa_temporal.py compiles that microkernel with dk_tile = dv_tile = head_dim
     # -- so a builder that chunks d disagrees with the kernel it calls, and the
     # Makefile says what that costs: "a mismatch here does not fail the build, it
-    # produces wrong results". Splitting d also puts dk_chunks puts from distinct
-    # memrefs on one channel per loop iteration, which air-opt-memtile-dma-bds
-    # cannot fold; it unrolls the whole causal prefix into the memtile BD chain
-    # instead (measured 175 BDs against a 48 cap). Capacity at head_dim > lkp
-    # comes from a smaller lkp (tile_size_q must stay == lkp), not from d.
+    # produces wrong results". Splitting d also lands dk_chunks separate puts,
+    # each from a distinct memref, on one channel per loop iteration, which
+    # air-opt-memtile-dma-bds cannot fold; it unrolls the whole causal prefix
+    # into the memtile BD chain instead (measured 175 BDs against a 48 cap).
+    # Capacity at head_dim > lkp comes from a smaller lkp (tile_size_q must
+    # stay == lkp), not from d.
     dk_tile = dk
     dv_tile = dv
     dk_chunks = 1
