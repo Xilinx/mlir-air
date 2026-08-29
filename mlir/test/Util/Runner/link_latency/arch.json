@@ -8,17 +8,6 @@
     }
   ],
   "devicename": "testdevice",
-  "kernels": {
-    "linalg.copy": {
-      "datatypes": {
-        "i8": {
-          "ops_per_core_per_cycle": 32,
-          "efficiency": 1
-        }
-      },
-      "name": "linalg.copy"
-    }
-  },
   "dus": {
     "count": [
       1,
@@ -73,6 +62,19 @@
       "count": 1,
       "bytes_per_second": 1000000000,
       "latency": 0
+    }
+  },
+  "cost_model": {
+    "op_costs": {
+      "linalg.copy": {
+        "datatypes": {
+          "i8": {
+            "ops_per_core_per_cycle": 32,
+            "efficiency": 1
+          }
+        },
+        "name": "linalg.copy"
+      }
     }
   }
 }

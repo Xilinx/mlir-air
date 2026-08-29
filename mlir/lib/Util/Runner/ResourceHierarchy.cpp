@@ -245,7 +245,27 @@ public:
   // Key pair: <src, dst>; mapped: vector of port pointers
   // TODO: deprecate this.
   std::map<std::pair<unsigned, unsigned>, port *> interfaces;
-  std::map<std::string, kernel *> kernels;
+  // How an op is priced. Four entries, and the names answer the reader's
+  // question -- I have an op, where does its cost come from?
+  //
+  //   cost_model.op_costs        ops with a body: a cycle expression over the
+  //                              op's own shape, or a throughput rate. Keyed by
+  //                              op name, or by `air.op_cost` when the op name
+  //                              does not identify the work.
+  //   cost_model.opaque_costs    ops with no body (air.custom): a fixed
+  //                              latency, keyed by the op's symbol. No formula,
+  //                              because there is nothing to derive one from.
+  //   cost_model.transfer_costs  data movement: bandwidth and time of flight,
+  //                              keyed by `air.transfer_cost`. Absent, a
+  //                              transfer is priced by its memory-space
+  //                              interface.
+  //   cost_model.fallback        used when none of the above matched: scalars
+  //                              feeding the built-in instruction-count
+  //                              estimate.
+  //
+  // Plural names are maps of named entries; `fallback` is singular because it
+  // is one entry, not a map.
+  std::map<std::string, kernel *> op_costs;
   std::vector<du *> dus;
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
@@ -260,7 +280,7 @@ public:
   double default_ops_per_core_per_cycle = 8;
   uint64_t kernel_invocation_overhead = 100;
 
-  void set_compute_model(llvm::json::Object *model) {
+  void set_fallback(llvm::json::Object *model) {
     if (!model)
       return;
     // Validate here rather than at the point of use: the first two divide a
@@ -328,13 +348,13 @@ public:
     }
   }
 
-  void set_kernels(llvm::json::Object *kernelObjects) {
+  void set_op_costs(llvm::json::Object *kernelObjects) {
     for (auto it = kernelObjects->begin(), ie = kernelObjects->end(); it != ie;
          ++it) {
       llvm::json::Object *kernelObject = it->second.getAsObject();
       if (kernelObject) {
         kernel *new_kernel = new kernel(this, kernelObject);
-        this->kernels.insert(std::make_pair(
+        this->op_costs.insert(std::make_pair(
             kernelObject->getString("name").value(), new_kernel));
       }
     }
@@ -409,7 +429,7 @@ public:
     this->set_clock(clk);
     this->set_datatypes(datatypeObjects);
     this->set_interfaces();
-    this->set_kernels(kernelsObject);
+    this->set_op_costs(kernelsObject);
     // TODO: get parent from parentObject, for multi-device modelling.
   }
 
@@ -464,12 +484,17 @@ public:
   }
 
   device(llvm::json::Object *model) {
+    // Everything that prices an op lives under one `cost_model` object. See
+    // set_op_costs() for what the four entries under it are and why they are
+    // named the way they are.
+    auto *costs = model->getObject("cost_model");
     this->setup_device_resources(model->getObject("dus"),
                                  model->getObject("noc"));
     this->setup_device_parameters(
         model->getObject("devicename"), model->getNumber("clock"),
-        model->getArray("datatypes"), model->getObject("kernels"), nullptr);
-    this->set_compute_model(model->getObject("compute_model"));
+        model->getArray("datatypes"),
+        costs ? costs->getObject("op_costs") : nullptr, nullptr);
+    this->set_fallback(costs ? costs->getObject("fallback") : nullptr);
     this->reset_reservation();
   }
 

@@ -36,7 +36,7 @@ module {
             air.execute_terminator %alloc : memref<64xi8, 2>
           }
           %e = air.execute [%ta, %tb] {
-            linalg.copy {air.kernel = "does_not_exist"} ins(%a : memref<64xi8, 2>) outs(%b : memref<64xi8, 2>)
+            linalg.copy {air.op_cost = "does_not_exist"} ins(%a : memref<64xi8, 2>) outs(%b : memref<64xi8, 2>)
           }
         }
       }

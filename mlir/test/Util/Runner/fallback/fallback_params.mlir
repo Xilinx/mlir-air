@@ -1,4 +1,4 @@
-//===- compute_model_params.mlir --------------------------------*- MLIR -*-===//
+//===- fallback_params.mlir --------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -11,7 +11,7 @@
 // runner, chosen for AIE: a herd body instance is one core, entering a kernel
 // costs 100 cycles because it is an external function call, and an unlisted
 // datatype runs 8 lanes wide. Those are properties of a machine. This arch
-// says otherwise, in "compute_model".
+// says otherwise, in "cost_model.fallback".
 //
 // Same kernel as cost_function/mac_bf16.mlir, which takes the defaults and
 // gets 256 + 100. Here 32x32x32 bf16 is 65536 scalar ops, the model declares
@@ -20,7 +20,7 @@
 //
 //     65536 / (4 x 256 x 1) = 64 cycles, + 0 overhead
 //
-// Reading the arch's compute_model is the whole assertion: ignore it and the
+// Reading the arch's cost_model.fallback is the whole assertion: ignore it and the
 // defaults give 356.
 
 // CHECK: "name": "LinalgOp(linalg.matmul)",

@@ -245,7 +245,7 @@ public:
         // operator is the instruction, it is. Declared by the model -- except
         // where the model gave a cycle expression, which is the whole cost by
         // construction and has nothing to add to.
-        if (!kernelCycleExpr(d, child_op))
+        if (!opCostCycleExpr(d, child_op))
           execution_time += d.kernel_invocation_overhead;
       } else if (auto custom_op =
                      dyn_cast_if_present<air::CustomOp>(child_op)) {
@@ -910,33 +910,34 @@ private:
     return (uint64_t)std::llround(*result);
   }
 
-  // Which entry of the model's `kernels` map prices this op.
+  // Which entry of `cost_model.op_costs` prices this op.
   //
   // The op's name by default, which is enough when an op name identifies the
-  // work. It often does not: the projections of a transformer layer are all a
-  // matvec and cost differently, so keying on "linalg.matvec" gives all of them
-  // one cost and no way to tell them apart. An `air.kernel` attribute names the
-  // entry instead -- the same thing air.custom's symbol does, without giving up
-  // an op that says what it computes.
-  static std::string kernelKeyForOp(Operation *op) {
-    if (auto named = op->getAttrOfType<StringAttr>("air.kernel"))
+  // work. It often does not: several projections in one layer can all be a
+  // matvec over the same activation and cost differently, so keying on
+  // "linalg.matvec" gives them one cost and no way to tell them apart. An
+  // `air.op_cost` attribute names the entry instead -- the same thing
+  // air.custom's symbol does, without giving up an op that says what it
+  // computes.
+  static std::string opCostKeyForOp(Operation *op) {
+    if (auto named = op->getAttrOfType<StringAttr>("air.op_cost"))
       return named.getValue().str();
     return air::to_string(op);
   }
 
   // True when the op asked for a specific entry rather than defaulting to its
   // name, so a missing entry is a mistake in the model and not silence.
-  static bool namesItsKernel(Operation *op) {
-    return (bool)op->getAttrOfType<StringAttr>("air.kernel");
+  static bool namesItsOpCost(Operation *op) {
+    return (bool)op->getAttrOfType<StringAttr>("air.op_cost");
   }
 
   // A model-supplied cycle expression for this op and datatype, if any.
-  std::optional<std::string> kernelCycleExpr(device &d, Operation *op) {
-    auto name = kernelKeyForOp(op);
-    if (!d.kernels.count(name))
+  std::optional<std::string> opCostCycleExpr(device &d, Operation *op) {
+    auto name = opCostKeyForOp(op);
+    if (!d.op_costs.count(name))
       return std::nullopt;
     auto dt = getElementTypeAsString(op->getOperandTypes()[0]);
-    auto &exprs = d.kernels[name]->cycle_exprs;
+    auto &exprs = d.op_costs[name]->cycle_exprs;
     auto it = exprs.find(dt);
     if (it == exprs.end())
       return std::nullopt;
@@ -955,7 +956,7 @@ private:
     // it replaces the op count, the rate and the efficiency, and an op it
     // prices is not one the throughput model is guessing at, so nothing is
     // reported as unpriced either.
-    if (auto expr = kernelCycleExpr(d, op)) {
+    if (auto expr = opCostCycleExpr(d, op)) {
       uint64_t ops = 0;
       for (auto &p : opCounts.map)
         if (isPricedScalarOp(std::get<0>(p)))
@@ -971,14 +972,14 @@ private:
     // the op count would let those fall back to the default rate in silence,
     // which is the case the attribute exists to rule out.
     auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
-    auto key = kernelKeyForOp(op);
-    if (namesItsKernel(op)) {
+    auto key = opCostKeyForOp(op);
+    if (namesItsOpCost(op)) {
       // A cycles expression for this datatype has already been taken above, so
       // reaching here means the entry must price it some other way.
-      if (!d.kernels.count(key))
+      if (!d.op_costs.count(key))
         op->emitOpError("names kernel '")
             << key << "', which the model does not define";
-      else if (!d.kernels[key]->datatypes.count(op_datatype))
+      else if (!d.op_costs[key]->datatypes.count(op_datatype))
         op->emitOpError("names kernel '")
             << key << "', which the model has, but not for datatype '"
             << op_datatype << "'";
@@ -1008,10 +1009,10 @@ private:
     if (compute_op_count) {
       double ops_per_core_per_cycle = d.default_ops_per_core_per_cycle;
       double efficiency = 1.0f;
-      if (d.kernels.count(key) &&
-          d.kernels[key]->datatypes.count(op_datatype)) {
-        ops_per_core_per_cycle = d.kernels[key]->datatypes[op_datatype].second;
-        efficiency = d.kernels[key]->datatypes[op_datatype].first;
+      if (d.op_costs.count(key) &&
+          d.op_costs[key]->datatypes.count(op_datatype)) {
+        ops_per_core_per_cycle = d.op_costs[key]->datatypes[op_datatype].second;
+        efficiency = d.op_costs[key]->datatypes[op_datatype].first;
       }
 
       double ops_per_cycle =
@@ -1037,7 +1038,8 @@ private:
         op->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName())
             .str();
     auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
-    auto kernels = model->getObject("custom_kernels");
+    auto *costs = model->getObject("cost_model");
+    auto kernels = costs ? costs->getObject("opaque_costs") : nullptr;
     if (kernels) {
       auto kernel = kernels->getObject(op_sym_name);
       if (kernel) {
@@ -1060,7 +1062,7 @@ private:
         op->emitOpError("found no custom kernel named ") << op_sym_name;
       }
     } else {
-      op->emitOpError("found no custom_kernels obj. in JSON");
+      op->emitOpError("found no cost_model.opaque_costs obj. in JSON");
     }
     return cycles;
   }

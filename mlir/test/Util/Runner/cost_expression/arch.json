@@ -11,22 +11,6 @@
       "bytes": 1
     }
   ],
-  "compute_model": {
-    "kernel_invocation_overhead": 0
-  },
-  "kernels": {
-    "linalg.matmul": {
-      "name": "linalg.matmul",
-      "datatypes": {
-        "i8": {
-          "cycles": "ceildiv(volume1, 4096) * (4 + 12*bits1)"
-        },
-        "i4": {
-          "cycles": "ceildiv(volume1, 4096) * (4 + 12*bits1)"
-        }
-      }
-    }
-  },
   "dus": {
     "count": [
       1,
@@ -75,6 +59,24 @@
     "inbound": {
       "count": 4,
       "bytes_per_second": 4000000000
+    }
+  },
+  "cost_model": {
+    "op_costs": {
+      "linalg.matmul": {
+        "name": "linalg.matmul",
+        "datatypes": {
+          "i8": {
+            "cycles": "ceildiv(volume1, 4096) * (4 + 12*bits1)"
+          },
+          "i4": {
+            "cycles": "ceildiv(volume1, 4096) * (4 + 12*bits1)"
+          }
+        }
+      }
+    },
+    "fallback": {
+      "kernel_invocation_overhead": 0
     }
   }
 }
