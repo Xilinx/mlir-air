@@ -313,8 +313,10 @@ def fill(buf, value):
 
     It emits the elementwise store loop, which vectorises, and falls back to
     ``linalg.fill`` only where that loop cannot go: a herd-shared accumulator,
-    whose fill covers one core's slab and not the whole memref, and a rank-0
-    buffer, which has no ``[:]`` to write through.
+    whose fill covers one core's slab and not the whole memref; a rank-0
+    buffer, which has no ``[:]`` to write through; and an L2 buffer, which is a
+    memtile with no core to run a loop on -- ``buf[:] =`` refuses one outright,
+    so the fallback is what keeps an L2 fill working at all.
 
     It used to be ``linalg.fill`` always, on the grounds that the elementwise
     path costs "a store per element". That is what ``linalg.fill`` itself lowers
@@ -346,7 +348,7 @@ def fill(buf, value):
     # A herd-shared accumulator is one memref spanning every core, so a core
     # must fill only its own slab -- the same subview ops.dot accumulates into.
     shared = getattr(buf.scope, "kind", None) == "shared"
-    if not shared and buf.shape:
+    if not shared and buf.shape and buf.space == "L1":
         buf[:] = scalar
         return Token()
 

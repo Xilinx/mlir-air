@@ -114,3 +114,36 @@ def a_transcendental_holds_the_narrow_width():
 @run
 def arithmetic_beside_it_is_not_penalised():
     print(build(lambda a, o: o.__setitem__(slice(None), a[:] * a[:])))
+
+
+# CHECK-LABEL: TEST: an_l2_fill_still_lowers_as_linalg
+# The elementwise store loop needs a core, and a memtile has none -- `buf[:] =`
+# refuses an L2 buffer outright. So L2 keeps the linalg.fill it always had;
+# taking the fast path unconditionally turned an L2 fill into a TypeError.
+# CHECK: linalg.fill
+@run
+def an_l2_fill_still_lowers_as_linalg():
+    x = air.tensor([N], bf16)
+    out = air.tensor([N], bf16)
+
+    with air.launch(name="l2", target="npu2") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    staged = air.alloc([TILE], bf16, scope=seg.private())
+                    ops.fill(staged, 0.0)
+                    with air.herd(range(0, N, TILE), shape=(4,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            (tn,) = h.tile_sizes
+                            col = tx * tn
+                            b = air.alloc([tn], bf16, scope=h.private())
+                            ops.load(b, x[col : col + tn])
+                            ops.store(b, out[col : col + tn])
+
+    print(launch.mlir())
