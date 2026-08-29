@@ -224,7 +224,7 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         num_heads_per_unroll=num_heads_per_unroll,
         fused_qkv=fused_qkv,
         n_images=n_images,
-    ).build(target="npu2")
+    )
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
     print(f"    (FA microkernel BFP16={fa_bfp16})")
     cache.compile_and_cache(
@@ -531,7 +531,7 @@ def compile_all_kernels(
         num_kv_heads=n_kv_heads,
         causal=False,
         num_heads_per_unroll=num_heads_per_unroll,
-    ).build(target="npu2")
+    )
     # Pre-build attn_npu2.o with the chosen precision mode and force=True. The
     # compile_and_cache below calls prepare_air_project → compile_all_external_kernels,
     # which rebuilds attn_npu2.o only if absent (force=False) — so this force=True
