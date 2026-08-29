@@ -31,7 +31,7 @@
 // The fill loop is the only segment-level loop left; the derived put joined it.
 // CHECK: %[[FOR:.*]] = scf.for
 // CHECK: %[[GET:.*]] = air.channel.get async{{.*}}@fill
-// CHECK: air.channel.put async [%[[GET]]{{.*}}@drain
+// CHECK: air.channel.put async [{{.*}}%[[GET]]{{.*}}@drain
 // CHECK: scf.yield
 // CHECK-NOT: scf.for
 // CHECK: air.herd

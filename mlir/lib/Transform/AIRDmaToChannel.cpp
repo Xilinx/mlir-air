@@ -15,6 +15,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -2019,6 +2020,69 @@ class AIRDemoteDmaToAIRHierarchyConversion
     return success();
   }
 };
+// Hoisting clones the ops a transfer depends on, so the guard condition around
+// the hoisted copy is usually a duplicate SSA value rather than the original --
+// `%48 = arith.index_cast %13` beside the `%14 = arith.index_cast %13` the
+// producer switches on. CSE merges the two, but not until two passes later, so
+// equality here has to be structural. Pure ops only: two calls to something
+// with side effects are two events, not one value.
+static bool sameValue(Value a, Value b, unsigned depth = 4) {
+  if (a == b)
+    return true;
+  if (!depth)
+    return false;
+  Operation *da = a.getDefiningOp(), *db = b.getDefiningOp();
+  if (!da || !db || da->getName() != db->getName() ||
+      da->getAttrDictionary() != db->getAttrDictionary() ||
+      da->getNumOperands() != db->getNumOperands() || !isMemoryEffectFree(da) ||
+      !isMemoryEffectFree(db))
+    return false;
+  if (cast<OpResult>(a).getResultNumber() !=
+      cast<OpResult>(b).getResultNumber())
+    return false;
+  for (auto [x, y] : llvm::zip(da->getOperands(), db->getOperands()))
+    if (!sameValue(x, y, depth - 1))
+      return false;
+  return true;
+}
+
+// Two guards select the same arm for the same reason: same op kind, the same
+// operands up to the equivalence above, and -- for a switch -- the same cases.
+static bool sameGuard(Operation *a, Operation *b) {
+  if (a->getName() != b->getName() ||
+      a->getNumOperands() != b->getNumOperands() ||
+      a->getNumRegions() != b->getNumRegions())
+    return false;
+  for (auto [x, y] : llvm::zip(a->getOperands(), b->getOperands()))
+    if (!sameValue(x, y))
+      return false;
+  auto sw = dyn_cast<scf::IndexSwitchOp>(a);
+  auto esw = dyn_cast<scf::IndexSwitchOp>(b);
+  if (sw && esw && sw.getCases() != esw.getCases())
+    return false;
+  return true;
+}
+
+// Every memref any channel endpoint under `op` touches.
+static llvm::SmallSetVector<Value, 8> channelMemrefsUnder(Operation *op) {
+  llvm::SmallSetVector<Value, 8> memrefs;
+  op->walk([&](air::ChannelInterface ci) { memrefs.insert(ci.getMemref()); });
+  return memrefs;
+}
+
+static bool touchesAny(Operation *op,
+                       const llvm::SmallSetVector<Value, 8> &memrefs) {
+  bool touches = false;
+  auto scan = [&](Operation *o) {
+    for (Value operand : o->getOperands())
+      if (memrefs.contains(operand))
+        touches = true;
+  };
+  scan(op);
+  op->walk(scan);
+  return touches;
+}
+
 // The two loops must agree on trip count for fusion to preserve meaning. The
 // bounds are compared as SSA values first, then as constants, because the
 // hoisted loop is a clone: it usually reuses the producer's own bound values,
@@ -2042,6 +2106,140 @@ static llvm::SmallSetVector<Value, 4> channelMemrefsIn(scf::ForOp loop) {
   llvm::SmallSetVector<Value, 4> memrefs;
   loop.walk([&](air::ChannelInterface ci) { memrefs.insert(ci.getMemref()); });
   return memrefs;
+}
+
+// Merge a hoisted transfer's rebuilt guard into the identical guard already
+// standing in front of it.
+//
+// cloneIndexSwitchUsingRemap rebuilds the guard around a hoisted transfer
+// rather than flattening it, which is right -- flattening would make a copy
+// written on one arm issue on every arm. But it rebuilds unconditionally, so a
+// design whose producer is already guarded ends up with two switches on the
+// same condition, the fill in one arm and the derived drain in the other's.
+// They cannot then be fused as loops: a value defined in one scf.index_switch
+// arm is invisible from a sibling switch's arm, so the producer loop's result
+// can never stand in for the hoisted loop's. The guards have to become one
+// first; after that the two loops are ordinary siblings and the fusion below
+// handles them.
+//
+// Moving the later guard's work earlier is only sound when nothing it reads was
+// produced in between, and nothing in between touches the buffers it moves --
+// both are checked. Everything else is left where it is.
+static void mergeHoistedGuards(func::FuncOp f, DominanceInfo &dom) {
+  auto hasHoistedLoop = [](Operation *op) {
+    bool found = false;
+    op->walk([&](scf::ForOp forOp) {
+      auto a = forOp->getAttrOfType<StringAttr>("loop-carried-dep");
+      if (a && a.getValue() == "hoistedLoop")
+        found = true;
+    });
+    return found;
+  };
+  auto singleBlockArms = [](Operation *op) {
+    for (Region &r : op->getRegions())
+      if (!r.hasOneBlock())
+        return false;
+    return op->getNumRegions() > 0;
+  };
+
+  SmallVector<Operation *> guards;
+  f.walk([&](Operation *op) {
+    if (isa<scf::IndexSwitchOp, scf::IfOp>(op) && hasHoistedLoop(op) &&
+        singleBlockArms(op))
+      guards.push_back(op);
+  });
+
+  for (Operation *late : guards) {
+    // One token in, one token out, or the yield rewiring below has no meaning.
+    if (late->getNumResults() > 1 ||
+        (late->getNumResults() == 1 &&
+         !isa<air::AsyncTokenType>(late->getResult(0).getType())))
+      continue;
+    auto memrefs = channelMemrefsUnder(late);
+
+    Operation *early = nullptr;
+    for (Operation *e = late->getPrevNode(); e; e = e->getPrevNode()) {
+      // Same condition is not enough: a design guards several independent
+      // feeds on one predicate, so the first switch scanned backwards is
+      // usually somebody else's. The one we want is the one holding an endpoint
+      // on a buffer this transfer touches.
+      if (sameGuard(late, e) && singleBlockArms(e) &&
+          e->getNumResults() == late->getNumResults()) {
+        // The endpoint that qualifies `e` must be one the front end wrote, not
+        // another hoisted copy waiting its turn -- otherwise the first two
+        // guards pair off with each other and the producer is never reached.
+        // A guard that has ALREADY absorbed a hoisted transfer still qualifies,
+        // which is what lets a fan of several transfers collect in one place.
+        bool sharesBuffer = false;
+        e->walk([&](air::ChannelInterface ci) {
+          if (!memrefs.contains(ci.getMemref()))
+            return;
+          for (Operation *a = ci->getParentOp(); a && a != e;
+               a = a->getParentOp()) {
+            auto attr = a->getAttrOfType<StringAttr>("loop-carried-dep");
+            if (attr && attr.getValue() == "hoistedLoop")
+              return;
+          }
+          sharesBuffer = true;
+        });
+        if (sharesBuffer) {
+          early = e;
+          break;
+        }
+      }
+      if (touchesAny(e, memrefs))
+        break;
+    }
+    if (!early)
+      continue;
+
+    // Nothing the late guard's ARMS read may have been defined after the early
+    // one. The guard's own condition is deliberately not part of this: it is a
+    // clone that CSE would fold into the early guard's condition anyway, and it
+    // dies with the op being erased.
+    bool readsSomethingInBetween = false;
+    for (Region &r : late->getRegions())
+      r.walk([&](Operation *inner) {
+        for (Value operand : inner->getOperands()) {
+          Operation *def = operand.getDefiningOp();
+          if (!def || late->isProperAncestor(def))
+            continue;
+          if (!dom.properlyDominates(def, early))
+            readsSomethingInBetween = true;
+        }
+      });
+    if (readsSomethingInBetween)
+      continue;
+
+    OpBuilder builder(late);
+    for (unsigned i = 0, e = late->getNumRegions(); i < e; ++i) {
+      Block *src = &late->getRegion(i).front();
+      Block *dst = &early->getRegion(i).front();
+      Operation *dstTerm = dst->getTerminator();
+      Operation *srcTerm = src->getTerminator();
+
+      SmallVector<Operation *> body;
+      for (Operation &op : src->without_terminator())
+        body.push_back(&op);
+      for (Operation *op : body)
+        op->moveBefore(dstTerm);
+
+      // The arm now does both halves, so it must wait on both. Dep tracing
+      // reruns over this and will prune whatever is redundant.
+      if (dstTerm->getNumOperands() == 1 && srcTerm->getNumOperands() == 1) {
+        builder.setInsertionPoint(dstTerm);
+        SmallVector<Value> deps{dstTerm->getOperand(0), srcTerm->getOperand(0)};
+        auto joined = air::WaitAllOp::create(
+            builder, late->getLoc(),
+            air::AsyncTokenType::get(late->getContext()), deps);
+        dstTerm->setOperand(0, joined.getAsyncToken());
+      }
+    }
+    for (auto [oldRes, newRes] :
+         llvm::zip(late->getResults(), early->getResults()))
+      oldRes.replaceAllUsesWith(newRes);
+    late->erase();
+  }
 }
 
 // Fuse a hoisted transfer's freshly built loop into the loop that fills the
@@ -2070,7 +2268,7 @@ static llvm::SmallSetVector<Value, 4> channelMemrefsIn(scf::ForOp loop) {
 // Fusing restores both. The guards below are what make it safe: identical trip
 // count, a shared memref, and nothing in between that touches that memref (an
 // intervening reader or writer would be reordered across the appended ops).
-static void fuseHoistedLoopsIntoProducer(func::FuncOp f) {
+static void fuseHoistedLoopsIntoProducer(func::FuncOp f, DominanceInfo &dom) {
   // "hoist" is stripped by AIRHoistExternalAIRChannelPattern once the transfer
   // reaches its destination; "loop-carried-dep" is the marker that survives to
   // here, and is what the rest of the pipeline keys on too.
@@ -2142,11 +2340,58 @@ static void fuseHoistedLoopsIntoProducer(func::FuncOp f) {
     if (!producer)
       continue;
 
-    // The appended ops run after the producer's body in the same iteration, so
-    // the hoisted loop's iter_arg becomes whatever the producer yields -- which
-    // is the RAW edge the clone lost.
+    // The body is about to move backwards, into the producer. Anything it reads
+    // from outside itself has to already be available there. When it is not --
+    // a hoisted transfer whose operands were materialised alongside it, past
+    // the producer -- leave the pair alone rather than build invalid IR.
+    bool dominates = true;
+    newFor.getBody()->walk([&](Operation *inner) {
+      for (Value operand : inner->getOperands()) {
+        if (Operation *def = operand.getDefiningOp()) {
+          if (newFor->isProperAncestor(def))
+            continue;
+          if (!dom.properlyDominates(def, producer))
+            dominates = false;
+        } else if (auto arg = dyn_cast<BlockArgument>(operand)) {
+          if (arg.getOwner() != newFor.getBody() &&
+              !dom.dominates(arg.getOwner(), producer->getBlock()))
+            dominates = false;
+        }
+      }
+    });
+    if (!dominates)
+      continue;
+
+    // Land the reads before the producer tears the buffer down, not at the end
+    // of its body: a loop that frees what it filled -- which is the norm, the
+    // buffer is per-iteration -- would otherwise get its dealloc ordered ahead
+    // of the transfers now reading it.
     Operation *producerYield = producer.getBody()->getTerminator();
-    Value carriedIn = producerYield->getOperand(0);
+    Operation *insertPt = producerYield;
+    for (Operation &op : producer.getBody()->without_terminator()) {
+      bool frees = false;
+      op.walk([&](memref::DeallocOp d) {
+        if (memrefs.contains(d.getMemref()))
+          frees = true;
+      });
+      if (frees) {
+        insertPt = &op;
+        break;
+      }
+    }
+
+    // The hoisted loop's iter_arg becomes the token of the last endpoint in the
+    // producer that writes the buffer -- the RAW edge the clone lost. Falling
+    // back to the loop's own iter_arg keeps the ordering no weaker than before.
+    Value carriedIn = producer.getRegionIterArgs()[0];
+    for (Operation &op : producer.getBody()->without_terminator()) {
+      if (&op == insertPt)
+        break;
+      auto ci = dyn_cast<air::ChannelInterface>(&op);
+      if (ci && memrefs.contains(ci.getMemref()) && op.getNumResults() &&
+          isa<air::AsyncTokenType>(op.getResult(0).getType()))
+        carriedIn = op.getResult(0);
+    }
     Value newYield = newFor.getBody()->getTerminator()->getOperand(0);
 
     newFor.getInductionVar().replaceAllUsesWith(producer.getInductionVar());
@@ -2156,9 +2401,16 @@ static void fuseHoistedLoopsIntoProducer(func::FuncOp f) {
     for (Operation &op : newFor.getBody()->without_terminator())
       body.push_back(&op);
     for (Operation *op : body)
-      op->moveBefore(producerYield);
+      op->moveBefore(insertPt);
 
-    producerYield->setOperand(0, newYield);
+    // The iteration now carries both halves of the feed.
+    OpBuilder yb(producerYield);
+    SmallVector<Value> joined{producerYield->getOperand(0), newYield};
+    producerYield->setOperand(
+        0, air::WaitAllOp::create(
+               yb, producer.getLoc(),
+               air::AsyncTokenType::get(producer.getContext()), joined)
+               .getAsyncToken());
     newFor.getResult(0).replaceAllUsesWith(producer.getResult(0));
     newFor.erase();
   }
@@ -2351,7 +2603,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // Put each hoisted transfer back in the loop that feeds it, before dep
     // tracing re-derives tokens over the result.
     for (auto f : funcOps) {
-      fuseHoistedLoopsIntoProducer(f);
+      DominanceInfo dom(f);
+      mergeHoistedGuards(f, dom);
+      fuseHoistedLoopsIntoProducer(f, dom);
     }
 
     // Dep tracing
