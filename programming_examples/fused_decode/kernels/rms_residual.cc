@@ -330,9 +330,13 @@ void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
   // if the feed is right, 7x if it got the previous token's, 0 if it got
   // nothing. The flush-side labels (PROJ_FLUSH_PROBE=3) proved the descriptor
   // chain BELOW the accumulator; this is the hop above it.
-  for (int t = 0; t < batch; t++)
-    for (int i = 0; i < n; i++)
-      y[t * n + i] = (bf16)((float)(t + 1) * 0.125f);
+  constexpr int vector_size = 16;
+  for (int t = 0; t < batch; t++) {
+    const auto c = aie::broadcast<bf16, vector_size>((bf16)((float)(t + 1) * 0.125f));
+    bf16 *it_y = y + t * n;
+    for (int i = 0; i < n / vector_size; i++)
+      aie::store_v(it_y + i * vector_size, c);
+  }
   (void)x;
   (void)w;
   (void)scales;
@@ -557,8 +561,18 @@ void band_copy_aie(bf16 *restrict dst, bf16 *restrict src, int n) {
 //   3)
 void rms_copy_aie(bf16 *restrict dst, bf16 *restrict src) {
   aie_round_nearest_even();
-  for (int i = 0; i < MODEL_DIM; i++)
-    dst[i] = src[i];
+  // Vectorised, like band_copy_aie above. It was a scalar loop, and Peano does
+  // not auto-vectorise (see RMS_CHUNK_PROBE=2 below), so it ran 16x slower than
+  // the residual_add_aie it stands in for under DECODE_ACC_STOP -- a diagnostic
+  // that costs MORE than the thing it removes reports the opposite of what it
+  // is asked. Same trap as RMS_CHUNK_PROBE=1, found by census rather than by
+  // being burned a fourth time.
+  constexpr int vector_size = 16;
+  static_assert(MODEL_DIM % vector_size == 0, "MODEL_DIM must be a whole "
+                                              "number of bf16 vectors");
+  for (int i = 0; i < MODEL_DIM / vector_size; i++)
+    aie::store_v(dst + i * vector_size,
+                 aie::load_v<vector_size>(src + i * vector_size));
 }
 
 void residual_add_aie_hdr(bf16 *restrict y, bf16 *restrict x_buf,

@@ -165,8 +165,13 @@ void glu_aie3072(bf16 *restrict y, bf16 *restrict x) { pseduo_glu<3072>(y, x); }
 // X keeps the uniform proj K=2048 (down = W_down @ [glu(1536) ++ zeros(512)]).
 void glu_aie3072_pad2048(bf16 *restrict y, bf16 *restrict x) {
   pseduo_glu<3072>(y, x);
-  for (int i = 1536; i < 2048; i++)
-    y[i] = (bf16)0.0f;
+  // Vectorised: Peano does not auto-vectorise a plain C loop (see the
+  // RMS_CHUNK_PROBE=2 comment in rms_residual.cc), so this pad cost 512 scalar
+  // stores where it needs 32 vector ones.
+  constexpr int vs = 16;
+  const auto z = aie::zeros<bf16, vs>();
+  for (int i = 1536; i < 2048; i += vs)
+    aie::store_v(y + i, z);
 }
 
 // Header-bearing variant for the PACKET x-feed (STAGE_MLP>=2 down-phase X):
@@ -176,8 +181,10 @@ void glu_aie3072_pad2048_hdr(bf16 *restrict y, bf16 *restrict x,
                              unsigned int pkt_id) {
   *reinterpret_cast<unsigned int *>(y + 14) = pkt_id;
   pseduo_glu<3072>(y + 16, x);
-  for (int i = 1536; i < 2048; i++)
-    y[16 + i] = (bf16)0.0f;
+  constexpr int vs = 16;
+  const auto z = aie::zeros<bf16, vs>();
+  for (int i = 1536; i < 2048; i += vs)
+    aie::store_v(y + 16 + i, z);
 }
 
 // MLP_REAL (Llama-3.2-1B real dims): gate/up proj output 16384 =

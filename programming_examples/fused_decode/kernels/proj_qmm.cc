@@ -88,8 +88,17 @@ void proj_qmm_pass256(bf16 *__restrict x_blk, bf16 *__restrict w,
   aie_round_nearest_even();
   volatile bf16 wkeep = w[0];
   (void)wkeep;
-  for (int i = 0; i < Q4NX_ROW_BLOCK_SIZE; i++)
-    y_acc[i] += (float)x_blk[i];
+  // Vectorised: Peano does not auto-vectorise, so a scalar stand-in for a
+  // vectorised kernel measures its own deoptimisation. See the RMS_CHUNK_PROBE=2
+  // comment in rms_residual.cc.
+  constexpr int vs = 16;
+  static_assert(Q4NX_ROW_BLOCK_SIZE % vs == 0, "row block must be whole vectors");
+  const auto one = aie::broadcast<bf16, vs>((bf16)1.0f);
+  for (int i = 0; i < Q4NX_ROW_BLOCK_SIZE / vs; i++) {
+    aie::vector<float, vs> acc = aie::load_v<vs>(y_acc + i * vs);
+    aie::vector<float, vs> add = aie::mul(aie::load_v<vs>(x_blk + i * vs), one);
+    aie::store_v(y_acc + i * vs, aie::add(acc, add));
+  }
 }
 
 // Accumulate ONE q4k block (32 rows x 256 cols) into y_acc (pure accumulate;
@@ -274,9 +283,13 @@ void proj_qmm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
 // deadlock from the X-feed / attention-feedback path.
 void proj_qmm_fill_x(bf16 *__restrict x, int n) {
   aie_round_nearest_even();
-  bf16 c = bf16(0.0625f);
-  for (int i = 0; i < n; i++)
-    x[i] = c;
+  constexpr int vs = 16;
+  const auto c = aie::broadcast<bf16, vs>(bf16(0.0625f));
+  int i = 0;
+  for (; i + vs <= n; i += vs)
+    aie::store_v(x + i, c);
+  for (; i < n; i++) // n is a runtime argument; keep the tail exact
+    x[i] = bf16(0.0625f);
 }
 
 // ---------------------------------------------------------------------------
@@ -376,8 +389,13 @@ void proj_qmm_mm_acc(bf16 *__restrict x_tile, bf16 *__restrict w,
   // 8-float runs scaling 1,2,...,8 and repeating every 64.
   (void)w;
   (void)ws;
-  for (int m = 0; m < PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE; m++)
-    y_acc[m] = (float)x_tile[m];
+  constexpr int vs = 16;
+  static_assert((PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE) % vs == 0,
+                "accumulator must be a whole number of vectors");
+  const auto one = aie::broadcast<bf16, vs>((bf16)1.0f);
+  for (int m = 0; m < PROJ_MM_BATCH * Q4NX_ROW_BLOCK_SIZE / vs; m++)
+    aie::store_v(y_acc + m * vs,
+                 (aie::vector<float, vs>)aie::mul(aie::load_v<vs>(x_tile + m * vs), one));
 #elif defined(PROJ_MM_PROBE) && PROJ_MM_PROBE == 2
   // TIMING ONLY -- split q4k_mm_block in half to see which half the core's
   // per-block time is in. 2 keeps the multiply and drops the dequantize, so
@@ -484,8 +502,9 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
     // Emitted slot t therefore carries y_acc[t*RB .. t*RB+RB), which for
     // RB=32 is half a C tile: slot 0 = tile 0 tokens 0-3, slot 1 = tile 0
     // tokens 4-7, slot 2 = tile 1 tokens 0-3, and so on.
-    for (int p = 0; p < RB; p++)
-      tmp[p] = y_acc[t * RB + p];
+    // Vectorised; RB is a compile-time multiple of the vector width.
+    for (int p = 0; p < RB; p += 8)
+      aie::store_v(tmp + p, aie::load_v<8>(y_acc + t * RB + p));
 #elif defined(PROJ_FLUSH_PROBE) && PROJ_FLUSH_PROBE == 2
     if (t == PROJ_MM_BATCH - 1)
       aie::store_v(tmp + (CB - 1) * 8, aie::broadcast<float, 8>(0.125f));
@@ -494,6 +513,9 @@ void proj_qmm_mm_flush_row(float *__restrict y_acc, bf16 *__restrict y_out,
     // of the KV cache. V is copied through rope unrotated, so its labels
     // survive; K's do not. t*32 + p is 0..255, which bf16 holds exactly, and
     // the role goes in the sign.
+    // Left scalar ON PURPOSE. Every element gets a different value and this
+    // probe is read for those values, never for a dispatch time -- it is the
+    // one place in this file where a scalar loop costs nothing that matters.
     for (int p = 0; p < RB; p++)
       tmp[p] = (i ? -1.0f : 1.0f) * (float)(t * RB + p);
 #endif
