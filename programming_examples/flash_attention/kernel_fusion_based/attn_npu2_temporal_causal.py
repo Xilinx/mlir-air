@@ -790,10 +790,11 @@ def build_launch(
 def build_module(**kwargs):
     """The MLIR module. Return type is the llms/ builders' contract.
 
-    llama32_1b/llama32_1b_prefill.py and shared/infra/fa_temporal.py import this
-    name and hand the result straight to KernelCache.compile_and_cache, which
-    stringifies it into air.mlir -- so it must be a module, not the
-    LaunchContext that build_launch returns.
+    programming_examples/llms/llama32_1b/llama32_1b_prefill.py and
+    programming_examples/llms/shared/infra/fa_temporal.py import this name and
+    hand the result straight to KernelCache.compile_and_cache, which stringifies
+    it into air.mlir -- so it must be a module, not the LaunchContext that
+    build_launch returns.
     """
     return build_launch(**kwargs).build(target="npu2")
 

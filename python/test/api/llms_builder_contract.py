@@ -38,6 +38,8 @@ import air.ir
 from ml_dtypes import bfloat16
 
 # Each row: (module path, builder, kwargs, the llms/ file that imports it).
+# The last field is printed on failure and is relative to
+# programming_examples/llms/, which is where every importer lives.
 # Configs are the smallest legal ones, not the ones llms/ passes -- the return
 # type does not depend on the shape, and a prefill-scale build is slow.
 BUILDERS = [
