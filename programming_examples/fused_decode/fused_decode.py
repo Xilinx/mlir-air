@@ -7022,6 +7022,27 @@ def build_module():
                                         ),
                                     )
                                 assert ex is not None and len(ex) == N_EXTRA
+                                if len(set(ex)) == 1:
+                                    # INVERT when every extra wave agrees, which
+                                    # is the common case: their core scalars are
+                                    # the wave SHAPE, and the shapes that differ
+                                    # between waves (w_off, x_slot) are all
+                                    # launch-side. One case per wave costs core
+                                    # .data, and 25 fc sub-waves overflowed it by
+                                    # 80 bytes across the four switches below.
+                                    # Two cases and a default is the same
+                                    # function of the arm.
+                                    return index_switch(
+                                        [ty_],
+                                        _arm_i,
+                                        [0, 1],
+                                        case_body_builder=lambda op, i, cv: yield_(
+                                            [voc_val if cv == 0 else dec_thunk()]
+                                        ),
+                                        default_body_builder=lambda op: yield_(
+                                            [idx(ex[0])]
+                                        ),
+                                    )
                                 return index_switch(
                                     [ty_],
                                     _arm_i,
@@ -8015,6 +8036,20 @@ def build_module():
                                     default_body_builder=lambda op: yield_([idx(dec)]),
                                 )
                             assert ex is not None and len(ex) == N_EXTRA
+                            if len(set(ex)) == 1:
+                                # One case per wave costs core .data -- see the
+                                # same inversion in the proj core's _sel.
+                                return index_switch(
+                                    [idx_t],
+                                    arith.index_cast(idx_t, _arm),
+                                    [0, 1],
+                                    case_body_builder=lambda op, i, cv: yield_(
+                                        [idx(voc if cv == 0 else dec)]
+                                    ),
+                                    default_body_builder=lambda op: yield_(
+                                        [idx(ex[0])]
+                                    ),
+                                )
                             return index_switch(
                                 [idx_t],
                                 arith.index_cast(idx_t, _arm),
