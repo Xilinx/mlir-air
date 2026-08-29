@@ -956,6 +956,7 @@ APPEND_DMA = not DYNSEQ_APPEND
 # not dominate it. Allocating it up front is the whole change; no new op.
 ROPEQ_DMA = True
 TOATTNQ_DMA = True
+ATTNO_DMA = True
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3415,7 +3416,13 @@ def build_module():
                     # is the only place both are visible. Allocated at segment
                     # scope rather than inside the decode arm for the same
                     # reason -- the rope herd is a sibling of that arm.
+                    _omtb_pre = None
                     _qmtb_pre = None
+                    if ATTN_SUBSYS and not HYBRID_MIXER and ATTNO_DMA:
+                        _omtb_pre = AllocOp(omt_l2, [], [])
+                        _omtb_pre.operation.attributes["air.memtile_col"] = (
+                            IntegerAttr.get(T.i32(), 5)
+                        )
                     if ATTN_SUBSYS and not HYBRID_MIXER and ROPEQ_DMA:
                         _qmtb_pre = AllocOp(qmt_l2, [], [])
                         _qmtb_pre.operation.attributes["air.no_split"] = UnitAttr.get()
@@ -4161,7 +4168,7 @@ def build_module():
                                     DeallocOp(a_m)
                                     DeallocOp(a_cc)
 
-                                def _kv_body(sh, Lh, _c, _arm=None):
+                                def _kv_body(sh, Lh, _c, _arm=None, omt=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
                                     a_o = AllocOp(ao_l1, [], [])
@@ -4190,7 +4197,7 @@ def build_module():
                                     DeallocOp(a_m)
                                     DeallocOp(a_cc)
 
-                                def _kv_body(sh, Lh, _c, _arm=None):
+                                def _kv_body(sh, Lh, _c, _arm=None, omt=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
                                     a_o = AllocOp(ao_l1, [], [])
@@ -4248,6 +4255,33 @@ def build_module():
                                         DeallocOp(a_mix)
 
                                     def _put_o():
+                                        if ATTNO_DMA and omt is not None:
+                                            # All four name @attnO as anchor: the
+                                            # first finds no endpoint yet and builds
+                                            # the arm, the rest resolve to it and
+                                            # land in that same arm.
+                                            DmaMemcpyNd(
+                                                omt,
+                                                a_o,
+                                                dst_offsets=[_c * DQ_PER_CU],
+                                                dst_sizes=[DQ_PER_CU],
+                                                dst_strides=[1],
+                                                src_offsets=[0, 0, 0],
+                                                src_sizes=[
+                                                    Q_HEADS_PER_CU,
+                                                    DH // 8,
+                                                    8,
+                                                ],
+                                                src_strides=[
+                                                    8,
+                                                    Q_HEADS_PER_CU * 8,
+                                                    1,
+                                                ],
+                                                channel="attnO",
+                                                channel_indices=[_c],
+                                                hoist_after="attnO",
+                                            )
+                                            return
                                         ChannelPut(
                                             "attnO",
                                             a_o,
@@ -4305,7 +4339,9 @@ def build_module():
                         _qkb = _cus[0][4]
                         _kvb = _cus[0][5]
 
-                        def _attn_leaf(ty_arg, cu, sh, Lh, qk_ty, _arm=None, qmt=None):
+                        def _attn_leaf(
+                            ty_arg, cu, sh, Lh, qk_ty, _arm=None, qmt=None, omt=None
+                        ):
                             _isqk = arith.cmpi(
                                 arith.CmpIPredicate.eq, ty_arg, idx(qk_ty)
                             )
@@ -4314,46 +4350,62 @@ def build_module():
                                 _qkb(sh, Lh, cu, _arm, qmt)
                                 yield_([])
                             with InsertionPoint(_if.elseRegion.blocks[0]):
-                                _kvb(sh, Lh, cu, _arm)
+                                _kvb(sh, Lh, cu, _arm, omt)
                                 yield_([])
 
                         def _attn_pairsel(
-                            ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None, qmt=None
+                            ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None, qmt=None, omt=None
                         ):
                             _lo = arith.cmpi(arith.CmpIPredicate.slt, ty_arg, idx(2))
                             _ifp = IfOp(_lo, [], has_else=True)
                             with InsertionPoint(_ifp.thenRegion.blocks[0]):
-                                _attn_leaf(ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm, qmt)
+                                _attn_leaf(
+                                    ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm, qmt, omt
+                                )
                                 yield_([])
                             with InsertionPoint(_ifp.elseRegion.blocks[0]):
-                                _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm, qmt)
+                                _attn_leaf(
+                                    ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm, qmt, omt
+                                )
                                 yield_([])
 
-                        def _attn_col(ty_arg, shs, Lh, ci, _arm=None, qmt=None):
+                        def _attn_col(
+                            ty_arg, shs, Lh, ci, _arm=None, qmt=None, omt=None
+                        ):
                             """The CU_PER_COL compute units of attn column `ci`,
                             selected by the herd's row index."""
                             _lo = ci * CU_PER_COL
                             if CU_PER_COL == 1:
-                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm, qmt)
+                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm, qmt, omt)
                             else:
-                                _attn_pairsel(ty_arg, shs, Lh, _lo, _lo + 1, _arm, qmt)
+                                _attn_pairsel(
+                                    ty_arg, shs, Lh, _lo, _lo + 1, _arm, qmt, omt
+                                )
 
-                        def _attn_dec(tx_arg, ty_arg, shs, Lh, _arm=None, qmt=None):
+                        def _attn_dec(
+                            tx_arg, ty_arg, shs, Lh, _arm=None, qmt=None, omt=None
+                        ):
                             if ATTN_COLS == 1:
-                                _attn_col(ty_arg, shs, Lh, 0, _arm, qmt)
+                                _attn_col(ty_arg, shs, Lh, 0, _arm, qmt, omt)
                                 return
                             _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
                             _ifc = IfOp(_isc0, [], has_else=True)
                             with InsertionPoint(_ifc.thenRegion.blocks[0]):
                                 _attn_col(
-                                    ty_arg, shs, Lh, 0, _arm, qmt
+                                    ty_arg, shs, Lh, 0, _arm, qmt, omt
                                 )  # first attn col
                                 yield_([])
                             with InsertionPoint(_ifc.elseRegion.blocks[0]):
                                 _attn_col(
-                                    ty_arg, shs, Lh, 1, _arm, qmt
+                                    ty_arg, shs, Lh, 1, _arm, qmt, omt
                                 )  # second attn col
                                 yield_([])
+
+                        _has_qmt = bool(TOATTNQ_DMA and _qmtb_pre)
+                        _has_omt = bool(ATTNO_DMA and _omtb_pre)
+                        _attn_extra = ([_qmtb_pre] if _has_qmt else []) + (
+                            [_omtb_pre] if _has_omt else []
+                        )
 
                         if _seg_arm_i is not None:
 
@@ -4362,16 +4414,15 @@ def build_module():
                                 sizes=ATTN_HERD_SIZES,
                                 operands=[t.result for t in _sh]
                                 + [_Lc, _core_arm]
-                                + ([_qmtb_pre] if TOATTNQ_DMA and _qmtb_pre else []),
+                                + _attn_extra,
                             )
                             def attn_blk(_tx, _ty, _sx, _sy, *_a):
                                 shs = list(_a[:N_ATTN_CU])
                                 Lh, _arm = _a[N_ATTN_CU], _a[N_ATTN_CU + 1]
-                                _qmt = (
-                                    _a[N_ATTN_CU + 2]
-                                    if len(_a) > N_ATTN_CU + 2
-                                    else None
-                                )
+                                _ei = N_ATTN_CU + 2
+                                _qmt = _a[_ei] if _has_qmt else None
+                                _ei += 1 if _has_qmt else 0
+                                _omt = _a[_ei] if _has_omt else None
 
                                 def _voc():
                                     yield_([])
@@ -4401,7 +4452,9 @@ def build_module():
                                 _arm_only(
                                     arith.index_cast(idx_t, _arm),
                                     {1, 2} if MIX_TO_CU else {2},
-                                    lambda: _attn_dec(_tx, _ty, shs, Lh, _arm, _qmt),
+                                    lambda: _attn_dec(
+                                        _tx, _ty, shs, Lh, _arm, _qmt, _omt
+                                    ),
                                 )
 
                         else:
@@ -4424,8 +4477,11 @@ def build_module():
                     # reorder) into 2048, then ONE egress -> host (oGathered). This
                     # is the reference o_buffer; the loop-close step routes it to
                     # mem_1_1 (id2) = o-proj X instead of host.
-                    def _omtb_dec(_conv=CONV_MIXER):
-                        omtb = AllocOp(omt_l2, [], [])
+                    def _omtb_dec(_conv=CONV_MIXER, omtb=None):
+                        if _omtb_pre is not None:
+                            omtb = _omtb_pre
+                        if omtb is None:
+                            omtb = AllocOp(omt_l2, [], [])
                         # Stays pinned: gemma3-4b fails to place without it
                         # ('aie.masterset' op targets same destination DMA: 0).
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
@@ -4455,7 +4511,7 @@ def build_module():
                             )
 
                         def _src_attn():
-                            for c in range(N_ATTN_CU):
+                            for c in range(0 if ATTNO_DMA else N_ATTN_CU):
                                 ChannelGet(
                                     "attnO",
                                     omtb,
@@ -4488,7 +4544,9 @@ def build_module():
                                 strides=[idx(1)],
                             ),
                         )
-                        DeallocOp(omtb)
+                        if _omtb_pre is None:
+                            # The hoisted buffer outlives this arm.
+                            DeallocOp(omtb)
 
                     _skip_omtb = False
                     # gate-off 2026-07-15b: o-gather (attnO get + xnorm o-proj put) is
