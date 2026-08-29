@@ -1190,6 +1190,14 @@ ARM_IDLE_CASES = [0] + [2 + k for k in range(N_EXTRA)]
 # because the accumulate adds into the same buffer the X arrived in; the host
 # subtracts the tap it wrote and multiplies rms(tap) back. Exact, and it needs no
 # kernel mode that does not already exist.
+# TEMPORARY BISECT KNOB. 1 = cut the extra arm off after the input side (no
+# residual1, no layerOut) -- but note that ALSO removes the only consumer of
+# @outY, so the egress backs up and the proj cores stall on their outA buffer,
+# which stalls the weight puts: level 1 hangs by construction and measures
+# nothing. 2 = keep the whole on-chip chain and drop only the HOST-side
+# @layerOut get, so the dispatch waits on X and weights alone. Remove once the
+# extra wave runs.
+EXTRA_STOP = int(_os.environ.get("DECODE_EXTRA_STOP", "0"))
 EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
 _EXTRA_UNWIRED = sorted({_w["dest"] for _w in EXTRA_WAVES} - {"rms"})
 if _EXTRA_UNWIRED and not EXTRA_PARTIAL:
@@ -1713,7 +1721,7 @@ for _i, _w in enumerate(EXTRA_WAVES):
             f"extra wave {_w['name']}: {_ch} X chunks is not a whole number of "
             f"{K // XCHUNK}-chunk re-feeds"
         )
-    EXTRA_NREFEED.append(_ch // (K // XCHUNK))
+    EXTRA_NREFEED.append(0 if EXTRA_STOP == 3 else _ch // (K // XCHUNK))
 
 # RMS_BAND_STREAM level 2's DMA transfer granularity for banding rmsX, kept
 # SEPARATE from STG_W. AIETargetModel::getBDMaxDims/getDmaBdWrapBits
@@ -3239,7 +3247,13 @@ def build_module():
                         # Extra waves: their buffer is a compile-time choice, like
                         # the lm-head's -- there is exactly one and the arm has
                         # already selected the slab offset.
-                        _fan(_WEXTRA)
+                        # DECODE_EXTRA_STOP=6 reads the same extent out of the
+                        # DECODE weight BO instead: numerically garbage, but it
+                        # is the one way to ask whether the sixth kernel argument
+                        # itself is the stall. No wave has ever DMA'd from it --
+                        # a decode wave reads %arg1 and the input-side-only
+                        # builds fed no weights at all.
+                        _fan(W if EXTRA_STOP == 6 else _WEXTRA)
                     elif not W_SPLIT:
                         _fan(W)
                     elif _wsel[0] is None:
@@ -4202,20 +4216,34 @@ def build_module():
                             #
                             # Same op, same extent, offset 0: an extra wave's
                             # result lands in X slot 0, where the host reads it.
-                            ChannelGet(
-                                "layerOut",
-                                X,
-                                indices=[idx(0)],
-                                offsets=[0],
-                                sizes=[BATCH * LAYER_RNDS * PAYLOAD],
-                                strides=[1],
-                            )
-                            _colspan = EXTRA_PER_COL[k] * blk
-                            _feed_wcols(
-                                idx(EXTRA_WAVES[k]["w_off"]),
-                                _colspan,
-                                EXTRA_NSTEPS[k],
-                            )
+                            #
+                            # AND IT GOES LAST, after the weights, for the same
+                            # reason the X goes first. It is a GET: under
+                            # air.preserve_shim_dma_order the host awaits it
+                            # before issuing anything queued behind it, so
+                            # placing it above the weight feed makes the host
+                            # wait for a result the proj cores cannot compute
+                            # until they get the weights it is blocking. That
+                            # deadlocks -- it is what the first extra-wave build
+                            # that reached the device actually died of, and the
+                            # decode arm has always drained layerOut at the very
+                            # end of its own feed.
+                            if EXTRA_STOP != 3:
+                                _colspan = EXTRA_PER_COL[k] * blk
+                                _feed_wcols(
+                                    idx(EXTRA_WAVES[k]["w_off"]),
+                                    _colspan,
+                                    EXTRA_NSTEPS[k],
+                                )
+                            if EXTRA_STOP != 2:
+                                ChannelGet(
+                                    "layerOut",
+                                    X,
+                                    indices=[idx(0)],
+                                    offsets=[0],
+                                    sizes=[BATCH * LAYER_RNDS * PAYLOAD],
+                                    strides=[1],
+                                )
                             yield_([])
 
                         def _uni_dec():
@@ -8391,7 +8419,10 @@ def build_module():
                                 # group stalls the tail (see _uni_voc).
                                 ChannelGet("rmsW2", w2, indices=[idx(0)])
                         # residual1: h = x + o-proj, in place.
-                        _if_decode(lambda: _accumulate(OPROJ_RNDS, 1))
+                        _if_decode(
+                            lambda: _accumulate(OPROJ_RNDS, 1),
+                            decode_only=EXTRA_STOP in (1, 3),
+                        )
                         # ph2: pre-MLP layernorm of h -> the gate-up X feed.
                         # Zero re-feeds on the LM head arm: there is no second
                         # projection phase there, and a zero-trip scf.for emits
@@ -8405,7 +8436,7 @@ def build_module():
                         _if_decode(
                             lambda: _accumulate(DOWN_RNDS, 2), decode_only=bool(N_EXTRA)
                         )
-                        _if_decode(_layer_out)
+                        _if_decode(_layer_out, decode_only=EXTRA_STOP == 1)
                         for _b in (
                             ([w2] if POST_RMS else [])
                             + ([xr] if xr is not None else [])
