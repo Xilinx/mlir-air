@@ -110,10 +110,20 @@ def build_launch(
         lqp % num_q_tiles == 0
     ), f"lqp ({lqp}) must be divisible by num_q_tiles ({num_q_tiles})"
     assert lk % lkp == 0, f"lk ({lk}) must be divisible by lkp ({lkp})"
-    dk_tile = min(dk, lkp)
-    dv_tile = min(dv, lkp)
-    dk_chunks = dk // dk_tile
-    dv_chunks = dv // dv_tile
+    # d is NEVER split for this kernel, unlike attn_npu2 / seqfirst / npu1 which
+    # tile it at lkp. mmul walks d as k-blocks of 8 inside the microkernel, and
+    # fa_temporal.py compiles that microkernel with dk_tile = dv_tile = head_dim
+    # -- so a builder that chunks d disagrees with the kernel it calls, and the
+    # Makefile says what that costs: "a mismatch here does not fail the build, it
+    # produces wrong results". Splitting d also puts dk_chunks puts from distinct
+    # memrefs on one channel per loop iteration, which air-opt-memtile-dma-bds
+    # cannot fold; it unrolls the whole causal prefix into the memtile BD chain
+    # instead (measured 175 BDs against a 48 cap). Capacity at head_dim > lkp
+    # comes from a smaller lkp (tile_size_q must stay == lkp), not from d.
+    dk_tile = dk
+    dv_tile = dv
+    dk_chunks = 1
+    dv_chunks = 1
     if num_kv_heads is None:
         num_kv_heads = num_heads
     gqa_group_size = num_heads // num_kv_heads
