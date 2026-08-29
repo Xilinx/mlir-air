@@ -1956,7 +1956,18 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     };
     // The base joins the key: feeds off different bases are never contiguous,
     // and for a rolled body the base is what distinguishes one wave's slice.
-    llvm::MapVector<std::tuple<int64_t, StringRef, void *, void *>,
+    //
+    // AND SO DOES THE BLOCK. Ops in one block run in sequence, which is what
+    // makes "consecutive in walk order" mean "consecutive in time"; ops in
+    // sibling regions are ALTERNATIVES and never both run. A rolled launch
+    // whose arms are the cases of an scf.index_switch put one feed per arm --
+    // walk order visits them back to back and their offsets are contiguous, so
+    // without this they merge into a single transfer of the whole run, issued
+    // and awaited inside whichever arm happened to be first. That arm then
+    // waits for output the other arms have not produced yet: measured as a
+    // dispatch timeout on a 25-wave fused launch, with the first wave's drain
+    // landing and nothing after it.
+    llvm::MapVector<std::tuple<int64_t, StringRef, void *, void *, void *>,
                     SmallVector<Entry>>
         groups;
     for (auto d : paced) {
@@ -1970,7 +1981,7 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
         wave = w.getInt();
       groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer(),
-              desc->base.getAsOpaquePointer()}]
+              desc->base.getAsOpaquePointer(), (void *)d->getBlock()}]
           .push_back({d, desc->offset, desc->len});
     }
 
