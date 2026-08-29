@@ -1,6 +1,5 @@
 {
   "clock": 1000000000,
-  "cores": 1,
   "datatypes": [
     {
       "bytes": 1,
@@ -137,33 +136,10 @@
         "name": "linalg.matmul"
       }
     },
-    "opaque_costs": {
-      "nn": {
-        "datatypes": {
-          "i8": {
-            "latency": 10480
-          },
-          "bf16": {
-            "latency": 10480
-          },
-          "i32": {
-            "latency": 10480
-          }
-        }
-      },
-      "nonlin": {
-        "datatypes": {
-          "i8": {
-            "latency": 200
-          },
-          "bf16": {
-            "latency": 200
-          },
-          "i32": {
-            "latency": 200
-          }
-        }
-      }
+    "fallback": {
+      "cores_per_kernel_instance": 4,
+      "kernel_invocation_overhead": 0,
+      "default_ops_per_core_per_cycle": 2
     }
   }
 }

@@ -245,10 +245,91 @@ public:
   // Key pair: <src, dst>; mapped: vector of port pointers
   // TODO: deprecate this.
   std::map<std::pair<unsigned, unsigned>, port *> interfaces;
-  std::map<std::string, kernel *> kernels;
+  // How an op is priced. Four entries, and the names answer the reader's
+  // question -- I have an op, where does its cost come from?
+  //
+  //   cost_model.op_costs        ops with a body: a cycle expression over the
+  //                              op's own shape, or a throughput rate. Keyed by
+  //                              op name, or by `air.op_cost` when the op name
+  //                              does not identify the work.
+  //   cost_model.opaque_costs    ops with no body (air.custom): a fixed
+  //                              latency, keyed by the op's symbol. No formula,
+  //                              because there is nothing to derive one from.
+  //   cost_model.transfer_costs  data movement: bandwidth and time of flight,
+  //                              keyed by `air.transfer_cost`. Absent, a
+  //                              transfer is priced by its memory-space
+  //                              interface.
+  //   cost_model.fallback        used when none of the above matched: scalars
+  //                              feeding the built-in instruction-count
+  //                              estimate.
+  //
+  // Plural names are maps of named entries; `fallback` is singular because it
+  // is one entry, not a map.
+  std::map<std::string, kernel *> op_costs;
   std::vector<du *> dus;
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
+
+  // cost_model.transfer_costs: named ways of pricing a data movement.
+  //
+  // Same mechanism as op_costs -- select an entry by a key -- but the key has
+  // no default. An op_costs key falls back to the op name, so that table is
+  // always consulted; a transfer with no `air.transfer_cost` attribute never
+  // reaches this table and is priced by its memory-space interface, exactly as
+  // before this existed.
+  //
+  // It is needed because the only thing a transfer could be keyed on was its
+  // (src, dst) memory-space pair, so two transfers between the same two levels
+  // always cost the same. That is wrong whenever a machine prices them
+  // differently for a reason the memory spaces do not capture -- a second
+  // interconnect between the same levels is one such reason, and another, which
+  // needs no extra hardware, is that one of them overlaps with compute and
+  // never reaches the critical path. The runner has no other way to say either.
+  //
+  // Named for the cost model rather than for a wire, because which of those an
+  // arch author means is their business and not the runner's.
+  struct transferCost {
+    double data_rate = 0; // bytes per second; unset means "use the interface"
+    double latency = 0;   // cycles of time of flight
+    bool has_data_rate = false;
+    bool has_latency = false;
+  };
+  std::map<std::string, transferCost> transfer_costs;
+
+  void set_transfer_costs(llvm::json::Object *obj) {
+    if (!obj)
+      return;
+    for (auto &entry : *obj) {
+      auto *o = entry.second.getAsObject();
+      if (!o)
+        continue;
+      transferCost tc;
+      if (auto v = o->getNumber("bytes_per_second")) {
+        this->resource_assertion(
+            *v > 0, "transfer cost bytes_per_second must be positive");
+        tc.data_rate = *v;
+        tc.has_data_rate = true;
+      }
+      if (auto v = o->getNumber("latency")) {
+        this->resource_assertion(*v >= 0,
+                                 "transfer cost latency must not be negative");
+        tc.latency = *v;
+        tc.has_latency = true;
+      }
+      this->transfer_costs[entry.first.str()] = tc;
+    }
+  }
+
+  // The entry a channel names, or nullptr if it names none or names one the
+  // arch does not define. Lookup failure falls back silently and on purpose: an
+  // arch that does not describe the distinction is still a valid model of the
+  // same IR, just a coarser one.
+  const transferCost *getTransferCostEntry(llvm::StringRef name) {
+    if (name.empty())
+      return nullptr;
+    auto it = this->transfer_costs.find(name.str());
+    return it == this->transfer_costs.end() ? nullptr : &it->second;
+  }
 
   // How the throughput model prices a linalg body. These were fixed constants
   // in the runner, chosen for AIE: a herd body instance is one core, a kernel
@@ -260,7 +341,7 @@ public:
   double default_ops_per_core_per_cycle = 8;
   uint64_t kernel_invocation_overhead = 100;
 
-  void set_compute_model(llvm::json::Object *model) {
+  void set_fallback(llvm::json::Object *model) {
     if (!model)
       return;
     // Validate here rather than at the point of use: the first two divide a
@@ -328,13 +409,19 @@ public:
     }
   }
 
-  void set_kernels(llvm::json::Object *kernelObjects) {
+  void set_op_costs(llvm::json::Object *kernelObjects) {
+    // Absent is legal -- a model that prices nothing by name still runs, on
+    // the fallback. Dereferencing unconditionally used to be safe only because
+    // the sole caller read a top-level key; it now reads a nested one, so
+    // there are two ways to arrive here with nothing.
+    if (!kernelObjects)
+      return;
     for (auto it = kernelObjects->begin(), ie = kernelObjects->end(); it != ie;
          ++it) {
       llvm::json::Object *kernelObject = it->second.getAsObject();
       if (kernelObject) {
         kernel *new_kernel = new kernel(this, kernelObject);
-        this->kernels.insert(std::make_pair(
+        this->op_costs.insert(std::make_pair(
             kernelObject->getString("name").value(), new_kernel));
       }
     }
@@ -409,7 +496,7 @@ public:
     this->set_clock(clk);
     this->set_datatypes(datatypeObjects);
     this->set_interfaces();
-    this->set_kernels(kernelsObject);
+    this->set_op_costs(kernelsObject);
     // TODO: get parent from parentObject, for multi-device modelling.
   }
 
@@ -464,12 +551,29 @@ public:
   }
 
   device(llvm::json::Object *model) {
+    // Everything that prices an op lives under one `cost_model` object. See
+    // set_op_costs() for what the four entries under it are and why they are
+    // named the way they are.
+    auto *costs = model->getObject("cost_model");
+    // Everything that prices an op moved under `cost_model`. Say so, rather
+    // than silently pricing the whole model on the fallback: a file written
+    // against the old flat layout is otherwise indistinguishable from one that
+    // deliberately prices nothing.
+    this->resource_assertion(
+        costs != nullptr,
+        "arch model has no 'cost_model' object. The pricing tables live under "
+        "it now: cost_model.op_costs (was 'kernels'), cost_model.opaque_costs "
+        "(was 'custom_kernels'), cost_model.fallback (was 'compute_model'), "
+        "and cost_model.transfer_costs");
     this->setup_device_resources(model->getObject("dus"),
                                  model->getObject("noc"));
     this->setup_device_parameters(
         model->getObject("devicename"), model->getNumber("clock"),
-        model->getArray("datatypes"), model->getObject("kernels"), nullptr);
-    this->set_compute_model(model->getObject("compute_model"));
+        model->getArray("datatypes"),
+        costs ? costs->getObject("op_costs") : nullptr, nullptr);
+    this->set_fallback(costs ? costs->getObject("fallback") : nullptr);
+    this->set_transfer_costs(costs ? costs->getObject("transfer_costs")
+                                   : nullptr);
     this->reset_reservation();
   }
 

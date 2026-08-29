@@ -201,7 +201,7 @@ public:
       else
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
       if (link_latency)
-        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
+        *link_latency = getTransferLatency(d, c.op, srcSpace, dstSpace);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast_if_present<xilinx::air::ChannelGetOp>(c.op);
@@ -228,7 +228,7 @@ public:
         execution_time =
             getTransferCost(d, c.op, srcSpace, dstSpace, dstVolumn, dstTy);
       if (link_latency)
-        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
+        *link_latency = getTransferLatency(d, c.op, srcSpace, dstSpace);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       if (!isa<air::ExecuteOp>(c.op))
         c.op->emitOpError("has mismatching event type").attachNote()
@@ -245,7 +245,7 @@ public:
         // operator is the instruction, it is. Declared by the model -- except
         // where the model gave a cycle expression, which is the whole cost by
         // construction and has nothing to add to.
-        if (!kernelCycleExpr(d, child_op))
+        if (!opCostCycleExpr(d, child_op))
           execution_time += d.kernel_invocation_overhead;
       } else if (auto custom_op =
                      dyn_cast_if_present<air::CustomOp>(child_op)) {
@@ -774,15 +774,43 @@ private:
 
     double bytes = volume * datawidth;
     double bps = d.interfaces[{srcSpace, dstSpace}]->data_rate;
+    // A channel may name an entry of cost_model.transfer_costs, for a machine
+    // that prices two transfers differently for a reason their memory spaces
+    // do not capture. See device::transfer_costs.
+    if (auto *tc = d.getTransferCostEntry(transferCostKeyForOp(op)))
+      if (tc->has_data_rate)
+        bps = tc->data_rate;
     if (bps == 0.0f)
       op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
 
-  // Fixed time-of-flight, in cycles, of the link between two memory spaces.
-  // Independent of payload size, and not part of the link's occupancy.
-  uint64_t getTransferLatency(device &d, unsigned srcSpace, unsigned dstSpace) {
+  // Which entry of cost_model.transfer_costs prices this op, or empty if it is
+  // not a channel op or its channel names none.
+  llvm::StringRef transferCostKeyForOp(Operation *op) {
+    auto chanOp = mlir::dyn_cast_if_present<air::ChannelInterface>(op);
+    if (!chanOp)
+      return {};
+    auto decl = air::getChannelDeclarationThroughSymbol(chanOp);
+    if (!decl)
+      return {};
+    if (auto attr = decl->getAttrOfType<StringAttr>("air.transfer_cost"))
+      return attr.getValue();
+    return {};
+  }
+
+  // Fixed time of flight, in cycles, of the transfer. Independent of payload
+  // size, and not part of the link's occupancy.
+  //
+  // Defaults to the interface between the two memory spaces; a channel naming
+  // a transfer cost overrides it, which is the only way to price two transfers
+  // that join the same pair of levels differently.
+  uint64_t getTransferLatency(device &d, Operation *op, unsigned srcSpace,
+                              unsigned dstSpace) {
+    if (auto *tc = d.getTransferCostEntry(transferCostKeyForOp(op)))
+      if (tc->has_latency)
+        return (uint64_t)std::llround(tc->latency);
     auto it = d.interfaces.find({srcSpace, dstSpace});
     if (it == d.interfaces.end() || !it->second)
       return 0;
@@ -910,33 +938,34 @@ private:
     return (uint64_t)std::llround(*result);
   }
 
-  // Which entry of the model's `kernels` map prices this op.
+  // Which entry of `cost_model.op_costs` prices this op.
   //
   // The op's name by default, which is enough when an op name identifies the
-  // work. It often does not: the projections of a transformer layer are all a
-  // matvec and cost differently, so keying on "linalg.matvec" gives all of them
-  // one cost and no way to tell them apart. An `air.kernel` attribute names the
-  // entry instead -- the same thing air.custom's symbol does, without giving up
-  // an op that says what it computes.
-  static std::string kernelKeyForOp(Operation *op) {
-    if (auto named = op->getAttrOfType<StringAttr>("air.kernel"))
+  // work. It often does not: several projections in one layer can all be a
+  // matvec over the same activation and cost differently, so keying on
+  // "linalg.matvec" gives them one cost and no way to tell them apart. An
+  // `air.op_cost` attribute names the entry instead -- the same thing
+  // air.custom's symbol does, without giving up an op that says what it
+  // computes.
+  static std::string opCostKeyForOp(Operation *op) {
+    if (auto named = op->getAttrOfType<StringAttr>("air.op_cost"))
       return named.getValue().str();
     return air::to_string(op);
   }
 
   // True when the op asked for a specific entry rather than defaulting to its
   // name, so a missing entry is a mistake in the model and not silence.
-  static bool namesItsKernel(Operation *op) {
-    return (bool)op->getAttrOfType<StringAttr>("air.kernel");
+  static bool namesItsOpCost(Operation *op) {
+    return (bool)op->getAttrOfType<StringAttr>("air.op_cost");
   }
 
   // A model-supplied cycle expression for this op and datatype, if any.
-  std::optional<std::string> kernelCycleExpr(device &d, Operation *op) {
-    auto name = kernelKeyForOp(op);
-    if (!d.kernels.count(name))
+  std::optional<std::string> opCostCycleExpr(device &d, Operation *op) {
+    auto name = opCostKeyForOp(op);
+    if (!d.op_costs.count(name))
       return std::nullopt;
     auto dt = getElementTypeAsString(op->getOperandTypes()[0]);
-    auto &exprs = d.kernels[name]->cycle_exprs;
+    auto &exprs = d.op_costs[name]->cycle_exprs;
     auto it = exprs.find(dt);
     if (it == exprs.end())
       return std::nullopt;
@@ -955,7 +984,7 @@ private:
     // it replaces the op count, the rate and the efficiency, and an op it
     // prices is not one the throughput model is guessing at, so nothing is
     // reported as unpriced either.
-    if (auto expr = kernelCycleExpr(d, op)) {
+    if (auto expr = opCostCycleExpr(d, op)) {
       uint64_t ops = 0;
       for (auto &p : opCounts.map)
         if (isPricedScalarOp(std::get<0>(p)))
@@ -971,16 +1000,16 @@ private:
     // the op count would let those fall back to the default rate in silence,
     // which is the case the attribute exists to rule out.
     auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
-    auto key = kernelKeyForOp(op);
-    if (namesItsKernel(op)) {
+    auto key = opCostKeyForOp(op);
+    if (namesItsOpCost(op)) {
       // A cycles expression for this datatype has already been taken above, so
       // reaching here means the entry must price it some other way.
-      if (!d.kernels.count(key))
-        op->emitOpError("names kernel '")
-            << key << "', which the model does not define";
-      else if (!d.kernels[key]->datatypes.count(op_datatype))
-        op->emitOpError("names kernel '")
-            << key << "', which the model has, but not for datatype '"
+      if (!d.op_costs.count(key))
+        op->emitOpError("air.op_cost names '")
+            << key << "', which cost_model.op_costs does not define";
+      else if (!d.op_costs[key]->datatypes.count(op_datatype))
+        op->emitOpError("air.op_cost names '")
+            << key << "', which cost_model.op_costs has, but not for datatype '"
             << op_datatype << "'";
     }
 
@@ -1008,10 +1037,10 @@ private:
     if (compute_op_count) {
       double ops_per_core_per_cycle = d.default_ops_per_core_per_cycle;
       double efficiency = 1.0f;
-      if (d.kernels.count(key) &&
-          d.kernels[key]->datatypes.count(op_datatype)) {
-        ops_per_core_per_cycle = d.kernels[key]->datatypes[op_datatype].second;
-        efficiency = d.kernels[key]->datatypes[op_datatype].first;
+      if (d.op_costs.count(key) &&
+          d.op_costs[key]->datatypes.count(op_datatype)) {
+        ops_per_core_per_cycle = d.op_costs[key]->datatypes[op_datatype].second;
+        efficiency = d.op_costs[key]->datatypes[op_datatype].first;
       }
 
       double ops_per_cycle =
@@ -1037,7 +1066,8 @@ private:
         op->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName())
             .str();
     auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
-    auto kernels = model->getObject("custom_kernels");
+    auto *costs = model->getObject("cost_model");
+    auto kernels = costs ? costs->getObject("opaque_costs") : nullptr;
     if (kernels) {
       auto kernel = kernels->getObject(op_sym_name);
       if (kernel) {
@@ -1054,13 +1084,15 @@ private:
           cycles = *kernel_ty->getNumber("latency");
         } else {
           op->emitOpError("unknown data type ")
-              << op_datatype << " for custom kernel " << op_sym_name;
+              << op_datatype << " for cost_model.opaque_costs entry "
+              << op_sym_name;
         }
       } else {
-        op->emitOpError("found no custom kernel named ") << op_sym_name;
+        op->emitOpError("cost_model.opaque_costs has no entry named ")
+            << op_sym_name;
       }
     } else {
-      op->emitOpError("found no custom_kernels obj. in JSON");
+      op->emitOpError("found no cost_model.opaque_costs obj. in JSON");
     }
     return cycles;
   }

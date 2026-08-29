@@ -75,6 +75,15 @@
         },
         "name": "linalg.copy"
       }
+    },
+    "transfer_costs": {
+      "fast": {
+        "bytes_per_second": 4000000000,
+        "latency": 0
+      },
+      "slowpath": {
+        "latency": 900
+      }
     }
   }
 }

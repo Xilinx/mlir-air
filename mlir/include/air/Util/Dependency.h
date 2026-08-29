@@ -181,6 +181,13 @@ struct dependencyNodeEntry {
   // Token count is used to synchronize operations which consumes/produces
   // multiple async tokens.
   int token_count;
+  // How many spatial instances of this event have been dispatched so far.
+  // Channel progress is otherwise tracked per channel instance, which is the
+  // same thing only while one op owns the whole channel. A broadcast whose
+  // receivers are separate ops shares one channel between them, so without a
+  // per-op count the first receiver to be scheduled consumes every dispatch
+  // the fanout allows and the rest can never run. Reset with start/end time.
+  unsigned dispatched_count;
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }
   bool is_done(uint64_t t) { return t >= end_time; }
@@ -199,7 +206,7 @@ struct dependencyNodeEntry {
         color(color), shape(shape), detailed_description(detailed_description),
         operationId(operationId), op(op), start_time(start_time),
         end_time(end_time), release_time(end_time), resources_released(false),
-        token_count(token_count) {}
+        token_count(token_count), dispatched_count(0) {}
 };
 
 // Dependency graph object
