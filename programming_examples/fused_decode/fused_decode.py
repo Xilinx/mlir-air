@@ -1514,6 +1514,65 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 #
 # 2 is the default and reproduces the exact prior IR (check_batch1_noop and the
 # depth-2 disassembly are both unaffected by this knob's existence).
+# RMS_MEMTILE_REFEED: move ph0/ph2's X re-broadcast off the rms CORE and onto
+# the X MEMTILE, so the core computes each normed chunk ONCE instead of once per
+# refeed sweep.
+#
+# WHY IT IS NEEDED ONLY AT BATCH > 1. At batch 1 the core holds the whole normed
+# X (BATCH*K bf16) and refeed() re-sends that one resident buffer -- no
+# recomputation at all. At batch 8 that buffer is 40 KB and the core is already
+# at 59424 of 59440 B holding the RAW x (which the residual still needs), so the
+# chunked path regenerates: `for r in nrefeed: for c in nchunk: rms_chunk`. That
+# is 12*5 chunks for ph0 and 38*5 for ph2 -- 250 a layer for 10 distinct ones,
+# and rms_chunk is 30.8 ms of a 134 ms dispatch (measured by deletion,
+# RMS_CHUNK_PROBE=2).
+#
+# The memtile has 512 KB, so it can hold what the core cannot. ph1 and ph3
+# already work this way ("mechanism-2": a memtile L2 buffer plus
+# refeed(n, _xnorm_put(buf, width))); this gives ph0/ph2 the same treatment.
+#
+# IT DOES NOT BUILD, AND THE REASON IS WORTH THE CODE. Every variant fails
+# air-to-aie with
+#     'aie.memtile_dma' op has more than 48 blocks
+# Three were tried:
+#   =1  all four decode phases split out (ph0 and ph2 gathered)      FAILS
+#   =2  ph2 alone gathered, ph0+ph1 left in one flat loop            FAILS
+#   =2 with the gather buffer moved to a memtile carrying 18 blocks
+#      instead of the X memtile's ceiling                            FAILS
+# The third is the informative one: relocating the BUFFER changes nothing, so
+# the blocks are spent on the @inX PUT side, which fans to all 16 projection
+# cores. Every additional feed structure costs that fan again, and the X memtile
+# has no room for a second.
+#
+# So "_feed_inX is ONE loop and the arms differ only in the trip count" is not a
+# style rule -- it is forced by the BD block budget of a 16-way broadcast, and
+# the comment calling two feed loops "the prior bug" was describing this wall
+# from the other side.
+#
+# THE ROUTE OUT, for whoever picks this up: free blocks on the tile that drives
+# @inX before adding a structure to it. The ph1 and ph3 relays are flat
+# pass-throughs and are the obvious candidates to move to one of the memtiles
+# sitting at 18-22 blocks. That is a bigger rearrangement than this knob, which
+# is why this stops here rather than guessing at it.
+#
+# Kept because the ~29 ms is real (rms_chunk is 30.8 ms by deletion and 96% of
+# its calls are redundant) and because three measured dead ends are cheaper to
+# read than to rediscover. Inert at the default, and check_channel_balance plus
+# _chanbal.py both show the emitted IR differs on @xnorm and nothing else.
+# Silently inert at batch 1 rather than an error: tools that sweep both batches
+# for comparison (check_channel_balance.py builds batch 1 to scale against)
+# would otherwise die on the knob rather than on anything real.
+RMS_MEMTILE_REFEED = int(_os.environ.get("RMS_MEMTILE_REFEED", "0")) and BATCH > 1
+# Which memtile column holds the gather buffer; see _feed_inX_rf.
+RMS_MEMTILE_COL = int(_os.environ.get("RMS_MEMTILE_COL", "3"))
+# How many X sweeps the RMS CORE emits per phase, per arm. Without the knob the
+# core does the re-broadcasting itself, so this IS the refeed count; with it the
+# memtile re-broadcasts and the core emits exactly one sweep (or none, where the
+# phase does not run on that arm).
+assert not (
+    RMS_MEMTILE_REFEED and N_EXTRA
+), "RMS_MEMTILE_REFEED does not yet carry the extra waves' own refeed counts"
+
 PROJ_RING_DEPTH = int(_os.environ.get("PROJ_RING_DEPTH", "2"))
 assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist"
 
@@ -1727,6 +1786,17 @@ for _i, _w in enumerate(EXTRA_WAVES):
             f"{K // XCHUNK}-chunk re-feeds"
         )
     EXTRA_NREFEED.append(0 if EXTRA_STOP == 3 else _ch // (K // XCHUNK))
+
+_PH0_SWEEPS = (
+    (1, 1, [1] * N_EXTRA)
+    if RMS_MEMTILE_REFEED == 1
+    else (VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED)
+)
+_PH2_SWEEPS = (
+    (0, 1, [0] * N_EXTRA)
+    if RMS_MEMTILE_REFEED
+    else (0, REFEED[GATEUP_PHASE], [0] * N_EXTRA)
+)
 
 # RMS_BAND_STREAM level 2's DMA transfer granularity for banding rmsX, kept
 # SEPARATE from STG_W. AIETargetModel::getBDMaxDims/getDmaBdWrapBits
@@ -2366,6 +2436,11 @@ def build_module():
         # X memtile = reproducer x_buffer: 512 (2 blocks) so the producer re-feed +
         # broadcast has the same slack as the reference; the proj cores' 256 ring chops it.
         xmt_l2 = MemRefType.get([BATCH * XCHUNK], bf16, memory_space=l2)
+        # RMS_MEMTILE_REFEED: the same staging, widened to hold a whole phase's
+        # X (every chunk of every token) so the memtile can re-broadcast it
+        # instead of the core recomputing it. 40 KB at batch 8 against the
+        # memtile's 512 KB.
+        xmt_wide_l2 = MemRefType.get([BATCH * K], bf16, memory_space=l2)
         # One fan get. W_DUAL_CHAN halves it: each shim channel feeds its own
         # ring covering half the column's cores (FLM's w_buffer[0:5120] /
         # w_buffer[5120:10240] split).
@@ -5111,6 +5186,80 @@ def build_module():
                             DeallocOp(xb)
                             yield_([])
 
+                    def _feed_inX_rf(src, nchunk, nrefeed):
+                        """RMS_MEMTILE_REFEED: gather one phase's X, then
+                        re-broadcast it -- the memtile doing what the core used
+                        to do by recomputing.
+
+                        The gather is nchunk gets of one [BATCH][XCHUNK] window
+                        each, landing back to back, so the wide buffer ends up
+                        chunk-major/token-minor -- exactly what _xnorm_put
+                        already produces and what the put below indexes. The
+                        re-broadcast then walks (refeed, chunk) in that order,
+                        because THAT is the order the projection cores consume:
+                        row-block r wants col-blocks 0..nchunk-1 in sequence,
+                        and its accumulator is live across them. Emitting
+                        chunk-major here would hand row-block r the same chunk
+                        nrefeed times.
+                        """
+                        wb = AllocOp(xmt_wide_l2, [], [])
+                        # NOT on XMT_PCOL. The X memtile is already at its 48-BD-block
+                        # ceiling -- adding this gather there fails air-to-aie with
+                        # 'aie.memtile_dma' op has more than 48 blocks, both with all
+                        # four decode phases converted and with ph2 alone. The other
+                        # memtiles carry 18-33 blocks, so the gather goes to one with
+                        # headroom and @inX originates from there for these phases.
+                        wb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                            T.i32(), RMS_MEMTILE_COL
+                        )
+                        _win = BATCH * XCHUNK
+                        for _g in for_(idx(0), idx(nchunk), idx(1)):
+                            ChannelGet(
+                                src,
+                                wb,
+                                offsets=[arith.muli(_g, idx(_win))],
+                                sizes=[idx(_win)],
+                                strides=[idx(1)],
+                            )
+                            yield_([])
+                        # THE SWEEP CANNOT BE ONE OP, and the reason bounds this
+                        # whole approach. Folding it into the xfeed descriptor
+                        # needs [nchunk, XCHUNK_MUL] outside _XFEED_BD's three
+                        # dimensions -- five in total, and this file already
+                        # records that the fifth is dropped in AIRRtToNpuPass
+                        # WITHOUT a diagnostic (see _rms_x_feed_ph). The two
+                        # cannot merge either: consecutive XCHUNK_MUL windows sit
+                        # 32 elements apart while the inner dimension already
+                        # walks stride 8, so they interleave rather than
+                        # partition.
+                        #
+                        # So it stays an explicit nest, and the nest costs BD
+                        # blocks. Four decode phases split out this way is
+                        #   'aie.memtile_dma' op has more than 48 blocks
+                        # -- measured. Hence RMS_MEMTILE_REFEED=2, which converts
+                        # ph2 alone (190 of the 250 redundant chunks a layer) and
+                        # leaves ph0/ph1/ph3 in one flat loop.
+                        _sz, _st = _XFEED_BD
+                        for _r in for_(idx(0), idx(nrefeed), idx(1)):
+                            for _c in for_(idx(0), idx(nchunk), idx(1)):
+                                _base = arith.muli(_c, idx(_win))
+                                for _jj in for_(idx(0), idx(XCHUNK_MUL), idx(1)):
+                                    _o0 = arith.addi(
+                                        _base,
+                                        arith.muli(_jj, idx(COL_BLOCK // _st[0])),
+                                    )
+                                    ChannelPut(
+                                        "inX",
+                                        wb,
+                                        offsets=[_o0] + [idx(0)] * (len(_sz) - 1),
+                                        sizes=[idx(v) for v in _sz],
+                                        strides=[idx(v) for v in _st],
+                                    )
+                                    yield_([])
+                                yield_([])
+                            yield_([])
+                        DeallocOp(wb)
+
                     # ONE feed loop reading the convergent @xnorm: rms-X (RMS_REFEED
                     # whole-2048 re-reads, from the rms core) THEN down-X (DOWN_REFEED
                     # whole-8192 re-reads, from the down_buffer) -- both converge on
@@ -5133,12 +5282,38 @@ def build_module():
                     _xc_voc = VOCAB_RNDS * (K // XCHUNK)
                     if _seg_arm_i is not None:
 
+                        _NCH = K // XCHUNK
+
                         def _xs_voc():
-                            _feed_inX("xnorm", _xc_voc)
+                            if RMS_MEMTILE_REFEED == 1:
+                                _feed_inX_rf("xnorm", _NCH, VOCAB_RNDS)
+                            else:
+                                _feed_inX("xnorm", _xc_voc)
                             yield_([])
 
                         def _xs_dec():
-                            _feed_inX("xnorm", _xc_dec)
+                            if RMS_MEMTILE_REFEED:
+                                # Phase-time order, matching the producers:
+                                # rms ph0 -> o-memtile ph1 -> rms ph2 -> down ph3.
+                                # Only the two rms phases gather-and-rebroadcast;
+                                # ph1 and ph3 already come from memtiles that
+                                # refeed on their own side, so they stay flat.
+                                if RMS_MEMTILE_REFEED == 1:
+                                    _feed_inX_rf("xnorm", _NCH, REFEED[0])
+                                    _feed_inX("xnorm", OPROJ_REFEED * _NCH)
+                                else:
+                                    # ph2 only: ph0 and ph1 stay in ONE flat loop,
+                                    # which is a BD block this memtile cannot spare.
+                                    _feed_inX(
+                                        "xnorm", (REFEED[0] + OPROJ_REFEED) * _NCH
+                                    )
+                                _feed_inX_rf("xnorm", _NCH, GATEUP_REFEED)
+                                if DOWN_PHASE >= 0:
+                                    _feed_inX(
+                                        "xnorm", DOWN_REFEED * (GLU_OUT // XCHUNK)
+                                    )
+                            else:
+                                _feed_inX("xnorm", _xc_dec)
                             yield_([])
 
                         if not N_EXTRA:
@@ -8485,7 +8660,7 @@ def build_module():
                             _w_row_get(w)
                             if POST_RMS:
                                 _w_row_get(w2)
-                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED))
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS))
                         elif RMS_W_ON_X:
                             # BOTH weights first, back to back, before anything
                             # else touches the band buffer -- and in the SAME
@@ -8515,10 +8690,10 @@ def build_module():
                             if POST_RMS:
                                 _rms_band_get(xb)
                                 CallOp(band_to_weight_aie, [w2, xb, _i32(K)])
-                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED))
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS))
                         else:
                             ChannelGet("rmsW", w, indices=[idx(0)])
-                            _emit_norm(w, _cnt(VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED))
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS))
                             if POST_RMS:
                                 # Swap in the post-attention weight BEFORE the
                                 # first o-proj get, not after: rmsW2 packet-muxes
@@ -8557,7 +8732,7 @@ def build_module():
                         # is what the lock credit counts.
                         _emit_norm(
                             w2 if POST_RMS else w,
-                            _cnt(0, REFEED[GATEUP_PHASE], [0] * N_EXTRA),
+                            _cnt(*_PH2_SWEEPS),
                         )
                         # residual2: layer output = h + down, in place.
                         _if_decode(
