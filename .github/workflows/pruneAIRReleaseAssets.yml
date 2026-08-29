@@ -61,12 +61,21 @@ jobs:
           for TAG in latest-air-wheels latest-air-wheels-no-rtti; do
             echo "::group::${TAG}"
 
+            # Restrict to .whl. These releases carry nothing but wheels today,
+            # so this changes no current behaviour -- it bounds future
+            # behaviour. Anything else attached later (a checksum file, a
+            # tarball, release notes) is both outside this job's remit and
+            # unparseable by the keep-floor below, which derives its key from
+            # wheel filename fields; excluding non-wheels here means they can
+            # never be deleted and can never corrupt a wheel's key.
+            #
             # Skip the tag on any fetch failure rather than letting set -e kill
             # the run. Bailing out is also the only safe response to a partial
             # response: the keep-floor is computed from this list, so pruning
             # against a truncated one could delete a variant's last wheel.
             if ! gh api "repos/${REPO}/releases/tags/${TAG}" --paginate \
-              -q '.assets[] | "\(.created_at)\t\(.id)\t\(.name)"' | sort > /tmp/assets.tsv; then
+              -q '.assets[] | select(.name | endswith(".whl")) | "\(.created_at)\t\(.id)\t\(.name)"' \
+              | sort > /tmp/assets.tsv; then
               echo "::warning::failed to list assets for ${TAG}, skipping"
               echo "::endgroup::"
               continue
@@ -74,11 +83,11 @@ jobs:
 
             count=$(wc -l < /tmp/assets.tsv)
             if [ "$count" -eq 0 ]; then
-              echo "::warning::no assets found for ${TAG}, skipping"
+              echo "::warning::no wheel assets found for ${TAG}, skipping"
               echo "::endgroup::"
               continue
             fi
-            echo "total assets: ${count}"
+            echo "total wheel assets: ${count}"
 
             # Keep-floor: never delete the newest asset for a given wheel
             # variant, however old it is. A wheel's last three dash-separated
