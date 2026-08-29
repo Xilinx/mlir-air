@@ -25,30 +25,37 @@ carries no DFlash code:
   * the wave descriptors (I2 / J2 / dest / X source / weight offset);
   * the layout gate, below, which is the thing that fails SILENTLY.
 
-TEN WAVES, and section 3.3's decomposition was right after all:
+FORTY-FIVE WAVES, ALL THE SAME SHAPE -- i2=1, j2=5, dest="rms", 160 blocks:
 
-  fc      is FIVE accumulating 2560x2560 projections, I2=5 J2=5, one per tap.
-          A single 2560x12800 wave is the tidier description and it was tried;
-          it has nowhere to keep its X. The taps can only reach @xnorm through
-          the rms core (the one producer there with a route to DDR), and at the
-          shipping RMS_BAND_STREAM=0 that core's @rmsX get is ONE op outside the
-          refeed loop, landing a resident BATCH*K row -- 40 KB of a 64 KB tile
-          for ONE tap. Split, each wave's X is one resident tap and the
-          cross-wave sum lands where the model already puts a cross-phase sum:
-          the rms core's residual, which accumulates through DDR.
-          The pack is NOT redone -- `fc_slab_perm` shows the five-slab layout is
-          a bijection on the shipped `W_fc` blocks, so it is a gather.
-  ctx K/V is the drafter's OWN k_proj/v_proj, already inside each drafter
-          layer's phase-0 `concat([Wq;Wk;Wv])` slab. Nothing new is packed --
-          only a row window is selected.
+  fc      25 sub-waves. It is FIVE accumulating 2560x2560 projections, one per
+          tap (section 3.3's decomposition), each split again into five
+          single-iteration waves. A single 2560x12800 wave is the tidier
+          description and it was tried; it has nowhere to keep its X. The taps
+          can only reach @xnorm through the rms core (the one producer there
+          with a route to DDR), and at the shipping RMS_BAND_STREAM=0 that
+          core's @rmsX get is ONE op outside the refeed loop, landing a resident
+          BATCH*K row -- 40 KB of a 64 KB tile for ONE tap. The five-way split
+          within a tap is a DEADLOCK bound instead: i2-1 egress rounds have to
+          sit in the fabric while the rms core finishes feeding, and it holds
+          four. The pack is NOT redone -- `fc_slab_perm` shows the five-slab
+          layout is a bijection on the shipped `W_fc` blocks, so it is a gather.
+  ctx K/V 20 sub-waves, four per drafter layer. The drafter's OWN k_proj/v_proj,
+          already inside each layer's phase-0 `concat([Wq;Wk;Wv])` slab: nothing
+          is packed, only a row window selected. dest="rms" like fc, so the
+          projection comes back RAW and the host does k_norm and RoPE -- see
+          `wave_specs`. That is what removed the last piece of engine work this
+          fold was waiting on.
 
-Every wave now reads exactly ONE X slot, which is what made the split worth
-taking on its own terms.
+Every wave reads exactly ONE X slot, which is what made the splits worth taking
+on their own terms.
 
 A wave is a whole launch iteration running ONE phase, which is the shape the
 LM-head waves already have (`nph_v = _sel(idx(1), ... idx(NPH))`). That is why
 `qwen3_4b_draft_requant.py`'s note about `fc` not fitting as a 5th PHASE (it
 would break `FULL4`) does not apply here: this is a 5th kind of WAVE.
+
+`WavePrepass` at the bottom is what a decode loop calls where it called
+`PrepassRunner`, and its docstring carries the measured cost of the whole fold.
 
     python3 dflash_prepass_waves.py             # the layout gate
     python3 dflash_prepass_waves.py --format    # q4k vs AWQ-int4 vs bf16
@@ -744,6 +751,185 @@ def context_kv(fd, waves, xall, th, kn_w, positions):
         ks.append(rope_ref(k, positions).reshape(-1, KVD))
         vs.append(a[:, KVD : 2 * KVD])
     return np.stack(ks), np.stack(vs)
+
+
+# ---------------------------------------------------------------------------
+# The pre-pass, as dispatches of the target's own program
+# ---------------------------------------------------------------------------
+class WavePrepass:
+    """`PrepassRunner`'s contract, with no third PDI behind it.
+
+        run(taps, positions) -> (target_hidden [n, D], k_ctx, v_ctx [5, n, 1024])
+
+    THREE INSTRUCTION STREAMS, ONE XCLBIN. UNI_WAVE_LO/HI restrict only the
+    fused launch loop -- the ABI and the CDO stay at UNI_DEC/UNI_LM -- so the
+    same device program can be driven by
+
+        verify   [0, DEC+LM+25)     the shipping verify pass, fc riding its tail
+        fc       [DEC+LM, DEC+LM+25)  fc alone, for rows no verify pass produced
+        ctxkv    [DEC+LM+25, END)     the context K/V, before each draft
+
+    and switching between them costs no PDI. That is the whole reason folding
+    the pre-pass is worth anything: the third program cost 36.5 ms of ELF
+    load/unload per block on top of its 82.0 ms of dispatch, at 0.46 GB/s.
+
+    MEASURED, one xclbin, qwen3-4b batch 8 at L=157, median of 7 [hw]:
+
+        stream         waves       ms   marginal
+        decode + LM       46   146.311      --
+        + fc              71   150.459    +4.148
+        + context K/V     91   152.429    +1.970
+        fc alone          25     3.173             20.5 MB -> 6.5 GB/s
+        context K/V alone 20     2.496             16.4 MB -> 6.6 GB/s
+
+    So the pre-pass costs 4.15 ms riding the verify pass plus 2.50 ms of its
+    own dispatch -- 6.65 ms against 118.5, and the 111.9 ms that buys back is
+    more than a third of a speculative step.
+
+    fc's marginal cost inside the verify pass (4.15) is HIGHER than its cost
+    alone (3.17), so riding the tail is not free -- it is chosen because the
+    taps are already in the X buffer there, and uploading them for a standalone
+    fc dispatch costs the difference back.
+
+    THE ORDER IN A BLOCK IS FORCED, and it is why fc and the context K/V are
+    two dispatches rather than one. th = hidden_norm(fc(taps)) and the context
+    K/V is a projection OF th, so the two cannot share a dispatch: the sum and
+    the norm between them are the host's. And taps for block N+1 come out of
+    block N's verify pass, which is what lets fc ride that pass's tail for free
+    while the context K/V takes a dispatch of its own before the draft.
+    """
+
+    def __init__(self, target, insts_dir=None, prefix=None, verbose=True):
+        import numpy as _np
+
+        from qwen3_4b_draft_weights import DraftWeights
+
+        self.np = _np
+        self.t = target
+        self.B, self.K = target.batch, target.K
+        fd_draft = _load_draft_fd()
+        self.waves, _ = wave_specs(fd_draft)
+        self.n_layers = fd_draft.UNI_DEC
+        self.tap0, self.tap_stride = _tap_slots(fd_draft)
+        self.th_slot = [w for w in self.waves if w.group != "fc"][0].x_slot
+        self.n_tap = len({w.x_slot for w in self.waves if w.group == "fc"})
+
+        dw = DraftWeights()
+        self.hn_w = _np.asarray(dw.hidden_norm(), _np.float32)
+        self.kn_w = [
+            _np.asarray(dw.bf16(f"layers.{L}.self_attn.k_norm.weight"), _np.float32)
+            for L in range(self.n_layers)
+        ]
+
+        d = Path(insts_dir) if insts_dir else (_HERE.parent.parent / "fused_decode")
+        pre = prefix or f"_L{target.ATTN_MAXL}"
+        self.insts = {
+            n: _np.fromfile(d / f"{pre}_{n}.insts.bin", dtype=_np.uint8)
+            for n in ("fc", "ctxkv")
+        }
+        self.t_run, self.n_run = 0.0, 0
+        if verbose:
+            print(
+                f"[wave prepass] {len(self.waves)} waves, {self.n_tap} taps at slot "
+                f"{self.tap0}+{self.tap_stride}k, target_hidden at slot "
+                f"{self.th_slot}; streams "
+                + ", ".join(f"{n} {v.nbytes}B" for n, v in self.insts.items()),
+                flush=True,
+            )
+
+    # -- X buffer helpers ---------------------------------------------------
+    def _write_slot(self, slot, rows):
+        """Fill X slot `slot` with `rows` ([<=B, K]), zero-padded to B."""
+        np = self.np
+        buf = np.zeros((self.B, self.K), self.t.bf16)
+        r = np.asarray(rows)
+        buf[: r.shape[0]] = r.astype(self.t.bf16)
+        off = slot * self.B * self.K
+        self.t.x_bo.write(np.ascontiguousarray(buf).reshape(-1).view(np.int16), off * 2)
+        self.t.x_bo.sync(
+            self.t.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE,
+            self.B * self.K * 2,
+            off * 2,
+        )
+
+    def _read_x(self):
+        np = self.np
+        self.t.x_bo.sync(
+            self.t.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE, self.t.nx * 2, 0
+        )
+        return np.frombuffer(self.t.x_bo.map(), dtype=self.t.bf16, count=self.t.nx)
+
+    def _dispatch(self, which):
+        import time as _time
+
+        t0 = _time.time()
+        self.t.dispatch_insts(self.insts[which])
+        self.t_run += _time.time() - t0
+        self.n_run += 1
+
+    # -- the two halves ------------------------------------------------------
+    def th_from_verify(self, taps):
+        """target_hidden for the block a verify dispatch just finished.
+
+        No dispatch: the fc waves already ran, as that pass's tail, over the tap
+        slots its own decode waves had just written. `taps` is the target's
+        `last_taps` -- the same rows, read back, which is what the residual
+        correction has to subtract.
+        """
+        return target_hidden(self.t, self.waves, self._read_x(), taps, self.hn_w)
+
+    def th_from_taps(self, taps):
+        """target_hidden for rows no verify pass produced -- block 0's prompt.
+
+        Chunked over B rows because that is the width of an X slot, and every
+        stage of this is row-independent: `fc` is a GEMM whose M is the row and
+        `hidden_norm` is per row. The same argument `PrepassRunner.run` makes
+        for chunking over CTX_PAD.
+        """
+        np = self.np
+        taps = np.asarray(taps, np.float32)
+        out = []
+        for i in range(0, taps.shape[0], self.B):
+            chunk = taps[i : i + self.B]
+            for s in range(self.n_tap):
+                self._write_slot(
+                    self.tap0 + s * self.tap_stride,
+                    chunk[:, s * self.K : (s + 1) * self.K],
+                )
+            self._dispatch("fc")
+            pad = np.zeros((self.B, taps.shape[1]), np.float32)
+            pad[: chunk.shape[0]] = chunk
+            out.append(
+                target_hidden(self.t, self.waves, self._read_x(), pad, self.hn_w)[
+                    : chunk.shape[0]
+                ]
+            )
+        return np.concatenate(out)
+
+    def ctxkv(self, th, positions):
+        """(k_ctx, v_ctx) for `th` at `positions`, one dispatch per B rows."""
+        np = self.np
+        th = np.asarray(th, np.float32)
+        ks, vs = [], []
+        for i in range(0, th.shape[0], self.B):
+            chunk = th[i : i + self.B]
+            pos = np.asarray(positions)[i : i + self.B]
+            self._write_slot(self.th_slot, chunk)
+            self._dispatch("ctxkv")
+            pad = np.zeros((self.B, self.K), np.float32)
+            pad[: chunk.shape[0]] = chunk
+            ppad = np.zeros(self.B, np.int64)
+            ppad[: pos.shape[0]] = pos
+            k, v = context_kv(self.t, self.waves, self._read_x(), pad, self.kn_w, ppad)
+            ks.append(k[:, : chunk.shape[0]])
+            vs.append(v[:, : chunk.shape[0]])
+        return np.concatenate(ks, axis=1), np.concatenate(vs, axis=1)
+
+    def run(self, taps, positions):
+        """PrepassRunner's signature, for the rows a verify pass did not make."""
+        th = self.th_from_taps(taps)
+        k, v = self.ctxkv(th, positions)
+        return th, k, v
 
 
 # ---------------------------------------------------------------------------

@@ -154,6 +154,7 @@ class FusedDecoder:
         weights=None,
         npz=None,
         artifact_dir=None,
+        extra_weights=None,
     ):
         """`batch` > 1 dispatches a block of B CONSECUTIVE positions of one
         sequence -- what DECODE_BATCH means in this engine, and what a
@@ -176,6 +177,13 @@ class FusedDecoder:
         own requant cache, and passing the target's would decode fluent
         garbage. `artifact_dir` is where the templates live, so the drafter's
         can sit beside the target's without either scan picking up the other.
+
+        `extra_weights` is the weight BO for a build whose `env_extra` carries
+        DECODE_EXTRA_WAVES -- extra launch iterations of the projection engine
+        running someone else's matrices (the DFlash pre-pass's fc and context
+        K/V; see llms/qwen3_4b_q4nx/dflash_prepass_waves.py). It is a separate
+        buffer appended after every existing binding position, so a template
+        without extra waves is bound exactly as before.
         """
         import importlib.util
         import numpy as np
@@ -259,6 +267,13 @@ class FusedDecoder:
         )
         self.X_SLOTS = fd.X_SLOTS  # >1 only with DECODE_HIDDEN_TAPS
         self.nx = self.X_SLOTS * self.K * _b
+        # Extra waves, all zero on a build that has none. X_SLOTS above already
+        # covers their output slots: the builder grows the X buffer to whatever
+        # the wave list reaches, which is why nothing here restates it.
+        self.N_EXTRA = getattr(fd, "N_EXTRA", 0)
+        self.EXTRA_W_ELEMS = getattr(fd, "EXTRA_W_ELEMS", 0)
+        self.EXTRA_OUT_SLOT = list(getattr(fd, "EXTRA_OUT_SLOT", []))
+        self.RMS_ONES_OFF = getattr(fd, "RMS_ONES_OFF", None)
         self.decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD * _b
         self.decode_y += getattr(fd, "PROBE_TOTAL", 0)
         self.ny = (
@@ -344,6 +359,27 @@ class FusedDecoder:
         self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
         self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
         self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
+        # The extra waves' weights, at the binding position the builder appends
+        # them to: after W_SPLIT's groups, which is g(8) on every model whose
+        # weights fit one BO. Uploaded once, like every other weight here.
+        self.e_bo = None
+        if self.N_EXTRA:
+            if extra_weights is None:
+                raise ValueError(
+                    f"the template has {self.N_EXTRA} extra waves and "
+                    f"{self.EXTRA_W_ELEMS} elements of weights for them, but no "
+                    f"extra_weights was passed; the dispatch would read zeros"
+                )
+            _e = np.ascontiguousarray(np.asarray(extra_weights, bfloat16)).reshape(-1)
+            if _e.size != self.EXTRA_W_ELEMS:
+                raise ValueError(
+                    f"extra_weights is {_e.size} elements, the template's wave "
+                    f"table says {self.EXTRA_W_ELEMS}"
+                )
+            _ng = len(self.w_bos) - 1 if self._wsplit else 0
+            self.e_bo = xrt.bo(self.dev, _e.size * 2, HO, g(8 + _ng))
+            self.e_bo.write(_e.view(np.int16), 0)
+            self.e_bo.sync(TO)
         self._ist = _stair.make_insts_states(
             self.gen, xrt, self.dev, g(1), self.windows
         )
@@ -362,6 +398,46 @@ class FusedDecoder:
         self.cur_maxl = m
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
+
+    def dispatch_insts(self, insts, timeout=60000):
+        """Run a DIFFERENT instruction stream against this same device program.
+
+        UNI_WAVE_LO/HI are build-time and restrict only the fused launch loop --
+        "keeps ABI/CDO fixed", fused_decode.py says where it reads them -- so a
+        build at a narrower wave range produces the SAME xclbin configuration
+        and a shorter insts.bin. Dispatching one here costs no PDI switch, which
+        is what lets the DFlash pre-pass's two halves sit at two different
+        points in a speculative block instead of in a third program of their own.
+
+        No L patching: a stream of extra waves alone has no decode wave in it,
+        so there is nothing in it that depends on the context length. Handing an
+        L-dependent stream to this would silently dispatch it at whatever L it
+        was compiled for.
+        """
+        np, xrt = self.np, self.xrt
+        insts = np.ascontiguousarray(np.asarray(insts, np.uint8))
+        key = insts.nbytes
+        cache = self.__dict__.setdefault("_alt_ib", {})
+        if key not in cache:
+            ib = xrt.bo(self.dev, insts.nbytes, xrt.bo.cacheable, self.kern.group_id(1))
+            ib.write(insts, 0)
+            ib.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+            cache[key] = ib
+        st = self.kern(
+            3,
+            cache[key],
+            insts.size,
+            self.x_bo,
+            self.w_bo,
+            self.r_bo,
+            self.y_bo,
+            self.kvc,
+            *(self.w_bos[1:] if self._wsplit else ()),
+            *((self.e_bo,) if self.e_bo is not None else ()),
+        ).wait(timeout)
+        if not str(st).endswith("COMPLETED"):
+            raise RuntimeError(f"alternate-stream dispatch state={st}")
+        return st
 
     def seed_kv(self, fk, fv, P):
         """Place the numpy-prefill K/V (fk/fv: [UNI_DEC,P,DK_TOT_A]) into the device KV cache
@@ -462,6 +538,13 @@ class FusedDecoder:
             _rmsbuf = np.zeros(self._RMS_SIZE, self.bf16)
             _rmsbuf[: self.rms_slabs.size] = self.rms_slabs
             _rmsbuf[self._final_off : self._final_off + self.K] = self.final_norm
+            # ONES for the extra waves' norm weight. An extra wave's X reaches
+            # the projection through the rms core -- the only producer on @xnorm
+            # with a route to DDR -- and feeding w == 1 leaves `rms_chunk` as the
+            # strided gather it already is, with only a per-row scale on top that
+            # the host divides back out. See dflash_prepass_waves.assemble.
+            if self.RMS_ONES_OFF is not None and self.N_EXTRA:
+                _rmsbuf[self.RMS_ONES_OFF : self.RMS_ONES_OFF + self.K] = self.bf16(1.0)
             self.r_bo.write(_rmsbuf.view(np.int16), 0)
             self.r_bo.sync(TO)
             self._rms_init = True
@@ -482,6 +565,7 @@ class FusedDecoder:
             self.y_bo,
             self.kvc,
             *(self.w_bos[1:] if self._wsplit else ()),
+            *((self.e_bo,) if self.e_bo is not None else ()),
             *_dyn.dispatch_args(self.gen, L),
         ).wait(60000)
         _voc_n = self.UNI_LM * self.VP * B
