@@ -1002,6 +1002,19 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # The append->readback RAW on the shared cache is ordered in the runtime sequence by
 # air-annotate-append-barrier, which derives it from the shared L3 memref (= the
 # reference's dma_wait). Only for MULTIBLK (L>1); L=1 uses the trivial on-chip-KV path.
+# ---- port predicates -------------------------------------------------------
+# One per ported feed, tested by BOTH the producer suppression and the consumer
+# emission. Four separate device failures in this file came from a producer
+# keyed on its flag alone while the consumer also required a buffer or a config
+# term: the consumer correctly fell back to the hand-written channel op and the
+# producer had already been deleted, leaving it unpaired (or, worse, compiling
+# and hanging). Anything a consumer tests belongs here.
+#
+# The per-buffer half (`rms is not None`, `qmt is not None`, ...) cannot live
+# here -- those are herd operands -- so each site ANDs it in. The static half
+# must not be duplicated.
+ROPELUT_DMA_OK = ROPELUT_DMA and not (ROPE_W_PER_LAYER and MULTIBLK)
+
 KV_APPEND = MULTIBLK
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
 # IN-PLACE into arg0 (the hidden_states BO), so layer N's output == layer N+1's input
@@ -2458,7 +2471,7 @@ def build_module():
                                     # writing it here as well would double it.
                                     (
                                         (lambda: None)
-                                        if ROPELUT_DMA
+                                        if (ROPELUT_DMA_OK and RMS is not None)
                                         else lambda: ChannelPut(
                                             "ropeLUT",
                                             RMS,
@@ -3251,11 +3264,7 @@ def build_module():
                         # are, threading a_iv in would be the price, and the
                         # hand-written pair stays instead.
                         _rope_off_h = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
-                        if (
-                            ROPELUT_DMA
-                            and rms is not None
-                            and not (ROPE_W_PER_LAYER and MULTIBLK)
-                        ):
+                        if ROPELUT_DMA_OK and rms is not None:
                             # Spelled as a DMA naming @ropeLUT rather than as a
                             # get with a matching put at launch scope: the pass
                             # hoists the shim put out for us. The declaration is
