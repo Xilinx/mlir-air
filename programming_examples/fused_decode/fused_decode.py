@@ -1809,6 +1809,35 @@ RMS_W_ON_X = (RMS_BAND_STREAM >= 3 or _os.environ.get("_RMS_W_ON_X")) and BATCH 
 # shipping BO size moves.
 RMS_TAIL_SLACK = (BATCH * STG_W - K) if RMS_W_ON_X else 0
 
+# TRACE: hardware event trace for a NAMED SET OF TILES, off unless asked for.
+#
+#   DECODE_TRACE_SIZE=<bytes>  DECODE_TRACE_TILES=0.2;0.1  ./build_template.sh 8 L
+#
+# WHY NAMED TILES AND NOT THE WHOLE ARRAY. airrt-to-npu patches every trace flow
+# in a column to the SAME shim buffer offset (trace_offset + col*size/ncols, per
+# column, not per tile), so a column that traces two tiles has them overwriting
+# each other in DDR. This design occupies 27 of 32 tiles; tracing all of them
+# would return one tile's events per column and no way to tell which. Naming the
+# tiles is also what keeps the instrument off the critical path -- each flow not
+# created is a South channel not consumed on a core whose south channels are
+# already carrying its data.
+#
+# WHY IT RIDES THE RMS BUFFER. The trace shim BD is patched against a kernel
+# argument, and an argument the design never reads is an argument the launch is
+# free to drop. arg2 is read-only for the design and its content all lives at
+# offset 0, so a tail on it is the one place a trace region can go without a
+# new ABI position, a new host binding, or a live-range question. Same trick,
+# same reason, as RMS_TAIL_SLACK above and RMS_SCRATCH below.
+TRACE_SIZE = int(_os.environ.get("DECODE_TRACE_SIZE", "0"))
+TRACE_TILES = _os.environ.get("DECODE_TRACE_TILES", "")
+# In bf16 elements, and generous: the shim BD's length field is not documented
+# here in bytes, so reserving 2x the requested trace size means a units error
+# reads as a short trace rather than as a corrupted buffer past the end.
+TRACE_SLACK = (2 * TRACE_SIZE) // 2 if TRACE_SIZE else 0
+# Set by build_module once rms_l3's extent is known; read by run() and by the
+# host harness (which imports this module for its geometry).
+TRACE_OFFSET_BYTES = 0
+
 # RMS_SCRATCH: one block of hidden states appended to the END of the Y buffer,
 # holding `h` (the post-attention residual) between residual1 and residual2 at
 # RMS_BAND_STREAM>=3. It is NOT a host output -- see
@@ -2139,9 +2168,17 @@ def build_module():
                 # That is what makes the X forwarding need NO kernel change at
                 # all -- see _uni_extra.
                 + (K if N_EXTRA else 0)
+                # The trace region, past everything the design reads. See TRACE_SIZE.
+                + TRACE_SLACK
             ],
             bf16,
         )
+        # Byte offset of the trace region within arg2, which is what the trace
+        # shim BD is patched with, and which the host reads it back from.
+        # Published rather than recomputed: it is derived from the very
+        # expression that sizes the buffer, so the two cannot disagree.
+        global TRACE_OFFSET_BYTES
+        TRACE_OFFSET_BYTES = (rms_l3.shape[0] - TRACE_SLACK) * 2
         # LM_HEAD drains VOCAB_SIZE_PADDED logits into Y (arg3); decode uses Y for the
         # QKV host rounds + rms layer-out. Separate compile-time size (decode unchanged).
         # Every drained PAYLOAD row becomes B rows, token-major (egress_bd.py) --
@@ -8752,6 +8789,12 @@ def run():
     # model-config parametrization) without an aircc/NPU build. Inert unless set.
     if _os.environ.get("FUSED_DECODE_EMIT_ONLY"):
         print(str(module))
+        # The trace region's byte offset into arg2, for a harness that reads the
+        # ABI off this same emit. Printed rather than recomputed there: the
+        # offset comes off rms_l3's own extent. Only under a traced build, so
+        # the byte-diff the gate does is untouched.
+        if TRACE_SIZE:
+            print(f"// TRACE_OFFSET_BYTES {TRACE_OFFSET_BYTES}")
         return 0
 
     # use_lock_race_condition_fix_v2: emit the reference-style daisy-chained locks for the
@@ -8769,6 +8812,18 @@ def run():
         # per dispatch from the emitted header instead of read from insts.bin.
         emit_txn_cpp=bool(DYNSEQ),
         debug_ir=bool(_os.environ.get("FUSED_DECODE_DEBUG_IR")),
+        trace_size=TRACE_SIZE,
+        trace_offset=TRACE_OFFSET_BYTES,
+        trace_tiles=TRACE_TILES,
+        trace_ddr_id=2,  # arg2, the rms buffer -- see TRACE_SIZE
+        # EVERY HERD IN THIS DESIGN IS PINNED with x_loc, at physical columns
+        # 0 through 7. aircc's default anchor is 0 and it would be right on its
+        # own -- but tracing shifts the anchor right by one to reserve a column,
+        # which would put every col-0 pin outside the segment, and
+        # air-place-herds answers that by dropping the pin and placing
+        # automatically. Stating the anchor keeps the traced build and the
+        # untraced build the same design, which is the only reason to trace it.
+        col_offset=0,
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "

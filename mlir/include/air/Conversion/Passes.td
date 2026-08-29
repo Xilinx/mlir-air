@@ -205,6 +205,13 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     Option<"clInsertTracePacketFlow", "insert-trace-packet-flow", "bool",
           /*default=*/"false",
           "Create packet routed traces for cores and memtiles">,
+    Option<"clTraceTiles", "trace-tiles", "std::string",
+          /*default=*/"\"\"",
+          "Restrict trace packet flows to a semicolon-separated list of "
+          "'col.row' tiles, e.g. '0.2;0.1'. Empty (the default) traces every "
+          "core and memtile, which only works when at most one tile per "
+          "column is traced: every flow in a column lands on the same shim "
+          "buffer offset, so a second one overwrites the first.">,
     Option<"clUseLockRaceConditionFix", "use-lock-race-condition-fix", "bool",
           /*default=*/"false",
           "Switch to enable a fix for lock race condition, which protects "
@@ -428,7 +435,13 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
           "Trace buffer size for cores and memtiles (in bytes)">,
     Option<"clTraceOffset", "trace-offset", "unsigned",
           /*default=*/"0",
-          "Trace buffer offset appended to ddr_id=2">,
+          "Trace buffer offset, in bytes, into the trace-ddr-id argument">,
+    Option<"clTraceDdrId", "trace-ddr-id", "unsigned",
+          /*default=*/"2",
+          "Index of the runtime-sequence argument the trace shim BD is "
+          "patched against. The default of 2 is only right for designs whose "
+          "third buffer has room to spare; a design that gives trace its own "
+          "argument sets this to that argument's index.">,
     Option<"clOutputElf", "output-elf", "bool",
           /*default=*/"false",
           "Enable ELF output mode. When set, generates a main aie.device "

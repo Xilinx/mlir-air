@@ -238,6 +238,9 @@ class XRTBackend(AirBackend):
         coalesce_shim_dma: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
+        trace_tiles: str = "",
+        trace_ddr_id: int = 2,
+        col_offset: int = -1,
         output_format: str = "xclbin",
         kernel_name: str = "",
         instance_name: str = "",
@@ -268,6 +271,9 @@ class XRTBackend(AirBackend):
             coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
+            trace_tiles: semicolon-separated "col.row" tiles to trace, e.g. "0.2;0.1". The default (empty) traces every core and memtile, which is only correct when at most one tile per column is traced -- every trace flow in a column is patched to the same shim buffer offset, so a second one in that column overwrites the first.
+            trace_ddr_id: index of the kernel argument the trace shim BD is patched against. The default of 2 assumes the third buffer has room past its real content; a design that gives trace its own argument passes that argument's index.
+            col_offset: physical column the placement anchor sits on. Leave at -1 to take aircc's per-device default. A design that pins its herds with x_loc must pass its own anchor explicitly, which also stops trace from shifting the anchor out from under those pins.
             output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn, elf].
             kernel_name: configure aircc to package the kernel with the specified name.
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
@@ -318,6 +324,9 @@ class XRTBackend(AirBackend):
         self.coalesce_shim_dma = coalesce_shim_dma
         self.trace_offset = trace_offset
         self.trace_size = trace_size
+        self.trace_tiles = trace_tiles
+        self.trace_ddr_id = trace_ddr_id
+        self.col_offset = col_offset
         self.currently_loaded = False
         self.output_format = output_format
         self.kernel_name = kernel_name
@@ -506,6 +515,15 @@ class XRTBackend(AirBackend):
                 aircc_options += [str(self.trace_size)]
                 aircc_options += ["-trace-offset"]
                 aircc_options += [str(self.trace_offset)]
+                aircc_options += ["-trace-ddr-id"]
+                aircc_options += [str(self.trace_ddr_id)]
+                if self.trace_tiles != "":
+                    aircc_options += ["-trace-tiles"]
+                    aircc_options += [self.trace_tiles]
+
+            if self.col_offset >= 0:
+                aircc_options += ["--col-offset"]
+                aircc_options += [str(self.col_offset)]
 
             if self.output_format != "":
                 aircc_options += ["--output-format"]

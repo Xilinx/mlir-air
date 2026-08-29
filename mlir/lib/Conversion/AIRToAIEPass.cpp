@@ -7731,9 +7731,44 @@ public:
     return success();
   }
 
+  // Parse a "col.row;col.row" trace-tiles list. An empty option yields an
+  // empty set, which createTracePacketFlow reads as "no filter".
+  static llvm::SmallDenseSet<std::pair<int, int>>
+  parseTraceTiles(StringRef spec, Operation *diagOp) {
+    llvm::SmallDenseSet<std::pair<int, int>> out;
+    SmallVector<StringRef> items;
+    spec.split(items, ';', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    for (StringRef it : items) {
+      auto [colStr, rowStr] = it.trim().split('.');
+      int col = 0, row = 0;
+      if (colStr.trim().getAsInteger(10, col) ||
+          rowStr.trim().getAsInteger(10, row)) {
+        diagOp->emitWarning() << "ignoring malformed trace-tiles entry '" << it
+                              << "'; expected 'col.row'";
+        continue;
+      }
+      out.insert({col, row});
+    }
+    return out;
+  }
+
   void createTracePacketFlow(AIE::DeviceOp device) {
     OpBuilder builder(device);
     const auto &target_model = device.getTargetModel();
+
+    // WHICH TILES. Every trace flow in a column is patched to the SAME shim
+    // buffer offset (airrt-to-npu computes it as trace_offset +
+    // col * trace_size / columns, per column and not per tile), so a column
+    // that traces more than one tile has its tiles overwriting each other in
+    // DDR. Tracing the whole array is therefore only meaningful on a design
+    // that occupies one tile per column; anything denser has to name the tiles
+    // it wants. The filter is also what keeps trace off the critical path of a
+    // design that already uses most of the array -- each flow it does not
+    // create is a South channel it does not consume.
+    auto traceTiles = parseTraceTiles(clTraceTiles, device);
+    auto isTraced = [&](int col, int row) {
+      return traceTiles.empty() || traceTiles.contains({col, row});
+    };
 
     // Collect existing TileOps
     DenseMap<AIE::TileID, AIE::TileOp> tiles;
@@ -7815,6 +7850,8 @@ public:
 
       if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
           target_model.isMemTile(srcColIndex, srcRowIndex)) {
+        if (!isTraced(srcColIndex, srcRowIndex))
+          continue;
         if (target_model.isCoreTile(srcColIndex, srcRowIndex) &&
             southPressureAt(srcColIndex, srcRowIndex) >= southCapacity)
           continue;

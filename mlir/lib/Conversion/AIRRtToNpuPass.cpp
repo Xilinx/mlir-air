@@ -2501,7 +2501,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Configure the tile trace units and the shimDMA
     if (clTraceSize > 0)
-      if (failed(insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset)))
+      if (failed(insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset,
+                                          clTraceDdrId)))
         signalPassFailure();
 
     RewritePatternSet funcToSeqPatterns(ctx);
@@ -4356,9 +4357,31 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                FlatSymbolRefAttr{}, col, row);
   }
 
-  // configure events to monitor
+  // Configure the tile trace units and the shim BD that drains them.
+  //
+  // KNOWN NOT TO PRODUCE DATA ON NPU2, and measured: a design traced this way
+  // writes nothing to its trace buffer and its dispatch hangs. Two causes are
+  // identified, one fixed here and one not:
+  //   - FIXED: the timer-sync broadcast used to poke Core Module registers at
+  //     (0, 0), which on every NPU target is the shim, not a core. Harmless on
+  //     a design whose column 0 shim is idle; on one that feeds through it, the
+  //     dispatch hangs. It now fires from a traced core -- see the end of the
+  //     flow loop.
+  //   - NOT FIXED: trace_control0 below is written with the STOP event in bits
+  //     [23:16] and nothing in the start-event bits, so the trace unit is
+  //     armed to stop and never told to start. mlir-aie's own trace path uses
+  //     broadcast 15 for start and 14 for stop, and has since moved to
+  //     declarative aie.trace ops lowered by -aie-insert-trace-flows; this
+  //     hand-rolled register write predates that and has no hardware test
+  //     in-tree.
+  //     Porting AIR onto the mlir-aie flow is the fix, not another register.
   LogicalResult insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
-                                         int64_t trace_offset) {
+                                         int64_t trace_offset,
+                                         int64_t trace_ddr_id) {
+    // The core tile that raises the timer-sync broadcast; see the end of the
+    // flow loop. Empty when nothing traced is a core, in which case there is
+    // no timer to sync from.
+    std::optional<std::pair<int, int>> traceTimerSyncTile;
     // Either container: the rolled path has already turned the control func
     // into its runtime_sequence by the time this runs.
     SmallVector<Operation *> funcOps;
@@ -4436,6 +4459,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         auto row = builder.getIntegerAttr(builder.getI32Type(), srcRowIndex);
         // configure tile trace
         if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
+          if (!traceTimerSyncTile)
+            traceTimerSyncTile = std::make_pair(srcColIndex, srcRowIndex);
           // event boardcast to sync timer
           uint32_t core_reg_timer_control = 0x34000;
           uint32_t core_reg_trace_control0 = 0x340D0;
@@ -4532,7 +4557,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                         builder.getI32IntegerAttr(buff_offset));
           AIEX::NpuAddressPatchOp::create(builder, patchLoc, addr,
                                           /* addr_val */ Value(),
-                                          /* ddr_id */ 2, buffOffsetVal);
+                                          /* ddr_id */ trace_ddr_id,
+                                          buffOffsetVal);
         }
 
         int address;
@@ -4551,11 +4577,26 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         chanToIdMap[dstColIndex]--;
       }
 
-      // broadcast event to sync timer
-      auto zero = builder.getIntegerAttr(builder.getI32Type(), 0);
-      makeNpuWrite32Fn(0x34000, 127 << 8, zero, zero);
-      makeNpuWrite32Fn(0x3404C, 127, zero, zero);
-      makeNpuWrite32Fn(0x34008, 127, zero, zero);
+      // Broadcast an event to sync every traced tile's timer, so their
+      // timestamps share an origin.
+      //
+      // FROM A TRACED CORE TILE, not from (0, 0). 0x34000/0x3404C/0x34008 are
+      // Core Module registers -- timer control, event generate, timer trigger
+      // -- and on every NPU target row 0 is the shim, not a core: those
+      // offsets address something else there, or nothing. It is harmless on a
+      // design whose column 0 shim is idle, which is why it survived; on a
+      // design that feeds activations and weights through shim 0 it hangs the
+      // dispatch. Any traced core will do, since the point is only to raise
+      // event 127 somewhere the broadcast network can see it.
+      if (traceTimerSyncTile) {
+        auto col = builder.getIntegerAttr(builder.getI32Type(),
+                                          traceTimerSyncTile->first);
+        auto row = builder.getIntegerAttr(builder.getI32Type(),
+                                          traceTimerSyncTile->second);
+        makeNpuWrite32Fn(0x34000, 127 << 8, col, row);
+        makeNpuWrite32Fn(0x3404C, 127, col, row);
+        makeNpuWrite32Fn(0x34008, 127, col, row);
+      }
     }
     return success();
   }

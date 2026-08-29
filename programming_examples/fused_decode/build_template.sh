@@ -114,6 +114,10 @@ PFX=decode
 # Its own prefix keeps it away from the templates the shipping gates read
 # (batch_equiv.py --prefix dyn picks it back up).
 [ "${DECODE_DYNSEQ:-0}" = "1" ] && PFX=dyn
+# A traced build appends the trace region to the rms BO, so its ABI is wider
+# than the template of the same name a numeric gate would bind. Same rule, same
+# reason as the two above.
+[ -n "${DECODE_TRACE_SIZE:-}" ] && [ "${DECODE_TRACE_SIZE:-0}" != "0" ] && PFX=trace
 OUT="${PFX}_b${BATCH}_L${L}"
 echo ">>> template $OUT  [$DECODE_MODEL]"
 LOG="${TMPDIR:-/tmp}/${OUT}.log"

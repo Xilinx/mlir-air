@@ -127,6 +127,19 @@ static cl::opt<unsigned>
                 cl::desc("Trace buffer offset appended to output"), cl::init(0),
                 cl::cat(airCompilerOptions));
 
+static cl::opt<std::string> traceTiles(
+    "trace-tiles",
+    cl::desc("Semicolon-separated 'col.row' tiles to trace, e.g. '0.2;0.1'. "
+             "Empty traces every core and memtile, which is only correct when "
+             "at most one tile per column is traced"),
+    cl::init(""), cl::cat(airCompilerOptions));
+
+static cl::opt<unsigned> traceDdrId(
+    "trace-ddr-id",
+    cl::desc("Runtime-sequence argument index the trace shim BD is patched "
+             "against"),
+    cl::init(2), cl::cat(airCompilerOptions));
+
 static cl::opt<std::string> cc("cc", cl::desc("Compiler to use for host code"),
                                cl::init("clang"), cl::cat(airCompilerOptions));
 
@@ -1113,7 +1126,15 @@ static LogicalResult runAieCompilation() {
   // in debug mode.
 
   // --- Build and run the placement pipeline ---
-  int traceColOffset = traceSize > 0 ? 1 : 0;
+  // Tracing reserves column 0 for the trace shim by shifting the placement
+  // anchor right -- but ONLY when the anchor is ours to move. A design that
+  // passes --col-offset has pinned its herds to physical columns, and shifting
+  // the anchor under them puts every pin at or below the old anchor "outside
+  // the segment": air-place-herds warns, drops the pin, and falls back to
+  // automatic placement, which silently produces a different design than the
+  // one being measured. An explicit --col-offset therefore wins.
+  int traceColOffset =
+      (traceSize > 0 && colOffset.getNumOccurrences() == 0) ? 1 : 0;
 
   std::string placementPipeline;
   {
@@ -1233,8 +1254,11 @@ static LogicalResult runAieCompilation() {
     os << " row-offset=" << resolvedRowOffset;
     os << " col-offset=" << resolvedColOffset;
     os << " device=" << deviceName.getValue();
-    if (traceSize > 0)
+    if (traceSize > 0) {
       os << " insert-trace-packet-flow=true";
+      if (!traceTiles.empty())
+        os << " trace-tiles=" << traceTiles.getValue();
+    }
     os << " use-lock-race-condition-fix="
        << (useLockRaceConditionFix ? "true" : "false");
     os << " use-lock-race-condition-fix-v2="
@@ -1296,6 +1320,7 @@ static LogicalResult runAieCompilation() {
       os << "airrt-to-npu{";
       os << " trace-size=" << traceSize;
       os << " trace-offset=" << traceOffset;
+      os << " trace-ddr-id=" << traceDdrId;
       bool outputElf = (outputFormat == OF_elf);
       os << " output-elf=" << (outputElf ? "true" : "false");
       os << " coalesce-shim-dma=" << (coalesceShimDma ? "true" : "false");
