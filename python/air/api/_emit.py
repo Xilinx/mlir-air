@@ -534,11 +534,24 @@ def _cap_by_ops(width, dst, expr):
 
 
 def _nest_width(dst, expr):
-    """Lanes for one assignment: the destination's, capped by its widest region."""
+    """Lanes for one assignment: the destination's, capped.
+
+    A width the caller *derived* -- the dtype's default for the target -- is
+    capped by the widest region in the expression, so a widened default cannot
+    ask for a vector the backend will not legalize. A width the caller *named*
+    is a decision about this buffer and skips that cap: dequant_awq allocates
+    ``vector=64`` so its ``ops.bitcast`` assignment covers exactly one vector,
+    and narrowing it to 32 makes that two trips.
+
+    The op cap applies either way. It is about accuracy at a width nobody
+    measured rather than about legalization, so an explicit request does not
+    buy past it.
+    """
     width = dst.vector_width
     if width <= 0:
         return width
-    width = _cap_by_regions(width, _regions_in(expr, dst.dtype, []))
+    if not getattr(dst, "vector_width_explicit", False):
+        width = _cap_by_regions(width, _regions_in(expr, dst.dtype, []))
     return _cap_by_ops(width, dst, expr)
 
 
