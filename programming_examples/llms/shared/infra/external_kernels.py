@@ -189,7 +189,8 @@ def compile_gemm_mm(
     if bfp16:
         extra.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
     # tile_k_l1_pad > tile_k_l1: B carries trailing bias rows the reduction
-    # skips, and add_bias_from_b_mn is compiled in to fold them into C.
+    # skips. DIM_K_PAD is what makes `extract_bias_from_b` (compute herd) and
+    # the `f32_to_bf16_bias{,_gelu}_mn` drain casts see the padded stride.
     if tile_k_l1_pad and tile_k_l1_pad != tile_k_l1:
         extra.append(f"-DDIM_K_PAD={tile_k_l1_pad}")
     if sym_suffix:

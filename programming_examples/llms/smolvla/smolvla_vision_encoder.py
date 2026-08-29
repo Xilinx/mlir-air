@@ -531,7 +531,7 @@ def compile_all_kernels(
         num_kv_heads=n_kv_heads,
         causal=False,
         num_heads_per_unroll=num_heads_per_unroll,
-    )
+    ).build(target="npu2")
     # Pre-build attn_npu2.o with the chosen precision mode and force=True. The
     # compile_and_cache below calls prepare_air_project → compile_all_external_kernels,
     # which rebuilds attn_npu2.o only if absent (force=False) — so this force=True

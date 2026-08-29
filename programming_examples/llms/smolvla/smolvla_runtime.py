@@ -57,8 +57,9 @@ VISION_SEQ_LEN = 1024
 # row-independent, so all 3 run stacked along rows through the two fused ELFs.
 # That pays one launch's control-stream replay instead of three (~337 us per
 # GEMM launch on NPU2), worth ~17% of device time. The ELFs are compiled for
-# exactly this count; a step with a different number of images falls back to
-# encoding one at a time.
+# exactly this count, so `encode` pads a shorter stack by repeating its last
+# patch embedding and discarding the extra rows; more than this many images
+# asserts, because it would need a differently-sized ELF.
 VISION_N_IMAGES = 3
 VISION_KERNELS = {
     "vit_ln_qkv",

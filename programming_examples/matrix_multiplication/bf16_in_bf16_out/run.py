@@ -88,6 +88,20 @@ def build_module(
     # second DMA is impossible -- an AIE2P core tile has 2 inbound channels and
     # A/B hold both. The matmul skips the pad rows (DIM_K_PAD); the compute herd
     # folds them into the f32 accumulator once, on the last K chunk.
+    #
+    # The fold lives in the drain's f32->bf16 cast, so it only happens on the
+    # cast_out path with an unchunked drain. Anywhere else the compute herd
+    # would still carve the bias rows out of B and nothing would ever add them
+    # -- a silently wrong result rather than a build error.
+    if b_pad_rows:
+        assert cast_out, (
+            "b_pad_rows folds the bias into the f32->bf16 drain cast, so it "
+            "needs the external f32-accumulate path with bf16 output"
+        )
+        assert drain_chunks == 1, (
+            f"b_pad_rows is not implemented for a chunked drain "
+            f"(drain_chunks={drain_chunks})"
+        )
     tile_k_l1_pad = tile_k_l1 + b_pad_rows
     tile_k_l2_pad = (tile_k_l2 // tile_k_l1) * tile_k_l1_pad
     a_size = [m, k]
