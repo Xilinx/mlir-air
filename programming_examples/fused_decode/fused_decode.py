@@ -539,7 +539,24 @@ ROPELUT_DMA = not HYBRID_MIXER
 # derived too the anchor chain is inW0c0 <- rmsW <- {rmsX, ropeLUT} -- which is
 # why @rmsW anchors to a channel that stays hand-written rather than to @rmsX
 # (that would close a cycle, and a cyclic chain has no correct hoist order).
-RMSW_DMA = True
+# OFF by default, and not because the port does not work: it is byte-identical
+# to the hand-written form on llama32_1b_q4nx and rides along on five other
+# models. It breaks three of nine.
+#
+# On qwen3_8b_q4nx -- which PASSES 2/2 upstream, so a clean baseline -- this flag
+# ALONE hangs decode, and every other port together passes 2/2. Same on
+# gemma3_4b_q4nx. Deriving @rmsW moves shim tasks: the three at slots 2-4
+# (rmsX, rmsW, rmsX) collapse to one and two @rmsW2 tasks appear 70 slots later,
+# which is the same shape as the @ropeLUT slot 66->28 move that hung lfm2.
+# `hoist_before="inW0c0"` reproduces the hand-written slot on some models and not
+# on others.
+#
+# What is NOT the discriminator, each checked against the 6-pass / 3-regress
+# split: POST_RMS, N_NORMS, ROPE_W_PER_LAYER, UNI_DEC, NGLU. ROPE_W_PER_LAYER is
+# True on three models that pass; NGLU=38 passes where 24 regresses. Without a
+# predicate there is nothing honest to gate on, so the flag is off until the
+# anchor is made per-build. Flip it to True to resume that work.
+RMSW_DMA = False
 # The mixer -> CU broadcast exists exactly when a hybrid has a mixer. A get with
 # no put is "channel op not in pairs" at emit time, so the decl, the put and the
 # four gets all key off this one predicate.
