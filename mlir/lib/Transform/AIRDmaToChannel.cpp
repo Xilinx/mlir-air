@@ -2019,6 +2019,151 @@ class AIRDemoteDmaToAIRHierarchyConversion
     return success();
   }
 };
+// The two loops must agree on trip count for fusion to preserve meaning. The
+// bounds are compared as SSA values first, then as constants, because the
+// hoisted loop is a clone: it usually reuses the producer's own bound values,
+// but a bound that was materialised inside the hierarchy comes out as a fresh
+// arith.constant.
+static bool sameTripCount(scf::ForOp a, scf::ForOp b) {
+  auto same = [](Value x, Value y) {
+    if (x == y)
+      return true;
+    APInt xc, yc;
+    return matchPattern(x, m_ConstantInt(&xc)) &&
+           matchPattern(y, m_ConstantInt(&yc)) && xc == yc;
+  };
+  return same(a.getLowerBound(), b.getLowerBound()) &&
+         same(a.getUpperBound(), b.getUpperBound()) &&
+         same(a.getStep(), b.getStep());
+}
+
+// The memrefs a loop's channel endpoints touch.
+static llvm::SmallSetVector<Value, 4> channelMemrefsIn(scf::ForOp loop) {
+  llvm::SmallSetVector<Value, 4> memrefs;
+  loop.walk([&](air::ChannelInterface ci) { memrefs.insert(ci.getMemref()); });
+  return memrefs;
+}
+
+// Fuse a hoisted transfer's freshly built loop into the loop that fills the
+// buffer it reads.
+//
+// Hoisting a transfer out of a hierarchy clones its whole enclosing loop nest,
+// so a design whose producer is one loop --
+//
+//   scf.for { %b = alloc; air.channel.get @fill (%b); air.channel.put @drain
+//   (%b) }
+//
+// -- comes back as two sibling loops over the same buffer with the same trip
+// count when the drain half is spelled as an air.dma_memcpy_nd instead: the
+// clone has no way to know its transfer belongs in the loop already standing
+// next to it. Two things then go wrong, and only the first is visible:
+//
+//   - The derived put's only incoming dependency is the buffer's alloc token,
+//     not the get that writes the buffer. The RAW edge is simply absent.
+//   - air-fuse-alloc-dealloc can no longer sink the alloc into a loop, because
+//     the uses are split across two. air-label-scf-for-to-ping-pong keys on a
+//     loop owning its buffer, so it skips both, and a producer that should be a
+//     ring of N independently locked slots is emitted as N/2 double-buffered
+//     pairs -- same buffers, same bytes, coarser synchronisation, and 6 fewer
+//     locks per memtile.
+//
+// Fusing restores both. The guards below are what make it safe: identical trip
+// count, a shared memref, and nothing in between that touches that memref (an
+// intervening reader or writer would be reordered across the appended ops).
+static void fuseHoistedLoopsIntoProducer(func::FuncOp f) {
+  // "hoist" is stripped by AIRHoistExternalAIRChannelPattern once the transfer
+  // reaches its destination; "loop-carried-dep" is the marker that survives to
+  // here, and is what the rest of the pipeline keys on too.
+  auto isHoisted = [](Operation *op) {
+    auto a = op->getAttrOfType<StringAttr>("loop-carried-dep");
+    return a && a.getValue() == "hoistedLoop";
+  };
+  SmallVector<scf::ForOp> hoisted;
+  f.walk([&](scf::ForOp forOp) {
+    if (isHoisted(forOp))
+      hoisted.push_back(forOp);
+  });
+
+  for (scf::ForOp newFor : hoisted) {
+    // Async plumbing below rewires exactly one token through the fused body.
+    if (newFor.getNumResults() != 1 ||
+        !isa<air::AsyncTokenType>(newFor.getResult(0).getType()))
+      continue;
+    auto memrefs = channelMemrefsIn(newFor);
+    if (memrefs.empty())
+      continue;
+
+    // An op may be stepped over on the way back only if it leaves our buffers
+    // alone; anything that reads or writes one would be reordered across the
+    // ops we are about to append.
+    auto touchesOurMemrefs = [&](Operation *p) {
+      bool touches = false;
+      auto scan = [&](Operation *o) {
+        for (Value operand : o->getOperands())
+          if (memrefs.contains(operand))
+            touches = true;
+      };
+      scan(p);
+      p->walk(scan);
+      return touches;
+    };
+    auto isCandidate = [&](Operation *p, Value &shared) {
+      auto candidate = dyn_cast<scf::ForOp>(p);
+      if (!candidate || isHoisted(candidate) ||
+          candidate.getNumResults() != 1 ||
+          !isa<air::AsyncTokenType>(candidate.getResult(0).getType()) ||
+          !sameTripCount(candidate, newFor))
+        return scf::ForOp();
+      for (Value m : channelMemrefsIn(candidate))
+        if (memrefs.contains(m)) {
+          shared = m;
+          return candidate;
+        }
+      return scf::ForOp();
+    };
+    // Scan one block backwards from `from` (exclusive), or from its end when
+    // `from` is null.
+    auto scanBack = [&](Block *block, Operation *from, Value &shared) {
+      Operation *start = from ? from->getPrevNode()
+                              : (block->empty() ? nullptr : &block->back());
+      for (Operation *p = start; p; p = p->getPrevNode()) {
+        if (scf::ForOp hit = isCandidate(p, shared))
+          return hit;
+        if (touchesOurMemrefs(p))
+          break;
+      }
+      return scf::ForOp();
+    };
+
+    scf::ForOp producer;
+    Value shared;
+    producer = scanBack(newFor->getBlock(), newFor, shared);
+
+    if (!producer)
+      continue;
+
+    // The appended ops run after the producer's body in the same iteration, so
+    // the hoisted loop's iter_arg becomes whatever the producer yields -- which
+    // is the RAW edge the clone lost.
+    Operation *producerYield = producer.getBody()->getTerminator();
+    Value carriedIn = producerYield->getOperand(0);
+    Value newYield = newFor.getBody()->getTerminator()->getOperand(0);
+
+    newFor.getInductionVar().replaceAllUsesWith(producer.getInductionVar());
+    newFor.getRegionIterArgs()[0].replaceAllUsesWith(carriedIn);
+
+    SmallVector<Operation *> body;
+    for (Operation &op : newFor.getBody()->without_terminator())
+      body.push_back(&op);
+    for (Operation *op : body)
+      op->moveBefore(producerYield);
+
+    producerYield->setOperand(0, newYield);
+    newFor.getResult(0).replaceAllUsesWith(producer.getResult(0));
+    newFor.erase();
+  }
+}
+
 struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   DmaToChannelPass() = default;
@@ -2201,6 +2346,12 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           .add<AIRHoistExternalAIRChannelPattern<air::HerdOp>,
                AIRHoistExternalAIRChannelPattern<air::SegmentOp>>(context);
       (void)applyPatternsGreedily(module, std::move(hoistChannelPatterns));
+    }
+
+    // Put each hoisted transfer back in the loop that feeds it, before dep
+    // tracing re-derives tokens over the result.
+    for (auto f : funcOps) {
+      fuseHoistedLoopsIntoProducer(f);
     }
 
     // Dep tracing
