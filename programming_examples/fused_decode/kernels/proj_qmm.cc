@@ -21,11 +21,52 @@
 #endif
 
 #ifdef PROJ_DELAY
+// PROJ_DELAY_L1=1 restores the original body: a volatile accumulator, so every
+// iteration is a load and a store to local data memory. It is kept only as the
+// A/B for the one below, because it does not measure what it looks like it
+// measures -- see the sweep's header above proj_qmm_mm_acc.
+#if defined(PROJ_DELAY_L1) && PROJ_DELAY_L1 == 1
+// Same arithmetic as the default below, but the accumulator is volatile, so
+// every step is a load and a store to local data memory. Running the two at the
+// same PROJ_DELAY isolates the L1 traffic: identical ALU work, one with the
+// running value in a register and one with it in memory.
+static volatile unsigned proj_probe_seed_l1 = 2463534242u;
+static volatile unsigned proj_probe_sink_l1;
 static inline void proj_probe_delay() {
-  volatile int s = 0;
-  for (int i = 0; i < PROJ_DELAY; i++)
-    s += i;
+  volatile unsigned s = proj_probe_seed_l1;
+  for (int i = 0; i < PROJ_DELAY; i++) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+  }
+  proj_probe_sink_l1 = s;
 }
+#else
+// REGISTER-ONLY DELAY. Two L1 accesses per CALL (seed in, sink out) instead of
+// two per ITERATION, so the loop burns core cycles without competing with the
+// DMA that is streaming the next weight block into the same tile. This kernel's
+// own rc-cache comment already names that contention as a cost worth 171
+// bundles, which is exactly why a probe made of L1 traffic cannot be read as a
+// probe of core occupancy.
+//
+// The seed is volatile so the recurrence is not constant-folded, and the step is
+// XORSHIFT rather than the obvious multiply-add. That is not a style choice.
+// s = a*s + c is AFFINE, so N of them compose into one a^N*s + C, and Peano does
+// exactly that: at -O2 it unrolled by 32 and emitted 8 multiply-adds carrying
+// a^4 = 0x979e791, so a sweep of "N units" was really running N/4 of them.
+// Xorshift has no closed form under composition, so N steps cost N steps.
+static volatile unsigned proj_probe_seed = 2463534242u;
+static volatile unsigned proj_probe_sink;
+static inline void proj_probe_delay() {
+  unsigned s = proj_probe_seed;
+  for (int i = 0; i < PROJ_DELAY; i++) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+  }
+  proj_probe_sink = s;
+}
+#endif
 #endif
 
 extern "C" {
@@ -270,11 +311,39 @@ void proj_qmm_mm_zero(float *__restrict y_acc, int _arm) {
 // third time that trap was walked into. So the core is timed INDIRECTLY: give
 // one role a known amount of extra work and see whether the dispatch notices.
 //
-// Sweeping PROJ_DELAY measures this core's SLACK. While the dispatch time is
-// flat, the core was idle at least that long per block and is not the critical
-// path; past the knee it grows 1:1 and the SLOPE calibrates the unit in
-// cycles -- ms/unit / (blocks per layer * layers) -- so no absolute cycle
-// counter is needed. The knee, in those calibrated units, is the slack.
+// SWEEPING PROJ_DELAY DOES NOT MEASURE THIS CORE'S SLACK. It was written
+// believing it did -- flat means idle, past the knee it grows 1:1, the slope
+// calibrates the unit -- and that reasoning needs the injected work to be
+// nothing but core cycles. On this kernel no version of it is. Measured on
+// qwen3-4b, batch 8, L=161, 36 layers, median of 9:
+//
+//   body of the delay loop            slope, ms per unit    shape
+//   volatile accumulator              0.0828                straight from 0
+//   register-only, xorshift           0.0436 -> 0.1186      convex, still rising
+//
+// Neither number is the core's cost per unit.
+//
+//   - A VOLATILE accumulator is a load and a store to local data memory every
+//     iteration, so the probe competes with the two DMAs filling this tile's
+//     next X and weight blocks. It measures L1 port pressure and core cycles
+//     together, and the split is not recoverable from the sweep. The rc-cache
+//     comment above already prices that contention at 171 bundles; a probe made
+//     of L1 traffic inherits it.
+//   - A REGISTER-ONLY body gets hidden in the scalar slots of a VLIW bundle
+//     beside the vector work, so it is nearly free until it is big enough to
+//     stop fitting. Per iteration it costs ~2 cycles at 256 units and ~4.7 at
+//     4096. A curve whose marginal cost is still climbing has no knee to read.
+//   - And the arithmetic has to be chosen so the compiler cannot shorten it.
+//     s = a*s + c is affine, so N steps compose into one a^N*s + C: Peano
+//     unrolled by 32 and emitted multiply-adds carrying a^4 = 0x979e791, making
+//     a sweep of N units run N/4 of them. Xorshift has no closed form under
+//     composition, which is why it is what the loop does now.
+//
+// What the probe IS good for is a differential at a fixed unit count: the two
+// bodies do identical arithmetic and differ only in where the running value
+// lives, so the gap between their slopes is the cost of the L1 traffic alone.
+// For anything about how busy the core is, delete real work instead and time
+// that -- PROJ_MM_PROBE 2 and 3 below.
 //
 // volatile forces the loop to survive -O2; nothing else here may be
 // -- a delay the optimizer deletes reads as "this core has infinite slack".
