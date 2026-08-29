@@ -1858,7 +1858,7 @@
 <p>The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source build, no CMake, no LLVM clone. Use this path unless you need to modify MLIR-AIR itself or run on an unsupported Python/platform.</p>
 <h3 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>Python 3.10–3.14</strong></li>
+<li><strong>Python 3.11–3.14</strong></li>
 <li><strong>pip</strong></li>
 <li><strong>XRT</strong> (optional, required only for running on hardware) — see <a href="https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt">mlir-aie's XRT install instructions</a></li>
 </ul>
@@ -1945,7 +1945,7 @@
 <p>This path builds MLIR-AIR from source but installs LLVM, MLIR-AIE, and Peano from prebuilt wheels — useful when you're hacking on MLIR-AIR itself but don't want to also rebuild its dependencies.</p>
 <h3 id="prerequisites_1">Prerequisites<a class="headerlink" href="#prerequisites_1" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>Python 3.10+</strong> (required by the wheels)</li>
+<li><strong>Python 3.11+</strong></li>
 <li><strong>gcc &gt;= 11</strong></li>
 <li><strong>pip</strong> (Python package manager)</li>
 <li><strong>XRT</strong> (optional, required only for running on hardware)</li>
@@ -2023,7 +2023,7 @@
 </code></pre></div></p>
 <h3 id="notes">Notes<a class="headerlink" href="#notes" title="Permanent link">&para;</a></h3>
 <ul>
-<li>The script expects Python 3.10+ and gcc &gt;= 11.</li>
+<li>The script expects Python 3.11+ and gcc &gt;= 11.</li>
 <li>For LIT tests, you may need to set <code>-DLLVM_EXTERNAL_LIT</code> to the path of your <code>lit</code> executable.</li>
 <li>The script installs dependencies using pip and downloads wheels from the official release pages.</li>
 <li>For advanced troubleshooting or custom builds, see the legacy instructions below.</li>
