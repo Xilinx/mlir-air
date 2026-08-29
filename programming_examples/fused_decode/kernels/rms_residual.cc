@@ -303,6 +303,12 @@ static inline void rms_chunk(bf16 *restrict y, bf16 *restrict x,
     const bf16 *it_w = w_base;
     bf16 *it_y = y + t * n;
     const float s = scales[t];
+    // n is a runtime argument, so the compiler sees an unknown trip count on a
+    // loop that is always XCHUNK/16 = 32. Under Peano AIE_PREPARE_FOR_PIPELINING
+    // expands to NOTHING -- it is Chess-only, see aie_kernel_utils.h -- so the
+    // hints that do anything on this toolchain are the unroll and the range.
+    AIE_LOOP_RANGE(8)
+    AIE_LOOP_UNROLL(4)
     for (int i = 0; i < n / vector_size; i++) {
       aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
       aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
