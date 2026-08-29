@@ -515,6 +515,7 @@ class Buffer(_Reshapable):
         vector_width=None,
         value=None,
         space="L1",
+        vector_width_explicit=False,
     ):
         self.shape = tuple(int(s) for s in shape)
         self.dtype = dtype
@@ -525,6 +526,14 @@ class Buffer(_Reshapable):
         self.vector_width = (
             dtype.default_vector_width if vector_width is None else int(vector_width)
         )
+        # Whether the CALLER named the width or took the dtype's default.
+        # air.alloc resolves the default before constructing, so this cannot be
+        # inferred from vector_width being None -- it has to be passed. The
+        # 512-bit region cap keeps a *widened default* legal; a width asked for
+        # explicitly is a decision about this buffer and outranks it.
+        # dequant_awq needs vector=64 so its ops.bitcast assignment covers
+        # exactly one vector, and capping it to 32 makes that two trips.
+        self.vector_width_explicit = bool(vector_width_explicit)
         # The memref SSA value produced by memref.alloc.
         self.value = value
         self.strides = _row_major_strides(self.shape)
@@ -693,6 +702,10 @@ class BufferSlice(_StridedView):
     @property
     def vector_width(self):
         return self.buffer.vector_width
+
+    @property
+    def vector_width_explicit(self):
+        return self.buffer.vector_width_explicit
 
     @property
     def base(self):
