@@ -1763,7 +1763,9 @@ def alloc(
         shape,
         dtype,
         scope=scope,
-        vector_width=vector,
+        # Resolved here rather than in Buffer, which is deliberately independent
+        # of the tracer and so has no way to ask what is being compiled for.
+        vector_width=dtype.width_for(current_target()) if vector is None else vector,
         value=op.result,
         space=space,
     )

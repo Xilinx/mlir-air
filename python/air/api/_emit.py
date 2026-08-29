@@ -492,6 +492,56 @@ def _nested_reduction(node):
     )
 
 
+# The widest vector the AIE backend legalizes. A nest carries one lane count
+# across every region in it, so the widest *element* in the expression is what
+# decides how many lanes fit: `normed[:] = row[:] * ops.cast(acc[:], f32)` over
+# a 32-lane bf16 destination would ask for a 32-lane f32 region, which is
+# 1024-bit and fails to legalize. Clamping here is what lets bf16 default to 32
+# on npu2 without every mixed-type assignment having to spell `vector=` itself.
+_MAX_VECTOR_BITS = 512
+
+
+def _cap_by_regions(width, dtypes):
+    """Narrow ``width`` until every region's vector fits ``_MAX_VECTOR_BITS``."""
+    for dtype in dtypes:
+        bits = getattr(dtype, "bits", None)
+        if bits:
+            width = min(width, max(1, _MAX_VECTOR_BITS // bits))
+    return width
+
+
+def _has_transcendental(node):
+    """Whether a ``math.*`` unary appears anywhere in the expression."""
+    if node.kind == "unary" and node.op in _FLOAT_UNARY_OPS:
+        return True
+    return any(_has_transcendental(arg) for arg in node.args)
+
+
+def _cap_by_ops(width, dst, expr):
+    """Hold a transcendental to the width its lowering is measured at.
+
+    Only the *arithmetic* widths were measured for the wide default. bf16
+    ``math.tanh`` at 512 bits compiles and runs and is quietly less accurate --
+    the gelu example, whose whole body is one tanh, goes from exact to 734 of
+    65536 elements outside its bf16 tolerance. exp and rsqrt are held to the
+    same width for the same reason: unmeasured there, and this file's rule is
+    that a width is measured before it is used.
+    """
+    narrow = getattr(dst.dtype, "default_vector_width", width)
+    if width > narrow and _has_transcendental(expr):
+        return narrow
+    return width
+
+
+def _nest_width(dst, expr):
+    """Lanes for one assignment: the destination's, capped by its widest region."""
+    width = dst.vector_width
+    if width <= 0:
+        return width
+    width = _cap_by_regions(width, _regions_in(expr, dst.dtype, []))
+    return _cap_by_ops(width, dst, expr)
+
+
 def _regions_in(node, dtype, out):
     """Element types appearing in ``node``, outermost first.
 
@@ -586,7 +636,7 @@ def emit_elementwise(dst, expr):
     # A rank-0 buffer is a single scalar -- the accumulator linalg.dot writes
     # into. There is no innermost dimension to vectorise, and the loop nest is
     # empty, so the scalar path handles it with no induction variables at all.
-    width = dst.vector_width
+    width = _nest_width(dst, expr)
     vectorized = bool(shape) and width > 0 and shape[-1] % width == 0
 
     _check_repack(expr, dst, shape, width)
@@ -774,8 +824,17 @@ def _emit_reduce(dst, expr):
     # says nothing about how far each step should advance.
     spanning = [leaf for leaf in leaves if leaf.shape and leaf.shape[-1] == axis]
     lanes = _reduce_lanes(spanning[0], axis) if spanning else axis
+    # And capped the same way an elementwise nest is, for the same reason: the
+    # accumulate usually happens in a wider type than the operand is stored in
+    # (`reduce_add(ops.cast(row[:], f32))` over a 32-lane bf16 row), and it is
+    # the *accumulate* that has to legalize. Uncapped, that row reduces as a
+    # 1024-bit vector.reduction, which the backend marks illegal.
+    region_dtypes = _regions_in(operand, dtype, [])
+    capped = _cap_by_regions(lanes, region_dtypes)
+    if capped and axis % capped == 0:
+        lanes = capped
     minor = _minor(len(src_shape))
-    regions = {d: _Region(d, lanes, True) for d in _regions_in(operand, dtype, [])}
+    regions = {d: _Region(d, lanes, True) for d in region_dtypes}
     kind = (_REDUCE_F if dtype.is_float else _REDUCE_I)[expr.op]
 
     # Index-typed 0 for the collapsed axis: it is both where the whole

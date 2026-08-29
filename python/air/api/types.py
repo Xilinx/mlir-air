@@ -43,9 +43,11 @@ class DType:
     is not a multiple of the width falls back to a scalar loop.
 
     The widths are measured, not assumed. bf16 at 16 lanes (256-bit) compiles on
-    both npu1 and npu2. f32 at 8 lanes (also 256-bit) does *not* -- it fails in
-    the AIE backend with "unable to legalize instruction: <8 x s32> G_FADD" on
-    both targets -- so f32 defaults to 16 lanes (512-bit), which does compile.
+    both npu1 and npu2; npu2 also legalizes 32 lanes (512-bit), which is what
+    ``wide_vector_width`` and ``width_for`` select there. f32 at 8 lanes (also
+    256-bit) does *not* -- it fails in the AIE backend with "unable to legalize
+    instruction: <8 x s32> G_FADD" on both targets -- so f32 defaults to 16
+    lanes (512-bit), which does compile.
     The hand-written eltwise_add example documents 8 for f32 in its --help, but
     its npu1 config actually runs scalar (VECTOR_SIZE=0), so that advice is
     never exercised there.
@@ -79,6 +81,7 @@ class DType:
         np_dtype,
         default_vector_width,
         is_float,
+        wide_vector_width=None,
         is_unsigned=False,
         computes=True,
         bits=None,
@@ -87,6 +90,9 @@ class DType:
         self.name = name
         self.np_dtype = np_dtype
         self.default_vector_width = default_vector_width
+        # Lanes on a target whose backend legalizes a wider vector for this
+        # type. None means the one width is all there is.
+        self.wide_vector_width = wide_vector_width
         # Stated, not inferred: np.issubdtype(bfloat16, np.floating) is False
         # for the ml_dtypes extension types, which would silently select the
         # integer arithmetic ops for a bf16 kernel.
@@ -131,6 +137,19 @@ class DType:
             )
         return np.dtype(self.np_dtype).itemsize
 
+    def width_for(self, target):
+        """Default lanes on ``target``, which is not the same on every one.
+
+        npu2's backend legalizes a 512-bit bf16 vector and npu1's does not, so a
+        single number has to be npu1's or be wrong somewhere. It was npu1's, and
+        every bf16 elementwise loop on npu2 ran at half the width the hardware
+        offers -- measured at 7% end to end on the int4 decode block, whose
+        hand-written predecessor used 512-bit throughout.
+        """
+        if self.wide_vector_width is not None and target == "npu2":
+            return self.wide_vector_width
+        return self.default_vector_width
+
     def mlir(self):
         """The MLIR element type. Requires an active Context."""
         # Imported lazily: air.backend pulls in the MLIR bindings, and importing
@@ -151,7 +170,7 @@ class DType:
         return f"air.api.{self.name}"
 
 
-bf16 = DType("bf16", bfloat16, 16, is_float=True)
+bf16 = DType("bf16", bfloat16, 16, is_float=True, wide_vector_width=32)
 # AIE2 and AIE2P have no fp16 instruction, scalar or vector -- bf16 is the
 # 16-bit float the hardware implements. Nothing in the toolchain refuses an f16
 # kernel, though: it compiles, runs, and returns the result of having read the

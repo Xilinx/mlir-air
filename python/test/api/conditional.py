@@ -53,16 +53,16 @@ def run(f):
 # CHECK: %[[C0:.*]] = arith.constant 0 : index
 # CHECK: %[[P:.*]] = arith.cmpi eq, %[[TX]], %[[C0]] : index
 # CHECK: scf.if %[[P]] {
-# CHECK:   linalg.fill ins(%c1_i32
+# CHECK:   %[[V1:.*]] = arith.constant 1 : i32
 # CHECK: } else {
-# CHECK:   linalg.fill ins(%c2_i32
+# CHECK:   %[[V2:.*]] = arith.constant 2 : i32
 # CHECK: }
 @run
 def branch_otherwise():
     A = air.tensor([N], i32)
     out = air.tensor([N], i32)
 
-    with air.launch(name="two_way") as launch:
+    with air.launch(name="two_way", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -90,19 +90,19 @@ def branch_otherwise():
 # first's else, so the two scf.ifs nest rather than sitting side by side. This
 # is the structure cascade_reduction relies on.
 # CHECK: scf.if
-# CHECK:   linalg.fill ins(%c1_i32
+# CHECK:   %[[V1:.*]] = arith.constant 1 : i32
 # CHECK: } else {
 # CHECK:   arith.cmpi eq, %{{.*}}, %c3
 # CHECK:   scf.if
-# CHECK:     linalg.fill ins(%c3_i32
+# CHECK:     %[[V3:.*]] = arith.constant 3 : i32
 # CHECK:   } else {
-# CHECK:     linalg.fill ins(%c2_i32
+# CHECK:     %[[V2B:.*]] = arith.constant 2 : i32
 @run
 def three_way_cascade():
     A = air.tensor([N], i32)
     out = air.tensor([N], i32)
 
-    with air.launch(name="three_way") as launch:
+    with air.launch(name="three_way", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -149,7 +149,7 @@ def every_comparison():
     A = air.tensor([N], i32)
     out = air.tensor([N], i32)
 
-    with air.launch(name="cmps") as launch:
+    with air.launch(name="cmps", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -180,7 +180,9 @@ def every_comparison():
 #
 # As emitted: the else region is there, empty but for its terminator.
 # CHECK: scf.if %{{.*}} {
-# CHECK:   linalg.fill
+# CHECK:   scf.for
+# CHECK:     vector.transfer_write
+# CHECK:   }
 # CHECK: } else {
 # CHECK: }
 #
@@ -188,15 +190,16 @@ def every_comparison():
 # region a branch with no `otherwise` produces is the one it looks like.
 # CHECK-LABEL: canonicalized:
 # CHECK: scf.if %{{.*}} {
-# CHECK-NEXT: linalg.fill
-# CHECK-NEXT: }
-# CHECK-NEXT: air.dma_memcpy_nd
+# CHECK-NEXT: scf.for
+# CHECK-NEXT: vector.transfer_write
+# CHECK-NOT: else
+# CHECK: air.dma_memcpy_nd
 @run
 def no_otherwise_canonicalizes_away():
     A = air.tensor([N], i32)
     out = air.tensor([N], i32)
 
-    with air.launch(name="one_way") as launch:
+    with air.launch(name="one_way", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -245,7 +248,7 @@ def a_branch_can_test_a_value_read_from_a_buffer():
     A = air.tensor([64, 64], bf16)
     OUT = air.tensor([64, 64], bf16)
 
-    with air.launch(name="vcond") as launch:
+    with air.launch(name="vcond", target="npu1") as launch:
 
         @launch.body
         def _():
@@ -274,7 +277,7 @@ def a_wider_data_comparison_is_still_ops_select():
     A = air.tensor([64], bf16)
     OUT = air.tensor([64], bf16)
 
-    with air.launch(name="vcond_wide") as launch:
+    with air.launch(name="vcond_wide", target="npu1") as launch:
 
         @launch.body
         def _():
