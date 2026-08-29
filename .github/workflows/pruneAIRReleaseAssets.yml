@@ -1,0 +1,127 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+name: Prune AIR release assets
+
+on:
+  schedule:
+    # 09:43 UTC daily. buildAIRWheels.yml starts its nightly at 04:00 UTC and
+    # the wheel matrix takes hours, so this runs well clear of the upload step.
+    # Off-the-hour to avoid the GH Actions traffic spike.
+    - cron: '43 9 * * *'
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: 'Delete wheels older than this many days'
+        type: string
+        default: '30'
+      dry_run:
+        description: 'List what would be deleted without actually deleting'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prune:
+    # Why: the rolling latest-air-wheels* releases accumulate indefinitely.
+    # Wheel names embed DATETIME+HASH (see buildAIRWheels.yml), so every nightly
+    # lands 8 net-new assets per tag that never collide with an existing name --
+    # `replacesArtifacts: true` on the release step is a no-op for them. At
+    # ~8 assets/day/tag we hit GitHub's hard 1000-asset-per-release cap in about
+    # four months. That already happened: both tags sat at exactly 1000 and
+    # every scheduled run from 2026-08-25 onward failed at upload until 300
+    # assets per tag were deleted by hand. This janitor keeps that from
+    # recurring, so the tag URLs baked into docs and downstream find-links pages
+    # stay stable instead of being rolled to latest-air-wheels-2.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune assets older than ${{ inputs.max_age_days || '30' }} days
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days || '30' }}
+          # Scheduled runs prune for real; manual runs default to a dry run so
+          # the blast radius can be eyeballed before anything is destroyed.
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          cutoff=$(date -u -d "${MAX_AGE_DAYS} days ago" +%s)
+          echo "cutoff: $(date -u -d "@$cutoff" --iso-8601=seconds)  dry_run=${DRY_RUN}"
+
+          total_deleted=0
+          total_seen=0
+
+          for TAG in latest-air-wheels latest-air-wheels-no-rtti; do
+            echo "::group::${TAG}"
+
+            # Skip the tag on any fetch failure rather than letting set -e kill
+            # the run. Bailing out is also the only safe response to a partial
+            # response: the keep-floor is computed from this list, so pruning
+            # against a truncated one could delete a variant's last wheel.
+            if ! gh api "repos/${REPO}/releases/tags/${TAG}" --paginate \
+              -q '.assets[] | "\(.created_at)\t\(.id)\t\(.name)"' | sort > /tmp/assets.tsv; then
+              echo "::warning::failed to list assets for ${TAG}, skipping"
+              echo "::endgroup::"
+              continue
+            fi
+
+            count=$(wc -l < /tmp/assets.tsv)
+            if [ "$count" -eq 0 ]; then
+              echo "::warning::no assets found for ${TAG}, skipping"
+              echo "::endgroup::"
+              continue
+            fi
+            echo "total assets: ${count}"
+
+            # Keep-floor: never delete the newest asset for a given wheel
+            # variant, however old it is. A wheel's last three dash-separated
+            # fields are its python tag, ABI tag and platform
+            # (e.g. cp312-cp312-linux_x86_64.whl), which is exactly the tuple
+            # pip resolves against. Without this floor a quiet month would empty
+            # the release and 404 every `pip install mlir_air`: the nightly is
+            # skipped entirely when HEAD already matches the last released wheel
+            # (see the check-new-commits job), so "no uploads for 30 days" is a
+            # normal state, not a broken one. The floor also retains the final
+            # wheel of a variant that has been dropped from the build matrix
+            # (cp310), which keeps existing installs resolving rather than
+            # breaking them on a janitor's schedule.
+            awk -F'\t' '{n=split($3,f,"-"); print f[n-2]"-"f[n-1]"-"f[n]"\t"$1"\t"$2}' /tmp/assets.tsv \
+              | sort -t$'\t' -k1,1 -k2,2r \
+              | awk -F'\t' '!seen[$1]++ {print $3}' | sort > /tmp/protected.ids
+            echo "protected (newest per variant): $(wc -l < /tmp/protected.ids)"
+
+            deleted=0
+            kept_by_floor=0
+            while IFS=$'\t' read -r created_at id name; do
+              asset_ts=$(date -u -d "$created_at" +%s)
+              [ "$asset_ts" -lt "$cutoff" ] || continue
+
+              if grep -qxF "$id" /tmp/protected.ids; then
+                echo "keep (newest of its variant): $created_at $name"
+                kept_by_floor=$((kept_by_floor+1))
+                continue
+              fi
+
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "would delete: $created_at $name"
+              else
+                gh api -X DELETE "repos/${REPO}/releases/assets/${id}" >/dev/null
+                echo "deleted: $created_at $name"
+              fi
+              deleted=$((deleted+1))
+            done < /tmp/assets.tsv
+
+            echo "${TAG}: ${deleted} of ${count} pruned, ${kept_by_floor} held by keep-floor"
+            total_deleted=$((total_deleted+deleted))
+            total_seen=$((total_seen+count))
+            echo "::endgroup::"
+          done
+
+          echo "::notice::pruned ${total_deleted} of ${total_seen} assets across both tags (dry_run=${DRY_RUN})"
