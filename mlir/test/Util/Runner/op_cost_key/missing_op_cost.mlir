@@ -1,4 +1,4 @@
-//===- missing_kernel.mlir ---------------------------------------*- MLIR -*-===//
+//===- missing_op_cost.mlir ---------------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -16,7 +16,7 @@
 // kernel that does not exist and fall back to the default rate in silence,
 // which is the one thing this attribute exists to prevent.
 
-// CHECK: error: 'linalg.copy' op names kernel 'does_not_exist', which the model does not define
+// CHECK: error: 'linalg.copy' op air.op_cost names 'does_not_exist', which cost_model.op_costs does not define
 // CHECK: No latency reported
 // CHECK-NOT: Latency (
 

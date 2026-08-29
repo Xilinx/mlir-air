@@ -410,6 +410,12 @@ public:
   }
 
   void set_op_costs(llvm::json::Object *kernelObjects) {
+    // Absent is legal -- a model that prices nothing by name still runs, on
+    // the fallback. Dereferencing unconditionally used to be safe only because
+    // the sole caller read a top-level key; it now reads a nested one, so
+    // there are two ways to arrive here with nothing.
+    if (!kernelObjects)
+      return;
     for (auto it = kernelObjects->begin(), ie = kernelObjects->end(); it != ie;
          ++it) {
       llvm::json::Object *kernelObject = it->second.getAsObject();
@@ -549,6 +555,16 @@ public:
     // set_op_costs() for what the four entries under it are and why they are
     // named the way they are.
     auto *costs = model->getObject("cost_model");
+    // Everything that prices an op moved under `cost_model`. Say so, rather
+    // than silently pricing the whole model on the fallback: a file written
+    // against the old flat layout is otherwise indistinguishable from one that
+    // deliberately prices nothing.
+    this->resource_assertion(
+        costs != nullptr,
+        "arch model has no 'cost_model' object. The pricing tables live under "
+        "it now: cost_model.op_costs (was 'kernels'), cost_model.opaque_costs "
+        "(was 'custom_kernels'), cost_model.fallback (was 'compute_model'), "
+        "and cost_model.transfer_costs");
     this->setup_device_resources(model->getObject("dus"),
                                  model->getObject("noc"));
     this->setup_device_parameters(

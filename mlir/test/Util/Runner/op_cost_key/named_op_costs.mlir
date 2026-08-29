@@ -1,4 +1,4 @@
-//===- named_kernels.mlir ----------------------------------------*- MLIR -*-===//
+//===- named_op_costs.mlir ----------------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT

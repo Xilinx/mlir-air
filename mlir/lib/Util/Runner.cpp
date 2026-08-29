@@ -1005,11 +1005,11 @@ private:
       // A cycles expression for this datatype has already been taken above, so
       // reaching here means the entry must price it some other way.
       if (!d.op_costs.count(key))
-        op->emitOpError("names kernel '")
-            << key << "', which the model does not define";
+        op->emitOpError("air.op_cost names '")
+            << key << "', which cost_model.op_costs does not define";
       else if (!d.op_costs[key]->datatypes.count(op_datatype))
-        op->emitOpError("names kernel '")
-            << key << "', which the model has, but not for datatype '"
+        op->emitOpError("air.op_cost names '")
+            << key << "', which cost_model.op_costs has, but not for datatype '"
             << op_datatype << "'";
     }
 
@@ -1084,10 +1084,12 @@ private:
           cycles = *kernel_ty->getNumber("latency");
         } else {
           op->emitOpError("unknown data type ")
-              << op_datatype << " for custom kernel " << op_sym_name;
+              << op_datatype << " for cost_model.opaque_costs entry "
+              << op_sym_name;
         }
       } else {
-        op->emitOpError("found no custom kernel named ") << op_sym_name;
+        op->emitOpError("cost_model.opaque_costs has no entry named ")
+            << op_sym_name;
       }
     } else {
       op->emitOpError("found no cost_model.opaque_costs obj. in JSON");
