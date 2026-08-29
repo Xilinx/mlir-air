@@ -8201,7 +8201,7 @@ def build_module():
                         def _emit_norm(wbuf, nrefeed):
                             _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm)
 
-                        def _accumulate(nrnds, stage):
+                        def _accumulate(nrnds, stage, guard=None):
                             """Add a projection's output into the residual.
 
                             The projection egresses (round, token): round r is
@@ -8242,90 +8242,119 @@ def build_module():
                                 "_RMS_BAND_FIRST"
                             )
                             for _r in for_(idx(0), idx(nrnds), idx(1)):
-                                _do_get = str(stage) in _RMS_BANDS_GET
-                                _do_put = str(stage) in _RMS_BANDS_PUT
-                                # _RMS_RES2_PUT_FIRST: a PROGRESS WITNESS, not a
-                                # fix. In residual2 only, put a band back as the
-                                # FIRST op of the loop body -- ahead of the @outY
-                                # get as well as the @rmsX get. Its contents are
-                                # stale garbage, but the drain is host-visible,
-                                # so reaching this loop at all lands one band in
-                                # X (BATCH runs of STG_W, one per token row) and
-                                # X staying empty means the core never got here.
-                                # Everything else the core does after ph2 is
-                                # invisible from the host.
-                                # ..._PUT_FIRST puts it ahead of the @outY get
-                                # too; ..._PUT_MID puts it BETWEEN the @outY get
-                                # and the @rmsX get. One band in X under MID and
-                                # none under neither says @outY arrived and the
-                                # BAND did not; none under MID says @outY is
-                                # what blocks. Nothing else separates the two.
-                                _pm = _os.environ.get("_RMS_RES2_PUT_MID")
-                                _pf = _os.environ.get("_RMS_RES2_PUT_FIRST")
-                                _wit = (_pf or _pm) and _do_put and stage == 2
-                                if _pf and _wit:
-                                    _rms_band_put_back(xr)
-                                if _band_first and _do_get:
-                                    _rms_band_get(xb)
-                                _outy_get()
-                                if _pm and _wit:
-                                    _rms_band_put_back(xr)
-                                if _RMS_STG_COPY:
-                                    # `stg`'s ONLY reader in this round, so AIR
-                                    # releases the @outY landing buffer here
-                                    # rather than after the accumulate.
-                                    CallOp(
-                                        band_copy_aie,
-                                        [sg2, stg, _i32(BATCH * STG_W)],
+                                # GUARD: an extra wave egresses its OWN i2 rounds, which is not
+                                # OPROJ_RNDS. The bound cannot simply become that count -- an
+                                # arm-selected trip count here fails air-to-aie with 'selects a
+                                # destination, but its routing domain has no demux', because the
+                                # demux id analysis reads the @outY gets' static extent. So the
+                                # loop stays statically OPROJ_RNDS and the BODY is skipped past
+                                # the wave's round count: one get op site, one static count, and
+                                # only the number of executions varies.
+                                _g = (
+                                    IfOp(
+                                        arith.cmpi(arith.CmpIPredicate.ult, _r, guard),
+                                        [],
+                                        has_else=False,
                                     )
-                                if RMS_BAND_STREAM >= 3:
-                                    # Length 0, not a dropped call: see the
-                                    # comment below -- unchanged reasoning,
-                                    # just no _off term to compute (the
-                                    # band fetch already selects the right
-                                    # data; see residual_acc_row_banded_aie).
-                                    _n = _i32(PAYLOAD if _add else 0)
-                                    # Round r IS band r (nrnds == nband,
-                                    # asserted via STG_W == PAYLOAD): xb
-                                    # holds no data between rounds, so the
-                                    # band this round updates has to come
-                                    # back from _x_in() every round, and the
-                                    # updated band has to go back out before
-                                    # ph2's scale pre-pass (residual1) or as
-                                    # the final output (residual2) can
-                                    # correctly re-read it. No scratch slot
-                                    # -- see the HIDDEN_TAPS refusal above.
-                                    if _do_get and not _band_first:
-                                        _rms_band_get(xb)
-                                    for t in range(BATCH):
-                                        CallOp(
-                                            residual_acc_row_banded_out_aie,
-                                            [
-                                                xr,
-                                                xb,
-                                                sg2 if _RMS_STG_COPY else stg,
-                                                _i32(t),
-                                                _i32(STG_W),
-                                                _n,
-                                            ],
-                                        )
-                                    if _do_put and not _wit:
+                                    if guard is not None
+                                    else None
+                                )
+                                if _g is not None:
+                                    _g.operation.attributes["air.arm_select"] = (
+                                        UnitAttr.get()
+                                    )
+                                _gctx = (
+                                    InsertionPoint(_g.thenRegion.blocks[0])
+                                    if _g is not None
+                                    else contextlib.nullcontext()
+                                )
+                                with _gctx:
+                                    _do_get = str(stage) in _RMS_BANDS_GET
+                                    _do_put = str(stage) in _RMS_BANDS_PUT
+                                    # _RMS_RES2_PUT_FIRST: a PROGRESS WITNESS, not a
+                                    # fix. In residual2 only, put a band back as the
+                                    # FIRST op of the loop body -- ahead of the @outY
+                                    # get as well as the @rmsX get. Its contents are
+                                    # stale garbage, but the drain is host-visible,
+                                    # so reaching this loop at all lands one band in
+                                    # X (BATCH runs of STG_W, one per token row) and
+                                    # X staying empty means the core never got here.
+                                    # Everything else the core does after ph2 is
+                                    # invisible from the host.
+                                    # ..._PUT_FIRST puts it ahead of the @outY get
+                                    # too; ..._PUT_MID puts it BETWEEN the @outY get
+                                    # and the @rmsX get. One band in X under MID and
+                                    # none under neither says @outY arrived and the
+                                    # BAND did not; none under MID says @outY is
+                                    # what blocks. Nothing else separates the two.
+                                    _pm = _os.environ.get("_RMS_RES2_PUT_MID")
+                                    _pf = _os.environ.get("_RMS_RES2_PUT_FIRST")
+                                    _wit = (_pf or _pm) and _do_put and stage == 2
+                                    if _pf and _wit:
                                         _rms_band_put_back(xr)
-                                else:
-                                    _off = arith.muli(
-                                        arith.index_cast(i32, _r), _i32(PAYLOAD)
-                                    )
-                                    # Length 0, not a dropped call: the kernel's loop
-                                    # runs zero times, so nothing is added -- but the
-                                    # get still has a reader, and without one AIR is
-                                    # free to move it and the channel stops balancing.
-                                    # (It did, and the dispatch hung.)
-                                    _n = _i32(PAYLOAD if _add else 0)
-                                    for t in range(BATCH):
+                                    if _band_first and _do_get:
+                                        _rms_band_get(xb)
+                                    _outy_get()
+                                    if _pm and _wit:
+                                        _rms_band_put_back(xr)
+                                    if _RMS_STG_COPY:
+                                        # `stg`'s ONLY reader in this round, so AIR
+                                        # releases the @outY landing buffer here
+                                        # rather than after the accumulate.
                                         CallOp(
-                                            residual_acc_row_aie,
-                                            [xb, stg, _i32(t), _off, _n],
+                                            band_copy_aie,
+                                            [sg2, stg, _i32(BATCH * STG_W)],
                                         )
+                                    if RMS_BAND_STREAM >= 3:
+                                        # Length 0, not a dropped call: see the
+                                        # comment below -- unchanged reasoning,
+                                        # just no _off term to compute (the
+                                        # band fetch already selects the right
+                                        # data; see residual_acc_row_banded_aie).
+                                        _n = _i32(PAYLOAD if _add else 0)
+                                        # Round r IS band r (nrnds == nband,
+                                        # asserted via STG_W == PAYLOAD): xb
+                                        # holds no data between rounds, so the
+                                        # band this round updates has to come
+                                        # back from _x_in() every round, and the
+                                        # updated band has to go back out before
+                                        # ph2's scale pre-pass (residual1) or as
+                                        # the final output (residual2) can
+                                        # correctly re-read it. No scratch slot
+                                        # -- see the HIDDEN_TAPS refusal above.
+                                        if _do_get and not _band_first:
+                                            _rms_band_get(xb)
+                                        for t in range(BATCH):
+                                            CallOp(
+                                                residual_acc_row_banded_out_aie,
+                                                [
+                                                    xr,
+                                                    xb,
+                                                    sg2 if _RMS_STG_COPY else stg,
+                                                    _i32(t),
+                                                    _i32(STG_W),
+                                                    _n,
+                                                ],
+                                            )
+                                        if _do_put and not _wit:
+                                            _rms_band_put_back(xr)
+                                    else:
+                                        _off = arith.muli(
+                                            arith.index_cast(i32, _r), _i32(PAYLOAD)
+                                        )
+                                        # Length 0, not a dropped call: the kernel's loop
+                                        # runs zero times, so nothing is added -- but the
+                                        # get still has a reader, and without one AIR is
+                                        # free to move it and the channel stops balancing.
+                                        # (It did, and the dispatch hung.)
+                                        _n = _i32(PAYLOAD if _add else 0)
+                                        for t in range(BATCH):
+                                            CallOp(
+                                                residual_acc_row_aie,
+                                                [xb, stg, _i32(t), _off, _n],
+                                            )
+                                    if _g is not None:
+                                        yield_([])
                                 yield_([])
 
                         def _layer_out():
@@ -8420,7 +8449,15 @@ def build_module():
                                 ChannelGet("rmsW2", w2, indices=[idx(0)])
                         # residual1: h = x + o-proj, in place.
                         _if_decode(
-                            lambda: _accumulate(OPROJ_RNDS, 1),
+                            lambda: _accumulate(
+                                OPROJ_RNDS,
+                                1,
+                                guard=(
+                                    _cnt(OPROJ_RNDS, OPROJ_RNDS, EXTRA_RNDS)
+                                    if N_EXTRA
+                                    else None
+                                ),
+                            ),
                             decode_only=EXTRA_STOP in (1, 3),
                         )
                         # ph2: pre-MLP layernorm of h -> the gate-up X feed.
