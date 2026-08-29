@@ -347,10 +347,11 @@ public:
 
   // Try to reserve resources for an event
   bool checkResourceFulfillmentForOpImpls(dependencyNodeEntry node) {
-    return checkResourceFulfillmentForOpImpls(node.op, node.asyncEventName);
+    return checkResourceFulfillmentForOpImpls(node.op, node.asyncEventName,
+                                              node.dispatched_count);
   }
-  bool checkResourceFulfillmentForOpImpls(Operation *op,
-                                          std::string name = "") {
+  bool checkResourceFulfillmentForOpImpls(Operation *op, std::string name = "",
+                                          unsigned already_dispatched = 0) {
     // At any point in time, if segment or herd op fails to allocate enough
     // resources, then the entire launch is invalid due to failing to allocate
     // enough resources upon launch.
@@ -370,9 +371,9 @@ public:
     // If the ops below fails to be allocated with enough resources, then defer
     // their execution until enough resources are freed up.
     else if (auto Op = dyn_cast_if_present<air::ChannelPutOp>(op)) {
-      return (bool)this->checkResourceFulfillmentForOp(Op);
+      return (bool)this->checkResourceFulfillmentForOp(Op, already_dispatched);
     } else if (auto Op = dyn_cast_if_present<air::ChannelGetOp>(op)) {
-      return (bool)this->checkResourceFulfillmentForOp(Op);
+      return (bool)this->checkResourceFulfillmentForOp(Op, already_dispatched);
     } else if (auto Op = dyn_cast_if_present<air::ExecuteOp>(op)) {
       auto child_op = &Op.getChildOps().front();
       if (name == "AllocOp") {
@@ -683,7 +684,26 @@ private:
                                  Graph::VertexId v) {
     Graph &G = this->ctrl_g->g;
     this->allocateEventToResourcesImpls(reserved_resources, G[v].op,
-                                        G[v].asyncEventName);
+                                        G[v].asyncEventName, &G[v]);
+  }
+
+  // Retire a channel op: mark it processed and clear its per-op dispatch
+  // count. The count has to be cleared here and not only in resetVertex,
+  // because completing a channel instance zeroes the channel-wide counters so
+  // the next round can dispatch -- and a per-op count left standing would cap
+  // that round at zero and silently drop the transfer.
+  void retireChannelOp(Graph::VertexId it) {
+    this->processed_vertices.push_back(it);
+    this->ctrl_g->g[it].dispatched_count = 0;
+  }
+
+  // How many spatial instances of this op are still to be dispatched. Channel
+  // progress is tracked per channel instance, which equals per op only while
+  // one op owns the channel. It does not when a broadcast's receivers are
+  // separate ops sharing one channel, so the per-op bound is kept separately.
+  unsigned ownRemainingDispatches(Operation *op, unsigned already_dispatched) {
+    unsigned own_total = this->tokenSpatialFactorForResource(op);
+    return own_total > already_dispatched ? own_total - already_dispatched : 0;
   }
 
   // Try to reserve resources for an event
@@ -720,7 +740,8 @@ private:
     return true;
   }
   // Return how many events can be dispatched at this point in time.
-  unsigned checkResourceFulfillmentForOp(air::ChannelPutOp putOp) {
+  unsigned checkResourceFulfillmentForOp(air::ChannelPutOp putOp,
+                                         unsigned already_dispatched = 0) {
 
     // Get a pool of available ports from src
     std::vector<resource *> src_resource_pool;
@@ -736,10 +757,14 @@ private:
     // dispatched event
     unsigned remaining =
         launch_runner->getRemainingDispatchesForDynamicDispatch(putOp);
+    remaining =
+        std::min(remaining, this->ownRemainingDispatches(putOp.getOperation(),
+                                                         already_dispatched));
 
     return std::min(remaining, (unsigned)src_resource_pool.size());
   }
-  unsigned checkResourceFulfillmentForOp(air::ChannelGetOp getOp) {
+  unsigned checkResourceFulfillmentForOp(air::ChannelGetOp getOp,
+                                         unsigned already_dispatched = 0) {
 
     // Get a pool of available ports from dst
     std::vector<resource *> dst_resource_pool;
@@ -753,6 +778,9 @@ private:
 
     unsigned remaining =
         launch_runner->getRemainingDispatchesForDynamicDispatch(getOp);
+    remaining =
+        std::min(remaining, this->ownRemainingDispatches(getOp.getOperation(),
+                                                         already_dispatched));
 
     return std::min(remaining, (unsigned)dst_resource_pool.size());
   }
@@ -760,8 +788,8 @@ private:
   // Allocate event to resources
   void
   allocateEventToResourcesImpls(std::vector<resource *> &reserved_resources,
-                                Operation *op = nullptr,
-                                std::string name = "") {
+                                Operation *op = nullptr, std::string name = "",
+                                dependencyNodeEntry *node = nullptr) {
     if (op) {
       if (auto exec_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
         auto child_op = &exec_op.getChildOps().front();
@@ -785,9 +813,9 @@ private:
           res->isReserved = false;
         }
       } else if (auto Op = dyn_cast_if_present<air::ChannelPutOp>(op)) {
-        this->allocateEventToResources(Op, reserved_resources);
+        this->allocateEventToResources(Op, reserved_resources, node);
       } else if (auto Op = dyn_cast_if_present<air::ChannelGetOp>(op)) {
-        this->allocateEventToResources(Op, reserved_resources);
+        this->allocateEventToResources(Op, reserved_resources, node);
       }
     } else {
       if (auto Op =
@@ -847,7 +875,8 @@ private:
         resource_pool, reserved_resources, memory_deallocated);
   }
   void allocateEventToResources(air::ChannelPutOp Op,
-                                std::vector<resource *> &reserved_resources) {
+                                std::vector<resource *> &reserved_resources,
+                                dependencyNodeEntry *node = nullptr) {
     auto chan_interface =
         dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
@@ -855,7 +884,7 @@ private:
     // Check how many evnets need to be dispatched in this op
     unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
-                                   "outbound", dispatched);
+                                   "outbound", dispatched, node);
 
     // Update tokens
     auto spatial_factor =
@@ -880,14 +909,15 @@ private:
     }
   }
   void allocateEventToResources(air::ChannelGetOp Op,
-                                std::vector<resource *> &reserved_resources) {
+                                std::vector<resource *> &reserved_resources,
+                                dependencyNodeEntry *node = nullptr) {
     auto chan_interface =
         dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
     unsigned total = this->tokenSpatialFactorForResource(Op.getOperation());
     this->allocateEventToResources(chan_interface, reserved_resources,
-                                   "inbound", dispatched);
+                                   "inbound", dispatched, node);
 
     // Update tokens
     auto spatial_factor =
@@ -911,7 +941,8 @@ private:
   void allocateEventToResources(air::ChannelInterface Op,
                                 std::vector<resource *> &reserved_resources,
                                 std::string port_direction,
-                                unsigned &dispatched) {
+                                unsigned &dispatched,
+                                dependencyNodeEntry *node = nullptr) {
 
     // Get a pool of available ports
     std::vector<resource *> resource_pool;
@@ -941,6 +972,21 @@ private:
 
     // Check how many events can be dispatched at this time
     dispatched = std::min(remaining, (unsigned)resource_pool.size());
+    // An op can never dispatch more spatial instances than it has. `remaining`
+    // is per channel *instance*, which over-counts when several ops share one
+    // channel -- the receivers of a broadcast whose fanout is spread over
+    // separate ops rather than over the tiles of one op. Without this cap the
+    // first receiver scheduled takes every dispatch the fanout allows and the
+    // others deadlock. Costs nothing when one op owns the channel, which is
+    // every pre-existing case: there own_total == remaining.
+    if (node) {
+      unsigned own_total =
+          this->tokenSpatialFactorForResource(Op.getOperation());
+      unsigned own_remaining = own_total > node->dispatched_count
+                                   ? own_total - node->dispatched_count
+                                   : 0;
+      dispatched = std::min(dispatched, own_remaining);
+    }
     // If simulating at per-core granularity, then one operation can at most be
     // dispatched once per core
     if (this->sim_granularity == "core" && Op->getParentOfType<air::HerdOp>()) {
@@ -950,6 +996,9 @@ private:
     // Dispatch all events that can be dispatched
     this->allocateRunnerNodeToPorts(resource_pool, reserved_resources,
                                     dispatched);
+
+    if (node)
+      node->dispatched_count += dispatched;
 
     // Keep track of how many remaining events to dispatch in this op
     std::pair<std::string, std::string> key =
@@ -1195,7 +1244,7 @@ private:
     if (launch_runner->channel_ops_in_progress.count(key)) {
       unsigned processed = launch_runner->channel_ops_in_progress[key].first;
       if (processed == total_count) {
-        this->processed_vertices.push_back(it);
+        this->retireChannelOp(it);
       }
     } else
       this->runner_assertion(false, "unknown channel.put op");
@@ -1295,10 +1344,25 @@ private:
     std::pair<std::string, std::string> get_key =
         std::make_pair(this->getChannelInstanceKey(op), "get");
 
-    // If data movement is complete, clear put and get progresses
-    if ((put_processed * bcast_factor == total_count) &&
-        (get_processed == total_count)) {
-      this->processed_vertices.push_back(it);
+    // If data movement is complete, clear put and get progresses.
+    //
+    // The count this is measured against is the number of gets the *channel
+    // instance* expects, which is this op's own spatial factor only while one
+    // op owns the channel -- a get inside a herd of N tiles, where the factor
+    // already equals the fanout. When the receivers are N separate ops the
+    // factor is 1 apiece and `put_processed * bcast == 1` can never hold, so
+    // the channel never completed and the run stalled. Taking the larger of
+    // the two covers both and changes nothing for either pre-existing shape.
+    //
+    // Anchoring on a total rather than on `get_processed == put_processed *
+    // bcast` is deliberate: that weaker form is also true at every
+    // intermediate round when a transfer is dispatched a few ports at a time,
+    // so it retires the channel half-moved. Util/Runner/bandwidth_contention
+    // is what says so.
+    unsigned expected_gets = std::max(total_count, bcast_factor);
+    if ((put_processed * bcast_factor == expected_gets) &&
+        (get_processed == expected_gets)) {
+      this->retireChannelOp(it);
       launch_runner->channel_ops_in_progress[get_key].first = 0;
       launch_runner->channel_ops_in_progress[get_key].second.clear();
       launch_runner->channel_ops_in_progress[put_key].first = 0;
@@ -1307,13 +1371,30 @@ private:
     // Else if a previous executeOp has already cleared the progresses
     else if (!launch_runner->channel_ops_in_progress[get_key].first &&
              !launch_runner->channel_ops_in_progress[put_key].first) {
-      this->processed_vertices.push_back(it);
+      this->retireChannelOp(it);
+    }
+    // Else if this op is one receiver of a declared broadcast and has taken
+    // its own copy. It must not be held open waiting for its siblings, which
+    // are in other segments and may be scheduled much later; whichever of them
+    // runs last clears the channel through the first branch above.
+    //
+    // `total_count < bcast_factor` is what makes this a broadcast receiver
+    // rather than a mismatch. A get that spans the whole fanout has
+    // total_count == bcast_factor and completes through the first branch. A
+    // channel with no broadcast_shape has bcast_factor == 1 and can never
+    // satisfy this, so an unbalanced put/get pair still stalls instead of
+    // being quietly accepted -- see Util/Runner/stalled_simulation.mlir, which
+    // exists because a stall that reports a plausible latency is the
+    // expensive kind of failure.
+    else if (bcast_factor > 1 && total_count < bcast_factor &&
+             this->ctrl_g->g[it].dispatched_count >= total_count) {
+      this->retireChannelOp(it);
     }
     // Else if under per-core simulation mode, then complete the work for this
     // core
     else if (this->sim_granularity == "core" &&
              op->getParentOfType<air::HerdOp>()) {
-      this->processed_vertices.push_back(it);
+      this->retireChannelOp(it);
     }
     // Else, continue dispatching get events
     else {
@@ -1347,6 +1428,7 @@ private:
       G[v].end_time = 0;
       G[v].release_time = 0;
       G[v].resources_released = false;
+      G[v].dispatched_count = 0;
     }
 
     // Push adj. vertices to latent wavefront candidates
