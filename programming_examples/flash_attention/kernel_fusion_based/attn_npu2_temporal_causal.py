@@ -78,7 +78,7 @@ M = 8  # mmul_m = mmul_k = mmul_n
 _MAX_ROUNDS_IN_FLIGHT = 8
 
 
-def build_module(
+def build_launch(
     lk=512,
     lkp=64,
     lq=512,
@@ -94,6 +94,10 @@ def build_module(
     causal_skip=True,
     q_tiles_per_core=1,
 ):
+    # num_cascade_stages and causal_skip are accepted and ignored: this design
+    # has no cascade, and the causal skip is in the DMA rather than a choice.
+    # Six llms/ call sites still pass them, so they stay in the signature.
+    del num_cascade_stages, causal_skip
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
         lqp % num_q_tiles == 0
@@ -314,13 +318,20 @@ def build_module(
                                 indices=[row_slot, i],
                             )
 
-            # K and V: one round's causal prefix, cps_lx blocks of lkp rows.
-            for lx in air.sequential(0, num_lq_iters):
-                cps_lx = num_lq_iters * NQ if _uniform_cps else None
+            # K and V: one round's causal prefix, cps_blocks(lx) blocks of lkp
+            # rows. That count is a transfer SIZE and air.api needs those
+            # static, so a varying prefix unrolls the round axis in Python --
+            # matching the memtile relay and the core, which consume exactly
+            # cps_blocks(lx) per round. Over-sending here does not merely waste
+            # bandwidth, it desynchronises the stream.
+            kv_rounds = (
+                air.sequential(0, num_lq_iters) if _uniform_cps else range(num_lq_iters)
+            )
+            for lx in kv_rounds:
                 for kv_local in range(num_heads_per_unroll):
                     k_col = ly * (num_heads_per_unroll * dk) + kv_local * dk
                     v_col = ly * (num_heads_per_unroll * dv) + kv_local * dv
-                    rows = (cps_lx if cps_lx is not None else num_lq_iters * NQ) * lkp
+                    rows = cps_blocks(lx) * lkp
                     if full_d_dma:
                         kin.put(
                             K[0:rows, k_col : k_col + dk].reshape(rows // lkp, lkp, dk),
@@ -776,6 +787,18 @@ def build_module(
     return launch
 
 
+def build_module(**kwargs):
+    """The MLIR module. Return type is the llms/ builders' contract.
+
+    programming_examples/llms/llama32_1b/llama32_1b_prefill.py and
+    programming_examples/llms/shared/infra/fa_temporal.py import this name and
+    hand the result straight to KernelCache.compile_and_cache, which stringifies
+    it into air.mlir -- so it must be a module, not the LaunchContext that
+    build_launch returns.
+    """
+    return build_launch(**kwargs).build(target="npu2")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="attn_npu2_temporal_causal.py",
@@ -820,7 +843,7 @@ def main():
     gqa_group_size = num_heads // num_kv_heads
     causal = args.causal
 
-    launch = build_module(
+    launch = build_launch(
         lk=lk,
         lkp=lkp,
         lq=lq,

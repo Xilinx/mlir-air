@@ -38,6 +38,8 @@ import air.ir
 from ml_dtypes import bfloat16
 
 # Each row: (module path, builder, kwargs, the llms/ file that imports it).
+# The last field is printed on failure and is relative to
+# programming_examples/llms/, which is where every importer lives.
 # Configs are the smallest legal ones, not the ones llms/ passes -- the return
 # type does not depend on the shape, and a prefill-scale build is slow.
 BUILDERS = [
@@ -76,6 +78,36 @@ BUILDERS = [
         "build_module",
         dict(lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64),
         "shared/infra/fa_headfirst.py",
+    ),
+    (
+        "flash_attention.kernel_fusion_based.attn_npu2_seqfirst",
+        "build_module",
+        dict(lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64, causal=True),
+        "llama32_1b, llama32_1b_int4, qwen25_0_5b, lfm2_1_2b_q4nx, smolvla",
+    ),
+    (
+        "flash_attention.kernel_fusion_based.attn_npu2_temporal_causal",
+        "build_module",
+        dict(
+            lk=512,
+            lkp=64,
+            lq=512,
+            lqp=512,
+            dk=64,
+            dv=64,
+            num_q_tiles=8,
+            num_heads=4,
+            num_kv_heads=4,
+            causal=True,
+            num_heads_per_unroll=1,
+        ),
+        "llama32_1b/llama32_1b_prefill.py, shared/infra/fa_temporal.py",
+    ),
+    (
+        "flash_attention.kernel_fusion_based.attn_npu1",
+        "build_module",
+        dict(lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64),
+        "the npu1 prefill path",
     ),
 ]
 
@@ -120,7 +152,10 @@ def check(modpath, fnname, kwargs, importer):
 # CHECK: gelu_and_mul.gelu_and_mul.build_module_2d: MLIR
 # CHECK: silu_and_mul.silu_and_mul.build_module_2d: MLIR
 # CHECK: flash_attention.kernel_fusion_based.attn_npu2.build_module: MLIR
-# CHECK: 6/6 builders return a module
+# CHECK: flash_attention.kernel_fusion_based.attn_npu2_seqfirst.build_module: MLIR
+# CHECK: flash_attention.kernel_fusion_based.attn_npu2_temporal_causal.build_module: MLIR
+# CHECK: flash_attention.kernel_fusion_based.attn_npu1.build_module: MLIR
+# CHECK: 9/9 builders return a module
 bad = [row for row in BUILDERS if not check(*row)]
 assert not bad, f"not a module: {[f'{m}.{f}' for m, f, _, _ in bad]}"
 print(f"{len(BUILDERS)}/{len(BUILDERS)} builders return a module")

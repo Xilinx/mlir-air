@@ -1,0 +1,16 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// Two q-rounds is the smallest shape whose causal prefix VARIES between rounds
+// (8 K-blocks then 16), which is the only thing that catches a producer and a
+// consumer disagreeing on the prefix length: at one round they agree trivially,
+// and past _MAX_ROUNDS_IN_FLIGHT the prefix is uniform again by design. LQP is
+// pinned to 512 because causal requires tile_size_q == LKP at NUM_Q_TILES=8.
+//
+// RUN: mkdir -p test_temporal_causal
+// RUN: cd test_temporal_causal
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run SCRIPT=attn_npu2_temporal_causal.py PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR LK=1024 LKP=64 LQ=1024 LQP=512 DK=64 DV=64 NUM_Q_TILES=8 NUM_HEADS=4 NUM_KV_HEADS=1 EXTRA_PY_FLAGS="--causal --num-q-tiles 8 --num-heads-per-unroll 1" | FileCheck %s
+// CHECK: PASS!
