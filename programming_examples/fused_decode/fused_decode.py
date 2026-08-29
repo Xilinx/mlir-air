@@ -1399,6 +1399,47 @@ Y_LAYER = sum(
 )  # Y / layer
 
 
+def _assert_channels_paired(module):
+    """Every air.channel must have at least one producer and one consumer.
+
+    A ported feed is spelled as an air.dma_memcpy_nd naming the channel, and
+    air-dma-to-channel derives the other half -- so the hand-written op on that
+    side has to be deleted, or the feed would be doubled. Deleting it under a
+    weaker condition than the one the DMA is emitted under leaves the surviving
+    half unpaired. Ten models import this builder with different configs, and
+    that mistake has been made four times (@toAttnQ, @attnO, @appendK/@appendV,
+    @ropeLUT), each time found only on the model it broke.
+
+    aircc does catch it -- `'air.channel.get' op found channel op not in pairs`
+    -- but tens of minutes later, pointing at a line of generated IR, naming
+    neither the feed nor the flag. Catch it here, where the name is still known.
+    """
+    import re as _re
+    from collections import Counter as _Counter
+
+    text = str(module)
+    puts = _Counter(_re.findall(r"air\.channel\.put[^@]*@([A-Za-z0-9_]+)", text))
+    gets = _Counter(_re.findall(r"air\.channel\.get[^@]*@([A-Za-z0-9_]+)", text))
+    # A DMA naming a channel supplies whichever half the pass will derive, so it
+    # counts for both.
+    dmas = _Counter(_re.findall(r"channel = @([A-Za-z0-9_]+)", text))
+    bad = []
+    for ch in sorted(set(puts) | set(gets) | set(dmas)):
+        has_src = puts[ch] or dmas[ch]
+        has_dst = gets[ch] or dmas[ch]
+        if not (has_src and has_dst):
+            bad.append(
+                f"@{ch}: {puts[ch]} put(s), {gets[ch]} get(s), {dmas[ch]} dma(s)"
+            )
+    if bad:
+        raise AssertionError(
+            f"DECODE_MODEL={MODEL_NAME}: channel op not in pairs, at emit time:\n  "
+            + "\n  ".join(bad)
+            + "\nA port's producer suppression must test exactly what its "
+            "consumer tests -- see the port predicates near KV_APPEND."
+        )
+
+
 def build_module():
     @module_builder
     def build():
@@ -5751,9 +5792,8 @@ def run():
         print(globals()[_const])
         return 0
 
-    import pyxrt as xrt
-
     module = build_module()
+    _assert_channels_paired(module)
 
     # Emit-only hook: dump the built AIR MLIR and stop before the (expensive) NPU
     # compile. Used to byte-diff the IR across no-op refactors (e.g. the incremental
@@ -5761,6 +5801,11 @@ def run():
     if _os.environ.get("FUSED_DECODE_EMIT_ONLY"):
         print(str(module))
         return 0
+
+    # Imported here, not at the top of main: emitting the IR is supposed to stop
+    # before anything that needs the runtime, and a CI job that only checks the
+    # IR has no pyxrt.
+    import pyxrt as xrt
 
     # use_lock_race_condition_fix_v2: emit the reference-style daisy-chained locks for the
     # shared-L2 fan-in (group/main asymmetric gather) -- matches the reproducer's
