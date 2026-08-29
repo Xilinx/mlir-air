@@ -308,7 +308,7 @@ static inline void rms_chunk(bf16 *restrict y, bf16 *restrict x,
     // expands to NOTHING -- it is Chess-only, see aie_kernel_utils.h -- so the
     // hints that do anything on this toolchain are the unroll and the range.
     AIE_LOOP_RANGE(8)
-    AIE_LOOP_UNROLL(4)
+    AIE_LOOP_UNROLL(8)
     for (int i = 0; i < n / vector_size; i++) {
       aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
       aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
