@@ -465,27 +465,42 @@ def wave_specs(fd_draft):
     # 1.090e-01 where one wave gives 1.080e-01 (cos 0.996578 vs 0.996583). The
     # four extra bf16 roundings are 5.6e-03 between the two forms, two orders
     # below the 1.08e-01 quantization floor. It is free.
+    #
+    # AND EACH SLAB IS ONE WAVE PER ROW-BLOCK ITERATION, not one wave. That is a
+    # DEADLOCK bound, measured on device: an extra wave is the only arm on which
+    # the rms core is both the X producer and the output consumer, in that
+    # order, so i2-1 egress rounds have to sit in the fabric while it finishes
+    # feeding. The fabric holds four. i2=3 completes and i2=5 hangs, everything
+    # else held fixed. fc's 12800 rows divide evenly only at i2 in {1, 5, 25},
+    # so i2=1 it is -- 25 waves of 512 rows, and each is a single-iteration
+    # window of a slab, which is the same `chan_window` slice the context K/V
+    # waves already take.
     n_slab = FC_IN // D
     g_slab = geom_for(D, D, fd_draft)
-    slab_bytes = g_slab.n_blocks * BLOCK_BF16
+    sub_first, sub_nblk = g_slab.chan_window(0, 1)
+    sub_blocks = sub_nblk * g_slab.NCX * g_slab.n_chan
+    sub_bytes = sub_blocks * BLOCK_BF16
+    sub_rows = g_slab.NCX * g_slab.NCY * ROW_BLOCK
     waves = [
         WaveSpec(
-            name=f"fc{s}",
-            m=D,
+            name=f"fc{s}i{t}",
+            m=sub_rows,
             k=D,
-            i2=g_slab.nbi_pc,
+            i2=1,
             j2=g_slab.nbj // 2,
-            iter_lo=0,
-            w_off=s * slab_bytes,
+            iter_lo=t,
+            w_off=(s * g_slab.nbi_pc + t) * sub_bytes,
             x_slot=tap0 + s * tap_stride,
             x_stride=1,
             dest="rms",
         )
         for s in range(n_slab)
+        for t in range(g_slab.nbi_pc)
     ]
-    assert (
-        n_slab * g_slab.n_blocks == g_fc.n_blocks
-    ), f"{n_slab} slabs of {g_slab.n_blocks} blocks is not fc's {g_fc.n_blocks}"
+    assert n_slab * g_slab.nbi_pc * sub_blocks == g_fc.n_blocks, (
+        f"{n_slab}x{g_slab.nbi_pc} sub-waves of {sub_blocks} blocks is not "
+        f"fc's {g_fc.n_blocks}"
+    )
     off = g_fc.n_blocks * BLOCK_BF16
     kv_blocks = kv_n_iter * g_kv.nbj * g_kv.blocks_per_step * g_kv.NCX * g_kv.n_chan
     for L in range(n_layers):
@@ -507,6 +522,32 @@ def wave_specs(fd_draft):
     return waves, off
 
 
+def fc_extra_bo(fd_draft, npz):
+    """The fc region of the extra BO: 25 single-iteration sub-slabs, in order.
+
+    Factored out of `build_extra_weights` so the device gate reads the SAME
+    bytes the BO is built from rather than a second copy of the gather.
+    """
+    from qwen3_4b_draft_weights import D, FC_IN
+
+    g_slab = geom_for(D, D, fd_draft)
+    _, sub_nblk = g_slab.chan_window(0, 1)
+    fc = np.asarray(npz["W_fc"]).reshape(-1, BLOCK_BF16)[fc_slab_perm(fd_draft)]
+    parts = []
+    for s in range(FC_IN // D):
+        sl = fc[s * g_slab.n_blocks : (s + 1) * g_slab.n_blocks]
+        for t in range(g_slab.nbi_pc):
+            for cx in range(g_slab.NCX):
+                for h in range(g_slab.n_chan):
+                    b = (
+                        cx * g_slab.blocks_per_col
+                        + h * g_slab.blocks_per_chan
+                        + t * sub_nblk
+                    )
+                    parts.append(sl[b : b + sub_nblk].reshape(-1))
+    return np.concatenate(parts)
+
+
 def build_extra_weights(fd_draft, npz, verbose=True):
     """The compact extra-weight BO: [fc slab | K/V window per drafter layer].
 
@@ -515,7 +556,7 @@ def build_extra_weights(fd_draft, npz, verbose=True):
     walks, so `_feed_wcol`'s two puts per column need only a base and a length.
     """
     waves, total = wave_specs(fd_draft)
-    from qwen3_4b_draft_weights import D
+    from qwen3_4b_draft_weights import D, FC_IN
 
     kv_lo, kv_hi = _kv_rows(fd_draft)
     g_kv = geom_for(kv_hi, D, fd_draft)
@@ -525,9 +566,11 @@ def build_extra_weights(fd_draft, npz, verbose=True):
     W = np.asarray(npz["W"]).reshape(-1)
     # Re-order the shipped one-slab pack into the five per-tap slabs the waves
     # read, block by block. A gather, not a re-pack: see fc_slab_perm.
-    fc = np.asarray(npz["W_fc"]).reshape(-1, BLOCK_BF16)
-    fc = fc[fc_slab_perm(fd_draft)].reshape(-1)
-    parts = [fc]
+    # fc: 25 single-iteration sub-slabs, gathered (cx, h) run by run so each
+    # wave's blocks are contiguous in the BO -- `_feed_wcol` reads a base and a
+    # length per column, and a single-iteration window of a slab is not
+    # contiguous until it is gathered.
+    parts = [fc_extra_bo(fd_draft, npz)]
     for L in range(fd_draft.UNI_DEC):
         lay = W[L * fd_draft.W_LAYER : (L + 1) * fd_draft.W_LAYER]
         for cx in range(g_kv.NCX):
@@ -631,6 +674,43 @@ def gate_layout(cache=None, verbose=True):
             f"{'OK' if ok else 'WRONG SPLIT'}"
         )
         print(f"          negative control, slab 0 vs tap 1: {wrong:.3e}")
+
+    # 1c. and the SUB-WAVE split of each slab: 25 single-iteration windows, in
+    #     the (cx, h) run order the feed reads them back in. The slab gate above
+    #     cannot see this -- it checks a permutation of whole slabs, and the
+    #     sub-wave gather re-interleaves inside one. A wrong window reads the
+    #     right slab's wrong 512 rows, which is O(1), not O(quant step).
+    _, sub_nblk = g_slab.chan_window(0, 1)
+    sub_rows = g_slab.NCX * g_slab.NCY * ROW_BLOCK
+    g_sub = geom_for(sub_rows, D, fd)
+    worst, worst_w = 0.0, ""
+    for sl_i in range(FC_IN // D):
+        sl = reord[sl_i * g_slab.n_blocks : (sl_i + 1) * g_slab.n_blocks]
+        for t in range(g_slab.nbi_pc):
+            run = np.concatenate(
+                [
+                    sl[b : b + sub_nblk].reshape(-1)
+                    for cx in range(g_slab.NCX)
+                    for h in range(g_slab.n_chan)
+                    for b in [
+                        cx * g_slab.blocks_per_col
+                        + h * g_slab.blocks_per_chan
+                        + t * sub_nblk
+                    ]
+                ]
+            )
+            got = dequant_cascade(run, sub_rows, D, g_sub)
+            ref = fc[t * sub_rows : (t + 1) * sub_rows, sl_i * D : (sl_i + 1) * D]
+            r = np.abs(got - ref).max() / max(np.abs(ref).max(), 1e-9)
+            if r > worst:
+                worst, worst_w = r, f"fc{sl_i}i{t}"
+    ok = worst <= 2.0 * step
+    bad += not ok
+    if verbose:
+        print(
+            f"  fc sub-waves 25x[{sub_rows}x{D}]: worst rel {worst:.3e} "
+            f"({worst_w})  {'OK' if ok else 'WRONG WINDOW'}"
+        )
 
     # 2. the K/V window of drafter layer 0's phase-0 slab, from the same cache.
     kv_lo, kv_hi = _kv_rows(fd)

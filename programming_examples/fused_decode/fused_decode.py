@@ -1156,6 +1156,11 @@ for _i, _w in enumerate(EXTRA_WAVES):
 # is i2/PAIR_ROWS. The two differ only on a paired model; keeping them separate
 # is what stops a PAIR_ROWS=2 build from silently running the wave twice.
 EXTRA_RNDS = [w["i2"] for w in EXTRA_WAVES]
+# How many @outY rounds the RMS CORE takes from a wave -- which is its egress
+# only when the wave is addressed to it. A wave whose demux id is rope or glu
+# egresses to that core instead, and a residual1 that still waited for i2 rounds
+# would wait forever.
+EXTRA_RES1_RNDS = [w["i2"] if w["dest"] == "rms" else 0 for w in EXTRA_WAVES]
 EXTRA_J2 = [w["j2"] for w in EXTRA_WAVES]
 EXTRA_I2 = []
 for _w in EXTRA_WAVES:
@@ -8488,7 +8493,7 @@ def build_module():
                                 OPROJ_RNDS,
                                 1,
                                 guard=(
-                                    _cnt(OPROJ_RNDS, OPROJ_RNDS, EXTRA_RNDS)
+                                    _cnt(OPROJ_RNDS, OPROJ_RNDS, EXTRA_RES1_RNDS)
                                     if N_EXTRA
                                     else None
                                 ),

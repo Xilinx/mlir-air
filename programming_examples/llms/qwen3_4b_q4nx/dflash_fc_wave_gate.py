@@ -62,7 +62,10 @@ def _load_target_fd(batch, L, no_lm="0"):
 
     fd_draft = P._load_draft_fd()
     waves, _ = P.wave_specs(fd_draft)
-    fc = [w for w in waves if w.name.startswith("fc")][:1]
+    # ALL the fc sub-waves, so the extra BO's extents and every wave's w_off are
+    # the ones the shipping table names -- the launch range decides how many
+    # actually dispatch, and this gate reads the FIRST one's output band.
+    fc = [w for w in waves if w.name.startswith("fc")]
 
     for k in list(os.environ):
         if k.startswith("DECODE_"):
@@ -138,12 +141,15 @@ def main():
         f"x_slot={wave.x_slot}  X_SLOTS={fd.X_SLOTS}  extra BO={fd.EXTRA_W_ELEMS}"
     )
 
-    # ---- the slab this wave reads, straight out of the shipped cache --------
+    # ---- the fc region of the extra BO, straight out of the shipped cache ---
     npz = np.load(_HERE / "_draft_q4nx_w2ch.npz")
-    g_slab = P.geom_for(wave.m, wave.k, fd_draft)
-    reord = np.asarray(npz["W_fc"]).reshape(-1, BLOCK_BF16)[P.fc_slab_perm(fd_draft)]
-    slab = reord[: g_slab.n_blocks].reshape(-1)
+    g_sub = P.geom_for(wave.m, wave.k, fd_draft)
+    slab = P.fc_extra_bo(fd_draft, npz)
     assert slab.size == fd.EXTRA_W_ELEMS, (slab.size, fd.EXTRA_W_ELEMS)
+    # what the FIRST sub-wave holds, and which output band it lands in
+    n_sub = g_sub.n_blocks * BLOCK_BF16
+    sub0 = slab[:n_sub]
+    band = slice(0, wave.m)
 
     # ---- the tap, and the CPU reference for what the wave should compute ----
     import ml_dtypes
@@ -152,8 +158,8 @@ def main():
     rng = np.random.default_rng(0)
     tap_b = rng.normal(0, 1, (B, K)).astype(bf16)
     tap_f = tap_b.astype(np.float32)  # exactly what the device will see
-    W = P.dequant_cascade(slab, wave.m, wave.k, g_slab)  # what the device holds
-    ref = tap_f @ W.T  # [B, M]
+    W = P.dequant_cascade(sub0, wave.m, wave.k, g_sub)  # what the device holds
+    ref = tap_f @ W.T  # [B, M] -- M is ONE row-block iteration, 512 rows
 
     # ---- device ------------------------------------------------------------
     dev = pyxrt.device(0)
@@ -237,8 +243,12 @@ def main():
 
     # (readback - tap) * rms(tap): the norm weight is ones, so the only thing
     # left on the X the projection saw is the per-row 1/rms the host can undo.
+    # residual1 lands round r of the egress at column band r of every token row,
+    # and an i2=1 wave has exactly round 0 -- so its output is the FIRST
+    # `wave.m` columns and the rest of the row is the untouched tap.
     r = np.sqrt((tap_f * tap_f).mean(-1, keepdims=True) + 1e-6)
-    fixed = (got - tap_f) * r
+    fixed = (got[:, band] - tap_f[:, band]) * r
+    ref = ref[:, : fixed.shape[1]]
 
     def cos(a, b):
         a, b = a.reshape(-1), b.reshape(-1)
@@ -259,7 +269,7 @@ def main():
     )
     rel = float(np.abs(fixed - ref).max() / max(np.abs(ref).max(), 1e-9))
     c = cos(fixed, ref)
-    mb = fd.EXTRA_W_ELEMS * 2 / 1e6
+    mb = n_sub * 2 / 1e6
     med = float(np.median(ms))
     print(f"  dispatch  median {med:.3f} ms over {args.reps}  (min {min(ms):.3f})")
     print(f"  weights   {mb:.1f} MB  ->  {mb / med:.2f} GB/s")
