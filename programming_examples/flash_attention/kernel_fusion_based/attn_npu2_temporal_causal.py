@@ -77,6 +77,13 @@ M = 8  # mmul_m = mmul_k = mmul_n
 # size and which holds the work at (G+1)/2G of the square rather than at 1.0.
 _MAX_ROUNDS_IN_FLIGHT = 8
 
+# K/V shim descriptors the unrolled triangle may hold open at once. A shim tile
+# has 16 and the Q relay and output gather need the rest; 8 is what
+# llama32_1b_q4nx runs at (4 rounds, one kv-head per unroll) and 16 is what
+# llama32_3b failed to build at. Only reachable when the prefix VARIES -- a
+# uniform prefix emits one descriptor whatever the round count.
+_SHIM_KV_DESCRIPTORS = 8
+
 
 def build_launch(
     lk=512,
@@ -139,7 +146,31 @@ def build_launch(
     num_lq_iters = lq // lqp
     tile_size_q = lqp // num_q_tiles
     _merge_out_into_kv = num_lq_iters > 4
-    _uniform_cps = num_lq_iters > _MAX_ROUNDS_IN_FLIGHT
+    # A varying prefix is a varying transfer size, air.api needs sizes static,
+    # so the triangle costs one shim descriptor per round per kv-head rather
+    # than one for the whole loop. A shim tile holds 16 simultaneously-active
+    # BDs and the Q relay and output gather want their share, so past
+    # _SHIM_KV_DESCRIPTORS the K/V descriptors alone would exhaust it:
+    #
+    #   'aiex.dma_configure_task' op Too many simultaneously active buffer
+    #   descriptors on tile (0,0), which supports up to 16.
+    #
+    # Uniform is the documented way out and is what the round-count cap below
+    # already does -- every round streams the full prefix, the in-core mask
+    # discards the extra blocks, and the descriptors collapse back to one
+    # because they are identical. It costs the causal DMA saving and it builds.
+    #
+    # `not causal` is the third way in, and it is a correctness one rather than
+    # a budget one: the prefix is only sound because the in-core mask discards
+    # what lies past the diagonal, and with no mask a round that streams
+    # (lx + 1) * NQ blocks simply does not see the rest of K. Non-causal
+    # attention has to read all of it.
+    _kv_descriptors = num_lq_iters * num_heads_per_unroll * 2  # K and V
+    _uniform_cps = (
+        not causal
+        or num_lq_iters > _MAX_ROUNDS_IN_FLIGHT
+        or _kv_descriptors > _SHIM_KV_DESCRIPTORS
+    )
 
     def cps_blocks(lx):
         """The round's causal prefix, in K blocks.
