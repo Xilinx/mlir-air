@@ -386,11 +386,13 @@ void proj_qmm_mm_acc(bf16 *__restrict x_tile, bf16 *__restrict w,
   // The results are garbage by construction and only the DISPATCH TIME means
   // anything.
   //
-  // Worth doing only because the PROJ_DELAY sweep showed the projection core
-  // has no slack at batch 8: with a knee at zero, core time removed shows up in
-  // the dispatch 1:1, so this subtraction is a measurement rather than an
-  // upper bound. Note 1 is NOT the third point of this partition -- its
-  // 256-element scalar store loop is comparable in cost to what it replaces.
+  // Note 1 is NOT the third point of this partition. Its 256-element store loop
+  // is plain C, and PEANO DOES NOT AUTO-VECTORISE -- see the RMS_CHUNK_PROBE=2
+  // comment in rms_residual.cc for the measurement, but the short version is
+  // that a bare C loop emits zero vector instructions at any optimisation
+  // level, so substituting one for an aie::-intrinsic kernel measures a 16x
+  // deoptimisation rather than the kernel. Probe 1 costs about what it
+  // replaces here and 87 ms MORE than it replaces in rms_chunk.
   q4k_mmul_any<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE, PROJ_MM_BATCH>(
       x_tile, ws, y_acc);
   (void)w;

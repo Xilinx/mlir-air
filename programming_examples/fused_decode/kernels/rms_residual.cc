@@ -339,9 +339,29 @@ void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
   (void)c;
 #elif defined(RMS_CHUNK_PROBE) && RMS_CHUNK_PROBE == 2
   // TIMING ONLY -- delete the chunk regeneration outright and leave y as it
-  // was. A true deletion, unlike probe 1 above, whose constant fill still
-  // writes batch*n elements and so costs about what it replaces (the same trap
-  // PROJ_MM_PROBE=1 fell into; see proj_qmm.cc).
+  // was.
+  //
+  // A TRUE DELETION, AND ON THIS TOOLCHAIN THAT IS THE ONLY KIND WORTH HAVING.
+  // Probe 1 above looks like it should be cheaper than what it replaces: it
+  // drops both loads and both multiplies and only stores a constant. Measured,
+  // it is 250.1 ms against a 163.2 ms baseline -- 87 ms SLOWER -- because it is
+  // written as a plain C loop and rms_chunk is written with aie:: intrinsics.
+  //
+  // PEANO DOES NOT AUTO-VECTORISE. Not this loop, not any loop: a bare
+  //   for (int i = 0; i < 4096; i++) y[i] = 0.125f;
+  // with a compile-time trip count, a __restrict pointer and plain float emits
+  // ZERO vector instructions, at -O2 and at -O3 -fvectorize -fslp-vectorize
+  // alike. There is no -fno-vectorize in the build flags; the aie2p backend
+  // simply does not do it. Every vector instruction in these kernels exists
+  // because someone wrote aie::load_v / aie::store_v / aie::mul by hand
+  // (rms_chunk: 34 vector ops in 95 instructions; probe 1: 5 in 53, and none of
+  // them a vector store).
+  //
+  // So a diagnostic that SUBSTITUTES plain C for an intrinsic kernel is not
+  // measuring the kernel, it is measuring a 16x deoptimisation of it. That trap
+  // has now been walked into three times -- PROJ_MM_PROBE=1's y_acc copy loop,
+  // this probe 1, and the reading of both as "the arithmetic is only 2%". A
+  // probe that deletes work and writes nothing cannot fall into it.
   //
   // This is the deletion counterpart of the RMS_DELAY sweep. Injection says
   // this core has no absorbing region; only deletion says how much of the
