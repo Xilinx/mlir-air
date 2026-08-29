@@ -73,7 +73,7 @@ M = 4  # mmul_m = mmul_n = 4 for the AIE2 mmul<4,8,4>
 K_MMUL = 8  # mmul_k = 8
 
 
-def build_module(
+def build_launch(
     lk=512,
     lkp=64,
     lq=512,
@@ -505,6 +505,16 @@ def build_module(
     return launch
 
 
+def build_module(**kwargs):
+    """The MLIR module. Return type is the llms/ builders' contract.
+
+    The llms/ prefill builders import this name and hand the result straight to
+    KernelCache.compile_and_cache, which stringifies it into air.mlir -- so it
+    must be a module, not the LaunchContext that build_launch returns.
+    """
+    return build_launch(**kwargs).build(target="npu1")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="attn_npu1.py",
@@ -546,7 +556,7 @@ def main():
     causal = args.causal
     gqa_group_size = num_heads // num_kv_heads
 
-    launch = build_module(
+    launch = build_launch(
         lk=lk,
         lkp=lkp,
         lq=lq,
