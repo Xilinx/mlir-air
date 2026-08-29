@@ -592,9 +592,17 @@ def build_launch(
                             every dv chunk, so one de-tiling view emits
                             row-major [tile_size_q, dv] for the whole slab.
                             """
+                            # dv // M FIRST: the slab is stored column-block-
+                            # major, so a dv block strides over every
+                            # tile_size_q block. Naming tile_size_q first
+                            # describes a row-block-major slab and emits the
+                            # right 4096 elements in the wrong order. The two
+                            # spellings coincide when tile_size_q == dv, which
+                            # is every shape shipping today (d=64, lkp=64) and
+                            # is why this survived.
                             packed = (
                                 gps_j[j]
-                                .reshape(tile_size_q // M, dv // M, M, M)
+                                .reshape(dv // M, tile_size_q // M, M, M)
                                 .transpose(1, 2, 0, 3)
                             )
 
