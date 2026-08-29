@@ -12,13 +12,19 @@
 # slope in BATCH is X traffic plus arithmetic, and the intercept is the weight
 # stream and everything else that does not care how many tokens are in flight.
 #
-#   ./_batch_sweep.sh 161 8 16 32
+#   SWEEP_MODEL=llama-3.2-1b SWEEP_VOCAB_I2=18 ./_batch_sweep.sh 161 8 16 32
 #
 # Batch 1 is NOT on this line: it runs the GEMV path, not the mmul path.
 # Batches not divisible by 8 do not build -- proj_qmm_mm_flush_row de-tiles for
-# aie::mmul<8,8,8>.
+# aie::mmul<8,8,8>. And qwen3-4b does not build past 8 at all: its rms core hits
+# an L1 ceiling of 8 (one BATCH*2560 residual plus a BATCH*512 staging buffer).
+# llama-3.2-1b is narrower and reaches 32, which is why the model is a knob --
+# the mechanism being separated here is a property of the dataflow, not of the
+# model.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); cd "$HERE"
+: "${SWEEP_MODEL:=qwen3-4b}"
+: "${SWEEP_VOCAB_I2:=30}"
 L=${1:?usage: _batch_sweep.sh <L> <batch> [batch...]}
 shift
 for B in "$@"; do
@@ -27,16 +33,16 @@ for B in "$@"; do
   # PROVENANCE: the probe sweeps in this directory leave decode_b8_L<L> behind
   # holding whatever PROJ_MM_PROBE they last built, and a reuse-if-exists check
   # would time that one and label it batch 8.
-  echo ">>> building batch $B"
+  echo ">>> building $SWEEP_MODEL batch $B"
   rm -f "$OUT.xclbin" "$OUT.insts.bin"
-  if ! env DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 W_DUAL_CHAN=1 \
+  if ! env DECODE_MODEL="$SWEEP_MODEL" VOCAB_CHUNK_I2="$SWEEP_VOCAB_I2" W_DUAL_CHAN=1 \
        DECODE_STACK=6080 ./build_template.sh "$B" "$L" \
        > "/tmp/_batch_${B}.log" 2>&1; then
     echo "batch $B  BUILD FAILED (/tmp/_batch_${B}.log)"; continue
   fi
-  env DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 W_DUAL_CHAN=1 DECODE_STACK=6080 \
+  env DECODE_MODEL="$SWEEP_MODEL" VOCAB_CHUNK_I2="$SWEEP_VOCAB_I2" W_DUAL_CHAN=1 DECODE_STACK=6080 \
     LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 UNIFIED=1 DECODE_NO_LM_WAVES=1 \
     DECODE_BATCH="$B" DECODE_GOLDEN_L="$L" \
     "$PYTHON" -u _dispatch_probe.py "$OUT" 40000 9 2>/dev/null \
-    | sed -n "s/^$OUT: /batch $B  /p"
+    | sed -n "s|^$OUT: |$SWEEP_MODEL batch $B  |p"
 done
