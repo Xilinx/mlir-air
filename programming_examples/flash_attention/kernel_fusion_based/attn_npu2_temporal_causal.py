@@ -159,9 +159,17 @@ def build_launch(
     # already does -- every round streams the full prefix, the in-core mask
     # discards the extra blocks, and the descriptors collapse back to one
     # because they are identical. It costs the causal DMA saving and it builds.
+    #
+    # `not causal` is the third way in, and it is a correctness one rather than
+    # a budget one: the prefix is only sound because the in-core mask discards
+    # what lies past the diagonal, and with no mask a round that streams
+    # (lx + 1) * NQ blocks simply does not see the rest of K. Non-causal
+    # attention has to read all of it.
     _kv_descriptors = num_lq_iters * num_heads_per_unroll * 2  # K and V
     _uniform_cps = (
-        num_lq_iters > _MAX_ROUNDS_IN_FLIGHT or _kv_descriptors > _SHIM_KV_DESCRIPTORS
+        not causal
+        or num_lq_iters > _MAX_ROUNDS_IN_FLIGHT
+        or _kv_descriptors > _SHIM_KV_DESCRIPTORS
     )
 
     def cps_blocks(lx):
