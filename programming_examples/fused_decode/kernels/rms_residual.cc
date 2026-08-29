@@ -321,7 +321,9 @@ void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 #ifdef RMS_DELAY
   rms_probe_delay();
 #endif
-#ifdef RMS_CHUNK_PROBE
+// == 1, not ifdef: probe 2 below is a distinct variant and an ifdef here would
+// swallow it.
+#if defined(RMS_CHUNK_PROBE) && RMS_CHUNK_PROBE == 1
   // Diagnostic builds only: make row t of the X feed the CONSTANT (t+1)/8, so
   // every projection output row comes out proportional to t+1. Reading the KV
   // cache then says what row 7 of the mmul's A operand actually was -- 8x row 0
@@ -335,6 +337,22 @@ void rms_chunk_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
   (void)w;
   (void)scales;
   (void)c;
+#elif defined(RMS_CHUNK_PROBE) && RMS_CHUNK_PROBE == 2
+  // TIMING ONLY -- delete the chunk regeneration outright and leave y as it
+  // was. A true deletion, unlike probe 1 above, whose constant fill still
+  // writes batch*n elements and so costs about what it replaces (the same trap
+  // PROJ_MM_PROBE=1 fell into; see proj_qmm.cc).
+  //
+  // This is the deletion counterpart of the RMS_DELAY sweep. Injection says
+  // this core has no absorbing region; only deletion says how much of the
+  // dispatch it is.
+  (void)y;
+  (void)x;
+  (void)w;
+  (void)scales;
+  (void)batch;
+  (void)c;
+  (void)n;
 #else
   rms_chunk(y, x, w, scales, batch, c, n);
 #endif
