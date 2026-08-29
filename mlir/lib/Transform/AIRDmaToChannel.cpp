@@ -1095,23 +1095,38 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   // prints the cases first -- so "last in walk order" is NOT "last in program
   // order", and picking by walk order lands a decode-only feed in the vocab
   // arm. Match the arm instead, which is what the front end means.
-  auto armOf = [](Operation *o) -> int {
+  // The whole PATH of arms, outermost first, not just the innermost one.
+  // Matching a single index treats two different switches' region 1 as the same
+  // place: a transfer guarded by the outer switch's case 0 then resolves onto
+  // an endpoint sitting in a NESTED switch's case 0 and is emitted there, so
+  // the arm it belonged to loses its feed entirely and another arm gets it
+  // twice. The consumer in the starved arm waits forever. That is what withdrew
+  // RMSW_DMA: on qwen3_8b the outer vocab arm's @rmsW put vanished and a
+  // duplicate appeared two levels down.
+  auto armPathOf = [](Operation *o) -> SmallVector<int, 4> {
+    SmallVector<int, 4> path;
     for (Operation *p = o->getParentOp(); p; p = p->getParentOp()) {
       if (isa<air::HierarchyInterface>(p))
-        return -1;
-      if (auto sw = dyn_cast<scf::IndexSwitchOp>(p))
+        break;
+      if (isa<scf::IndexSwitchOp>(p))
         for (unsigned r = 0; r < p->getNumRegions(); r++)
           if (p->getRegion(r).isAncestor(o->getParentRegion()) ||
-              &p->getRegion(r) == o->getParentRegion())
-            return (int)r;
+              &p->getRegion(r) == o->getParentRegion()) {
+            path.push_back((int)r);
+            break;
+          }
     }
-    return -1;
+    std::reverse(path.begin(), path.end());
+    return path;
   };
-  int wantArm = -1;
+  SmallVector<int, 4> wantArm;
+  bool haveWantArm = false;
   for (auto getput : externalGetPuts)
     if (getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after") ||
-        getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before"))
-      wantArm = armOf(getput.getOperation());
+        getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before")) {
+      wantArm = armPathOf(getput.getOperation());
+      haveWantArm = true;
+    }
 
   // "After the LAST endpoint" and "before the FIRST endpoint" are the mirror
   // pair. Taking the last one in both directions would drop a hoist_before
@@ -1127,7 +1142,7 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
     auto oParent = o->getParentOfType<air::HierarchyInterface>();
     if ((oParent ? oParent.getOperation() : nullptr) != hierParent)
       return WalkResult::advance();
-    bool sameArm = armOf(o.getOperation()) == wantArm;
+    bool sameArm = haveWantArm && armPathOf(o.getOperation()) == wantArm;
     if (placeBefore) {
       if (!pick)
         pick = o.getOperation();
@@ -1143,7 +1158,7 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   LLVM_DEBUG(
       llvm::dbgs() << "[dma-to-channel] anchor " << anchor
                    << " hoisting out of " << hier_op->getName()
-                   << ": arm=" << wantArm << " resolved="
+                   << ": armDepth=" << wantArm.size() << " resolved="
                    << (pickSameArm ? "same-arm" : (pick ? "any-arm" : "NONE"))
                    << "\n");
   return pickSameArm ? pickSameArm : pick;
