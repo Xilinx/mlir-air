@@ -270,6 +270,67 @@ public:
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
 
+  // cost_model.transfer_costs: named ways of pricing a data movement.
+  //
+  // Same mechanism as op_costs -- select an entry by a key -- but the key has
+  // no default. An op_costs key falls back to the op name, so that table is
+  // always consulted; a transfer with no `air.transfer_cost` attribute never
+  // reaches this table and is priced by its memory-space interface, exactly as
+  // before this existed.
+  //
+  // It is needed because the only thing a transfer could be keyed on was its
+  // (src, dst) memory-space pair, so two transfers between the same two levels
+  // always cost the same. That is wrong whenever a machine prices them
+  // differently for a reason the memory spaces do not capture -- a second
+  // interconnect between the same levels is one such reason, and another, which
+  // needs no extra hardware, is that one of them overlaps with compute and
+  // never reaches the critical path. The runner has no other way to say either.
+  //
+  // Named for the cost model rather than for a wire, because which of those an
+  // arch author means is their business and not the runner's.
+  struct transferCost {
+    double data_rate = 0; // bytes per second; unset means "use the interface"
+    double latency = 0;   // cycles of time of flight
+    bool has_data_rate = false;
+    bool has_latency = false;
+  };
+  std::map<std::string, transferCost> transfer_costs;
+
+  void set_transfer_costs(llvm::json::Object *obj) {
+    if (!obj)
+      return;
+    for (auto &entry : *obj) {
+      auto *o = entry.second.getAsObject();
+      if (!o)
+        continue;
+      transferCost tc;
+      if (auto v = o->getNumber("bytes_per_second")) {
+        this->resource_assertion(
+            *v > 0, "transfer cost bytes_per_second must be positive");
+        tc.data_rate = *v;
+        tc.has_data_rate = true;
+      }
+      if (auto v = o->getNumber("latency")) {
+        this->resource_assertion(*v >= 0,
+                                 "transfer cost latency must not be negative");
+        tc.latency = *v;
+        tc.has_latency = true;
+      }
+      this->transfer_costs[entry.first.str()] = tc;
+    }
+  }
+
+  // The entry a channel names, or nullptr if it names none or names one the
+  // arch does not define. Lookup failure falls back silently and on purpose: an
+  // arch that does not describe the distinction is still a valid model of the
+  // same IR, just a coarser one.
+  const transferCost *getTransferCostEntry(llvm::StringRef name) {
+    if (name.empty())
+      return nullptr;
+    auto it = this->transfer_costs.find(name.str());
+    return it == this->transfer_costs.end() ? nullptr : &it->second;
+  }
+
   // How the throughput model prices a linalg body. These were fixed constants
   // in the runner, chosen for AIE: a herd body instance is one core, a kernel
   // is an external function call costing ~100 cycles to enter, and a vector
@@ -495,6 +556,8 @@ public:
         model->getArray("datatypes"),
         costs ? costs->getObject("op_costs") : nullptr, nullptr);
     this->set_fallback(costs ? costs->getObject("fallback") : nullptr);
+    this->set_transfer_costs(costs ? costs->getObject("transfer_costs")
+                                   : nullptr);
     this->reset_reservation();
   }
 

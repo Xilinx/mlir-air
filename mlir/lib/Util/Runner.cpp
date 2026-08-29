@@ -201,7 +201,7 @@ public:
       else
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
       if (link_latency)
-        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
+        *link_latency = getTransferLatency(d, c.op, srcSpace, dstSpace);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast_if_present<xilinx::air::ChannelGetOp>(c.op);
@@ -228,7 +228,7 @@ public:
         execution_time =
             getTransferCost(d, c.op, srcSpace, dstSpace, dstVolumn, dstTy);
       if (link_latency)
-        *link_latency = getTransferLatency(d, srcSpace, dstSpace);
+        *link_latency = getTransferLatency(d, c.op, srcSpace, dstSpace);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       if (!isa<air::ExecuteOp>(c.op))
         c.op->emitOpError("has mismatching event type").attachNote()
@@ -774,15 +774,43 @@ private:
 
     double bytes = volume * datawidth;
     double bps = d.interfaces[{srcSpace, dstSpace}]->data_rate;
+    // A channel may name an entry of cost_model.transfer_costs, for a machine
+    // that prices two transfers differently for a reason their memory spaces
+    // do not capture. See device::transfer_costs.
+    if (auto *tc = d.getTransferCostEntry(transferCostKeyForOp(op)))
+      if (tc->has_data_rate)
+        bps = tc->data_rate;
     if (bps == 0.0f)
       op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
 
-  // Fixed time-of-flight, in cycles, of the link between two memory spaces.
-  // Independent of payload size, and not part of the link's occupancy.
-  uint64_t getTransferLatency(device &d, unsigned srcSpace, unsigned dstSpace) {
+  // Which entry of cost_model.transfer_costs prices this op, or empty if it is
+  // not a channel op or its channel names none.
+  llvm::StringRef transferCostKeyForOp(Operation *op) {
+    auto chanOp = mlir::dyn_cast_if_present<air::ChannelInterface>(op);
+    if (!chanOp)
+      return {};
+    auto decl = air::getChannelDeclarationThroughSymbol(chanOp);
+    if (!decl)
+      return {};
+    if (auto attr = decl->getAttrOfType<StringAttr>("air.transfer_cost"))
+      return attr.getValue();
+    return {};
+  }
+
+  // Fixed time of flight, in cycles, of the transfer. Independent of payload
+  // size, and not part of the link's occupancy.
+  //
+  // Defaults to the interface between the two memory spaces; a channel naming
+  // a transfer cost overrides it, which is the only way to price two transfers
+  // that join the same pair of levels differently.
+  uint64_t getTransferLatency(device &d, Operation *op, unsigned srcSpace,
+                              unsigned dstSpace) {
+    if (auto *tc = d.getTransferCostEntry(transferCostKeyForOp(op)))
+      if (tc->has_latency)
+        return (uint64_t)std::llround(tc->latency);
     auto it = d.interfaces.find({srcSpace, dstSpace});
     if (it == d.interfaces.end() || !it->second)
       return 0;
