@@ -957,6 +957,13 @@ APPEND_DMA = not DYNSEQ_APPEND
 ROPEQ_DMA = True
 TOATTNQ_DMA = True
 ATTNO_DMA = True
+# And the KV re-block feed. Its consumers sit inside the attn herd's inner
+# scf.for, and its producer is a guarded segment-scope loop, so the derived
+# put has to end up back in that loop -- air-dma-to-channel does that itself
+# (it merges the rebuilt guard and fuses the loop), which is why this needs no
+# anchor. The staging buffers move to segment scope so they dominate the herd;
+# air-fuse-alloc-dealloc sinks them back into the loop afterwards.
+TOKV_DMA = True
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3426,6 +3433,21 @@ def build_module():
                     if ATTN_SUBSYS and not HYBRID_MIXER and ROPEQ_DMA:
                         _qmtb_pre = AllocOp(qmt_l2, [], [])
                         _qmtb_pre.operation.attributes["air.no_split"] = UnitAttr.get()
+                    # One (K, V) staging pair per attn column group. Per-iteration
+                    # in the channel form; at segment scope here because a herd
+                    # operand must dominate the herd, and the producer loop is a
+                    # sibling of the arm the herd lives in.
+                    _kvstage_pre = []
+                    if ATTN_SUBSYS and not HYBRID_MIXER and KV_SPLIT and TOKV_DMA:
+                        for _gcol, _gcus in ATTN_COL_GROUPS:
+                            _pair = []
+                            for _ in range(2):
+                                _b = AllocOp(kvblk_l2, [], [])
+                                _b.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), _gcol)
+                                )
+                                _pair.append(_b)
+                            _kvstage_pre.append(_pair)
                     if ATTN_SUBSYS and not HYBRID_MIXER:
                         # BUG FIX (later43c): the rope arm MUST track the mode like
                         # proj/rms (0 in vocab). Hardcoded 1 kept rope in _dec()
@@ -3965,63 +3987,77 @@ def build_module():
                                         if c != _cus[0]:
                                             return
                                         _gw = len(_cus) * KVPC_DH
+                                        _pre = (
+                                            _kvstage_pre[_gi]
+                                            if TOKV_DMA and _kvstage_pre
+                                            else None
+                                        )
                                         for _blk in for_(idx(0), _seg_rounds(), idx(1)):
-                                            _kbuf = AllocOp(kvblk_l2, [], [])
-                                            _kbuf.operation.attributes[
-                                                "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
-                                            _vbuf = AllocOp(kvblk_l2, [], [])
-                                            _vbuf.operation.attributes[
-                                                "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
+                                            if _pre is not None:
+                                                _kbuf, _vbuf = _pre
+                                            else:
+                                                _kbuf = AllocOp(kvblk_l2, [], [])
+                                                _kbuf.operation.attributes[
+                                                    "air.memtile_col"
+                                                ] = IntegerAttr.get(T.i32(), col)
+                                                _vbuf = AllocOp(kvblk_l2, [], [])
+                                                _vbuf.operation.attributes[
+                                                    "air.memtile_col"
+                                                ] = IntegerAttr.get(T.i32(), col)
                                             ChannelGet(
                                                 "inKV_K", _kbuf, indices=[idx(_gi)]
                                             )
                                             ChannelGet(
                                                 "inKV_V", _vbuf, indices=[idx(_gi)]
                                             )
-                                            for _lc, _cc in enumerate(_cus):
-                                                ChannelPut(
-                                                    "toK",
-                                                    _kbuf,
-                                                    indices=[idx(_cc)],
-                                                    offsets=[
-                                                        idx(0),
-                                                        idx(0),
-                                                        idx(_lc * KVPC_DH),
-                                                    ],
-                                                    sizes=[
-                                                        idx(KVPC_DH // 8),
-                                                        idx(16),
-                                                        idx(8),
-                                                    ],
-                                                    strides=[idx(8), idx(_gw), idx(1)],
-                                                )
-                                                ChannelPut(
-                                                    "toV",
-                                                    _vbuf,
-                                                    indices=[idx(_cc)],
-                                                    offsets=[
-                                                        idx(0),
-                                                        idx(0),
-                                                        idx(0),
-                                                        idx(_lc * KVPC_DH),
-                                                    ],
-                                                    sizes=[
-                                                        idx(2),
-                                                        idx(KVPC_DH // 8),
-                                                        idx(8),
-                                                        idx(8),
-                                                    ],
-                                                    strides=[
-                                                        idx(_gw * 8),
-                                                        idx(8),
-                                                        idx(_gw),
-                                                        idx(1),
-                                                    ],
-                                                )
-                                            DeallocOp(_kbuf)
-                                            DeallocOp(_vbuf)
+                                            if _pre is None:
+                                                for _lc, _cc in enumerate(_cus):
+                                                    ChannelPut(
+                                                        "toK",
+                                                        _kbuf,
+                                                        indices=[idx(_cc)],
+                                                        offsets=[
+                                                            idx(0),
+                                                            idx(0),
+                                                            idx(_lc * KVPC_DH),
+                                                        ],
+                                                        sizes=[
+                                                            idx(KVPC_DH // 8),
+                                                            idx(16),
+                                                            idx(8),
+                                                        ],
+                                                        strides=[
+                                                            idx(8),
+                                                            idx(_gw),
+                                                            idx(1),
+                                                        ],
+                                                    )
+                                                    ChannelPut(
+                                                        "toV",
+                                                        _vbuf,
+                                                        indices=[idx(_cc)],
+                                                        offsets=[
+                                                            idx(0),
+                                                            idx(0),
+                                                            idx(0),
+                                                            idx(_lc * KVPC_DH),
+                                                        ],
+                                                        sizes=[
+                                                            idx(2),
+                                                            idx(KVPC_DH // 8),
+                                                            idx(8),
+                                                            idx(8),
+                                                        ],
+                                                        strides=[
+                                                            idx(_gw * 8),
+                                                            idx(8),
+                                                            idx(_gw),
+                                                            idx(1),
+                                                        ],
+                                                    )
+                                            if _pre is None:
+                                                DeallocOp(_kbuf)
+                                                DeallocOp(_vbuf)
                                             yield_([])
                                         return
                                     # ROLLED (was Python for blk in range(ATTN_ROUNDS)): AIR for_
@@ -4118,7 +4154,20 @@ def build_module():
                                     )
                                     return arith.index_cast(idx_t, _q)
 
-                                def _qk_body(sh, Lh, _c, _arm=None, qmt=None):
+                                # KV staging geometry for CU `_c`: its group's
+                                # (K, V) pair, and where this CU's slice sits.
+                                def _kv_src(_c, kvs):
+                                    if not (TOKV_DMA and kvs):
+                                        return None
+                                    _g = ATTN_CU_GROUP[_c]
+                                    _cus_g = ATTN_COL_GROUPS[_g][1]
+                                    return (
+                                        kvs[_g],
+                                        _cus_g.index(_c),
+                                        len(_cus_g) * KVPC_DH,
+                                    )
+
+                                def _qk_body(sh, Lh, _c, _arm=None, qmt=None, kvs=None):
                                     a_q = AllocOp(aq_l1, [], [])
                                     if TOATTNQ_DMA and qmt is not None:
                                         DmaMemcpyNd(
@@ -4156,7 +4205,20 @@ def build_module():
                                         # the wrong buffer vs the DMA rotation -> misaligned KV ->
                                         # garbage chat. Single-buffer is aligned.
                                         a_k = AllocOp(ak_l1, [], [])
-                                        ChannelGet("toK", a_k, indices=[idx(_c)])
+                                        _src = _kv_src(_c, kvs)
+                                        if _src is not None:
+                                            _pair, _lc, _gw = _src
+                                            DmaMemcpyNd(
+                                                a_k,
+                                                _pair[0],
+                                                src_offsets=[0, 0, _lc * KVPC_DH],
+                                                src_sizes=[KVPC_DH // 8, 16, 8],
+                                                src_strides=[8, _gw, 1],
+                                                channel="toK",
+                                                channel_indices=[_c],
+                                            )
+                                        else:
+                                            ChannelGet("toK", a_k, indices=[idx(_c)])
                                         blk_c = arith.index_cast(i32, _blk)
                                         CallOp(
                                             attn_qk_blk,
@@ -4168,7 +4230,7 @@ def build_module():
                                     DeallocOp(a_m)
                                     DeallocOp(a_cc)
 
-                                def _kv_body(sh, Lh, _c, _arm=None, omt=None):
+                                def _kv_body(sh, Lh, _c, _arm=None, omt=None, kvs=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
                                     a_o = AllocOp(ao_l1, [], [])
@@ -4185,7 +4247,20 @@ def build_module():
                                         # the wrong buffer vs the DMA rotation -> misaligned KV ->
                                         # garbage chat. Single-buffer is aligned.
                                         a_k = AllocOp(ak_l1, [], [])
-                                        ChannelGet("toK", a_k, indices=[idx(_c)])
+                                        _src = _kv_src(_c, kvs)
+                                        if _src is not None:
+                                            _pair, _lc, _gw = _src
+                                            DmaMemcpyNd(
+                                                a_k,
+                                                _pair[0],
+                                                src_offsets=[0, 0, _lc * KVPC_DH],
+                                                src_sizes=[KVPC_DH // 8, 16, 8],
+                                                src_strides=[8, _gw, 1],
+                                                channel="toK",
+                                                channel_indices=[_c],
+                                            )
+                                        else:
+                                            ChannelGet("toK", a_k, indices=[idx(_c)])
                                         blk_c = arith.index_cast(i32, _blk)
                                         CallOp(
                                             attn_qk_blk,
@@ -4197,7 +4272,7 @@ def build_module():
                                     DeallocOp(a_m)
                                     DeallocOp(a_cc)
 
-                                def _kv_body(sh, Lh, _c, _arm=None, omt=None):
+                                def _kv_body(sh, Lh, _c, _arm=None, omt=None, kvs=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
                                     a_o = AllocOp(ao_l1, [], [])
@@ -4209,7 +4284,20 @@ def build_module():
                                         # consumption aligned with the DMA rotation (no unroll-by-2
                                         # remainder desync -> no misaligned KV).
                                         a_v = AllocOp(av_l1, [], [])
-                                        ChannelGet("toV", a_v, indices=[idx(_c)])
+                                        _src = _kv_src(_c, kvs)
+                                        if _src is not None:
+                                            _pair, _lc, _gw = _src
+                                            DmaMemcpyNd(
+                                                a_v,
+                                                _pair[1],
+                                                src_offsets=[0, 0, 0, _lc * KVPC_DH],
+                                                src_sizes=[2, KVPC_DH // 8, 8, 8],
+                                                src_strides=[_gw * 8, 8, _gw, 1],
+                                                channel="toV",
+                                                channel_indices=[_c],
+                                            )
+                                        else:
+                                            ChannelGet("toV", a_v, indices=[idx(_c)])
                                         blk_c = arith.index_cast(i32, _blk)
                                         CallOp(
                                             attn_kv_blk,
@@ -4340,71 +4428,117 @@ def build_module():
                         _kvb = _cus[0][5]
 
                         def _attn_leaf(
-                            ty_arg, cu, sh, Lh, qk_ty, _arm=None, qmt=None, omt=None
+                            ty_arg,
+                            cu,
+                            sh,
+                            Lh,
+                            qk_ty,
+                            _arm=None,
+                            qmt=None,
+                            omt=None,
+                            kvs=None,
                         ):
                             _isqk = arith.cmpi(
                                 arith.CmpIPredicate.eq, ty_arg, idx(qk_ty)
                             )
                             _if = IfOp(_isqk, [], has_else=True)
                             with InsertionPoint(_if.thenRegion.blocks[0]):
-                                _qkb(sh, Lh, cu, _arm, qmt)
+                                _qkb(sh, Lh, cu, _arm, qmt, kvs)
                                 yield_([])
                             with InsertionPoint(_if.elseRegion.blocks[0]):
-                                _kvb(sh, Lh, cu, _arm, omt)
+                                _kvb(sh, Lh, cu, _arm, omt, kvs)
                                 yield_([])
 
                         def _attn_pairsel(
-                            ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None, qmt=None, omt=None
+                            ty_arg,
+                            shs,
+                            Lh,
+                            cu_lo,
+                            cu_hi,
+                            _arm=None,
+                            qmt=None,
+                            omt=None,
+                            kvs=None,
                         ):
                             _lo = arith.cmpi(arith.CmpIPredicate.slt, ty_arg, idx(2))
                             _ifp = IfOp(_lo, [], has_else=True)
                             with InsertionPoint(_ifp.thenRegion.blocks[0]):
                                 _attn_leaf(
-                                    ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm, qmt, omt
+                                    ty_arg,
+                                    cu_lo,
+                                    shs[cu_lo],
+                                    Lh,
+                                    0,
+                                    _arm,
+                                    qmt,
+                                    omt,
+                                    kvs,
                                 )
                                 yield_([])
                             with InsertionPoint(_ifp.elseRegion.blocks[0]):
                                 _attn_leaf(
-                                    ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm, qmt, omt
+                                    ty_arg,
+                                    cu_hi,
+                                    shs[cu_hi],
+                                    Lh,
+                                    2,
+                                    _arm,
+                                    qmt,
+                                    omt,
+                                    kvs,
                                 )
                                 yield_([])
 
                         def _attn_col(
-                            ty_arg, shs, Lh, ci, _arm=None, qmt=None, omt=None
+                            ty_arg, shs, Lh, ci, _arm=None, qmt=None, omt=None, kvs=None
                         ):
                             """The CU_PER_COL compute units of attn column `ci`,
                             selected by the herd's row index."""
                             _lo = ci * CU_PER_COL
                             if CU_PER_COL == 1:
-                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm, qmt, omt)
+                                _attn_leaf(
+                                    ty_arg, _lo, shs[_lo], Lh, 0, _arm, qmt, omt, kvs
+                                )
                             else:
                                 _attn_pairsel(
-                                    ty_arg, shs, Lh, _lo, _lo + 1, _arm, qmt, omt
+                                    ty_arg, shs, Lh, _lo, _lo + 1, _arm, qmt, omt, kvs
                                 )
 
                         def _attn_dec(
-                            tx_arg, ty_arg, shs, Lh, _arm=None, qmt=None, omt=None
+                            tx_arg,
+                            ty_arg,
+                            shs,
+                            Lh,
+                            _arm=None,
+                            qmt=None,
+                            omt=None,
+                            kvs=None,
                         ):
                             if ATTN_COLS == 1:
-                                _attn_col(ty_arg, shs, Lh, 0, _arm, qmt, omt)
+                                _attn_col(ty_arg, shs, Lh, 0, _arm, qmt, omt, kvs)
                                 return
                             _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
                             _ifc = IfOp(_isc0, [], has_else=True)
                             with InsertionPoint(_ifc.thenRegion.blocks[0]):
                                 _attn_col(
-                                    ty_arg, shs, Lh, 0, _arm, qmt, omt
+                                    ty_arg, shs, Lh, 0, _arm, qmt, omt, kvs
                                 )  # first attn col
                                 yield_([])
                             with InsertionPoint(_ifc.elseRegion.blocks[0]):
                                 _attn_col(
-                                    ty_arg, shs, Lh, 1, _arm, qmt, omt
+                                    ty_arg, shs, Lh, 1, _arm, qmt, omt, kvs
                                 )  # second attn col
                                 yield_([])
 
                         _has_qmt = bool(TOATTNQ_DMA and _qmtb_pre)
                         _has_omt = bool(ATTNO_DMA and _omtb_pre)
-                        _attn_extra = ([_qmtb_pre] if _has_qmt else []) + (
-                            [_omtb_pre] if _has_omt else []
+                        # The staging pairs go in group order, so a CU picks its
+                        # own out with ATTN_CU_GROUP.
+                        _kv_flat = [b for pair in _kvstage_pre for b in pair]
+                        _attn_extra = (
+                            ([_qmtb_pre] if _has_qmt else [])
+                            + ([_omtb_pre] if _has_omt else [])
+                            + _kv_flat
                         )
 
                         if _seg_arm_i is not None:
@@ -4423,6 +4557,11 @@ def build_module():
                                 _qmt = _a[_ei] if _has_qmt else None
                                 _ei += 1 if _has_qmt else 0
                                 _omt = _a[_ei] if _has_omt else None
+                                _ei += 1 if _has_omt else 0
+                                _kvs = [
+                                    list(_a[_ei + 2 * _g : _ei + 2 * _g + 2])
+                                    for _g in range(len(_kvstage_pre))
+                                ]
 
                                 def _voc():
                                     yield_([])
@@ -4453,7 +4592,7 @@ def build_module():
                                     arith.index_cast(idx_t, _arm),
                                     {1, 2} if MIX_TO_CU else {2},
                                     lambda: _attn_dec(
-                                        _tx, _ty, shs, Lh, _arm, _qmt, _omt
+                                        _tx, _ty, shs, Lh, _arm, _qmt, _omt, _kvs
                                     ),
                                 )
 
