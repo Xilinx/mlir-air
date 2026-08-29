@@ -1182,34 +1182,32 @@ EXTRA_DEST = [DEMUX.index(_w["dest"]) for _w in EXTRA_WAVES]
 # of a bare [0], with the same idle body: a COUNT (zero) and not a program, and
 # byte-identical when there are no extra waves.
 ARM_IDLE_CASES = [0] + [2 + k for k in range(N_EXTRA)]
-# The arm lands in pieces, so the guard names what is still missing rather than
-# refusing the whole flag. An extra wave now gets its arm, its weight feed, its
-# proj scalars, its egress, and its X (the rms core forwards the tap, see
-# _uni_extra). What it does NOT have is a consumer for a `rope` dest: the rope
-# core still runs a decode-shaped get count and would stall on rounds a
-# context-K/V wave never produces.
+# ONLY dest "rms" IS WIRED, and the guard below is the whole reason this is a
+# generic hook rather than a DFlash feature. An extra wave gets its arm, its
+# weight feed, its proj scalars, its egress and its X (the rms core forwards the
+# tap, see _uni_extra) -- and what makes an `rms` dest need nothing else is that
+# the rms core's residual1 already takes the wave's rounds (fc's egress is
+# exactly OPROJ_RNDS, so that pass needs no count change at all) and @layerOut
+# already drains the result. What lands there is `tap + W.tap/rms(tap)`, because
+# the accumulate adds into the same buffer the X arrived in; the host subtracts
+# the tap it wrote and multiplies rms(tap) back. Exact, and it needs no kernel
+# mode that does not already exist.
 #
-# An `rms` dest works today. The rms core's residual1 takes the wave's rounds --
-# fc's egress is exactly OPROJ_RNDS, so that pass needs no count change at all --
-# and @layerOut drains the result. What lands there is `tap + W.tap/rms(tap)`,
-# because the accumulate adds into the same buffer the X arrived in; the host
-# subtracts the tap it wrote and multiplies rms(tap) back. Exact, and it needs no
-# kernel mode that does not already exist.
-# TEMPORARY BISECT KNOB. 1 = cut the extra arm off after the input side (no
-# residual1, no layerOut) -- but note that ALSO removes the only consumer of
-# @outY, so the egress backs up and the proj cores stall on their outA buffer,
-# which stalls the weight puts: level 1 hangs by construction and measures
-# nothing. 2 = keep the whole on-chip chain and drop only the HOST-side
-# @layerOut get, so the dispatch waits on X and weights alone. Remove once the
-# extra wave runs.
-EXTRA_STOP = int(_os.environ.get("DECODE_EXTRA_STOP", "0"))
+# Every other dest would need its consumer to grow a body for the extra arm --
+# a `rope` dest, say, needs k_norm, RoPE and appendK/appendV -- and on the arms
+# it does not have one, that core sits in ARM_IDLE_CASES and the egress backs up.
+# The DFlash pre-pass wanted a `rope` dest for its context K/V and does not use
+# one: the projection comes back on @layerOut like fc's does, and the host --
+# which is already writing that KV cache -- applies k_norm and RoPE to the
+# [layers, batch, 1024] result in microseconds. Weight bandwidth is what an
+# extra wave exists to buy, and the rope arm buys none of it.
 EXTRA_PARTIAL = int(_os.environ.get("DECODE_EXTRA_WAVES_PARTIAL", "0"))
 _EXTRA_UNWIRED = sorted({_w["dest"] for _w in EXTRA_WAVES} - {"rms"})
 if _EXTRA_UNWIRED and not EXTRA_PARTIAL:
     raise SystemExit(
         f"DECODE_EXTRA_WAVES has waves with dest {_EXTRA_UNWIRED}, whose consumer "
-        f"is not wired -- that core still runs a decode-shaped round count and "
-        f"would stall. Only dest 'rms' is runnable today "
+        f"has no extra-arm body -- that core sits idle on arm 2+k and the wave's "
+        f"egress backs up. Only dest 'rms' is wired "
         f"(docs/DFlashFeasibility.md section 3.15). Set "
         f"DECODE_EXTRA_WAVES_PARTIAL=1 to emit IR for inspection anyway."
     )
@@ -1785,7 +1783,7 @@ for _i, _w in enumerate(EXTRA_WAVES):
             f"extra wave {_w['name']}: {_ch} X chunks is not a whole number of "
             f"{K // XCHUNK}-chunk re-feeds"
         )
-    EXTRA_NREFEED.append(0 if EXTRA_STOP == 3 else _ch // (K // XCHUNK))
+    EXTRA_NREFEED.append(_ch // (K // XCHUNK))
 
 _PH0_SWEEPS = (
     (1, 1, [1] * N_EXTRA)
@@ -3377,13 +3375,7 @@ def build_module():
                         # Extra waves: their buffer is a compile-time choice, like
                         # the lm-head's -- there is exactly one and the arm has
                         # already selected the slab offset.
-                        # DECODE_EXTRA_STOP=6 reads the same extent out of the
-                        # DECODE weight BO instead: numerically garbage, but it
-                        # is the one way to ask whether the sixth kernel argument
-                        # itself is the stall. No wave has ever DMA'd from it --
-                        # a decode wave reads %arg1 and the input-side-only
-                        # builds fed no weights at all.
-                        _fan(W if EXTRA_STOP == 6 else _WEXTRA)
+                        _fan(_WEXTRA)
                     elif not W_SPLIT:
                         _fan(W)
                     elif _wsel[0] is None:
@@ -4358,22 +4350,20 @@ def build_module():
                             # that reached the device actually died of, and the
                             # decode arm has always drained layerOut at the very
                             # end of its own feed.
-                            if EXTRA_STOP != 3:
-                                _colspan = EXTRA_PER_COL[k] * blk
-                                _feed_wcols(
-                                    idx(EXTRA_WAVES[k]["w_off"]),
-                                    _colspan,
-                                    EXTRA_NSTEPS[k],
-                                )
-                            if EXTRA_STOP != 2:
-                                ChannelGet(
-                                    "layerOut",
-                                    X,
-                                    indices=[idx(0)],
-                                    offsets=[EXTRA_OUT_SLOT[k] * BATCH * K],
-                                    sizes=[BATCH * LAYER_RNDS * PAYLOAD],
-                                    strides=[1],
-                                )
+                            _colspan = EXTRA_PER_COL[k] * blk
+                            _feed_wcols(
+                                idx(EXTRA_WAVES[k]["w_off"]),
+                                _colspan,
+                                EXTRA_NSTEPS[k],
+                            )
+                            ChannelGet(
+                                "layerOut",
+                                X,
+                                indices=[idx(0)],
+                                offsets=[EXTRA_OUT_SLOT[k] * BATCH * K],
+                                sizes=[BATCH * LAYER_RNDS * PAYLOAD],
+                                strides=[1],
+                            )
                             yield_([])
 
                         def _uni_dec():
@@ -8723,7 +8713,6 @@ def build_module():
                                     else None
                                 ),
                             ),
-                            decode_only=EXTRA_STOP in (1, 3),
                         )
                         # ph2: pre-MLP layernorm of h -> the gate-up X feed.
                         # Zero re-feeds on the LM head arm: there is no second
@@ -8738,7 +8727,7 @@ def build_module():
                         _if_decode(
                             lambda: _accumulate(DOWN_RNDS, 2), decode_only=bool(N_EXTRA)
                         )
-                        _if_decode(_layer_out, decode_only=EXTRA_STOP == 1)
+                        _if_decode(_layer_out)
                         for _b in (
                             ([w2] if POST_RMS else [])
                             + ([xr] if xr is not None else [])

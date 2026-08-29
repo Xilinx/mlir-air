@@ -260,7 +260,19 @@ class WaveSpec:
     w_off: int  # element offset of the slab's column-0 base in the extra BO
     x_slot: int  # first X-buffer slot this wave contracts over
     x_stride: int  # slots between them (fc's taps are every 8th)
-    dest: str  # "rms" (hidden_norm) or "rope" (k_norm + RoPE)
+    dest: str  # "rms" -- see the `dest` note in `wave_specs`
+    # Which M-row band of its OWN projection's output this wave holds, counted
+    # from that projection's first row rather than from the slab's. It is
+    # `iter_lo` for fc, whose slab IS the projection, and `iter_lo - 8` for a
+    # context-K/V wave, whose slab starts with q. The engine never reads either:
+    # an i2=1 wave always deposits into band 0 of its own output slot, so this
+    # is the host's map from slots back to rows.
+    out_band: int = 0
+    # The PROJECTION this wave is a band of -- "fc", or one drafter layer's
+    # context K/V. Carried rather than parsed back out of `name`, because the
+    # assembler below turns output slots into projections and a naming
+    # convention is not a thing to make that depend on.
+    group: str = ""
 
     def as_config(self):
         """The subset fused_decode's DECODE_EXTRA_WAVES takes.
@@ -484,11 +496,13 @@ def wave_specs(fd_draft):
     waves = [
         WaveSpec(
             name=f"fc{s}i{t}",
+            group="fc",
             m=sub_rows,
             k=D,
             i2=1,
             j2=g_slab.nbj // 2,
             iter_lo=t,
+            out_band=t,
             w_off=(s * g_slab.nbi_pc + t) * sub_bytes,
             x_slot=tap0 + s * tap_stride,
             x_stride=1,
@@ -502,23 +516,52 @@ def wave_specs(fd_draft):
         f"fc's {g_fc.n_blocks}"
     )
     off = g_fc.n_blocks * BLOCK_BF16
-    kv_blocks = kv_n_iter * g_kv.nbj * g_kv.blocks_per_step * g_kv.NCX * g_kv.n_chan
+    # AND THE CONTEXT K/V WAVES ARE THE SAME SHAPE, for both of fc's reasons and
+    # a third that removes the last piece of engine work this fold was waiting
+    # on.
+    #
+    #   i2=1, because the deadlock bound above is not about which core consumes
+    #   the output -- it is about the rms core having to finish FEEDING before
+    #   the first egress round can land, and that core feeds every extra wave.
+    #
+    #   dest="rms", because a "rope" dest needs the rope core to grow a
+    #   context-K/V body (k_norm, RoPE, appendK/appendV at the drafter's KV
+    #   base) and it buys NOTHING: the host already owns that arithmetic. The
+    #   PDI pre-pass returns k_ctx already normed and rotated only because it
+    #   had a rope stage to spare; `seed_context_kv` takes whatever it is given,
+    #   and k_norm + RoPE on [5, 8, 1024] is microseconds of numpy against the
+    #   ~3 ms of weight streaming this wave exists to do. So the K/V projection
+    #   comes back raw on @layerOut, exactly as fc's partials do, and every line
+    #   of engine support these waves need is already on silicon.
+    #
+    # What that costs is one X slot's worth of readback per wave instead of a
+    # KV-cache write -- 20 x BATCH*K bf16 -- and what it saves is the entire
+    # rope arm, which is the only reason `dest` still has a second value.
+    sub_kv_first, sub_kv_nblk = g_kv.chan_window(0, 1)
+    sub_kv_blocks = sub_kv_nblk * g_kv.NCX * g_kv.n_chan
     for L in range(n_layers):
-        waves.append(
-            WaveSpec(
-                name=f"ctxkv{L}",
-                m=kv_hi - kv_lo,
-                k=D,
-                i2=kv_n_iter,
-                j2=g_kv.nbj // 2,
-                iter_lo=kv_iter_lo,
-                w_off=off,
-                x_slot=th_slot,
-                x_stride=1,
-                dest="rope",
+        for t in range(kv_n_iter):
+            waves.append(
+                WaveSpec(
+                    name=f"ctxkv{L}i{t}",
+                    group=f"ctxkv{L}",
+                    m=sub_rows,
+                    k=D,
+                    i2=1,
+                    j2=g_kv.nbj // 2,
+                    iter_lo=kv_iter_lo + t,
+                    out_band=t,
+                    w_off=off,
+                    x_slot=th_slot,
+                    x_stride=1,
+                    dest="rms",
+                )
             )
-        )
-        off += kv_blocks * BLOCK_BF16
+            off += sub_kv_blocks * BLOCK_BF16
+    assert kv_n_iter * sub_rows == kv_hi - kv_lo, (
+        f"{kv_n_iter} sub-waves of {sub_rows} rows is not the "
+        f"{kv_hi - kv_lo}-row K/V window"
+    )
     return waves, off
 
 
@@ -548,36 +591,51 @@ def fc_extra_bo(fd_draft, npz):
     return np.concatenate(parts)
 
 
-def build_extra_weights(fd_draft, npz, verbose=True):
-    """The compact extra-weight BO: [fc slab | K/V window per drafter layer].
+def ctxkv_extra_bo(fd_draft, npz):
+    """The context-K/V region of the extra BO: 4 sub-slabs per drafter layer.
 
-    Each layer's window is gathered as `NCX * n_chan` contiguous runs -- one per
-    (column, shim channel) -- and re-emitted in the same (cx, h) order the feed
-    walks, so `_feed_wcol`'s two puts per column need only a base and a length.
+    The same gather as `fc_extra_bo`, over the K/V row window of each layer's
+    phase-0 slab instead of over fc's five taps -- and factored out for the same
+    reason, so the device gate reads the bytes the BO is built from.
+
+    A sub-wave is ONE row-block iteration, so within a (cx, h) sub-run its
+    blocks are `nbj * blocks_per_step` contiguous ones starting at iteration
+    `it_lo + t`. `chan_window` states that; this only walks it.
     """
-    waves, total = wave_specs(fd_draft)
-    from qwen3_4b_draft_weights import D, FC_IN
+    from qwen3_4b_draft_weights import D
 
     kv_lo, kv_hi = _kv_rows(fd_draft)
     g_kv = geom_for(kv_hi, D, fd_draft)
     it_lo, n_it = g_kv.iter_window(kv_lo, kv_hi)
-    first, n_blk = g_kv.chan_window(it_lo, n_it)
+    _, sub_nblk = g_kv.chan_window(0, 1)
 
     W = np.asarray(npz["W"]).reshape(-1)
-    # Re-order the shipped one-slab pack into the five per-tap slabs the waves
-    # read, block by block. A gather, not a re-pack: see fc_slab_perm.
-    # fc: 25 single-iteration sub-slabs, gathered (cx, h) run by run so each
-    # wave's blocks are contiguous in the BO -- `_feed_wcol` reads a base and a
-    # length per column, and a single-iteration window of a slab is not
-    # contiguous until it is gathered.
-    parts = [fc_extra_bo(fd_draft, npz)]
+    parts = []
     for L in range(fd_draft.UNI_DEC):
         lay = W[L * fd_draft.W_LAYER : (L + 1) * fd_draft.W_LAYER]
-        for cx in range(g_kv.NCX):
-            for h in range(g_kv.n_chan):
-                base = cx * g_kv.blocks_per_col + h * g_kv.blocks_per_chan + first
-                parts.append(lay[base * BLOCK_BF16 : (base + n_blk) * BLOCK_BF16])
-    out = np.concatenate(parts)
+        for t in range(n_it):
+            for cx in range(g_kv.NCX):
+                for h in range(g_kv.n_chan):
+                    b = (
+                        cx * g_kv.blocks_per_col
+                        + h * g_kv.blocks_per_chan
+                        + (it_lo + t) * sub_nblk
+                    )
+                    parts.append(lay[b * BLOCK_BF16 : (b + sub_nblk) * BLOCK_BF16])
+    return np.concatenate(parts)
+
+
+def build_extra_weights(fd_draft, npz, verbose=True):
+    """The compact extra-weight BO: [fc slab | K/V window per drafter layer].
+
+    Each wave's slab is gathered as `NCX * n_chan` contiguous runs -- one per
+    (column, shim channel) -- and re-emitted in the same (cx, h) order the feed
+    walks, so `_feed_wcol`'s two puts per column need only a base and a length.
+    A single-iteration window is not contiguous until it is gathered, which is
+    what both halves below are doing.
+    """
+    waves, total = wave_specs(fd_draft)
+    out = np.concatenate([fc_extra_bo(fd_draft, npz), ctxkv_extra_bo(fd_draft, npz)])
     if out.size != total:
         raise AssertionError(f"extra BO is {out.size} elements, layout says {total}")
     if verbose:
@@ -586,6 +644,106 @@ def build_extra_weights(fd_draft, npz, verbose=True):
             f"{out.size * 2 / 1e6:.1f} MB over {len(waves)} waves"
         )
     return out, waves
+
+
+# ---------------------------------------------------------------------------
+# Reading the waves back
+# ---------------------------------------------------------------------------
+# WHAT A WAVE LEAVES BEHIND IS NOT `W . x`. The X reaches the projection through
+# the rms core, whose regen multiplies by the norm weight and a per-row scale,
+# and whose residual pass adds the result into the same buffer the X arrived in.
+# The norm weight is fed as ONES -- that is what makes the forwarding need no
+# kernel change -- so the wave's output slot holds
+#
+#     x + W . (x / rms(x))
+#
+# and rms(x) is a per-row scalar the HOST can compute, because the host wrote x.
+# The correction is therefore exact rather than a fit:
+#
+#     W . x  =  (readback - x) * rms(x)
+#
+# The eps below is the kernel's, and it has to stay that: a different one is a
+# per-row relative error of eps/(2*rms^2), which on a hidden state of norm ~1
+# is small enough to pass a cosine gate and wrong.
+RMS_EPS = 1e-6
+
+
+def rms_rows(x, eps=RMS_EPS):
+    """The per-row scale the rms core divided out, as float32."""
+    xf = np.asarray(x, np.float32)
+    return np.sqrt((xf * xf).mean(-1, keepdims=True) + eps)
+
+
+def assemble(fd, waves, xall, x_rows, eps=RMS_EPS):
+    """{group: [B, nband*M]} -- every wave's projection, out of the X buffer.
+
+    `xall` is the whole X BO as bf16, `x_rows` maps X slot to the [B, K] row
+    block the host wrote there. Bands are placed by `out_band` and NOT by where
+    the values landed: an i2=1 wave always deposits into columns [0, M) of its
+    own output slot, because residual1 puts egress round r at column band r and
+    such a wave has only round 0. The rms core does not know which output rows
+    the wave computed; the wave descriptor does.
+    """
+    B, K = fd.BATCH, fd.K
+    M = waves[0].m
+    nband, out = {}, {}
+    for w in waves:
+        nband[w.group] = max(nband.get(w.group, 0), w.out_band + 1)
+    for g, n in nband.items():
+        out[g] = np.zeros((B, n * M), np.float32)
+    for k, w in enumerate(waves):
+        x = np.asarray(x_rows[w.x_slot], np.float32).reshape(B, K)
+        sl = fd.EXTRA_OUT_SLOT[k]
+        got = xall[sl * B * K : (sl + 1) * B * K].astype(np.float32).reshape(B, K)
+        out[w.group][:, w.out_band * M : (w.out_band + 1) * M] += (
+            got[:, :M] - x[:, :M]
+        ) * rms_rows(x, eps)
+    return out
+
+
+def target_hidden(fd, waves, xall, taps, hn_w):
+    """fc's answer, normed -- the drafter's context feature.
+
+    `taps` is [B, 5*K] in TAP_SLOTS order, exactly what the target's
+    `last_taps` holds and what the fc waves' X slots were filled from.
+    """
+    import dflash_sumnorm
+
+    K = fd.K
+    tap0, stride = _tap_slots(_load_draft_fd())
+    x_rows = {
+        tap0 + s * stride: np.asarray(taps, np.float32)[:, s * K : (s + 1) * K]
+        for s in range(np.asarray(taps).shape[1] // K)
+    }
+    fc = assemble(fd, [w for w in waves if w.group == "fc"], xall, x_rows)["fc"]
+    return dflash_sumnorm.reference([fc], np.asarray(hn_w))
+
+
+def context_kv(fd, waves, xall, th, kn_w, positions):
+    """(k_ctx, v_ctx), each [n_layers, B, KV_DIM] -- k_norm'd and rotated.
+
+    The waves return the K/V projection RAW; k_norm and RoPE are the host's,
+    which is why these waves need no rope-core arm. The K/V window is the phase-0
+    slab's rows [q_rows, q_rows+2*KVD), so the first KVD columns of each layer's
+    assembled band-run are K and the rest are V -- the packer's own row order,
+    not a convention chosen here.
+    """
+    import dflash_ctxkv_int4_builder as CK
+    from dflash_ctxkv_int4_gate import rope_ref
+
+    kv = [w for w in waves if w.group != "fc"]
+    got = assemble(fd, kv, xall, {kv[0].x_slot: th})
+    HD, KVD = CK.HEAD_DIM, CK.KV_DIM
+    ks, vs = [], []
+    for L in range(len({w.group for w in kv})):
+        a = got[f"ctxkv{L}"]
+        k = a[:, :KVD].reshape(-1, HD)
+        k = (k / np.sqrt((k**2).mean(-1, keepdims=True) + RMS_EPS)) * np.asarray(
+            kn_w[L], np.float32
+        )
+        ks.append(rope_ref(k, positions).reshape(-1, KVD))
+        vs.append(a[:, KVD : 2 * KVD])
+    return np.stack(ks), np.stack(vs)
 
 
 # ---------------------------------------------------------------------------

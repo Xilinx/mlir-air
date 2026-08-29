@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""ONE fc wave of the folded pre-pass, on device, against the CPU reference.
+"""The folded pre-pass's waves, on device, against the CPU reference.
 
-This is the step that decides whether folding the pre-pass into the target's
-program is worth doing at all, and it deliberately runs the fc wave ALONE --
-`UNI_WAVE_LO/HI` restrict the launch loop to the extra wave, so the dispatch
-contains no decode layer, no attention and no LM head. Two things come out of
-it that nothing before it could give:
+Both families, and they are the same shape: 25 fc sub-waves and 20 context-K/V
+sub-waves, all i2=1 j2=5 dest="rms". Two things come out of this that nothing
+before it could give:
 
   correctness  does the extra-wave machinery (arm, weight feed, X through the
                rms core, proj scalars, egress) actually compute W.tap?
@@ -20,7 +18,7 @@ it that nothing before it could give:
 
 WHAT COMES BACK IS NOT W.tap. The rms core's regen multiplies by the norm
 weight and by a per-row scale, and the residual pass adds the result into the
-same buffer the X arrived in, so X slot 0 holds
+same buffer the X arrived in, so the wave's output slot holds
 
     tap + W . (tap / rms(tap))
 
@@ -62,10 +60,10 @@ def _load_target_fd(batch, L, no_lm="0"):
 
     fd_draft = P._load_draft_fd()
     waves, _ = P.wave_specs(fd_draft)
-    # ALL the fc sub-waves, so the extra BO's extents and every wave's w_off are
-    # the ones the shipping table names -- the launch range decides how many
-    # actually dispatch, and this gate reads the FIRST one's output band.
-    fc = [w for w in waves if w.name.startswith("fc")]
+    # EVERY wave, always -- `w_off` and the extra BO's extent are absolute, so a
+    # build that omits a family would give the ones behind it different offsets
+    # and this gate would be checking a different table from the shipping one.
+    # Which waves actually DISPATCH is the launch range's business.
 
     for k in list(os.environ):
         if k.startswith("DECODE_"):
@@ -83,7 +81,7 @@ def _load_target_fd(batch, L, no_lm="0"):
         DECODE_BATCH=str(batch),
         W_DUAL_CHAN="1",
         FUSED_DECODE_EMIT_ONLY="1",
-        DECODE_EXTRA_WAVES=json.dumps([w.as_config() for w in fc]),
+        DECODE_EXTRA_WAVES=json.dumps([w.as_config() for w in waves]),
     )
     import re
     import subprocess
@@ -109,7 +107,7 @@ def _load_target_fd(batch, L, no_lm="0"):
     if not m:
         raise RuntimeError("could not find the emitted ABI; did the build fail?")
     abi = [int(x) for x in re.findall(r"memref<(\d+)xbf16>", m.group(1))]
-    return mod, fd_draft, fc, abi
+    return mod, fd_draft, waves, abi
 
 
 def main():
@@ -122,11 +120,15 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--corr", type=float, default=0.99)
     ap.add_argument("--timeout", type=int, default=60000)
-    # A wave is dispatched as the TAIL of a full decode+LM sequence, never
-    # alone: restricting the launch loop to a single wave deadlocks even for a
-    # shipping vocab wave in a build with no extra waves at all (measured). So
-    # this has to emit the ABI for that same configuration.
     ap.add_argument("--no-lm-waves", default="0", dest="no_lm_waves")
+    # A SECOND INSTRUCTION STREAM AGAINST THE SAME XCLBIN. UNI_WAVE_LO/HI are
+    # build-time and they restrict only the launch loop -- "keeps ABI/CDO fixed
+    # at UNI_DEC/UNI_LM", fused_decode.py says so where they are read -- so a
+    # narrower range recompiles to the same device and a shorter insts.bin.
+    # That is what lets the pre-pass's two halves sit in different DISPATCHES
+    # without a second PDI, which is the whole point of folding it at all.
+    ap.add_argument("--insts", default=None, help="insts.bin to dispatch instead")
+    ap.add_argument("--only", default="", help="report only groups with this prefix")
     args = ap.parse_args()
 
     import ml_dtypes
@@ -137,35 +139,49 @@ def main():
     if len(abi) != 6:
         raise RuntimeError(f"expected 6 BOs (x,w,rms,y,kvc,extra), got {abi}")
     B, K = fd.BATCH, fd.K
-    taps = sorted({w.x_slot for w in waves})
+    xslots = sorted({w.x_slot for w in waves})
+    # Every sub-wave contributes to exactly one PROJECTION: fc, or one drafter
+    # layer's context K/V. Which one is the only thing that differs between the
+    # two families -- the shape, the X width, the arm and the readback are
+    # identical, which is the whole point of giving the K/V waves dest="rms".
+    groups = {}
+    for k, w in enumerate(waves):
+        groups.setdefault(w.group, []).append((k, w))
     print(
-        f"[fc] {len(waves)} sub-waves, {len(taps)} taps at X slots {taps}, "
-        f"M={waves[0].m} K={waves[0].k}  X_SLOTS={fd.X_SLOTS}  "
-        f"extra BO={fd.EXTRA_W_ELEMS}"
+        f"[waves] {len(waves)} sub-waves in {len(groups)} projections, "
+        f"X slots {xslots}, M={waves[0].m} K={waves[0].k}  "
+        f"X_SLOTS={fd.X_SLOTS}  extra BO={fd.EXTRA_W_ELEMS}"
     )
 
-    # ---- the fc region of the extra BO, straight out of the shipped cache ---
+    # ---- the extra BO, straight out of the shipped cache --------------------
     npz = np.load(_HERE / "_draft_q4nx_w2ch.npz")
     g_sub = P.geom_for(waves[0].m, waves[0].k, fd_draft)
-    blob = P.fc_extra_bo(fd_draft, npz)
+    blob = np.concatenate(
+        [P.fc_extra_bo(fd_draft, npz), P.ctxkv_extra_bo(fd_draft, npz)]
+    )
     assert blob.size == fd.EXTRA_W_ELEMS, (blob.size, fd.EXTRA_W_ELEMS)
     n_sub = g_sub.n_blocks * BLOCK_BF16
 
-    # ---- five taps, and the CPU reference for the assembled fc -------------
+    # ---- the X rows, and the CPU reference for each projection --------------
     rng = np.random.default_rng(0)
-    tap = {sl: rng.normal(0, 1, (B, K)).astype(bf16) for sl in taps}
-    tapf = {sl: tap[sl].astype(np.float32) for sl in taps}
+    tap = {sl: rng.normal(0, 1, (B, K)).astype(bf16) for sl in xslots}
+    tapf = {sl: tap[sl].astype(np.float32) for sl in xslots}
     rms = {
-        sl: np.sqrt((tapf[sl] * tapf[sl]).mean(-1, keepdims=True) + 1e-6) for sl in taps
+        sl: np.sqrt((tapf[sl] * tapf[sl]).mean(-1, keepdims=True) + 1e-6)
+        for sl in xslots
     }
     # fc(concat(h_0..h_4)) = sum_s W_s . h_s, and sub-wave (s, t) is rows
     # [t*M, (t+1)*M) of W_s -- so it contributes output band t of tap s and
-    # nothing else. Build the reference from the SAME bytes the device holds.
+    # nothing else. A context-K/V sub-wave is the same statement with one X and
+    # `out_band` counted from the K/V window's first row rather than the slab's.
+    # Build every reference from the SAME bytes the device holds.
     M = waves[0].m
-    ref = np.zeros((B, fd.LAYER_RNDS * fd.PAYLOAD), np.float32)
-    for k, w in enumerate(waves):
-        Wk = P.dequant_cascade(blob[k * n_sub : (k + 1) * n_sub], w.m, w.k, g_sub)
-        ref[:, w.iter_lo * M : (w.iter_lo + 1) * M] += tapf[w.x_slot] @ Wk.T
+    nband = {g: max(w.out_band for _, w in ws) + 1 for g, ws in groups.items()}
+    ref = {g: np.zeros((B, nband[g] * M), np.float32) for g in groups}
+    for g, ws in groups.items():
+        for k, w in ws:
+            Wk = P.dequant_cascade(blob[k * n_sub : (k + 1) * n_sub], w.m, w.k, g_sub)
+            ref[g][:, w.out_band * M : (w.out_band + 1) * M] += tapf[w.x_slot] @ Wk.T
 
     # ---- device ------------------------------------------------------------
     dev = pyxrt.device(0)
@@ -176,7 +192,8 @@ def main():
     ctx = pyxrt.hw_context(dev, xb.get_uuid())
     kern = pyxrt.kernel(ctx, "MLIR_AIE")
     insts = np.fromfile(
-        _HERE.parent.parent / "fused_decode" / f"{args.prefix}.insts.bin",
+        args.insts
+        or (_HERE.parent.parent / "fused_decode" / f"{args.prefix}.insts.bin"),
         dtype=np.uint8,
     )
     TO, FROM = pyxrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE, (
@@ -193,7 +210,7 @@ def main():
     assert abi[0] == fd.X_SLOTS * B * K, (abi[0], fd.X_SLOTS * B * K)
 
     x_host = np.zeros(fd.X_SLOTS * B * K, bf16)
-    for sl in taps:
+    for sl in xslots:
         x_host[sl * B * K : (sl + 1) * B * K] = tap[sl].reshape(-1)
     x_bo.write(x_host.view(np.int16), 0)
     # ONES on the norm weight: rms_chunk is already the strided gather this
@@ -230,30 +247,39 @@ def main():
     # of every token row, and an i2=1 wave has exactly round 0 -- the rms core
     # does not know WHICH output rows the wave computed, only that one round
     # arrived. So every sub-wave deposits into columns [0, M) of its own slot,
-    # and it is `iter_lo` that says where those M values belong in the answer.
-    got = np.zeros_like(ref)
+    # and it is `out_band` that says where those M values belong in the answer.
+    got = {g: np.zeros_like(r) for g, r in ref.items()}
     src = slice(0, M)
-    for k, w in enumerate(waves):
-        sl = fd.EXTRA_OUT_SLOT[k]
-        out = xall[sl * B * K : (sl + 1) * B * K].astype(np.float32).reshape(B, K)
-        got[:, w.iter_lo * M : (w.iter_lo + 1) * M] += (
-            out[:, src] - tapf[w.x_slot][:, src]
-        ) * rms[w.x_slot]
+    for g, ws in groups.items():
+        for k, w in ws:
+            sl = fd.EXTRA_OUT_SLOT[k]
+            out = xall[sl * B * K : (sl + 1) * B * K].astype(np.float32).reshape(B, K)
+            got[g][:, w.out_band * M : (w.out_band + 1) * M] += (
+                out[:, src] - tapf[w.x_slot][:, src]
+            ) * rms[w.x_slot]
 
     def cos(a, b):
         a, b = a.reshape(-1), b.reshape(-1)
         return float(a @ b / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-9))
 
-    rel = float(np.abs(got - ref).max() / max(np.abs(ref).max(), 1e-9))
-    c = cos(got, ref)
     mb = fd.EXTRA_W_ELEMS * 2 / 1e6
     med = float(np.median(ms))
     print(f"  dispatch  median {med:.3f} ms over {len(ms)}  (min {min(ms):.3f})")
     print(f"  weights   {mb:.1f} MB over {len(waves)} waves")
-    print(f"  fc        rel {rel:.3e}  cos {c:.6f}")
-    ok = c >= args.corr
+    worst = 1.0
+    for g in sorted(groups):
+        if not g.startswith(args.only):
+            continue
+        rel = float(np.abs(got[g] - ref[g]).max() / max(np.abs(ref[g]).max(), 1e-9))
+        c = cos(got[g], ref[g])
+        worst = min(worst, c)
+        print(
+            f"  {g:<9} {len(groups[g]):2d} waves  rel {rel:.3e}  cos {c:.6f}"
+            f"{'' if c >= args.corr else '   <-- FAIL'}"
+        )
+    ok = worst >= args.corr
     print()
-    print("PASS" if ok else f"FAIL (cos {c:.6f} < {args.corr})")
+    print("PASS" if ok else f"FAIL (worst cos {worst:.6f} < {args.corr})")
     return 0 if ok else 1
 
 
