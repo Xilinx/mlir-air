@@ -237,3 +237,57 @@ def a_comparison_can_name_one_element_of_a_buffer():
                     air.ops.store(a, OUT)
 
     print(launch.mlir())
+
+
+# A region narrower than the whole buffer takes a different path in
+# Buffer.__getitem__: `b[:]` short-circuits to a BufferExpr, anything else
+# builds a BufferSlice. Every test above subscripts the whole buffer, so all of
+# them exercise BufferExpr and none of them exercise BufferSlice -- which is how
+# BufferSlice came to answer `+` but not `>=`, and how attn_npu2's
+# `ctr[3:4] >= dv_chunks - 1` reached a TypeError at trace time. The two
+# spellings name the same read and must answer the same operators.
+
+
+# CHECK-LABEL: TEST: a_partial_region_compares
+# CHECK: arith.cmpi sgt
+# CHECK: arith.select
+@run
+def a_partial_region_compares():
+    def body(a, b):
+        # Rank stays 1 and the extent is the tile, so this is a plain region of
+        # the buffer rather than a view -- the case _as_leaf admits.
+        return air.ops.select(a[0:1024] > b[0:1024], a[0:1024], b[0:1024])
+
+    print(build(i32, body).mlir())
+
+
+# CHECK-LABEL: TEST: a_partial_region_compares_against_a_scalar
+# The spelling that failed: a region on the left, a plain Python int on the
+# right, with no arithmetic in between to promote it first.
+# CHECK: arith.cmpi sge
+# CHECK: arith.select
+@run
+def a_partial_region_compares_against_a_scalar():
+    print(
+        build(i32, lambda a, b: air.ops.select(a[0:1024] >= 1, a[0:1024], b[:])).mlir()
+    )
+
+
+# CHECK-LABEL: TEST: a_partial_region_compares_reflected
+# Python answers `1 <= region` by swapping the operands and calling the
+# region's __ge__, so the reflected form needs no separate dunder -- but it
+# does need pinning, because that is a language rule and not an obvious one.
+# CHECK: arith.cmpi sge
+@run
+def a_partial_region_compares_reflected():
+    print(
+        build(i32, lambda a, b: air.ops.select(1 <= a[0:1024], a[0:1024], b[:])).mlir()
+    )
+
+
+# CHECK-LABEL: TEST: a_partial_region_is_bitwise
+# Same gap, same fix: `&` was on BufferExpr only.
+# CHECK: arith.andi
+@run
+def a_partial_region_is_bitwise():
+    print(build(i32, lambda a, b: a[0:1024] & b[0:1024]).mlir())

@@ -757,6 +757,70 @@ class BufferSlice(_StridedView):
     def __neg__(self):
         return -self._as_leaf()
 
+    # Comparisons and bitwise, completing the operator surface a region shares
+    # with a whole-buffer read.
+    #
+    # `Buffer.__getitem__` returns a BufferExpr for `b[:]` and a BufferSlice for
+    # anything narrower, so these two spellings of the same read went down
+    # different paths. Arithmetic was on both; comparisons and bitwise were on
+    # BufferExpr only. `b[:] >= n` therefore worked and `b[3:4] >= n` raised
+    # `TypeError: '>=' not supported between instances of 'BufferSlice' and
+    # 'int'` -- a distinction with no rule behind it, which every existing
+    # comparison test missed because they all subscript the whole buffer.
+    #
+    # __eq__/__ne__ stay out, as they do on BufferExpr: defining __eq__ sets
+    # __hash__ to None and changes what `slice == slice` means for ordinary
+    # Python. ops.equal / ops.not_equal are the spelling.
+    def __lt__(self, o):
+        return self._arith(o, lambda a, b: a < b)
+
+    def __le__(self, o):
+        return self._arith(o, lambda a, b: a <= b)
+
+    def __gt__(self, o):
+        return self._arith(o, lambda a, b: a > b)
+
+    def __ge__(self, o):
+        return self._arith(o, lambda a, b: a >= b)
+
+    def __and__(self, o):
+        return self._arith(o, lambda a, b: a & b)
+
+    def __rand__(self, o):
+        return self._arith(o, lambda a, b: a & b, reflected=True)
+
+    def __or__(self, o):
+        return self._arith(o, lambda a, b: a | b)
+
+    def __ror__(self, o):
+        return self._arith(o, lambda a, b: a | b, reflected=True)
+
+    def __xor__(self, o):
+        return self._arith(o, lambda a, b: a ^ b)
+
+    def __rxor__(self, o):
+        return self._arith(o, lambda a, b: a ^ b, reflected=True)
+
+    def __lshift__(self, o):
+        return self._arith(o, lambda a, b: a << b)
+
+    def __rlshift__(self, o):
+        return self._arith(o, lambda a, b: a << b, reflected=True)
+
+    def __rshift__(self, o):
+        return self._arith(o, lambda a, b: a >> b)
+
+    def __rrshift__(self, o):
+        return self._arith(o, lambda a, b: a >> b, reflected=True)
+
+    def __bool__(self):
+        # The same guard BufferExpr carries, for the same reason, now that a
+        # region answers the same operators: `b[3:4] and x` would take the
+        # default object truthiness and emit nothing. Deferring to the leaf
+        # keeps one wording, and a region that cannot be read elementwise
+        # raises _as_leaf's explanation instead, which is the better message.
+        return bool(self._as_leaf())
+
     def materialize_offsets(self):
         return [o.materialize() for o in self.offsets]
 
