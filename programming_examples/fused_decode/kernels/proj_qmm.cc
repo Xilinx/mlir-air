@@ -20,6 +20,14 @@
 #include "q4k_mm.h" // batched projection only; see the bottom of this file
 #endif
 
+#ifdef PROJ_DELAY
+static inline void proj_probe_delay() {
+  volatile int s = 0;
+  for (int i = 0; i < PROJ_DELAY; i++)
+    s += i;
+}
+#endif
+
 extern "C" {
 
 // Zero the row-block accumulator (call once before the col-block loop).
@@ -87,6 +95,9 @@ void proj_qmm_acc(bf16 *__restrict x_full, int j, bf16 *__restrict w,
 void proj_qmm_acc256(bf16 *__restrict x_blk, bf16 *__restrict w,
                      float *__restrict y_acc) {
   aie_round_nearest_even();
+#ifdef PROJ_DELAY
+  proj_probe_delay();
+#endif
   constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
   constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
 #ifndef Q4_0
@@ -140,6 +151,9 @@ void proj_qmm_acc256_c(bf16 *__restrict x_blk, bf16 *__restrict w,
                        float *__restrict y_acc, bf16 *__restrict rc, int j,
                        int fill) {
   aie_round_nearest_even();
+#ifdef PROJ_DELAY
+  proj_probe_delay();
+#endif
   constexpr int m = Q4NX_ROW_BLOCK_SIZE; // 32
   constexpr int k = Q4NX_COL_BLOCK_SIZE; // 256
 #ifndef Q4_0
@@ -264,14 +278,14 @@ void proj_qmm_mm_zero(float *__restrict y_acc, int _arm) {
 //
 // volatile forces the loop to survive -O2; nothing else here may be
 // -- a delay the optimizer deletes reads as "this core has infinite slack".
-#ifdef PROJ_DELAY
-static inline void proj_probe_delay() {
-  volatile int s = 0;
-  for (int i = 0; i < PROJ_DELAY; i++)
-    s += i;
-}
-#endif
-
+//
+// IT IS CALLED FROM BOTH THE BATCH-1 AND THE BATCHED PER-BLOCK ENTRY, and the
+// definition sits above extern "C" so it can be. It used to sit inside the
+// #ifdef PROJ_MM_BATCH block with its only call in proj_qmm_mm_acc, which made
+// a batch-1 sweep flat to any delay -- not because the core had slack, but
+// because build_template.sh omits -DPROJ_MM_BATCH at batch 1 and the code
+// being timed was never compiled in. A flat sweep is the interesting answer
+// here, so it is exactly the one worth being sure of.
 // Accumulate ONE q4k block across all PROJ_MM_BATCH tokens.
 //   x_tile : this col-block's activations for every token, in aie::mmul's A
 //            TILE ORDER -- not a plain [BATCH][COL_BLOCK] buffer. See pack_A in
