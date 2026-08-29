@@ -92,38 +92,40 @@ arch = {
         {"bytes": 4, "name": "i32"},
     ],
     "devicename": "testdevice",
-    "kernels": {
-        "linalg.copy": {
-            "datatypes": {
-                "i8": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                "bf16": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                "i32": {"ops_per_core_per_cycle": 16, "efficiency": 1},
+    "cost_model": {
+        "op_costs": {
+            "linalg.copy": {
+                "datatypes": {
+                    "i8": {"ops_per_core_per_cycle": 32, "efficiency": 1},
+                    "bf16": {"ops_per_core_per_cycle": 32, "efficiency": 1},
+                    "i32": {"ops_per_core_per_cycle": 16, "efficiency": 1},
+                },
+                "name": "linalg.copy",
             },
-            "name": "linalg.copy",
-        },
-        "linalg.fill": {
-            "datatypes": {
-                "i8": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                "bf16": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                "i32": {"ops_per_core_per_cycle": 16, "efficiency": 1},
+            "linalg.fill": {
+                "datatypes": {
+                    "i8": {"ops_per_core_per_cycle": 32, "efficiency": 1},
+                    "bf16": {"ops_per_core_per_cycle": 32, "efficiency": 1},
+                    "i32": {"ops_per_core_per_cycle": 16, "efficiency": 1},
+                },
+                "name": "linalg.fill",
             },
-            "name": "linalg.fill",
-        },
-        "linalg.generic": {
-            "datatypes": {
-                "i8": {"macs_per_core_per_cycle": 256, "efficiency": 1},
-                "bf16": {"macs_per_core_per_cycle": 128, "efficiency": 1},
-                "i32": {"macs_per_core_per_cycle": 1, "efficiency": 1},
+            "linalg.generic": {
+                "datatypes": {
+                    "i8": {"macs_per_core_per_cycle": 256, "efficiency": 1},
+                    "bf16": {"macs_per_core_per_cycle": 128, "efficiency": 1},
+                    "i32": {"macs_per_core_per_cycle": 1, "efficiency": 1},
+                },
+                "name": "linalg.generic",
             },
-            "name": "linalg.generic",
-        },
-        "linalg.matmul": {
-            "datatypes": {
-                "i8": {"macs_per_core_per_cycle": 256, "efficiency": 1},
-                "bf16": {"macs_per_core_per_cycle": 128, "efficiency": 1},
-                "i32": {"macs_per_core_per_cycle": 1, "efficiency": 1},
+            "linalg.matmul": {
+                "datatypes": {
+                    "i8": {"macs_per_core_per_cycle": 256, "efficiency": 1},
+                    "bf16": {"macs_per_core_per_cycle": 128, "efficiency": 1},
+                    "i32": {"macs_per_core_per_cycle": 1, "efficiency": 1},
+                },
+                "name": "linalg.matmul",
             },
-            "name": "linalg.matmul",
         },
     },
     "dus": {

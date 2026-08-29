@@ -1,4 +1,4 @@
-//===- named_kernels.mlir ----------------------------------------*- MLIR -*-===//
+//===- named_op_costs.mlir ----------------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -18,7 +18,7 @@
 // an op that says what it computes in exchange for a symbol to hang a number
 // on.
 //
-// `air.kernel` names the entry instead, so an op can be both.
+// `air.op_cost` names the entry instead, so an op can be both.
 //
 //     proj_a  ceildiv(volume0, 4096) * 40 +  20 =  60
 //     proj_b  ceildiv(volume0, 4096) * 40 +  60 = 100
@@ -67,13 +67,13 @@ module {
             air.execute_terminator %alloc : memref<64xi8, 2>
           }
           %e0 = air.execute [%tw, %ta] {
-            linalg.matvec {air.kernel = "proj_a"} ins(%w, %act : memref<64x64xi8, 2>, memref<64xi8, 2>) outs(%act : memref<64xi8, 2>)
+            linalg.matvec {air.op_cost = "proj_a"} ins(%w, %act : memref<64x64xi8, 2>, memref<64xi8, 2>) outs(%act : memref<64xi8, 2>)
           }
           %e1 = air.execute [%e0] {
-            linalg.matvec {air.kernel = "proj_b"} ins(%w, %act : memref<64x64xi8, 2>, memref<64xi8, 2>) outs(%act : memref<64xi8, 2>)
+            linalg.matvec {air.op_cost = "proj_b"} ins(%w, %act : memref<64x64xi8, 2>, memref<64xi8, 2>) outs(%act : memref<64xi8, 2>)
           }
           %e2 = air.execute [%e1] {
-            linalg.matvec {air.kernel = "proj_c"} ins(%w, %act : memref<64x64xi8, 2>, memref<64xi8, 2>) outs(%act : memref<64xi8, 2>)
+            linalg.matvec {air.op_cost = "proj_c"} ins(%w, %act : memref<64x64xi8, 2>, memref<64xi8, 2>) outs(%act : memref<64xi8, 2>)
           }
         }
       }
