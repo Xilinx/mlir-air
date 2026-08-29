@@ -538,7 +538,8 @@ def _nest_width(dst, expr):
     width = dst.vector_width
     if width <= 0:
         return width
-    width = _cap_by_regions(width, _regions_in(expr, dst.dtype, []))
+    if not getattr(dst, "vector_width_explicit", False):
+        width = _cap_by_regions(width, _regions_in(expr, dst.dtype, []))
     return _cap_by_ops(width, dst, expr)
 
 
