@@ -28,6 +28,13 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+# Every sibling Makefile under llms/ carries this line, and this one did not:
+# both interpreters below default to $(PYTHON), which was never set, so a bare
+# `make compile` ran the script as its own interpreter and got
+# "Permission denied" (exit 126). It worked under lit only because
+# programming_examples/lit.cfg.py exports PYTHON into the test environment.
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
 # The interpreter that runs the model. It needs torch + lerobot (installed by
 # requirements.txt) AND air + pyxrt (from the sourced mlir-air environment) in
 # ONE process, which is what makes the in-process NPU path work. Defaults to
