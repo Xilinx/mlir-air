@@ -94,6 +94,10 @@ def build_launch(
     causal_skip=True,
     q_tiles_per_core=1,
 ):
+    # num_cascade_stages and causal_skip are accepted and ignored: this design
+    # has no cascade, and the causal skip is in the DMA rather than a choice.
+    # Six llms/ call sites still pass them, so they stay in the signature.
+    del num_cascade_stages, causal_skip
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
         lqp % num_q_tiles == 0
