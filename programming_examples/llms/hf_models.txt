@@ -59,6 +59,13 @@ Qwen/Qwen3-8B
 # doubles as the reference `make verify` compares against.
 FastFlowLM/Qwen3-4B-NPU2
 
+# Same Q4NX packaging of Qwen2.5-3B-Instruct. Used by llms/qwen25_3b_q4, which
+# PR #1943 moved onto this bundle without listing it here -- so the offline
+# nightly raised OfflineModeIsEnabled before it reached the gate.
+# Qwen/Qwen2.5-3B-Instruct is already listed above and doubles as the bf16
+# reference `make verify` uses.
+FastFlowLM/Qwen2.5-3B-Instruct-NPU2
+
 # Qwen2.5-7B-Instruct is listed ONCE, not as a pair: FastFlowLM publishes no
 # Qwen2.5-7B bundle, so llms/qwen25_7b_q4nx quantizes this checkpoint to Q4NX on
 # load and `make verify` compares against the same repo in bf16. Ungated.
