@@ -191,7 +191,15 @@ void copy_bf16_to_bf16(bfloat16 *y, const bfloat16 *y_bf16) {
   }
 }
 
-// Round-to-nearest-even for every accumulator narrowing in this core.
+// Round-to-nearest-even for every accumulator narrowing in this core, if the
+// model asked for it.
+//
+// NO-OP unless -DDECODE_ROUND_NEAREST. Without the flag this writes nothing and
+// the core keeps whatever mode it already has, which for a decode dispatch is
+// the power-up FLOOR -- so a model bringing up on the default is flooring every
+// accum->bf16 narrowing, by design. Read the two blocks below together: the
+// first is why nearest is the better mode, the last is why it is not the
+// default.
 //
 // An AIE core comes up with its rounding mode set to FLOOR (toward -inf), and
 // the mode is a core register that nothing else here writes -- so a kernel that
@@ -210,8 +218,16 @@ void copy_bf16_to_bf16(bfloat16 *y, const bfloat16 *y_bf16) {
 // it. Call it FIRST in every extern "C" entry point -- the register is per
 // core, but a core runs whichever kernels its herd assigns, so relying on some
 // other entry point having set it is how one path silently keeps flooring.
+//
+// Opt-in per model via -DDECODE_ROUND_NEAREST, and OFF by default, because
+// llama31_8b, qwen25_7b and qwen25_3b score WORSE under round-to-nearest than
+// under the power-up floor (8B top-k gate: 5/5 flooring, 4/5 nearest). The mode
+// a decode wants is a property of that model, not of the kernels. A new model
+// should measure both; if its gate moves, say which it picked in its Makefile.
 static inline void aie_round_nearest_even() {
+#ifdef DECODE_ROUND_NEAREST
   ::aie::set_rounding(aie::rounding_mode::conv_even);
+#endif
 }
 
 #endif
