@@ -31,6 +31,23 @@ static_assert(
     "assume a DH-wide cos/sin LUT; make them ROPE_DIM-relative first");
 #endif
 
+// Attention scale. Every model here sets ATTN_SCALE to 1/sqrt(DH), but the two
+// are different quantities: Gemma scales by 1/sqrt(query_pre_attn_scalar), which
+// equals the head dim in the configs carried here and need not in general
+// (gemma-3-27b: 168 against a head dim of 128). So the model header stays
+// authoritative and this only catches a value copied from a neighbour with a
+// different head dim -- which has no runtime symptom, because a wrong scale
+// still produces plausible logits. Written squared to keep it a constant
+// expression; sqrt is not constexpr. A model that genuinely scales by something
+// else defines ATTN_SCALE_NOT_INV_SQRT_DH.
+#ifndef ATTN_SCALE_NOT_INV_SQRT_DH
+static_assert(ATTN_SCALE * ATTN_SCALE * DH > 0.999f &&
+                  ATTN_SCALE * ATTN_SCALE * DH < 1.001f,
+              "ATTN_SCALE is not 1/sqrt(DH) for this model; if that is "
+              "deliberate (a Gemma-style query_pre_attn_scalar differing from "
+              "the head dim), define ATTN_SCALE_NOT_INV_SQRT_DH");
+#endif
+
 constexpr int DQ = NUM_ATTN_HEADS * DH;
 constexpr int DK = NUM_KV_HEADS * DH;
 constexpr int DV = DK;
