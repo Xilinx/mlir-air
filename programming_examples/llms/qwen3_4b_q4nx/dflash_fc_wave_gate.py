@@ -47,7 +47,7 @@ import dflash_prepass_waves as P
 from proj_qmm_pack import BLOCK_BF16
 
 
-def _load_target_fd(batch, L, no_lm="0"):
+def _load_target_fd(batch, L, no_lm="0", extra_env=None):
     """fused_decode at the TARGET's geometry, with the fc wave configured.
 
     The same module the template was built from, loaded with the same
@@ -83,6 +83,12 @@ def _load_target_fd(batch, L, no_lm="0"):
         FUSED_DECODE_EMIT_ONLY="1",
         DECODE_EXTRA_WAVES=json.dumps([w.as_config() for w in waves]),
     )
+    # Whatever else the template under test was built with. The DFlash loop's
+    # target carries DECODE_HIDDEN_TAPS=1 and a UNI_WAVE_HI that stops before
+    # the context-K/V waves, and a gate that emitted a different ABI from the
+    # one the template has would size its BOs wrong -- which is the failure that
+    # dispatches COMPLETED and writes nothing.
+    os.environ.update(extra_env or {})
     import re
     import subprocess
 
@@ -129,13 +135,25 @@ def main():
     # without a second PDI, which is the whole point of folding it at all.
     ap.add_argument("--insts", default=None, help="insts.bin to dispatch instead")
     ap.add_argument("--only", default="", help="report only groups with this prefix")
+    ap.add_argument("--dir", default=None, help="where the template lives")
+    ap.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        help="K=V the template was BUILT with (repeatable), e.g. "
+        "--env DECODE_HIDDEN_TAPS=1 --env UNI_WAVE_HI=71",
+    )
     args = ap.parse_args()
+    _dir = Path(args.dir) if args.dir else _HERE.parent.parent / "fused_decode"
+    _extra_env = dict(kv.split("=", 1) for kv in args.env)
 
     import ml_dtypes
     import pyxrt
 
     bf16 = ml_dtypes.bfloat16
-    fd, fd_draft, waves, abi = _load_target_fd(args.batch, args.L, args.no_lm_waves)
+    fd, fd_draft, waves, abi = _load_target_fd(
+        args.batch, args.L, args.no_lm_waves, _extra_env
+    )
     if len(abi) != 6:
         raise RuntimeError(f"expected 6 BOs (x,w,rms,y,kvc,extra), got {abi}")
     B, K = fd.BATCH, fd.K
@@ -185,15 +203,12 @@ def main():
 
     # ---- device ------------------------------------------------------------
     dev = pyxrt.device(0)
-    xb = pyxrt.xclbin(
-        str(_HERE.parent.parent / "fused_decode" / f"{args.prefix}.xclbin")
-    )
+    xb = pyxrt.xclbin(str(_dir / f"{args.prefix}.xclbin"))
     dev.register_xclbin(xb)
     ctx = pyxrt.hw_context(dev, xb.get_uuid())
     kern = pyxrt.kernel(ctx, "MLIR_AIE")
     insts = np.fromfile(
-        args.insts
-        or (_HERE.parent.parent / "fused_decode" / f"{args.prefix}.insts.bin"),
+        args.insts or (_dir / f"{args.prefix}.insts.bin"),
         dtype=np.uint8,
     )
     TO, FROM = pyxrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE, (

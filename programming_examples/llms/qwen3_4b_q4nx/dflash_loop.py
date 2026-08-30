@@ -12,10 +12,17 @@ One round of the loop, and where each piece already gates:
        batch-1 steps); five of the boundaries -- TAP_SLOTS, i.e.
        `hidden_states[layer_id + 1]` for the drafter's target_layer_ids -- are
        the next round's drafter input.
-    2. PRE-PASS, 24 launches, int4                   dflash_prepass_runner.py
+    2. PRE-PASS, as WAVES of step 1's own program       dflash_prepass_waves.py
        taps -> fc -> hidden_norm -> per-layer k/v_proj -> k_norm -> RoPE, for
        the positions the target just committed. Layer-invariant, so it runs
        once per block and not once per layer (dflash_draft_decomp.py).
+       It is SPLIT ACROSS THE ROUND, because the chain forces it: fc's 25
+       sub-waves ride step 1's tail, over tap slots that pass has just written;
+       the host sums them, norms, and gets target_hidden; the 20 context-K/V
+       waves are a projection OF target_hidden, so they take their own 2.5 ms
+       dispatch here, before step 3. Both against ONE xclbin -- UNI_WAVE_LO/HI
+       restrict only the launch loop, so a second instruction stream costs no
+       PDI switch.
     3. DRAFTER, 5 layers, bidirectional, batch B     draft_b8_L<N> template
        Its context K/V is what the pre-pass produced; its own block is
        [committed token, mask, mask, ...] and every query sees the whole block.
@@ -35,9 +42,11 @@ acceptance distribution; the device drafter is int4 pre-pass + q4k layers and
 agrees with the bf16 one on only 4 of 7 slots on the one block measured so far
 (section 3.7), so 1.24x has been an upper bound with nothing under it.
 
-It is NOT a tok/s harness. Three device programs do not fit on the array at
-once, so the pre-pass ELF is loaded and unloaded around every block; the
-reported `t_load` is that cost and it is not part of any shipping design.
+It is now also a tok/s harness, which it was not: there used to be a third
+device program here and three do not fit on the array at once, so the pre-pass
+ELF was loaded and unloaded around every block -- 36.5 ms a block that no
+shipping design would pay. The pre-pass is waves of the target's own xclbin now,
+so there are two programs and no reload.
 
     python3 dflash_loop.py --n-tokens 32
     python3 dflash_loop.py --n-tokens 32 --no-spec   # the same tokens, block 1
@@ -67,7 +76,7 @@ TAP_SLOTS = [lid + 1 for lid in TARGET_LAYER_IDS]  # [2, 10, 18, 26, 34]
 MASK_TOKEN_ID = 151669
 
 
-def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L"):
+def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None):
     """The target, built with DECODE_HIDDEN_TAPS so a verify dispatch also
     returns every layer boundary.
 
@@ -104,17 +113,45 @@ def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L"):
             self.taps_slot0_err = float(np.abs(x[0] - e).max())
             return lg
 
-    return TapsFusedDecoder(
+    # THE PRE-PASS'S WAVES RIDE THIS TEMPLATE. `waves` is the wave table from
+    # dflash_prepass_waves; passing it makes the verify dispatch carry fc's 25
+    # sub-waves in its tail, over the tap slots its own decode waves have just
+    # written, and gives the loop a device program the context-K/V stream can be
+    # dispatched against without a PDI switch. The template must have been BUILT
+    # with the same table (UNI_WAVE_HI at UNI_DEC + UNI_LM + 25), which the
+    # env_extra below is what pins.
+    _env = {
+        "DECODE_STACK": stack,
+        "DECODE_HIDDEN_TAPS": "1",
+        "DECODE_MASK_BIDIR": "0",
+    }
+    _extra_w = None
+    if waves is not None:
+        import json
+
+        import dflash_prepass_waves as P
+
+        _env["DECODE_EXTRA_WAVES"] = json.dumps([w.as_config() for w in waves])
+        _env["UNI_WAVE_HI"] = str(P.uni_hi_verify(waves))
+        _extra_w, _ = P.build_extra_weights(
+            P._load_draft_fd(), np.load(_HERE / "_draft_q4nx_w2ch.npz")
+        )
+    dec = TapsFusedDecoder(
         model=model,
         max_L=max_L,
         batch=batch,
         template_prefix=prefix,
-        env_extra={
-            "DECODE_STACK": stack,
-            "DECODE_HIDDEN_TAPS": "1",
-            "DECODE_MASK_BIDIR": "0",
-        },
+        env_extra=_env,
+        extra_weights=_extra_w,
     )
+    # FusedDecoder UPDATES the process environment rather than replacing it, and
+    # the DRAFTER is built from that same environment a few lines later. Leaving
+    # the wave table set would build a drafter that declares an extra weight BO
+    # nobody binds -- so drop the two keys that are the target's alone, for the
+    # same reason DECODE_MASK_BIDIR is passed explicitly off above.
+    for _k in ("DECODE_EXTRA_WAVES", "UNI_WAVE_HI", "UNI_WAVE_LO"):
+        os.environ.pop(_k, None)
+    return dec
 
 
 class DFlashLoop:
@@ -135,8 +172,8 @@ class DFlashLoop:
         import numpy as np
 
         import dflash_phase2_device as PD
+        import dflash_prepass_waves as P
         import qwen3_4b_q4nx_weights as gw
-        from dflash_prepass_runner import PrepassRunner
 
         self.np = np
         self.B = int(block)
@@ -183,25 +220,24 @@ class DFlashLoop:
         del qm
         gc.collect()
 
-        # ---- the pre-pass: quantize + compile once (minutes), dispatch per
-        # block. Built BEFORE the decoders so its aircc run does not compete
-        # with two multi-GiB weight uploads for memory.
+        # ---- target, with taps AND the pre-pass's waves in its tail.
+        #
+        # THE PRE-PASS IS NOT A PROGRAM ANY MORE. It was a third PDI: 82.0 ms of
+        # dispatch at 0.46 GB/s plus 36.5 ms of ELF load/unload, per block,
+        # because three device programs do not co-reside. It is now 45 extra
+        # launch iterations of THIS xclbin's own projection engine -- 6.65 ms
+        # total, at 6.5 GB/s -- driven by two instruction streams against one
+        # device program (dflash_prepass_waves.WavePrepass).
         self.speculate = bool(speculate)
         self.prepass = None
+        _waves = None
         if self.speculate:
-            t0 = time.time()
-            self.prepass = PrepassRunner(target_source=model, verbose=verbose)
-            print(
-                f"[loop] pre-pass compiled in {self.prepass.t_compile:6.1f}s "
-                f"(setup {time.time() - t0:6.1f}s)",
-                flush=True,
-            )
-            # No bound on P: block 0's context is the whole prompt, and
-            # PrepassRunner.run chunks over CTX_PAD rows because every stage of
-            # the pre-pass is row-independent.
-
-        # ---- target, with taps
-        self.target = _taps_decoder(model, max_L, self.B, stack, target_prefix)
+            _waves, _ = P.wave_specs(P._load_draft_fd())
+        self.target = _taps_decoder(
+            model, max_L, self.B, stack, target_prefix, waves=_waves
+        )
+        if self.speculate:
+            self.prepass = P.WavePrepass(self.target, verbose=verbose)
 
         # ---- drafter, bidirectional. DECODE_HIDDEN_TAPS explicitly off: the
         # target set it in this same process's environment.
@@ -268,13 +304,23 @@ class DFlashLoop:
         ctx_pos = np.arange(P)
         start = P
         seeded = False
-        acc_lens, t_target, t_draft, stopped = [], 0.0, 0.0, False
+        # Block 0's target_hidden is the only one no verify pass produced -- the
+        # prompt's taps came out of the numpy prefill -- so it takes fc's own
+        # instruction stream, chunked over B rows. Every later block's is
+        # already on the device when its verify pass ends, because fc's 25
+        # sub-waves ran in that pass's tail over the tap slots its own decode
+        # waves had just written. That is the whole reason fc rides the verify
+        # pass and the context K/V does not: fc's input is what the pass makes.
+        ctx_th = self.prepass.th_from_taps(ctx_taps) if speculate else None
+        acc_lens, t_target, t_draft, t_pre, stopped = [], 0.0, 0.0, 0.0, False
 
         while start + 1 < max_length and not stopped:
             blk = [int(out[start])] + [MASK_TOKEN_ID] * (B - 1)
 
             if speculate:
-                th, k_ctx, v_ctx = self.prepass.run(ctx_taps, ctx_pos)
+                t0 = time.time()
+                k_ctx, v_ctx = self.prepass.ctxkv(ctx_th, ctx_pos)
+                t_pre += time.time() - t0
                 if not seeded:
                     DD.seed_context_kv(self.drafter, k_ctx, v_ctx, start)
                     seeded = True
@@ -296,6 +342,13 @@ class DFlashLoop:
                 e = self.target.taps_slot0_err
                 print(f"[loop] tap slot 0 vs the embeddings written: {e:.3e}")
                 assert e == 0.0, "X slot/token indexing disagrees with the write"
+            # fc already ran, in the tail of the dispatch above. No dispatch
+            # here -- this reads the 25 partials out of the X buffer, subtracts
+            # the tap each was added into, and norms the sum.
+            if speculate:
+                t0 = time.time()
+                next_th = self.prepass.th_from_verify(taps)
+                t_pre += time.time() - t0
             post = [int(r.argmax()) for r in y]
 
             # Greedy acceptance: the longest prefix of the drafted slots that
@@ -334,9 +387,15 @@ class DFlashLoop:
             # positions start..start+acc.
             ctx_taps = taps[:produced]
             ctx_pos = np.arange(start, start + produced)
+            if speculate:
+                ctx_th = next_th[:produced]
             start += produced
 
-        return out, acc_lens, {"target": t_target, "draft": t_draft}
+        return (
+            out,
+            acc_lens,
+            {"target": t_target, "draft": t_draft, "prepass": t_pre},
+        )
 
 
 def main():
@@ -422,10 +481,13 @@ def main():
     pp = loop.prepass
     msg = f"[loop] wall {wall:.1f}s | target {t['target']:.2f}s"
     if pp is not None:
+        # No ELF (re)load line any more, and that is the point: the pre-pass is
+        # waves of the target's own program, so there is no third PDI to swap
+        # in. `n_run` counts DISPATCHES, not blocks -- block 0's prompt takes
+        # ceil(P/B) of them and every later block takes one.
         msg += (
-            f" | draft {t['draft']:.2f}s | pre-pass run {pp.t_run:.2f}s over "
-            f"{pp.n_run} blocks | pre-pass ELF (re)load {pp.t_load:.2f}s"
-            "  <- not a shipping cost"
+            f" | draft {t['draft']:.2f}s | pre-pass {t['prepass']:.2f}s over "
+            f"{pp.n_run} dispatches ({pp.t_run:.2f}s on the array)"
         )
     print(msg)
     return 0

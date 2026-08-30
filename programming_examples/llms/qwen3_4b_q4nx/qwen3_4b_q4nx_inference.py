@@ -198,6 +198,10 @@ class FusedDecoder:
         self.batch = int(batch)
 
         self.decode_model = decode_model
+        # Where the templates were found, kept so anything that ships a SECOND
+        # instruction stream against this same xclbin (see `dispatch_insts`)
+        # looks for it beside them rather than guessing.
+        self.artifact_dir = artifact_dir or _DECODE_DIR
         self.gen = _pick_decode_gen(
             artifact_dir or _DECODE_DIR,
             max_L,
@@ -280,9 +284,27 @@ class FusedDecoder:
             self.decode_y + self.UNI_LM * self.VP * _b + getattr(fd, "RMS_SCRATCH", 0)
         )
         # RMS BO: [UNI_DEC per-layer norm slabs | B*UNI_DEC rope_w slabs | final_norm]
+        # ( | RMS_TAIL_SLACK | K ones, when the build has extra waves)
         self._rope_base = self.UNI_DEC * self.RMS_LAYER
         self._final_off = self._rope_base + _b * self.UNI_DEC * self.ROPE_W_LEN
         self._RMS_SIZE = self._final_off + self.K + getattr(fd, "RMS_TAIL_SLACK", 0)
+        # The builder puts the extra waves' ones run at RMS_ONES_OFF, which is
+        # exactly the end of everything above -- so the arithmetic here, which
+        # is a SECOND COPY of the builder's, has to be checked against it and
+        # then extended. Not doing that is not a crash: numpy drops a write that
+        # starts at the end of an array, the ones stay zero, every extra wave
+        # multiplies its X by zero and returns the residual it was added into
+        # unchanged. Measured as target_hidden at cos 0.008 with the dispatch
+        # reporting COMPLETED, and fused_decode.py says why the symbol is at
+        # module scope at all: "a second copy of this arithmetic on that side is
+        # exactly how a silently-wrong buffer happens".
+        if self.RMS_ONES_OFF is not None:
+            assert self.RMS_ONES_OFF == self._RMS_SIZE, (
+                f"host RMS layout disagrees with the builder: ones at "
+                f"{self.RMS_ONES_OFF}, host tail at {self._RMS_SIZE}"
+            )
+            if self.N_EXTRA:
+                self._RMS_SIZE = self.RMS_ONES_OFF + self.K
         self.LREG = self.ATTN_MAXL * self.KVSZ_TOK
 
         # host weights: embed (x0 gather), final_norm (RMS BO), per-layer qk-norm (rope_w).
@@ -370,7 +392,20 @@ class FusedDecoder:
                     f"{self.EXTRA_W_ELEMS} elements of weights for them, but no "
                     f"extra_weights was passed; the dispatch would read zeros"
                 )
-            _e = np.ascontiguousarray(np.asarray(extra_weights, bfloat16)).reshape(-1)
+            # REINTERPRET, never convert. These are packed q4k blocks, and a
+            # requant cache stores them as int16 because they are bytes and not
+            # numbers -- `np.asarray(x, bfloat16)` on one turns the bit pattern
+            # 15632 into the value 15632.0 and every wave then streams garbage
+            # that still dispatches COMPLETED. Same rule as `self.Wv16` above.
+            _e = np.asarray(extra_weights).reshape(-1)
+            if _e.dtype == np.int16:
+                _e = _e.view(bfloat16)
+            elif _e.dtype != bfloat16:
+                raise TypeError(
+                    f"extra_weights is {_e.dtype}; packed weights must arrive as "
+                    f"bfloat16 or as the int16 bit pattern of one"
+                )
+            _e = np.ascontiguousarray(_e)
             if _e.size != self.EXTRA_W_ELEMS:
                 raise ValueError(
                     f"extra_weights is {_e.size} elements, the template's wave "
@@ -399,6 +434,32 @@ class FusedDecoder:
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
 
+    def _init_rms(self):
+        """RMS BO: norm slabs + final_norm constant. Written once.
+
+        The per-layer rope region on top of it is per TOKEN and stays in
+        `dispatch`; this is only the part that never changes. It is its own
+        method because `dispatch_insts` needs it too and may run FIRST -- block
+        0 of a DFlash loop dispatches the pre-pass's fc stream before the target
+        has decoded anything, and that stream reads the norm weight below.
+        """
+        if hasattr(self, "_rms_init"):
+            return
+        np = self.np
+        _rmsbuf = np.zeros(self._RMS_SIZE, self.bf16)
+        _rmsbuf[: self.rms_slabs.size] = self.rms_slabs
+        _rmsbuf[self._final_off : self._final_off + self.K] = self.final_norm
+        # ONES for the extra waves' norm weight. An extra wave's X reaches the
+        # projection through the rms core -- the only producer on @xnorm with a
+        # route to DDR -- and feeding w == 1 leaves `rms_chunk` as the strided
+        # gather it already is, with only a per-row scale on top that the host
+        # divides back out. See dflash_prepass_waves.assemble.
+        if self.RMS_ONES_OFF is not None and self.N_EXTRA:
+            _rmsbuf[self.RMS_ONES_OFF : self.RMS_ONES_OFF + self.K] = self.bf16(1.0)
+        self.r_bo.write(_rmsbuf.view(np.int16), 0)
+        self.r_bo.sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        self._rms_init = True
+
     def dispatch_insts(self, insts, timeout=60000):
         """Run a DIFFERENT instruction stream against this same device program.
 
@@ -415,6 +476,7 @@ class FusedDecoder:
         was compiled for.
         """
         np, xrt = self.np, self.xrt
+        self._init_rms()
         insts = np.ascontiguousarray(np.asarray(insts, np.uint8))
         key = insts.nbytes
         cache = self.__dict__.setdefault("_alt_ib", {})
@@ -532,22 +594,7 @@ class FusedDecoder:
             self._kv_dirty = False
         # X is B embeddings, token-major. Qwen3 has no embedding scale.
         x0 = np.ascontiguousarray(np.asarray(self.embed[toks], self.bf16).reshape(-1))
-        # RMS BO: norm slabs + final_norm constant; write once, then patch the per-layer
-        # rope region each token (positions change cos/sin).
-        if not hasattr(self, "_rms_init"):
-            _rmsbuf = np.zeros(self._RMS_SIZE, self.bf16)
-            _rmsbuf[: self.rms_slabs.size] = self.rms_slabs
-            _rmsbuf[self._final_off : self._final_off + self.K] = self.final_norm
-            # ONES for the extra waves' norm weight. An extra wave's X reaches
-            # the projection through the rms core -- the only producer on @xnorm
-            # with a route to DDR -- and feeding w == 1 leaves `rms_chunk` as the
-            # strided gather it already is, with only a per-row scale on top that
-            # the host divides back out. See dflash_prepass_waves.assemble.
-            if self.RMS_ONES_OFF is not None and self.N_EXTRA:
-                _rmsbuf[self.RMS_ONES_OFF : self.RMS_ONES_OFF + self.K] = self.bf16(1.0)
-            self.r_bo.write(_rmsbuf.view(np.int16), 0)
-            self.r_bo.sync(TO)
-            self._rms_init = True
+        self._init_rms()
         rope = (
             self._rope_block([p + t for t in range(B)]) if B > 1 else self._rope_slab(p)
         )

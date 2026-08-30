@@ -323,12 +323,12 @@ def _kv_rows(fd_draft):
     return q_rows, q_rows + k_rows + v_rows
 
 
-def _target_x_slots():
-    """X_SLOTS of the TARGET's build -- one per layer, plus the input.
+def _target_fd():
+    """fused_decode loaded at the TARGET's geometry.
 
-    Read out of a fused_decode loaded at the target's geometry rather than
-    written down, because it is the number the extra waves have to sit above
-    and the two must not be able to drift apart.
+    Read rather than written down, because everything taken off it here is a
+    number the extra waves have to agree with and the two must not be able to
+    drift apart: the X slots they sit above, and the wave indices they occupy.
     """
     # qwen3_4b_draft_requant._load_fd pins DECODE_MODEL to the drafter, so load
     # the target the same way it does rather than trying to steer that one.
@@ -354,12 +354,30 @@ def _target_x_slots():
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod.UNI_DEC + 1
+        return mod
     finally:
         for k in list(os.environ):
             if k.startswith("DECODE_"):
                 os.environ.pop(k, None)
         os.environ.update(saved)
+
+
+def _target_x_slots():
+    """X_SLOTS of the target's build -- one per layer, plus the input."""
+    return _target_fd().UNI_DEC + 1
+
+
+def uni_hi_verify(waves):
+    """The launch range the VERIFY template is built at: everything but ctxkv.
+
+    The context-K/V waves are in the table -- they have to be, or every wave
+    behind them would sit at a different offset in the extra weight BO -- but
+    the verify pass must not DISPATCH them: their X is target_hidden, which the
+    host cannot have written when that pass runs. They get their own instruction
+    stream against the same xclbin instead (see WavePrepass).
+    """
+    mod = _target_fd()
+    return mod.UNI_DEC + mod.UNI_LM + sum(1 for w in waves if w.group == "fc")
 
 
 def _tap_slots(fd_draft):
@@ -572,6 +590,28 @@ def wave_specs(fd_draft):
     return waves, off
 
 
+def _cache_bf16(a):
+    """A requant cache's packed weights as bf16, REINTERPRETED and not converted.
+
+    The caches store q4k blocks as int16 -- they are packed bytes, not numbers --
+    and every driver that reads one does `.view(bfloat16)`. A gather that leaves
+    the dtype as int16 works anyway as long as whoever writes the BO also views
+    rather than converts, which is exactly the coincidence that hid this: the
+    device gate writes `blob.view(np.int16)`, an identity on int16, while
+    `FusedDecoder` writes `np.asarray(extra_weights, bfloat16)` -- and 15632 the
+    bit pattern became 15632.0 the number. Every extra wave then streamed
+    plausible garbage and returned a plausible answer (target_hidden at cos 0.10
+    against the CPU chain, with the device itself provably correct).
+
+    So the dtype is fixed HERE, where the bytes are read, and the type says what
+    the data is from then on.
+    """
+    from ml_dtypes import bfloat16
+
+    a = np.asarray(a).reshape(-1)
+    return a.view(bfloat16) if a.dtype == np.int16 else a
+
+
 def fc_extra_bo(fd_draft, npz):
     """The fc region of the extra BO: 25 single-iteration sub-slabs, in order.
 
@@ -582,7 +622,7 @@ def fc_extra_bo(fd_draft, npz):
 
     g_slab = geom_for(D, D, fd_draft)
     _, sub_nblk = g_slab.chan_window(0, 1)
-    fc = np.asarray(npz["W_fc"]).reshape(-1, BLOCK_BF16)[fc_slab_perm(fd_draft)]
+    fc = _cache_bf16(npz["W_fc"]).reshape(-1, BLOCK_BF16)[fc_slab_perm(fd_draft)]
     parts = []
     for s in range(FC_IN // D):
         sl = fc[s * g_slab.n_blocks : (s + 1) * g_slab.n_blocks]
@@ -616,7 +656,7 @@ def ctxkv_extra_bo(fd_draft, npz):
     it_lo, n_it = g_kv.iter_window(kv_lo, kv_hi)
     _, sub_nblk = g_kv.chan_window(0, 1)
 
-    W = np.asarray(npz["W"]).reshape(-1)
+    W = _cache_bf16(npz["W"])
     parts = []
     for L in range(fd_draft.UNI_DEC):
         lay = W[L * fd_draft.W_LAYER : (L + 1) * fd_draft.W_LAYER]
@@ -681,7 +721,20 @@ def rms_rows(x, eps=RMS_EPS):
     return np.sqrt((xf * xf).mean(-1, keepdims=True) + eps)
 
 
-def assemble(fd, waves, xall, x_rows, eps=RMS_EPS):
+def _bo_geom(fd):
+    """(batch, K, output slots) from either a BUILDER or a DECODER.
+
+    The gates hold a `fused_decode` module loaded at the template's geometry;
+    a running loop holds the `FusedDecoder` bound to it. Both know these three
+    numbers and neither should have to be converted into the other to read them
+    -- and taking them off whichever one the caller has is what keeps the gate
+    and the loop reading the same slots.
+    """
+    B = getattr(fd, "BATCH", None)
+    return (B if B is not None else fd.batch), fd.K, fd.EXTRA_OUT_SLOT
+
+
+def assemble(fd, waves, xall, x_rows, eps=RMS_EPS, only=None):
     """{group: [B, nband*M]} -- every wave's projection, out of the X buffer.
 
     `xall` is the whole X BO as bf16, `x_rows` maps X slot to the [B, K] row
@@ -690,17 +743,31 @@ def assemble(fd, waves, xall, x_rows, eps=RMS_EPS):
     own output slot, because residual1 puts egress round r at column band r and
     such a wave has only round 0. The rms core does not know which output rows
     the wave computed; the wave descriptor does.
+
+    `waves` IS THE WHOLE TABLE, always; `only` restricts which groups come back.
+    A wave's output slot is `EXTRA_OUT_SLOT[k]` for its index k in the table the
+    template was BUILT with, so handing this a filtered list would read some
+    other wave's slot -- silently, and with the right shape.
     """
-    B, K = fd.BATCH, fd.K
+    B, K, out_slot = _bo_geom(fd)
+    if len(waves) != len(out_slot):
+        raise ValueError(
+            f"assemble takes the whole {len(out_slot)}-wave table (use `only=` "
+            f"to select groups); got {len(waves)} waves"
+        )
     M = waves[0].m
+    keep = {w.group for w in waves} if only is None else set(only)
     nband, out = {}, {}
     for w in waves:
-        nband[w.group] = max(nband.get(w.group, 0), w.out_band + 1)
+        if w.group in keep:
+            nband[w.group] = max(nband.get(w.group, 0), w.out_band + 1)
     for g, n in nband.items():
         out[g] = np.zeros((B, n * M), np.float32)
     for k, w in enumerate(waves):
+        if w.group not in keep:
+            continue
         x = np.asarray(x_rows[w.x_slot], np.float32).reshape(B, K)
-        sl = fd.EXTRA_OUT_SLOT[k]
+        sl = out_slot[k]
         got = xall[sl * B * K : (sl + 1) * B * K].astype(np.float32).reshape(B, K)
         out[w.group][:, w.out_band * M : (w.out_band + 1) * M] += (
             got[:, :M] - x[:, :M]
@@ -708,21 +775,25 @@ def assemble(fd, waves, xall, x_rows, eps=RMS_EPS):
     return out
 
 
-def target_hidden(fd, waves, xall, taps, hn_w):
+def target_hidden(fd, waves, xall, taps, hn_w, tap_slots=None):
     """fc's answer, normed -- the drafter's context feature.
 
     `taps` is [B, 5*K] in TAP_SLOTS order, exactly what the target's
     `last_taps` holds and what the fc waves' X slots were filled from.
+
+    `tap_slots` is (first, stride); pass it. Deriving it here re-imports
+    fused_decode at the drafter's geometry, which is seconds and an environment
+    mutation, and this runs once a block.
     """
     import dflash_sumnorm
 
     K = fd.K
-    tap0, stride = _tap_slots(_load_draft_fd())
+    tap0, stride = tap_slots or _tap_slots(_load_draft_fd())
     x_rows = {
         tap0 + s * stride: np.asarray(taps, np.float32)[:, s * K : (s + 1) * K]
         for s in range(np.asarray(taps).shape[1] // K)
     }
-    fc = assemble(fd, [w for w in waves if w.group == "fc"], xall, x_rows)["fc"]
+    fc = assemble(fd, waves, xall, x_rows, only={"fc"})["fc"]
     return dflash_sumnorm.reference([fc], np.asarray(hn_w))
 
 
@@ -739,7 +810,7 @@ def context_kv(fd, waves, xall, th, kn_w, positions):
     from dflash_ctxkv_int4_gate import rope_ref
 
     kv = [w for w in waves if w.group != "fc"]
-    got = assemble(fd, kv, xall, {kv[0].x_slot: th})
+    got = assemble(fd, waves, xall, {kv[0].x_slot: th}, only={w.group for w in kv})
     HD, KVD = CK.HEAD_DIM, CK.KV_DIM
     ks, vs = [], []
     for L in range(len({w.group for w in kv})):
@@ -810,7 +881,8 @@ class WavePrepass:
         fd_draft = _load_draft_fd()
         self.waves, _ = wave_specs(fd_draft)
         self.n_layers = fd_draft.UNI_DEC
-        self.tap0, self.tap_stride = _tap_slots(fd_draft)
+        self._taps = _tap_slots(fd_draft)
+        self.tap0, self.tap_stride = self._taps
         self.th_slot = [w for w in self.waves if w.group != "fc"][0].x_slot
         self.n_tap = len({w.x_slot for w in self.waves if w.group == "fc"})
 
@@ -821,8 +893,18 @@ class WavePrepass:
             for L in range(self.n_layers)
         ]
 
-        d = Path(insts_dir) if insts_dir else (_HERE.parent.parent / "fused_decode")
-        pre = prefix or f"_L{target.ATTN_MAXL}"
+        # Beside the templates, not beside this file: the streams are built from
+        # the SAME configuration as the xclbin they are dispatched against, and
+        # a stream from another window would bind and compute the wrong rows.
+        d = Path(insts_dir or getattr(target, "artifact_dir", _HERE))
+        # Keyed on the TEMPLATE the active xclbin was built from, not on
+        # ATTN_MAXL: a window is a range of context lengths (144 here) and the
+        # xclbin is one build inside it (127). These streams carry no decode
+        # wave, so nothing in them depends on L -- but they must be the same
+        # BUILD as the device they are dispatched against, and `base_L` is the
+        # only name that says which one that is.
+        base_L = target.gen.templates[target.cur_maxl]["base_L"]
+        pre = prefix or f"_L{base_L}"
         self.insts = {
             n: _np.fromfile(d / f"{pre}_{n}.insts.bin", dtype=_np.uint8)
             for n in ("fc", "ctxkv")
@@ -876,7 +958,9 @@ class WavePrepass:
         `last_taps` -- the same rows, read back, which is what the residual
         correction has to subtract.
         """
-        return target_hidden(self.t, self.waves, self._read_x(), taps, self.hn_w)
+        return target_hidden(
+            self.t, self.waves, self._read_x(), taps, self.hn_w, self._taps
+        )
 
     def th_from_taps(self, taps):
         """target_hidden for rows no verify pass produced -- block 0's prompt.
@@ -900,9 +984,9 @@ class WavePrepass:
             pad = np.zeros((self.B, taps.shape[1]), np.float32)
             pad[: chunk.shape[0]] = chunk
             out.append(
-                target_hidden(self.t, self.waves, self._read_x(), pad, self.hn_w)[
-                    : chunk.shape[0]
-                ]
+                target_hidden(
+                    self.t, self.waves, self._read_x(), pad, self.hn_w, self._taps
+                )[: chunk.shape[0]]
             )
         return np.concatenate(out)
 
