@@ -65,6 +65,11 @@ def main():
     ap.add_argument("--target-prefix", default="taps_b8_L")
     ap.add_argument("--draft-prefix", default="draft_b8_L")
     ap.add_argument("--exactness", action="store_true")
+    # A CONTROL for the acceptance number, not a mode anyone should ship.
+    # "cpu" runs the pre-pass in numpy off the same q4k bytes the waves
+    # stream, so a difference between the two runs is the wave arithmetic and
+    # nothing else. See dflash_prepass_waves.CpuPrepass.
+    ap.add_argument("--prepass", choices=("waves", "cpu"), default="waves")
     ap.add_argument("--out", default=None, help="write the raw per-block lengths")
     ap.add_argument("--spec-ms", type=float, default=STEP_MS_SPEC)
     ap.add_argument("--base-ms", type=float, default=STEP_MS_BASE)
@@ -114,6 +119,7 @@ def main():
         target_prefix=args.target_prefix,
         draft_prefix=args.draft_prefix,
         speculate=True,
+        prepass=args.prepass,
     )
 
     all_lens, rows, mismatches = [], [], 0

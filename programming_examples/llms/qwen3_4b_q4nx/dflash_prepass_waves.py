@@ -1016,6 +1016,106 @@ class WavePrepass:
         return th, k, v
 
 
+class CpuPrepass:
+    """`WavePrepass`'s interface, in numpy, off the SAME q4k bytes.
+
+    A CONTROL, not a fallback. Folding the pre-pass moved acceptance from 3.981
+    to 3.614, and the projections cannot obviously account for it -- the waves
+    agree with the numpy chain at cos 0.9998 end to end. This substitutes exact
+    arithmetic on the identical weights for the array's, so a run of the standing
+    acceptance gate says which side of that the missing 0.37 tokens is on:
+
+        --prepass cpu gives back 3.981   the wave arithmetic costs acceptance
+        --prepass cpu still reads ~3.61  it does not, and the baseline moved
+
+    The weights are dequantized from the extra BO -- the bytes the waves stream
+    -- and not re-quantized from the checkpoint, so "the same numbers" is
+    structural rather than a claim. It is SLOW (a dense [2560, 12800] and ten
+    [2048, 2560] per block, in float32) and exists only to answer that question.
+    """
+
+    def __init__(self, target, npz=None, verbose=True):
+        fd_draft = _load_draft_fd()
+        self.waves, _ = wave_specs(fd_draft)
+        self.n_layers = fd_draft.UNI_DEC
+        self.B, self.K, _ = _bo_geom(target)
+        self.taps0, self.tap_stride = _tap_slots(fd_draft)
+        self.t_run, self.n_run = 0.0, 0
+
+        if npz is None:
+            npz = np.load(_HERE / "_draft_q4nx_w2ch.npz")
+        blob = np.concatenate(
+            [fc_extra_bo(fd_draft, npz), ctxkv_extra_bo(fd_draft, npz)]
+        )
+        g = geom_for(self.waves[0].m, self.waves[0].k, fd_draft)
+        n_sub = g.n_blocks * BLOCK_BF16
+        self.M = self.waves[0].m
+        # One [M, K] per sub-wave, in the table's order -- the same slicing the
+        # device's weight feed does, so a wave and its matrix cannot disagree.
+        self.W = [
+            dequant_cascade(blob[k * n_sub : (k + 1) * n_sub], w.m, w.k, g)
+            for k, w in enumerate(self.waves)
+        ]
+
+        from qwen3_4b_draft_weights import DraftWeights
+
+        dw = DraftWeights()
+        self.hn_w = np.asarray(dw.hidden_norm(), np.float32)
+        self.kn_w = [
+            np.asarray(dw.bf16(f"layers.{L}.self_attn.k_norm.weight"), np.float32)
+            for L in range(self.n_layers)
+        ]
+        if verbose:
+            print(
+                f"[cpu prepass] CONTROL: {len(self.W)} dequantized sub-waves, "
+                f"{sum(x.nbytes for x in self.W) / 1e6:.0f} MB",
+                flush=True,
+            )
+
+    def th_from_taps(self, taps):
+        import dflash_sumnorm
+
+        taps = np.asarray(taps, np.float32)
+        fc = np.zeros((taps.shape[0], self.K), np.float32)
+        for k, w in enumerate(self.waves):
+            if w.group != "fc":
+                continue
+            s = (w.x_slot - self.taps0) // self.tap_stride
+            fc[:, w.out_band * self.M : (w.out_band + 1) * self.M] += (
+                taps[:, s * self.K : (s + 1) * self.K] @ self.W[k].T
+            )
+        return dflash_sumnorm.reference([fc], self.hn_w)
+
+    # A verify pass makes no CPU pre-pass state, so this is the same call.
+    th_from_verify = th_from_taps
+
+    def ctxkv(self, th, positions):
+        import dflash_ctxkv_int4_builder as CK
+        from dflash_ctxkv_int4_gate import rope_ref
+
+        th = np.asarray(th, np.float32)
+        HD, KVD = CK.HEAD_DIM, CK.KV_DIM
+        raw = {}
+        for k, w in enumerate(self.waves):
+            if w.group == "fc":
+                continue
+            a = raw.setdefault(w.group, np.zeros((th.shape[0], 2 * KVD), np.float32))
+            a[:, w.out_band * self.M : (w.out_band + 1) * self.M] = th @ self.W[k].T
+        ks, vs = [], []
+        for L in range(self.n_layers):
+            a = raw[f"ctxkv{L}"]
+            k = a[:, :KVD].reshape(-1, HD)
+            k = (k / np.sqrt((k**2).mean(-1, keepdims=True) + RMS_EPS)) * self.kn_w[L]
+            ks.append(rope_ref(k, positions).reshape(-1, KVD))
+            vs.append(a[:, KVD : 2 * KVD])
+        return np.stack(ks), np.stack(vs)
+
+    def run(self, taps, positions):
+        th = self.th_from_taps(taps)
+        k, v = self.ctxkv(th, positions)
+        return th, k, v
+
+
 # ---------------------------------------------------------------------------
 # Gates
 # ---------------------------------------------------------------------------

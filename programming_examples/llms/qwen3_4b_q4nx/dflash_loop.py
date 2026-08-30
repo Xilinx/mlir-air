@@ -166,6 +166,7 @@ class DFlashLoop:
         draft_prefix="draft_b8_L",
         speculate=True,
         verbose=False,
+        prepass="waves",
     ):
         import gc
 
@@ -237,7 +238,11 @@ class DFlashLoop:
             model, max_L, self.B, stack, target_prefix, waves=_waves
         )
         if self.speculate:
-            self.prepass = P.WavePrepass(self.target, verbose=verbose)
+            self.prepass = (
+                P.CpuPrepass(self.target)
+                if prepass == "cpu"
+                else P.WavePrepass(self.target, verbose=verbose)
+            )
 
         # ---- drafter, bidirectional. DECODE_HIDDEN_TAPS explicitly off: the
         # target set it in this same process's environment.
@@ -418,6 +423,7 @@ def main():
         "commits exactly one token. The token stream is then the plain greedy "
         "one and any difference from --spec is speculation's own.",
     )
+    ap.add_argument("--prepass", choices=("waves", "cpu"), default="waves")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -460,6 +466,7 @@ def main():
         draft_prefix=args.draft_prefix,
         speculate=not args.no_spec,
         verbose=args.verbose,
+        prepass=args.prepass,
     )
     t0 = time.time()
     toks, acc, t = loop.run(args.n_tokens)
