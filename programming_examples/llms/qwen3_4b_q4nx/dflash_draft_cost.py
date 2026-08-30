@@ -98,6 +98,15 @@ def main():
         help="1 measures the SAME vocab dataflow at batch 1 -- the batched "
         "penalty in a workload with no attention, KV, rope or GLU in it",
     )
+    ap.add_argument(
+        "--tag",
+        default="",
+        help="'rcp' reads the RMS_CHUNK_PROBE=2 family instead of the shipping "
+        "one -- the same design with the rms core's chunk regeneration deleted "
+        "and every handshake, lock and DMA left in place. 'rmd<n>' reads the "
+        "RMS_DELAY=<n> family, which instead ADDS a known scalar delay per "
+        "regeneration and so says whether that work is exposed or overlapped",
+    )
     args = ap.parse_args()
 
     import numpy as np
@@ -107,22 +116,41 @@ def main():
 
     fd = _load_builder()
 
+    B_, L_ = args.batch, args.L
+    if args.tag == "rcp":
+        pfx, full = f"rcp_b{B_}_L", f"rcp_b{B_}_L{L_}.insts.bin"
+        nolm, lmonly = (
+            f"_rnolm_b{B_}_L{L_}.insts.bin",
+            f"_rlmonly_b{B_}_L{L_}.insts.bin",
+        )
+    elif args.tag.startswith("rmd") and args.tag[3:].isdigit():
+        d = args.tag[3:]
+        pfx, full = f"rmd{d}_b{B_}_L", f"rmd{d}_b{B_}_L{L_}.insts.bin"
+        nolm = f"_m{d}nolm_b{B_}_L{L_}.insts.bin"
+        lmonly = f"_m{d}lmonly_b{B_}_L{L_}.insts.bin"
+    elif args.tag:
+        raise SystemExit(f"unknown --tag {args.tag!r} (only 'rcp' or 'rmd<n>')")
+    else:
+        # The batch-8 shipping set predates the sweep and carries no _b8 infix.
+        sfx = "" if B_ == 8 else f"_b{B_}"
+        pfx, full = f"draft_b{B_}_L", f"draft_b{B_}_L{L_}.insts.bin"
+        nolm, lmonly = f"_dnolm{sfx}_L{L_}.insts.bin", f"_dlmonly{sfx}_L{L_}.insts.bin"
+
     dec = DD.build_draft_decoder(
         INF.MODEL_DEFAULT,
         max_L=args.max_L,
         batch=args.batch,
-        template_prefix=f"draft_b{args.batch}_L",
+        template_prefix=pfx,
     )
     B = dec.batch
     n = dec.UNI_DEC
     Z = np.zeros((n, args.ctx, dec.DK_TOT_A), np.float32)
     dec.seed_kv(Z, Z, args.ctx)
 
-    sfx = "" if args.batch == 8 else f"_b{args.batch}"
     streams = {
-        "full  [0,15)": f"draft_b{args.batch}_L{args.L}.insts.bin",
-        "nolm  [0,5) ": f"_dnolm{sfx}_L{args.L}.insts.bin",
-        "lmonly[5,15)": f"_dlmonly{sfx}_L{args.L}.insts.bin",
+        "full  [0,15)": full,
+        "nolm  [0,5) ": nolm,
+        "lmonly[5,15)": lmonly,
     }
     blobs = {}
     for k, f in streams.items():
