@@ -210,8 +210,15 @@ void copy_bf16_to_bf16(bfloat16 *y, const bfloat16 *y_bf16) {
 // it. Call it FIRST in every extern "C" entry point -- the register is per
 // core, but a core runs whichever kernels its herd assigns, so relying on some
 // other entry point having set it is how one path silently keeps flooring.
+//
+// Opt-in per model via -DDECODE_ROUND_NEAREST: llama31_8b, qwen25_7b and
+// qwen25_3b score WORSE under round-to-nearest than under the power-up floor
+// (8B top-k gate: 5/5 flooring, 4/5 nearest), so the mode a model wants is a
+// property of that model, not of the kernels.
 static inline void aie_round_nearest_even() {
+#ifdef DECODE_ROUND_NEAREST
   ::aie::set_rounding(aie::rounding_mode::conv_even);
+#endif
 }
 
 #endif

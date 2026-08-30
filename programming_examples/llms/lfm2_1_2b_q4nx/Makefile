@@ -94,6 +94,9 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -DNDEBUG -DMODEL_TYPE=LFM2_1_2B -D__AIE_API_AIE_ADF_HPP__ \
   -I $(AIEOPT_DIR)/include -I $(DEC)/kernels -I $(DEC)/models \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
+# Round accum->bf16 to nearest instead of the power-up floor: this decode's
+# residual stream compounds the floor bias (cosine 0.876 -> 0.962).
+PEANO_KBASE += -DDECODE_ROUND_NEAREST
 # 4x-finer SiLU LUT (same [-8,8) range, 256 segments instead of 64). LFM2's
 # SwiGLU gate is p99 = 1.2 / max 4.1 across all 16 layers, so the shipped
 # 0.25-wide segments put almost the whole distribution in ~10 of 64 entries;
