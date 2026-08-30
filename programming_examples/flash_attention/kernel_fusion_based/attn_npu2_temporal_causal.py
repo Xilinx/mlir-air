@@ -110,10 +110,21 @@ def build_launch(
         lqp % num_q_tiles == 0
     ), f"lqp ({lqp}) must be divisible by num_q_tiles ({num_q_tiles})"
     assert lk % lkp == 0, f"lk ({lk}) must be divisible by lkp ({lkp})"
-    dk_tile = min(dk, lkp)
-    dv_tile = min(dv, lkp)
-    dk_chunks = dk // dk_tile
-    dv_chunks = dv // dv_tile
+    # d is NEVER split for this kernel, unlike attn_npu2 / seqfirst / npu1 which
+    # tile it at lkp. mmul walks d as k-blocks of 8 inside the microkernel, and
+    # fa_temporal.py compiles that microkernel with dk_tile = dv_tile = head_dim
+    # -- so a builder that chunks d disagrees with the kernel it calls, and the
+    # Makefile says what that costs: "a mismatch here does not fail the build, it
+    # produces wrong results". Splitting d also lands dk_chunks separate puts,
+    # each from a distinct memref, on one channel per loop iteration, which
+    # air-opt-memtile-dma-bds cannot fold; it unrolls the whole causal prefix
+    # into the memtile BD chain instead (measured 175 BDs against a 48 cap).
+    # Capacity at head_dim > lkp comes from a smaller lkp (tile_size_q must
+    # stay == lkp), not from d.
+    dk_tile = dk
+    dv_tile = dv
+    dk_chunks = 1
+    dv_chunks = 1
     if num_kv_heads is None:
         num_kv_heads = num_heads
     gqa_group_size = num_heads // num_kv_heads
@@ -582,9 +593,17 @@ def build_launch(
                             every dv chunk, so one de-tiling view emits
                             row-major [tile_size_q, dv] for the whole slab.
                             """
+                            # dv // M FIRST: the slab is stored column-block-
+                            # major, so a dv block strides over every
+                            # tile_size_q block. Naming tile_size_q first
+                            # describes a row-block-major slab and emits the
+                            # right 4096 elements in the wrong order. The two
+                            # spellings coincide when tile_size_q == dv, which
+                            # is every shape shipping today (d=64, lkp=64) and
+                            # is why this survived.
                             packed = (
                                 gps_j[j]
-                                .reshape(tile_size_q // M, dv // M, M, M)
+                                .reshape(dv // M, tile_size_q // M, M, M)
                                 .transpose(1, 2, 0, 3)
                             )
 
