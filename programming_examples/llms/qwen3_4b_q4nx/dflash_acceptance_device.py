@@ -40,8 +40,13 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-# Section 6, measured on device. A block-8 speculative step against a baseline
-# token step; break-even is the ratio, 3.83 accepted tokens.
+# Section 6, measured on device: a baseline batch-1 token step. The SPECULATIVE
+# step is no longer a constant here -- the loop times its own target, draft and
+# pre-pass, and this prices from that. It had to become a measurement: the
+# pre-pass was a third PDI at a fixed 118.5 ms a block, and folding it onto the
+# target's own program (dflash_prepass_waves.py) took it to a few ms, so a
+# number written down in this file would now be wrong by a third of a step.
+# `--spec-ms` still forces one, for pricing a hypothetical.
 STEP_MS_SPEC = 217.9
 STEP_MS_BASE = 56.9
 
@@ -112,11 +117,21 @@ def main():
     )
 
     all_lens, rows, mismatches = [], [], 0
+    t_step, n_step = 0.0, 0
     for i in range(loop.n_prompts):
         loop.select(i)
-        toks, acc, _ = loop.run(args.n_tokens, verbose=False)
+        toks, acc, _t = loop.run(args.n_tokens, verbose=False)
         gen = toks[loop.P :]
         all_lens.extend(acc)
+        # The step, MEASURED, rather than the constant below. The pre-pass used
+        # to be a third PDI whose cost was fixed and enormous, so a number in
+        # this file was as good as any; folded onto the target's own program it
+        # is a few ms, and the step is now dominated by parts this loop times
+        # itself. Prompt 0 is dropped -- its block 0 pre-pass covers the whole
+        # prompt (ceil(P/B) dispatches, not one) and every device buffer is cold.
+        if i:
+            t_step += sum(_t.values())
+            n_step += len(acc)
         note = ""
         if args.exactness:
             loop.select(i)
@@ -136,7 +151,9 @@ def main():
 
     a = np.array(all_lens, float)
     mean = float(a.mean())
-    speed = mean * args.base_ms / args.spec_ms
+    spec_ms = 1e3 * t_step / n_step if n_step else args.spec_ms
+    src = "MEASURED here" if n_step else "section 6"
+    speed = mean * args.base_ms / spec_ms
     print(f"\n[acceptance] {len(a)} blocks over {loop.n_prompts} prompts")
     print("  accepted-length histogram (tokens committed per verify dispatch):")
     for k in range(1, args.block + 1):
@@ -147,11 +164,12 @@ def main():
             )
     print(
         f"\n  mean tokens per verify dispatch : {mean:.3f}\n"
-        f"  break-even                      : {args.spec_ms / args.base_ms:.2f}\n"
+        f"  speculative step                : {spec_ms:.1f} ms  ({src})\n"
+        f"  break-even                      : {spec_ms / args.base_ms:.2f}\n"
         f"  SPEEDUP vs batch-1 decode       : {speed:.2f}x"
         f"   ({'worth it' if speed > 1 else 'NOT worth it'})\n"
-        f"  (priced with section 6's measured {args.spec_ms:.1f} ms speculative "
-        f"step and {args.base_ms:.1f} ms baseline token)"
+        f"  (against a {args.base_ms:.1f} ms baseline token; the step is the "
+        f"loop's own target + draft + pre-pass over {n_step} blocks)"
     )
     if args.exactness:
         print(

@@ -412,7 +412,21 @@ class FusedDecoder:
                     f"table says {self.EXTRA_W_ELEMS}"
                 )
             _ng = len(self.w_bos) - 1 if self._wsplit else 0
-            self.e_bo = xrt.bo(self.dev, _e.size * 2, HO, g(8 + _ng))
+            # The template on disk is what decides whether this argument exists,
+            # and the ENVIRONMENT is what said there are extra waves -- so the
+            # two can disagree, and when they do XRT raises "invalid vector
+            # subscript" from inside group_id, which names neither. Say it here.
+            try:
+                _gid = g(8 + _ng)
+            except Exception:
+                raise RuntimeError(
+                    f"this build declares {self.N_EXTRA} extra waves but the "
+                    f"template {self.gen.templates[self.cur_maxl]['xclbin']} has "
+                    f"no extra-weight argument -- it was built without "
+                    f"DECODE_EXTRA_WAVES. Rebuild that window's templates, or "
+                    f"point --max-L at one that was."
+                ) from None
+            self.e_bo = xrt.bo(self.dev, _e.size * 2, HO, _gid)
             self.e_bo.write(_e.view(np.int16), 0)
             self.e_bo.sync(TO)
         self._ist = _stair.make_insts_states(
