@@ -94,12 +94,25 @@ def main():
     env = {"DECODE_STACK": args.stack, "DECODE_MASK_BIDIR": "0"}
     if args.taps:
         env["DECODE_HIDDEN_TAPS"] = "1"
+    # The taps templates carry the DFlash pre-pass's waves in their tail, which
+    # is part of their ABI: built without the table, this decoder binds five
+    # buffers against a six-argument kernel and the sweep reports 0/8 agreement
+    # and NaNs at every context length rather than anything that names the
+    # cause. One helper owns the table so every consumer of the prefix agrees.
+    extra_w = None
+    if args.prefix.startswith("taps"):
+        import dflash_prepass_waves as P
+
+        _we, extra_w = P.taps_decoder_args()
+        env.update(_we)
+        env["DECODE_HIDDEN_TAPS"] = "1"
     dB = INF.FusedDecoder(
         model=model,
         max_L=args.max_L,
         batch=B,
         template_prefix=args.prefix,
         env_extra=env,
+        extra_weights=extra_w,
     )
 
     print(

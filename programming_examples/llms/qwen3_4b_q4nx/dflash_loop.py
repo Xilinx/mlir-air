@@ -127,15 +127,10 @@ def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None):
     }
     _extra_w = None
     if waves is not None:
-        import json
-
         import dflash_prepass_waves as P
 
-        _env["DECODE_EXTRA_WAVES"] = json.dumps([w.as_config() for w in waves])
-        _env["UNI_WAVE_HI"] = str(P.uni_hi_verify(waves))
-        _extra_w, _ = P.build_extra_weights(
-            P._load_draft_fd(), np.load(_HERE / "_draft_q4nx_w2ch.npz")
-        )
+        _we, _extra_w = P.taps_decoder_args(waves=waves)
+        _env.update(_we)
     dec = TapsFusedDecoder(
         model=model,
         max_L=max_L,

@@ -84,13 +84,24 @@ def main():
     del qm, lg
     gc.collect()
 
-    env = {"DECODE_STACK": args.stack} if B > 1 else None
+    env = {"DECODE_STACK": args.stack} if B > 1 else {}
+    # A taps template carries the DFlash pre-pass's waves in its tail, and that
+    # is part of its ABI -- one helper owns the table so every consumer of the
+    # prefix binds the same buffers the kernel declares.
+    extra_w = None
+    if args.prefix.startswith("taps"):
+        import dflash_prepass_waves as P
+
+        _we, extra_w = P.taps_decoder_args()
+        env.update(_we)
+        env["DECODE_HIDDEN_TAPS"] = "1"
     dec = INF.FusedDecoder(
         model=model,
         max_L=args.max_L,
         batch=B,
         template_prefix=args.prefix,
-        env_extra=env,
+        env_extra=env or None,
+        extra_weights=extra_w,
     )
     n = dec.UNI_DEC
     rng = np.random.default_rng(0)

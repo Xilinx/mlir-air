@@ -1016,6 +1016,31 @@ class WavePrepass:
         return th, k, v
 
 
+def taps_decoder_args(npz=None, waves=None):
+    """(env_extra, extra_weights) for a target template that carries the waves.
+
+    ONE place, because the wave table is part of the template's ABI and every
+    consumer of that prefix needs the same one. A `FusedDecoder` built on
+    `taps_b8_L*` without this binds five buffers against a six-argument kernel:
+    dflash_verify_ctx_sweep.py did, and reported 0/8 agreement and NaNs at every
+    context length rather than anything that named the cause.
+
+    The env is what the template was BUILT with, so it also pins UNI_WAVE_HI --
+    the verify range, everything through fc and not the context K/V.
+    """
+    if waves is None:
+        waves, _ = wave_specs(_load_draft_fd())
+    import json
+
+    if npz is None:
+        npz = np.load(_HERE / "_draft_q4nx_w2ch.npz")
+    w, _ = build_extra_weights(_load_draft_fd(), npz, verbose=False)
+    return {
+        "DECODE_EXTRA_WAVES": json.dumps([x.as_config() for x in waves]),
+        "UNI_WAVE_HI": str(uni_hi_verify(waves)),
+    }, w
+
+
 class CpuPrepass:
     """`WavePrepass`'s interface, in numpy, off the SAME q4k bytes.
 

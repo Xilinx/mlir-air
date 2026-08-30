@@ -429,6 +429,7 @@ class FusedDecoder:
             self.e_bo = xrt.bo(self.dev, _e.size * 2, HO, _gid)
             self.e_bo.write(_e.view(np.int16), 0)
             self.e_bo.sync(TO)
+        self._check_arity(g)
         self._ist = _stair.make_insts_states(
             self.gen, xrt, self.dev, g(1), self.windows
         )
@@ -447,6 +448,39 @@ class FusedDecoder:
         self.cur_maxl = m
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
+
+    def _check_arity(self, g):
+        """Does this host bind every buffer the TEMPLATE declares?
+
+        The environment decides what this driver builds; the file on disk
+        decides what the kernel takes. When they disagree the dispatch does not
+        fail -- it binds the buffers it has, in order, and the argument nobody
+        filled reads whatever is there. Measured: a taps template carrying the
+        DFlash pre-pass's waves, opened by a caller that did not know about
+        them, gave 0/8 batch-vs-batch-1 agreement and NaNs at every context
+        length. Nothing in that output points here.
+
+        `group_id` is the only thing that knows the real arity, so count up
+        until it refuses. Only an UNDER-bind is an error: over-binding would
+        already have raised where the buffer was allocated.
+        """
+        want = 5 + (len(self.w_bos) - 1 if self._wsplit else 0)
+        want += 1 if self.e_bo is not None else 0
+        have = 0
+        while have < 64:
+            try:
+                g(3 + have)
+            except Exception:
+                break
+            have += 1
+        if have > want:
+            raise RuntimeError(
+                f"the template takes {have} buffers and this driver binds "
+                f"{want}: argument {3 + want} would go unfilled and the "
+                f"dispatch would read whatever is at it. If this is a target "
+                f"built with DFlash pre-pass waves, the caller needs "
+                f"dflash_prepass_waves.taps_decoder_args()."
+            )
 
     def _init_rms(self):
         """RMS BO: norm slabs + final_norm constant. Written once.
