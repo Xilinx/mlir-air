@@ -148,7 +148,15 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
         # replaces predated Strix Halo and Krackan, so those parts fell to the
         # "unknown model" branch: `ryzen_ai_npu2` was never added and every
         # test gated on it reported UNSUPPORTED on hardware that can run it.
-        npu2_models = ["npu4", "strix", "npu5", "strix halo", "npu6", "krackan"]
+        npu2_models = [
+            "npu4",
+            "strix",
+            "npu5",
+            "strix halo",
+            "npu6",
+            "krackan",
+            "gorgon point",
+        ]
         npu1_models = ["npu1", "phoenix"]
         # Serializing through flock and run_on_npu.sh is POSIX-only: flock is
         # util-linux, and the script is bash that sources

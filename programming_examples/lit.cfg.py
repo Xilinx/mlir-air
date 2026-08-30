@@ -123,7 +123,15 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
         # aligned with mlir-aie's hostruntime.py and the AIR XRT backend
         # (NPU_MODELS). Robust to xrt-smi table-format changes and covers newer
         # parts (Strix Halo, Krackan) that the old strict regex missed.
-        npu2_models = ["npu4", "strix", "npu5", "strix halo", "npu6", "krackan"]
+        npu2_models = [
+            "npu4",
+            "strix",
+            "npu5",
+            "strix halo",
+            "npu6",
+            "krackan",
+            "gorgon point",
+        ]
         npu1_models = ["npu1", "phoenix"]
         # Serializing through flock and run_on_npu.sh is POSIX-only: flock is
         # util-linux, and the script is bash that sources
