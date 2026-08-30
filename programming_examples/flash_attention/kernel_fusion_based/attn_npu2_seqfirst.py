@@ -545,7 +545,7 @@ def build_launch(
                                     div_gp_sp(sp_c, gp_c)
                                     gp2l2.put(
                                         gp_c.reshape(
-                                            tile_size_q // M, dv_tile // M, M, M
+                                            dv_tile // M, tile_size_q // M, M, M
                                         ).transpose(1, 2, 0, 3),
                                         indices=[tx, 0],
                                     )
