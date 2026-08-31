@@ -1529,29 +1529,43 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 # already work this way ("mechanism-2": a memtile L2 buffer plus
 # refeed(n, _xnorm_put(buf, width))); this gives ph0/ph2 the same treatment.
 #
-# IT DOES NOT BUILD, AND THE REASON IS WORTH THE CODE. Every variant fails
-# air-to-aie with
-#     'aie.memtile_dma' op has more than 48 blocks
-# Three were tried:
-#   =1  all four decode phases split out (ph0 and ph2 gathered)      FAILS
-#   =2  ph2 alone gathered, ph0+ph1 left in one flat loop            FAILS
-#   =2 with the gather buffer moved to a memtile carrying 18 blocks
-#      instead of the X memtile's ceiling                            FAILS
-# The third is the informative one: relocating the BUFFER changes nothing, so
-# the blocks are spent on the @inX PUT side, which fans to all 16 projection
-# cores. Every additional feed structure costs that fan again, and the X memtile
-# has no room for a second.
+# IT STILL DOES NOT BUILD, BUT NOT FOR THE REASON THIS COMMENT USED TO GIVE.
 #
-# So "_feed_inX is ONE loop and the arms differ only in the trip count" is not a
-# style rule -- it is forced by the BD block budget of a 16-way broadcast, and
-# the comment calling two feed loops "the prior bug" was describing this wall
-# from the other side.
+# It used to die in air-to-aie with 'aie.memtile_dma' op has more than 48
+# blocks, at =1, at =2, and at =2 with the gather buffer relocated -- and the
+# conclusion drawn was that the blocks go to the @inX PUT side and the X memtile
+# has no room for a second feed structure. Half of that was right and the wall
+# was not the blocks.
 #
-# THE ROUTE OUT, for whoever picks this up: free blocks on the tile that drives
-# @inX before adding a structure to it. The ph1 and ph3 relays are flat
-# pass-throughs and are the obvious candidates to move to one of the memtiles
-# sitting at 18-22 blocks. That is a bigger rearrangement than this knob, which
-# is why this stops here rather than guessing at it.
+# The nest in _feed_inX_rf was three deep (nrefeed x nchunk x XCHUNK_MUL)
+# because folding XCHUNK_MUL into the descriptor was believed impossible --
+# "consecutive windows sit 32 elements apart ... so they interleave rather than
+# partition". They partition: the windows are COL_BLOCK apart in ADDRESS, since
+# offsets are multiplied by strides. xfeed_bd(BATCH, XCHUNK, 1) is the folded
+# descriptor and emits a byte-for-byte identical stream (enumerate both address
+# lists; they match in order, not just as sets). With that level gone the
+# 48-block error is GONE at =1 and =2.
+#
+# WHAT IT HITS NOW, and this is the real constraint:
+#     'aie.dma_bd' op Allocator exhausted available BD IDs (maximum 24 for
+#     channel 0)
+# mem_tile_2_1 channel 0 carries 27. Not blocks -- BD IDs, and they are 27
+# because that ONE channel has SIX aie.dma_start(MM2S, 0) chains on it, one per
+# phase that got its own put structure. A DMA channel has one BD chain
+# (check_dma_alloc.py's docstring records a deadlock from exactly two on one
+# channel). Every other memtile channel in the design sits at 2-4 BDs, so
+# RMS_MEMTILE_COL cannot help: 27 does not fit in 24 anywhere.
+#
+# So "_feed_inX is ONE loop and the arms differ only in the trip count" IS the
+# binding rule, and it is about chains per channel rather than blocks per tile.
+#
+# THE ROUTE OUT, for whoever picks this up: do not ADD a refeed structure --
+# make the gather-then-rebroadcast the ONLY @inX path, for every phase and arm,
+# with nrefeed as the trip count (1 where the phase does not refeed). That keeps
+# one dma_start on the channel and puts this back inside the rule instead of
+# fighting it. It costs X one extra L2 hop, which is ~1% of the traffic the
+# regeneration is burning. It is a real rework of the most deadlock-prone part
+# of this design, which is why this stops here.
 #
 # Kept because the ~29 ms is real (rms_chunk is 30.8 ms by deletion and 96% of
 # its calls are redundant) and because three measured dead ends are cheaper to
@@ -5229,23 +5243,41 @@ def build_module():
                         # -- measured. Hence RMS_MEMTILE_REFEED=2, which converts
                         # ph2 alone (190 of the 250 redundant chunks a layer) and
                         # leaves ph0/ph1/ph3 in one flat loop.
-                        _sz, _st = _XFEED_BD
+                        # ONE put per chunk, not XCHUNK_MUL of them.
+                        #
+                        # The paragraph above says the two windows a chunk splits
+                        # into "interleave rather than partition". They
+                        # partition. Consecutive windows are COL_BLOCK apart in
+                        # ADDRESS, not 32 elements -- offsets are multiplied by
+                        # strides, which is the exact trap chunk_offsets' own
+                        # docstring is written to prevent, applied here in
+                        # reverse. So the outermost extent going from kcol//s to
+                        # XCHUNK//s covers both windows in one descriptor, and
+                        # xfeed_bd(BATCH, XCHUNK, 1) IS that descriptor:
+                        # [(64,8),(8,512),(8,1)] against [(32,8),(8,512),(8,1)].
+                        # Enumerating both address lists gives the same 4096
+                        # elements in the same ORDER, so the emitted stream is
+                        # byte-for-byte what the two puts produced.
+                        #
+                        # That drops a level off the nest, and the nest is what
+                        # spends the BD blocks this knob dies on.
+                        _sz, _st = _xfd.xfeed_bd(BATCH, XCHUNK, 1)
+                        # offsets[0] is in units of strides[0], not elements --
+                        # the same rule. The chunk base is _win ELEMENTS, so it
+                        # is _win // _st[0] here; writing _win flatly would
+                        # transfer exactly the right count from 8x the wrong
+                        # place.
+                        _cstep = _win // _st[0]
                         for _r in for_(idx(0), idx(nrefeed), idx(1)):
                             for _c in for_(idx(0), idx(nchunk), idx(1)):
-                                _base = arith.muli(_c, idx(_win))
-                                for _jj in for_(idx(0), idx(XCHUNK_MUL), idx(1)):
-                                    _o0 = arith.addi(
-                                        _base,
-                                        arith.muli(_jj, idx(COL_BLOCK // _st[0])),
-                                    )
-                                    ChannelPut(
-                                        "inX",
-                                        wb,
-                                        offsets=[_o0] + [idx(0)] * (len(_sz) - 1),
-                                        sizes=[idx(v) for v in _sz],
-                                        strides=[idx(v) for v in _st],
-                                    )
-                                    yield_([])
+                                ChannelPut(
+                                    "inX",
+                                    wb,
+                                    offsets=[arith.muli(_c, idx(_cstep))]
+                                    + [idx(0)] * (len(_sz) - 1),
+                                    sizes=[idx(v) for v in _sz],
+                                    strides=[idx(v) for v in _st],
+                                )
                                 yield_([])
                             yield_([])
                         DeallocOp(wb)
