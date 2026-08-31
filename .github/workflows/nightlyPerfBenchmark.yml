@@ -433,12 +433,44 @@ jobs:
             exit 1
           fi
           LLVM_AIE_VERSION=$(python3 -m pip show llvm-aie | awk '/^Version:/{print $2}')
+          # Runtime provenance under the pinned compilers: a decode hang that
+          # only ever reproduces on this runner is unattributable after the fact
+          # without it. Best effort -- a missing xrt-smi just leaves the fields out.
+          xrt-smi examine > xrt_examine.txt 2>/dev/null || true
           mkdir -p perf_out
           python3 - "$MLIR_AIE_HASH" "$LLVM_AIE_VERSION" "${{ github.sha }}" <<'PY'
-          import datetime, glob, json, os, re, shutil, sys
+          import datetime, glob, json, os, platform, re, shutil, sys
           import xml.etree.ElementTree as ET
 
           aie_hash, peano_ver, air_sha = sys.argv[1], sys.argv[2], sys.argv[3]
+
+          def runtime_fields():
+              out = {"kernel": platform.release()}
+              try:
+                  txt = open("xrt_examine.txt").read()
+              except OSError:
+                  return out
+              # "Version"/"Hash" repeat per section, so read them out of the XRT
+              # block only; the rest are unique enough to match anywhere.
+              xrt = re.search(r"^XRT\n(.*?)(?:\n\S|\Z)", txt, re.M | re.S)
+              for key, pat, where in (
+                  ("xrt_version", r"^\s*Version\s*:\s*(\S+)", xrt),
+                  ("xrt_hash", r"^\s*Hash\s*:\s*(\S+)", xrt),
+                  ("amdxdna_version", r"amdxdna Version\s*:\s*([^\s,]+)", None),
+                  ("npu_firmware", r"NPU Firmware Version\s*:\s*(\S+)", None),
+              ):
+                  hay = txt if where is None else (where.group(1) if where else "")
+                  m = re.search(pat, hay, re.M)
+                  if m:
+                      out[key] = m.group(1)
+              return out
+
+          TOOLCHAIN = {
+              "mlir_air_sha": air_sha,
+              "mlir_aie_hash": aie_hash,
+              "llvm_aie_version": peano_ver,
+              **runtime_fields(),
+          }
 
           # Per-model verify status from the verify xunit output. A model may
           # contribute several run_npu2_verify* lits (e.g. int4 ships a skipped
@@ -478,11 +510,7 @@ jobs:
                   print(f"WARNING: {f} unreadable ({e}); recording as failed", file=sys.stderr)
                   continue
               d["runner"] = "amdryzenai5pro340"
-              d["toolchain"] = {
-                  "mlir_air_sha": air_sha,
-                  "mlir_aie_hash": aie_hash,
-                  "llvm_aie_version": peano_ver,
-              }
+              d["toolchain"] = dict(TOOLCHAIN)
               d["verify_status"] = vstatus.get(d["model"], "")
               recs.append(d)
               prof = os.path.join(os.path.dirname(f), "profile.txt")
@@ -514,11 +542,7 @@ jobs:
                       "decode_tokens_per_sec": None,
                       "context_len": None,
                   },
-                  "toolchain": {
-                      "mlir_air_sha": air_sha,
-                      "mlir_aie_hash": aie_hash,
-                      "llvm_aie_version": peano_ver,
-                  },
+                  "toolchain": dict(TOOLCHAIN),
                   "run_params": {"n_tokens": None, "prompt": None},
               })
 
@@ -535,11 +559,7 @@ jobs:
           for f in sorted(glob.glob("build_assert/test/llms/**/*.sweep.json", recursive=True)):
               d = json.load(open(f))
               d["runner"] = "amdryzenai5pro340"
-              d["toolchain"] = {
-                  "mlir_air_sha": air_sha,
-                  "mlir_aie_hash": aie_hash,
-                  "llvm_aie_version": peano_ver,
-              }
+              d["toolchain"] = dict(TOOLCHAIN)
               d["verify_status"] = vstatus.get(d["model"], "")
               sweeps.append(d)
           sweeps.sort(key=lambda r: r["model"])
@@ -560,11 +580,7 @@ jobs:
                   print(f"WARNING: {f} unreadable ({e}); skipping", file=sys.stderr)
                   continue
               d["runner"] = "amdryzenai5pro340"
-              d["toolchain"] = {
-                  "mlir_air_sha": air_sha,
-                  "mlir_aie_hash": aie_hash,
-                  "llvm_aie_version": peano_ver,
-              }
+              d["toolchain"] = dict(TOOLCHAIN)
               d["verify_status"] = vstatus.get(d["model"], "")
               pf.append(d)
           pf.sort(key=lambda r: r["model"])
