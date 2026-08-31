@@ -123,6 +123,23 @@ def main():
             f"_rnolm_b{B_}_L{L_}.insts.bin",
             f"_rlmonly_b{B_}_L{L_}.insts.bin",
         )
+    elif args.tag == "rr3":
+        # RMS_CHUNK_PROBE=2 + PROJ_RING_DEPTH=3: does a deeper input ring hide
+        # the projection arithmetic ONCE the regeneration is gone and that
+        # arithmetic is actually on the critical path?
+        pfx, full = f"rr3_b{B_}_L", f"rr3_b{B_}_L{L_}.insts.bin"
+        nolm = f"_unolm_b{B_}_L{L_}.insts.bin"
+        lmonly = f"_ulmonly_b{B_}_L{L_}.insts.bin"
+    elif args.tag in ("p", "r3"):
+        # p  = PROJ_MM_PROBE=1 alone: the projection arithmetic with the rms
+        #      regeneration still in place. Says whether that arithmetic is
+        #      exposed today or only becomes exposed once the rms fix lands.
+        # r3 = PROJ_RING_DEPTH=3, the existing overlap experiment.
+        t = args.tag
+        pfx, full = f"{t}_b{B_}_L", f"{t}_b{B_}_L{L_}.insts.bin"
+        i = "p" if t == "p" else "t"
+        nolm = f"_{i}nolm_b{B_}_L{L_}.insts.bin"
+        lmonly = f"_{i}lmonly_b{B_}_L{L_}.insts.bin"
     elif args.tag == "z":
         # RMS_CHUNK_PROBE=2 + PROJ_MM_PROBE=1: everything that scales with the
         # block deleted, the weight path untouched. The b=0 test.
