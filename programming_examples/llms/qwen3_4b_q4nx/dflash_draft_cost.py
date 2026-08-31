@@ -123,6 +123,12 @@ def main():
             f"_rnolm_b{B_}_L{L_}.insts.bin",
             f"_rlmonly_b{B_}_L{L_}.insts.bin",
         )
+    elif args.tag == "z":
+        # RMS_CHUNK_PROBE=2 + PROJ_MM_PROBE=1: everything that scales with the
+        # block deleted, the weight path untouched. The b=0 test.
+        pfx, full = f"z_b{B_}_L", f"z_b{B_}_L{L_}.insts.bin"
+        nolm = f"_znolm_b{B_}_L{L_}.insts.bin"
+        lmonly = f"_zlmonly_b{B_}_L{L_}.insts.bin"
     elif args.tag.startswith("rmd") and args.tag[3:].isdigit():
         d = args.tag[3:]
         pfx, full = f"rmd{d}_b{B_}_L", f"rmd{d}_b{B_}_L{L_}.insts.bin"
