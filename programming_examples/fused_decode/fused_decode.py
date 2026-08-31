@@ -5227,15 +5227,19 @@ def build_module():
                                 IntegerAttr.get(T.i32(), RMS_MEMTILE_COL)
                             )
                         _win = BATCH * XCHUNK
-                        for _g in for_(idx(0), idx(nchunk), idx(1)):
-                            ChannelGet(
-                                src,
-                                wb,
-                                offsets=[arith.muli(_g, idx(_win))],
-                                sizes=[idx(_win)],
-                                strides=[idx(1)],
-                            )
-                            yield_([])
+                        # ONE flat get for the whole gather. The chunks land back
+                        # to back, so nchunk windows of _win ARE one contiguous
+                        # nchunk*_win run -- a loop of offset gets says the same
+                        # thing in nchunk ops, and each op is a dma_start. The
+                        # producer still emits nchunk separate puts; channel
+                        # balance is on total elements, not op count.
+                        ChannelGet(
+                            src,
+                            wb,
+                            offsets=[idx(0)],
+                            sizes=[idx(nchunk * _win)],
+                            strides=[idx(1)],
+                        )
                         # THE SWEEP CANNOT BE ONE OP, and the reason bounds this
                         # whole approach. Folding it into the xfeed descriptor
                         # needs [nchunk, XCHUNK_MUL] outside _XFEED_BD's three
@@ -5277,19 +5281,44 @@ def build_module():
                         # is _win // _st[0] here; writing _win flatly would
                         # transfer exactly the right count from 8x the wrong
                         # place.
-                        _cstep = _win // _st[0]
-                        for _r in for_(idx(0), idx(nrefeed), idx(1)):
-                            for _c in for_(idx(0), idx(nchunk), idx(1)):
-                                ChannelPut(
-                                    "inX",
-                                    wb,
-                                    offsets=[arith.muli(_c, idx(_cstep))]
-                                    + [idx(0)] * (len(_sz) - 1),
-                                    sizes=[idx(v) for v in _sz],
-                                    strides=[idx(v) for v in _st],
-                                )
-                                yield_([])
-                            yield_([])
+                        # ONE put covering ALL nchunk chunks, wrapped in refeed().
+                        #
+                        # This is the whole reason the knob never built. refeed()
+                        # requires "an n-trip scf.for around a SINGLE
+                        # air.channel.put ... no operand depends on the induction
+                        # variable" -- that is the shape air-annotate-refeed
+                        # collapses into air.refeed_count. The nest that was here
+                        # violated both halves: the body held an inner loop, and
+                        # the put's offset depended on that loop's index. So the
+                        # pattern never fired, every (refeed, chunk) put stayed a
+                        # separate op, and each became its own aie.dma_start --
+                        # six of them on one channel, 27 BD IDs against 24.
+                        #
+                        # Folding the chunk dim into the descriptor makes the body
+                        # a bare put again. AIRToAIEPass then does exactly what is
+                        # wanted (AIRToAIEPass.cpp ~6618): the fill acquires the
+                        # write lock xN and releases the read lock xN, and the
+                        # MM2S self-loops count-free, re-sending ONE resident
+                        # buffer N times. One dma_start per direction.
+                        #
+                        # 4 dims is the memtile BD's limit and this uses exactly
+                        # 4. The highest stride is _win, NOT 0 -- a stride-0
+                        # repeat dim is HW-unsupported on AIE2 memtile/core BDs
+                        # (air_channel_producer_refeed.mlir says so), which is
+                        # why the repeat is a lock count rather than a dimension.
+                        _sz4 = [nchunk] + list(_sz)
+                        _st4 = [_win] + list(_st)
+
+                        def _put_all():
+                            ChannelPut(
+                                "inX",
+                                wb,
+                                offsets=[idx(0)] * len(_sz4),
+                                sizes=[idx(v) for v in _sz4],
+                                strides=[idx(v) for v in _st4],
+                            )
+
+                        refeed(nrefeed, _put_all)
                         if _own:
                             DeallocOp(wb)
 

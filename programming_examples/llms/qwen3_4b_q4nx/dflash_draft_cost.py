@@ -123,6 +123,11 @@ def main():
             f"_rnolm_b{B_}_L{L_}.insts.bin",
             f"_rlmonly_b{B_}_L{L_}.insts.bin",
         )
+    elif args.tag == "mtr":
+        # RMS_MEMTILE_REFEED=1, i.e. the actual fix under test.
+        pfx, full = f"mtr_b{B_}_L", f"mtr_b{B_}_L{L_}.insts.bin"
+        nolm = f"_vnolm_b{B_}_L{L_}.insts.bin"
+        lmonly = f"_vlmonly_b{B_}_L{L_}.insts.bin"
     elif args.tag == "rr3":
         # RMS_CHUNK_PROBE=2 + PROJ_RING_DEPTH=3: does a deeper input ring hide
         # the projection arithmetic ONCE the regeneration is gone and that
