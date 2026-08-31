@@ -614,6 +614,7 @@ def parse_args():
     parser.add_argument("--lkp", type=int, default=64)
     parser.add_argument("--lq", type=int, default=512)
     parser.add_argument("--lqp", type=int, default=256)
+    parser.add_argument("--num-q-tiles", type=int, default=4)
     parser.add_argument("--dk", type=int, default=64)
     parser.add_argument("--dv", type=int, default=64)
     parser.add_argument("--num-cascade-stages", type=int, default=4)
@@ -645,7 +646,7 @@ def main():
 
     lk, lkp, lq, lqp = args.lk, args.lkp, args.lq, args.lqp
     dk, dv = args.dk, args.dv
-    num_q_tiles = 4
+    num_q_tiles = args.num_q_tiles
     num_heads = args.num_heads
     num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
     causal = args.causal

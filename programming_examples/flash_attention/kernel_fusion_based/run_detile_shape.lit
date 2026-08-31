@@ -1,0 +1,17 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Guards the drain's de-tiling view at a shape where tile_size_q != dv_tile.
+// The C slab is column-block-major, so the first two extents of the reshape are
+// [dv_tile/M, tile_size_q/M]; swapping them is a no-op at every shape that ships
+// except head_dim=256 (gemma3-4b), which is how the swap reached main twice --
+// #1961 and #1964. IR only, no device.
+//
+// head_dim=256's fa_headfirst tiling: lkp=32, lqp=256, num_q_tiles=8 (so
+// tile_size_q=32), dv_tile=128.
+//
+// RUN: %PYTHON %S/attn_npu2.py -p --lk 256 --lq 256 --lkp 32 --lqp 256 \
+// RUN:   --num-q-tiles 8 --dk 256 --dv 256 --dv-tile 128 --num-heads 1 \
+// RUN:   --num-kv-heads 1 --num-heads-per-unroll 1 --causal | FileCheck %s
+//
+// CHECK: air.channel.put {{.*}}@Gp2L2{{.*}}[4, 8, 16, 8] [64, 8, 256, 1]
