@@ -5190,10 +5190,17 @@ def build_module():
                             DeallocOp(xb)
                             yield_([])
 
-                    def _feed_inX_rf(src, nchunk, nrefeed):
+                    def _feed_inX_rf(src, nchunk, nrefeed, wb=None):
                         """RMS_MEMTILE_REFEED: gather one phase's X, then
                         re-broadcast it -- the memtile doing what the core used
                         to do by recomputing.
+
+                        `wb` lets sibling calls in the SAME arm share one gather
+                        buffer. They are sequential -- ph0's re-broadcast is
+                        finished before ph2 gathers -- so a second allocation
+                        buys nothing and costs its own BD chain on a channel
+                        that has none to spare (see the BD-ID note above
+                        RMS_MEMTILE_REFEED).
 
                         The gather is nchunk gets of one [BATCH][XCHUNK] window
                         each, landing back to back, so the wide buffer ends up
@@ -5206,16 +5213,19 @@ def build_module():
                         chunk-major here would hand row-block r the same chunk
                         nrefeed times.
                         """
-                        wb = AllocOp(xmt_wide_l2, [], [])
+                        _own = wb is None
+                        if _own:
+                            wb = AllocOp(xmt_wide_l2, [], [])
                         # NOT on XMT_PCOL. The X memtile is already at its 48-BD-block
                         # ceiling -- adding this gather there fails air-to-aie with
                         # 'aie.memtile_dma' op has more than 48 blocks, both with all
                         # four decode phases converted and with ph2 alone. The other
                         # memtiles carry 18-33 blocks, so the gather goes to one with
                         # headroom and @inX originates from there for these phases.
-                        wb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            T.i32(), RMS_MEMTILE_COL
-                        )
+                        if _own:
+                            wb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), RMS_MEMTILE_COL)
+                            )
                         _win = BATCH * XCHUNK
                         for _g in for_(idx(0), idx(nchunk), idx(1)):
                             ChannelGet(
@@ -5280,7 +5290,16 @@ def build_module():
                                 )
                                 yield_([])
                             yield_([])
-                        DeallocOp(wb)
+                        if _own:
+                            DeallocOp(wb)
+
+                    def _rf_buf():
+                        """One gather buffer for every _feed_inX_rf in an arm."""
+                        wb = AllocOp(xmt_wide_l2, [], [])
+                        wb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                            T.i32(), RMS_MEMTILE_COL
+                        )
+                        return wb
 
                     # ONE feed loop reading the convergent @xnorm: rms-X (RMS_REFEED
                     # whole-2048 re-reads, from the rms core) THEN down-X (DOWN_REFEED
@@ -5321,7 +5340,12 @@ def build_module():
                                 # ph1 and ph3 already come from memtiles that
                                 # refeed on their own side, so they stay flat.
                                 if RMS_MEMTILE_REFEED == 1:
-                                    _feed_inX_rf("xnorm", _NCH, REFEED[0])
+                                    # ph0 and ph2 SHARE the gather buffer: ph0's
+                                    # re-broadcast is complete before ph2 gathers,
+                                    # and a second allocation costs its own BD
+                                    # chain on the channel this knob overflows.
+                                    _wb = _rf_buf()
+                                    _feed_inX_rf("xnorm", _NCH, REFEED[0], _wb)
                                     _feed_inX("xnorm", OPROJ_REFEED * _NCH)
                                 else:
                                     # ph2 only: ph0 and ph1 stay in ONE flat loop,
@@ -5329,7 +5353,14 @@ def build_module():
                                     _feed_inX(
                                         "xnorm", (REFEED[0] + OPROJ_REFEED) * _NCH
                                     )
-                                _feed_inX_rf("xnorm", _NCH, GATEUP_REFEED)
+                                _feed_inX_rf(
+                                    "xnorm",
+                                    _NCH,
+                                    GATEUP_REFEED,
+                                    _wb if RMS_MEMTILE_REFEED == 1 else None,
+                                )
+                                if RMS_MEMTILE_REFEED == 1:
+                                    DeallocOp(_wb)
                                 if DOWN_PHASE >= 0:
                                     _feed_inX(
                                         "xnorm", DOWN_REFEED * (GLU_OUT // XCHUNK)
