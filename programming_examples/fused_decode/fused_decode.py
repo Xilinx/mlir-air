@@ -3574,8 +3574,12 @@ def build_module():
                         # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
                         def _qmtb_dec():
                             qmtb = AllocOp(qmt_l2, [], [])
-                            # Column is compiler-derived (lands on the reference
-                            # mem_5_1); only the split opt-out is load-bearing.
+                            # Pinned: the derived column is template-length
+                            # dependent (qwen3-4b at ATTN_MAXL=128 lands on
+                            # mem_2_1, and that build times out on NPU2).
+                            qmtb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), 5)
+                            )
                             qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet("ropeQ", qmtb, indices=[idx(0)])
                             for c in range(N_ATTN_CU):
