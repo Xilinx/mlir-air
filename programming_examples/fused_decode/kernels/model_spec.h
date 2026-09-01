@@ -32,8 +32,8 @@ static_assert(
 #endif
 
 // Attention scale. Every model here sets ATTN_SCALE to 1/sqrt(DH), but the two
-// are different quantities: Gemma scales by 1/sqrt(query_pre_attn_scalar), which
-// equals the head dim in the configs carried here and need not in general
+// are different quantities: Gemma scales by 1/sqrt(query_pre_attn_scalar),
+// which equals the head dim in the configs carried here and need not in general
 // (gemma-3-27b: 168 against a head dim of 128). So the model header stays
 // authoritative and this only catches a value copied from a neighbour with a
 // different head dim -- which has no runtime symptom, because a wrong scale
