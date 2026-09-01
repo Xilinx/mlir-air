@@ -3554,7 +3554,7 @@ def build_module():
                     # operand must dominate the herd, and the producer loop is a
                     # sibling of the arm the herd lives in.
                     _kvstage_pre = []
-                    if ATTN_SUBSYS and not HYBRID_MIXER and KV_SPLIT and TOKV_DMA:
+                    if ATTN_SUBSYS and KV_SPLIT and TOKV_DMA:
                         for _gcol, _gcus in ATTN_COL_GROUPS:
                             _pair = []
                             for _ in range(2):
