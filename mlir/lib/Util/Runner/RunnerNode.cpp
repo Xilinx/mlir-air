@@ -363,7 +363,14 @@ public:
       return result;
     } else if (auto Op = dyn_cast_if_present<air::HerdOp>(op)) {
       bool result = this->checkResourceFulfillmentForOp(Op);
-      if (!result) {
+      // Only a herd that cannot fit the hierarchy at all is an error. A herd
+      // that fits but finds its tiles taken is contending with a sibling herd
+      // and defers, exactly as the channel ops below do -- two operators
+      // time-sharing one compute hierarchy is a mapping, not a mistake, and it
+      // is the only way to model a machine whose operators are resident in
+      // fewer tiles than the program names.
+      if (!result && this->getBatchDispatchCount(Op.getOperation(), true) >
+                         this->getTilesCapacity()) {
         op->emitOpError("isn't allocated with enough resources to run");
       }
       return result;
@@ -466,6 +473,21 @@ private:
   void getTilesPoolFromParent(std::vector<resource *> &resource_pool) {
     auto parent_runner_node = this->parent;
     parent_runner_node->getTilesPool(resource_pool);
+  }
+  // Every tile the resource hierarchy provides, reserved or not.
+  //
+  // The distinction this draws is between a herd that can never run and one
+  // that merely has to wait. Needing more tiles than exist is a property of the
+  // program and the machine, and no amount of waiting fixes it. Needing more
+  // than are free right now is ordinary contention, and the herd holding them
+  // will release them when it completes.
+  unsigned getTilesCapacity() {
+    unsigned capacity = 0;
+    for (auto res_hier : this->resource_hiers) {
+      auto col = static_cast<du *>(res_hier);
+      capacity += col->tiles.size();
+    }
+    return capacity;
   }
   void getPortsPool(std::vector<resource *> &resource_pool,
                     std::string port_direction) {
@@ -724,10 +746,30 @@ private:
     // Note: forced to use dispatch multiplier to get tile count, since it is
     // checking for the entire herd op.
     unsigned tile_count = this->getBatchDispatchCount(Op.getOperation(), true);
-    if (tile_count <= resource_hier_pool.size()) {
-      return true;
-    } else
-      return false;
+    return tile_count + this->getTilesPromisedToWavefront() <=
+           resource_hier_pool.size();
+  }
+
+  // Tiles owed to herds already on this wavefront that have not taken them yet.
+  //
+  // A herd is gated here, on the parent, but reserves its tiles later and on
+  // its own runner node. Between those two moments its tiles are neither free
+  // nor held, so a gate that only looks at the free pool offers the same tiles
+  // to every herd it sees in one pass. Two herds are then admitted against one
+  // set of tiles, and the second one's reservation trips an assertion whose own
+  // comment says it should have been unreachable.
+  unsigned getTilesPromisedToWavefront() {
+    unsigned promised = 0;
+    for (auto &entry : this->wavefront) {
+      // A herd that has already reserved carries its resources here, and those
+      // tiles are out of the free pool -- counting it again would double-bill.
+      if (!std::get<1>(entry).empty())
+        continue;
+      auto &node = this->ctrl_g->g[std::get<0>(entry)];
+      if (auto herd = dyn_cast_if_present<air::HerdOp>(node.op))
+        promised += this->getBatchDispatchCount(herd.getOperation(), true);
+    }
+    return promised;
   }
   bool checkResourceFulfillmentForOp(memref::AllocOp Op) {
     // WORKAROUND: Temporarily disable memory resource checking

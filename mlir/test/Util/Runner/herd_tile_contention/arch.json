@@ -1,0 +1,75 @@
+{
+  "clock": 1000000000,
+  "devicename": "herd_tile_contention",
+  "datatypes": [
+    {
+      "name": "i8",
+      "bytes": 1
+    }
+  ],
+  "dus": {
+    "count": [
+      1,
+      1
+    ],
+    "memory": {
+      "memory_space": "L2",
+      "bytes": 1048576
+    },
+    "ports": {
+      "outbound": {
+        "count": 4,
+        "bytes_per_second": 4000000000
+      },
+      "inbound": {
+        "count": 4,
+        "bytes_per_second": 4000000000
+      }
+    },
+    "tiles": {
+      "count": [
+        1,
+        8
+      ],
+      "memory": {
+        "memory_space": "L1",
+        "bytes": 65536
+      },
+      "ports": {
+        "outbound": {
+          "count": 2,
+          "bytes_per_second": 4000000000
+        },
+        "inbound": {
+          "count": 2,
+          "bytes_per_second": 4000000000
+        }
+      }
+    }
+  },
+  "noc": {
+    "outbound": {
+      "count": 4,
+      "bytes_per_second": 4000000000
+    },
+    "inbound": {
+      "count": 4,
+      "bytes_per_second": 4000000000
+    }
+  },
+  "cost_model": {
+    "op_costs": {
+      "priced": {
+        "name": "priced",
+        "datatypes": {
+          "i8": {
+            "cycles": "200"
+          }
+        }
+      }
+    },
+    "fallback": {
+      "kernel_invocation_overhead": 0
+    }
+  }
+}
