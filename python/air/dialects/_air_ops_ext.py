@@ -353,6 +353,7 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         channel_indices=None,
         hoist_after=None,
         hoist_before=None,
+        hoist_unguarded=False,
     ):
         if channel is None and channel_indices is not None:
             raise ValueError("channel_indices requires channel")
@@ -412,6 +413,12 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             self.operation.attributes["hoist_before"] = FlatSymbolRefAttr.get(
                 hoist_before
             )
+        # "place by default, but do not rebuild my guards". Distinct from the
+        # anchors above: those say WHERE, this says what control structure not
+        # to synthesise around it. Needed when the guard is on a runtime
+        # parameter, which cannot be rebuilt outside the hierarchy at all.
+        if hoist_unguarded:
+            self.operation.attributes["hoist_unguarded"] = UnitAttr.get()
 
 
 dma_memcpy_nd = DmaMemcpyNd

@@ -902,6 +902,11 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     externalGetPut->setAttr("air.hoist_after", anchor);
   if (auto anchor = op.getHoistBeforeAttr())
     externalGetPut->setAttr("air.hoist_before", anchor);
+  // Same reasoning for "do not carry my guards": it is a statement about where
+  // the external half lands, so it belongs on the external half only.
+  if (op->hasAttr("hoist_unguarded"))
+    externalGetPut->setAttr("air.hoist_unguarded",
+                            UnitAttr::get(op->getContext()));
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
@@ -1309,6 +1314,28 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     if (externalGetPuts.empty())
       return failure();
 
+    // "air.hoist_unguarded": place by default, but do NOT rebuild my guards.
+    //
+    // An unanchored hoist clones the guards the transfer sat under so the
+    // external half stays conditional; an anchored one skips them and inherits
+    // the anchor's context instead. A transfer whose hand-written counterpart
+    // was UNGUARDED at the outer scope wants neither.
+    //
+    // It is not merely cosmetic. A guard on the hierarchy's own induction
+    // variable is fine -- the tile-count machinery collapses it. A guard on an
+    // i32 RUNTIME PARAMETER is not: rebuilding it at segment scope emits an
+    // `arith.index_cast` on the segment's own i32 block argument, and that
+    // cannot survive the segment becoming an aie.device. air-to-aie reports
+    // "'arith.index_cast' op using value defined outside the region".
+    //
+    // fused_decode's hybrid is exactly that shape -- its arm is a per-layer
+    // IS_ATTN RTP that must survive to runtime -- and anchoring, the other way
+    // to skip the rebuild, has no endpoint at the right depth to name there.
+    bool unguarded =
+        llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
+          return getput->hasAttr("air.hoist_unguarded");
+        });
+
     // Resolve the issue-order anchor up front: it decides whether the enclosing
     // control ops are pulled in and rebuilt at all.
     bool placeBefore = false;
@@ -1326,7 +1353,7 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       // guards it sits under on the hierarchy side must NOT come along -- their
       // conditions are defined in the region being left behind, which is what
       // "using value defined outside the region" reports.
-      if (!anchorOp)
+      if (!anchorOp && !unguarded)
         for (auto parent = op->getParentOp();
              !isa<air::HierarchyInterface>(parent);
              parent = parent->getParentOp()) {
@@ -1391,7 +1418,7 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // context, so rebuilding the hierarchy-side guards would both duplicate
     // that context and reference conditions defined in the region being left
     // behind.
-    if (!anchorOp) {
+    if (!anchorOp && !unguarded) {
       for (auto getput : externalGetPuts) {
         for (Operation *p = getput->getParentOp();
              p && p != hier_op.getOperation(); p = p->getParentOp()) {
@@ -1452,9 +1479,11 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // the hoisted scf parallel should respect the broadcast shape instead. If
     // broadcasting is detected, then hoist and specialize each data movement
     // (i.e. do not hoist the air.hierarchy iteration space.)
-    if (anchored) {
+    if (anchored || unguarded) {
       // The anchor fixes position and control context. Wrapping the iteration
       // space in an scf.parallel here would move it back to the hierarchy op.
+      // An unguarded hoist keeps the default position but has likewise asked
+      // not to have control structure synthesised around it.
     } else if (llvm::any_of(externalGetPuts,
                             [](air::ChannelInterface getput) {
                               return air::getChannelDeclarationThroughSymbol(
@@ -1484,13 +1513,17 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // Hoist ops to "external" side code region, by cloning with remap.
     SmallVector<Operation *> clonedOps;
     IRMapping remap;
-    if (anchored) {
-      // Anchored: clone ONLY the external ops and what feeds them, straight in
-      // at the anchor. cloneOpsInBlock is not usable here -- it walks the
-      // hierarchy's top-level block and turns everything unlabelled into a
-      // wait_all, so an op nested in a guard whose ancestors are deliberately
-      // not labelled (they belong to the context being left behind) would be
-      // dropped and its partner left unpaired.
+    if (anchored || unguarded) {
+      // Anchored, or unguarded: clone ONLY the external ops and what feeds
+      // them, straight in at the insertion point. cloneOpsInBlock is not usable
+      // here -- it walks the hierarchy's top-level block and turns everything
+      // unlabelled into a wait_all, so an op nested in a guard whose ancestors
+      // are deliberately not labelled (they belong to the context being left
+      // behind) would be dropped and its partner left unpaired.
+      //
+      // The two cases differ only in WHERE: an anchored op goes to the anchor,
+      // an unguarded one to the default point just before the hierarchy op.
+      // They agree on what to clone, which is why they share this path.
       rewriter.restoreInsertionPoint(insertionPointAtHierOp);
       int arg_idx = 0;
       for (auto arg : hier_op.getKernelArguments())
