@@ -95,11 +95,6 @@ _CHECK_WANT = dict(
 )
 
 
-# Builder env keys the last geometry() call set via env_extra, so the next one
-# can clear them (the builder reads its knobs at import time).
-_EXTRA_SET = set()
-
-
 def _rope_w_elems(fd):
     """The rope/qk-norm/qkv-bias region between the rms slabs and the final norm.
 
@@ -163,7 +158,17 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
     present they are cross-checked, because a silent mismatch there is the one
     error in here that produces a number rather than a failure.
     """
-    os.environ.update(
+    # The builder reads its configuration from the environment at import, so
+    # these have to be set for the import -- but they are RESTORED afterwards.
+    # Leaking them poisons whatever the caller does next: sweep_decode.py shells
+    # out to `make` for the following context, a model Makefile setting a knob
+    # with `?=` cannot override an environment variable, and the next build
+    # silently comes back configured the way this pin says rather than the way
+    # the Makefile says. That is not hypothetical -- W_DUAL_CHAN=1 leaking from
+    # here rebuilt qwen25_3b_q4 with the dual weight feed from the second
+    # context onward, and every one of those dispatches wedged on a Krackan NPU
+    # while the first context, built before this ran, was fine.
+    pinned = dict(
         DECODE_MODEL=model,
         VOCAB_CHUNK_I2=str(vocab_chunk_i2),
         LM_HEAD="0",
@@ -173,23 +178,33 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         DECODE_GOLDEN_L=str(ctx),
         W_DUAL_CHAN="1",
     )
-    # Some models need extra builder env (qwen3-8b's DECODE_STACK/DECODE_WGROUP).
-    # Drop whatever a previous call in this process set and this one does not:
-    # the builder reads these at import, so a leftover DECODE_WGROUP would make
-    # the next model come back split when it is not (which --check would hit).
-    global _EXTRA_SET
-    for k in _EXTRA_SET - set(env_extra or {}):
-        os.environ.pop(k, None)
-    _EXTRA_SET = set(env_extra or {})
-    os.environ.update(env_extra or {})
-    # fused_decode.py imports its siblings (proj_qmm_pack, ...) by bare name.
-    if str(FUSED_DECODE) not in sys.path:
-        sys.path.insert(0, str(FUSED_DECODE))
-    spec = importlib.util.spec_from_file_location(
-        "_fused_decode_geom", FUSED_DECODE / "fused_decode.py"
-    )
-    fd = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fd)
+    # The whole mutate-import-restore sequence is one try/finally: a failure
+    # anywhere in it (a missing builder, a spec that will not load, a raising
+    # import) must still hand the caller its environment back, or the leak
+    # returns on exactly the paths nobody exercises.
+    saved = {k: os.environ.get(k) for k in set(pinned) | set(env_extra or {})}
+    try:
+        os.environ.update(pinned)
+        # Some models need extra builder env (qwen3-8b's DECODE_STACK/
+        # DECODE_WGROUP). Saved above too, so one call's extras cannot survive
+        # into the next: the builder reads these at import, and a leftover
+        # DECODE_WGROUP would make the following model come back split when it
+        # is not.
+        os.environ.update(env_extra or {})
+        # fused_decode.py imports its siblings (proj_qmm_pack, ...) by bare name.
+        if str(FUSED_DECODE) not in sys.path:
+            sys.path.insert(0, str(FUSED_DECODE))
+        spec = importlib.util.spec_from_file_location(
+            "_fused_decode_geom", FUSED_DECODE / "fused_decode.py"
+        )
+        fd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fd)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     # `is not None`, not truthiness: 0 is a wrong answer to "how many layers",
     # not an absent one, and silently falling back to a head-only weight BO
