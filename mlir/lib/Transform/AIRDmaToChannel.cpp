@@ -907,6 +907,9 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   if (op->hasAttr("hoist_unguarded"))
     externalGetPut->setAttr("air.hoist_unguarded",
                             UnitAttr::get(op->getContext()));
+  if (op->hasAttr("hoist_outside_loops"))
+    externalGetPut->setAttr("air.hoist_outside_loops",
+                            UnitAttr::get(op->getContext()));
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
@@ -1451,6 +1454,37 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // anchor's position and its control context (no new guard is synthesised;
     // if the anchor sits in a switch arm, so does this).
     if (anchorOp) {
+      // "air.hoist_outside_loops": resolve the anchor, then step OUT of any
+      // loops enclosing it, stopping at the first non-loop parent.
+      //
+      // An anchor names a channel, so it resolves to an op, so the transfer
+      // becomes that op's SIBLING -- it inherits the anchor's depth exactly.
+      // When the transfer belongs one level shallower there is nothing to say,
+      // and the failure is quiet: land a transfer inside a loop its consumers
+      // sit outside of and the consumers stop dominating it.
+      //
+      // Stepping out of LOOPS specifically, and not out of arms, is the same
+      // distinction this whole hoist rests on. A loop changes how MANY times
+      // the transfer is issued, which is a property of the transfer and must
+      // not be inherited from a neighbour. An arm changes only WHETHER it is
+      // issued, which is a property of the surrounding context and is exactly
+      // what an anchor is for. So: inherit the anchor's predicate, not its
+      // trip count.
+      if (llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
+            return getput->hasAttr("air.hoist_outside_loops");
+          })) {
+        while (auto *parent = anchorOp->getParentOp()) {
+          if (!isa<LoopLikeOpInterface>(parent))
+            break;
+          anchorOp = parent;
+        }
+        // Stepping out inverts the direction: "after the last endpoint" inside
+        // a loop means "after the loop", but "before the first" likewise means
+        // "before the loop", and the group-ordering walk below keys off
+        // siblings that no longer exist at this level. Place before the loop in
+        // both directions, which is where the hand-written endpoint sat.
+        placeBefore = true;
+      }
       if (placeBefore) {
         // Inserting each op directly before the anchor already preserves the
         // group's order: [A, T], then [A, B, T].
@@ -2668,6 +2702,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         op->removeAttr("hoist");
         op->removeAttr("air.hoist_after");
         op->removeAttr("air.hoist_before");
+        op->removeAttr("air.hoist_unguarded");
+        op->removeAttr("air.hoist_outside_loops");
       });
     }
 

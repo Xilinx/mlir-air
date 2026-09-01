@@ -354,6 +354,7 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         hoist_after=None,
         hoist_before=None,
         hoist_unguarded=False,
+        hoist_outside_loops=False,
     ):
         if channel is None and channel_indices is not None:
             raise ValueError("channel_indices requires channel")
@@ -419,6 +420,11 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         # parameter, which cannot be rebuilt outside the hierarchy at all.
         if hoist_unguarded:
             self.operation.attributes["hoist_unguarded"] = UnitAttr.get()
+        # "resolve my anchor, then step out of any loops around it". An anchor
+        # makes the transfer its target's sibling, so it inherits the target's
+        # DEPTH; this says to inherit the predicate but not the trip count.
+        if hoist_outside_loops:
+            self.operation.attributes["hoist_outside_loops"] = UnitAttr.get()
 
 
 dma_memcpy_nd = DmaMemcpyNd
