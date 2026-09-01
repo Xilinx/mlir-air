@@ -56,8 +56,17 @@ ATTN_L      ?= $(LBUILD)
 # W_DUAL_CHAN feeds each proj column's weights on BOTH of its shim MM2S channels
 # and reorders the DDR cascade accordingly, so the build and the weight packer
 # must agree. The packer reads the flag off the loaded engine rather than the
-# environment, so the two cannot disagree; this only records it in the stamp.
-W_DUAL_CHAN ?= 1
+# environment, so the two cannot disagree.
+#
+# OFF for this model, unlike the other nine. The dual feed wedges every decode
+# dispatch on a Krackan NPU -- 0 of 13 complete, at every context from 1024 to
+# 32768, with no prefill and no weights involved, while llama32_3b_q4nx runs at
+# 28 tok/s on the same part minutes apart. Turning it off completes 10 of 10
+# across that whole range. Costs ~16% decode on Strix (23.4 -> 19.6 tok/s).
+# EXPORTED because the builder reads it from the environment: a plain `?=`
+# reaches the stamp but never the engine, so the value here would be cosmetic.
+W_DUAL_CHAN ?= 0
+export W_DUAL_CHAN
 
 # Per-kernel -O is LOAD-BEARING (see fused_decode/Makefile): proj_qmm/rms_residual/
 # glu/rope MUST be -O2 (rope.cc at -O1 miscompiles -> the decode HANGS on device);
