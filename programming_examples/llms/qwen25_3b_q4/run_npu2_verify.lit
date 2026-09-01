@@ -4,9 +4,10 @@
 // Qwen2.5-3B Q4_0 verify gate: top-k token-level inclusion check, NPU q4 vs HF
 // bf16, 2 prompts x 32 greedy tokens, k=5 (use `make verify-full` for the full
 // sweep locally). Exercises the full production prefill + fused decode path
-// through the verify subsystem (verify/verify_runner.py); the NPU side is Q4_0
-// quantized from the HF checkpoint on the host, the reference is that same
-// checkpoint in bf16.
+// through the verify subsystem (verify/verify_runner.py); the NPU side reads
+// FastFlowLM's pre-quantized Q4_0 bundle (model.q4nx) directly -- #1943 stopped
+// it re-quantizing on the host -- and the reference is the HF bf16 checkpoint
+// that bundle was built from.
 //
 // This gate also covers what the old deterministic string check covered: the
 // decode runs 32 fused dispatches per prompt, so an under-primed fill lock (the
@@ -18,7 +19,7 @@
 //
 // Skips cleanly when HF_TOKEN is unset (weight + tokenizer downloads need it).
 //
-// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_qwen_qwen2_5_3b_instruct
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_qwen_qwen2_5_3b_instruct, hfweights_fastflowlm_qwen2_5_3b_instruct_npu2
 //
 // RUN: mkdir -p test_peano_verify
 // RUN: cd test_peano_verify
