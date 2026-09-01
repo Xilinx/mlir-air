@@ -3508,6 +3508,15 @@ def build_module():
                         )
                     if ATTN_SUBSYS and not HYBRID_MIXER and ROPEQ_DMA:
                         _qmtb_pre = AllocOp(qmt_l2, [], [])
+                        # Same pin the hand-written qmtb carries (#1969): the
+                        # derived column is template-length dependent, and at
+                        # ATTN_MAXL=128 qwen3-4b lands on mem_2_1 and times out.
+                        # The ported path returns before that alloc is reached,
+                        # so the attribute has to be repeated here or the port
+                        # silently drops the fix.
+                        _qmtb_pre.operation.attributes["air.memtile_col"] = (
+                            IntegerAttr.get(T.i32(), 5)
+                        )
                         _qmtb_pre.operation.attributes["air.no_split"] = UnitAttr.get()
                     # One (K, V) staging pair per attn column group. Per-iteration
                     # in the channel form; at segment scope here because a herd
