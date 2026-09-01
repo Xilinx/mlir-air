@@ -182,7 +182,20 @@ public:
     if (link_latency)
       *link_latency = 0;
 
-    if (type == "wait_all") {
+    if (name == "ReshapeOp") {
+      // memref.expand_shape / collapse_shape / reshape are metadata: they
+      // change how a buffer is indexed and lower to no instructions, so they
+      // cost nothing.
+      //
+      // This is not separable from the region pricing below. A metadata child
+      // gets its own vertex, and that vertex's op is the ENCLOSING region --
+      // so pricing it the way a region is priced charges the region's compute
+      // once per reshape. Twenty-one reshapes ahead of one 200-cycle matvec
+      // come to 21 x 210 cycles that way. The old front()-based pricing
+      // happened to return the reshape itself and fall through to the default
+      // of one cycle, which hid the problem without addressing it.
+      execution_time = 0;
+    } else if (type == "wait_all") {
       execution_time = 1;
     } else if (type == "dma") {
       auto Op = mlir::dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(c.op);
@@ -235,7 +248,7 @@ public:
             << "Has 'execute' as event type, but op isn't of type "
                "air::ExecuteOp";
       auto child_op =
-          &dyn_cast_if_present<air::ExecuteOp>(c.op).getChildOps().front();
+          getPricedChildOp(dyn_cast_if_present<air::ExecuteOp>(c.op));
       if (auto Op = mlir::dyn_cast_if_present<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
@@ -258,6 +271,41 @@ public:
       execution_time = 1;
     }
     return execution_time;
+  }
+
+  // The op an air.execute region is priced by.
+  //
+  // A region wraps whatever the producer put in it, and only some of that has
+  // a cost: a linalg op or an air.custom does, while memref.expand_shape,
+  // subview, cast and friends are metadata that lower to nothing. Pricing the
+  // region by whichever op happens to be FIRST therefore makes the cost depend
+  // on how the region was assembled rather than on what it computes.
+  //
+  // That is not hypothetical. air-dependency legitimately sinks a reshape into
+  // the region ahead of the compute it feeds, and the region then costs zero:
+  //
+  //     air.execute {
+  //       %e = memref.expand_shape ...                  <- first, free
+  //       linalg.generic {air.op_cost = "attn_qk"} ...  <- never reached
+  //     }
+  //
+  // Two of attention's three linalg ops went free that way, worth 569 cycles a
+  // layer on one model and 2.91% -> 6.45% over a 148-point sweep, with every
+  // point moving under. The IR was correct; the pricing was reading the wrong
+  // op.
+  //
+  // A region holding more than one priced op is still charged for the first of
+  // them, which is the behaviour that was already there and a separate
+  // question from this one.
+  static Operation *getPricedChildOp(air::ExecuteOp exe) {
+    if (!exe)
+      return nullptr;
+    for (Operation &child : exe.getChildOps())
+      if (isa<linalg::LinalgOp, air::CustomOp>(&child))
+        return &child;
+    // Nothing priced in there. Hand back the first op so the callers' type
+    // switch falls through exactly as it did before.
+    return exe.getChildOps().empty() ? nullptr : &exe.getChildOps().front();
   }
 
   bool processGraph(runnerNode &c, device &device_resource_node,
