@@ -969,31 +969,43 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # reaches the rope herd, so KVC is threaded through the segment the way RMS and
 # X are. Guarded on DYNSEQ_APPEND: with a runtime context length the append
 # offset depends on the L RTP, which would have to be threaded in as well.
-# Also gated off for HYBRID, but NOT for the anchor reason this comment used to
-# give. Forcing the flag True on lfm2-1.2b does not produce a misplaced shim BD;
-# it does not produce a DMA at all:
+# ON for hybrids too, as of the KVC threading below. It was off for several
+# sessions, and the reason recorded for that was wrong twice over.
 #
-#   @appendK: 1 put(s), 0 get(s), 0 dma(s)
+# The stated reason was that `hoist_before="inKV_K"` lands 40 shim slots off on
+# a hybrid. Forcing the flag True showed there was no misplaced BD because there
+# was no DMA at all -- `@appendK: 1 put(s), 0 get(s), 0 dma(s)`. On a hybrid the
+# rope body runs inside the CONV herd, called positionally as
+# `_rope_body(_arm, _lands[0])` with no kvc, so the `kvc is not None` guard was
+# false while the get suppression tested only APPEND_DMA. Fifth asymmetric port,
+# third caught by the emit-time pairing assertion.
 #
-# On a hybrid the rope body runs inside the CONV herd -- `_rope_body(_arm,
-# _lands[0])`, positional, no kvc -- so the `kvc is not None` guard on the DMA
-# is false while the get suppression above tests only APPEND_DMA. The two
-# predicates disagree, which is the fifth time a port has been asymmetric and
-# the third the emit-time pairing assertion has caught it.
+# Threading KVC and the layer index into conv_h fixes that (see _conv_kv_opers).
+# What is left is a 4-line shim task move: @convStIn from slot 64 to 26 and the
+# second wave's @ropeLUT from 66 to 30. Three experiments place it:
 #
-# So the real blocker is that KVC is not threaded to the hybrid's rope call
-# site: conv_h takes operands=[a_mix, _arm_conv], and KVC (and the wave index
-# the append offset is rebuilt from) would have to be added to it. That is a
-# real change to the hybrid's KV append offsets, so it wants its own device
-# run on the one hybrid model, not a flag flip.
+#   anchor removed entirely  -> @ropeLUT STILL moves, and the appends fall to
+#                               the end of the queue. Anchor is innocent.
+#   operands threaded, DMA   -> shim task order IDENTICAL, 114/114. Threading
+#     suppressed                is innocent.
+#   both                     -> the 4-line move.
 #
-# For the record, since the old note is worth not repeating: `inKV_K` DOES
-# repeat -- two launch-scope endpoints on lfm2, one per ph0 wave -- which is
-# exactly the property that made `inW0c0` the wrong anchor for @rmsW. But the
-# hand-written `get @appendK` sits at launch-scope index 51 and the FIRST
-# `put @inKV_K` at 53, so first-occurrence resolution is right here. The anchor
-# is not what is wrong.
-APPEND_DMA = not DYNSEQ_APPEND and not HYBRID_MIXER
+# So it is the hoist of the external half out of conv_h, and it first appears
+# inside air-to-aie: the channel op order is identical through pass 048 and
+# diverges at 049. Not an anchoring problem, which is where two sessions of
+# effort went.
+#
+# The move is BENIGN, measured rather than assumed: lfm2-1.2b -- the only model
+# with HYBRID_MIXER -- verifies topk 2/0 through its own run_npu2_verify.lit,
+# which is 32 greedy tokens x 2 prompts and would not survive a wrong KV append
+# offset. The historical "device timed out at decode pos 8" was recorded against
+# a build that could not emit the DMA, so it was never this design.
+#
+# For the record: `inKV_K` DOES repeat -- two launch-scope endpoints on lfm2,
+# one per ph0 wave -- which is the property that made `inW0c0` the wrong anchor
+# for @rmsW. But the hand-written `get @appendK` sits at launch-scope index 51
+# and the first `put @inKV_K` at 53, so first-occurrence resolution is right.
+APPEND_DMA = not DYNSEQ_APPEND
 # And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
 # get on an L2 buffer, which air-dma-to-channel handles natively -- the only
 # obstacle was that the L2 buffer is allocated after the rope herd, so it does
@@ -3620,6 +3632,18 @@ def build_module():
                         # per-layer IS_ATTN and has to survive to runtime.
                         _arm_conv = _core_arm
 
+                        # The hybrid runs rope inside THIS herd, so the ported
+                        # append's operands have to reach it here. On the
+                        # attention-only path they reach the rope herd instead
+                        # (see _rope_opers) and this list is empty, which keeps
+                        # conv_h's signature unchanged for every model that is
+                        # not a hybrid.
+                        _conv_kv_opers = (
+                            ([_seg_KVC, _seg_iv] if _seg_iv is not None else [_seg_KVC])
+                            if (APPEND_DMA and _seg_KVC is not None)
+                            else []
+                        )
+
                         @herd(
                             name="conv",
                             # Two vertically adjacent tiles: ty=0 stages the ph0
@@ -3627,9 +3651,15 @@ def build_module():
                             # buffer and computes. They hand it over as NEIGHBOUR
                             # MEMORY, not DMA -- see shortconv.cc.
                             sizes=[1, 2],
-                            operands=[a_mix.result, _arm_conv],
+                            # KVC and the layer index ride along only for the
+                            # ported append: the DMA names both endpoints in one
+                            # place, so the L3 cache has to be visible inside the
+                            # herd. A herd is IsolatedFromAbove, which is why the
+                            # layer index comes in too -- the append offset is
+                            # rebuilt from it here rather than carried in.
+                            operands=[a_mix.result, _arm_conv] + _conv_kv_opers,
                         )
-                        def conv_h(tx, ty, _sx, _sy, mix, _arm):
+                        def conv_h(tx, ty, _sx, _sy, mix, _arm, *_ckv):
                             def _stage_ingest():
                                 """Land ph0's whole egress, WHATEVER the layer type.
 
@@ -3841,7 +3871,17 @@ def build_module():
                                 # q/k/v have to arrive on every decode wave too.
                                 # rope_compute_hyb's own IS_ATTN branch is where
                                 # the layer type is decided.
-                                _rope_body(_arm, _lands[0])
+                                # kvc/kiv are the ported append's operands, empty
+                                # unless APPEND_DMA is on for this build. Passed
+                                # by keyword so the positional a_qkv stays
+                                # _lands[0] -- the hybrid's rope reads the ph0
+                                # landing as its QKV.
+                                _rope_body(
+                                    _arm,
+                                    _lands[0],
+                                    kvc=_ckv[0] if _ckv else None,
+                                    kiv=_ckv[1] if len(_ckv) > 1 else None,
+                                )
                                 for _w in range(1, CONV_WAVES):
                                     _land(_w)
                                 # Same rule one level up: the mixer core runs
