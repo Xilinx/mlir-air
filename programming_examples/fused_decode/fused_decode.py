@@ -539,24 +539,27 @@ ROPELUT_DMA = not HYBRID_MIXER
 # derived too the anchor chain is inW0c0 <- rmsW <- {rmsX, ropeLUT} -- which is
 # why @rmsW anchors to a channel that stays hand-written rather than to @rmsX
 # (that would close a cycle, and a cyclic chain has no correct hoist order).
-# OFF by default, and not because the port does not work: it is byte-identical
-# to the hand-written form on llama32_1b_q4nx and rides along on five other
-# models. It breaks three of nine.
+# The anchor is @rmsW2 on a POST_RMS model, not @inW0c0. Every one of the four
+# `if not RMSW_DMA:` suppression sites is immediately followed by a @rmsW2
+# endpoint, so the hand-written order is `rmsX rmsW rmsW2 inW0c0` and the
+# derived put belongs ahead of @rmsW2 -- @inW0c0 is simply the wrong neighbour,
+# and it is the FOURTH occurrence of a channel that repeats once per wave.
+# Off POST_RMS there is no @rmsW2 and @inW0c0 is right.
 #
-# On qwen3_8b_q4nx -- which PASSES 2/2 upstream, so a clean baseline -- this flag
-# ALONE hangs decode, and every other port together passes 2/2. Same on
-# gemma3_4b_q4nx. Deriving @rmsW moves shim tasks: the three at slots 2-4
-# (rmsX, rmsW, rmsX) collapse to one and two @rmsW2 tasks appear 70 slots later,
-# which is the same shape as the @ropeLUT slot 66->28 move that hung lfm2.
-# `hoist_before="inW0c0"` reproduces the hand-written slot on some models and not
-# on others.
+# This flag was off for several sessions because @inW0c0 hung qwen3_8b_q4nx,
+# gemma3_4b_q4nx and qwen25_7b_q4nx while passing the other six -- deriving
+# @rmsW collapsed the three shim tasks at slots 2-4 into one and pushed two
+# @rmsW2 tasks ~70 slots later, the same shape as the @ropeLUT 66->28 move that
+# hung lfm2. No predicate distinguished the two groups: POST_RMS, N_NORMS,
+# ROPE_W_PER_LAYER, UNI_DEC and NGLU were each checked against the split and
+# each refuted. There was no discriminator because the anchor, not the model,
+# was wrong.
 #
-# What is NOT the discriminator, each checked against the 6-pass / 3-regress
-# split: POST_RMS, N_NORMS, ROPE_W_PER_LAYER, UNI_DEC, NGLU. ROPE_W_PER_LAYER is
-# True on three models that pass; NGLU=38 passes where 24 regresses. Without a
-# predicate there is nothing honest to gate on, so the flag is off until the
-# anchor is made per-build. Flip it to True to resume that work.
-RMSW_DMA = False
+# With @rmsW2 the derived form is order-identical to the hand-written one on all
+# ten models that share this builder -- same channel order at air-dma-to-channel
+# and the same shim task order, task for task, at airrt-to-npu (95 to 287 tasks
+# depending on the model), each measured at the LBUILD its own verify lit uses.
+RMSW_DMA = True
 # The mixer -> CU broadcast exists exactly when a hybrid has a mixer. A get with
 # no put is "channel op not in pairs" at emit time, so the decl, the put and the
 # four gets all key off this one predicate.
@@ -5368,8 +5371,10 @@ def build_module():
                             # put is gone. Anchored to @inW0c0 -- a channel that stays
                             # hand-written -- because @rmsX and @ropeLUT are themselves
                             # anchored to @rmsW, and anchoring @rmsW back onto @rmsX
-                            # would make the chain cyclic. "before the first @inW0c0
-                            # endpoint" is exactly the slot the hand-written put had.
+                            # would make the chain cyclic. On POST_RMS that neighbour
+                            # is @rmsW2, which follows every hand-written @rmsW get;
+                            # @inW0c0 repeats once per wave and resolved to the wrong
+                            # occurrence.
                             if RMSW_DMA and _rms is not None:
                                 _fn_off = (
                                     UNI_DEC * RMS_LAYER
@@ -5385,7 +5390,7 @@ def build_module():
                                     src_strides=[1],
                                     channel="rmsW",
                                     channel_indices=[0],
-                                    hoist_before="inW0c0",
+                                    hoist_before="rmsW2" if POST_RMS else "inW0c0",
                                 )
                             else:
                                 ChannelGet("rmsW", a_wl, indices=[idx(0)])
@@ -5569,8 +5574,10 @@ def build_module():
                             # put is gone. Anchored to @inW0c0 -- a channel that stays
                             # hand-written -- because @rmsX and @ropeLUT are themselves
                             # anchored to @rmsW, and anchoring @rmsW back onto @rmsX
-                            # would make the chain cyclic. "before the first @inW0c0
-                            # endpoint" is exactly the slot the hand-written put had.
+                            # would make the chain cyclic. On POST_RMS that neighbour
+                            # is @rmsW2, which follows every hand-written @rmsW get;
+                            # @inW0c0 repeats once per wave and resolved to the wrong
+                            # occurrence.
                             if RMSW_DMA and _rms is not None:
                                 DmaMemcpyNd(
                                     g_wa,
@@ -5580,7 +5587,7 @@ def build_module():
                                     src_strides=[1],
                                     channel="rmsW",
                                     channel_indices=[0],
-                                    hoist_before="inW0c0",
+                                    hoist_before="rmsW2" if POST_RMS else "inW0c0",
                                 )
                             else:
                                 ChannelGet("rmsW", g_wa, indices=[idx(0)])
@@ -5666,8 +5673,9 @@ def build_module():
                         # put is gone. Anchored to @inW0c0 -- a channel that stays
                         # hand-written -- because @rmsX and @ropeLUT are themselves
                         # anchored to @rmsW, and anchoring @rmsW back onto @rmsX
-                        # would make the chain cyclic. "before the first @inW0c0
-                        # endpoint" is exactly the slot the hand-written put had.
+                        # would make the chain cyclic. On POST_RMS that neighbour is
+                        # @rmsW2, which follows every hand-written @rmsW get; @inW0c0
+                        # repeats once per wave and resolved to the wrong occurrence.
                         if RMSW_DMA and _rms is not None:
                             DmaMemcpyNd(
                                 a_w,
@@ -5677,7 +5685,7 @@ def build_module():
                                 src_strides=[1],
                                 channel="rmsW",
                                 channel_indices=[0],
-                                hoist_before="inW0c0",
+                                hoist_before="rmsW2" if POST_RMS else "inW0c0",
                             )
                         else:
                             ChannelGet("rmsW", a_w, indices=[idx(0)])
