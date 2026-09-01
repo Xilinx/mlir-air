@@ -969,15 +969,30 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # reaches the rope herd, so KVC is threaded through the segment the way RMS and
 # X are. Guarded on DYNSEQ_APPEND: with a runtime context length the append
 # offset depends on the L RTP, which would have to be threaded in as well.
-# Also gated off for HYBRID, as @ropeLUT is. The derived append needs an anchor
-# to keep its shim BD where the hand-written get had it, and `inKV_K` -- the
-# right answer on an attention-only build, where the readback sits right after
-# the append -- is 40 shim slots away on a hybrid one, whose two ph0 waves put
-# the readbacks in the second block. Anchoring there dragged the SECOND wave's
-# @ropeLUT task from slot 66 up to slot 28 and the device timed out at decode
-# pos 8, which is the same failure shape as the slot 6->18 move recorded for
-# @ropeLUT itself. The fix is a per-build anchor, not this flag; until that
-# exists a hybrid build keeps the hand-written pair.
+# Also gated off for HYBRID, but NOT for the anchor reason this comment used to
+# give. Forcing the flag True on lfm2-1.2b does not produce a misplaced shim BD;
+# it does not produce a DMA at all:
+#
+#   @appendK: 1 put(s), 0 get(s), 0 dma(s)
+#
+# On a hybrid the rope body runs inside the CONV herd -- `_rope_body(_arm,
+# _lands[0])`, positional, no kvc -- so the `kvc is not None` guard on the DMA
+# is false while the get suppression above tests only APPEND_DMA. The two
+# predicates disagree, which is the fifth time a port has been asymmetric and
+# the third the emit-time pairing assertion has caught it.
+#
+# So the real blocker is that KVC is not threaded to the hybrid's rope call
+# site: conv_h takes operands=[a_mix, _arm_conv], and KVC (and the wave index
+# the append offset is rebuilt from) would have to be added to it. That is a
+# real change to the hybrid's KV append offsets, so it wants its own device
+# run on the one hybrid model, not a flag flip.
+#
+# For the record, since the old note is worth not repeating: `inKV_K` DOES
+# repeat -- two launch-scope endpoints on lfm2, one per ph0 wave -- which is
+# exactly the property that made `inW0c0` the wrong anchor for @rmsW. But the
+# hand-written `get @appendK` sits at launch-scope index 51 and the FIRST
+# `put @inKV_K` at 53, so first-occurrence resolution is right here. The anchor
+# is not what is wrong.
 APPEND_DMA = not DYNSEQ_APPEND and not HYBRID_MIXER
 # And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
 # get on an L2 buffer, which air-dma-to-channel handles natively -- the only
