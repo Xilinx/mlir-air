@@ -3407,6 +3407,7 @@ def build_module():
                                 src_strides=[1],
                                 channel="ropeQ",
                                 channel_indices=[0],
+                                hoist_unguarded=HYBRID_MIXER,
                             )
                         else:
                             ChannelPut(
@@ -3536,7 +3537,7 @@ def build_module():
                         _omtb_pre.operation.attributes["air.memtile_col"] = (
                             IntegerAttr.get(T.i32(), 5)
                         )
-                    if ATTN_SUBSYS and not HYBRID_MIXER and ROPEQ_DMA:
+                    if ATTN_SUBSYS and ROPEQ_DMA:
                         _qmtb_pre = AllocOp(qmt_l2, [], [])
                         # Same pin the hand-written qmtb carries (#1969): the
                         # derived column is template-length dependent, and at
@@ -3638,10 +3639,14 @@ def build_module():
                         # (see _rope_opers) and this list is empty, which keeps
                         # conv_h's signature unchanged for every model that is
                         # not a hybrid.
-                        _conv_kv_opers = (
+                        _conv_append_opers = (
                             ([_seg_KVC, _seg_iv] if _seg_iv is not None else [_seg_KVC])
                             if (APPEND_DMA and _seg_KVC is not None)
                             else []
+                        )
+                        _n_capp = len(_conv_append_opers)
+                        _conv_kv_opers = _conv_append_opers + (
+                            [_qmtb_pre] if _qmtb_pre is not None else []
                         )
 
                         @herd(
@@ -3879,8 +3884,11 @@ def build_module():
                                 _rope_body(
                                     _arm,
                                     _lands[0],
-                                    kvc=_ckv[0] if _ckv else None,
-                                    kiv=_ckv[1] if len(_ckv) > 1 else None,
+                                    kvc=_ckv[0] if _n_capp > 0 else None,
+                                    kiv=_ckv[1] if _n_capp > 1 else None,
+                                    qmt=(
+                                        _ckv[_n_capp] if len(_ckv) > _n_capp else None
+                                    ),
                                 )
                                 for _w in range(1, CONV_WAVES):
                                     _land(_w)
