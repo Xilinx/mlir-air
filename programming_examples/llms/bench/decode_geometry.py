@@ -178,21 +178,26 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         DECODE_GOLDEN_L=str(ctx),
         W_DUAL_CHAN="1",
     )
+    # The whole mutate-import-restore sequence is one try/finally: a failure
+    # anywhere in it (a missing builder, a spec that will not load, a raising
+    # import) must still hand the caller its environment back, or the leak
+    # returns on exactly the paths nobody exercises.
     saved = {k: os.environ.get(k) for k in set(pinned) | set(env_extra or {})}
-    os.environ.update(pinned)
-    # Some models need extra builder env (qwen3-8b's DECODE_STACK/DECODE_WGROUP).
-    # Saved above too, so one call's extras cannot survive into the next: the
-    # builder reads these at import, and a leftover DECODE_WGROUP would make the
-    # following model come back split when it is not.
-    os.environ.update(env_extra or {})
-    # fused_decode.py imports its siblings (proj_qmm_pack, ...) by bare name.
-    if str(FUSED_DECODE) not in sys.path:
-        sys.path.insert(0, str(FUSED_DECODE))
-    spec = importlib.util.spec_from_file_location(
-        "_fused_decode_geom", FUSED_DECODE / "fused_decode.py"
-    )
-    fd = importlib.util.module_from_spec(spec)
     try:
+        os.environ.update(pinned)
+        # Some models need extra builder env (qwen3-8b's DECODE_STACK/
+        # DECODE_WGROUP). Saved above too, so one call's extras cannot survive
+        # into the next: the builder reads these at import, and a leftover
+        # DECODE_WGROUP would make the following model come back split when it
+        # is not.
+        os.environ.update(env_extra or {})
+        # fused_decode.py imports its siblings (proj_qmm_pack, ...) by bare name.
+        if str(FUSED_DECODE) not in sys.path:
+            sys.path.insert(0, str(FUSED_DECODE))
+        spec = importlib.util.spec_from_file_location(
+            "_fused_decode_geom", FUSED_DECODE / "fused_decode.py"
+        )
+        fd = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fd)
     finally:
         for k, v in saved.items():
