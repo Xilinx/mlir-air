@@ -482,6 +482,11 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         // is an operand, not an attribute, so it has to ride on the op that
         // names both endpoints.
         Optional<Index>:$dest,
+        // Sub-channel selectors that are only known at run time -- a tile
+        // indexing its own column, say. `channel_indices` below is the static
+        // form; a transfer whose index is derived from a herd induction
+        // variable has no static form and could not be spelled at all.
+        Variadic<Index>:$dynamic_channel_indices,
         DenseI64ArrayAttr:$static_dst_offsets,
         DenseI64ArrayAttr:$static_dst_sizes,
         DenseI64ArrayAttr:$static_dst_strides,
@@ -509,6 +514,7 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         custom<DynamicIndexList>($dynamic_src_sizes, $static_src_sizes)
         custom<DynamicIndexList>($dynamic_src_strides, $static_src_strides) `)`
     (`dest` `(` $dest^ `)`)?
+    (`chan_idx` `(` $dynamic_channel_indices^ `)`)?
     attr-dict `:` `(` type($dst) `,` type($src) `)`
   }];
   let description = [{
@@ -631,6 +637,7 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
                    "::mlir::Value":$dest,
+                   "::mlir::ValueRange":$dynamic_channel_indices,
                    CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
                    CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
     // All-dynamic builder, for callers that already hold index Values.

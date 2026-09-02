@@ -348,6 +348,7 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_sizes=[],
         src_strides=[],
         dest=None,
+        dynamic_channel_indices=None,
         pad_before=None,
         pad_after=None,
         channel=None,
@@ -386,6 +387,11 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             # transfer is for. A gather whose producers pick their consumer at
             # run time cannot be spelled as a DMA without it.
             dest=None if dest is None else pyint_to_index(dest),
+            # Sub-channel selectors known only at run time. A transfer indexed
+            # by a herd induction variable has no static form.
+            dynamic_channel_indices=[
+                pyint_to_index(i) for i in (dynamic_channel_indices or [])
+            ],
             static_dst_offsets=static_dst_offsets,
             static_dst_sizes=static_dst_sizes,
             static_dst_strides=static_dst_strides,

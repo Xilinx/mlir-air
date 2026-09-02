@@ -2918,9 +2918,10 @@ void air::DmaMemcpyNdOp::build(
   auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
   build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
         dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
-        dynSrcStrides, /*dest=*/Value(), staticDstOffsets, staticDstSizes,
-        staticDstStrides, staticSrcOffsets, staticSrcSizes, staticSrcStrides,
-        pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        dynSrcStrides, /*dest=*/Value(),
+        /*dynamic_channel_indices=*/ValueRange{}, staticDstOffsets,
+        staticDstSizes, staticDstStrides, staticSrcOffsets, staticSrcSizes,
+        staticSrcStrides, pad_before, pad_after, /*src_rank=*/IntegerAttr(),
         /*dst_rank=*/IntegerAttr(),
         /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
@@ -2935,7 +2936,8 @@ void air::DmaMemcpyNdOp::build(
     ArrayRef<OpFoldResult> dst_strides, Value src,
     ArrayRef<OpFoldResult> src_offsets, ArrayRef<OpFoldResult> src_sizes,
     ArrayRef<OpFoldResult> src_strides, Value dest,
-    DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+    ValueRange dynamic_channel_indices, DenseI32ArrayAttr pad_before,
+    DenseI32ArrayAttr pad_after) {
   SmallVector<Value> dynDstOffsets, dynDstSizes, dynDstStrides;
   SmallVector<Value> dynSrcOffsets, dynSrcSizes, dynSrcStrides;
   auto staticDstOffsets = splitMixed(b, dst_offsets, dynDstOffsets);
@@ -2946,9 +2948,10 @@ void air::DmaMemcpyNdOp::build(
   auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
   build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
         dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
-        dynSrcStrides, dest, staticDstOffsets, staticDstSizes, staticDstStrides,
-        staticSrcOffsets, staticSrcSizes, staticSrcStrides, pad_before,
-        pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr(),
+        dynSrcStrides, dest, dynamic_channel_indices, staticDstOffsets,
+        staticDstSizes, staticDstStrides, staticSrcOffsets, staticSrcSizes,
+        staticSrcStrides, pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        /*dst_rank=*/IntegerAttr(),
         /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
         /*hoist_after=*/FlatSymbolRefAttr(),
@@ -2963,6 +2966,7 @@ void air::DmaMemcpyNdOp::build(
     DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
   build(b, result, resultTypes, async_dependencies, dst, dst_offsets, dst_sizes,
         dst_strides, src, src_offsets, src_sizes, src_strides, /*dest=*/Value(),
+        /*dynamic_channel_indices=*/ValueRange{},
         allDynamic(b, dst_offsets.size()), allDynamic(b, dst_sizes.size()),
         allDynamic(b, dst_strides.size()), allDynamic(b, src_offsets.size()),
         allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),

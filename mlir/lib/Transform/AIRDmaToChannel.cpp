@@ -843,7 +843,16 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
 
   SmallVector<Value, 1> channel_idx_internal{};
   SmallVector<Value, 1> channel_idx_external{};
-  if (auto staticIndices = op.getChannelIndices()) {
+  if (!op.getDynamicChannelIndices().empty()) {
+    // Sub-channel selectors known only at run time -- a tile indexing its own
+    // column, say. They win over the static form and over the spatial
+    // inference: the front end said exactly which sub-channel this is, and it
+    // is not a constant. Both halves index the same one.
+    for (Value v : op.getDynamicChannelIndices()) {
+      channel_idx_internal.push_back(v);
+      channel_idx_external.push_back(v);
+    }
+  } else if (auto staticIndices = op.getChannelIndices()) {
     // An explicit index overrides the spatial inference below. It is what a
     // sub-channel of a bundle is selected with when the index is NOT the
     // enclosing spatial index -- e.g. a per-column weight feed inside a loop
