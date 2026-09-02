@@ -15,6 +15,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Any.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/JSON.h"
@@ -408,11 +409,79 @@ public:
       }
     }
 
+    // Offer the hardware to whoever has been waiting for it longest.
+    //
+    // The candidate set comes out of a graph walk, so its order is an accident
+    // of how the vertices happen to be reached. That does not matter while
+    // every candidate fits, and it decides everything once they do not: a herd
+    // reserves its tiles when it is admitted and holds them until it retires,
+    // so whichever herd is offered the tiles first gets them, and a consumer
+    // admitted ahead of its producer parks the tiles the producer needs.
+    //
+    // Oldest-ready-first, then ascending vertex id. Both halves are needed and
+    // neither is arbitrary:
+    //
+    //   * the timestamp is what keeps a pipeline moving. A later stage of an
+    //     earlier loop iteration became ready first, so it goes first, and an
+    //     earlier stage cannot run ahead into the next iteration while the
+    //     work in front of it is still holding. Ranking purely by position
+    //     starves the tail -- the first stage is always earlier in the IR than
+    //     the last one and would win every round.
+    //   * the id breaks the tie, which is where the order was previously
+    //     arbitrary: several candidates become ready in the same step and
+    //     their relative order came out of a graph walk. Ids follow the IR
+    //     walk, so ascending id is program order, which within a hierarchy is
+    //     a topological order of the dataflow: producers first.
+    // Order ONLY the herds, and only among themselves. The slots they occupy
+    // in the candidate list stay where they are, so every non-herd candidate
+    // keeps both its position and its relative order.
+    //
+    // Tiles are the only resource a herd reserves ahead of running, so that is
+    // the whole scope of this rule. Sorting the list as a whole also decides
+    // which of several transfers is offered a port first, in designs that have
+    // no herd contention at all and no reason to be perturbed -- a behaviour
+    // change well outside what the deadlock above justifies.
+    //
+    // The key is materialised into the sort input rather than looked up from
+    // the comparator. try_emplace returns the stamp it either found or just
+    // wrote, so this is one lookup per herd instead of one per comparison, and
+    // the comparator cannot touch a container it might also insert into.
+    llvm::SmallVector<unsigned> herd_slots;
+    llvm::SmallVector<std::pair<uint64_t, Graph::VertexId>> by_age;
+    for (auto [i, v] : llvm::enumerate(next_vertex_set)) {
+      if (!isa_and_present<air::HerdOp>(G[v].op))
+        continue;
+      herd_slots.push_back(i);
+      by_age.emplace_back(c.first_ready_time.try_emplace(v, time).first->second,
+                          v);
+    }
+    if (herd_slots.size() > 1) {
+      llvm::sort(by_age);
+      for (auto [k, slot] : llvm::enumerate(herd_slots))
+        next_vertex_set[slot] = by_age[k].second;
+    }
+
     // Check resource fulfillment of each candidate
+    bool herd_blocked = false;
     for (auto next_vertex : next_vertex_set) {
+
+      // A herd that cannot fit blocks the herds behind it, rather than letting
+      // them take the tiles it is waiting for. The queue order above is only
+      // binding if it is binding under contention: without this a small herd
+      // from further back slips past a large one and parks exactly the tiles
+      // the large one -- which is its own producer -- was waiting for.
+      //
+      // Head-of-line only among herds, and only for the pass in which one was
+      // refused: nothing else contends for tiles, and a herd that fits is
+      // admitted exactly as before.
+      bool is_herd = isa_and_present<air::HerdOp>(G[next_vertex].op);
+      if (is_herd && herd_blocked)
+        continue;
 
       // Check whether adj_v's resource requirement has been fulfilled.
       bool res_fulfilled = c.checkResourceFulfillmentForOpImpls(G[next_vertex]);
+      if (is_herd && !res_fulfilled)
+        herd_blocked = true;
 
       if (res_fulfilled) {
         // Delete vertex from latent wavefront candidates
@@ -421,6 +490,10 @@ public:
         c.pushToWavefront(next_vertex,
                           canonicalizer.getIteratorFromPosition(
                               c.ctrl_g->position, c.ctrl_g->hierarchyOp));
+        // It is no longer waiting, so its next wait starts fresh -- a loop
+        // body's vertices come round again and each iteration queues in its
+        // own right.
+        c.first_ready_time.erase(next_vertex);
 
         uint64_t link_latency = 0;
         uint64_t occupancy =

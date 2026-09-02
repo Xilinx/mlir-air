@@ -31,6 +31,11 @@ public:
   std::vector<Graph::VertexId> processed_vertices;
   // An incomplete vector of vertices as candidates to wavefront
   std::vector<Graph::VertexId> latent_wavefront_candidates;
+  // When each candidate first had its dependencies met and started waiting for
+  // hardware. Contended resources go to whoever has waited longest; see
+  // pushOpsToWavefrontAndAllocateResource. Erased when the vertex is admitted,
+  // so a loop body's vertices queue afresh on every iteration.
+  std::map<Graph::VertexId, uint64_t> first_ready_time;
   // Sub runner nodes to the current runner node
   std::vector<runnerNode> sub_runner_nodes;
   // Simulation time as of the current scheduling step, for retiring ops that
@@ -407,6 +412,7 @@ public:
   ~runnerNode() {
     wavefront.clear();
     processed_vertices.clear();
+    first_ready_time.clear();
     loop_trip_count.clear();
     sub_runner_nodes.clear();
     channel_token_counts.clear();
@@ -1279,13 +1285,27 @@ private:
       launch_runner = launch_runner->parent;
     }
 
-    // Check if this op has been completely dispatched
+    // Check if this op has been completely dispatched.
+    //
+    // Against the channel-wide counter, which is what the dispatch budget is
+    // measured in: getRemainingDispatchesForDynamicDispatch subtracts the
+    // channel's progress, so where several puts share a channel a later one
+    // legitimately dispatches fewer instances than its own spatial factor --
+    // sometimes none at all. Its own count is therefore NOT the question.
+    //
+    // What is missing is the case the get side has always had: the channel
+    // completed and its counters were cleared before this put was executed.
+    // Zero is then indistinguishable from "not started" on the counter alone,
+    // so it is qualified by this op having dispatched something -- a put that
+    // has moved nothing cannot be looking at its own completion. Without this
+    // a put executed after its get can never retire and the run stalls.
     std::pair<std::string, std::string> key =
         std::make_pair(this->getChannelInstanceKey(op), "put");
     unsigned total_count = this->tokenSpatialFactorForResource(op);
     if (launch_runner->channel_ops_in_progress.count(key)) {
       unsigned processed = launch_runner->channel_ops_in_progress[key].first;
-      if (processed == total_count) {
+      if (processed == total_count ||
+          (!processed && this->ctrl_g->g[it].dispatched_count)) {
         this->retireChannelOp(it);
       }
     } else
