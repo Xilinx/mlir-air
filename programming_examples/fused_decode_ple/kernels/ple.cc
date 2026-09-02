@@ -135,17 +135,42 @@ void ple_zero(float *restrict acc) {
 }
 
 // acc += w_block . x_slice, for one (out_tile, in_block) pair.
-void ple_mac(float *restrict acc, bf16 *restrict w, bf16 *restrict x) {
+//
+// The x offset rides as an int rather than a sliced memref: AIR passes whole
+// buffers to an external call, so the block index has to be an operand.
+//
+// Two widths, because the three PLE projections are not the same shape. The
+// "down" pair (inp_gate, per_layer_model_proj) contracts MODEL_DIM -> PLI_D, so
+// x is MODEL_DIM wide and j selects one of its K/256 blocks. The "up" one
+// (per_layer_projection) contracts PLI_D -> MODEL_DIM, and PLI_D == 256 ==
+// BF16_PROJ_K_BLOCK exactly, so there is only ever one input block and no
+// index is needed.
+void ple_mac_down(float *restrict acc, bf16 *restrict w, bf16 *restrict x,
+                  int j) {
+  aie_round_nearest_even();
+  mvm_blk<BF16_PROJ_M_BLOCK, BF16_PROJ_K_BLOCK>(acc, w,
+                                                x + j * BF16_PROJ_K_BLOCK);
+}
+
+void ple_mac_up(float *restrict acc, bf16 *restrict w, bf16 *restrict x) {
   aie_round_nearest_even();
   mvm_blk<BF16_PROJ_M_BLOCK, BF16_PROJ_K_BLOCK>(acc, w, x);
 }
 
-// Write one finished output tile (32 values) as bf16.
-void ple_flush(bf16 *restrict y, float *restrict acc) {
+// Write one finished output tile (32 values) at tile index i.
+static inline void flush_at(bf16 *y, float *acc, int i) {
   aie::vector<float, BF16_PROJ_M_BLOCK> v = aie::load_v<BF16_PROJ_M_BLOCK>(acc);
   aie::accum<accfloat, BF16_PROJ_M_BLOCK> a;
   a.from_vector(v);
-  aie::store_v(y, a.template to_vector<bf16>());
+  aie::store_v(y + i * BF16_PROJ_M_BLOCK, a.template to_vector<bf16>());
+}
+
+void ple_flush_down(bf16 *restrict y, float *restrict acc, int i) {
+  flush_at(y, acc, i);
+}
+
+void ple_flush_up(bf16 *restrict y, float *restrict acc, int i) {
+  flush_at(y, acc, i);
 }
 
 // ---- stage tails (everything after the matmul, per stage) ----
@@ -185,6 +210,20 @@ void ple_apply_gate(bf16 *restrict pli, bf16 *restrict gate) {
   mul_inplace<PLI_D>(pli, gate);
 }
 
+// The gate core emits one packet, [residual(MODEL_DIM) ++ gate(PLI_D)], so the
+// up core takes both halves in a single channel get instead of racing two.
+// These three "_at" entry points index into that packed buffer.
+void ple_pack_gate(bf16 *restrict y, bf16 *restrict x, bf16 *restrict g) {
+  for (int i = 0; i < MODEL_DIM; i += 16)
+    aie::store_v(y + i, aie::load_v<16>(x + i));
+  for (int i = 0; i < PLI_D; i += 16)
+    aie::store_v(y + MODEL_DIM + i, aie::load_v<16>(g + i));
+}
+
+void ple_apply_gate_at(bf16 *restrict pli, bf16 *restrict packed) {
+  mul_inplace<PLI_D>(pli, packed + MODEL_DIM);
+}
+
 // per_layer_up tail: y = (residual + rmsnorm(y, w)) * layer_output_scale.
 // layer_scale is a 1-element buffer (the bundle stores it as shape (1,)).
 void ple_up_tail(bf16 *restrict y, bf16 *restrict residual, bf16 *restrict w,
@@ -194,6 +233,12 @@ void ple_up_tail(bf16 *restrict y, bf16 *restrict residual, bf16 *restrict w,
   rmsnorm<MODEL_DIM>(y, y, w);
   add_inplace<MODEL_DIM>(y, residual);
   scale_inplace<MODEL_DIM>(y, *layer_scale);
+}
+
+// Same, taking the residual from the head of the packed [residual ++ gate].
+void ple_up_tail_at(bf16 *restrict y, bf16 *restrict packed, bf16 *restrict w,
+                    bf16 *restrict layer_scale, int _arm) {
+  ple_up_tail(y, packed, w, layer_scale, _arm);
 }
 
 } // extern "C"

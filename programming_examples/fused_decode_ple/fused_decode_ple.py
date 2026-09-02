@@ -1427,6 +1427,29 @@ GLU_PCOL = 5  # GLU compute tile + down memtile column (reference: tile_5_x + me
 # DOWN phase: the GLU output (8192) is fed back on-chip as the down X (NOT host).
 # down_buffer re-broadcasts its 8192 DOWN_REFEED(=4) times to the X memtile, which
 # chunks each into 16x512 -> inX for ph3. No gluShim host drain.
+if PLE:
+    # PLE core placement, as (col, row). For gemma4 (PAIR_ROWS=1, one attention
+    # CU) the occupied compute tiles are: proj cols 0,1,6,7 rows 2-5; rms (2,2);
+    # rope (2,3); glu (5,3); attention (4,2)+(4,3) at ATTN_PCOL=4. Column 3 is a
+    # memtile column (DOWN_PCOL) but its compute rows are all free, so the three
+    # PLE cores go there as a vertical chain -- and (3,2) is horizontally
+    # adjacent to the rms core at (2,2), which is the one hop that carries the
+    # post-FFN residual.
+    #
+    # FastFlowLM places these at (4,2)/(4,3)/(5,2); that layout is not available
+    # here because this design spends col 4 on attention and col 5 on the GLU.
+    PLE_GATE_LOC = (3, 2)
+    PLE_PROJ_LOC = (3, 3)
+    PLE_UP_LOC = (3, 4)
+    _ple_occupied = set(PCOL) | {RMS_PCOL, ATTN_PCOL, GLU_PCOL}
+    for _nm, _loc in (
+        ("gate", PLE_GATE_LOC),
+        ("proj", PLE_PROJ_LOC),
+        ("up", PLE_UP_LOC),
+    ):
+        assert _loc[0] not in PCOL, f"PLE {_nm} core at {_loc} lands on a proj column"
+    assert len({PLE_GATE_LOC, PLE_PROJ_LOC, PLE_UP_LOC}) == 3, "PLE cores collide"
+
 HOST_ROUNDS = sum(ROUNDS_PER_DEST[p] for p in HOST_DRAIN)  # host-drained egress rounds
 # #4: the down egresses as the rms layer output (residual2), drained on its own channel.
 LAYER_RNDS = (PAIR_ROWS * I2P[DOWN_PHASE]) if FULL4 else 0
@@ -1527,6 +1550,32 @@ def build_module():
             bf16,
         )
 
+        if PLE:
+            # ---- PLE DDR ----
+            # One slab per layer, laid out in the order the cores consume it:
+            #   [inp_gate 48 blk][model_proj 48 blk][per_layer_projection 48 blk]
+            #   [emb PLI_D][proj_norm_w PLI_D][post_ple_norm_w K][scale 32]
+            # The three weight regions are the bundle's RAW bytes -- no
+            # repacking, because the bundle already stores them out-tile-major
+            # in exactly the block order kernels/ple.cc walks (verified at
+            # cos 1.00000000).
+            #
+            # The scale is a single bf16 but gets a 32-wide slot: a shim BD
+            # moving 2 bytes is not worth a special case, and 32 keeps every
+            # region 64B-aligned.
+            PLE_SCALE_PAD = 32
+            PLE_EMB_OFF = 3 * PLE_NBLK_DOWN * PLE_BLK  # after the 144 blocks
+            PLE_NORMW_OFF = PLE_EMB_OFF + PLI_D
+            PLE_UPNORMW_OFF = PLE_NORMW_OFF + PLI_D
+            PLE_SCALE_OFF = PLE_UPNORMW_OFF + K
+            PLE_LAYER = PLE_SCALE_OFF + PLE_SCALE_PAD
+            plew_l3 = MemRefType.get([UNI_DEC * PLE_LAYER], bf16)
+            # The token embedding. Its own operand because proj_layer_embedding
+            # reads it on EVERY layer while x_l3 is the chained hidden state,
+            # overwritten in place each layer. Conflating the two is the layer-8
+            # bug (cos 0.79) in host-buffer form.
+            plex0_l3 = MemRefType.get([K], bf16)
+
         # ---- L1 buffers ----
         xblk_l1 = MemRefType.get([COL_BLOCK], bf16, memory_space=l1)  # 256 X chunk
         wblk_l1 = MemRefType.get([BLOCK_BF16], bf16, memory_space=l1)  # 2560 weight
@@ -1542,6 +1591,19 @@ def build_module():
         # keeps <=4 packet ids per S2MM port (1 arbiter x 4 msels). lo/hi kernels
         # slice it. Only used when N_NORMS>=4.
         rms_w2k_l1 = MemRefType.get([2 * K], bf16, memory_space=l1)
+        if PLE:
+            # PLE L1. The bf16 weight block is streamed one at a time (8192 bf16
+            # = 16 KB); two of these plus the accumulators is what bounds these
+            # cores, which is why the PLE gets its own tiles rather than folding
+            # into rms.
+            pleblk_l1 = MemRefType.get([PLE_BLK], bf16, memory_space=l1)
+            plev_l1 = MemRefType.get([PLI_D], bf16, memory_space=l1)  # 256 vector
+            pleacc_l1 = MemRefType.get([PLE_M_BLK], f32, memory_space=l1)  # 32 acc
+            plex_l1 = MemRefType.get([K], bf16, memory_space=l1)  # 1536 vector
+            plescale_l1 = MemRefType.get([1], bf16, memory_space=l1)
+            # gate core egress: [residual(K) ++ gelu'd gate(PLI_D)], one packet
+            # so the up core gets both halves in a single get.
+            plegate_l1 = MemRefType.get([K + PLI_D], bf16, memory_space=l1)
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
@@ -1690,6 +1752,34 @@ def build_module():
             visibility="private",
         )
         rope_compute.attributes["link_with"] = StringAttr.get("rope.o")
+        if PLE:
+            # kernels/ple.cc. Block-streamed bf16 mvm (zero/mac/flush, the
+            # proj_qmm split) plus one tail per stage.
+            def _ple_fn(name, sig):
+                f = FuncOp(name, (sig, []), visibility="private")
+                f.attributes["link_with"] = StringAttr.get("ple.o")
+                return f
+
+            ple_zero = _ple_fn("ple_zero", [pleacc_l1])
+            # AIR hands an external call whole buffers, so the block index is an
+            # operand rather than a sliced memref. "down" contracts K -> PLI_D
+            # (x is K wide, j picks the input block); "up" contracts
+            # PLI_D -> K, and PLI_D == PLE_K_BLK so there is exactly one input
+            # block and no index.
+            ple_mac_down = _ple_fn("ple_mac_down", [pleacc_l1, pleblk_l1, plex_l1, i32])
+            ple_mac_up = _ple_fn("ple_mac_up", [pleacc_l1, pleblk_l1, plev_l1])
+            ple_flush_down = _ple_fn("ple_flush_down", [plev_l1, pleacc_l1, i32])
+            ple_flush_up = _ple_fn("ple_flush_up", [plex_l1, pleacc_l1, i32])
+            ple_proj_tail = _ple_fn("ple_proj_tail", [plev_l1, plev_l1, plev_l1])
+            ple_gate_act = _ple_fn("ple_gate_act", [plev_l1, i32])
+            # The gate core emits ONE packet, [residual(K) ++ gate(PLI_D)], so
+            # the up core takes both halves in a single get rather than racing
+            # two channels. The "_at" entry points index into that packing.
+            ple_pack_gate = _ple_fn("ple_pack_gate", [plegate_l1, plex_l1, plev_l1])
+            ple_apply_gate_at = _ple_fn("ple_apply_gate_at", [plev_l1, plegate_l1])
+            ple_up_tail_at = _ple_fn(
+                "ple_up_tail_at", [plex_l1, plegate_l1, plex_l1, plescale_l1, i32]
+            )
         if HYBRID_MIXER:
             # The hybrid's rope shares its input buffer with the ShortConv
             # staging call, and rope_compute rewrites that buffer in place (see
@@ -1989,6 +2079,32 @@ def build_module():
         # the down_buffer fill, derived from the DOWN_REFEED loop around the put
         # below), NOT drained to host.
         channel_decl("gluOut", size=[1])
+        if PLE:
+            # PLE dataflow. FastFlowLM hops rms->gate through adjacent-tile
+            # shared L1; AIR's idiom is a channel, so that hop is @toPle here.
+            #   rms    --toPle(K)------------------> gate
+            #   gate   --gateOut(K+PLI_D)---------->  up     (residual ++ gate)
+            #   projE  --pliOut(PLI_D)------------->  up
+            #   up     --layerOut(K)--------------->  host   (moved off rms)
+            channel_decl("toPle", size=[1])
+            channel_decl("gateOut", size=[1])
+            channel_decl("pliOut", size=[1])
+            # Weight/parameter feeds, one per consuming core. Each carries this
+            # layer's raw bundle bytes for its projection, streamed a block at a
+            # time in the order the kernel consumes them (no repacking -- see
+            # kernels/ple.cc).
+            channel_decl("pleGateW", size=[1])
+            channel_decl("pleProjW", size=[1])
+            channel_decl("pleUpW", size=[1])
+            # proj_layer_embedding also needs the token EMBEDDING (x0), this
+            # layer's per-layer-token-embedding slice, and the 256-wide
+            # per_layer_proj_norm weight.
+            channel_decl("pleX0", size=[1])
+            channel_decl("pleEmb", size=[1])
+            channel_decl("pleNormW", size=[1])
+            # per_layer_up needs post_layernorm(K) and layer_output_scale(1).
+            channel_decl("pleUpNormW", size=[1])
+            channel_decl("pleUpScale", size=[1])
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
@@ -2036,16 +2152,23 @@ def build_module():
         # DYNSEQ appends the context length as a trailing scalar. Kept last so the
         # DDR argument positions -- and every host binding built around them --
         # are unchanged.
+        # The PLE pair is appended AFTER the weight groups and BEFORE the DYNSEQ
+        # scalar, which has to stay last. A non-PLE model contributes nothing
+        # here, so every existing host binding position is unchanged.
+        _ple_args = [plew_l3, plex0_l3] if PLE else []
         _fn_args = (
             [x_l3, w_l3, rms_l3, y_l3]
             + ([kvc_l3] if MULTIBLK else [])
             + _w_extra
+            + _ple_args
             + ([i32] if DYNSEQ else [])
         )
         # arg index of each weight group's buffer: group 0 is the original arg1;
         # groups 1.. and the lm-head follow the base args. Index into _la is +4.
         _w_base_n = 4 + (1 if MULTIBLK else 0)
         WARG = [1] + [_w_base_n + i for i in range(len(_w_extra))]
+        PLEW_ARG = _w_base_n + len(_w_extra)  # func-arg index of plew_l3
+        PLEX0_ARG = PLEW_ARG + 1
 
         @FuncOp.from_py_func(*_fn_args)
         def q4nx_decode(*_fa):
@@ -2066,6 +2189,8 @@ def build_module():
                 # Value => a runtime group index into _WBUFS[0:N_WGRP].
                 _wsel = [None]
                 KVC = _la[8] if MULTIBLK else None
+                PLEW = _la[4 + PLEW_ARG] if PLE else None
+                PLEX0 = _la[4 + PLEX0_ARG] if PLE else None
                 # The dispatch-time context length (DYNSEQ). Last operand before
                 # the multi-layer induction variable.
                 L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
@@ -2271,6 +2396,7 @@ def build_module():
                         # buffer is G*W_LAYER instead of UNI_DEC*W_LAYER.
                         _wbase = arith.muli(arith.subi(a_iv, _goff), idx(W_LAYER))
                     _rbase = _lb(RMS_LAYER)  # rms weights slab for this layer
+                    _pbase = _lb(PLE_LAYER) if PLE else None  # PLE slab
                     _kbase = _lb(KV_LAYER)  # KV cache slab for this layer
                     _ybase = _lb(Y_LAYER)  # Y (host-drain) region for this layer
                     if UNIFIED:
@@ -2449,6 +2575,69 @@ def build_module():
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state).
                             ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
+                            if PLE:
+                                # This layer's PLE slab, same _lb form the rms /
+                                # KV / Y slabs use.
+                                _pb = _pbase
+                                # Weight streams: one put per block, in the order
+                                # the cores get them. Python-unrolled, like the
+                                # vocab feed -- a launch-scope for_ deadlocks the
+                                # shim sequence (see _feed_wcols).
+                                for _bi in range(PLE_NBLK_DOWN):
+                                    ChannelPut(
+                                        "pleGateW",
+                                        PLEW,
+                                        offsets=[arith.addi(_pb, idx(_bi * PLE_BLK))],
+                                        sizes=[PLE_BLK],
+                                        strides=[1],
+                                    )
+                                for _bi in range(PLE_NBLK_DOWN):
+                                    ChannelPut(
+                                        "pleProjW",
+                                        PLEW,
+                                        offsets=[
+                                            arith.addi(
+                                                _pb,
+                                                idx((PLE_NBLK_DOWN + _bi) * PLE_BLK),
+                                            )
+                                        ],
+                                        sizes=[PLE_BLK],
+                                        strides=[1],
+                                    )
+                                for _bi in range(PLE_NBLK_UP):
+                                    ChannelPut(
+                                        "pleUpW",
+                                        PLEW,
+                                        offsets=[
+                                            arith.addi(
+                                                _pb,
+                                                idx(
+                                                    (2 * PLE_NBLK_DOWN + _bi) * PLE_BLK
+                                                ),
+                                            )
+                                        ],
+                                        sizes=[PLE_BLK],
+                                        strides=[1],
+                                    )
+                                # x0 is the TOKEN EMBEDDING and is layer-invariant:
+                                # offset 0 every layer, unlike X which is the
+                                # chained hidden state.
+                                ChannelPut(
+                                    "pleX0", PLEX0, offsets=[0], sizes=[K], strides=[1]
+                                )
+                                for _nm, _off, _sz in (
+                                    ("pleEmb", PLE_EMB_OFF, PLI_D),
+                                    ("pleNormW", PLE_NORMW_OFF, PLI_D),
+                                    ("pleUpNormW", PLE_UPNORMW_OFF, K),
+                                    ("pleUpScale", PLE_SCALE_OFF, 1),
+                                ):
+                                    ChannelPut(
+                                        _nm,
+                                        PLEW,
+                                        offsets=[arith.addi(_pb, idx(_off))],
+                                        sizes=[_sz],
+                                        strides=[1],
+                                    )
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
@@ -4458,6 +4647,205 @@ def build_module():
                         glu_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), GLU_PCOL)
                         glu_h.attributes["y_loc"] = IntegerAttr.get(T.i64(), 3)
 
+                    # ===== per-layer embeddings (PLE) ==========================
+                    # Three cores, mirroring FastFlowLM's relative layout. They
+                    # sit between the post-FFN residual and the layer output:
+                    # the rms core stops driving @layerOut and hands its residual
+                    # to @toPle instead (see _rms_body step3).
+                    #
+                    #   gate (PLE_GATE_LOC): gelu(x @ inp_gate.T), 1536 -> 256
+                    #   projE(PLE_PROJ_LOC): the per-layer input, from the token
+                    #                        EMBEDDING, 1536 -> 256
+                    #   up   (PLE_UP_LOC)  : (pli*gate) @ per_layer_proj.T,
+                    #                        256 -> 1536, + norm + residual +
+                    #                        layer_output_scale -> @layerOut
+                    if PLE:
+                        _arm_ple = _seg_arm
+
+                        def _ple_proj_down(acc, y, w_chan, x, _nout):
+                            """K -> PLI_D projection, block-streamed.
+
+                            Out-tile-major over PLE_NBLK_DOWN blocks, which is
+                            the order the bundle already stores them in, so the
+                            feed is a flat sequential read (kernels/ple.cc).
+                            """
+                            for _i in for_(idx(0), idx(_nout), idx(1)):
+                                CallOp(ple_zero, [acc])
+                                for _j in for_(idx(0), idx(K // PLE_K_BLK), idx(1)):
+                                    wb = AllocOp(pleblk_l1, [], [])
+                                    ChannelGet(w_chan, wb, indices=[idx(0)])
+                                    CallOp(
+                                        ple_mac_down,
+                                        [acc, wb, x, arith.index_cast(T.i32(), _j)],
+                                    )
+                                    DeallocOp(wb)
+                                    yield_([])
+                                CallOp(
+                                    ple_flush_down,
+                                    [y, acc, arith.index_cast(T.i32(), _i)],
+                                )
+                                yield_([])
+
+                        # ---- gate core ----
+                        @herd(name="plegate", sizes=[1, 1], operands=[_arm_ple])
+                        def plegate_h(tx, ty, _sx, _sy, _arm):
+                            def _dec():
+                                a_x = AllocOp(plex_l1, [], [])
+                                ChannelGet("toPle", a_x, indices=[idx(0)])
+                                a_g = AllocOp(plev_l1, [], [])
+                                acc = AllocOp(pleacc_l1, [], [])
+                                _ple_proj_down(
+                                    acc, a_g, "pleGateW", a_x, PLI_D // PLE_M_BLK
+                                )
+                                CallOp(ple_gate_act, [a_g, _arm])
+                                # One packet carrying [residual ++ gate] so the
+                                # up core takes both halves in a single get.
+                                a_o = AllocOp(plegate_l1, [], [])
+                                CallOp(ple_pack_gate, [a_o, a_x, a_g])
+                                ChannelPut(
+                                    "gateOut",
+                                    a_o,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K + PLI_D)],
+                                    strides=[idx(1)],
+                                )
+                                DeallocOp(a_x)
+                                DeallocOp(a_g)
+                                DeallocOp(acc)
+                                DeallocOp(a_o)
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                arith.index_cast(idx_t, _arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: yield_([]),
+                                default_body_builder=lambda op: _dec(),
+                            )
+
+                        plegate_h.attributes["link_with"] = StringAttr.get("ple.o")
+                        plegate_h.attributes["x_loc"] = IntegerAttr.get(
+                            T.i64(), PLE_GATE_LOC[0]
+                        )
+                        plegate_h.attributes["y_loc"] = IntegerAttr.get(
+                            T.i64(), PLE_GATE_LOC[1]
+                        )
+
+                        # ---- per-layer input (projection of the EMBEDDING) ----
+                        @herd(name="pleproj", sizes=[1, 1], operands=[_arm_ple])
+                        def pleproj_h(tx, ty, _sx, _sy, _arm):
+                            def _dec():
+                                # x0 is the TOKEN EMBEDDING, not the running
+                                # hidden state. Feeding the hidden state here is
+                                # the bug that put CPU-reference layer 8 at
+                                # cos 0.79 (0.30 on this block alone); it is
+                                # nearly invisible because early layers barely
+                                # differ from their embedding.
+                                a_x0 = AllocOp(plex_l1, [], [])
+                                ChannelGet("pleX0", a_x0, indices=[idx(0)])
+                                a_p = AllocOp(plev_l1, [], [])
+                                acc = AllocOp(pleacc_l1, [], [])
+                                _ple_proj_down(
+                                    acc, a_p, "pleProjW", a_x0, PLI_D // PLE_M_BLK
+                                )
+                                a_e = AllocOp(plev_l1, [], [])
+                                ChannelGet("pleEmb", a_e, indices=[idx(0)])
+                                a_nw = AllocOp(plev_l1, [], [])
+                                ChannelGet("pleNormW", a_nw, indices=[idx(0)])
+                                CallOp(ple_proj_tail, [a_p, a_e, a_nw])
+                                ChannelPut(
+                                    "pliOut",
+                                    a_p,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(PLI_D)],
+                                    strides=[idx(1)],
+                                )
+                                DeallocOp(a_x0)
+                                DeallocOp(a_p)
+                                DeallocOp(acc)
+                                DeallocOp(a_e)
+                                DeallocOp(a_nw)
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                arith.index_cast(idx_t, _arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: yield_([]),
+                                default_body_builder=lambda op: _dec(),
+                            )
+
+                        pleproj_h.attributes["link_with"] = StringAttr.get("ple.o")
+                        pleproj_h.attributes["x_loc"] = IntegerAttr.get(
+                            T.i64(), PLE_PROJ_LOC[0]
+                        )
+                        pleproj_h.attributes["y_loc"] = IntegerAttr.get(
+                            T.i64(), PLE_PROJ_LOC[1]
+                        )
+
+                        # ---- up projection + layer output ----
+                        @herd(name="pleup", sizes=[1, 1], operands=[_arm_ple])
+                        def pleup_h(tx, ty, _sx, _sy, _arm):
+                            def _dec():
+                                a_rg = AllocOp(plegate_l1, [], [])
+                                ChannelGet("gateOut", a_rg, indices=[idx(0)])
+                                a_p = AllocOp(plev_l1, [], [])
+                                ChannelGet("pliOut", a_p, indices=[idx(0)])
+                                # pli *= gate, i.e. the gate half of @gateOut.
+                                CallOp(ple_apply_gate_at, [a_p, a_rg])
+                                a_y = AllocOp(plex_l1, [], [])
+                                acc = AllocOp(pleacc_l1, [], [])
+                                # PLI_D == PLE_K_BLK, so one input block per
+                                # output tile and no j loop.
+                                for _i in for_(idx(0), idx(K // PLE_M_BLK), idx(1)):
+                                    CallOp(ple_zero, [acc])
+                                    wb = AllocOp(pleblk_l1, [], [])
+                                    ChannelGet("pleUpW", wb, indices=[idx(0)])
+                                    CallOp(ple_mac_up, [acc, wb, a_p])
+                                    DeallocOp(wb)
+                                    CallOp(
+                                        ple_flush_up,
+                                        [a_y, acc, arith.index_cast(T.i32(), _i)],
+                                    )
+                                    yield_([])
+                                a_nw = AllocOp(plex_l1, [], [])
+                                ChannelGet("pleUpNormW", a_nw, indices=[idx(0)])
+                                a_sc = AllocOp(plescale_l1, [], [])
+                                ChannelGet("pleUpScale", a_sc, indices=[idx(0)])
+                                # residual = the K-wide head of @gateOut.
+                                CallOp(ple_up_tail_at, [a_y, a_rg, a_nw, a_sc, _arm])
+                                ChannelPut(
+                                    "layerOut",
+                                    a_y,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                DeallocOp(a_rg)
+                                DeallocOp(a_p)
+                                DeallocOp(a_y)
+                                DeallocOp(acc)
+                                DeallocOp(a_nw)
+                                DeallocOp(a_sc)
+                                yield_([])
+
+                            index_switch(
+                                [],
+                                arith.index_cast(idx_t, _arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: yield_([]),
+                                default_body_builder=lambda op: _dec(),
+                            )
+
+                        pleup_h.attributes["link_with"] = StringAttr.get("ple.o")
+                        pleup_h.attributes["x_loc"] = IntegerAttr.get(
+                            T.i64(), PLE_UP_LOC[0]
+                        )
+                        pleup_h.attributes["y_loc"] = IntegerAttr.get(
+                            T.i64(), PLE_UP_LOC[1]
+                        )
+
+                    if GLU_DEST >= 0:
                         # GLU output -> down memtile accumulate (8192). FAITHFUL: feed
                         # it back on-chip as the DOWN phase X, re-broadcast DOWN_REFEED
                         # times into the convergent @xnorm. The DOWN_REFEED loop
@@ -5122,8 +5510,13 @@ def build_module():
                             DeallocOp(g_sub)
                             DeallocOp(g_subn)
                             DeallocOp(g_wb)
+                            # Gemma3 stops here: res2 IS the layer output. Gemma4
+                            # adds a FIFTH norm on the per-layer-embedding branch,
+                            # so res2 is only the post-FFN residual and the layer
+                            # output is produced by the PLE up core -- hand res2
+                            # to @toPle instead of draining it.
                             ChannelPut(
-                                "layerOut",
+                                "toPle" if PLE else "layerOut",
                                 g_x,
                                 offsets=[idx(0)],
                                 sizes=[idx(DOWN_RNDS * PAYLOAD)],
@@ -5209,14 +5602,31 @@ def build_module():
                             CallOp(residual_add_aie, [a_r2, a_h, a_dn])
                             DeallocOp(a_h)
                             DeallocOp(a_dn)
-                            # BD-COMPACTION: single full-size layerOut put.
-                            ChannelPut(
-                                "layerOut",
-                                a_r2,
-                                offsets=[idx(0)],
-                                sizes=[idx(DOWN_RNDS * PAYLOAD)],
-                                strides=[idx(1)],
-                            )
+                            # The layer output. WITHOUT a PLE that is res2 and
+                            # the rms core drains it straight to the host.
+                            # WITH one, res2 is only the post-FFN residual: the
+                            # per-layer-embedding branch still has to be gated
+                            # in and normed on top of it, so res2 goes to the
+                            # PLE gate core and @layerOut is driven by the PLE
+                            # up core instead (see the plegate/pleproj/pleup
+                            # herds).
+                            if PLE:
+                                ChannelPut(
+                                    "toPle",
+                                    a_r2,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                    strides=[idx(1)],
+                                )
+                            else:
+                                # BD-COMPACTION: single full-size layerOut put.
+                                ChannelPut(
+                                    "layerOut",
+                                    a_r2,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                    strides=[idx(1)],
+                                )
                             DeallocOp(a_r2)
 
                     rms_h = herd(name="rms", sizes=[1, 1], operands=[_arm_rms])(
