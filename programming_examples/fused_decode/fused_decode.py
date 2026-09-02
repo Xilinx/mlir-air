@@ -1012,6 +1012,11 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # for @rmsW. But the hand-written `get @appendK` sits at launch-scope index 51
 # and the first `put @inKV_K` at 53, so first-occurrence resolution is right.
 APPEND_DMA = not DYNSEQ_APPEND
+# The hybrid's conv state, the same way. @convStIn reads [BX(t-2)|BX(t-1)] out
+# of the KV BO and @convStOut writes the shifted state back over the SAME slot,
+# so both name KVC -- which already reaches conv_h for the ported append. Only
+# a hybrid has them.
+CONVST_DMA = HYBRID_MIXER
 # And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
 # get on an L2 buffer, which air-dma-to-channel handles natively -- the only
 # obstacle was that the L2 buffer is allocated after the rope herd, so it does
@@ -2619,6 +2624,8 @@ def build_module():
                                     _cst = _lo(_lb(CONV_ST_LAYER), CONV_ST_BASE)
 
                                     def _conv_state():
+                                        if CONVST_DMA:
+                                            return
                                         ChannelPut(
                                             "convStIn",
                                             KVC,
@@ -3666,7 +3673,7 @@ def build_module():
                         # not a hybrid.
                         _conv_append_opers = (
                             ([_seg_KVC, _seg_iv] if _seg_iv is not None else [_seg_KVC])
-                            if (APPEND_DMA and _seg_KVC is not None)
+                            if ((APPEND_DMA or CONVST_DMA) and _seg_KVC is not None)
                             else []
                         )
                         _n_capp = len(_conv_append_opers)
@@ -3782,16 +3789,50 @@ def build_module():
                                         [_lands[0], _lands[1], mix, _arm],
                                     )
 
+                            # The conv state slot, rebuilt inside the herd. _cst is
+                            # a launch-scope value and a herd is IsolatedFromAbove,
+                            # so the wave index comes in as an operand and the
+                            # offset is recomputed from it -- the same friction
+                            # @appendK's _apoff and @rmsW's _rbase_h have.
+                            _cst_kvc = _ckv[0] if _n_capp > 0 else None
+                            _cst_iv = _ckv[1] if _n_capp > 1 else None
+
+                            def _cst_h():
+                                if _cst_iv is None:
+                                    return CONV_ST_BASE
+                                b = arith.muli(_cst_iv, idx(CONV_ST_LAYER))
+                                return (
+                                    arith.addi(b, idx(CONV_ST_BASE))
+                                    if CONV_ST_BASE
+                                    else b
+                                )
+
                             def _mix():
                                 a_st = AllocOp(convst_l1, [], [])
-                                ChannelGet(
-                                    "convStIn",
-                                    a_st,
-                                    indices=[idx(0)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(2 * CONV_DIM)],
-                                    strides=[idx(1)],
-                                )
+                                if CONVST_DMA and _cst_kvc is not None:
+                                    DmaMemcpyNd(
+                                        a_st,
+                                        _cst_kvc,
+                                        src_offsets=[_cst_h()],
+                                        src_sizes=[2 * CONV_DIM],
+                                        src_strides=[1],
+                                        channel="convStIn",
+                                        channel_indices=[0],
+                                        # @convW, not @inW0c0: the hand-written pair
+                                        # sits in a LATER wave than the decode arm's
+                                        # first weight put, and first-occurrence
+                                        # resolution would land it ~40 slots early.
+                                        hoist_after="convW",
+                                    )
+                                else:
+                                    ChannelGet(
+                                        "convStIn",
+                                        a_st,
+                                        indices=[idx(0)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(2 * CONV_DIM)],
+                                        strides=[idx(1)],
+                                    )
                                 a_y = AllocOp(convo_l1, [], [])
                                 a_bx = AllocOp(convst_l1, [], [])
                                 CallOp(shortconv_compute, [mix, a_st, a_y, a_bx, _arm])
@@ -3807,14 +3848,33 @@ def build_module():
                                 # sub-channel -- the constraint that the first
                                 # hybrid violated and hung on.
                                 def _put_stout():
-                                    ChannelPut(
-                                        "convStOut",
-                                        a_bx,
-                                        indices=[idx(0)],
-                                        offsets=[idx(0)],
-                                        sizes=[idx(2 * CONV_DIM)],
-                                        strides=[idx(1)],
-                                    )
+                                    if CONVST_DMA and _cst_kvc is not None:
+                                        DmaMemcpyNd(
+                                            _cst_kvc,
+                                            a_bx,
+                                            dst_offsets=[_cst_h()],
+                                            dst_sizes=[2 * CONV_DIM],
+                                            dst_strides=[1],
+                                            src_offsets=[0],
+                                            src_sizes=[2 * CONV_DIM],
+                                            src_strides=[1],
+                                            channel="convStOut",
+                                            channel_indices=[0],
+                                            # Chained off its own partner, not off
+                                            # @convW: two transfers sharing one
+                                            # anchor come out REVERSED, because each
+                                            # is inserted directly after it.
+                                            hoist_after="convStIn",
+                                        )
+                                    else:
+                                        ChannelPut(
+                                            "convStOut",
+                                            a_bx,
+                                            indices=[idx(0)],
+                                            offsets=[idx(0)],
+                                            sizes=[idx(2 * CONV_DIM)],
+                                            strides=[idx(1)],
+                                        )
 
                                 if MIX_TO_CU:
                                     # NOT straight to @xnorm: that would be a
