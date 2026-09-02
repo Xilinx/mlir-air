@@ -30,7 +30,7 @@ namespace {
 /// its `sizes` when they are all static, else the whole memref. nullopt when
 /// any size is dynamic -- an unknown volume must never be silently treated as
 /// zero, since that would make a broadcast look like a partition.
-static std::optional<int64_t> accessVolume(ChannelInterface chanOp) {
+static std::optional<int64_t> accessVolume(PacketEndpoint chanOp) {
   SmallVector<OpFoldResult> sizes = chanOp.getMixedSizes();
   if (sizes.empty()) {
     auto memrefTy = dyn_cast<MemRefType>(chanOp.getMemref().getType());
@@ -51,7 +51,7 @@ static std::optional<int64_t> accessVolume(ChannelInterface chanOp) {
 /// Volume this op contributes across every execution of it, i.e. its access
 /// volume scaled by the trip counts of the loops it sits in. nullopt if either
 /// part is not static.
-static std::optional<int64_t> totalVolume(ChannelInterface chanOp,
+static std::optional<int64_t> totalVolume(PacketEndpoint chanOp,
                                           Operation *scopeRoot) {
   std::optional<int64_t> vol = accessVolume(chanOp);
   if (!vol)
@@ -78,12 +78,37 @@ static std::optional<int64_t> totalVolume(ChannelInterface chanOp,
 /// and misclassify the channel.
 using DestKey = int64_t;
 
-static std::optional<DestKey> destKeyOf(ChannelInterface chanOp,
+static std::optional<DestKey> destKeyOf(PacketEndpoint chanOp,
                                         int broadcastDim) {
-  OperandRange indices = chanOp.getIndices();
+  SmallVector<OpFoldResult> indices = chanOp.getMixedIndices();
   if (broadcastDim < 0 || broadcastDim >= (int)indices.size())
     return std::nullopt;
   return getConstantIntValue(indices[broadcastDim]);
+}
+
+/// Every site in `mod` that picks a packet destination at run time, in either
+/// spelling.
+static SmallVector<PacketEndpoint> collectHeaderOriginators(ModuleOp mod) {
+  SmallVector<PacketEndpoint> out;
+  mod.walk([&](Operation *op) {
+    if (auto put = dyn_cast<ChannelPutOp>(op)) {
+      if (put.getDest())
+        out.push_back(cast<ChannelInterface>(op));
+    } else if (auto d = dyn_cast<DmaMemcpyNdOp>(op)) {
+      if (d.getChannel() && d.getDest())
+        out.push_back(PacketEndpoint::putHalfOf(d));
+    }
+  });
+  return out;
+}
+
+/// The `air.channel` an endpoint names, through the symbol table.
+static ChannelOp lookupChannel(PacketEndpoint e) {
+  if (auto put = dyn_cast<ChannelPutOp>(e.getOperation()))
+    return getChannelDeclarationThroughSymbol(put);
+  return dyn_cast_if_present<ChannelOp>(SymbolTable::lookupNearestSymbolFrom(
+      e.getOperation(),
+      cast<DmaMemcpyNdOp>(e.getOperation()).getChannelAttr()));
 }
 
 static bool isPacketChannel(ChannelOp chanOp) {
@@ -93,8 +118,8 @@ static bool isPacketChannel(ChannelOp chanOp) {
 
 /// Classify one packet channel from its put/get volumes.
 static PacketChannelFacts classify(ChannelOp chanOp,
-                                   ArrayRef<ChannelInterface> puts,
-                                   ArrayRef<ChannelInterface> gets,
+                                   ArrayRef<PacketEndpoint> puts,
+                                   ArrayRef<PacketEndpoint> gets,
                                    Operation *scopeRoot) {
   PacketChannelFacts c;
 
@@ -121,7 +146,7 @@ static PacketChannelFacts classify(ChannelOp chanOp,
     return c;
   }
   llvm::MapVector<DestKey, int64_t> volByDest;
-  for (ChannelInterface g : gets) {
+  for (PacketEndpoint g : gets) {
     std::optional<DestKey> key = destKeyOf(g, broadcastDim);
     if (!key) {
       c.reason = "a get has a non-constant index on the broadcast dimension";
@@ -146,7 +171,7 @@ static PacketChannelFacts classify(ChannelOp chanOp,
   }
 
   int64_t putVol = 0;
-  for (ChannelInterface p : puts) {
+  for (PacketEndpoint p : puts) {
     std::optional<int64_t> v = totalVolume(p, scopeRoot);
     if (!v) {
       c.reason = "a put has a non-static volume";
@@ -250,6 +275,15 @@ static bool opWritesRoot(Operation *op, Value root) {
   op->walk([&](Operation *inner) {
     if (isa<ChannelGetOp>(inner))
       return WalkResult::skip();
+    // Same for a DMA that names a channel: it is the un-lowered spelling of a
+    // get, so it deposits bytes without transforming them. Several producers
+    // landing disjoint slices in one gather buffer is exactly the shape the
+    // ChannelGetOp exemption above exists for, and a DMA's declared write
+    // effect on its `dst` would otherwise let every producer but the last one
+    // sever the chain.
+    if (auto d = dyn_cast<DmaMemcpyNdOp>(inner))
+      if (d.getChannel())
+        return WalkResult::skip();
     if (auto call = dyn_cast<CallOpInterface>(inner)) {
       // A call has no effect interface to consult, so any buffer it is handed
       // is assumed written. Kernels take their output buffer by reference.
@@ -287,8 +321,7 @@ static bool opWritesRoot(Operation *op, Value root) {
 /// Yes unless something between them rewrites the buffer. Note what is NOT
 /// required: that `g` precede `p`. A rolled hop puts this iteration's buffer
 /// before getting the next one, and demanding program order would sever it.
-static bool isForwardingPair(ChannelInterface g, ChannelInterface p,
-                             Value root) {
+static bool isForwardingPair(PacketEndpoint g, PacketEndpoint p, Value root) {
   Operation *gAnc = nullptr, *pAnc = nullptr;
   Block *blk = commonBlock(g.getOperation(), p.getOperation(), gAnc, pAnc);
   if (!blk)
@@ -313,6 +346,67 @@ namespace xilinx {
 namespace air {
 
 const PacketChannelFacts PacketRoutingDomainAnalysis::unknownFacts = {};
+
+//===----------------------------------------------------------------------===//
+// PacketEndpoint
+//===----------------------------------------------------------------------===//
+
+StringRef PacketEndpoint::getChanName() const {
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op))
+    return *d.getChannel();
+  return cast<ChannelInterface>(op).getChanName();
+}
+
+Value PacketEndpoint::getMemref() const {
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op))
+    return put ? d.getSrc() : d.getDst();
+  return cast<ChannelInterface>(op).getMemref();
+}
+
+SmallVector<OpFoldResult> PacketEndpoint::getMixedOffsets() const {
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op))
+    return put ? d.getMixedSrcOffsets() : d.getMixedDstOffsets();
+  return cast<ChannelInterface>(op).getMixedOffsets();
+}
+
+SmallVector<OpFoldResult> PacketEndpoint::getMixedSizes() const {
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op))
+    return put ? d.getMixedSrcSizes() : d.getMixedDstSizes();
+  return cast<ChannelInterface>(op).getMixedSizes();
+}
+
+SmallVector<OpFoldResult> PacketEndpoint::getMixedIndices() const {
+  SmallVector<OpFoldResult> out;
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op)) {
+    if (!d.getDynamicChannelIndices().empty()) {
+      for (Value v : d.getDynamicChannelIndices())
+        out.push_back(v);
+    } else if (auto idx = d.getChannelIndices()) {
+      Builder b(op->getContext());
+      for (int64_t i : *idx)
+        out.push_back(b.getIndexAttr(i));
+    }
+    return out;
+  }
+  for (Value v : cast<ChannelInterface>(op).getIndices())
+    out.push_back(v);
+  return out;
+}
+
+Value PacketEndpoint::getDest() const {
+  if (!put)
+    return Value();
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op))
+    return d.getDest();
+  return cast<ChannelPutOp>(op).getDest();
+}
+
+void PacketEndpoint::clearDest() const {
+  if (auto d = dyn_cast<DmaMemcpyNdOp>(op))
+    d.getDestMutable().clear();
+  else
+    cast<ChannelPutOp>(op).getDestMutable().clear();
+}
 
 StringRef getPacketFanoutName(PacketFanout f) {
   switch (f) {
@@ -342,13 +436,35 @@ PacketRoutingDomainAnalysis::PacketRoutingDomainAnalysis(ModuleOp mod)
 }
 
 void PacketRoutingDomainAnalysis::classifyChannels(ModuleOp mod) {
-  llvm::MapVector<StringRef, SmallVector<ChannelInterface>> putsOfByName,
+  llvm::MapVector<StringRef, SmallVector<PacketEndpoint>> putsOfByName,
       getsOfByName;
   mod.walk([&](ChannelInterface op) {
     if (isa<ChannelPutOp>(op.getOperation()))
       putsOfByName[op.getChanName()].push_back(op);
     else if (isa<ChannelGetOp>(op.getOperation()))
       getsOfByName[op.getChanName()].push_back(op);
+  });
+  // A DMA naming a channel is both ends of one transfer, written once. Register
+  // both halves: read side as the put, written side as the get. Skipping it
+  // would leave the channel with no endpoints at all -- not "an unclassifiable
+  // channel" but an INVISIBLE one, which is how a broken chain looks too.
+  mod.walk([&](DmaMemcpyNdOp d) {
+    if (!d.getChannel())
+      return;
+    StringRef name = *d.getChannel();
+    putsOfByName[name].push_back(PacketEndpoint::putHalfOf(d));
+    // The get half is registered only on a channel that does NOT fan out.
+    //
+    // On a broadcast channel the fan-out lives in the separately written gets,
+    // one per destination, and a DMA names exactly one `dst`. Counting it as a
+    // further destination would inflate the demux's count by the number of
+    // producers and turn a partition into "neither replicates nor partitions".
+    // What the half is FOR is chain recovery -- naming the buffer the payload
+    // lands in so the next hop's put can be matched to it -- and that only ever
+    // applies to a single-destination hop.
+    ChannelOp c = lookupChannel(PacketEndpoint::putHalfOf(d));
+    if (c && !c.isBroadcast())
+      getsOfByName[name].push_back(PacketEndpoint::getHalfOf(d));
   });
   mod.walk([&](ChannelOp chanOp) {
     if (!isPacketChannel(chanOp))
@@ -368,20 +484,24 @@ void PacketRoutingDomainAnalysis::buildForwardingEdges(ModuleOp mod) {
   // the raw memref operand -- a subview, an air.execute result or a herd block
   // argument names the same bytes through a different Value, and keying on
   // identity drops those links without a word.
-  llvm::DenseMap<Value, SmallVector<ChannelInterface>> puttersByRoot;
+  llvm::DenseMap<Value, SmallVector<PacketEndpoint>> puttersByRoot;
   for (ChannelOp c : packetChans)
-    for (ChannelInterface p : putsOf[c.getOperation()])
+    for (PacketEndpoint p : putsOf[c.getOperation()])
       puttersByRoot[resolveBufferRoot(p.getMemref())].push_back(p);
 
   for (ChannelOp c : packetChans) {
     StringRef name = c.getSymName();
     llvm::SmallPtrSet<Operation *, 4> seen;
-    for (ChannelInterface g : getsOf[c.getOperation()]) {
+    for (PacketEndpoint g : getsOf[c.getOperation()]) {
       Value root = resolveBufferRoot(g.getMemref());
-      for (ChannelInterface p : puttersByRoot.lookup(root)) {
+      for (PacketEndpoint p : puttersByRoot.lookup(root)) {
+        // A deferred DMA is registered as both halves of its own channel, so it
+        // would otherwise "forward into" itself.
+        if (p.getOperation() == g.getOperation())
+          continue;
         if (p.getChanName() == name)
           continue;
-        ChannelOp succ = getChannelDeclarationThroughSymbol(p);
+        ChannelOp succ = lookupChannel(p);
         if (!succ || seen.contains(succ.getOperation()))
           continue;
         // Dedupe on the link that was ACCEPTED, not on the one first
@@ -422,30 +542,25 @@ void PacketRoutingDomainAnalysis::buildDomains() {
   // reaches covers its broadcast dimension over TIME, and that is the whole
   // space-vs-time question, answered by the design without an attribute for it.
   struct Origin {
-    ChannelPutOp put;
+    PacketEndpoint put;
     llvm::SmallPtrSet<Operation *, 8> reaches;
   };
   SmallVector<Origin> origins;
-  {
-    ModuleOp m = mod;
-    m.walk([&](ChannelPutOp put) {
-      if (!put.getDest())
-        return;
-      ChannelOp c0 = getChannelDeclarationThroughSymbol(put);
-      if (!c0)
-        return;
-      Origin o;
-      o.put = put;
-      o.reaches.insert(c0.getOperation());
-      SmallVector<ChannelOp> wl{c0};
-      while (!wl.empty()) {
-        ChannelOp cur = wl.pop_back_val();
-        for (ChannelOp succ : feeds.lookup(cur.getOperation()))
-          if (o.reaches.insert(succ.getOperation()).second)
-            wl.push_back(succ);
-      }
-      origins.push_back(std::move(o));
-    });
+  for (PacketEndpoint put : collectHeaderOriginators(mod)) {
+    ChannelOp c0 = lookupChannel(put);
+    if (!c0)
+      continue;
+    Origin o;
+    o.put = put;
+    o.reaches.insert(c0.getOperation());
+    SmallVector<ChannelOp> wl{c0};
+    while (!wl.empty()) {
+      ChannelOp cur = wl.pop_back_val();
+      for (ChannelOp succ : feeds.lookup(cur.getOperation()))
+        if (o.reaches.insert(succ.getOperation()).second)
+          wl.push_back(succ);
+    }
+    origins.push_back(std::move(o));
   }
 
   // One domain per demux. Ids belong to the domain, so this is also the only
@@ -594,16 +709,16 @@ PacketRoutingDomainAnalysis::getFacts(ChannelOp c) const {
   return it == facts.end() ? unknownFacts : it->second;
 }
 
-ArrayRef<ChannelInterface>
+ArrayRef<PacketEndpoint>
 PacketRoutingDomainAnalysis::getPuts(ChannelOp c) const {
   auto it = putsOf.find(c.getOperation());
-  return it == putsOf.end() ? ArrayRef<ChannelInterface>() : it->second;
+  return it == putsOf.end() ? ArrayRef<PacketEndpoint>() : it->second;
 }
 
-ArrayRef<ChannelInterface>
+ArrayRef<PacketEndpoint>
 PacketRoutingDomainAnalysis::getGets(ChannelOp c) const {
   auto it = getsOf.find(c.getOperation());
-  return it == getsOf.end() ? ArrayRef<ChannelInterface>() : it->second;
+  return it == getsOf.end() ? ArrayRef<PacketEndpoint>() : it->second;
 }
 
 //===----------------------------------------------------------------------===//
@@ -617,7 +732,7 @@ PacketRoutingDomainAnalysis::getGets(ChannelOp c) const {
 /// meant to go -- which is the whole reason the decision travels in the packet
 /// header instead. So a demux fed from L2 with nothing upstream of it has lost
 /// its chain, however well-formed it looks locally.
-static bool putCouldHaveWrittenHeader(ChannelInterface put) {
+static bool putCouldHaveWrittenHeader(PacketEndpoint put) {
   auto ty = dyn_cast<BaseMemRefType>(put.getMemref().getType());
   return ty && isL1(ty);
 }
@@ -642,17 +757,15 @@ LogicalResult PacketRoutingDomainAnalysis::verify() const {
   // The old diagnostic for this blamed the put's own channel for "not being a
   // demux" -- but a hop is not supposed to be one, and the real fault is
   // usually a severed link further downstream. Name the domain instead.
-  m.walk([&](ChannelPutOp put) {
-    if (!put.getDest())
-      return;
-    ChannelOp c = getChannelDeclarationThroughSymbol(put);
+  for (PacketEndpoint put : collectHeaderOriginators(m)) {
+    ChannelOp c = lookupChannel(put);
     if (!c) {
-      emit(put, "names a channel that does not resolve");
-      return;
+      emit(put.getOperation(), "names a channel that does not resolve");
+      continue;
     }
     const PacketRoutingDomain *dom = getDomainOf(c);
     if (dom && dom->ids.size() >= 2)
-      return;
+      continue;
 
     SmallVector<std::string> notes;
     if (!dom) {
@@ -683,9 +796,9 @@ LogicalResult PacketRoutingDomainAnalysis::verify() const {
            " routing id(s); selecting a destination needs at least 2")
               .str());
     }
-    emit(put, "selects a destination, but its routing domain has no demux",
-         notes);
-  });
+    emit(put.getOperation(),
+         "selects a destination, but its routing domain has no demux", notes);
+  }
 
   // A demux fed from L2 with no upstream at all.
   //
@@ -703,7 +816,7 @@ LogicalResult PacketRoutingDomainAnalysis::verify() const {
     // is about a list the compiler DERIVED, where a wrong derivation is ours.
     if (dom.idsDeclared)
       continue;
-    ArrayRef<ChannelInterface> puts = getPuts(dom.demux);
+    ArrayRef<PacketEndpoint> puts = getPuts(dom.demux);
     if (puts.empty() || llvm::any_of(puts, putCouldHaveWrittenHeader))
       continue;
     emit(dom.demux.getOperation(),
@@ -780,8 +893,9 @@ void PacketRoutingDomainAnalysis::printReport(llvm::raw_ostream &os) const {
        << " id(s) [";
     llvm::interleaveComma(dom.ids, os);
     os << "] (" << (dom.idsDeclared ? "declared" : "allocated") << ")\n";
-    for (ChannelPutOp p : dom.originators)
-      os << "  originator  " << p.getChanName() << " (dest)\n";
+    for (PacketEndpoint p : dom.originators)
+      os << "  originator  " << p.getChanName() << " (dest"
+         << (p.isDeferred() ? ", dma" : "") << ")\n";
     for (ChannelOp h : dom.hops)
       os << "  hop         @" << h.getSymName() << " (" << getFacts(h).numDests
          << " dest)\n";

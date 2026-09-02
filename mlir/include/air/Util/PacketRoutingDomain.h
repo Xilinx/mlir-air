@@ -44,6 +44,71 @@ struct PacketChannelFacts {
 };
 
 //===----------------------------------------------------------------------===//
+// Endpoints
+//===----------------------------------------------------------------------===//
+
+/// One end of a packet transfer.
+///
+/// This analysis runs before `air-dma-to-channel`, so a transfer the front end
+/// spelled as an `air.dma_memcpy_nd` naming a channel has neither a put nor a
+/// get in the IR yet -- only the one op that will become both. Modelling that
+/// op as a PAIR of endpoints is what lets the same chain recovery work on
+/// either spelling. Without it, a design that stops hand-writing its puts loses
+/// its routing chain outright, and its demux is rejected for a header "nothing
+/// upstream writes" while the header is in fact written exactly as before.
+///
+/// Which half is which follows from the direction of the copy and nothing else:
+/// the side the DMA READS is the put, the side it WRITES is the get. That is
+/// the same rule `air-dma-to-channel` applies when it materializes the two.
+class PacketEndpoint {
+public:
+  PacketEndpoint() = default;
+  /*implicit*/ PacketEndpoint(ChannelInterface ci)
+      : op(ci.getOperation()), put(isa<ChannelPutOp>(ci.getOperation())) {}
+  static PacketEndpoint putHalfOf(DmaMemcpyNdOp d) {
+    return PacketEndpoint(d.getOperation(), /*put=*/true);
+  }
+  static PacketEndpoint getHalfOf(DmaMemcpyNdOp d) {
+    return PacketEndpoint(d.getOperation(), /*put=*/false);
+  }
+
+  explicit operator bool() const { return op != nullptr; }
+  Operation *getOperation() const { return op; }
+  Location getLoc() const { return op->getLoc(); }
+  bool isPut() const { return put; }
+  /// True when this endpoint is one half of a not-yet-lowered DMA rather than a
+  /// materialized channel op.
+  bool isDeferred() const { return isa<DmaMemcpyNdOp>(op); }
+
+  StringRef getChanName() const;
+  /// The buffer on THIS side of the transfer.
+  Value getMemref() const;
+  SmallVector<OpFoldResult> getMixedOffsets() const;
+  SmallVector<OpFoldResult> getMixedSizes() const;
+  /// Sub-channel selectors, in either the static or the runtime form. Mixed
+  /// rather than an OperandRange because a DMA may spell them as an attribute,
+  /// and a constant selector is exactly the case a demux has to resolve.
+  SmallVector<OpFoldResult> getMixedIndices() const;
+  /// The runtime packet-demux destination, or null. Only a put ever has one.
+  Value getDest() const;
+  /// Drop that destination, once its header word has been written.
+  void clearDest() const;
+
+  InFlightDiagnostic emitOpError(const Twine &m = {}) const {
+    return op->emitOpError(m);
+  }
+
+  bool operator==(const PacketEndpoint &o) const {
+    return op == o.op && put == o.put;
+  }
+
+private:
+  PacketEndpoint(Operation *op, bool put) : op(op), put(put) {}
+  Operation *op = nullptr;
+  bool put = false;
+};
+
+//===----------------------------------------------------------------------===//
 // Routing domains
 //===----------------------------------------------------------------------===//
 
@@ -62,7 +127,7 @@ struct PacketRoutingDomain {
   /// Puts carrying a `dest` operand -- the sites that pick a destination at run
   /// time and stamp the header. May be empty for a domain whose ids the front
   /// end pins and whose header some kernel writes by hand.
-  SmallVector<ChannelPutOp> originators;
+  SmallVector<PacketEndpoint> originators;
   /// Header-preserving single-destination channels that forward the packet,
   /// ordered from furthest upstream to nearest the demux.
   SmallVector<ChannelOp> hops;
@@ -103,8 +168,8 @@ public:
   /// checked AGAINST, so it must never be read back off that pin.
   unsigned getInferredIdCount(ChannelOp c) const;
 
-  ArrayRef<ChannelInterface> getPuts(ChannelOp c) const;
-  ArrayRef<ChannelInterface> getGets(ChannelOp c) const;
+  ArrayRef<PacketEndpoint> getPuts(ChannelOp c) const;
+  ArrayRef<PacketEndpoint> getGets(ChannelOp c) const;
 
   /// Emit a diagnostic for every structural fault found, and fail if any was.
   /// This is the difference between a misrouted packet showing up as a compile
@@ -124,7 +189,7 @@ private:
   ModuleOp mod;
   SmallVector<ChannelOp> packetChans;
   llvm::DenseMap<Operation *, PacketChannelFacts> facts;
-  llvm::DenseMap<Operation *, SmallVector<ChannelInterface>> putsOf, getsOf;
+  llvm::DenseMap<Operation *, SmallVector<PacketEndpoint>> putsOf, getsOf;
 
   /// Channel -> the channels it forwards INTO (its successors downstream).
   llvm::DenseMap<Operation *, SmallVector<ChannelOp>> feeds;
