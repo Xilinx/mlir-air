@@ -1117,6 +1117,26 @@ PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
 # core's get ORDER changes. Tests whether the deadlock is that the up core holds
 # ~50 enqueued blocks it will not touch until the gate core finishes.
 PLE_UP_W_FIRST = PLE and int(_os.environ.get("DECODE_PLE_UP_W_FIRST", "0"))
+# Stage the up core's weight stream through an L2 FIFO instead of shim-direct.
+#
+# THE MECHANISM THIS EXISTS FOR. The runtime sequence is not fire-and-forget: it
+# is a 4-deep rolling window of "configure task N, await task N-4, start task N"
+# (192 aiex.dma_await_task in the emitted sequence). So a consumer that stalls
+# does not merely backpressure -- it jams the window and the shim stops
+# executing, including everything after it. The up core blocks on @gateOut before
+# touching any of its ~50 weight blocks, so its run is exactly that stall.
+#
+# A memtile absorbs the blocks at DMA speed, so the shim's tasks retire and the
+# sequence runs to the end; the wait moves onto the memtile->core edge, where
+# nothing else is queued behind it. Two slots are enough -- AIR turns the
+# per-iteration alloc below into a count-free 2-buffer ring.
+# TESTED AND HARMFUL AS BUILT: 0/5 against 2/5 without it. The per-iteration
+# alloc idiom lowers to a TWO-slot ring, so the shim gets two blocks of slack
+# where it needs tens -- all cost, no depth. A ring with real depth wants ~24
+# slots (384 KB) and mem_tile_3_1 is already the DOWN memtile, so there is
+# nowhere to put it. Default OFF; kept because it is the only thing that proved
+# a shallow L2 hop is not the answer.
+PLE_UP_L2 = PLE and int(_os.environ.get("DECODE_PLE_UP_L2", "0"))
 # Program the @pleOut host drain BEFORE the weight feed, on the theory that the
 # up core's 50 @pleW blocks backpressure the shim before it ever reaches the
 # drain BD, so the up core can never put. TESTED AND REFUTED: byte-for-byte the
@@ -1708,6 +1728,10 @@ def build_module():
             # gate core egress: [residual(K) ++ gelu'd gate(PLI_D)], one packet
             # so the up core gets both halves in a single get.
             plegate_l1 = MemRefType.get([K + PLI_D], bf16, memory_space=l1)
+            # [residual(K) | gate(PLI_D) | up_norm_w(K) | scale(32)]. The gate
+            # core assembles it, the up core's tail reads all four out of it.
+            PLE_PK = 2 * K + PLI_D + PLE_SCALE_PAD
+            plepk_l1 = MemRefType.get([PLE_PK], bf16, memory_space=l1)
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
@@ -1787,6 +1811,8 @@ def build_module():
             [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
         )
         grp_l2 = MemRefType.get([GRP_ROWS], bf16, memory_space=l2)
+        if PLE_UP_L2:
+            pleblk_l2 = MemRefType.get([PLE_BLK], bf16, memory_space=l2)
         main_l2 = MemRefType.get([MAIN_ROWS], bf16, memory_space=l2)
         relay_l2 = MemRefType.get(
             [PAYLOAD], bf16, memory_space=l2
@@ -1871,9 +1897,9 @@ def build_module():
             # PLI_D -> K, and PLI_D == PLE_K_BLK so there is exactly one input
             # block and no index.
             ple_mac_down = _ple_fn(
-                "ple_mac_down", [pleacc_l1, pleblk_l1, plegate_l1, i32]
+                "ple_mac_down", [pleacc_l1, pleblk_l1, plepk_l1, i32]
             )
-            ple_mac_up_at = _ple_fn("ple_mac_up_at", [pleacc_l1, pleblk_l1, plegate_l1])
+            ple_mac_up_at = _ple_fn("ple_mac_up_at", [pleacc_l1, pleblk_l1, plepk_l1])
             ple_flush_down = _ple_fn("ple_flush_down", [plev_l1, pleacc_l1, i32])
             ple_flush_up = _ple_fn("ple_flush_up", [plex_l1, pleacc_l1, i32])
             ple_proj_tail = _ple_fn("ple_proj_tail", [plev_l1, plev_l1, plev_l1])
@@ -1882,7 +1908,8 @@ def build_module():
             # the up core takes both halves in a single get rather than racing
             # two channels. The "_at" entry points index into that packing.
             ple_pack_gate = _ple_fn("ple_pack_gate", [plegate_l1, plex_l1, plev_l1])
-            ple_gate_into = _ple_fn("ple_gate_into", [plegate_l1, plev_l1])
+            ple_gate_into = _ple_fn("ple_gate_into", [plepk_l1, plev_l1])
+            ple_up_tail_pk = _ple_fn("ple_up_tail_pk", [plex_l1, plepk_l1, i32])
             ple_up_tail_at = _ple_fn(
                 "ple_up_tail_at", [plex_l1, plegate_l1, plex_l1, plescale_l1, i32]
             )
@@ -1901,7 +1928,7 @@ def build_module():
                 # N calls on one side against 1 on the other is a cadence
                 # mismatch -- measured on the shortconv mixer, where 2 staging
                 # calls against 1 consumer hung.
-                ple_res_in = _ple_fn("ple_res_in", [plex_l1, plegate_l1])
+                ple_res_in = _ple_fn("ple_res_in", [plex_l1, plepk_l1])
                 ple_res_out = FuncOp(
                     "ple_res_out", ([rms_l1, plex_l1], []), visibility="private"
                 )
@@ -2270,6 +2297,9 @@ def build_module():
                 if PLE_UP_CHAN:
                     # dest 2 above, promoted to a channel of its own.
                     channel_decl("pleWu", size=[1])
+                if PLE_UP_L2:
+                    # memtile -> up core, the second leg of the L2 FIFO.
+                    channel_decl("pleWup", size=[1])
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
@@ -2850,30 +2880,46 @@ def build_module():
                                     )
 
                                 def _feed_gate():
-                                    # dest 0 (gate): weights only.
+                                    # dest 0 (gate): its own weights, then the
+                                    # UP core's norm weight and scale, which this
+                                    # core forwards in the @gateOut bundle.
                                     _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
+                                    if PLE_SHARED_RES:
+                                        _pput(
+                                            PLE_DEST_GATE,
+                                            PLEW,
+                                            arith.addi(_pb, idx(PLE_UPNORMW_OFF)),
+                                            K,
+                                        )
+                                        _pput(
+                                            PLE_DEST_GATE,
+                                            PLEW,
+                                            arith.addi(_pb, idx(PLE_SCALE_OFF)),
+                                            PLE_SCALE_PAD,
+                                        )
 
                                 def _feed_up():
-                                    # dest 2 (up): weights, then the norm weight
-                                    # and scale its tail reads -- the core's
-                                    # order again.
+                                    # dest 2 (up): ONE uniform block size, and
+                                    # nothing else. The norm weight and scale
+                                    # ride the gate's stream now -- see there.
                                     _pw(
                                         PLE_DEST_UP,
                                         2 * PLE_NBLK_DOWN,
                                         PLE_NBLK_UP,
                                     )
-                                    _pput(
-                                        PLE_DEST_UP,
-                                        PLEW,
-                                        arith.addi(_pb, idx(PLE_UPNORMW_OFF)),
-                                        K,
-                                    )
-                                    _pput(
-                                        PLE_DEST_UP,
-                                        PLEW,
-                                        arith.addi(_pb, idx(PLE_SCALE_OFF)),
-                                        PLE_SCALE_PAD,
-                                    )
+                                    if not PLE_SHARED_RES:
+                                        _pput(
+                                            PLE_DEST_UP,
+                                            PLEW,
+                                            arith.addi(_pb, idx(PLE_UPNORMW_OFF)),
+                                            K,
+                                        )
+                                        _pput(
+                                            PLE_DEST_UP,
+                                            PLEW,
+                                            arith.addi(_pb, idx(PLE_SCALE_OFF)),
+                                            PLE_SCALE_PAD,
+                                        )
 
                                 _feeders = {
                                     "p": _feed_proj,
@@ -5071,7 +5117,60 @@ def build_module():
                             # (up core puts @pleOut) TIMEOUT, rung 6 (identical
                             # but the put removed) COMPLETED. One producer per
                             # channel is the rule.
-                            pass
+                            if PLE_UP_L2:
+
+                                def _upfifo_dec():
+                                    # Fresh alloc per iteration, memtile-pinned:
+                                    # the idiom the weight fan already uses, and
+                                    # what makes AIR emit a count-free 2-buffer
+                                    # rotation instead of a repeat-count BD. Must
+                                    # stay a for_ -- Python-unrolling 48 get/put
+                                    # pairs overflows the 48-BD memtile limit.
+                                    def _slot(ty):
+                                        b = AllocOp(ty, [], [])
+                                        b.operation.attributes["air.memtile_col"] = (
+                                            IntegerAttr.get(T.i32(), PLE_RELAY_PCOL)
+                                        )
+                                        return b
+
+                                    def _hop(ty, n):
+                                        b = _slot(ty)
+                                        ChannelGet(
+                                            "pleW",
+                                            b,
+                                            indices=[idx(0), idx(PLE_DEST_UP)],
+                                            offsets=[idx(0)],
+                                            sizes=[idx(n)],
+                                            strides=[idx(1)],
+                                        )
+                                        ChannelPut(
+                                            "pleWup",
+                                            b,
+                                            indices=[idx(0)],
+                                            offsets=[idx(0)],
+                                            sizes=[idx(n)],
+                                            strides=[idx(1)],
+                                        )
+                                        DeallocOp(b)
+
+                                    # ONE size, so this lowers to a single
+                                    # count-free 2-buffer ring. Appending the
+                                    # norm weight and scale here was fatal: it
+                                    # produced TWO dma_start blocks for the same
+                                    # memtile channel and the tail never moved.
+                                    # They ride the gate's bundle instead.
+                                    for _ in for_(idx(0), idx(PLE_NBLK_UP), idx(1)):
+                                        _hop(pleblk_l2, PLE_BLK)
+                                        yield_([])
+                                    yield_([])
+
+                                index_switch(
+                                    [],
+                                    arith.index_cast(idx_t, _seg_arm),
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_([]),
+                                    default_body_builder=lambda op: _upfifo_dec(),
+                                )
                         elif PLE_BYPASS in (4, 6):
                             # BISECT ONLY (4): emit NO relay at all and let the
                             # shim drain @layerOut directly, so the dataflow is
@@ -5155,8 +5254,14 @@ def build_module():
                                     DeallocOp(a_b)
                                     yield_([])
                                     return
-                                # [residual(K) ++ pli(PLI_D)] assembled here.
-                                a_x = AllocOp(plegate_l1, [], [])
+                                # [residual | pli | up_norm_w | scale] assembled
+                                # here; the last two are passed straight through
+                                # for the up core (see ple_up_tail_pk).
+                                a_x = AllocOp(
+                                    plepk_l1 if PLE_SHARED_RES else plegate_l1,
+                                    [],
+                                    [],
+                                )
 
                                 def _get_pli():
                                     ChannelGet(
@@ -5210,11 +5315,36 @@ def build_module():
                                 # receives [residual ++ pli*gate] and needs no
                                 # third input.
                                 CallOp(ple_gate_into, [a_x, a_g])
+                                if PLE_SHARED_RES:
+                                    # The up core's norm weight and scale ride
+                                    # THIS core's @pleW stream and go out in the
+                                    # bundle. FastFlowLM routes them the same
+                                    # way. It also leaves the up core with one
+                                    # uniform inbound weight size, which is what
+                                    # lets its L2 FIFO lower to a single
+                                    # count-free ring -- mixing a 48x8192 ring
+                                    # with a 1536 and a 32 on one memtile channel
+                                    # produced TWO dma_start blocks for the same
+                                    # channel and the tail never forwarded.
+                                    for _off, _n in (
+                                        (K + PLI_D, K),
+                                        (2 * K + PLI_D, PLE_SCALE_PAD),
+                                    ):
+                                        ChannelGet(
+                                            "pleW",
+                                            a_x,
+                                            indices=[idx(0), idx(PLE_DEST_GATE)],
+                                            offsets=[idx(_off)],
+                                            sizes=[idx(_n)],
+                                            strides=[idx(1)],
+                                        )
                                 ChannelPut(
                                     "gateOut",
                                     a_x,
                                     offsets=[idx(0)],
-                                    sizes=[idx(K + PLI_D)],
+                                    sizes=[
+                                        idx(PLE_PK if PLE_SHARED_RES else K + PLI_D)
+                                    ],
                                     strides=[idx(1)],
                                 )
                                 DeallocOp(a_x)
@@ -5251,7 +5381,15 @@ def build_module():
                                 # cos 0.79 (0.30 on this block alone); it is
                                 # nearly invisible because early layers barely
                                 # differ from their embedding.
-                                a_x0 = AllocOp(plegate_l1, [], [])
+                                # plepk_l1, not plegate_l1: ple_mac_down takes
+                                # the gate core's bundle type and this core
+                                # shares that entry point. Only the K-wide head
+                                # is ever read here.
+                                a_x0 = AllocOp(
+                                    plepk_l1 if PLE_SHARED_RES else plegate_l1,
+                                    [],
+                                    [],
+                                )
                                 ChannelGet(
                                     "pleW",
                                     a_x0,
@@ -5341,7 +5479,9 @@ def build_module():
                                     Its own channel under PLE_UP_CHAN, otherwise
                                     destination 2 of the shared @pleW.
                                     """
-                                    if PLE_UP_CHAN:
+                                    if PLE_UP_L2:
+                                        ChannelGet("pleWup", buf, indices=[idx(0)])
+                                    elif PLE_UP_CHAN:
                                         ChannelGet("pleWu", buf, indices=[idx(0)])
                                     else:
                                         ChannelGet(
@@ -5352,7 +5492,11 @@ def build_module():
 
                                 # [residual ++ pli*gate]; the gate was already
                                 # applied on the gate core.
-                                a_rg = AllocOp(plegate_l1, [], [])
+                                a_rg = AllocOp(
+                                    plepk_l1 if PLE_SHARED_RES else plegate_l1,
+                                    [],
+                                    [],
+                                )
                                 if not PLE_UP_W_FIRST:
                                     ChannelGet("gateOut", a_rg, indices=[idx(0)])
                                 a_y = AllocOp(plex_l1, [], [])
@@ -5370,14 +5514,25 @@ def build_module():
                                         [a_y, acc, arith.index_cast(T.i32(), _i)],
                                     )
                                     yield_([])
-                                a_nw = AllocOp(plex_l1, [], [])
-                                _upw(a_nw)
-                                a_sc = AllocOp(plescale_l1, [], [])
-                                _upw(a_sc)
-                                if PLE_UP_W_FIRST:
-                                    ChannelGet("gateOut", a_rg, indices=[idx(0)])
-                                # residual = the K-wide head of @gateOut.
-                                CallOp(ple_up_tail_at, [a_y, a_rg, a_nw, a_sc, _arm])
+                                if PLE_SHARED_RES:
+                                    if PLE_UP_W_FIRST:
+                                        ChannelGet("gateOut", a_rg, indices=[idx(0)])
+                                    # residual, norm weight and scale all come
+                                    # out of the one bundle.
+                                    CallOp(ple_up_tail_pk, [a_y, a_rg, _arm])
+                                    a_nw = a_sc = None
+                                else:
+                                    a_nw = AllocOp(plex_l1, [], [])
+                                    _upw(a_nw)
+                                    a_sc = AllocOp(plescale_l1, [], [])
+                                    _upw(a_sc)
+                                    if PLE_UP_W_FIRST:
+                                        ChannelGet("gateOut", a_rg, indices=[idx(0)])
+                                    # residual = the K-wide head of @gateOut.
+                                    CallOp(
+                                        ple_up_tail_at,
+                                        [a_y, a_rg, a_nw, a_sc, _arm],
+                                    )
                                 ChannelPut(
                                     "pleOut",
                                     a_y,
@@ -5388,8 +5543,9 @@ def build_module():
                                 DeallocOp(a_rg)
                                 DeallocOp(a_y)
                                 DeallocOp(acc)
-                                DeallocOp(a_nw)
-                                DeallocOp(a_sc)
+                                if a_nw is not None:
+                                    DeallocOp(a_nw)
+                                    DeallocOp(a_sc)
                                 yield_([])
 
                             index_switch(

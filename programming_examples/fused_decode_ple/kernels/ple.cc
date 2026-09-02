@@ -257,6 +257,20 @@ void ple_up_tail_at(bf16 *restrict y, bf16 *restrict packed, bf16 *restrict w,
   ple_up_tail(y, packed, w, layer_scale, _arm);
 }
 
+// Everything the up core's tail needs, out of ONE bundle:
+//   [residual(MODEL_DIM) | gate(PLI_D) | post_ple_norm_w(MODEL_DIM) |
+//   scale(32)]
+// The gate core assembles it and sends it on @gateOut. This is FastFlowLM's own
+// shape -- they route up_norm and scale through the chain rather than sending
+// them to the up core separately -- and here it also keeps the up core's
+// inbound weight stream to ONE uniform block size, which is what lets its L2
+// FIFO lower to a single count-free ring instead of two conflicting channel
+// programs.
+void ple_up_tail_pk(bf16 *restrict y, bf16 *restrict packed, int _arm) {
+  ple_up_tail(y, packed, packed + MODEL_DIM + PLI_D,
+              packed + 2 * MODEL_DIM + PLI_D, _arm);
+}
+
 // The consumer half of the shared-L1 residual hand-off (rms_residual.cc's
 // ple_res_out is the producer). The shared buffer is FIRST and the packed
 // buffer LAST, because AIR reads the last memref of an external call as the
