@@ -2762,8 +2762,63 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return rankOf(a.getChanName(), 0) < rankOf(b.getChanName(), 0);
         });
 
+    // Hoist one transfer per round, EXCEPT that transfers sharing a channel and
+    // an enclosing loop go in the same round.
+    //
+    // One round marks one op "external" and runs the patterns, so the hoisting
+    // pattern sees a batch of one and rebuilds the enclosing loop for that op
+    // alone. Two rounds therefore produce two loops -- and two loops in
+    // sequence do not mean what one loop containing two transfers meant. The
+    // loop INTERLEAVES them (a, b, a, b, ...) and the pair of loops SERIALISES
+    // them (a*N, then b*N). A channel is a FIFO, so its consumer's Nth transfer
+    // takes the Nth arrival: serialising the producer sends arrival 1 where
+    // arrival 2 belonged. Measured as wrong output on device, not as a
+    // different schedule.
+    //
+    // Marking the whole group before the patterns run makes the batch complete,
+    // and one clone of the hierarchy body reproduces the interleave exactly.
+    // Grouping is by nearest enclosing loop as well as by channel: two
+    // transfers on one channel in DIFFERENT loops are already ordered by those
+    // loops and have nothing to preserve.
+    auto nearestLoop = [](air::ChannelInterface gp) -> Operation * {
+      for (Operation *p = gp->getParentOp(); p; p = p->getParentOp()) {
+        if (isa<air::HierarchyInterface>(p))
+          return nullptr;
+        if (isa<LoopLikeOpInterface>(p))
+          return p;
+      }
+      return nullptr;
+    };
+    // Membership only -- these handles are never dereferenced. An op hoisted in
+    // an earlier round has been erased, and asking a dangling ChannelInterface
+    // for its name is a segfault.
+    llvm::SmallDenseSet<Operation *> queued;
+    for (auto gp : hoistOrder)
+      queued.insert(gp.getOperation());
+    llvm::SmallDenseSet<Operation *> hoisted;
     for (auto getput : hoistOrder) {
+      if (!hoisted.insert(getput.getOperation()).second)
+        continue;
       getput->setAttr("loop-carried-dep", StringAttr::get(context, "external"));
+      // Siblings come from a walk of the LIVE IR, not from hoistOrder, for the
+      // same reason.
+      if (auto *loop = nearestLoop(getput)) {
+        auto name = getput.getChanName();
+        loop->walk([&](air::ChannelInterface sibling) {
+          if (sibling == getput)
+            return;
+          if (!queued.count(sibling.getOperation()))
+            return;
+          if (sibling.getChanName() != name)
+            return;
+          if (nearestLoop(sibling) != loop)
+            return;
+          if (!hoisted.insert(sibling.getOperation()).second)
+            return;
+          sibling->setAttr("loop-carried-dep",
+                           StringAttr::get(context, "external"));
+        });
+      }
       RewritePatternSet hoistChannelPatterns(context);
       hoistChannelPatterns
           .add<AIRHoistExternalAIRChannelPattern<air::HerdOp>,
