@@ -1071,21 +1071,25 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # The per-buffer half (`rms is not None`, `qmt is not None`, ...) cannot live
 # here -- those are herd operands -- so each site ANDs it in. The static half
 # must not be duplicated.
-ROPELUT_DMA_OK = ROPELUT_DMA and not (ROPE_W_PER_LAYER and MULTIBLK)
+# The per-layer clause is gone: _rope_off_h rebuilds the slab offset from the
+# wave index now, so ROPE_W_PER_LAYER is no longer a reason to keep the
+# hand-written pair. _rope_body asserts if that index is ever missing, which
+# turns a silently unpaired channel into a build error.
+ROPELUT_DMA_OK = ROPELUT_DMA
 
 # Which channel the derived @rmsW2 put has to land ahead of in a DECODE arm:
 # whichever one followed the hand-written put there.
 #
-# A HAND-WRITTEN @ropeLUT put is emitted immediately after @rmsW2, so it is the
-# neighbour to name. A DERIVED one is anchored `hoist_after="rmsW"` and lands
-# between @rmsW and @rmsW2 instead, leaving @inW0c0 -- the first weight put --
-# as the next fixed thing along; the hybrid has no @ropeLUT in this arm at all
-# and wants @inW0c0 for the same reason.
+# @ropeLUT is emitted between them in the source, but it is DERIVED on every
+# model now and anchored `hoist_after="rmsW"`, so it lands between @rmsW and
+# @rmsW2 rather than after the pair. @inW0c0 -- the first weight put -- is the
+# next fixed thing along, and it is the answer for the hybrid too, which has no
+# @ropeLUT in this arm at all.
 #
-# Naming @ropeLUT where it is derived, or @inW0c0 where it is not, was measured
-# and is wrong in both directions: it moves the whole rms group, because @rmsW
-# chains onto @rmsW2 and @rmsX onto @rmsW.
-_RMSW2_ANCHOR = "inW0c0" if (ROPELUT_DMA_OK or HYBRID_MIXER) else "ropeLUT"
+# Naming @ropeLUT instead was measured while the LUT was still hand-written on
+# five models, and it is wrong now that it is not: it moves the whole rms group,
+# because @rmsW chains onto @rmsW2 and @rmsX onto @rmsW.
+_RMSW2_ANCHOR = "inW0c0"
 
 
 KV_APPEND = MULTIBLK
@@ -3378,12 +3382,24 @@ def build_module():
                             )
                         a_lut = AllocOp(ropelut_l1, [], [])
                         # _rope_off is a launch-scope expression, and a herd is
-                        # IsolatedFromAbove, so recompute the offset here. It is
-                        # only recomputable when it does not depend on a_iv --
-                        # i.e. when the rope weights are NOT per-layer. When they
-                        # are, threading a_iv in would be the price, and the
-                        # hand-written pair stays instead.
-                        _rope_off_h = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                        # IsolatedFromAbove, so recompute the offset here. When the
+                        # rope weights are PER LAYER it depends on the wave index,
+                        # which now reaches this herd on its own terms -- see
+                        # _has_riv. That is the whole reason six models kept the
+                        # hand-written pair.
+                        _lut_off_h = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                        if ROPE_W_PER_LAYER and MULTIBLK:
+                            assert kiv is not None, (
+                                "@ropeLUT is derived but the wave index did not "
+                                "reach this herd: the launch-scope put is "
+                                "suppressed and the get would be unpaired"
+                            )
+                            _b = arith.muli(kiv, idx(ROPE_W_LEN))
+                            _rope_off_h = (
+                                arith.addi(_b, idx(_lut_off_h)) if _lut_off_h else _b
+                            )
+                        else:
+                            _rope_off_h = _lut_off_h
                         if ROPELUT_DMA_OK and rms is not None:
                             # Spelled as a DMA naming @ropeLUT rather than as a
                             # get with a matching put at launch scope: the pass
@@ -3403,7 +3419,7 @@ def build_module():
                                 # weight stream. Without it the derived put lands
                                 # at the herd's position, slot 6 -> 18, and the
                                 # rope core deadlocks waiting on its LUT.
-                                hoist_after="rmsW",
+                                hoist_before="rmsX",
                             )
                         else:
                             ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
@@ -3604,21 +3620,25 @@ def build_module():
                         # the LM launch waits on -> TIMEOUT.
                         _arm_rope = _seg_arm
 
+                        # The wave index rides along on its OWN terms, not on the
+                        # KV cache's. @appendK wants both; @ropeLUT wants only the
+                        # index, because a per-layer rope_w slab is offset by it.
+                        # Coupling them kept the LUT hand-written on every qk-norm
+                        # model for no reason but the operand list's shape.
+                        _has_kvc = _seg_KVC is not None
+                        _has_riv = _seg_iv is not None
                         _rope_opers = (
                             [_arm_rope, _seg_RMS]
-                            + (
-                                [_seg_KVC, _seg_iv]
-                                if (_seg_KVC is not None and _seg_iv is not None)
-                                else ([_seg_KVC] if _seg_KVC is not None else [])
-                            )
+                            + ([_seg_KVC] if _has_kvc else [])
+                            + ([_seg_iv] if _has_riv else [])
                             + ([_qmtb_pre] if _qmtb_pre is not None else [])
                         )
-                        _n_kv = len(_rope_opers) - 2 - (1 if _qmtb_pre else 0)
+                        _n_kv = (1 if _has_kvc else 0) + (1 if _has_riv else 0)
 
                         @herd(name="rope", sizes=[1, 1], operands=_rope_opers)
                         def rope_h(tx, ty, _sx, _sy, _arm, _rms, *_rest):
-                            _kvc = _rest[0] if _n_kv > 0 else None
-                            _kiv = _rest[1] if _n_kv > 1 else None
+                            _kvc = _rest[0] if _has_kvc else None
+                            _kiv = _rest[1 if _has_kvc else 0] if _has_riv else None
                             _qmt = _rest[_n_kv] if len(_rest) > _n_kv else None
 
                             def _dec():
