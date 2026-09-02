@@ -8,7 +8,7 @@ to AMD™ NPUs and GPUs.**
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Contributors](https://img.shields.io/github/contributors/Xilinx/mlir-air?cacheSeconds=86400)](https://github.com/Xilinx/mlir-air/graphs/contributors)
 
-<img src="https://mlir.llvm.org/mlir-logo.png" width="180">
+<img src="https://mlir.llvm.org/mlir-logo.png" alt="MLIR logo" width="180">
 
 📖 **[Documentation](https://xilinx.github.io/mlir-air/)** &nbsp;·&nbsp; 🚀 **[Programming Guide](https://xilinx.github.io/mlir-air/dev/programming_guide/)** &nbsp;·&nbsp; 🧩 **[Compute Model](https://xilinx.github.io/mlir-air/dev/AIRComputeModel/)** &nbsp;·&nbsp; 💡 **[Examples](https://xilinx.github.io/mlir-air/dev/programming_examples/)**
 
