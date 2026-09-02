@@ -1062,6 +1062,24 @@ if PLE:
         f"PLE tiling does not divide: PLI_D={PLI_D} K={K} "
         f"against {PLE_M_BLK}x{PLE_K_BLK}"
     )
+    # PLE DDR slab, one per layer, in the order the cores consume it:
+    #   [inp_gate 48 blk][model_proj 48 blk][per_layer_projection 48 blk]
+    #   [emb PLI_D][proj_norm_w PLI_D][post_ple_norm_w K][scale PLE_SCALE_PAD]
+    # The three weight regions are the bundle's RAW bytes -- the bundle already
+    # stores them out-tile-major in the block order kernels/ple.cc walks
+    # (verified at cos 1.00000000), so the packer must NOT de-tile them.
+    #
+    # Module scope, not inside build_module: the weight packer imports this
+    # module and lays the BO out from these, so the two cannot drift.
+    #
+    # The scale is one bf16 but gets a 32-wide slot -- a shim BD's transfer
+    # length must be a multiple of 4 bytes and a lone bf16 is 2.
+    PLE_SCALE_PAD = 32
+    PLE_EMB_OFF = 3 * PLE_NBLK_DOWN * PLE_BLK
+    PLE_NORMW_OFF = PLE_EMB_OFF + PLI_D
+    PLE_UPNORMW_OFF = PLE_NORMW_OFF + PLI_D
+    PLE_SCALE_OFF = PLE_UPNORMW_OFF + K
+    PLE_LAYER = PLE_SCALE_OFF + PLE_SCALE_PAD
 
 KV_PER_CU = MODEL["KV_PER_CU"]
 DH_A = MODEL["DH_A"]
@@ -1563,24 +1581,7 @@ def build_module():
         )
 
         if PLE:
-            # ---- PLE DDR ----
-            # One slab per layer, laid out in the order the cores consume it:
-            #   [inp_gate 48 blk][model_proj 48 blk][per_layer_projection 48 blk]
-            #   [emb PLI_D][proj_norm_w PLI_D][post_ple_norm_w K][scale 32]
-            # The three weight regions are the bundle's RAW bytes -- no
-            # repacking, because the bundle already stores them out-tile-major
-            # in exactly the block order kernels/ple.cc walks (verified at
-            # cos 1.00000000).
-            #
-            # The scale is a single bf16 but gets a 32-wide slot: a shim BD
-            # moving 2 bytes is not worth a special case, and 32 keeps every
-            # region 64B-aligned.
-            PLE_SCALE_PAD = 32
-            PLE_EMB_OFF = 3 * PLE_NBLK_DOWN * PLE_BLK  # after the 144 blocks
-            PLE_NORMW_OFF = PLE_EMB_OFF + PLI_D
-            PLE_UPNORMW_OFF = PLE_NORMW_OFF + PLI_D
-            PLE_SCALE_OFF = PLE_UPNORMW_OFF + K
-            PLE_LAYER = PLE_SCALE_OFF + PLE_SCALE_PAD
+            # ---- PLE DDR (layout constants are module-level) ----
             plew_l3 = MemRefType.get([UNI_DEC * PLE_LAYER], bf16)
             # The token embedding. Its own operand because proj_layer_embedding
             # reads it on EVERY layer while x_l3 is the chained hidden state,
