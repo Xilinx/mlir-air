@@ -1146,9 +1146,9 @@ anchorAttrOf(ArrayRef<air::ChannelInterface> externalGetPuts) {
 // channel ops: the LAST endpoint of that channel in the region the hierarchy op
 // lives in, skipping anything inside the hierarchy op itself. Returns null when
 // nothing is anchored or the anchor names a channel with no endpoint out here.
-static Operation *
-findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
-                     Operation *hier_op, bool &placeBefore) {
+static SmallVector<Operation *>
+findIssueOrderAnchors(ArrayRef<air::ChannelInterface> externalGetPuts,
+                      Operation *hier_op, bool &placeBefore) {
   FlatSymbolRefAttr anchor;
   placeBefore = false;
   for (auto getput : externalGetPuts) {
@@ -1165,11 +1165,11 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
     // One shared insertion point is used for the whole batch, so only honour
     // the anchor when the batch agrees on it.
     if (anchor && anchor != a)
-      return nullptr;
+      return {};
     anchor = a;
   }
   if (!anchor)
-    return nullptr;
+    return {};
 
   // Only endpoints at the SAME hierarchy level count. Without this the herd
   // -level hoist would match an endpoint of the anchor channel sitting inside a
@@ -1226,7 +1226,12 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   // that arm -- still the right arm, just further in; a weight feed split per
   // column group is the usual source. ANY is a last resort and is where a
   // wrong answer comes from, so it is only taken when the other two are empty.
-  Operation *pickExact = nullptr, *pickInside = nullptr, *pickAny = nullptr;
+  Operation *pickExact = nullptr, *pickAny = nullptr;
+  // Inside matches kept ONE PER ARM. A transfer shallower than its anchor
+  // belongs in every arm the anchor has an endpoint in, not in one of them, so
+  // which arms those are is the answer -- collapsing them to a single winner
+  // throws the question away.
+  SmallVector<std::pair<SmallVector<int, 4>, Operation *>, 4> insideByArm;
   hier_op->getParentRegion()->walk([&](air::ChannelInterface o) {
     if (hier_op->isAncestor(o.getOperation()))
       return WalkResult::advance();
@@ -1246,18 +1251,75 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
     };
     if (exact)
       keep(pickExact);
-    else if (inside)
-      keep(pickInside);
+    else if (inside) {
+      auto *hit = llvm::find_if(
+          insideByArm, [&](const auto &kv) { return kv.first == path; });
+      if (hit == insideByArm.end())
+        insideByArm.push_back({path, o.getOperation()});
+      else
+        keep(hit->second);
+    }
     keep(pickAny);
     return WalkResult::advance();
   });
-  Operation *pick = pickExact ? pickExact : (pickInside ? pickInside : pickAny);
-  // An INSIDE match is deeper than the transfer, so landing ON it would put the
-  // transfer in ONE of the nested arms and starve the others -- the failure
-  // that withdrew RMSW_DMA on qwen3_8b. Climb back out to the structure that
-  // holds them all: before it covers every nested arm's first endpoint, after
-  // it covers every nested arm's last.
-  if (pick && !pickExact && pickInside) {
+
+  if (pickExact)
+    return {pickExact};
+
+  // Climbing out of an ARM is free; climbing out of a LOOP is not.
+  //
+  // That is the same distinction the anchored placement rests on elsewhere: an
+  // arm changes only WHETHER the transfer is issued, which is context and is
+  // what an anchor is for, while a loop changes how MANY times, which is a
+  // property of the transfer itself and must never be inherited or discarded.
+  // So ask of each inside match whether reaching the transfer's own arm depth
+  // would cross a loop.
+  auto climbCrossesLoop = [&](Operation *o) {
+    for (Operation *p = o->getParentOp();
+         p && !isa<air::HierarchyInterface>(p) &&
+         armPathOf(p).size() >= wantArm.size();
+         p = p->getParentOp()) {
+      if (isa<LoopLikeOpInterface>(p))
+        return true;
+      if (armPathOf(p).size() == wantArm.size())
+        break;
+    }
+    return false;
+  };
+
+  if (insideByArm.size() > 1 && llvm::any_of(insideByArm, [&](const auto &kv) {
+        return climbCrossesLoop(kv.second);
+      })) {
+    // The anchor has endpoints in several arms, each inside a loop, and the
+    // transfer is in none of them -- so it belongs in all of them: one copy per
+    // arm, at that arm's own endpoint, inside that arm's loop.
+    //
+    // Climbing out issues the transfer the right number of TIMES, which is why
+    // it looks equivalent, but it lands outside every one of those loops. In
+    // fused_decode's egress the arms are the two phases and each runs its own
+    // round loop, so what should be four memtile descriptors per round becomes
+    // four times the round count, chained, at segment scope -- and
+    // air-dependency-canonicalize rejects the result.
+    //
+    // The starvation this replaces -- a transfer landing in ONE nested arm
+    // while the others wait forever, which withdrew RMSW_DMA on qwen3_8b -- is
+    // the failure of picking one arm. Taking all of them answers it rather than
+    // returning to it.
+    SmallVector<Operation *> sites;
+    for (auto &kv : insideByArm)
+      sites.push_back(kv.second);
+    return sites;
+  }
+
+  Operation *pickInside = nullptr;
+  for (auto &kv : insideByArm)
+    if (!placeBefore || !pickInside)
+      pickInside = kv.second;
+  Operation *pick = pickInside ? pickInside : pickAny;
+  // An INSIDE match is deeper than the transfer, and no loop stands in the way.
+  // Climb back out to the structure that holds every arm: before it covers each
+  // arm's first endpoint, after it covers each arm's last.
+  if (pick && pickInside) {
     while (armPathOf(pick).size() > wantArm.size()) {
       auto *p = pick->getParentOp();
       if (!p || isa<air::HierarchyInterface>(p))
@@ -1268,12 +1330,15 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   LLVM_DEBUG(llvm::dbgs() << "[dma-to-channel] anchor " << anchor
                           << " hoisting out of " << hier_op->getName()
                           << ": armDepth=" << wantArm.size() << " resolved="
-                          << (pickExact ? "same-arm"
-                                        : (pickInside ? "inside-arm"
-                                                      : (pickAny ? "any-arm"
-                                                                 : "NONE")))
-                          << "\n");
-  return pick;
+                          << (pickExact
+                                  ? "same-arm"
+                                  : (!insideByArm.empty()
+                                         ? "inside-arm"
+                                         : (pickAny ? "any-arm" : "NONE")))
+                          << " sites=" << (pick ? 1 : 0) << "\n");
+  if (!pick)
+    return {};
+  return {pick};
 }
 
 // How many tiles of `hier_op` actually execute `getput`?
@@ -1446,8 +1511,11 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // Resolve the issue-order anchor up front: it decides whether the enclosing
     // control ops are pulled in and rebuilt at all.
     bool placeBefore = false;
-    Operation *anchorOp = findIssueOrderAnchor(
+    SmallVector<Operation *> anchorOps = findIssueOrderAnchors(
         externalGetPuts, hier_op.getOperation(), placeBefore);
+    // More than one site means the anchor lives in several switch arms and the
+    // transfer belongs in each; the clone below runs once per site.
+    Operation *anchorOp = anchorOps.empty() ? nullptr : anchorOps.front();
 
     // Get backward slices to the target "external" side channel ops, to be
     // hoisted together.
@@ -1662,22 +1730,43 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       // The two cases differ only in WHERE: an anchored op goes to the anchor,
       // an unguarded one to the default point just before the hierarchy op.
       // They agree on what to clone, which is why they share this path.
-      rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-      int arg_idx = 0;
-      for (auto arg : hier_op.getKernelArguments())
-        remap.map(arg, hier_op.getKernelOperand(arg_idx++));
-
       SetVector<Operation *> toClone;
       for (auto *b : backwardSlice)
         if (!isa<air::ChannelInterface>(b) &&
             !b->hasTrait<OpTrait::IsTerminator>() && b->getNumRegions() == 0)
           toClone.insert(b);
-      // getBackwardSlice fills the SetVector defs-before-uses, so its own order
-      // is already a valid clone order.
-      for (auto *b : toClone)
-        rewriter.clone(*b, remap);
-      for (auto getput : externalGetPuts)
-        clonedOps.push_back(rewriter.clone(*getput.getOperation(), remap));
+
+      // One emission per anchor site. Unanchored, and in the ordinary anchored
+      // case, that is a single site and this loop runs once; several sites
+      // means the anchor's endpoints are spread over sibling switch arms and
+      // the transfer belongs in each of them.
+      //
+      // Each site gets its OWN mapping. Sharing one would make the second site
+      // reuse the first site's clones, which sit in a sibling region and
+      // dominate nothing here.
+      SmallVector<mlir::OpBuilder::InsertPoint> sites;
+      if (anchored && anchorOps.size() > 1) {
+        for (Operation *site : anchorOps) {
+          rewriter.setInsertionPoint(site);
+          sites.push_back(rewriter.saveInsertionPoint());
+        }
+      } else
+        sites.push_back(insertionPointAtHierOp);
+
+      for (auto &site : sites) {
+        IRMapping siteRemap;
+        int arg_idx = 0;
+        for (auto arg : hier_op.getKernelArguments())
+          siteRemap.map(arg, hier_op.getKernelOperand(arg_idx++));
+        rewriter.restoreInsertionPoint(site);
+        // getBackwardSlice fills the SetVector defs-before-uses, so its own
+        // order is already a valid clone order.
+        for (auto *b : toClone)
+          rewriter.clone(*b, siteRemap);
+        for (auto getput : externalGetPuts)
+          clonedOps.push_back(
+              rewriter.clone(*getput.getOperation(), siteRemap));
+      }
       if (clonedOps.empty())
         return failure();
     } else if (auto scf_par = dyn_cast_or_null<scf::ParallelOp>(scf_loop)) {
