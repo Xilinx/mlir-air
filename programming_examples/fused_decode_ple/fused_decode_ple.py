@@ -1031,6 +1031,34 @@ KV_SPLIT = True  # fixed config: decoupled K/V memtile rings
 # DDR KV-cache shapes (the reference full-faithful append+readback) for MULTIBLK. Per CU = 2 kv
 # heads x DH=64 = 128 (one K or V region). All-CU region width DK_TOT_A; per-token
 # K++V = KVSZ_TOK; cache padded to ATTN_MAXL = ATTN_ROUNDS*16 positions.
+# ===== per-layer embeddings (PLE) ==========================================
+# The Gemma4 feature this builder is named for. Everything PLE keys off this one
+# predicate, so a model without a PLE_DIM emits byte-identical IR to
+# fused_decode.py -- which is the standing no-op check for this fork (see the
+# module header). Do not let a PLE block escape a `if PLE:` guard.
+PLE = MODEL.get("PLE_DIM", 0) > 0
+PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
+if PLE:
+    # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
+    # block is 32 outputs x 256 inputs laid out [in][out].
+    PLE_M_BLK = 32
+    PLE_K_BLK = 256
+    PLE_BLK = PLE_M_BLK * PLE_K_BLK  # 8192 bf16 per streamed block
+    # Blocks per projection = (out/32) * (in/256), consumed out-tile-major.
+    # The bundle already stores these matrices in exactly that order, so the
+    # builder streams its raw bytes with no repacking (verified at cos
+    # 1.00000000 -- see kernels/ple.cc).
+    PLE_NBLK_DOWN = (PLI_D // PLE_M_BLK) * (K // PLE_K_BLK)  # 1536->256: 48
+    PLE_NBLK_UP = (K // PLE_M_BLK) * (PLI_D // PLE_K_BLK)  # 256->1536: 48
+    # Three projections per layer: inp_gate and per_layer_model_proj are both
+    # 1536->256, per_layer_projection is 256->1536.
+    PLE_NBLK_LAYER = 2 * PLE_NBLK_DOWN + PLE_NBLK_UP  # 144
+    PLE_W_LAYER = PLE_NBLK_LAYER * PLE_BLK  # bf16 elems/layer (1179648)
+    assert PLI_D % PLE_M_BLK == 0 and K % PLE_K_BLK == 0, (
+        f"PLE tiling does not divide: PLI_D={PLI_D} K={K} "
+        f"against {PLE_M_BLK}x{PLE_K_BLK}"
+    )
+
 KV_PER_CU = MODEL["KV_PER_CU"]
 DH_A = MODEL["DH_A"]
 KVPC_DH = KV_PER_CU * DH_A  # 128
