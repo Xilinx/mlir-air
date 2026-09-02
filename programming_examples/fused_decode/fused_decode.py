@@ -449,6 +449,8 @@ _MODELS = {
     #   I2P = [M, D, 2*INTER, D]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS) = [6,4,28,4]
     #   J2P = [K, K, K, INTER]/(2*COL_BLOCK)                   = [8,8,8,28]
     "llama-3.1-8b": dict(
+        # see RMSW2_DMA_OK: its decode @rmsW2 anchor resolves any-arm
+        NO_RMSW2_DMA=True,
         K=4096,
         M=6144,  # DQ+DK+DV = 4096+1024+1024
         DH_A=128,
@@ -560,6 +562,12 @@ ROPELUT_DMA = not HYBRID_MIXER
 # and the same shim task order, task for task, at airrt-to-npu (95 to 287 tasks
 # depending on the model), each measured at the LBUILD its own verify lit uses.
 RMSW_DMA = True
+
+# @rmsW2 is @rmsW's twin: same L3 weight BO, same shim MM2S, emitted one slot
+# later. It is ported on the same terms. Its anchor is not the same, though --
+# see _RMSW2_ANCHOR, which has to name whichever channel followed the
+# hand-written put in THIS model's arm.
+RMSW2_DMA = True
 # The mixer -> CU broadcast exists exactly when a hybrid has a mixer. A get with
 # no put is "channel op not in pairs" at emit time, so the decl, the put and the
 # four gets all key off this one predicate.
@@ -1061,6 +1069,32 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # here -- those are herd operands -- so each site ANDs it in. The static half
 # must not be duplicated.
 ROPELUT_DMA_OK = ROPELUT_DMA and not (ROPE_W_PER_LAYER and MULTIBLK)
+
+# Which channel the derived @rmsW2 put has to land ahead of in a DECODE arm:
+# whichever one followed the hand-written put there.
+#
+# A HAND-WRITTEN @ropeLUT put is emitted immediately after @rmsW2, so it is the
+# neighbour to name. A DERIVED one is anchored `hoist_after="rmsW"` and lands
+# between @rmsW and @rmsW2 instead, leaving @inW0c0 -- the first weight put --
+# as the next fixed thing along; the hybrid has no @ropeLUT in this arm at all
+# and wants @inW0c0 for the same reason.
+#
+# Naming @ropeLUT where it is derived, or @inW0c0 where it is not, was measured
+# and is wrong in both directions: it moves the whole rms group, because @rmsW
+# chains onto @rmsW2 and @rmsX onto @rmsW.
+_RMSW2_ANCHOR = "inW0c0" if (ROPELUT_DMA_OK or HYBRID_MIXER) else "ropeLUT"
+
+# llama-3.1-8b is the one shape where no anchor tried resolves in-arm.
+# air-dma-to-channel reports `resolved=any-arm` for its decode @rmsW2, and via
+# that same chain the whole group lands at the end of the launch instead of
+# ahead of the weight stream -- 11 differing shim tasks. It is not wave count
+# (phi4-mini has the same UNI_DEC=32 and is order-identical) and not the
+# hand-written order (llama-3.2-3b's is character for character the same).
+# Three anchors were measured against it -- @ropeLUT on both sides and
+# @layerOut -- and each fixed llama-3.1-8b at the cost of models that already
+# matched. Left on the hand-written path until the arm-path match itself is
+# fixed; every other model derives it.
+RMSW2_DMA_OK = RMSW2_DMA and not MODEL.get("NO_RMSW2_DMA", False)
 
 KV_APPEND = MULTIBLK
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
@@ -2411,13 +2445,14 @@ def build_module():
                                         sizes=[2 * K],
                                         strides=[1],
                                     )
-                                ChannelPut(
-                                    "rmsW2",
-                                    RMS,
-                                    offsets=[0],
-                                    sizes=[2 * K],
-                                    strides=[1],
-                                )
+                                if not RMSW2_DMA_OK:
+                                    ChannelPut(
+                                        "rmsW2",
+                                        RMS,
+                                        offsets=[0],
+                                        sizes=[2 * K],
+                                        strides=[1],
+                                    )
                             else:
                                 if not RMSW_DMA:
                                     ChannelPut(
@@ -2433,13 +2468,14 @@ def build_module():
                                     # (rms tile has only 2 S2MM). Feeding + consuming a dummy
                                     # in vocab keeps that packet group hole-free so the vocab
                                     # tail doesn't stall (consumed by _rms_lm_head dummy get).
-                                    ChannelPut(
-                                        "rmsW2",
-                                        RMS,
-                                        offsets=[0],
-                                        sizes=[K],
-                                        strides=[1],
-                                    )
+                                    if not RMSW2_DMA_OK:
+                                        ChannelPut(
+                                            "rmsW2",
+                                            RMS,
+                                            offsets=[0],
+                                            sizes=[K],
+                                            strides=[1],
+                                        )
                             # vocab weight feed: round-major, NCY-fanned. Python-unrolled
                             # (NOT an AIR for_ -- a launch-scope for_ DEADLOCKS the shim
                             # sequence). inW puts are issue_token=false so the shim reuses BD
@@ -2493,13 +2529,14 @@ def build_module():
                                         sizes=[2 * K],
                                         strides=[1],
                                     )
-                                ChannelPut(
-                                    "rmsW2",
-                                    RMS,
-                                    offsets=[_lo(_rbase, 2 * K)],
-                                    sizes=[2 * K],
-                                    strides=[1],
-                                )
+                                if not RMSW2_DMA_OK:
+                                    ChannelPut(
+                                        "rmsW2",
+                                        RMS,
+                                        offsets=[_lo(_rbase, 2 * K)],
+                                        sizes=[2 * K],
+                                        strides=[1],
+                                    )
                             else:
                                 if not RMSW_DMA:
                                     ChannelPut(
@@ -2511,13 +2548,14 @@ def build_module():
                                     )
                                 if POST_RMS:
                                     # post_attention_layernorm weight on its own channel.
-                                    ChannelPut(
-                                        "rmsW2",
-                                        RMS,
-                                        offsets=[_lo(_rbase, K)],
-                                        sizes=[K],
-                                        strides=[1],
-                                    )
+                                    if not RMSW2_DMA_OK:
+                                        ChannelPut(
+                                            "rmsW2",
+                                            RMS,
+                                            offsets=[_lo(_rbase, K)],
+                                            sizes=[K],
+                                            strides=[1],
+                                        )
                             # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
                             # ONE per-position LUT SHARED across layers (single theta) at a
                             # layer-independent offset. ROPE_W_PER_LAYER (gemma/qwen3
@@ -5413,6 +5451,13 @@ def build_module():
                         """
                         return 0 if _iv is None else arith.muli(_iv, idx(RMS_LAYER))
 
+                    def _rbase_h2(_iv, extra):
+                        """_rbase_h(_iv) + extra, in whichever form _iv is."""
+                        b = _rbase_h(_iv)
+                        if _iv is None:
+                            return b + extra
+                        return arith.addi(b, idx(extra)) if extra else b
+
                     def _rms_body(tx, ty, _sx, _sy, _arm, _x, _rms=None, _iv=None):
                         # DIAGNOSTIC (later43e): make rms SINGLE-mode in the LM_HEAD build
                         # (standalone form). The dual-mode index_switch over DATAFLOW puts
@@ -5484,7 +5529,24 @@ def build_module():
                                 # consume the vocab dummy rmsW2 (see _uni_voc) so the
                                 # shared rmsX/rmsW2 packet group has no vocab-mode hole.
                                 a_w2l = AllocOp(_rms_w_ty, [], [])
-                                ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
+                                if RMSW2_DMA_OK and _rms is not None:
+                                    DmaMemcpyNd(
+                                        a_w2l,
+                                        _rms,
+                                        src_offsets=[0],
+                                        src_sizes=[2 * K if N_NORMS >= 4 else K],
+                                        src_strides=[1],
+                                        channel="rmsW2",
+                                        channel_indices=[0],
+                                        # Vocab arm: always @inW0c0. There is no
+                                        # @ropeLUT endpoint in this arm, and an
+                                        # anchor that misses its arm resolves onto
+                                        # the decode arm's copy, emitting the vocab
+                                        # feed over there.
+                                        hoist_before="inW0c0",
+                                    )
+                                else:
+                                    ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
                                 DeallocOp(a_w2l)
                             a_xnl = AllocOp(rms_l1, [], [])
                             # x re-broadcast. Baking the WHOLE count N=VOCAB_RNDS into one
@@ -5678,7 +5740,19 @@ def build_module():
                             else:
                                 ChannelGet("rmsW", g_wa, indices=[idx(0)])
                             g_wb = AllocOp(rms_w2k_l1, [], [])
-                            ChannelGet("rmsW2", g_wb, indices=[idx(0)])
+                            if RMSW2_DMA_OK and _rms is not None:
+                                DmaMemcpyNd(
+                                    g_wb,
+                                    _rms,
+                                    src_offsets=[_rbase_h2(_iv, 2 * K)],
+                                    src_sizes=[2 * K],
+                                    src_strides=[1],
+                                    channel="rmsW2",
+                                    channel_indices=[0],
+                                    hoist_before=_RMSW2_ANCHOR,
+                                )
+                            else:
+                                ChannelGet("rmsW2", g_wb, indices=[idx(0)])
                             g_xn = AllocOp(rms_l1, [], [])
                             g_sub = AllocOp(rms_l1, [], [])  # o-proj, then down
                             g_subn = AllocOp(
@@ -5779,7 +5853,19 @@ def build_module():
                         if POST_RMS:
                             # post_attention_layernorm weight (own channel).
                             a_w2 = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsW2", a_w2, indices=[idx(0)])
+                            if RMSW2_DMA_OK and _rms is not None:
+                                DmaMemcpyNd(
+                                    a_w2,
+                                    _rms,
+                                    src_offsets=[_rbase_h2(_iv, K)],
+                                    src_sizes=[K],
+                                    src_strides=[1],
+                                    channel="rmsW2",
+                                    channel_indices=[0],
+                                    hoist_before=_RMSW2_ANCHOR,
+                                )
+                            else:
+                                ChannelGet("rmsW2", a_w2, indices=[idx(0)])
                         # step1: input layernorm -> X feed (re-fed RMS_REFEED via xnorm)
                         a_xn = AllocOp(rms_l1, [], [])
                         CallOp(rms_norm_aie, [a_xn, a_x, a_w, _arm])
@@ -5865,7 +5951,7 @@ def build_module():
                     # single-layer build, where the slab offset is the constant 0.
                     _rms_opers = [_arm_rms, _seg_X] + (
                         [_seg_RMS] + ([_seg_iv] if _seg_iv is not None else [])
-                        if RMSW_DMA
+                        if RMSW_DMA or RMSW2_DMA_OK
                         else []
                     )
                     rms_h = herd(name="rms", sizes=[1, 1], operands=_rms_opers)(
