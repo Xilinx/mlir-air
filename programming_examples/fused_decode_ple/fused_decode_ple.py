@@ -2619,7 +2619,11 @@ def build_module():
                             # drain logits (natural order): rms LM branch
                             # forwards VOCAB_RNDS x PAYLOAD via layerOut; ONE 2D-strided get.
                             ChannelGet(
-                                "pleOut" if PLE else "layerOut",
+                                (
+                                    "layerOut"
+                                    if (not PLE or PLE_BYPASS == 4)
+                                    else "pleOut"
+                                ),
                                 Y,
                                 indices=[idx(0)],
                                 offsets=[_vyb],
@@ -3180,7 +3184,11 @@ def build_module():
                                 # With a PLE the layer output is produced by the
                                 # up core, not the rms core; @layerOut in the
                                 # decode arm is the rms->gate hand-off.
-                                "pleOut" if PLE else "layerOut",
+                                (
+                                    "layerOut"
+                                    if (not PLE or PLE_BYPASS == 4)
+                                    else "pleOut"
+                                ),
                                 _out_bo,
                                 indices=[idx(0)],
                                 offsets=[_out_base],
@@ -4796,29 +4804,34 @@ def build_module():
                             T.i32(), PLE_RELAY_PCOL
                         )
 
+                        def _relay_bypass_ops():
+                            # BISECT ONLY: relay the rms residual straight to the
+                            # layer output, so the decode arm becomes the no-PLE
+                            # dataflow with the PLE cores still built and still
+                            # fed. Isolates the rms->relay->shim hand-off from the
+                            # gate/up chain behind it. No yield: the caller owns
+                            # the terminator (BYPASS=2 emits these at herd scope,
+                            # where a yield would terminate the enclosing block).
+                            ChannelGet(
+                                "layerOut",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(K)],
+                                strides=[idx(1)],
+                            )
+                            ChannelPut(
+                                "pleOut",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(K)],
+                                strides=[idx(1)],
+                            )
+
                         def _relay_dec():
                             if PLE_BYPASS:
-                                # BISECT ONLY: relay the rms residual straight to
-                                # the layer output, so the decode arm becomes the
-                                # no-PLE dataflow with the PLE cores still built
-                                # and still fed. Isolates the rms->relay->shim
-                                # hand-off from the gate/up chain behind it.
-                                ChannelGet(
-                                    "layerOut",
-                                    _rb,
-                                    indices=[idx(0)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
-                                ChannelPut(
-                                    "pleOut",
-                                    _rb,
-                                    indices=[idx(0)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
+                                _relay_bypass_ops()
                                 yield_([])
                                 return
                             # Merge the post-FFN residual with the per-layer
@@ -4875,13 +4888,29 @@ def build_module():
                                 yield_([])
                             yield_([])
 
-                        index_switch(
-                            [],
-                            arith.index_cast(idx_t, _seg_arm),
-                            [0],
-                            case_body_builder=lambda op, i, cv: _relay_voc(),
-                            default_body_builder=lambda op: _relay_dec(),
-                        )
+                        if PLE_BYPASS == 4:
+                            # BISECT ONLY (4): emit NO relay at all and let the
+                            # shim drain @layerOut directly, so the dataflow is
+                            # the no-PLE one with the PLE cores merely present
+                            # and idle. Separates "the PLE cores/channels exist"
+                            # from "the relay + @pleOut wiring".
+                            pass
+                        elif PLE_BYPASS == 2:
+                            # BISECT ONLY: no arm switch at all, so the relay's
+                            # program is unambiguously the 1-block decode one.
+                            # Tests whether the switch itself is what wedges
+                            # wave 0 (a memtile cannot branch, so both arms
+                            # otherwise land in one static program). Vocab is
+                            # expected to hang here -- nothing relays its logits.
+                            _relay_bypass_ops()
+                        else:
+                            index_switch(
+                                [],
+                                arith.index_cast(idx_t, _seg_arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: _relay_voc(),
+                                default_body_builder=lambda op: _relay_dec(),
+                            )
 
                         def _ple_proj_down(acc, y, w_dest, x, _nout):
                             """K -> PLI_D projection, block-streamed.
@@ -5651,13 +5680,21 @@ def build_module():
                                     sizes=[idx(K)],
                                     strides=[idx(1)],
                                 )
-                                ChannelPut(
-                                    "layerOut",
-                                    a_v,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
+                                if PLE_BYPASS != 3:
+                                    # BISECT ONLY (3): drop the vocab arm's
+                                    # @layerOut puts, leaving the channel with a
+                                    # single put site and a single get site.
+                                    # Tests whether the per-arm put count (1 in
+                                    # decode, 9 here) is what makes air-to-aie
+                                    # drop the relay flow. Vocab is expected to
+                                    # hang; every DECODE wave should now run.
+                                    ChannelPut(
+                                        "layerOut",
+                                        a_v,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
                                 yield_([])
                             DeallocOp(a_xl)
                             DeallocOp(a_wl)
