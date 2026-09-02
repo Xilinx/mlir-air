@@ -112,6 +112,70 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
   return output;
 }
 
+// Materialize the PURE defs a labelled op depends on but which were not
+// themselves labelled.
+//
+// cloneOpsInBlock skips an unlabelled non-async op outright: nothing clones it
+// and nothing maps it. A later clone of a labelled CONSUMER then resolves that
+// operand through lookupOrDefault and keeps the ORIGINAL value -- which still
+// lives in the block being left behind. The result is an op at the outer scope
+// referring to a def at the inner one, and the failure surfaces far away as
+// "operand #0 does not dominate this use".
+//
+// The shape that hits this in practice is a rebuilt arm guard:
+// `scf.index_switch` is labelled (it carries the async token the hoisted
+// transfer depends on) while the `arith.index_cast` feeding its condition is
+// not (it produces no token, so no dependence edge reaches it).
+//
+// A pure op is free to duplicate, so clone it on demand rather than drop the
+// dependence. Ops with regions are excluded: cloning one would duplicate a
+// whole nest, and a region-carrying op on this path is always labelled anyway.
+static void materializePureDefs(Operation *o, Block *blk, OpBuilder &builder,
+                                IRMapping &remap,
+                                SmallVector<Operation *> &clonedOps) {
+  SmallVector<Value> worklist;
+  auto collect = [&](Operation *op) {
+    for (auto v : op->getOperands())
+      worklist.push_back(v);
+    for (auto &r : op->getRegions()) {
+      SetVector<Value> above;
+      getUsedValuesDefinedAbove(r, above);
+      for (auto v : above)
+        worklist.push_back(v);
+    }
+  };
+  collect(o);
+  SmallVector<Operation *> toClone;
+  llvm::SmallDenseSet<Operation *> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (remap.contains(v))
+      continue;
+    auto *d = v.getDefiningOp();
+    if (!d || d->getBlock() != blk)
+      continue;
+    // Labelled ops are the main loop's business.
+    if (d->hasAttr("hoist"))
+      continue;
+    if (d->getNumRegions() || !air::isPure(d))
+      continue;
+    if (!seen.insert(d).second)
+      continue;
+    toClone.push_back(d);
+    collect(d);
+  }
+  // Clone defs before uses.
+  llvm::sort(toClone,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (auto *d : toClone) {
+    auto *c = builder.clone(*d, remap);
+    // Label it: the caller's cleanup erases every unlabelled op in the newly
+    // built outer loop, and this clone has uses.
+    c->setAttr("hoist", StringAttr::get(c->getContext(), "dep"));
+    clonedOps.push_back(c);
+  }
+}
+
 // Clone ops in a block.
 SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                                               IRMapping &remap) {
@@ -125,6 +189,7 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
       }
       continue;
     }
+    materializePureDefs(&o, blk, builder, remap, clonedOps);
     if (auto child_for_op = dyn_cast_if_present<LoopLikeOpInterface>(o)) {
       auto clonedScfLoopOps =
           air::cloneScfLoopUsingRemap(builder, remap, child_for_op);
