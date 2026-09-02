@@ -62,8 +62,8 @@ substantially more accessible.
 ## A simple AIR program
 
 This elementwise-add design distributes a 4096-element vector across two herd
-cores. Each core stages its slice through the L3 → L2 → L1 memory hierarchy,
-computes `C = A + B` in local memory, and writes the result back. The following
+cores. The segment stages both inputs from L3 into L2. Each core then brings its
+tile into L1, computes `C = A + B`, and writes the result back. The following
 tabs show the Python source and the MLIR-AIR IR generated from it.
 
 === "Python API"
@@ -103,8 +103,8 @@ tabs show the Python source and the MLIR-AIR IR generated from it.
                         air.ops.load(l2_b, B)
 
                         # The tile grid `range(0, n, tile_n)` is strip-mined onto
-                        # NUM_TILES cores by the DSL. The herd captures l2_a/l2_b/
-                        # l2_c from the enclosing scope -- no `operands=[...]`.
+                        # NUM_TILES cores by the DSL, and l2_a/l2_b/l2_c are
+                        # carried in as operands automatically.
                         with air.herd(
                             [range(0, n, tile_n)],
                             name="herd_0",
