@@ -1206,7 +1206,12 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
   // transfer in between a multi-endpoint anchor's own transfers instead of
   // ahead of the group -- e.g. anchoring ahead of a weight feed that is spelled
   // as two contiguous halves.
-  Operation *pick = nullptr, *pickSameArm = nullptr;
+  // Three rankings, best first. EXACT is the endpoint standing in precisely the
+  // arm the transfer belongs to. INSIDE is one standing in a switch NESTED in
+  // that arm -- still the right arm, just further in; a weight feed split per
+  // column group is the usual source. ANY is a last resort and is where a
+  // wrong answer comes from, so it is only taken when the other two are empty.
+  Operation *pickExact = nullptr, *pickInside = nullptr, *pickAny = nullptr;
   hier_op->getParentRegion()->walk([&](air::ChannelInterface o) {
     if (hier_op->isAncestor(o.getOperation()))
       return WalkResult::advance();
@@ -1215,26 +1220,45 @@ findIssueOrderAnchor(ArrayRef<air::ChannelInterface> externalGetPuts,
     auto oParent = o->getParentOfType<air::HierarchyInterface>();
     if ((oParent ? oParent.getOperation() : nullptr) != hierParent)
       return WalkResult::advance();
-    bool sameArm = haveWantArm && armPathOf(o.getOperation()) == wantArm;
-    if (placeBefore) {
-      if (!pick)
-        pick = o.getOperation();
-      if (sameArm && !pickSameArm)
-        pickSameArm = o.getOperation();
-    } else {
-      pick = o.getOperation();
-      if (sameArm)
-        pickSameArm = o.getOperation();
-    }
+    auto path = armPathOf(o.getOperation());
+    bool exact = haveWantArm && path == wantArm;
+    bool inside = haveWantArm && path.size() > wantArm.size() &&
+                  std::equal(wantArm.begin(), wantArm.end(), path.begin());
+    auto keep = [&](Operation *&slot) {
+      // "After the LAST endpoint" and "before the FIRST" are the mirror pair.
+      if (!placeBefore || !slot)
+        slot = o.getOperation();
+    };
+    if (exact)
+      keep(pickExact);
+    else if (inside)
+      keep(pickInside);
+    keep(pickAny);
     return WalkResult::advance();
   });
-  LLVM_DEBUG(
-      llvm::dbgs() << "[dma-to-channel] anchor " << anchor
-                   << " hoisting out of " << hier_op->getName()
-                   << ": armDepth=" << wantArm.size() << " resolved="
-                   << (pickSameArm ? "same-arm" : (pick ? "any-arm" : "NONE"))
-                   << "\n");
-  return pickSameArm ? pickSameArm : pick;
+  Operation *pick = pickExact ? pickExact : (pickInside ? pickInside : pickAny);
+  // An INSIDE match is deeper than the transfer, so landing ON it would put the
+  // transfer in ONE of the nested arms and starve the others -- the failure
+  // that withdrew RMSW_DMA on qwen3_8b. Climb back out to the structure that
+  // holds them all: before it covers every nested arm's first endpoint, after
+  // it covers every nested arm's last.
+  if (pick && !pickExact && pickInside) {
+    while (armPathOf(pick).size() > wantArm.size()) {
+      auto *p = pick->getParentOp();
+      if (!p || isa<air::HierarchyInterface>(p))
+        break;
+      pick = p;
+    }
+  }
+  LLVM_DEBUG(llvm::dbgs() << "[dma-to-channel] anchor " << anchor
+                          << " hoisting out of " << hier_op->getName()
+                          << ": armDepth=" << wantArm.size() << " resolved="
+                          << (pickExact ? "same-arm"
+                                        : (pickInside ? "inside-arm"
+                                                      : (pickAny ? "any-arm"
+                                                                 : "NONE")))
+                          << "\n");
+  return pick;
 }
 
 // How many tiles of `hier_op` actually execute `getput`?
