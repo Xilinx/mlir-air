@@ -68,115 +68,12 @@ range_ = for_
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_rope_2d(outer_rows, outer_cols, embed_dim, np_dtype, herd_x):
-    from air.dialects.memref import collapse_shape as memref_collapse_shape
-
-    xrt_dtype = type_mapper(np_dtype)
-    total = outer_rows * outer_cols
-    rope_rows = total // embed_dim
-    herd_y = 1
-    total_tiles = herd_x * herd_y
-
-    assert embed_dim % 16 == 0, "embed_dim must be divisible by 16"
-    assert total % embed_dim == 0
-    assert rope_rows % total_tiles == 0
-
-    l3_2d_ty = MemRefType.get([outer_rows, outer_cols], xrt_dtype)
-    l3_1d_ty = MemRefType.get([total], xrt_dtype)
-
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get(
-        shape=[embed_dim], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-
-    rope_func = FuncOp(
-        "rope", ([l1RowTy, l1RowTy, l1RowTy, T.i32()], []), visibility="private"
-    )
-    rope_func.attributes["link_with"] = StringAttr.get("rope.o")
-    rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-    rows_per_tile = rope_rows // total_tiles
-
-    row_offset_map = AffineMap.get(
-        0,
-        3,
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),
-                    AffineExpr.get_mul(
-                        AffineExpr.get_add(
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(herd_y),
-                            ),
-                            AffineSymbolExpr.get(2),
-                        ),
-                        AffineConstantExpr.get(rows_per_tile),
-                    ),
-                ),
-                AffineConstantExpr.get(embed_dim),
-            )
-        ],
-    )
-
-    @FuncOp.from_py_func(l3_2d_ty, l3_1d_ty, l3_2d_ty)
-    def rope_2d(arg0_2d, arg1_lut, arg2_2d):
-        @launch(operands=[arg0_2d, arg1_lut, arg2_2d])
-        def rope_launch(l_in_2d, l_lut, l_out_2d):
-            in_flat = memref_collapse_shape(l3_1d_ty, l_in_2d, [[0, 1]])
-            out_flat = memref_collapse_shape(l3_1d_ty, l_out_2d, [[0, 1]])
-
-            @segment(name="rope_seg", operands=[in_flat, l_lut, out_flat])
-            def rope_seg(s_in, s_lut, s_out):
-                @herd(
-                    name="rope_herd",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_in, s_lut, s_out],
-                )
-                def rope_body(_tx, _ty, _sx, _sy, h_in, h_lut, h_out):
-                    l1_in = AllocOp(l1RowTy, [], [])
-                    l1_lut = AllocOp(l1RowTy, [], [])
-                    l1_out = AllocOp(l1RowTy, [], [])
-
-                    dim_i32 = ConstantOp(T.i32(), embed_dim)
-
-                    for local_row in range_(rows_per_tile):
-                        row_offset = affine_apply(row_offset_map, [local_row, _tx, _ty])
-
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[row_offset],
-                            src_sizes=[embed_dim],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_lut,
-                            h_lut,
-                            src_offsets=[row_offset],
-                            src_sizes=[embed_dim],
-                            src_strides=[1],
-                        )
-
-                        CallOp(rope_func, [l1_in, l1_lut, l1_out, dim_i32])
-
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[row_offset],
-                            dst_sizes=[embed_dim],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_lut)
-                    DeallocOp(l1_out)
-
-                rope_body.attributes["link_with"] = StringAttr.get("rope.o")
-
+# The RoPE launch builder lives in shared/builders/rms_gemms_rope_multi.py.
+# This file used to carry a near-copy of it, identical apart from lacking the
+# partial-rotary branch; the shared one at its default rope_dim=None emits a
+# byte-identical air.insts.bin at every shape this file builds, so the copy is
+# a maintenance liability rather than a difference.
+from shared.builders.rms_gemms_rope_multi import _build_rope_2d
 
 # ---------------------------------------------------------------------------
 # Module builder

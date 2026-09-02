@@ -5,8 +5,8 @@
 
 Single-launch alternative to o_gemv_ffn_int4_multi.py. Same post-attention
 math (O proj + residual #1, RMSNorm, FFN gate/up + SwiGLU, FFN down +
-residual #2), packed into ONE air.launch with three herds wired together
-by two W->E cascade-shift chains, so res1 (LA->LGU/LD) and swiglu
+residual #2), packed into ONE air.launch with three herd groups wired
+together by two W->E cascade-shift chains, so res1 (LA->LGU/LD) and swiglu
 (LGU->LD) flow in-array rather than round-tripping through L3.
 
   LA  (row 4 cols 0..7): matvec_int4 + partial_plus_r -> per-core
@@ -42,67 +42,38 @@ ABI (8 args; arg0/arg3/arg5 are packed int4 BOs):
 K_CHUNK is fixed at 2048 (=K=emb) → all three stages link the same
 mv_int4_bf16.o (DIM_K=2048, DIM_M=8). LD's K=hidden=8192 splits into
 K_LD_div=4 inner iters; LA and LGU do a single K chunk each.
+
+Written on ``air.api``. Two things this kernel needs that most do not:
+
+**Placement is pinned, not inferred.** ``air.herd(at=(column, row))``
+sets the ``x_loc``/``y_loc`` that ``air-place-herds`` reads. Normally
+letting the pass choose is right, but a cascade is a physical link
+between *neighbouring* cores, so a W->E chain only exists if its herds
+are actually laid out west to east along one row. Both chains here
+depend on that, and the three rows are chosen so the packet broadcasts
+and the shim sharing work out.
+
+**Three channels are packet-switched rather than circuit-switched.**
+``res1ToCons``, ``lguGAMMA`` and ``swigluToLd`` each fan one L1 buffer
+out to many cores, and a packet broadcast reaches all of its
+destinations over *one* flow where a circuit-switched channel needs one
+per destination. That is not a tuning preference: res1ToCons has 16
+destinations, and the LD stream switch arbiter has a 4-msel multicast
+limit that separate flows would blow straight through.
 """
 
 import argparse
+import os
 import sys
 
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air.ir import (
-    AffineConstantExpr,
-    AffineExpr,
-    AffineMap,
-    AffineMapAttr,
-    AffineSymbolExpr,
-    BF16Type,
-    F32Type,
-    InsertionPoint,
-    IntegerAttr,
-    IntegerType,
-    MemRefType,
-    StringAttr,
-    UnitAttr,
-    VectorType,
-)
-from air.dialects.affine import apply as affine_apply
-from air.dialects.air import (
-    Channel,
-    ChannelGet,
-    ChannelPut,
-    MemorySpace,
-    T,
-    herd,
-    launch,
-    module_builder,
-    segment,
-)
-from air.dialects.air import channel as channel_decl
-from air.dialects.func import FuncOp, CallOp
-from air.dialects.memref import (
-    AllocOp,
-    DeallocOp,
-    subview,
-    load as memref_load,
-    store as memref_store,
-    cast as memref_cast,
-)
-from air.dialects import arith
-from air.dialects import linalg
-from air.dialects import math as math_dialect
-from air.dialects import scf
-from air.dialects.scf import for_, yield_
-from air.dialects.vector import (
-    transfer_read,
-    transfer_write,
-    BroadcastOp,
-    reduction as vector_reduction,
-)
-from air.backend.xrt_runner import XRTRunner
+from air import api as air
+from air.api import ops
+from air.api.types import bf16, f32, i8, i32
 from air.backend.xrt import XRTBackend
-
-import os
+from air.backend.xrt_runner import XRTRunner
 
 sys.path.insert(
     0,
@@ -120,7 +91,11 @@ from matvec_int4_packed_add import cpu_reference as la_cpu_reference
 
 KERNEL_OBJ_NAME = "mv_int4_bf16.o"
 
-range_ = for_
+# The rows the three herd groups sit on, west to east along each.
+ROW_LGU, ROW_LD, ROW_LA = 2, 3, 4
+
+SILU_VEC = 32
+RMS_VEC = 16
 
 
 def lgu_cpu_reference(A_q, A_s, A_z, res1, gamma, eps=1e-5):
@@ -150,8 +125,27 @@ def lgu_cpu_reference(A_q, A_s, A_z, res1, gamma, eps=1e-5):
     return (silu * up).astype(bfloat16)
 
 
+def ld_cpu_reference(A_q, A_s, A_z, swiglu, R):
+    """LD: D = dequant(A_q,A_s,A_z) @ swiglu + R."""
+    M_ = A_q.shape[0]
+    K_ = swiglu.shape[0]
+    n_groups = A_s.shape[0]
+    gs = K_ // n_groups
+    A_q_i = A_q.astype(np.int32)
+    low = A_q_i & 0x0F
+    high = (A_q_i >> 4) & 0x0F
+    nibs = np.empty((M_, K_), dtype=np.int32)
+    nibs[:, 0::2] = low
+    nibs[:, 1::2] = high
+    s_per_kk = np.repeat(A_s.astype(np.float32), gs, axis=0)
+    z_per_kk = np.repeat(A_z.astype(np.int32), gs, axis=0)
+    dequant = (nibs - z_per_kk.T) * s_per_kk.T
+    raw = (dequant @ swiglu.astype(np.float32)).astype(bfloat16).astype(np.float32)
+    return (raw + R.astype(np.float32)).astype(bfloat16)
+
+
 def build_o_gemv_ffn_int4_fused_module(
-    emb_dim=2048, hidden_dim=8192, gs=128, m_tile=8, k_chunk=2048, n_cores=8
+    emb_dim=2048, hidden_dim=8192, gs=128, m_tile=8, k_chunk=2048, n_cores=8, **kwargs
 ):
     """Public API matching o_gemv_ffn_int4_multi.build_o_gemv_ffn_int4_module."""
     return build_module(
@@ -165,10 +159,11 @@ def build_o_gemv_ffn_int4_fused_module(
         N_LA=n_cores,
         N_LGU=n_cores,
         N_LD=n_cores,
+        **kwargs,
     )
 
 
-def build_module(
+def build_launch(
     K=2048,
     M_LA=2048,
     M_LGU=16384,
@@ -180,7 +175,9 @@ def build_module(
     N_LGU=8,
     N_LD=8,
     skip_inline=False,
+    target="npu2",
 ):
+    """Trace the kernel and return the launch; ``build_module`` lowers it."""
     assert K == K_CHUNK
     assert K_CHUNK % GS == 0
     assert M_LGU % 2 == 0
@@ -209,10 +206,10 @@ def build_module(
 
     M_lgu_per_core = M_LGU // N_LGU  # 2048
     M_lgu_div = M_lgu_per_core // M_TILE  # 256
-    SILU_VEC = 32
     half_M_per_core = M_lgu_per_core // 2  # 1024
     M_OUT = M_LGU // 2  # 8192 (assembled swiglu)
     assert half_M_per_core % SILU_VEC == 0
+    assert K % RMS_VEC == 0
 
     K_LD_div = K_LD // K_CHUNK  # 4
     M_ld_per_core = M_LA // N_LD  # 256
@@ -226,860 +223,467 @@ def build_module(
     tile_bytes = q_bytes + s_bytes + z_bytes
     total_lgu_tiles = N_LGU * M_lgu_div
 
-    @module_builder
-    def build():
-        bf16_ty = BF16Type.get()
-        i8_ty = IntegerType.get_signless(8)
-        i32_ty = T.i32()
-        f32_ty = F32Type.get()
-        l1_ms = IntegerAttr.get(T.i32(), MemorySpace.L1)
-        l2_ms = IntegerAttr.get(T.i32(), MemorySpace.L2)
+    # ---- L3 interface: inputs first, then the two outputs. ----
+    P_la = air.tensor([N_LA * la_tiles_per_col, tile_bytes], i8)
+    B_la = air.tensor([K], bf16)
+    R_la = air.tensor([M_LA], bf16)
+    P_lgu = air.tensor([total_lgu_tiles, tile_bytes], i8)
+    G_l3 = air.tensor([K], bf16)
+    P_ld = air.tensor([N_LD * ld_tiles_per_col, tile_bytes], i8)
+    D_ld = air.tensor([M_LA], bf16)
+    # DEBUG: capture LA's assembled res1 to L3 so it can be checked against
+    # the CPU reference for LA on its own.
+    D_dbg = air.tensor([M_LA], bf16)
 
-        # ---- L3 ----
-        # LA inputs
-        packed_la_l3 = MemRefType.get([N_LA * la_tiles_per_col, tile_bytes], i8_ty)
-        B_la_l3 = MemRefType.get([K], bf16_ty)
-        R_la_l3 = MemRefType.get([M_LA], bf16_ty)
-        # LGU inputs
-        packed_lgu_l3 = MemRefType.get([total_lgu_tiles, tile_bytes], i8_ty)
-        gamma_l3 = MemRefType.get([K], bf16_ty)
-        # LD inputs / outputs
-        packed_ld_l3 = MemRefType.get([N_LD * ld_tiles_per_col, tile_bytes], i8_ty)
-        D_ld_l3 = MemRefType.get([M_LA], bf16_ty)
-        # DEBUG: capture LA's assembled res1 to L3 so we can verify it
-        # matches the CPU reference for LA. Same shape as R/res1.
-        D_dbg_l3 = MemRefType.get([M_LA], bf16_ty)
+    # ---- Channels ----
+    # LA per-col coalesced inputs: B + R-slab + multi-dim PACKED all on ONE
+    # packet channel per col.
+    la_all = [
+        air.channel(f"laAll_{c}", channel_type="npu_dma_packet") for c in range(N_LA)
+    ]
+    # W->E cascade chain across the LA row. N_LA-1 edges.
+    casc_la = air.channel(
+        "chan_cascade_la", size=[N_LA - 1], channel_type="npu_cascade"
+    )
+    # LGU: per-col packed via memtile, default circuit for non-shared flows.
+    lgu_packed = air.channel("lguPACKED", size=[N_LGU])
+    lgu_l2_l1 = air.channel("lguL2ToL1", size=[N_LGU])
+    # Eastmost LA L1 -> all LGU + LD cores: 16-dest packet broadcast.
+    res1_to_cons = air.channel(
+        "res1ToCons",
+        size=[1, 1],
+        broadcast_shape=[N_LGU + N_LD, 1],
+        channel_type="npu_dma_packet",
+    )
+    # DEBUG: also emit res1 to L3 so it can be inspected.
+    la_res_debug = air.channel("laResDebug", size=[1])
+    # Packet broadcast for gamma (shares LGU S2MM:0).
+    lgu_gamma = air.channel(
+        "lguGAMMA",
+        size=[1, 1],
+        broadcast_shape=[N_LGU, 1],
+        channel_type="npu_dma_packet",
+    )
+    casc_lgu = air.channel(
+        "chan_cascade_lgu", size=[N_LGU - 1], channel_type="npu_cascade"
+    )
+    # Eastmost LGU L1 -> all LD cores: ONE packet broadcast carrying
+    # K_LD_div K_CHUNK-bf16 chunks in FIFO sequence. Collapsing the 4
+    # chunks onto a single channel keeps the LD stream switch arbiter
+    # under the 4-msel multicast limit (4 separate broadcast channels
+    # + ldR1 would exceed it).
+    swiglu_to_ld = air.channel(
+        "swigluToLd",
+        size=[1, 1],
+        broadcast_shape=[N_LD, 1],
+        channel_type="npu_dma_packet",
+    )
+    # LD: per-col packed via memtile (packet for shim sharing).
+    ld_packed = air.channel("ldPACKED", size=[N_LD], channel_type="npu_dma_packet")
+    ld_l2_l1 = air.channel("ldL2ToL1", size=[N_LD])
+    ld_out = air.channel("ldOutD", size=[N_LD])
 
-        # ---- LGU L1 / L2 ----
-        packed_lgu_l2 = MemRefType.get([tile_bytes], i8_ty, memory_space=l2_ms)
-        packed_lgu_l1 = MemRefType.get([tile_bytes], i8_ty, memory_space=l1_ms)
-        res1_l1 = MemRefType.get([K], bf16_ty, memory_space=l1_ms)
-        gamma_l1 = MemRefType.get([K], bf16_ty, memory_space=l1_ms)
-        normed_l1 = MemRefType.get([K], bf16_ty, memory_space=l1_ms)
-        gate_l1_ty = MemRefType.get([half_M_per_core], bf16_ty, memory_space=l1_ms)
-        up_l1_ty = MemRefType.get([half_M_per_core], bf16_ty, memory_space=l1_ms)
-        # Per-core SwiGLU output (2 KB). Copied into l1_recv at the
-        # cascade hop -- avoids a second 16 KB cascade buffer.
-        swiglu_out_l1_ty = MemRefType.get(
-            [half_M_per_core], bf16_ty, memory_space=l1_ms
-        )
-        # Full assembled swiglu L1 scratch: 8192 bf16 = 16 KB.
-        full_l1 = MemRefType.get([M_OUT], bf16_ty, memory_space=l1_ms)
+    # ---- Hand-written kernels ----
+    matvec_store = air.extern(
+        "matvec_int4_bf16_packed_store", link_with=KERNEL_OBJ_NAME
+    )
+    # LD path: a matvec taking a b-offset in elements, so one big swiglu
+    # buffer can be kept and k iterated with a loop the compiler can
+    # ping-pong the PACKED get against.
+    matvec_offset = air.extern(
+        "matvec_int4_bf16_packed_b_offset",
+        link_with=KERNEL_OBJ_NAME,
+        scalars=[i32],
+    )
 
-        CASCADE_WIDTH = 32
-        partial_full_ty = MemRefType.get([CASCADE_WIDTH], bf16_ty, memory_space=l1_ms)
-        partial_slice_ty = MemRefType.get([M_TILE], bf16_ty, memory_space=l1_ms)
-        D_la_l1 = MemRefType.get([M_TILE], bf16_ty, memory_space=l1_ms)
+    with air.launch(name="o_gemv_ffn_int4_fused", target=target) as lch:
 
-        # ---- LA L1 ----
-        packed_la_l1 = MemRefType.get([tile_bytes], i8_ty, memory_space=l1_ms)
-        B_la_l1 = MemRefType.get([K], bf16_ty, memory_space=l1_ms)
-        # R is full M_LA; inline partial+r subviews it at the per-core
-        # slab offset (shared shape with LD).
-        R_la_l1 = MemRefType.get([M_LA], bf16_ty, memory_space=l1_ms)
-        full_la_l1 = MemRefType.get([M_LA], bf16_ty, memory_space=l1_ms)
+        @lch.body
+        def _():
+            # LA per-col puts (B + full R + multi-dim PACKED) on the same
+            # per-col packet channel. Order matches the herd-side gets.
+            for c in range(N_LA):
+                la_all[c].put(B_la[0:K])
+                # Push FULL R so each LA core reads its own per-core slab
+                # out of it at the right offset (shared shape with LD).
+                la_all[c].put(R_la[0:M_LA])
+                lo = c * la_tiles_per_col
+                la_all[c].put(P_la[lo : lo + la_tiles_per_col, :])
 
-        # ---- LD L1 / L2 ----
-        packed_ld_l2 = MemRefType.get([tile_bytes], i8_ty, memory_space=l2_ms)
-        packed_ld_l1 = MemRefType.get([tile_bytes], i8_ty, memory_space=l1_ms)
-        # Full assembled swiglu in L1: K_LD bf16 = 16 KB. Inner k loop
-        # uses matvec_*_b_offset to skip into the right chunk.
-        swiglu_full_l1 = MemRefType.get([K_LD], bf16_ty, memory_space=l1_ms)
-        # Residual addend on LD side: full M_LA, indexed via offset.
-        R_ld_l1 = MemRefType.get([M_LA], bf16_ty, memory_space=l1_ms)
-        slab_ld_l1 = MemRefType.get([M_ld_per_core], bf16_ty, memory_space=l1_ms)
+            # LGU per-col packed + gamma broadcast. res1 is supplied by LA
+            # over res1ToCons, so there is no L3 res1 put here.
+            for c in range(N_LGU):
+                lo = c * M_lgu_div
+                lgu_packed.put(P_lgu[lo : lo + M_lgu_div, :], indices=[c])
+            lgu_gamma.put(G_l3[0:K])
 
-        # ---- Channels ----
-        # LA per-col coalesced inputs: B + R-slab + multi-dim PACKED
-        # all on ONE packet channel per col.
-        for c in range(N_LA):
-            channel_decl(f"laAll_{c}", channel_type="npu_dma_packet")
-        # W->E cascade chain across LA row (row 4). N_LA-1 edges.
-        channel_decl("chan_cascade_la", size=[N_LA - 1], channel_type="npu_cascade")
+            # DEBUG: catch LA's broadcast output to L3. The whole tensor,
+            # not D_dbg[0:M_LA]: a full-extent slice says the same thing but
+            # reaches the IR as an explicit [0] [2048] [1] access pattern,
+            # and on a design this close to the shim's limits that is enough
+            # to change the allocation ("failed to get MM2S tile for L3
+            # allocation"). A bare tensor emits [] [] [], as it must here.
+            la_res_debug.get(D_dbg)
 
-        # LGU: packet broadcast for gamma (shares LGU S2MM:0). Per-col
-        # packed via memtile, default circuit for non-shared flows.
-        channel_decl("lguPACKED", size=[N_LGU])
-        channel_decl("lguL2ToL1", size=[N_LGU])
-        # Eastmost LA L1 -> all LGU + LD cores: 16-dest packet broadcast.
-        N_RES1_CONS = N_LGU + N_LD
-        res1_ch = Channel("res1ToCons", size=[1, 1], broadcast_shape=[N_RES1_CONS, 1])
-        res1_ch.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
-        # DEBUG: also emit res1 to L3 so we can inspect what LA produces.
-        channel_decl("laResDebug", size=[1])
-        gamma_ch = Channel("lguGAMMA", size=[1, 1], broadcast_shape=[N_LGU, 1])
-        gamma_ch.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
-        channel_decl("chan_cascade_lgu", size=[N_LGU - 1], channel_type="npu_cascade")
+            # LD per-col packed + per-col output. The residual addend is
+            # res1, which LD receives from LA over res1ToCons.
+            for c in range(N_LD):
+                lo = c * ld_tiles_per_col
+                ld_packed.put(P_ld[lo : lo + ld_tiles_per_col, :], indices=[c])
+                d_lo = c * M_ld_per_core
+                ld_out.get(D_ld[d_lo : d_lo + M_ld_per_core], indices=[c])
 
-        # Eastmost LGU L1 -> all LD cores: ONE packet broadcast carrying
-        # K_LD_div K_CHUNK-bf16 chunks in FIFO sequence. Collapsing the
-        # 4 chunks onto a single channel keeps the LD stream switch
-        # arbiter under the 4-msel multicast limit (4 separate broadcast
-        # channels + ldR1 would exceed it).
-        sw_ch = Channel("swigluToLd", size=[1, 1], broadcast_shape=[N_LD, 1])
-        sw_ch.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
+            with air.segment(name="seg") as seg:
 
-        # LD: per-col packed via memtile (packet for shim sharing).
-        channel_decl("ldPACKED", size=[N_LD], channel_type="npu_dma_packet")
-        channel_decl("ldL2ToL1", size=[N_LD])
-        # LD output per-col to L3.
-        channel_decl("ldOutD", size=[N_LD])
-
-        # ---- Private kernel decls ----
-        matvec_func = FuncOp(
-            "matvec_int4_bf16_packed",
-            ([packed_lgu_l1, normed_l1, partial_slice_ty], []),
-            visibility="private",
-        )
-        matvec_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-        matvec_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-        matvec_store_func = FuncOp(
-            "matvec_int4_bf16_packed_store",
-            ([packed_lgu_l1, normed_l1, partial_slice_ty], []),
-            visibility="private",
-        )
-        matvec_store_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-        matvec_store_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-        # LD path: matvec that takes a b-offset (elements) so we can keep
-        # one big swiglu buffer and iterate k via scf.for + ping-pong.
-        matvec_offset_func = FuncOp(
-            "matvec_int4_bf16_packed_b_offset",
-            ([packed_ld_l1, swiglu_full_l1, i32_ty, partial_slice_ty], []),
-            visibility="private",
-        )
-        matvec_offset_func.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-        matvec_offset_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
-        @FuncOp.from_py_func(
-            packed_la_l3,
-            B_la_l3,
-            R_la_l3,
-            packed_lgu_l3,
-            gamma_l3,
-            packed_ld_l3,
-            D_ld_l3,
-            D_dbg_l3,
-        )  # DEBUG: capture LA's res1 output
-        def o_gemv_ffn_int4_fused(P_la, B_la, R_la, P_lgu, G_l3, P_ld, D_ld, D_dbg):
-            @launch(operands=[P_la, B_la, R_la, P_lgu, G_l3, P_ld, D_ld, D_dbg])
-            def launch_body(p_la, b_la, r_la, p_lgu, g_l3, p_ld, d_ld, d_dbg):
-                c0 = arith.ConstantOp.create_index(0)
-                c1 = arith.ConstantOp.create_index(1)
-                cK = arith.ConstantOp.create_index(K)
-                cMLA = arith.ConstantOp.create_index(M_LA)
-                c_tb = arith.ConstantOp.create_index(tile_bytes)
-
-                # LA per-col puts (B + full R + multi-dim PACKED) on the
-                # same per-col packet channel. Order matches herd-side gets.
-                for c in range(N_LA):
-                    ChannelPut(
-                        f"laAll_{c}", b_la, offsets=[c0], sizes=[cK], strides=[c1]
-                    )
-                    # Push FULL R so each LA core subviews its own per-core
-                    # slab offset (shared shape with LD).
-                    ChannelPut(
-                        f"laAll_{c}", r_la, offsets=[c0], sizes=[cMLA], strides=[c1]
-                    )
-                    c_packed_off = arith.ConstantOp.create_index(c * la_tiles_per_col)
-                    c_tpc = arith.ConstantOp.create_index(la_tiles_per_col)
-                    ChannelPut(
-                        f"laAll_{c}",
-                        p_la,
-                        offsets=[c_packed_off, c0],
-                        sizes=[c_tpc, c_tb],
-                        strides=[c_tb, c1],
-                    )
-
-                # LGU per-col packed + gamma broadcast. res1 is supplied
-                # by LA via res1ToCons; no L3 res1 put here.
-                for c in range(N_LGU):
-                    c_idx = arith.ConstantOp.create_index(c)
-                    c_tile_off = arith.ConstantOp.create_index(c * M_lgu_div)
-                    ChannelPut(
-                        "lguPACKED",
-                        p_lgu,
-                        indices=[c_idx],
-                        offsets=[c_tile_off, 0],
-                        sizes=[M_lgu_div, tile_bytes],
-                        strides=[tile_bytes, 1],
-                    )
-                ChannelPut("lguGAMMA", g_l3, offsets=[0], sizes=[K], strides=[1])
-
-                # DEBUG: catch LA's broadcast output to L3.
-                ChannelGet("laResDebug", d_dbg)
-
-                # LD per-col packed + per-col output. Residual addend is
-                # res1 (from LA via res1ToCons).
-                for c in range(N_LD):
-                    c_idx = arith.ConstantOp.create_index(c)
-                    c_ld_tile_off = arith.ConstantOp.create_index(c * ld_tiles_per_col)
-                    ChannelPut(
-                        "ldPACKED",
-                        p_ld,
-                        indices=[c_idx],
-                        offsets=[c_ld_tile_off, 0],
-                        sizes=[ld_tiles_per_col, tile_bytes],
-                        strides=[tile_bytes, 1],
-                    )
-                    c_ld_d_off = arith.ConstantOp.create_index(c * M_ld_per_core)
-                    c_mldpc = arith.ConstantOp.create_index(M_ld_per_core)
-                    c_one = arith.ConstantOp.create_index(1)
-                    ChannelGet(
-                        "ldOutD",
-                        d_ld,
-                        indices=[c_idx],
-                        offsets=[c_ld_d_off],
-                        sizes=[c_mldpc],
-                        strides=[c_one],
-                    )
-
-                @segment(name="seg")
-                def segment_body():
-                    # LGU L2 staging.
+                @seg.body
+                def _():
+                    # ---- L2 staging ----
+                    # One tile in flight per trip: the alloc is inside the
+                    # loop so the compiler introduces ping-pong on it.
                     for c in range(N_LGU):
-                        c_idx_s = arith.ConstantOp.create_index(c)
-                        for _ in for_(M_lgu_div):
-                            l2_op = AllocOp(packed_lgu_l2, [], [])
-                            ChannelGet("lguPACKED", l2_op, indices=[c_idx_s])
-                            ChannelPut("lguL2ToL1", l2_op, indices=[c_idx_s])
-                            DeallocOp(l2_op)
-                            yield_([])
+                        for _t in air.sequential(M_lgu_div):
+                            l2 = air.alloc([tile_bytes], i8, scope=seg.private())
+                            lgu_packed.get(l2, indices=[c])
+                            lgu_l2_l1.put(l2, indices=[c])
 
-                    # LD L2 staging.
                     for c in range(N_LD):
-                        c_idx_s = arith.ConstantOp.create_index(c)
-                        for _ in for_(ld_tiles_per_col):
-                            l2_op = AllocOp(packed_ld_l2, [], [])
-                            ChannelGet("ldPACKED", l2_op, indices=[c_idx_s])
-                            ChannelPut("ldL2ToL1", l2_op, indices=[c_idx_s])
-                            DeallocOp(l2_op)
-                            yield_([])
+                        for _t in air.sequential(ld_tiles_per_col):
+                            l2 = air.alloc([tile_bytes], i8, scope=seg.private())
+                            ld_packed.get(l2, indices=[c])
+                            ld_l2_l1.put(l2, indices=[c])
 
-                    # ---- LA herds (N_LA cores at row 4, per-col) ----
-                    # Each LA core c does matvec_int4 + partial_plus_r
-                    # producing its M_la_per_core slab into l1_local at
-                    # offset col*M_la_per_core, then participates in the
-                    # W->E chan_cascade_la chain. Eastmost LA (col N_LA-1)
-                    # broadcasts the assembled res1 to LGU+LD cores.
-                    for c in range(N_LA):
-
-                        def make_la_herd(col):
-                            is_first = col == 0
-                            is_last = col == N_LA - 1
-                            col_base_const = col * M_la_per_core
-
-                            @herd(name=f"la_{col}", sizes=[1, 1])
-                            def la_body(tx, ty, _sx, _sy):
-                                c0 = arith.ConstantOp.create_index(0)
-                                vec_w_la = CASCADE_WIDTH
-                                vecTy_la = VectorType.get([vec_w_la], bf16_ty)
-                                vecTy_mt_la = VectorType.get([M_TILE], bf16_ty)
-                                cst0_bf16_la = arith.ConstantOp(bf16_ty, 0.0)
-                                id_map_la = AffineMapAttr.get(AffineMap.get_identity(1))
-                                c_mla_idx = arith.ConstantOp.create_index(M_LA)
-                                c_vec_idx_la = arith.ConstantOp.create_index(vec_w_la)
-                                zero_vec_la = BroadcastOp(vecTy_la, cst0_bf16_la)
-
-                                l1_b = AllocOp(B_la_l1, [], [])
-                                l1_r = AllocOp(R_la_l1, [], [])
-                                l1_local_la = AllocOp(full_la_l1, [], [])
-                                if not skip_inline:
-                                    # Vectorized zero-fill of full-M_LA scratch.
-                                    for j in for_(c0, c_mla_idx, c_vec_idx_la):
-                                        sub_l = subview(
-                                            l1_local_la.result, [j], [vec_w_la], [1]
-                                        )
-                                        transfer_write(
-                                            None,
-                                            zero_vec_la.result,
-                                            sub_l,
-                                            [c0],
-                                            id_map_la,
-                                            [True],
-                                        )
-                                        yield_([])
-                                # Get B, R, then PACKED tiles in matvec loop
-                                ChannelGet(f"laAll_{col}", l1_b)
-                                ChannelGet(f"laAll_{col}", l1_r)
-
-                                c_mt_la = arith.ConstantOp.create_index(M_TILE)
-                                col_base_la = arith.ConstantOp.create_index(
-                                    col_base_const
-                                )
-                                for outer in for_(M_la_div):
-                                    l1_p = AllocOp(packed_la_l1, [], [])
-                                    ChannelGet(f"laAll_{col}", l1_p)
-                                    l1_partial_full_la = AllocOp(
-                                        partial_full_ty, [], []
-                                    )
-                                    l1_partial_strided_la = subview(
-                                        l1_partial_full_la.result, [0], [M_TILE], [1]
-                                    )
-                                    l1_partial_la = memref_cast(
-                                        D_la_l1, l1_partial_strided_la
-                                    )
-                                    l1_d_full_la = AllocOp(partial_full_ty, [], [])
-                                    l1_d_strided_la = subview(
-                                        l1_d_full_la.result, [0], [M_TILE], [1]
-                                    )
-                                    l1_d_la = memref_cast(D_la_l1, l1_d_strided_la)
-
-                                    local_off = arith.muli(outer, c_mt_la)
-                                    global_off = arith.addi(col_base_la, local_off)
-                                    CallOp(
-                                        matvec_store_func, [l1_p, l1_b, l1_partial_la]
-                                    )
-                                    # Inline partial+r: one 8-wide bf16
-                                    # vector add (patched aievec pads to
-                                    # 16-wide internally).
-                                    sub_r_la = subview(
-                                        l1_r.result, [global_off], [M_TILE], [1]
-                                    )
-                                    v_p_la = transfer_read(
-                                        vecTy_mt_la,
-                                        l1_partial_la,
-                                        [c0],
-                                        id_map_la,
-                                        cst0_bf16_la,
-                                        [True],
-                                    )
-                                    v_r_la = transfer_read(
-                                        vecTy_mt_la,
-                                        sub_r_la,
-                                        [c0],
-                                        id_map_la,
-                                        cst0_bf16_la,
-                                        [True],
-                                    )
-                                    v_sum_la = arith.addf(v_p_la, v_r_la)
-                                    transfer_write(
-                                        None,
-                                        v_sum_la,
-                                        l1_d_la,
-                                        [c0],
-                                        id_map_la,
-                                        [True],
-                                    )
-                                    if not skip_inline:
-                                        # Scatter M_TILE outputs into l1_local
-                                        # at offset global_off.
-                                        for i in range(M_TILE):
-                                            ci = arith.ConstantOp.create_index(i)
-                                            abs_idx = arith.addi(global_off, ci)
-                                            v = memref_load(l1_d_la, [ci])
-                                            memref_store(v, l1_local_la, [abs_idx])
-                                    DeallocOp(l1_p)
-                                    DeallocOp(l1_partial_full_la)
-                                    DeallocOp(l1_d_full_la)
-                                    yield_([])
-
-                                # ---- W->E cascade pad-and-reduce ----
-                                if is_first:
-                                    edge_idx = arith.ConstantOp.create_index(col)
-                                    ChannelPut(
-                                        "chan_cascade_la",
-                                        l1_local_la,
-                                        indices=[edge_idx],
-                                    )
-                                else:
-                                    l1_recv_la = AllocOp(full_la_l1, [], [])
-                                    prev_edge_idx = arith.ConstantOp.create_index(
-                                        col - 1
-                                    )
-                                    ChannelGet(
-                                        "chan_cascade_la",
-                                        l1_recv_la,
-                                        indices=[prev_edge_idx],
-                                    )
-                                    if not skip_inline:
-                                        # Vectorized add at CASCADE_WIDTH lanes.
-                                        for j in for_(c0, c_mla_idx, c_vec_idx_la):
-                                            sub_r = subview(
-                                                l1_recv_la.result, [j], [vec_w_la], [1]
-                                            )
-                                            sub_l = subview(
-                                                l1_local_la.result, [j], [vec_w_la], [1]
-                                            )
-                                            v_r = transfer_read(
-                                                vecTy_la,
-                                                sub_r,
-                                                [c0],
-                                                id_map_la,
-                                                cst0_bf16_la,
-                                                [True],
-                                            )
-                                            v_l = transfer_read(
-                                                vecTy_la,
-                                                sub_l,
-                                                [c0],
-                                                id_map_la,
-                                                cst0_bf16_la,
-                                                [True],
-                                            )
-                                            v_sum = arith.addf(v_r, v_l)
-                                            transfer_write(
-                                                None,
-                                                v_sum,
-                                                sub_l,
-                                                [c0],
-                                                id_map_la,
-                                                [True],
-                                            )
-                                            yield_([])
-                                    DeallocOp(l1_recv_la)
-                                    if is_last:
-                                        ChannelPut("res1ToCons", l1_local_la)
-                                        # DEBUG: also send to L3.
-                                        ChannelPut("laResDebug", l1_local_la)
-                                    else:
-                                        edge_idx = arith.ConstantOp.create_index(col)
-                                        ChannelPut(
-                                            "chan_cascade_la",
-                                            l1_local_la,
-                                            indices=[edge_idx],
-                                        )
-
-                                DeallocOp(l1_b)
-                                DeallocOp(l1_r)
-                                DeallocOp(l1_local_la)
-
-                            la_body.attributes["link_with"] = StringAttr.get(
-                                KERNEL_OBJ_NAME
-                            )
-                            la_body.attributes["x_loc"] = IntegerAttr.get(T.i64(), col)
-                            la_body.attributes["y_loc"] = IntegerAttr.get(T.i64(), 4)
-
-                        make_la_herd(c)
-
-                    @herd(name="lgu_h", sizes=[N_LGU, 1])
-                    def lgu_body(tx, ty, _sx, _sy):
-                        c0 = arith.ConstantOp.create_index(0)
-                        vec_w = CASCADE_WIDTH
-                        vecTy = VectorType.get([vec_w], bf16_ty)
-                        cst0_bf16 = arith.ConstantOp(bf16_ty, 0.0)
-                        id_map = AffineMapAttr.get(AffineMap.get_identity(1))
-                        c_m_out_idx = arith.ConstantOp.create_index(M_OUT)
-                        c_vec_idx = arith.ConstantOp.create_index(vec_w)
-                        zero_vec = BroadcastOp(vecTy, cst0_bf16)
-
-                        l1_gamma = AllocOp(gamma_l1, [], [])
-                        l1_res1 = AllocOp(res1_l1, [], [])
-                        # RMS writes back in place into res1 (no separate
-                        # normed buffer) -- saves 4 KB L1.
-                        l1_normed = l1_res1
-                        l1_gate = AllocOp(gate_l1_ty, [], [])
-                        l1_up = AllocOp(up_l1_ty, [], [])
-                        # Per-core SwiGLU output (2 KB). SwiGLU writes here;
-                        # the cascade step copies it into l1_recv at the
-                        # right offset. Eliminates the 16 KB l1_local
-                        # scratch we used to have (-14 KB net, restores
-                        # L1 budget for ping-pong on packed).
-                        l1_swiglu_out = AllocOp(swiglu_out_l1_ty, [], [])
-
-                        # Faster-arriving broadcast (gamma) first.
-                        ChannelGet("lguGAMMA", l1_gamma, indices=[tx, ty])
-                        # LGU dests are first N_LGU indices of res1ToCons.
-                        ChannelGet("res1ToCons", l1_res1, indices=[tx, ty])
-
-                        # ---- Inline RMSNorm (mirrors la_lgu_cascade_fused) ----
-                        rms_vec_size = 16
-                        rms_vecTy_bf16 = VectorType.get([rms_vec_size], bf16_ty)
-                        rms_vecTy_f32 = VectorType.get([rms_vec_size], f32_ty)
-                        rms_cst0_f32 = arith.ConstantOp(f32_ty, 0.0)
-                        rms_acc_ty = MemRefType.get(
-                            shape=[rms_vec_size],
-                            element_type=f32_ty,
-                            memory_space=l1_ms,
+                    # ---- LA: N_LA 1x1 herds, west to east along ROW_LA ----
+                    # Each LA core produces its M_la_per_core slab of res1
+                    # into a full-M_LA scratch at col*M_la_per_core, then
+                    # joins the W->E cascade. The eastmost one broadcasts
+                    # the assembled res1 to every LGU and LD core.
+                    for col in range(N_LA):
+                        _la_herd(
+                            col=col,
+                            N_LA=N_LA,
+                            K=K,
+                            M_LA=M_LA,
+                            M_TILE=M_TILE,
+                            M_la_div=M_la_div,
+                            M_la_per_core=M_la_per_core,
+                            tile_bytes=tile_bytes,
+                            skip_inline=skip_inline,
+                            la_all=la_all,
+                            casc_la=casc_la,
+                            res1_to_cons=res1_to_cons,
+                            la_res_debug=la_res_debug,
+                            matvec_store=matvec_store,
                         )
-                        rms_acc = AllocOp(rms_acc_ty, [], [])
-                        if not skip_inline:
-                            zero_vec_f32 = BroadcastOp(rms_vecTy_f32, rms_cst0_f32)
-                            transfer_write(
-                                None, zero_vec_f32, rms_acc, [c0], id_map, [True]
-                            )
-                            c_k = arith.ConstantOp.create_index(K)
-                            c_rms_vec = arith.ConstantOp.create_index(rms_vec_size)
-                            for j in range_(0, c_k, c_rms_vec):
-                                sub_r = subview(
-                                    l1_res1.result, [j], [rms_vec_size], [1]
-                                )
-                                v_x = transfer_read(
-                                    rms_vecTy_bf16,
-                                    sub_r,
-                                    [c0],
-                                    id_map,
-                                    cst0_bf16,
-                                    [True],
-                                )
-                                v_sq_bf16 = arith.mulf(v_x, v_x)
-                                v_sq_f32 = arith.extf(rms_vecTy_f32, v_sq_bf16)
-                                v_acc = transfer_read(
-                                    rms_vecTy_f32,
-                                    rms_acc,
-                                    [c0],
-                                    id_map,
-                                    rms_cst0_f32,
-                                    [True],
-                                )
-                                v_sum = arith.addf(v_acc, v_sq_f32)
-                                transfer_write(
-                                    None, v_sum, rms_acc, [c0], id_map, [True]
-                                )
-                                yield_([])
 
-                            v_final_f32 = transfer_read(
-                                rms_vecTy_f32,
-                                rms_acc,
-                                [c0],
-                                id_map,
-                                rms_cst0_f32,
-                                [True],
-                            )
-                            total_sum_f32 = vector_reduction(f32_ty, "add", v_final_f32)
-                            k_f32_const = arith.ConstantOp(f32_ty, float(K))
-                            eps_f32_const = arith.ConstantOp(f32_ty, 1.0e-5)
-                            mean_f32 = arith.divf(total_sum_f32, k_f32_const)
-                            mean_eps_f32 = arith.addf(mean_f32, eps_f32_const)
-                            rstd_f32 = math_dialect.rsqrt(mean_eps_f32)
-                            rstd_bf16 = arith.truncf(bf16_ty, rstd_f32)
-                            v_rstd = BroadcastOp(rms_vecTy_bf16, rstd_bf16)
-
-                            for j in range_(0, c_k, c_rms_vec):
-                                sub_r = subview(
-                                    l1_res1.result, [j], [rms_vec_size], [1]
-                                )
-                                sub_w = subview(
-                                    l1_gamma.result, [j], [rms_vec_size], [1]
-                                )
-                                v_r = transfer_read(
-                                    rms_vecTy_bf16,
-                                    sub_r,
-                                    [c0],
-                                    id_map,
-                                    cst0_bf16,
-                                    [True],
-                                )
-                                v_w = transfer_read(
-                                    rms_vecTy_bf16,
-                                    sub_w,
-                                    [c0],
-                                    id_map,
-                                    cst0_bf16,
-                                    [True],
-                                )
-                                v_n = arith.mulf(v_r, v_rstd.result)
-                                v_y = arith.mulf(v_n, v_w)
-                                # Write back into res1 in place (l1_normed === l1_res1).
-                                transfer_write(None, v_y, sub_r, [c0], id_map, [True])
-                                yield_([])
-
-                        DeallocOp(rms_acc)
-                        # Gamma not needed after RMS -- free its 4 KB.
-                        DeallocOp(l1_gamma)
-
-                        # ---- Hot int4 GEMV loop (ORIGINAL structure with
-                        #      ping-pong on packed_l1 via per-iter alloc) ----
-                        l1_partial_op = AllocOp(partial_full_ty, [], [])
-                        l1_partial_strided = subview(
-                            l1_partial_op.result, [0], [M_TILE], [1]
-                        )
-                        l1_partial_slice = memref_cast(
-                            partial_slice_ty, l1_partial_strided
-                        )
-                        pair_off_map = AffineMap.get(
-                            0,
-                            1,
-                            [
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(0),
-                                    AffineConstantExpr.get(M_TILE // 2),
-                                )
-                            ],
-                        )
-                        for outer in for_(M_lgu_div):
-                            l1_packed_op = AllocOp(packed_lgu_l1, [], [])
-                            ChannelGet("lguL2ToL1", l1_packed_op, indices=[tx])
-                            CallOp(
-                                matvec_store_func,
-                                [l1_packed_op, l1_normed, l1_partial_slice],
-                            )
-                            if not skip_inline:
-                                pair_off = affine_apply(pair_off_map, [outer])
-                                for i in range(M_TILE // 2):
-                                    ci_g = arith.ConstantOp.create_index(2 * i)
-                                    ci_u = arith.ConstantOp.create_index(2 * i + 1)
-                                    v_g = memref_load(l1_partial_slice, [ci_g])
-                                    v_u = memref_load(l1_partial_slice, [ci_u])
-                                    pair_pos_map = AffineMap.get(
-                                        0,
-                                        1,
-                                        [
-                                            AffineExpr.get_add(
-                                                AffineSymbolExpr.get(0),
-                                                AffineConstantExpr.get(i),
-                                            )
-                                        ],
-                                    )
-                                    pair_pos = affine_apply(pair_pos_map, [pair_off])
-                                    memref_store(v_g, l1_gate, [pair_pos])
-                                    memref_store(v_u, l1_up, [pair_pos])
-                            DeallocOp(l1_packed_op)
-                            yield_([])
-                        DeallocOp(l1_partial_op)
-
-                        # ---- Vectorized SwiGLU(gate, up) -> l1_swiglu_out
-                        #      (per-core 2 KB output; copied into l1_recv
-                        #      during the cascade step). ----
-                        vecTyOut = VectorType.get([SILU_VEC], bf16_ty)
-                        cst_half_bf16 = arith.ConstantOp(bf16_ty, 0.5)
-                        cst_one_bf16 = arith.ConstantOp(bf16_ty, 1.0)
-                        v_half_bf16 = BroadcastOp(vecTyOut, cst_half_bf16)
-                        v_one_bf16 = BroadcastOp(vecTyOut, cst_one_bf16)
-                        c_half_idx = arith.ConstantOp.create_index(half_M_per_core)
-                        c_silu_idx = arith.ConstantOp.create_index(SILU_VEC)
-                        if not skip_inline:
-                            for kk in for_(c0, c_half_idx, c_silu_idx):
-                                sub_g = subview(l1_gate.result, [kk], [SILU_VEC], [1])
-                                sub_u = subview(l1_up.result, [kk], [SILU_VEC], [1])
-                                sub_out = subview(
-                                    l1_swiglu_out.result, [kk], [SILU_VEC], [1]
-                                )
-                                v_g = transfer_read(
-                                    vecTyOut, sub_g, [c0], id_map, cst0_bf16, [True]
-                                )
-                                v_u = transfer_read(
-                                    vecTyOut, sub_u, [c0], id_map, cst0_bf16, [True]
-                                )
-                                v_half_g = arith.mulf(v_g, v_half_bf16.result)
-                                v_tanh = math_dialect.tanh(v_half_g)
-                                v_tanh_p1 = arith.addf(v_tanh, v_one_bf16.result)
-                                v_sig = arith.mulf(v_tanh_p1, v_half_bf16.result)
-                                v_silu = arith.mulf(v_g, v_sig)
-                                v_out = arith.mulf(v_silu, v_u)
-                                transfer_write(
-                                    None, v_out, sub_out, [c0], id_map, [True]
-                                )
-                                yield_([])
-
-                        # ---- W->E cascade pad-and-copy ----
-                        # The single 16 KB cascade scratch is l1_recv. For
-                        # col 0 it starts zero-filled (we just write our
-                        # slab in); for other cols it gets the assembled
-                        # value from the previous cascade hop and we copy
-                        # our slab in at col*half_M_per_core (overwriting
-                        # the zero that's there because earlier cores
-                        # don't write to our slot).
-                        l1_recv = AllocOp(full_l1, [], [])
-                        c1_idx = arith.ConstantOp.create_index(1)
-                        c0_tx = arith.ConstantOp.create_index(0)
-                        last_tx = arith.ConstantOp.create_index(N_LGU - 1)
-                        # Per-core base offset into the assembled vector
-                        # (also the SwiGLU's "global" position).
-                        c_hmpc_idx = arith.ConstantOp.create_index(half_M_per_core)
-                        col_base = arith.muli(tx, c_hmpc_idx)
-
-                        cmp_first = arith.CmpIOp(arith.CmpIPredicate.eq, tx, c0_tx)
-                        if_first = scf.IfOp(cmp_first, has_else=True)
-                        with InsertionPoint(if_first.then_block):
-                            # Col 0: zero-fill, then write own slab in.
-                            for j in for_(c0, c_m_out_idx, c_vec_idx):
-                                sub_r = subview(l1_recv.result, [j], [vec_w], [1])
-                                transfer_write(
-                                    None, zero_vec.result, sub_r, [c0], id_map, [True]
-                                )
-                                yield_([])
-                            yield_([])
-                        with InsertionPoint(if_first.else_block):
-                            # Receive assembled-so-far from prev cascade.
-                            prev_tx = arith.SubIOp(tx, c1_idx)
-                            ChannelGet("chan_cascade_lgu", l1_recv, indices=[prev_tx])
-                            yield_([])
-                        if not skip_inline:
-                            # Both branches: copy our 2 KB swiglu slab into
-                            # l1_recv at offset col_base. Vectorized at SILU_VEC.
-                            for kk in for_(c0, c_hmpc_idx, c_silu_idx):
-                                sub_s = subview(
-                                    l1_swiglu_out.result, [kk], [SILU_VEC], [1]
-                                )
-                                global_idx = arith.addi(col_base, kk)
-                                sub_r = subview(
-                                    l1_recv.result, [global_idx], [SILU_VEC], [1]
-                                )
-                                v_s = transfer_read(
-                                    vecTyOut, sub_s, [c0], id_map, cst0_bf16, [True]
-                                )
-                                transfer_write(None, v_s, sub_r, [c0], id_map, [True])
-                                yield_([])
-
-                        # Forward or broadcast.
-                        cmp_last = arith.CmpIOp(arith.CmpIPredicate.eq, tx, last_tx)
-                        if_last = scf.IfOp(cmp_last, has_else=True)
-                        with InsertionPoint(if_last.then_block):
-                            # Eastmost LGU: broadcast K_LD_div K_CHUNK
-                            # chunks on one packet channel (FIFO).
-                            for k_chunk in range(K_LD_div):
-                                ck_off = arith.ConstantOp.create_index(
-                                    k_chunk * K_CHUNK
-                                )
-                                ck_n = arith.ConstantOp.create_index(K_CHUNK)
-                                ck_one = arith.ConstantOp.create_index(1)
-                                ChannelPut(
-                                    "swigluToLd",
-                                    l1_recv,
-                                    offsets=[ck_off],
-                                    sizes=[ck_n],
-                                    strides=[ck_one],
-                                )
-                            yield_([])
-                        with InsertionPoint(if_last.else_block):
-                            ChannelPut("chan_cascade_lgu", l1_recv, indices=[tx])
-                            yield_([])
-
-                        DeallocOp(l1_res1)
-                        DeallocOp(l1_gate)
-                        DeallocOp(l1_up)
-                        DeallocOp(l1_swiglu_out)
-                        DeallocOp(l1_recv)
-
-                    lgu_body.attributes["link_with"] = StringAttr.get(KERNEL_OBJ_NAME)
-                    lgu_body.attributes["x_loc"] = IntegerAttr.get(T.i64(), 0)
-                    lgu_body.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
-
-                    # ---- LD herd (N_LD cores at row 3) ----
-                    @herd(name="ld_herd", sizes=[N_LD, 1])
-                    def ld_herd_body(tx, ty, _sx, _sy):
-                        c0 = arith.ConstantOp.create_index(0)
-                        c_mt = arith.ConstantOp.create_index(M_TILE)
-                        c_mldpc = arith.ConstantOp.create_index(M_ld_per_core)
-                        c_kchunk = arith.ConstantOp.create_index(K_CHUNK)
-                        c_one = arith.ConstantOp.create_index(1)
-                        c_kchunk_i32 = arith.ConstantOp(i32_ty, K_CHUNK)
-                        tx_base = arith.muli(tx, c_mldpc)
-
-                        # Single full swiglu buffer; LGU sends K_LD_div
-                        # K_CHUNK chunks in FIFO order with offsets.
-                        l1_swiglu = AllocOp(swiglu_full_l1, [], [])
-                        l1_r = AllocOp(R_ld_l1, [], [])
-                        l1_slab = AllocOp(slab_ld_l1, [], [])
-
-                        # Residual addend first (was correct order for
-                        # standalone LGU+LD). LD dests are second half of
-                        # res1ToCons: tx + N_LGU.
-                        n_lgu_const = arith.ConstantOp.create_index(N_LGU)
-                        ld_dest_idx = arith.addi(tx, n_lgu_const)
-                        ChannelGet("res1ToCons", l1_r, indices=[ld_dest_idx, ty])
-                        # Swiglu chunks: receive into the full buffer at
-                        # successive K_CHUNK offsets.
-                        for k_chunk in range(K_LD_div):
-                            ck_off = arith.ConstantOp.create_index(k_chunk * K_CHUNK)
-                            ChannelGet(
-                                "swigluToLd",
-                                l1_swiglu,
-                                indices=[tx, ty],
-                                offsets=[ck_off],
-                                sizes=[c_kchunk],
-                                strides=[c_one],
-                            )
-
-                        cst0_bf16_ld = arith.ConstantOp(bf16_ty, 0.0)
-                        vecTy_mt_ld = VectorType.get([M_TILE], bf16_ty)
-                        id_map_ld = AffineMapAttr.get(AffineMap.get_identity(1))
-
-                        for outer in for_(M_ld_div):
-                            l1_partial_full = AllocOp(partial_full_ty, [], [])
-                            l1_partial_strided = subview(
-                                l1_partial_full.result, [0], [M_TILE], [1]
-                            )
-                            l1_partial = memref_cast(D_la_l1, l1_partial_strided)
-                            l1_d_full = AllocOp(partial_full_ty, [], [])
-                            l1_d_strided = subview(l1_d_full.result, [0], [M_TILE], [1])
-                            l1_d = memref_cast(D_la_l1, l1_d_strided)
-
-                            linalg.fill(cst0_bf16_ld, outs=[l1_partial])
-                            # Inner K loop: scf.for + per-iter PACKED alloc
-                            # so the compiler auto-introduces ping-pong on
-                            # ldL2ToL1 (DMA prefetch overlaps with compute).
-                            for k_chunk in for_(K_LD_div):
-                                l1_p = AllocOp(packed_ld_l1, [], [])
-                                ChannelGet("ldL2ToL1", l1_p, indices=[tx])
-                                k_chunk_i32 = arith.IndexCastOp(i32_ty, k_chunk).result
-                                b_off_i32 = arith.muli(k_chunk_i32, c_kchunk_i32)
-                                CallOp(
-                                    matvec_offset_func,
-                                    [l1_p, l1_swiglu, b_off_i32, l1_partial],
-                                )
-                                DeallocOp(l1_p)
-                                yield_([])
-
-                            local_off = arith.muli(outer, c_mt)
-                            global_off = arith.addi(tx_base, local_off)
-                            # Inline partial+r: one 8-wide bf16 vector add
-                            # (patched aievec pads to 16-wide internally).
-                            sub_r_ld = subview(l1_r.result, [global_off], [M_TILE], [1])
-                            v_p_ld = transfer_read(
-                                vecTy_mt_ld,
-                                l1_partial,
-                                [c0],
-                                id_map_ld,
-                                cst0_bf16_ld,
-                                [True],
-                            )
-                            v_r_ld = transfer_read(
-                                vecTy_mt_ld,
-                                sub_r_ld,
-                                [c0],
-                                id_map_ld,
-                                cst0_bf16_ld,
-                                [True],
-                            )
-                            v_sum_ld = arith.addf(v_p_ld, v_r_ld)
-                            transfer_write(
-                                None, v_sum_ld, l1_d, [c0], id_map_ld, [True]
-                            )
-                            if not skip_inline:
-                                for i in range(M_TILE):
-                                    ci = arith.ConstantOp.create_index(i)
-                                    abs_idx = arith.addi(local_off, ci)
-                                    v = memref_load(l1_d, [ci])
-                                    memref_store(v, l1_slab, [abs_idx])
-                            DeallocOp(l1_partial_full)
-                            DeallocOp(l1_d_full)
-                            yield_([])
-
-                        ChannelPut("ldOutD", l1_slab, indices=[tx])
-
-                        DeallocOp(l1_swiglu)
-                        DeallocOp(l1_r)
-                        DeallocOp(l1_slab)
-
-                    ld_herd_body.attributes["link_with"] = StringAttr.get(
-                        KERNEL_OBJ_NAME
+                    _lgu_herd(
+                        N_LGU=N_LGU,
+                        K=K,
+                        K_CHUNK=K_CHUNK,
+                        K_LD_div=K_LD_div,
+                        M_TILE=M_TILE,
+                        M_OUT=M_OUT,
+                        M_lgu_div=M_lgu_div,
+                        half_M_per_core=half_M_per_core,
+                        tile_bytes=tile_bytes,
+                        skip_inline=skip_inline,
+                        lgu_gamma=lgu_gamma,
+                        res1_to_cons=res1_to_cons,
+                        lgu_l2_l1=lgu_l2_l1,
+                        casc_lgu=casc_lgu,
+                        swiglu_to_ld=swiglu_to_ld,
+                        matvec_store=matvec_store,
                     )
-                    ld_herd_body.attributes["x_loc"] = IntegerAttr.get(T.i64(), 0)
-                    ld_herd_body.attributes["y_loc"] = IntegerAttr.get(T.i64(), 3)
 
-    return build()
+                    _ld_herd(
+                        N_LGU=N_LGU,
+                        N_LD=N_LD,
+                        K_CHUNK=K_CHUNK,
+                        K_LD=K_LD,
+                        K_LD_div=K_LD_div,
+                        M_LA=M_LA,
+                        M_TILE=M_TILE,
+                        M_ld_div=M_ld_div,
+                        M_ld_per_core=M_ld_per_core,
+                        tile_bytes=tile_bytes,
+                        skip_inline=skip_inline,
+                        res1_to_cons=res1_to_cons,
+                        swiglu_to_ld=swiglu_to_ld,
+                        ld_l2_l1=ld_l2_l1,
+                        ld_out=ld_out,
+                        matvec_offset=matvec_offset,
+                    )
+
+    return lch
 
 
-def ld_cpu_reference(A_q, A_s, A_z, swiglu, R):
-    """LD: D = dequant(A_q,A_s,A_z) @ swiglu + R."""
-    M_ = A_q.shape[0]
-    K_ = swiglu.shape[0]
-    n_groups = A_s.shape[0]
-    gs = K_ // n_groups
-    A_q_i = A_q.astype(np.int32)
-    low = A_q_i & 0x0F
-    high = (A_q_i >> 4) & 0x0F
-    nibs = np.empty((M_, K_), dtype=np.int32)
-    nibs[:, 0::2] = low
-    nibs[:, 1::2] = high
-    s_per_kk = np.repeat(A_s.astype(np.float32), gs, axis=0)
-    z_per_kk = np.repeat(A_z.astype(np.int32), gs, axis=0)
-    dequant = (nibs - z_per_kk.T) * s_per_kk.T
-    raw = (dequant @ swiglu.astype(np.float32)).astype(bfloat16).astype(np.float32)
-    return (raw + R.astype(np.float32)).astype(bfloat16)
+def _la_herd(
+    *,
+    col,
+    N_LA,
+    K,
+    M_LA,
+    M_TILE,
+    M_la_div,
+    M_la_per_core,
+    tile_bytes,
+    skip_inline,
+    la_all,
+    casc_la,
+    res1_to_cons,
+    la_res_debug,
+    matvec_store,
+):
+    """One LA core: O-proj GEMV + residual #1, then its cascade hop.
+
+    Emitted as N_LA separate 1x1 herds rather than one 1-D herd because the
+    cascade makes each column's body genuinely different -- the first only
+    sends, the last broadcasts -- and because each has to be pinned to its
+    own column for the W->E chain to be W->E.
+    """
+    is_first = col == 0
+    is_last = col == N_LA - 1
+    col_base = col * M_la_per_core
+
+    with air.herd([range(1), range(1)], name=f"la_{col}", at=(col, ROW_LA)) as h:
+
+        @h.body
+        def _(_tx, _ty):
+            l1_b = air.alloc([K], bf16, scope=h.private())
+            l1_r = air.alloc([M_LA], bf16, scope=h.private())
+            l1_local = air.alloc([M_LA], bf16, scope=h.private())
+            if not skip_inline:
+                # Only this core's slab is written below; the cascade adds
+                # the buffers together, so everything else has to be zero.
+                ops.fill(l1_local, 0.0)
+
+            # B, then R, then the PACKED tiles inside the matvec loop.
+            la_all[col].get(l1_b)
+            la_all[col].get(l1_r)
+
+            for outer in air.sequential(M_la_div):
+                l1_p = air.alloc([tile_bytes], i8, scope=h.private())
+                la_all[col].get(l1_p)
+                # M_TILE wide, and handed to the kernel whole. The
+                # predecessor allocates 32 and passes a subview of the head,
+                # but air-shrink-memref-sizes-by-access narrows that to 8 and
+                # folds the subview away, so 8 is what it actually compiles;
+                # allocating it directly keeps a memref.subview out of the
+                # dependency analysis, which does not see a write *through* a
+                # subview as a write to the parent buffer.
+                partial = air.alloc([M_TILE], bf16, scope=h.private(), vector=M_TILE)
+                out = air.alloc([M_TILE], bf16, scope=h.private(), vector=M_TILE)
+
+                global_off = col_base + outer * M_TILE
+                matvec_store(l1_p, l1_b, partial)
+                out[:] = partial[:] + l1_r[global_off : global_off + M_TILE]
+                if not skip_inline:
+                    l1_local[global_off : global_off + M_TILE] = out[:]
+
+            # ---- W->E cascade shift ----
+            if is_first:
+                casc_la.put(l1_local, indices=[col])
+            else:
+                l1_recv = air.alloc([M_LA], bf16, scope=h.private())
+                casc_la.get(l1_recv, indices=[col - 1])
+                if not skip_inline:
+                    l1_local[:] = l1_recv[:] + l1_local[:]
+                if is_last:
+                    res1_to_cons.put(l1_local)
+                    # DEBUG: also send to L3.
+                    la_res_debug.put(l1_local)
+                else:
+                    casc_la.put(l1_local, indices=[col])
+
+
+def _lgu_herd(
+    *,
+    N_LGU,
+    K,
+    K_CHUNK,
+    K_LD_div,
+    M_TILE,
+    M_OUT,
+    M_lgu_div,
+    half_M_per_core,
+    tile_bytes,
+    skip_inline,
+    lgu_gamma,
+    res1_to_cons,
+    lgu_l2_l1,
+    casc_lgu,
+    swiglu_to_ld,
+    matvec_store,
+):
+    """RMSNorm(res1, gamma) -> gate/up GEMV -> SwiGLU -> cascade -> LD."""
+    # shape= pins the *physical* herd, one core per column. Without it the
+    # DSL strip-mines the 8-wide grid onto its default 2 columns and loops
+    # 4x, which is a different machine: the cascade needs eight cores laid
+    # out W->E on one row, and the shim allocation is computed per column.
+    with air.herd(
+        [range(N_LGU), range(1)], shape=(N_LGU, 1), name="lgu_h", at=(0, ROW_LGU)
+    ) as h:
+
+        @h.body
+        def _(tx, ty):
+            l1_gamma = air.alloc([K], bf16, scope=h.private())
+            l1_res1 = air.alloc([K], bf16, scope=h.private())
+            # RMS writes back in place into res1 rather than into a second
+            # buffer -- worth 4 KB of L1 here.
+            l1_normed = l1_res1
+            l1_gate = air.alloc([half_M_per_core], bf16, scope=h.private())
+            l1_up = air.alloc([half_M_per_core], bf16, scope=h.private())
+            # Per-core SwiGLU output (2 KB). The cascade step copies it
+            # into l1_recv at the right offset, which is what lets the
+            # 16 KB assembled buffer be allocated once rather than twice.
+            l1_swiglu_out = air.alloc([half_M_per_core], bf16, scope=h.private())
+
+            # The faster-arriving broadcast (gamma) first.
+            lgu_gamma.get(l1_gamma, indices=[tx, ty])
+            # LGU takes the first N_LGU destinations of res1ToCons.
+            res1_to_cons.get(l1_res1, indices=[tx, ty])
+
+            # ---- RMSNorm, in place ----
+            if not skip_inline:
+                acc = air.alloc([1], f32, scope=h.private())
+                acc[:] = ops.reduce_add(ops.cast(l1_res1[:] * l1_res1[:], f32))
+                rstd = ops.cast(ops.rsqrt(acc[:] / float(K) + 1.0e-5), bf16)
+                l1_normed[:] = l1_res1[:] * rstd * l1_gamma[:]
+
+            # ---- Hot int4 GEMV: one PACKED tile per trip, allocated in
+            #      the loop so the compiler ping-pongs the get. ----
+            # The result tile is hoisted *out* of the loop, and has to be:
+            # air-label-scf-for-to-ping-pong only labels a loop whose body
+            # allocates the one buffer the get targets, so a second alloc
+            # beside it costs the loop its ping-pong (lguL2ToL1 stays at one
+            # get instead of two) and the design then runs out of shim MM2S.
+            partial = air.alloc([M_TILE], bf16, scope=h.private())
+            # This fill is not needed for the arithmetic -- the kernel writes
+            # every element of `partial` before anything reads it. It is here
+            # to keep the alloc where it was written: air-fuse-alloc-dealloc
+            # sinks an alloc into a loop when *every* user is inside it, and
+            # sinking this one is what costs the loop its ping-pong. The fill
+            # is a use outside the loop, so the alloc stays out. The
+            # predecessor gets the same effect by accident, from a
+            # memref.subview it happens to compute once above the loop.
+            ops.fill(partial, 0.0)
+            for outer in air.sequential(M_lgu_div):
+                l1_p = air.alloc([tile_bytes], i8, scope=h.private())
+                lgu_l2_l1.get(l1_p, indices=[tx])
+                matvec_store(l1_p, l1_normed, partial)
+                if not skip_inline:
+                    # The kernel emits gate and up interleaved, so this
+                    # de-interleaves them. A strided read would say it
+                    # better, but a slice step is not a DMA access pattern
+                    # and the DSL has no spelling for one.
+                    pair_off = outer * (M_TILE // 2)
+                    for i in range(M_TILE // 2):
+                        l1_gate[pair_off + i] = partial[2 * i]
+                        l1_up[pair_off + i] = partial[2 * i + 1]
+
+            # ---- SwiGLU ----
+            if not skip_inline:
+                l1_swiglu_out[:] = ops.silu(l1_gate[:]) * l1_up[:]
+
+            # ---- W->E cascade shift ----
+            # l1_recv is the single 16 KB assembled buffer. Column 0 starts
+            # it at zero and writes its own slab in; every other column
+            # receives the assembled-so-far value and overwrites its own
+            # slot, which is zero there because no earlier core writes it.
+            l1_recv = air.alloc([M_OUT], bf16, scope=h.private())
+            col_base = tx * half_M_per_core
+
+            first = ops.branch(tx == 0)
+            with first:
+                ops.fill(l1_recv, 0.0)
+            with first.otherwise():
+                casc_lgu.get(l1_recv, indices=[tx - 1])
+
+            if not skip_inline:
+                # Both arms: copy this core's slab in at col_base.
+                l1_recv[col_base : col_base + half_M_per_core] = l1_swiglu_out[:]
+
+            last = ops.branch(tx == N_LGU - 1)
+            with last:
+                # Eastmost LGU: broadcast K_LD_div K_CHUNK chunks over one
+                # packet channel, in FIFO order.
+                for k_chunk in range(K_LD_div):
+                    lo = k_chunk * K_CHUNK
+                    swiglu_to_ld.put(l1_recv[lo : lo + K_CHUNK])
+            with last.otherwise():
+                casc_lgu.put(l1_recv, indices=[tx])
+
+
+def _ld_herd(
+    *,
+    N_LGU,
+    N_LD,
+    K_CHUNK,
+    K_LD,
+    K_LD_div,
+    M_LA,
+    M_TILE,
+    M_ld_div,
+    M_ld_per_core,
+    tile_bytes,
+    skip_inline,
+    res1_to_cons,
+    swiglu_to_ld,
+    ld_l2_l1,
+    ld_out,
+    matvec_offset,
+):
+    """FFN-down GEMV over the assembled swiglu, plus residual #2."""
+    # shape= pins the *physical* herd, one core per column. Without it the
+    # DSL strip-mines the 8-wide grid onto its default 2 columns and loops
+    # 4x, which is a different machine: the cascade needs eight cores laid
+    # out W->E on one row, and the shim allocation is computed per column.
+    with air.herd(
+        [range(N_LD), range(1)], shape=(N_LD, 1), name="ld_herd", at=(0, ROW_LD)
+    ) as h:
+
+        @h.body
+        def _(tx, ty):
+            # One full swiglu buffer; LGU sends K_LD_div K_CHUNK chunks in
+            # FIFO order and each lands at its own offset.
+            l1_swiglu = air.alloc([K_LD], bf16, scope=h.private())
+            l1_r = air.alloc([M_LA], bf16, scope=h.private())
+            l1_slab = air.alloc([M_ld_per_core], bf16, scope=h.private())
+
+            # The residual addend first, matching the order the standalone
+            # LGU+LD build used. LD takes the second half of res1ToCons'
+            # destinations.
+            res1_to_cons.get(l1_r, indices=[tx + N_LGU, ty])
+            for k_chunk in range(K_LD_div):
+                lo = k_chunk * K_CHUNK
+                swiglu_to_ld.get(l1_swiglu[lo : lo + K_CHUNK], indices=[tx, ty])
+
+            tx_base = tx * M_ld_per_core
+
+            for outer in air.sequential(M_ld_div):
+                partial = air.alloc([M_TILE], bf16, scope=h.private(), vector=M_TILE)
+                out = air.alloc([M_TILE], bf16, scope=h.private(), vector=M_TILE)
+                ops.fill(partial, 0.0)
+
+                # Inner K loop, with the PACKED tile allocated per trip so
+                # the compiler overlaps its DMA with the compute.
+                for k_chunk in air.sequential(K_LD_div):
+                    l1_p = air.alloc([tile_bytes], i8, scope=h.private())
+                    ld_l2_l1.get(l1_p, indices=[tx])
+                    matvec_offset(l1_p, l1_swiglu, k_chunk * K_CHUNK, partial)
+
+                local_off = outer * M_TILE
+                global_off = tx_base + local_off
+                out[:] = partial[:] + l1_r[global_off : global_off + M_TILE]
+                if not skip_inline:
+                    l1_slab[local_off : local_off + M_TILE] = out[:]
+
+            ld_out.put(l1_slab, indices=[tx])
+
+
+def build_module(**kwargs):
+    """Lower the kernel to a module, as the XRT backend and runner want it."""
+    target = kwargs.get("target", "npu2")
+    return build_launch(**kwargs).build(target=target)
 
 
 if __name__ == "__main__":
@@ -1095,6 +699,13 @@ if __name__ == "__main__":
     parser.add_argument("--m-tile", type=int, default=8, dest="m_tile")
     parser.add_argument("--k-chunk", type=int, default=2048, dest="k_chunk")
     parser.add_argument("--n-cores", type=int, default=8, dest="n_cores")
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="npu2",
+        help="AIE generation. This kernel is npu2-only: it uses eight columns "
+        "and three fixed rows, which npu1 does not have.",
+    )
     parser.add_argument(
         "--compile-mode",
         type=str,
@@ -1120,6 +731,7 @@ if __name__ == "__main__":
         m_tile=args.m_tile,
         k_chunk=args.k_chunk,
         n_cores=args.n_cores,
+        target=args.target,
     )
     if args.print_module_only:
         print(module)
@@ -1133,6 +745,7 @@ if __name__ == "__main__":
             instance_name="o_gemv_ffn_int4_fused",
             use_lock_race_condition_fix=False,
             stack_size=4096,
+            target_device=args.target,
         )
         backend.compile(module)
         backend.unload()

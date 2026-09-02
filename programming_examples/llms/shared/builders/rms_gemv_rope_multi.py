@@ -74,6 +74,11 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
+from air import api as air
+from air.api import ops
+from air.api.types import f32, i32
+from shared.builders.rms_gemms_rope_multi import _api_dtype
+
 from shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
@@ -91,150 +96,74 @@ EPS = 1e-5
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_rms_1d(n, np_dtype, vector_size=16):
+def _build_rms_1d(n, np_dtype, vector_size=16, target="npu2"):
     """Build RMSNorm for M=1 with 1D func args (decode-friendly).
 
-    The standard weighted_rms_norm builds with 2D (M, N) I/O memrefs.
-    For decode (M=1), the GEMV expects 1D (N,) input. This wrapper:
-      - Uses 1D memref<N x bf16> func args
-      - Inside air.launch: expand_shape 1D -> (1, N) for the herd body
-      - The herd body is the standard M=1 single-tile RMSNorm
+    The standard weighted_rms_norm builds with 2D (M, N) I/O memrefs. For
+    decode (M=1) the GEMV expects 1D (N,) input, so the func args are 1D.
 
     Func signature: (x_1d: [N], weight: [N], out_1d: [N])
+
+    Three lines of DSL for what the predecessor spelled as ~90: an explicit
+    1D->2D expand_shape at launch scope, a vector-width bf16 accumulator filled
+    by a hand-rolled loop of subview + two transfer_reads + mulf + addf, a
+    store/load inserted between the mulf and the addf to break the chain, a
+    horizontal vector.reduction, and an extf/rsqrt/truncf triple.
+
+    None of that structure survives here -- ops.reduce_add is one op and there
+    is nowhere to put the chain break -- and it does not need to: the emitted
+    air.insts.bin is byte-identical to the predecessor's at every N the callers
+    use. The accumulate stays bf16 and the division stays a division, which is
+    where this differs from weighted_rms_norm (f32 accumulate, multiply by the
+    reciprocal); those are numerics, not spelling, so they are kept.
     """
-    from air.dialects.memref import expand_shape as memref_expand_shape
+    assert n % vector_size == 0, (n, vector_size)
 
-    xrt_dtype = type_mapper(np_dtype)
-    assert n % vector_size == 0
+    dtype = _api_dtype(np_dtype)
+    X = air.tensor([n], dtype)
+    W = air.tensor([n], dtype)
+    Y = air.tensor([n], dtype)
 
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    with air.launch(name="rms_norm_1d") as launch:
 
-    # L3 types
-    l3_1d_ty = MemRefType.get([n], xrt_dtype)
-    l3_2d_ty = MemRefType.get([1, n], xrt_dtype)
+        @launch.body
+        def _():
+            with air.segment(name="rms_seg") as seg:
 
-    # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get([n], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(1), range(1)], name="rms_herd", shape=(1, 1)
+                    ) as h:
 
-    @FuncOp.from_py_func(l3_1d_ty, l3_1d_ty, l3_1d_ty)
-    def rms_norm_1d(x_1d, weight, out_1d):
-        @launch(operands=[x_1d, weight, out_1d])
-        def rms_launch(l_x_1d, l_weight, l_out_1d):
-            # Expand 1D -> 2D for RMSNorm herd (which uses 2D DMA offsets)
-            l_x_2d = memref_expand_shape(l3_2d_ty, l_x_1d, [[0, 1]], [], [1, n])
-            l_out_2d = memref_expand_shape(l3_2d_ty, l_out_1d, [[0, 1]], [], [1, n])
+                        @h.body
+                        def _(tx, ty):
+                            row = air.alloc(
+                                [n], dtype, scope=h.private(), vector=vector_size
+                            )
+                            wt = air.alloc(
+                                [n], dtype, scope=h.private(), vector=vector_size
+                            )
+                            out = air.alloc(
+                                [n], dtype, scope=h.private(), vector=vector_size
+                            )
+                            acc = air.alloc(
+                                [1], dtype, scope=h.private(), vector=vector_size
+                            )
+                            rstd = air.alloc(
+                                [1], dtype, scope=h.private(), vector=vector_size
+                            )
 
-            @segment(name="rms_seg", operands=[l_x_2d, l_weight, l_out_2d])
-            def rms_seg(s_x_2d, s_weight, s_out_2d):
-                @herd(
-                    name="rms_herd",
-                    sizes=[1, 1],
-                    operands=[s_x_2d, s_weight, s_out_2d],
-                )
-                def rms_body(_tx, _ty, _sx, _sy, l3_in, l3_weight, l3_out):
-                    l1_row = AllocOp(l1RowTy, [], [])
-                    l1_out = AllocOp(l1RowTy, [], [])
-                    l1_weight_buf = AllocOp(l1RowTy, [], [])
-                    l1_acc = AllocOp(l1VecTy, [], [])
+                            ops.load(wt, W[:])
+                            ops.load(row, X[:])
+                            acc[:] = ops.reduce_add(row[:] * row[:])
+                            rstd[:] = ops.cast(
+                                ops.rsqrt(ops.cast(acc[:] / n + EPS, f32)), dtype
+                            )
+                            out[:] = row[:] * rstd[:] * wt[:]
+                            ops.store(out, Y[:])
 
-                    c0 = arith.ConstantOp.create_index(0)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                    n_f = arith.ConstantOp(xrt_dtype, float(n))
-                    eps_f = arith.ConstantOp(xrt_dtype, EPS)
-
-                    v_zero = BroadcastOp(vecTy, cst0)
-
-                    # DMA weight to L1
-                    dma_memcpy_nd(l1_weight_buf, l3_weight)
-
-                    # M=1: single row, no loop needed
-                    row = arith.ConstantOp.create_index(0)
-
-                    # DMA: load single row from 2D L3 to L1
-                    dma_memcpy_nd(
-                        l1_row,
-                        l3_in,
-                        src_offsets=[row, 0],
-                        src_sizes=[1, n],
-                        src_strides=[n, 1],
-                    )
-
-                    # Step 1: Vectorized sum of x^2
-                    transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
-                    for j in range_(0, n, vector_size):
-                        sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                        sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
-                        v_x = transfer_read(
-                            vecTy, sub_row, [c0], identity_map, cst0, [True]
-                        )
-                        v_sq = arith.mulf(v_x, v_x)
-                        # Break mulf->addf chain via store/load
-                        transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
-                        v_sq_rd = transfer_read(
-                            vecTy, sub_tmp, [c0], identity_map, cst0, [True]
-                        )
-                        v_acc = transfer_read(
-                            vecTy, l1_acc, [c0], identity_map, cst0, [True]
-                        )
-                        v_sum = arith.addf(v_acc, v_sq_rd)
-                        transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
-                        yield_([])
-
-                    # Horizontal reduce
-                    v_final = transfer_read(
-                        vecTy, l1_acc, [c0], identity_map, cst0, [True]
-                    )
-                    total_sum = vector_reduction(xrt_dtype, "add", v_final)
-                    rms = arith.divf(total_sum, n_f)
-
-                    # Step 2: rstd = rsqrt(rms + eps) in f32
-                    f32 = F32Type.get()
-                    rms_eps = arith.addf(rms, eps_f)
-                    rms_eps_f32 = arith.extf(f32, rms_eps)
-                    rstd_f32 = math_dialect.rsqrt(rms_eps_f32)
-                    rstd = arith.truncf(xrt_dtype, rstd_f32)
-
-                    # Step 3: y = x * rstd * weight
-                    v_rstd = BroadcastOp(vecTy, rstd)
-                    for j in range_(0, n, vector_size):
-                        sub_row = subview(l1_row.result, [j], [vector_size], [1])
-                        sub_w = subview(l1_weight_buf.result, [j], [vector_size], [1])
-                        sub_out = subview(l1_out.result, [j], [vector_size], [1])
-                        v_x = transfer_read(
-                            vecTy, sub_row, [c0], identity_map, cst0, [True]
-                        )
-                        v_w = transfer_read(
-                            vecTy, sub_w, [c0], identity_map, cst0, [True]
-                        )
-                        v_normed = arith.mulf(v_x, v_rstd)
-                        v_weighted = arith.mulf(v_normed, v_w)
-                        transfer_write(
-                            None,
-                            v_weighted,
-                            sub_out,
-                            [c0],
-                            identity_map,
-                            [True],
-                        )
-                        yield_([])
-
-                    # DMA: write result row back to 2D L3
-                    dma_memcpy_nd(
-                        l3_out,
-                        l1_out,
-                        dst_offsets=[row, 0],
-                        dst_sizes=[1, n],
-                        dst_strides=[n, 1],
-                    )
-
-                    DeallocOp(l1_row)
-                    DeallocOp(l1_out)
-                    DeallocOp(l1_weight_buf)
-                    DeallocOp(l1_acc)
+    return launch.build(target=target)
 
 
 # ---------------------------------------------------------------------------
@@ -242,8 +171,7 @@ def _build_rms_1d(n, np_dtype, vector_size=16):
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_rope_1d(n_rows, embed_dim, np_dtype, herd_x=1):
+def _build_rope_1d(n_rows, embed_dim, np_dtype, herd_x=1, target="npu2"):
     """Build a RoPE launch with 1D func args (for decode GEMV compatibility).
 
     Func signature:
@@ -255,104 +183,57 @@ def _build_rope_1d(n_rows, embed_dim, np_dtype, herd_x=1):
         n_rows:    Number of RoPE rows (n_heads for Q, n_kv_heads for K)
         embed_dim: RoPE column width per row (head_dim=64)
         herd_x:    Number of tiles for row-parallel
+        target:    NPU generation to build for; see _build_rope_2d.
+
+    The 2-D sibling in rms_gemms_rope_multi.py carries the reasoning: the
+    hand-built AffineMap becomes Python arithmetic on the tile coordinates,
+    and the emitted air.insts.bin is byte-identical to the predecessor's.
     """
-    xrt_dtype = type_mapper(np_dtype)
+    assert embed_dim % 16 == 0
     total = n_rows * embed_dim
     herd_y = 1
     total_tiles = herd_x * herd_y
-    assert embed_dim % 16 == 0
     assert n_rows % total_tiles == 0
-
-    l3_1d_ty = MemRefType.get([total], xrt_dtype)
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get(
-        shape=[embed_dim], element_type=xrt_dtype, memory_space=l1_mem_space
-    )
-
-    rope_func = FuncOp(
-        "rope", ([l1RowTy, l1RowTy, l1RowTy, T.i32()], []), visibility="private"
-    )
-    rope_func.attributes["link_with"] = StringAttr.get("rope.o")
-    rope_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-
     rows_per_tile = n_rows // total_tiles
 
-    # Affine map: row_offset = (local_row + tile_id * rows_per_tile) * embed_dim
-    row_offset_map = AffineMap.get(
-        0,
-        3,  # s0=local_row, s1=_tx, s2=_ty
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineSymbolExpr.get(0),  # local_row
-                    AffineExpr.get_mul(
-                        AffineExpr.get_add(
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),  # _tx
-                                AffineConstantExpr.get(herd_y),
-                            ),
-                            AffineSymbolExpr.get(2),  # _ty
-                        ),
-                        AffineConstantExpr.get(rows_per_tile),
-                    ),
-                ),
-                AffineConstantExpr.get(embed_dim),
-            )
-        ],
-    )
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([total], dtype)
+    LUT = air.tensor([total], dtype)
+    OUT = air.tensor([total], dtype)
 
-    @FuncOp.from_py_func(l3_1d_ty, l3_1d_ty, l3_1d_ty)
-    def rope_1d(arg0_in, arg1_lut, arg2_out):
-        @launch(operands=[arg0_in, arg1_lut, arg2_out])
-        def rope_launch(l_in, l_lut, l_out):
-            @segment(name="rope_seg", operands=[l_in, l_lut, l_out])
-            def rope_seg(s_in, s_lut, s_out):
-                @herd(
-                    name="rope_herd",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_in, s_lut, s_out],
-                )
-                def rope_body(_tx, _ty, _sx, _sy, h_in, h_lut, h_out):
-                    l1_in = AllocOp(l1RowTy, [], [])
-                    l1_lut = AllocOp(l1RowTy, [], [])
-                    l1_out_buf = AllocOp(l1RowTy, [], [])
+    rope = air.extern("rope", link_with="rope.o", scalars=[i32])
 
-                    dim_i32 = ConstantOp(T.i32(), embed_dim)
+    with air.launch(name="rope_1d") as launch:
 
-                    for local_row in range_(rows_per_tile):
-                        row_offset = affine_apply(row_offset_map, [local_row, _tx, _ty])
+        @launch.body
+        def _():
+            with air.segment(name="rope_seg") as seg:
 
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[row_offset],
-                            src_sizes=[embed_dim],
-                            src_strides=[1],
-                        )
-                        dma_memcpy_nd(
-                            l1_lut,
-                            h_lut,
-                            src_offsets=[row_offset],
-                            src_sizes=[embed_dim],
-                            src_strides=[1],
-                        )
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="rope_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
 
-                        CallOp(rope_func, [l1_in, l1_lut, l1_out_buf, dim_i32])
+                        @h.body
+                        def _(tx, ty):
+                            l1_in = air.alloc([embed_dim], dtype, scope=h.private())
+                            l1_lut = air.alloc([embed_dim], dtype, scope=h.private())
+                            l1_out = air.alloc([embed_dim], dtype, scope=h.private())
 
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out_buf,
-                            dst_offsets=[row_offset],
-                            dst_sizes=[embed_dim],
-                            dst_strides=[1],
-                        )
-                        yield_([])
+                            for local_row in air.sequential(0, rows_per_tile):
+                                row = (
+                                    local_row + (tx * herd_y + ty) * rows_per_tile
+                                ) * embed_dim
 
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_lut)
-                    DeallocOp(l1_out_buf)
+                                ops.load(l1_in, IN[row : row + embed_dim])
+                                ops.load(l1_lut, LUT[row : row + embed_dim])
+                                rope(l1_in, l1_lut, l1_out, embed_dim)
+                                ops.store(l1_out, OUT[row : row + embed_dim])
 
-                rope_body.attributes["link_with"] = StringAttr.get("rope.o")
+    return launch.build(target=target)
 
 
 # External kernel function names shared across all sub-kernels

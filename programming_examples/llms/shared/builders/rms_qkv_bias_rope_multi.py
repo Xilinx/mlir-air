@@ -65,6 +65,10 @@ from air.dialects.func import FuncOp
 from air.dialects.scf import for_ as range_, yield_
 from air.backend.xrt_runner import type_mapper
 
+from air import api as air
+from air.api import ops
+from shared.builders.rms_gemms_rope_multi import _api_dtype
+
 # ---------------------------------------------------------------------------
 # Per-channel broadcast bias-add, 2D in/out (prefill, M=seq).
 #
@@ -79,129 +83,141 @@ from air.backend.xrt_runner import type_mapper
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_bias_add_2d(seq_len, in_cols, real_cols, np_dtype, herd_x, vector_size=16):
+def _build_bias_add_2d(
+    seq_len, in_cols, real_cols, np_dtype, herd_x, vector_size=16, target="npu2"
+):
     """Build a broadcast bias-add launch with 2D in/out args.
 
     Func signature:
-      (in_2d:  [seq_len, in_cols]   — N-padded GEMM output,
+      (in_2d:  [seq_len, in_cols]   -- N-padded GEMM output,
        bias_1d:[real_cols],
-       out_2d: [seq_len, real_cols] — un-padded contiguous)
+       out_2d: [seq_len, real_cols] -- un-padded contiguous)
+
     The herd splits the seq rows across herd_x tiles; each row reads the first
     real_cols of `in`, adds the broadcast bias, writes real_cols to `out`.
+
+    `IN[r, 0:real_cols]` is the padded row: an integer subscript drops the row
+    axis and the slice keeps the column one, so the region is rank 1 and its
+    row stride is in_cols, which is what the predecessor spelled as
+    src_sizes=[1, real_cols] / src_strides=[in_cols, 1]. The bias load stays
+    hoisted above the row loop, as it was.
     """
-    xrt_dtype = type_mapper(np_dtype)
     herd_y = 1
     total_tiles = herd_x * herd_y
     assert real_cols % vector_size == 0, (real_cols, vector_size)
     assert seq_len % total_tiles == 0, (seq_len, total_tiles)
     rows_per_tile = seq_len // total_tiles
 
-    vec_ty = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([seq_len, in_cols], dtype)
+    BIAS = air.tensor([real_cols], dtype)
+    OUT = air.tensor([seq_len, real_cols], dtype)
 
-    in_2d_ty = MemRefType.get([seq_len, in_cols], xrt_dtype)
-    bias_ty = MemRefType.get([real_cols], xrt_dtype)
-    out_2d_ty = MemRefType.get([seq_len, real_cols], xrt_dtype)
-    out_flat_ty = MemRefType.get([seq_len * real_cols], xrt_dtype)
+    with air.launch(name="bias_add_2d") as launch:
 
-    l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1_row_ty = MemRefType.get([real_cols], xrt_dtype, memory_space=l1_space)
+        @launch.body
+        def _():
+            with air.segment(name="ba_seg") as seg:
 
-    # row index r = tile_id * rows_per_tile + local_row
-    row_map = AffineMap.get(
-        0,
-        3,
-        [
-            AffineExpr.get_add(
-                AffineExpr.get_mul(
-                    AffineExpr.get_add(
-                        AffineExpr.get_mul(
-                            AffineSymbolExpr.get(1), AffineConstantExpr.get(herd_y)
-                        ),
-                        AffineSymbolExpr.get(2),
-                    ),
-                    AffineConstantExpr.get(rows_per_tile),
-                ),
-                AffineSymbolExpr.get(0),
-            )
-        ],
-    )
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="ba_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
 
-    @FuncOp.from_py_func(in_2d_ty, bias_ty, out_2d_ty)
-    def bias_add_2d(arg0_in, arg1_bias, arg2_out):
-        @launch(operands=[arg0_in, arg1_bias, arg2_out])
-        def ba_launch(l_in, l_bias, l_out):
-            from air.dialects.memref import collapse_shape as memref_collapse_shape
-
-            out_flat = memref_collapse_shape(out_flat_ty, l_out, [[0, 1]])
-
-            @segment(name="ba_seg", operands=[l_in, l_bias, out_flat])
-            def ba_seg(s_in, s_bias, s_out):
-                @herd(
-                    name="ba_herd",
-                    sizes=[herd_x, herd_y],
-                    operands=[s_in, s_bias, s_out],
-                )
-                def ba_body(_tx, _ty, _sx, _sy, h_in, h_bias, h_out):
-                    l1_in = AllocOp(l1_row_ty, [], [])
-                    l1_bias = AllocOp(l1_row_ty, [], [])
-                    l1_out = AllocOp(l1_row_ty, [], [])
-                    c0 = arith.ConstantOp.create_index(0)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-
-                    # bias DMA once per tile (broadcast across rows).
-                    dma_memcpy_nd(
-                        l1_bias,
-                        h_bias,
-                        src_offsets=[0],
-                        src_sizes=[real_cols],
-                        src_strides=[1],
-                    )
-
-                    for local_row in range_(rows_per_tile):
-                        r = affine_apply(row_map, [local_row, _tx, _ty])
-                        # in: 2D (seq, in_cols) — read row r, first real_cols.
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[r, c0],
-                            src_sizes=[1, real_cols],
-                            src_strides=[in_cols, 1],
-                        )
-                        for j in range_(0, real_cols, vector_size):
-                            si = subview(l1_in.result, [j], [vector_size], [1])
-                            sb = subview(l1_bias.result, [j], [vector_size], [1])
-                            so = subview(l1_out.result, [j], [vector_size], [1])
-                            v_i = transfer_read(
-                                vec_ty, si, [c0], identity_map, cst0, [True]
+                        @h.body
+                        def _(tx, ty):
+                            l1_in = air.alloc(
+                                [real_cols],
+                                dtype,
+                                scope=h.private(),
+                                vector=vector_size,
                             )
-                            v_b = transfer_read(
-                                vec_ty, sb, [c0], identity_map, cst0, [True]
+                            l1_bias = air.alloc(
+                                [real_cols],
+                                dtype,
+                                scope=h.private(),
+                                vector=vector_size,
                             )
-                            transfer_write(
-                                None,
-                                arith.addf(v_i, v_b),
-                                so,
-                                [c0],
-                                identity_map,
-                                [True],
+                            l1_out = air.alloc(
+                                [real_cols],
+                                dtype,
+                                scope=h.private(),
+                                vector=vector_size,
                             )
-                            yield_([])
-                        # out: flat 1D (seq*real_cols), row offset r*real_cols.
-                        off = arith.muli(r, arith.ConstantOp.create_index(real_cols))
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[off],
-                            dst_sizes=[real_cols],
-                            dst_strides=[1],
-                        )
-                        yield_([])
 
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_bias)
-                    DeallocOp(l1_out)
+                            ops.load(l1_bias, BIAS[0:real_cols])
+                            out_flat = OUT.reshape(seq_len * real_cols)
+
+                            for local_row in air.sequential(0, rows_per_tile):
+                                r = (tx * herd_y + ty) * rows_per_tile + local_row
+                                ops.load(l1_in, IN[r, 0:real_cols])
+                                l1_out[:] = l1_in[:] + l1_bias[:]
+                                off = r * real_cols
+                                ops.store(l1_out, out_flat[off : off + real_cols])
+
+    return launch.build(target=target)
+
+
+def _build_bias_add_1d(n_cols, np_dtype, herd_x=1, vector_size=16, target="npu2"):
+    """Build a 1D broadcast bias-add launch (decode, M=1).
+
+    Func signature: (in_1d: [n_cols], bias_1d: [n_cols], out_1d: [n_cols]).
+    """
+    assert n_cols % vector_size == 0, (n_cols, vector_size)
+    assert n_cols % herd_x == 0, (n_cols, herd_x)
+    herd_y = 1
+    cols_per_tile = n_cols // herd_x
+
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([n_cols], dtype)
+    BIAS = air.tensor([n_cols], dtype)
+    OUT = air.tensor([n_cols], dtype)
+
+    with air.launch(name="bias_add_1d") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="ba_seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="ba_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            l1_in = air.alloc(
+                                [cols_per_tile],
+                                dtype,
+                                scope=h.private(),
+                                vector=vector_size,
+                            )
+                            l1_bias = air.alloc(
+                                [cols_per_tile],
+                                dtype,
+                                scope=h.private(),
+                                vector=vector_size,
+                            )
+                            l1_out = air.alloc(
+                                [cols_per_tile],
+                                dtype,
+                                scope=h.private(),
+                                vector=vector_size,
+                            )
+
+                            off = (tx * herd_y + ty) * cols_per_tile
+                            ops.load(l1_in, IN[off : off + cols_per_tile])
+                            ops.load(l1_bias, BIAS[off : off + cols_per_tile])
+                            l1_out[:] = l1_in[:] + l1_bias[:]
+                            ops.store(l1_out, OUT[off : off + cols_per_tile])
+
+    return launch.build(target=target)
 
 
 # ---------------------------------------------------------------------------
@@ -212,97 +228,6 @@ def _build_bias_add_2d(seq_len, in_cols, real_cols, np_dtype, herd_x, vector_siz
 # Decode GEMV outputs are NOT N-padded (plain matvec), so in_cols == n_cols.
 # Single row processed by tile 0; trivially cheap.
 # ---------------------------------------------------------------------------
-
-
-@module_builder
-def _build_bias_add_1d(n_cols, np_dtype, herd_x=1, vector_size=16):
-    """Build a 1D broadcast bias-add launch (decode, M=1).
-
-    Func signature: (in_1d: [n_cols], bias_1d: [n_cols], out_1d: [n_cols]).
-    """
-    xrt_dtype = type_mapper(np_dtype)
-    assert n_cols % vector_size == 0, (n_cols, vector_size)
-    assert n_cols % herd_x == 0, (n_cols, herd_x)
-    cols_per_tile = n_cols // herd_x
-
-    vec_ty = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-    l3_ty = MemRefType.get([n_cols], xrt_dtype)
-    l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1_ty = MemRefType.get([cols_per_tile], xrt_dtype, memory_space=l1_space)
-
-    # offset = tile_id * cols_per_tile
-    off_map = AffineMap.get(
-        0,
-        2,
-        [
-            AffineExpr.get_mul(
-                AffineExpr.get_add(
-                    AffineExpr.get_mul(
-                        AffineSymbolExpr.get(0), AffineConstantExpr.get(1)
-                    ),
-                    AffineSymbolExpr.get(1),
-                ),
-                AffineConstantExpr.get(cols_per_tile),
-            )
-        ],
-    )
-
-    @FuncOp.from_py_func(l3_ty, l3_ty, l3_ty)
-    def bias_add_1d(arg0_in, arg1_bias, arg2_out):
-        @launch(operands=[arg0_in, arg1_bias, arg2_out])
-        def ba_launch(l_in, l_bias, l_out):
-            @segment(name="ba1_seg", operands=[l_in, l_bias, l_out])
-            def ba_seg(s_in, s_bias, s_out):
-                @herd(
-                    name="ba1_herd", sizes=[herd_x, 1], operands=[s_in, s_bias, s_out]
-                )
-                def ba_body(_tx, _ty, _sx, _sy, h_in, h_bias, h_out):
-                    l1_in = AllocOp(l1_ty, [], [])
-                    l1_bias = AllocOp(l1_ty, [], [])
-                    l1_out = AllocOp(l1_ty, [], [])
-                    c0 = arith.ConstantOp.create_index(0)
-                    cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                    off = affine_apply(off_map, [_tx, _ty])
-                    dma_memcpy_nd(
-                        l1_in,
-                        h_in,
-                        src_offsets=[off],
-                        src_sizes=[cols_per_tile],
-                        src_strides=[1],
-                    )
-                    dma_memcpy_nd(
-                        l1_bias,
-                        h_bias,
-                        src_offsets=[off],
-                        src_sizes=[cols_per_tile],
-                        src_strides=[1],
-                    )
-                    for j in range_(0, cols_per_tile, vector_size):
-                        si = subview(l1_in.result, [j], [vector_size], [1])
-                        sb = subview(l1_bias.result, [j], [vector_size], [1])
-                        so = subview(l1_out.result, [j], [vector_size], [1])
-                        v_i = transfer_read(
-                            vec_ty, si, [c0], identity_map, cst0, [True]
-                        )
-                        v_b = transfer_read(
-                            vec_ty, sb, [c0], identity_map, cst0, [True]
-                        )
-                        transfer_write(
-                            None, arith.addf(v_i, v_b), so, [c0], identity_map, [True]
-                        )
-                        yield_([])
-                    dma_memcpy_nd(
-                        h_out,
-                        l1_out,
-                        dst_offsets=[off],
-                        dst_sizes=[cols_per_tile],
-                        dst_strides=[1],
-                    )
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_bias)
-                    DeallocOp(l1_out)
 
 
 # ===========================================================================

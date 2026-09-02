@@ -52,6 +52,7 @@ if _LLMS_DIR not in sys.path:
     sys.path.insert(0, _LLMS_DIR)
 
 from qwen25_3b_weights import LlamaConfig
+from shared.builders.o_ffn_multi import build_named_add
 from qwen25_3b_cpu_helpers import attention_reference
 
 # ---------------------------------------------------------------------------
@@ -206,99 +207,18 @@ def _build_residual_add_2d_ir(seq_len, emb_dim):
 
     n_total = seq_len * emb_dim
 
-    @module_builder
+    # @res_add is the shared eltwise add under its own symbol; this used to
+    # be a private copy of the whole builder just to rename it.
     def _build():
-        from air.dialects.memref import collapse_shape as memref_collapse_shape
-
-        xrt_dtype = type_mapper(bfloat16)
-        twod_ty = MemRefType.get([seq_len, emb_dim], xrt_dtype)
-        flat_ty = MemRefType.get([n_total], xrt_dtype)
-        rows_per_pe = seq_len // 8
-        l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-        l1_ty = MemRefType.get([emb_dim], xrt_dtype, memory_space=l1_space)
-        vec_ty = VectorType.get([16], xrt_dtype)
-        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-        @FuncOp.from_py_func(twod_ty, twod_ty, twod_ty)
-        def res_add(proj_2d, xres_2d, out_2d):
-            @launch(operands=[proj_2d, xres_2d, out_2d])
-            def add_launch(l_proj, l_xres, l_out):
-                proj_flat = memref_collapse_shape(flat_ty, l_proj, [[0, 1]])
-                xres_flat = memref_collapse_shape(flat_ty, l_xres, [[0, 1]])
-                out_flat = memref_collapse_shape(flat_ty, l_out, [[0, 1]])
-
-                @segment(name="radd_seg", operands=[proj_flat, xres_flat, out_flat])
-                def add_seg(s_proj, s_xres, s_out):
-                    row_map = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(0),
-                                    AffineConstantExpr.get(rows_per_pe),
-                                ),
-                                AffineSymbolExpr.get(1),
-                            )
-                        ],
-                    )
-
-                    @herd(
-                        name="radd_herd", sizes=[8, 1], operands=[s_proj, s_xres, s_out]
-                    )
-                    def add_body(_tx, _ty, _sx, _sy, h_proj, h_xres, h_out):
-                        l1_p = AllocOp(l1_ty, [], [])
-                        l1_x = AllocOp(l1_ty, [], [])
-                        l1_o = AllocOp(l1_ty, [], [])
-                        c0 = arith.ConstantOp.create_index(0)
-                        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                        for iv in range_(0, rows_per_pe, 1):
-                            r = affine_apply(row_map, [_tx, iv])
-                            off = arith.muli(r, arith.ConstantOp.create_index(emb_dim))
-                            dma_memcpy_nd(
-                                l1_p,
-                                h_proj,
-                                src_offsets=[off],
-                                src_sizes=[emb_dim],
-                                src_strides=[1],
-                            )
-                            dma_memcpy_nd(
-                                l1_x,
-                                h_xres,
-                                src_offsets=[off],
-                                src_sizes=[emb_dim],
-                                src_strides=[1],
-                            )
-                            for j in range_(0, emb_dim, 16):
-                                sp = subview(l1_p.result, [j], [16], [1])
-                                sx = subview(l1_x.result, [j], [16], [1])
-                                so = subview(l1_o.result, [j], [16], [1])
-                                vp = transfer_read(
-                                    vec_ty, sp, [c0], identity_map, cst0, [True]
-                                )
-                                vx = transfer_read(
-                                    vec_ty, sx, [c0], identity_map, cst0, [True]
-                                )
-                                transfer_write(
-                                    None,
-                                    arith.addf(vp, vx),
-                                    so,
-                                    [c0],
-                                    identity_map,
-                                    [True],
-                                )
-                                yield_([])
-                            dma_memcpy_nd(
-                                h_out,
-                                l1_o,
-                                dst_offsets=[off],
-                                dst_sizes=[emb_dim],
-                                dst_strides=[1],
-                            )
-                            yield_([])
-                        DeallocOp(l1_p)
-                        DeallocOp(l1_x)
-                        DeallocOp(l1_o)
+        return build_named_add(
+            seq_len,
+            emb_dim,
+            bfloat16,
+            "res_add",
+            "radd_seg",
+            "radd_herd",
+            True,
+        )
 
     return str(_build())
 
@@ -534,105 +454,18 @@ def _build_down_add_2d_to_1d_ir(seq_len, emb_dim):
 
     n_total = seq_len * emb_dim
 
-    @module_builder
+    # @down_add is the shared eltwise add under its own symbol; this used to
+    # be a private copy of the whole builder just to rename it.
     def _build():
-        from air.dialects.memref import collapse_shape as memref_collapse_shape
-
-        xrt_dtype = type_mapper(bfloat16)
-        twod_ty = MemRefType.get([seq_len, emb_dim], xrt_dtype)
-        out_1d_ty = MemRefType.get([n_total], xrt_dtype)
-        total_tiles = 8
-        chunk_size = n_total // total_tiles
-        tile_n = emb_dim
-        l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-        l1_ty = MemRefType.get([tile_n], xrt_dtype, memory_space=l1_space)
-        vec_ty = VectorType.get([16], xrt_dtype)
-        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-        @FuncOp.from_py_func(twod_ty, twod_ty, out_1d_ty)
-        def down_add(down_2d, res_2d, out_1d):
-            @launch(operands=[down_2d, res_2d, out_1d])
-            def add_launch(l_down, l_res, l_out):
-                down_flat = memref_collapse_shape(out_1d_ty, l_down, [[0, 1]])
-                res_flat = memref_collapse_shape(out_1d_ty, l_res, [[0, 1]])
-
-                @segment(name="dadd_seg", operands=[down_flat, res_flat, l_out])
-                def add_seg(s_down, s_res, s_out):
-                    offset_map = AffineMap.get(
-                        0,
-                        3,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineExpr.get_add(
-                                        AffineExpr.get_mul(
-                                            AffineSymbolExpr.get(1),
-                                            AffineConstantExpr.get(1),
-                                        ),
-                                        AffineSymbolExpr.get(2),
-                                    ),
-                                    AffineConstantExpr.get(chunk_size),
-                                ),
-                            )
-                        ],
-                    )
-
-                    @herd(
-                        name="dadd_herd", sizes=[8, 1], operands=[s_down, s_res, s_out]
-                    )
-                    def add_body(_tx, _ty, _sx, _sy, h_down, h_res, h_out):
-                        l1_d = AllocOp(l1_ty, [], [])
-                        l1_r = AllocOp(l1_ty, [], [])
-                        l1_o = AllocOp(l1_ty, [], [])
-                        c0 = arith.ConstantOp.create_index(0)
-                        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                        for loop_iv in range_(0, chunk_size, tile_n):
-                            offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
-                            dma_memcpy_nd(
-                                l1_d,
-                                h_down,
-                                src_offsets=[offset],
-                                src_sizes=[tile_n],
-                                src_strides=[1],
-                            )
-                            dma_memcpy_nd(
-                                l1_r,
-                                h_res,
-                                src_offsets=[offset],
-                                src_sizes=[tile_n],
-                                src_strides=[1],
-                            )
-                            for j in range_(0, tile_n, 16):
-                                sd = subview(l1_d.result, [j], [16], [1])
-                                sr = subview(l1_r.result, [j], [16], [1])
-                                so = subview(l1_o.result, [j], [16], [1])
-                                vd = transfer_read(
-                                    vec_ty, sd, [c0], identity_map, cst0, [True]
-                                )
-                                vr = transfer_read(
-                                    vec_ty, sr, [c0], identity_map, cst0, [True]
-                                )
-                                transfer_write(
-                                    None,
-                                    arith.addf(vd, vr),
-                                    so,
-                                    [c0],
-                                    identity_map,
-                                    [True],
-                                )
-                                yield_([])
-                            dma_memcpy_nd(
-                                h_out,
-                                l1_o,
-                                dst_offsets=[offset],
-                                dst_sizes=[tile_n],
-                                dst_strides=[1],
-                            )
-                            yield_([])
-                        DeallocOp(l1_d)
-                        DeallocOp(l1_r)
-                        DeallocOp(l1_o)
+        return build_named_add(
+            seq_len,
+            emb_dim,
+            bfloat16,
+            "down_add",
+            "dadd_seg",
+            "dadd_herd",
+            False,
+        )
 
     return str(_build())
 

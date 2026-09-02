@@ -134,6 +134,14 @@ def set_active_trace(trace):
     """Install (or clear) the active trace; returns the previous one."""
     global _ACTIVE_TRACE
     previous, _ACTIVE_TRACE = _ACTIVE_TRACE, trace
+    if trace is not None:
+        # Channel declarations are placed by construction order, and the map
+        # from symbol name to that order describes one module. Two builds in
+        # one process (the llms model drivers do several) would otherwise have
+        # the second read the first's indices back off same-named channels.
+        from ._channel import _reset_declaration_order
+
+        _reset_declaration_order()
     return previous
 
 
@@ -1144,13 +1152,16 @@ class HerdContext:
 
     _what = "air.herd"
 
-    def __init__(self, iterable, name=None, shape=None, target=None, link_with=None):
+    def __init__(
+        self, iterable, name=None, shape=None, target=None, link_with=None, at=None
+    ):
         self.dims = parse_grid(iterable)
         if len(self.dims) > 2:
             raise NotImplementedError(
                 f"air.api supports 1-D and 2-D herd grids; got {len(self.dims)}-D"
             )
         self.name = name or "herd_0"
+        self.at = _parse_herd_anchor(at)
         self.target = resolve_target(target) if target else current_target()
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
@@ -1469,6 +1480,15 @@ class HerdContext:
                 next(iter(herd_self._objects))
             )
 
+        # at=(col, row) pins the herd's origin, as air-place-herds reads it.
+        if herd_self.at is not None:
+            from air.ir import IntegerAttr
+            from air.dialects.air import T as _T
+
+            col, row = herd_self.at
+            herd_body.attributes["x_loc"] = IntegerAttr.get(_T.i64(), col)
+            herd_body.attributes["y_loc"] = IntegerAttr.get(_T.i64(), row)
+
         # After link_with, because pruning rebuilds the op and carries its
         # attributes across.
         prune_unused_operands(herd_body)
@@ -1519,7 +1539,45 @@ def run_strip_mined(run, repeats, range_, yield_):
 # ---------------------------------------------------------------------------
 
 
-def herd(iterable, name=None, shape=None, target=None, link_with=None):
+def _parse_herd_anchor(at):
+    """Validate ``air.herd(at=(col, row))`` into a pair of ints, or None.
+
+    Only the shape of the argument is checked here. Whether the herd actually
+    *fits* on the array from that origin is the compiler's to answer -- it knows
+    the device's column count and what else is already placed, and it says so
+    ("column index (8) must be less than the number of columns in the device").
+    Duplicating that check here would mean keeping a second, staler copy of the
+    device table.
+    """
+    if at is None:
+        return None
+    if isinstance(at, (str, bytes)) or not hasattr(at, "__len__"):
+        raise TypeError(
+            f"air.herd(at=...) takes a (column, row) pair, got "
+            f"{type(at).__name__} {at!r}"
+        )
+    if len(at) != 2:
+        raise ValueError(
+            f"air.herd(at=...) takes a (column, row) pair; got {len(at)} "
+            f"value(s), {tuple(at)!r}. The anchor is always 2-D even for a 1-D "
+            "herd, because the array is."
+        )
+    out = []
+    for value, which in zip(at, ("column", "row")):
+        if isinstance(value, bool) or not hasattr(value, "__index__"):
+            raise TypeError(
+                f"air.herd(at=...) {which} must be a Python integer, got "
+                f"{type(value).__name__} {value!r}. Placement is resolved at "
+                "trace time; it cannot depend on a coordinate."
+            )
+        value = int(value)
+        if value < 0:
+            raise ValueError(f"air.herd(at=...) {which} must be >= 0, got {value}")
+        out.append(value)
+    return tuple(out)
+
+
+def herd(iterable, name=None, shape=None, target=None, link_with=None, at=None):
     """A herd of cores over ``iterable``, strip-mined onto the physical array.
 
     ``link_with=`` names the object file to stamp on the herd, for a lowering
@@ -1527,9 +1585,18 @@ def herd(iterable, name=None, shape=None, target=None, link_with=None):
     the cases in this tree. It is spelled as the attribute it sets, and as the
     raw ``@herd`` decorator already spells it. For a call the DSL emits itself,
     use air.extern, which sets link_with from the kernel's own declaration.
+
+    ``at=(column, row)`` pins the herd's origin on the array instead of letting
+    ``air-place-herds`` choose, by setting the ``x_loc``/``y_loc`` the pass
+    reads. Placement is normally the compiler's business and leaving it off is
+    the right default, but a design whose herds talk over **cascade** channels
+    has no such freedom: a cascade is a physical link between neighbouring
+    cores, so a W->E chain only exists if the chain's herds are actually laid
+    out W to E on one row. o_gemv_ffn_int4_fused is the worked case -- eight
+    1x1 LA herds pinned along row 4, with LGU and LD on rows 2 and 3.
     """
     return HerdContext(
-        iterable, name=name, shape=shape, target=target, link_with=link_with
+        iterable, name=name, shape=shape, target=target, link_with=link_with, at=at
     )
 
 

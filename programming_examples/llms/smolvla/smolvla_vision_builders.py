@@ -65,6 +65,10 @@ from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_ as range_, yield_
 from air.backend.xrt_runner import type_mapper
+
+from air import api as air
+from air.api import ops
+from shared.builders.rms_gemms_rope_multi import _api_dtype
 from air.dialects.arith import ConstantOp
 
 from shared.infra.stitching import (
@@ -97,102 +101,68 @@ _SQRT_2_OVER_PI = 0.7978845608028654
 # ---------------------------------------------------------------------------
 
 
-@module_builder
-def _build_gelu_2d(rows, cols, tile_n, np_dtype, herd_x=8, herd_y=2, vector_size=16):
-    from air.dialects.memref import collapse_shape as memref_collapse_shape
+def _build_gelu_2d(
+    rows, cols, tile_n, np_dtype, herd_x=8, herd_y=2, vector_size=16, target="npu2"
+):
+    """Tanh-approximation GELU over a 2-D tensor, walked as a flat array.
 
-    xrt_dtype = type_mapper(np_dtype)
+        0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+
+    Written out rather than as ``ops.gelu``, which composes the same identity
+    from the same constants: the DSL associates it as ``(x*x)*x`` and ``0.5*x``
+    where the predecessor has ``x*(x*x)`` and ``x*0.5``. Both are the same
+    number, but this conversion is gated on emitting a byte-identical
+    air.insts.bin, so the association is kept as it was. A future cleanup can
+    switch to ops.gelu and re-gate.
+    """
     n = rows * cols
     total_tiles = herd_x * herd_y
     assert n % (tile_n * total_tiles) == 0, (n, tile_n, total_tiles)
     assert tile_n % vector_size == 0
 
-    l3_2d_ty = MemRefType.get([rows, cols], xrt_dtype)
-    l3_1d_ty = MemRefType.get([n], xrt_dtype)
-    l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1_ty = MemRefType.get([tile_n], xrt_dtype, memory_space=l1_space)
-    vec_ty = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-    index_type = T.index()
+    dtype = _api_dtype(np_dtype)
+    IN = air.tensor([rows, cols], dtype)
+    OUT = air.tensor([rows, cols], dtype)
 
-    @FuncOp.from_py_func(l3_2d_ty, l3_2d_ty)
-    def gelu2d(arg0_2d, arg1_2d):
-        @launch(operands=[arg0_2d, arg1_2d])
-        def g_launch(l_in, l_out):
-            in_flat = memref_collapse_shape(l3_1d_ty, l_in, [[0, 1]])
-            out_flat = memref_collapse_shape(l3_1d_ty, l_out, [[0, 1]])
+    with air.launch(name="gelu2d") as launch:
 
-            @segment(name="gelu2d_seg", operands=[in_flat, out_flat])
-            def g_seg(s_in, s_out):
-                @herd(
-                    name="gelu2d_herd", sizes=[herd_x, herd_y], operands=[s_in, s_out]
-                )
-                def g_body(_tx, _ty, _sx, _sy, h_in, h_out):
-                    l1_in = AllocOp(l1_ty, [], [])
-                    l1_out = AllocOp(l1_ty, [], [])
-                    for _iv in range_(0, n, tile_n * total_tiles):
-                        offset_map = AffineMap.get(
-                            0,
-                            3,
-                            [
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(0),
-                                    AffineExpr.get_mul(
-                                        AffineExpr.get_add(
-                                            AffineExpr.get_mul(
-                                                AffineSymbolExpr.get(1),
-                                                AffineConstantExpr.get(herd_y),
-                                            ),
-                                            AffineSymbolExpr.get(2),
-                                        ),
-                                        AffineConstantExpr.get(tile_n),
-                                    ),
-                                )
-                            ],
-                        )
-                        offset = affine_apply(offset_map, [_iv, _tx, _ty])
-                        dma_memcpy_nd(
-                            l1_in,
-                            h_in,
-                            src_offsets=[offset],
-                            src_sizes=[tile_n],
-                            src_strides=[1],
-                        )
-                        c0 = ConstantOp(index_type, 0)
-                        cVec = ConstantOp(index_type, vector_size)
-                        cTile = ConstantOp(index_type, tile_n)
-                        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                        v_half = _bcast(vec_ty, xrt_dtype, 0.5)
-                        v_one = _bcast(vec_ty, xrt_dtype, 1.0)
-                        v_beta = _bcast(vec_ty, xrt_dtype, _GELU_BETA)
-                        v_s2opi = _bcast(vec_ty, xrt_dtype, _SQRT_2_OVER_PI)
-                        for j in range_(c0, cTile, cVec):
-                            si = subview(l1_in.result, [j], [vector_size], [1])
-                            so = subview(l1_out.result, [j], [vector_size], [1])
-                            v_x = transfer_read(
-                                vec_ty, si, [c0], identity_map, cst0, [True]
+        @launch.body
+        def _():
+            with air.segment(name="gelu2d_seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd(
+                        [range(herd_x), range(herd_y)],
+                        name="gelu2d_herd",
+                        shape=(herd_x, herd_y),
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            l1_in = air.alloc(
+                                [tile_n], dtype, scope=h.private(), vector=vector_size
                             )
-                            v_x2 = arith.mulf(v_x, v_x)
-                            v_x3 = arith.mulf(v_x, v_x2)
-                            v_bx3 = arith.mulf(v_x3, v_beta)
-                            v_inner = arith.addf(v_x, v_bx3)
-                            v_scaled = arith.mulf(v_inner, v_s2opi)
-                            v_tanh = math_dialect.tanh(v_scaled)
-                            v_opt = arith.addf(v_tanh, v_one)
-                            v_hx = arith.mulf(v_x, v_half)
-                            v_gelu = arith.mulf(v_hx, v_opt)
-                            transfer_write(None, v_gelu, so, [c0], identity_map, [True])
-                            yield_([])
-                        dma_memcpy_nd(
-                            h_out,
-                            l1_out,
-                            dst_offsets=[offset],
-                            dst_sizes=[tile_n],
-                            dst_strides=[1],
-                        )
-                        yield_([])
-                    DeallocOp(l1_in)
-                    DeallocOp(l1_out)
+                            l1_out = air.alloc(
+                                [tile_n], dtype, scope=h.private(), vector=vector_size
+                            )
+
+                            in_flat = IN.reshape(n)
+                            out_flat = OUT.reshape(n)
+
+                            for iv in air.sequential(0, n, tile_n * total_tiles):
+                                off = iv + (tx * herd_y + ty) * tile_n
+                                ops.load(l1_in, in_flat[off : off + tile_n])
+
+                                x = l1_in[:]
+                                x2 = x * x
+                                x3 = x * x2
+                                inner = (x + x3 * _GELU_BETA) * _SQRT_2_OVER_PI
+                                l1_out[:] = (x * 0.5) * (ops.tanh(inner) + 1.0)
+
+                                ops.store(l1_out, out_flat[off : off + tile_n])
+
+    return launch.build(target=target)
 
 
 def _bcast(vec_ty, xrt_dtype, val):

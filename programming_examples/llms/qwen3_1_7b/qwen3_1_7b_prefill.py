@@ -122,7 +122,10 @@ def build_o_ffn_qwen_module(
       %arg15..18  f32 C-scratch (proj[seq,emb], gate[seq,hid], up[seq,hid], down[seq,emb])
     """
     from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
-    from shared.builders.o_ffn_multi import _build_add_2d_to_2d
+    from shared.builders.o_ffn_multi import (
+        _build_add_2d_to_1d,
+        _build_add_2d_to_2d,
+    )
     from shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
@@ -249,101 +252,11 @@ def build_o_ffn_qwen_module(
 
     print("  [8/8] FFN Add (2D -> 1D)...")
 
-    @module_builder
-    def _build_add_2d_to_1d():
-        from air.dialects.memref import collapse_shape as memref_collapse_shape
+    # The FFN add is the shared builder, imported above with its 2D->2D
+    # sibling. This used to be a nested near-copy that closed over
+    # seq_len/emb_dim; same kernel, same @eltwise_add symbol.
 
-        xrt_dtype = type_mapper(bfloat16)
-        l3_2d_ty = MemRefType.get([seq_len, emb_dim], xrt_dtype)
-        l3_1d_ty = MemRefType.get([n_total], xrt_dtype)
-        total_tiles = 8
-        chunk_size = n_total // total_tiles
-        tile_n = emb_dim
-        l1_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-        l1_ty = MemRefType.get([tile_n], xrt_dtype, memory_space=l1_space)
-        vec_ty = VectorType.get([16], xrt_dtype)
-        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
-
-        @FuncOp.from_py_func(l3_2d_ty, l3_2d_ty, l3_1d_ty)
-        def eltwise_add(a_2d, b_2d, out_1d):
-            @launch(operands=[a_2d, b_2d, out_1d])
-            def add_launch(l_a, l_b, l_out):
-                a_flat = memref_collapse_shape(l3_1d_ty, l_a, [[0, 1]])
-                b_flat = memref_collapse_shape(l3_1d_ty, l_b, [[0, 1]])
-
-                @segment(name="add_seg", operands=[a_flat, b_flat, l_out])
-                def add_seg(s_a, s_b, s_out):
-                    offset_map = AffineMap.get(
-                        0,
-                        3,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineExpr.get_mul(
-                                    AffineExpr.get_add(
-                                        AffineExpr.get_mul(
-                                            AffineSymbolExpr.get(1),
-                                            AffineConstantExpr.get(1),
-                                        ),
-                                        AffineSymbolExpr.get(2),
-                                    ),
-                                    AffineConstantExpr.get(chunk_size),
-                                ),
-                            )
-                        ],
-                    )
-
-                    @herd(name="add_herd", sizes=[8, 1], operands=[s_a, s_b, s_out])
-                    def add_body(_tx, _ty, _sx, _sy, h_a, h_b, h_out):
-                        l1_a = AllocOp(l1_ty, [], [])
-                        l1_b = AllocOp(l1_ty, [], [])
-                        l1_out = AllocOp(l1_ty, [], [])
-                        c0 = arith.ConstantOp.create_index(0)
-                        cst0 = arith.ConstantOp(xrt_dtype, 0.0)
-                        for loop_iv in range_(0, chunk_size, tile_n):
-                            offset = affine_apply(offset_map, [loop_iv, _tx, _ty])
-                            dma_memcpy_nd(
-                                l1_a,
-                                h_a,
-                                src_offsets=[offset],
-                                src_sizes=[tile_n],
-                                src_strides=[1],
-                            )
-                            dma_memcpy_nd(
-                                l1_b,
-                                h_b,
-                                src_offsets=[offset],
-                                src_sizes=[tile_n],
-                                src_strides=[1],
-                            )
-                            for j in range_(0, tile_n, 16):
-                                sub_a = subview(l1_a.result, [j], [16], [1])
-                                sub_b = subview(l1_b.result, [j], [16], [1])
-                                sub_out = subview(l1_out.result, [j], [16], [1])
-                                v_a = transfer_read(
-                                    vec_ty, sub_a, [c0], identity_map, cst0, [True]
-                                )
-                                v_b = transfer_read(
-                                    vec_ty, sub_b, [c0], identity_map, cst0, [True]
-                                )
-                                v_sum = arith.addf(v_a, v_b)
-                                transfer_write(
-                                    None, v_sum, sub_out, [c0], identity_map, [True]
-                                )
-                                yield_([])
-                            dma_memcpy_nd(
-                                h_out,
-                                l1_out,
-                                dst_offsets=[offset],
-                                dst_sizes=[tile_n],
-                                dst_strides=[1],
-                            )
-                            yield_([])
-                        DeallocOp(l1_a)
-                        DeallocOp(l1_b)
-                        DeallocOp(l1_out)
-
-    ffn_add_ir = str(_build_add_2d_to_1d())
+    ffn_add_ir = str(_build_add_2d_to_1d(seq_len, emb_dim, bfloat16))
 
     # All GEMMs here resolve to fused-cast (large shapes). One mm.o suffix.
     _gemm_sym = o_spec["sym_suffix"]
