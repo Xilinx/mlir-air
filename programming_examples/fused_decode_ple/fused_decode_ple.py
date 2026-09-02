@@ -1083,16 +1083,19 @@ PLE_SHARED_RES = (
 # DMA1 to itself), so the host emission order and the per-port BD order are not
 # the same thing, and which destination goes first measurably changes where the
 # dispatch wedges. Sweepable rather than hardcoded for exactly that reason.
-# MEASURED, all six permutations at UNI_DEC=1 on NPU2, run TWICE -- once with the
-# up core sharing @pleW and once with it on a channel of its own, which moves
-# which pair of cores shares a shim MM2S port. Both sweeps fail on exactly pgu
-# and ugp and reach the KV append on the other four. 12/12.
+# THIS DISPATCH IS FLAKY, so single runs mean nothing here -- every claim below
+# is 5 repeats. An early single-sample sweep produced a clean-looking "the gate
+# must not be fed in the middle" rule across 12 points; repeats show several of
+# those points are 2/5 or 3/5, so that rule was partly noise. Do not reinstate
+# it.
 #
-# So the rule is NOT about shim-port adjacency, which was the first reading and
-# which the second sweep refutes: the two runs pair the cores differently and the
-# outcome does not move. The rule is that THE GATE'S FEED MUST NOT BE IN THE
-# MIDDLE -- g first or g last works, g second does not. Mechanism still unknown.
-# Default gpu.
+# What survives repetition (UNI_DEC=1, 5 runs each):
+#   pug + PLE_UP_W_FIRST      5/5    the only stable PLE configuration
+#   upg + PLE_UP_W_FIRST      3/5
+#   gpu                       2/5    correct arithmetic, best correct order
+#   gup / pgu / ugp           0/5
+#   no-PLE control            5/5
+# Default gpu: it is the best order whose arithmetic is right.
 PLE_FEED_ORDER = _os.environ.get("DECODE_PLE_FEED_ORDER", "gpu")
 # Give the UP core its own weight channel instead of a third destination on the
 # shared @pleW packet channel. The up core is the one that holds a long run of
@@ -1107,6 +1110,13 @@ PLE_FEED_ORDER = _os.environ.get("DECODE_PLE_FEED_ORDER", "gpu")
 # Default OFF because it spends a shim MM2S for nothing; kept because flipping
 # the pairing is what proved the ordering rule is not about port sharing.
 PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
+# DIAGNOSTIC (DECODE_PLE_UP_W_FIRST=1): have the up core drain its whole weight
+# stream BEFORE it blocks on @gateOut, instead of after. Numerically wrong -- the
+# macs run against an uninitialised @gateOut buffer -- but every channel's volume
+# and destination is untouched, so the shim feed is bit-identical and only the
+# core's get ORDER changes. Tests whether the deadlock is that the up core holds
+# ~50 enqueued blocks it will not touch until the gate core finishes.
+PLE_UP_W_FIRST = PLE and int(_os.environ.get("DECODE_PLE_UP_W_FIRST", "0"))
 # Program the @pleOut host drain BEFORE the weight feed, on the theory that the
 # up core's 50 @pleW blocks backpressure the shim before it ever reaches the
 # drain BD, so the up core can never put. TESTED AND REFUTED: byte-for-byte the
@@ -5147,13 +5157,8 @@ def build_module():
                                     return
                                 # [residual(K) ++ pli(PLI_D)] assembled here.
                                 a_x = AllocOp(plegate_l1, [], [])
-                                if PLE_SHARED_RES:
-                                    # The pli lands in the tail by DMA; the
-                                    # residual is copied out of the rms core's
-                                    # shared buffer into the head. ONE call, and
-                                    # the shared buffer is NOT the last memref
-                                    # operand -- that is what marks this core the
-                                    # consumer (see the ple_res_in decl).
+
+                                def _get_pli():
                                     ChannelGet(
                                         "pliOut",
                                         a_x,
@@ -5162,7 +5167,19 @@ def build_module():
                                         sizes=[idx(PLI_D)],
                                         strides=[idx(1)],
                                     )
+
+                                if PLE_SHARED_RES:
+                                    # The residual is copied out of the rms
+                                    # core's shared buffer into the head. ONE
+                                    # call, and the shared buffer is NOT the last
+                                    # memref operand -- that is what marks this
+                                    # core the consumer (see the ple_res_in decl).
                                     CallOp(ple_res_in, [_sh[0], a_x])
+                                    # @pliOut lands in the TAIL, and the tail is
+                                    # not read until ple_gate_into below -- so
+                                    # this get is deferred past the projection.
+                                    # See the note there; taking it up here is
+                                    # what deadlocked the design.
                                 else:
                                     # Merged by the relay memtile so this core
                                     # needs only two S2MM (this and @pleW).
@@ -5173,6 +5190,22 @@ def build_module():
                                     acc, a_g, PLE_DEST_GATE, a_x, PLI_D // PLE_M_BLK
                                 )
                                 CallOp(ple_gate_act, [a_g, _arm])
+                                if PLE_SHARED_RES:
+                                    # DEFERRED TO HERE, and it is load-bearing.
+                                    #
+                                    # A core must be able to drain its whole
+                                    # @pleW run without waiting on anything that
+                                    # comes LATER in the shim's instruction
+                                    # stream. Taken before the projection, this
+                                    # get made the gate core sit on 48 enqueued
+                                    # weight blocks until the proj core -- fed
+                                    # after it -- produced @pliOut, and the shim
+                                    # never got that far. The projection only
+                                    # reads a_x's K-wide head (the residual,
+                                    # which arrives through shared L1 and costs
+                                    # the shim nothing), so moving the get here
+                                    # is free and changes no arithmetic.
+                                    _get_pli()
                                 # Apply the gate here, in place, so the up core
                                 # receives [residual ++ pli*gate] and needs no
                                 # third input.
@@ -5320,7 +5353,8 @@ def build_module():
                                 # [residual ++ pli*gate]; the gate was already
                                 # applied on the gate core.
                                 a_rg = AllocOp(plegate_l1, [], [])
-                                ChannelGet("gateOut", a_rg, indices=[idx(0)])
+                                if not PLE_UP_W_FIRST:
+                                    ChannelGet("gateOut", a_rg, indices=[idx(0)])
                                 a_y = AllocOp(plex_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
                                 # PLI_D == PLE_K_BLK, so one input block per
@@ -5340,6 +5374,8 @@ def build_module():
                                 _upw(a_nw)
                                 a_sc = AllocOp(plescale_l1, [], [])
                                 _upw(a_sc)
+                                if PLE_UP_W_FIRST:
+                                    ChannelGet("gateOut", a_rg, indices=[idx(0)])
                                 # residual = the K-wide head of @gateOut.
                                 CallOp(ple_up_tail_at, [a_y, a_rg, a_nw, a_sc, _arm])
                                 ChannelPut(
