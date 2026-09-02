@@ -3532,7 +3532,7 @@ def build_module():
                     # reason -- the rope herd is a sibling of that arm.
                     _omtb_pre = None
                     _qmtb_pre = None
-                    if ATTN_SUBSYS and not HYBRID_MIXER and ATTNO_DMA:
+                    if ATTN_SUBSYS and ATTNO_DMA:
                         _omtb_pre = AllocOp(omt_l2, [], [])
                         _omtb_pre.operation.attributes["air.memtile_col"] = (
                             IntegerAttr.get(T.i32(), 5)
@@ -4708,8 +4708,31 @@ def build_module():
                                 name="attn_blk",
                                 sizes=ATTN_HERD_SIZES,
                                 operands=[t.result for t in _sh]
-                                + [_Lc, _core_arm]
-                                + _attn_extra,
+                                # _seg_arm, not _core_arm, for THIS herd only.
+                                #
+                                # @attnO's consumer sits in a segment-scope arm
+                                # switching on a value derived from the layer
+                                # INDEX. Hoisting the ported put rebuilds the
+                                # herd-side guard out there, and a guard on
+                                # _core_arm rebuilds as an index_cast of the
+                                # segment's i32 RTP block argument, which does
+                                # not survive the segment becoming an aie.device.
+                                # Feeding the herd the segment-derived arm makes
+                                # the rebuild a clone of a legal segment-scope
+                                # chain, and no anchor is needed at all.
+                                #
+                                # The note on _core_arm above says deriving the
+                                # layer type inside the segment once compiled
+                                # both hybrids to identical flow sets with the
+                                # CUs' @attnO puts erased. That does NOT
+                                # reproduce here: the arm reaches air-to-aie as a
+                                # live select chain rather than a folded
+                                # constant, all four puts survive as DMAs, and
+                                # lfm2_1_2b_q4nx -- mixed attention and ShortConv
+                                # layers -- verifies topk 2/0 through its lit.
+                                # No-op off a hybrid, where _core_arm IS
+                                # _seg_arm already.
+                                + [_Lc, _seg_arm] + _attn_extra,
                             )
                             def attn_blk(_tx, _ty, _sx, _sy, *_a):
                                 shs = list(_a[:N_ATTN_CU])
