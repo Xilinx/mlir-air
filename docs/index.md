@@ -61,126 +61,87 @@ substantially more accessible.
 
 ## A simple AIR program
 
-The Python API constructs this elementwise-add design as MLIR-AIR IR. Two herd
-cores each process a slice of a 4096-element vector, staging data L3 → L2 → L1,
-computing `C = A + B` in local memory, and writing the result back. Switch tabs
-to inspect the same program in either representation.
+This elementwise-add design distributes a 4096-element vector across two herd
+cores. The segment stages both inputs from L3 into L2. Each core then brings its
+tile into L1, computes `C = A + B`, and writes the result back. The following
+tabs show the Python source and the MLIR-AIR IR generated from it.
 
 === "Python API"
 
     ```python
-    from air.ir import *
-    from air.dialects.affine import apply as affine_apply
-    from air.dialects.air import *
-    from air.dialects.memref import AllocOp, DeallocOp, load, store
-    from air.dialects.func import FuncOp
-    from air.dialects.scf import for_, yield_
-    from air.backend.xrt_runner import type_mapper
+    from air import api as air
+    from air.api.types import dtype_of
 
-    range_ = for_
+    NUM_TILES = 2
 
 
-    @module_builder
     def build_module(n, tile_n, np_dtype_in):
-        a_size = [n]
-        xrt_dtype_in = type_mapper(np_dtype_in)
-        num_tiles = 2
-        assert n % (tile_n * num_tiles) == 0
+        assert n % (tile_n * NUM_TILES) == 0
+        dt = dtype_of(np_dtype_in)
 
         # Function arguments reside in L3 (system memory).
-        l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
+        A = air.tensor([n], dt)
+        B = air.tensor([n], dt)
+        C = air.tensor([n], dt)
 
-        # A segment owns L2 storage shared by its herd.
-        l2MemrefTy = MemRefType.get(
-            shape=a_size,
-            element_type=xrt_dtype_in,
-            memory_space=IntegerAttr.get(T.i32(), MemorySpace.L2),
-        )
+        with air.launch(name="eltwise_add") as launch:
 
-        # Each herd core has its own tile-sized L1 buffer.
-        l1MemrefTy = MemRefType.get(
-            shape=[tile_n],
-            element_type=xrt_dtype_in,
-            memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-        )
+            @launch.body
+            def _():
+                with air.segment(name="segment_0") as seg:
 
-        @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
-        def eltwise_add(arg0, arg1, arg2):
-            @launch(operands=[arg0, arg1, arg2], sizes=[1, 1])
-            def launch_body(_ivx, _ivy, _sx, _sy, arg0_l, arg1_l, arg2_l):
-                @segment(name="segment_0", operands=[arg0_l, arg1_l, arg2_l])
-                def segment_body(arg0_s, arg1_s, arg2_s):
-                    l2_a = AllocOp(l2MemrefTy, [], [])
-                    l2_b = AllocOp(l2MemrefTy, [], [])
-                    l2_out = AllocOp(l2MemrefTy, [], [])
+                    @seg.body
+                    def _():
+                        # seg.private() places these in L2: storage owned by the
+                        # segment and shared by its herd.
+                        l2_a = air.alloc([n], dt, scope=seg.private())
+                        l2_b = air.alloc([n], dt, scope=seg.private())
+                        l2_c = air.alloc([n], dt, scope=seg.private())
 
-                    # L3 -> L2: stage both input vectors in the MemTile level.
-                    dma_memcpy_nd(l2_a, arg0_s)
-                    dma_memcpy_nd(l2_b, arg1_s)
+                        # L3 -> L2: stage both input vectors in the MemTile level.
+                        air.ops.load(l2_a, A)
+                        air.ops.load(l2_b, B)
 
-                    @herd(
-                        name="herd_0",
-                        sizes=[1, num_tiles],
-                        operands=[l2_a, l2_b, l2_out],
-                    )
-                    def herd_body(_tx, _ty, _sx, _sy, a, b, c):
-                        l1_a = AllocOp(l1MemrefTy, [], [])
-                        l1_b = AllocOp(l1MemrefTy, [], [])
-                        l1_out = AllocOp(l1MemrefTy, [], [])
+                        # The tile grid `range(0, n, tile_n)` is strip-mined onto
+                        # NUM_TILES cores by the DSL, and l2_a/l2_b/l2_c are
+                        # carried in as operands automatically.
+                        with air.herd(
+                            [range(0, n, tile_n)],
+                            name="herd_0",
+                            shape=(NUM_TILES,),
+                        ) as h:
 
-                        for _iv in range_(0, n, tile_n * num_tiles):
-                            offset_map = AffineMap.get(
-                                0,
-                                2,
-                                [
-                                    AffineExpr.get_add(
-                                        AffineSymbolExpr.get(0),
-                                        AffineExpr.get_mul(
-                                            AffineSymbolExpr.get(1),
-                                            AffineConstantExpr.get(tile_n),
-                                        ),
-                                    )
-                                ],
-                            )
-                            offset = affine_apply(offset_map, [_iv, _ty])
+                            @h.body
+                            def _(tx):
+                                # tx counts tiles, not elements.
+                                i0 = tx * tile_n
 
-                            # L2 -> L1: bring this core's tiles into local memory.
-                            dma_memcpy_nd(
-                                l1_a, a, src_offsets=[offset],
-                                src_sizes=[tile_n], src_strides=[1],
-                            )
-                            dma_memcpy_nd(
-                                l1_b, b, src_offsets=[offset],
-                                src_sizes=[tile_n], src_strides=[1],
-                            )
+                                # h.private() places these in L1: each core has
+                                # its own tile-sized buffer.
+                                a = air.alloc([tile_n], dt, scope=h.private())
+                                b = air.alloc([tile_n], dt, scope=h.private())
+                                c = air.alloc([tile_n], dt, scope=h.private())
 
-                            # Compute C = A + B in each core's local memory.
-                            for i in range_(tile_n):
-                                val = arith.addf(load(l1_a, [i]), load(l1_b, [i]))
-                                store(val, l1_out, [i])
-                                yield_([])
+                                # L2 -> L1: bring this core's tiles into local memory.
+                                air.ops.load(a, l2_a[i0 : i0 + tile_n])
+                                air.ops.load(b, l2_b[i0 : i0 + tile_n])
 
-                            # L1 -> L2: return the completed tile to the segment.
-                            dma_memcpy_nd(
-                                c, l1_out, dst_offsets=[offset],
-                                dst_sizes=[tile_n], dst_strides=[1],
-                            )
-                            DeallocOp(l1_a)
-                            DeallocOp(l1_b)
-                            DeallocOp(l1_out)
-                            yield_([])
+                                # Compute C = A + B in each core's local memory.
+                                c[:] = a[:] + b[:]
 
-                    # L2 -> L3: write the full output vector to the result.
-                    dma_memcpy_nd(arg2_s, l2_out)
-                    DeallocOp(l2_a)
-                    DeallocOp(l2_b)
-                    DeallocOp(l2_out)
+                                # L1 -> L2: return the completed tile to the segment.
+                                air.ops.store(c, l2_c[i0 : i0 + tile_n])
+
+                        # L2 -> L3: write the full output vector to the result.
+                        air.ops.store(l2_c, C)
+
+        return launch
     ```
 
 === "MLIR-AIR IR"
 
     ```mlir
-    #map = affine_map<()[s0, s1] -> (s0 + s1 * 512)>
+    #map = affine_map<()[s0, s1] -> (s0 * 2048 + s1 * 512)>
     module {
       func.func @eltwise_add(%arg0: memref<4096xf32>, %arg1: memref<4096xf32>, %arg2: memref<4096xf32>) {
         %c1 = arith.constant 1 : index
@@ -192,37 +153,40 @@ to inspect the same program in either representation.
             %alloc_2 = memref.alloc() : memref<4096xf32, 1 : i32>
             air.dma_memcpy_nd (%alloc[] [] [], %arg10[] [] []) : (memref<4096xf32, 1 : i32>, memref<4096xf32>)
             air.dma_memcpy_nd (%alloc_1[] [] [], %arg11[] [] []) : (memref<4096xf32, 1 : i32>, memref<4096xf32>)
-            %c1_3 = arith.constant 1 : index
             %c2 = arith.constant 2 : index
-            air.herd @herd_0  tile (%arg13, %arg14) in (%arg15=%c1_3, %arg16=%c2) args(%arg17=%alloc, %arg18=%alloc_1, %arg19=%alloc_2) : memref<4096xf32, 1 : i32>, memref<4096xf32, 1 : i32>, memref<4096xf32, 1 : i32> {
-              %alloc_4 = memref.alloc() : memref<512xf32, 2 : i32>
-              %alloc_5 = memref.alloc() : memref<512xf32, 2 : i32>
-              %alloc_6 = memref.alloc() : memref<512xf32, 2 : i32>
+            %c1_3 = arith.constant 1 : index
+            air.herd @herd_0  tile (%arg13, %arg14) in (%arg15=%c2, %arg16=%c1_3) args(%arg17=%alloc, %arg18=%alloc_1, %arg19=%alloc_2) : memref<4096xf32, 1 : i32>, memref<4096xf32, 1 : i32>, memref<4096xf32, 1 : i32> {
               %c0 = arith.constant 0 : index
-              %c4096 = arith.constant 4096 : index
-              %c1024 = arith.constant 1024 : index
-              scf.for %arg20 = %c0 to %c4096 step %c1024 {
-                %0 = affine.apply #map()[%arg20, %arg14]
-                air.dma_memcpy_nd (%alloc_4[] [] [], %arg17[%0] [512] [1]) : (memref<512xf32, 2 : i32>, memref<4096xf32, 1 : i32>)
-                air.dma_memcpy_nd (%alloc_5[] [] [], %arg18[%0] [512] [1]) : (memref<512xf32, 2 : i32>, memref<4096xf32, 1 : i32>)
-                %c0_7 = arith.constant 0 : index
+              %c4 = arith.constant 4 : index
+              %c1_4 = arith.constant 1 : index
+              scf.for %arg20 = %c0 to %c4 step %c1_4 {
+                %alloc_5 = memref.alloc() : memref<512xf32, 2 : i32>
+                %alloc_6 = memref.alloc() : memref<512xf32, 2 : i32>
+                %alloc_7 = memref.alloc() : memref<512xf32, 2 : i32>
+                %0 = affine.apply #map()[%arg13, %arg20]
+                air.dma_memcpy_nd (%alloc_5[] [] [], %arg17[%0] [512] [1]) : (memref<512xf32, 2 : i32>, memref<4096xf32, 1 : i32>)
+                %1 = affine.apply #map()[%arg13, %arg20]
+                air.dma_memcpy_nd (%alloc_6[] [] [], %arg18[%1] [512] [1]) : (memref<512xf32, 2 : i32>, memref<4096xf32, 1 : i32>)
+                %cst = arith.constant 0.000000e+00 : f32
+                %c0_8 = arith.constant 0 : index
                 %c512 = arith.constant 512 : index
-                %c1_8 = arith.constant 1 : index
-                scf.for %arg21 = %c0_7 to %c512 step %c1_8 {
-                  %1 = memref.load %alloc_4[%arg21] : memref<512xf32, 2 : i32>
-                  %2 = memref.load %alloc_5[%arg21] : memref<512xf32, 2 : i32>
-                  %3 = arith.addf %1, %2 : f32
-                  memref.store %3, %alloc_6[%arg21] : memref<512xf32, 2 : i32>
+                %c16 = arith.constant 16 : index
+                scf.for %arg21 = %c0_8 to %c512 step %c16 {
+                  %3 = vector.transfer_read %alloc_5[%arg21], %cst {in_bounds = [true]} : memref<512xf32, 2 : i32>, vector<16xf32>
+                  %4 = vector.transfer_read %alloc_6[%arg21], %cst {in_bounds = [true]} : memref<512xf32, 2 : i32>, vector<16xf32>
+                  %5 = arith.addf %3, %4 : vector<16xf32>
+                  vector.transfer_write %5, %alloc_7[%arg21] {in_bounds = [true]} : vector<16xf32>, memref<512xf32, 2 : i32>
                 }
-                air.dma_memcpy_nd (%arg19[%0] [512] [1], %alloc_6[] [] []) : (memref<4096xf32, 1 : i32>, memref<512xf32, 2 : i32>)
-                memref.dealloc %alloc_4 : memref<512xf32, 2 : i32>
-                memref.dealloc %alloc_5 : memref<512xf32, 2 : i32>
                 memref.dealloc %alloc_6 : memref<512xf32, 2 : i32>
+                memref.dealloc %alloc_5 : memref<512xf32, 2 : i32>
+                %2 = affine.apply #map()[%arg13, %arg20]
+                air.dma_memcpy_nd (%arg19[%2] [512] [1], %alloc_7[] [] []) : (memref<4096xf32, 1 : i32>, memref<512xf32, 2 : i32>)
+                memref.dealloc %alloc_7 : memref<512xf32, 2 : i32>
               }
             }
-            air.dma_memcpy_nd (%arg12[] [] [], %alloc_2[] [] []) : (memref<4096xf32>, memref<4096xf32, 1 : i32>)
-            memref.dealloc %alloc : memref<4096xf32, 1 : i32>
             memref.dealloc %alloc_1 : memref<4096xf32, 1 : i32>
+            memref.dealloc %alloc : memref<4096xf32, 1 : i32>
+            air.dma_memcpy_nd (%arg12[] [] [], %alloc_2[] [] []) : (memref<4096xf32>, memref<4096xf32, 1 : i32>)
             memref.dealloc %alloc_2 : memref<4096xf32, 1 : i32>
           }
         }
@@ -231,12 +195,8 @@ to inspect the same program in either representation.
     }
     ```
 
-The Python tab is a condensed excerpt — renamed and reflowed for readability —
-of the CI-covered
-[`programming_examples/eltwise_add_with_l2/`](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/eltwise_add_with_l2)
-example; see that directory for the exact, runnable source and its XRT test
-harness. The IR tab is the verbatim `--print-module-only` output of that example
-at `n=4096`, `tile_n=512`.
+To build and run this design, see
+[`programming_examples/eltwise_add_with_l2`](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/eltwise_add_with_l2).
 
 For more details on the AIR compute and memory model — launches, segments,
 herds, and how data movement maps onto hardware — read the
