@@ -2918,7 +2918,35 @@ void air::DmaMemcpyNdOp::build(
   auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
   build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
         dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
-        dynSrcStrides, staticDstOffsets, staticDstSizes, staticDstStrides,
+        dynSrcStrides, /*dest=*/Value(), staticDstOffsets, staticDstSizes,
+        staticDstStrides, staticSrcOffsets, staticSrcSizes, staticSrcStrides,
+        pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        /*dst_rank=*/IntegerAttr(),
+        /*channel=*/FlatSymbolRefAttr(),
+        /*channel_indices=*/DenseI64ArrayAttr(),
+        /*hoist_after=*/FlatSymbolRefAttr(),
+        /*hoist_before=*/FlatSymbolRefAttr());
+}
+
+void air::DmaMemcpyNdOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, Value dst,
+    ArrayRef<OpFoldResult> dst_offsets, ArrayRef<OpFoldResult> dst_sizes,
+    ArrayRef<OpFoldResult> dst_strides, Value src,
+    ArrayRef<OpFoldResult> src_offsets, ArrayRef<OpFoldResult> src_sizes,
+    ArrayRef<OpFoldResult> src_strides, Value dest,
+    DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynDstOffsets, dynDstSizes, dynDstStrides;
+  SmallVector<Value> dynSrcOffsets, dynSrcSizes, dynSrcStrides;
+  auto staticDstOffsets = splitMixed(b, dst_offsets, dynDstOffsets);
+  auto staticDstSizes = splitMixed(b, dst_sizes, dynDstSizes);
+  auto staticDstStrides = splitMixed(b, dst_strides, dynDstStrides);
+  auto staticSrcOffsets = splitMixed(b, src_offsets, dynSrcOffsets);
+  auto staticSrcSizes = splitMixed(b, src_sizes, dynSrcSizes);
+  auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
+  build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
+        dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
+        dynSrcStrides, dest, staticDstOffsets, staticDstSizes, staticDstStrides,
         staticSrcOffsets, staticSrcSizes, staticSrcStrides, pad_before,
         pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr(),
         /*channel=*/FlatSymbolRefAttr(),
@@ -2934,11 +2962,12 @@ void air::DmaMemcpyNdOp::build(
     ValueRange src_offsets, ValueRange src_sizes, ValueRange src_strides,
     DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
   build(b, result, resultTypes, async_dependencies, dst, dst_offsets, dst_sizes,
-        dst_strides, src, src_offsets, src_sizes, src_strides,
+        dst_strides, src, src_offsets, src_sizes, src_strides, /*dest=*/Value(),
         allDynamic(b, dst_offsets.size()), allDynamic(b, dst_sizes.size()),
         allDynamic(b, dst_strides.size()), allDynamic(b, src_offsets.size()),
         allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
-        pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        pad_before, pad_after,
+        /*src_rank=*/IntegerAttr(),
         /*dst_rank=*/IntegerAttr(), /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
         /*hoist_after=*/FlatSymbolRefAttr(),
@@ -2958,6 +2987,21 @@ void air::ChannelPutOp::build(
   build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
         dynOffsets, dynSizes, dynStrides, /*dest=*/Value(), staticOffsets,
         staticSizes, staticStrides, pad_before, pad_after);
+}
+
+void air::ChannelPutOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, FlatSymbolRefAttr chan_name,
+    ValueRange indices, Value src, ArrayRef<OpFoldResult> src_offsets,
+    ArrayRef<OpFoldResult> src_sizes, ArrayRef<OpFoldResult> src_strides,
+    Value dest, DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynOffsets, dynSizes, dynStrides;
+  auto staticOffsets = splitMixed(b, src_offsets, dynOffsets);
+  auto staticSizes = splitMixed(b, src_sizes, dynSizes);
+  auto staticStrides = splitMixed(b, src_strides, dynStrides);
+  build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
+        dynOffsets, dynSizes, dynStrides, dest, staticOffsets, staticSizes,
+        staticStrides, pad_before, pad_after);
 }
 
 void air::ChannelPutOp::build(OpBuilder &b, OperationState &result,

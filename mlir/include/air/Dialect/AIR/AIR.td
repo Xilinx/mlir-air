@@ -476,6 +476,12 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         Variadic<Index>:$dynamic_src_offsets,
         Variadic<Index>:$dynamic_src_sizes,
         Variadic<Index>:$dynamic_src_strides,
+        // Runtime destination select for a packet demux, carried through to the
+        // derived air.channel.put. A gather whose producers pick their
+        // destination at runtime cannot be spelled without it: the demux index
+        // is an operand, not an attribute, so it has to ride on the op that
+        // names both endpoints.
+        Optional<Index>:$dest,
         DenseI64ArrayAttr:$static_dst_offsets,
         DenseI64ArrayAttr:$static_dst_sizes,
         DenseI64ArrayAttr:$static_dst_strides,
@@ -502,6 +508,7 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         custom<DynamicIndexList>($dynamic_src_offsets, $static_src_offsets)
         custom<DynamicIndexList>($dynamic_src_sizes, $static_src_sizes)
         custom<DynamicIndexList>($dynamic_src_strides, $static_src_strides) `)`
+    (`dest` `(` $dest^ `)`)?
     attr-dict `:` `(` type($dst) `,` type($src) `)`
   }];
   let description = [{
@@ -611,6 +618,19 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::Value":$dst,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$dst_strides,
+                   "::mlir::Value":$src,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   "::mlir::Value":$dest,
                    CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
                    CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
     // All-dynamic builder, for callers that already hold index Values.
@@ -941,6 +961,18 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
                    "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
+                   CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
+    // Same, carrying a runtime packet-demux destination.
+    OpBuilder<(ins "::mlir::TypeRange":$resultTypes,
+                   "::mlir::ValueRange":$async_dependencies,
+                   "::mlir::FlatSymbolRefAttr":$chan_name,
+                   "::mlir::ValueRange":$indices,
+                   "::mlir::Value":$src,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_offsets,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_sizes,
+                   "::llvm::ArrayRef<::mlir::OpFoldResult>":$src_strides,
+                   "::mlir::Value":$dest,
                    CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_before,
                    CArg<"::mlir::DenseI32ArrayAttr", "nullptr">:$pad_after)>,
     OpBuilder<(ins "::mlir::TypeRange":$resultTypes,

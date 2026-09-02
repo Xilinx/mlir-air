@@ -551,7 +551,10 @@ private:
         dma_op.getMixedDstSizes(), dma_op.getMixedDstStrides(),
         dma_op.getSrcMemref(), dma_op.getMixedSrcOffsets(),
         dma_op.getMixedSrcSizes(), dma_op.getMixedSrcStrides(),
-        dma_op.getPadBeforeAttr(), dma_op.getPadAfterAttr());
+        // A runtime packet-demux destination is an OPERAND, so the attribute
+        // sweep below cannot carry it -- and dropping it turns a demux into a
+        // point-to-point transfer with no diagnostic.
+        dma_op.getDest(), dma_op.getPadBeforeAttr(), dma_op.getPadAfterAttr());
 
     // Re-instantiating drops every attribute the builder does not take. That
     // silently lost `channel` / `channel_indices` (air-dependency runs before

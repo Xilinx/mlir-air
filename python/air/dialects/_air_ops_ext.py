@@ -347,6 +347,7 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_offsets=[],
         src_sizes=[],
         src_strides=[],
+        dest=None,
         pad_before=None,
         pad_after=None,
         channel=None,
@@ -381,6 +382,10 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             dynamic_src_offsets=dyn_src_offsets,
             dynamic_src_sizes=dyn_src_sizes,
             dynamic_src_strides=dyn_src_strides,
+            # Runtime packet-demux destination: which consumer of the demux this
+            # transfer is for. A gather whose producers pick their consumer at
+            # run time cannot be spelled as a DMA without it.
+            dest=None if dest is None else pyint_to_index(dest),
             static_dst_offsets=static_dst_offsets,
             static_dst_sizes=static_dst_sizes,
             static_dst_strides=static_dst_strides,

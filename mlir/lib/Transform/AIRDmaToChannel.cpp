@@ -920,18 +920,24 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
 
+  // A runtime packet-demux destination rides on the INTERNAL put -- the one
+  // that stays on the core, which is where the demux index is computed and what
+  // air-annotate-packet-ids reads. The external half is the memtile/shim side
+  // and has no destination to select.
+  Value demuxDest = op.getDest();
+
   if (air::getMemorySpace(src_type) == innerMemorySpace) {
     auto internal = air::ChannelPutOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, src, src_offsets, src_sizes, src_strides,
-        padBefore, padAfter);
+        demuxDest, padBefore, padAfter);
     internalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(internal.getOperation());
   } else {
     auto external = air::ChannelPutOp::create(
         builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_external, src, src_offsets, src_sizes, src_strides,
-        padBefore, padAfter);
+        demuxDest, padBefore, padAfter);
     externalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
