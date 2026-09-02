@@ -1341,6 +1341,86 @@ findIssueOrderAnchors(ArrayRef<air::ChannelInterface> externalGetPuts,
   return {pick};
 }
 
+// Do two access-pattern lists describe the same window?
+//
+// By VALUE, not by SSA identity. Each hoisted transfer materializes its own
+// copy of the pure defs it needs -- that is what lets a clone stand alone in
+// the block it lands in -- so two spellings of one constant offset are
+// different Values by construction. Comparing the Values answers "not the same
+// window" for every transfer this is ever asked about.
+static bool sameWindow(ArrayRef<OpFoldResult> a, ArrayRef<OpFoldResult> b) {
+  if (a.size() != b.size())
+    return false;
+  for (auto [x, y] : llvm::zip_equal(a, b)) {
+    std::optional<int64_t> cx = getConstantIntValue(x);
+    std::optional<int64_t> cy = getConstantIntValue(y);
+    if (cx || cy) {
+      // One side constant and the other not is a difference this cannot see
+      // through, so say so rather than guess.
+      if (cx != cy)
+        return false;
+      continue;
+    }
+    if (x != y)
+      return false;
+  }
+  return true;
+}
+
+// Is `a` the same transfer as `b`, ignoring async plumbing?
+//
+// Same channel, same sub-channel, same buffer, same window. The async
+// dependency lists are deliberately NOT compared: they are how the transfer is
+// SCHEDULED, not what it moves, and two clones of one transfer reaching the
+// same point by different paths carry different tokens by construction.
+static bool sameTransfer(air::ChannelInterface a, air::ChannelInterface b) {
+  if (a->getName() != b->getName())
+    return false;
+  if (a.getChanName() != b.getChanName())
+    return false;
+  if (a.getMemref() != b.getMemref())
+    return false;
+  // Note OperandRange's own == compares the RANGE rather than its elements,
+  // and two distinct ops never share one.
+  SmallVector<OpFoldResult> ai, bi;
+  for (Value v : a.getIndices())
+    ai.push_back(v);
+  for (Value v : b.getIndices())
+    bi.push_back(v);
+  return sameWindow(ai, bi) &&
+         sameWindow(a.getMixedOffsets(), b.getMixedOffsets()) &&
+         sameWindow(a.getMixedSizes(), b.getMixedSizes()) &&
+         sameWindow(a.getMixedStrides(), b.getMixedStrides());
+}
+
+// A transfer already emitted at this point, or null.
+//
+// A producer stream SHARED by several consumer sites is one transfer, and the
+// hoist sees it once per site: each site names the same channel, the same
+// memtile buffer and the same window, and each is anchored to the same feed. A
+// second descriptor for it is not a second transfer -- it re-sends bytes the
+// first already sent, on the same sub-channel, acquiring the fill lock a second
+// time for a fill that happens once. The memtile MM2S ring then carries two
+// acquires per release against an S2MM that still has one, and the design reads
+// stale weights.
+//
+// The front end could not have said this differently: with the transfer spelled
+// as an air.channel.put it writes ONE put in the producer's own loop and lets
+// several gets share it -- which is legal, and is the shape this restores.
+static Operation *findEmittedTransfer(air::ChannelInterface getput,
+                                      Block *blk) {
+  for (Operation &o : *blk) {
+    if (&o == getput.getOperation())
+      continue;
+    auto other = dyn_cast<air::ChannelInterface>(&o);
+    if (!other)
+      continue;
+    if (sameTransfer(getput, other))
+      return &o;
+  }
+  return nullptr;
+}
+
 // How many tiles of `hier_op` actually execute `getput`?
 //
 // A DMA carries one multiplicity, the CONSUMER's: it sits inside the hierarchy,
@@ -1510,9 +1590,38 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
 
     // Resolve the issue-order anchor up front: it decides whether the enclosing
     // control ops are pulled in and rebuilt at all.
+    // Partition the batch by the anchor each op names.
+    //
+    // One shared insertion point used to serve the whole batch, so a batch that
+    // disagreed simply lost its anchors. That is not a disagreement to resolve:
+    // a weight fan written from the core side puts every column's transfers on
+    // ONE channel while each names the feed IT is fed from, so sixteen
+    // transfers name eight anchors and every one of them is right. Resolve and
+    // place per group; a batch that agrees is the one-group case and is
+    // unchanged.
+    llvm::MapVector<Attribute, SmallVector<air::ChannelInterface>> byAnchor;
+    bool everyOpAnchored = true;
+    for (auto getput : externalGetPuts) {
+      auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+      if (!a)
+        a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
+      if (!a) {
+        everyOpAnchored = false;
+        break;
+      }
+      byAnchor[a].push_back(getput);
+    }
+    // Mixed anchored/unanchored keeps the old single-point behaviour: the
+    // unanchored ops have no site of their own to go to.
+    if (!everyOpAnchored || byAnchor.size() < 2) {
+      byAnchor.clear();
+      byAnchor[FlatSymbolRefAttr()] = SmallVector<air::ChannelInterface>(
+          externalGetPuts.begin(), externalGetPuts.end());
+    }
+
     bool placeBefore = false;
     SmallVector<Operation *> anchorOps = findIssueOrderAnchors(
-        externalGetPuts, hier_op.getOperation(), placeBefore);
+        byAnchor.front().second, hier_op.getOperation(), placeBefore);
     // More than one site means the anchor lives in several switch arms and the
     // transfer belongs in each; the clone below runs once per site.
     Operation *anchorOp = anchorOps.empty() ? nullptr : anchorOps.front();
@@ -1625,6 +1734,36 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // after that channel's LAST endpoint instead, so it inherits both the
     // anchor's position and its control context (no new guard is synthesised;
     // if the anchor sits in a switch arm, so does this).
+    // Turn one resolved anchor into an insertion point. Factored so that every
+    // anchor GROUP gets the same treatment -- the outside-loops climb and the
+    // group-ordering walk are properties of the anchor, not of being first.
+    auto siteFor = [&](Operation *at, ArrayRef<air::ChannelInterface> ops,
+                       bool before) -> mlir::OpBuilder::InsertPoint {
+      if (llvm::any_of(ops, [](air::ChannelInterface getput) {
+            return getput->hasAttr("air.hoist_outside_loops");
+          })) {
+        while (auto *parent = at->getParentOp()) {
+          if (!isa<LoopLikeOpInterface>(parent))
+            break;
+          at = parent;
+        }
+        before = true;
+      }
+      if (before) {
+        rewriter.setInsertionPoint(at);
+      } else {
+        Operation *tail = at;
+        for (Operation *n = at->getNextNode(); n; n = n->getNextNode()) {
+          auto a = n->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+          if (!a || a != anchorAttrOf(ops))
+            break;
+          tail = n;
+        }
+        rewriter.setInsertionPointAfter(tail);
+      }
+      return rewriter.saveInsertionPoint();
+    };
+
     if (anchorOp) {
       // "air.hoist_outside_loops": resolve the anchor, then step OUT of any
       // loops enclosing it, stopping at the first non-loop parent.
@@ -1744,30 +1883,67 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       // Each site gets its OWN mapping. Sharing one would make the second site
       // reuse the first site's clones, which sit in a sibling region and
       // dominate nothing here.
-      SmallVector<mlir::OpBuilder::InsertPoint> sites;
-      if (anchored && anchorOps.size() > 1) {
-        for (Operation *site : anchorOps) {
-          rewriter.setInsertionPoint(site);
-          sites.push_back(rewriter.saveInsertionPoint());
-        }
-      } else
-        sites.push_back(insertionPointAtHierOp);
+      // Set when a clone was dropped as a duplicate of a transfer already at
+      // the site. Emitting nothing is then the correct outcome, not a failure.
+      bool dedupedAny = false;
 
-      for (auto &site : sites) {
-        IRMapping siteRemap;
-        int arg_idx = 0;
-        for (auto arg : hier_op.getKernelArguments())
-          siteRemap.map(arg, hier_op.getKernelOperand(arg_idx++));
-        rewriter.restoreInsertionPoint(site);
-        // getBackwardSlice fills the SetVector defs-before-uses, so its own
-        // order is already a valid clone order.
-        for (auto *b : toClone)
-          rewriter.clone(*b, siteRemap);
-        for (auto getput : externalGetPuts)
-          clonedOps.push_back(
-              rewriter.clone(*getput.getOperation(), siteRemap));
+      // Several GROUPS means the ops name different anchors; several SITES
+      // within a group means that anchor's endpoints are spread over sibling
+      // switch arms.
+      for (auto &group : byAnchor) {
+        bool firstGroup = &group == &byAnchor.front();
+        SmallVector<mlir::OpBuilder::InsertPoint> sites;
+        if (anchored) {
+          bool groupBefore = placeBefore;
+          SmallVector<Operation *> groupAnchors =
+              firstGroup
+                  ? anchorOps
+                  : findIssueOrderAnchors(group.second, hier_op.getOperation(),
+                                          groupBefore);
+          // The first group with a single site already has its insertion point
+          // computed above, outside-loops climb and ordering walk included.
+          // Recomputing it here would drop both.
+          if (firstGroup && groupAnchors.size() < 2)
+            sites.push_back(insertionPointAtHierOp);
+          else
+            for (Operation *site : groupAnchors)
+              sites.push_back(siteFor(site, group.second, groupBefore));
+        }
+        if (sites.empty())
+          sites.push_back(insertionPointAtHierOp);
+
+        for (auto &site : sites) {
+          IRMapping siteRemap;
+          int arg_idx = 0;
+          for (auto arg : hier_op.getKernelArguments())
+            siteRemap.map(arg, hier_op.getKernelOperand(arg_idx++));
+          rewriter.restoreInsertionPoint(site);
+          // getBackwardSlice fills the SetVector defs-before-uses, so its own
+          // order is already a valid clone order.
+          for (auto *b : toClone)
+            rewriter.clone(*b, siteRemap);
+          for (auto getput : group.second) {
+            Operation *c = rewriter.clone(*getput.getOperation(), siteRemap);
+            // Already emitted here by another consumer site sharing this
+            // producer stream: keep the one descriptor and let this site's
+            // internal half share it, exactly as the hand-written form does.
+            if (auto ci = dyn_cast<air::ChannelInterface>(c)) {
+              if (Operation *prior = findEmittedTransfer(ci, c->getBlock())) {
+                c->replaceAllUsesWith(prior);
+                rewriter.eraseOp(c);
+                dedupedAny = true;
+                continue;
+              }
+            }
+            clonedOps.push_back(c);
+          }
+        }
       }
-      if (clonedOps.empty())
+      // Every clone being a duplicate is success: the transfer is already at
+      // the site, and the internal halves left behind will share it. Failing
+      // here rolls the whole conversion back and strands this DMA's external
+      // half inside the hierarchy.
+      if (clonedOps.empty() && !dedupedAny)
         return failure();
     } else if (auto scf_par = dyn_cast_or_null<scf::ParallelOp>(scf_loop)) {
       // If air.hierarchy is hoisted into an scf.parallel loop.
