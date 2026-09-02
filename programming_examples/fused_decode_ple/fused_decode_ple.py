@@ -1083,11 +1083,30 @@ PLE_SHARED_RES = (
 # DMA1 to itself), so the host emission order and the per-port BD order are not
 # the same thing, and which destination goes first measurably changes where the
 # dispatch wedges. Sweepable rather than hardcoded for exactly that reason.
-# MEASURED, all six permutations at UNI_DEC=1 on NPU2: the two DMA0 destinations
-# must be ADJACENT. Split them with the DMA1 one (pgu, ugp) and the dispatch
-# wedges before the KV append even lands; keep them together (gpu, gup, upg, pug)
-# and the layer starts. 6/6, no exceptions. Default gpu.
+# MEASURED, all six permutations at UNI_DEC=1 on NPU2, run TWICE -- once with the
+# up core sharing @pleW and once with it on a channel of its own, which moves
+# which pair of cores shares a shim MM2S port. Both sweeps fail on exactly pgu
+# and ugp and reach the KV append on the other four. 12/12.
+#
+# So the rule is NOT about shim-port adjacency, which was the first reading and
+# which the second sweep refutes: the two runs pair the cores differently and the
+# outcome does not move. The rule is that THE GATE'S FEED MUST NOT BE IN THE
+# MIDDLE -- g first or g last works, g second does not. Mechanism still unknown.
+# Default gpu.
 PLE_FEED_ORDER = _os.environ.get("DECODE_PLE_FEED_ORDER", "gpu")
+# Give the UP core its own weight channel instead of a third destination on the
+# shared @pleW packet channel. The up core is the one that holds a long run of
+# blocks it cannot touch until @gateOut arrives, and it shares a shim MM2S port
+# with the proj core -- so its backpressure is the proj core's problem too. With
+# a channel of its own, every shim port carries exactly one core's stream and the
+# emission-order adjacency rule above stops binding.
+# TESTED: no behavioural change. Column 3 has only two shim MM2S for three PLE
+# cores, so a fourth channel cannot give each core a port of its own -- the
+# compiler just re-pairs them (gate+up on DMA0, proj on DMA1, instead of proj+up
+# on DMA0, gate on DMA1). All six feed orders behave identically either way.
+# Default OFF because it spends a shim MM2S for nothing; kept because flipping
+# the pairing is what proved the ordering rule is not about port sharing.
+PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
 # Program the @pleOut host drain BEFORE the weight feed, on the theory that the
 # up core's 50 @pleW blocks backpressure the shim before it ever reaches the
 # drain BD, so the up core can never put. TESTED AND REFUTED: byte-for-byte the
@@ -2233,7 +2252,14 @@ def build_module():
             #   dest 1 (proj): x0(K), emb(PLI_D), norm_w(PLI_D), 48 blocks
             #   dest 2 (up)  : post_ple_norm_w(K), scale(32), 48 blocks
             if PLE_BYPASS != 5:
-                channel_decl("pleW", size=[1, 3], channel_type="npu_dma_packet")
+                channel_decl(
+                    "pleW",
+                    size=[1, 2 if PLE_UP_CHAN else 3],
+                    channel_type="npu_dma_packet",
+                )
+                if PLE_UP_CHAN:
+                    # dest 2 above, promoted to a channel of its own.
+                    channel_decl("pleWu", size=[1])
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
@@ -2735,10 +2761,13 @@ def build_module():
                                 _pb = _pbase
 
                                 def _pput(dest, buf, off, sz):
+                                    _up = PLE_UP_CHAN and dest == PLE_DEST_UP
                                     ChannelPut(
-                                        "pleW",
+                                        "pleWu" if _up else "pleW",
                                         buf,
-                                        indices=[idx(0), idx(dest)],
+                                        indices=(
+                                            [idx(0)] if _up else [idx(0), idx(dest)]
+                                        ),
                                         offsets=[off],
                                         sizes=[sz],
                                         strides=[1],
@@ -5272,6 +5301,22 @@ def build_module():
                                     DeallocOp(a_b)
                                     yield_([])
                                     return
+
+                                def _upw(buf):
+                                    """This core's weight stream.
+
+                                    Its own channel under PLE_UP_CHAN, otherwise
+                                    destination 2 of the shared @pleW.
+                                    """
+                                    if PLE_UP_CHAN:
+                                        ChannelGet("pleWu", buf, indices=[idx(0)])
+                                    else:
+                                        ChannelGet(
+                                            "pleW",
+                                            buf,
+                                            indices=[idx(0), idx(PLE_DEST_UP)],
+                                        )
+
                                 # [residual ++ pli*gate]; the gate was already
                                 # applied on the gate core.
                                 a_rg = AllocOp(plegate_l1, [], [])
@@ -5283,9 +5328,7 @@ def build_module():
                                 for _i in for_(idx(0), idx(K // PLE_M_BLK), idx(1)):
                                     CallOp(ple_zero, [acc])
                                     wb = AllocOp(pleblk_l1, [], [])
-                                    ChannelGet(
-                                        "pleW", wb, indices=[idx(0), idx(PLE_DEST_UP)]
-                                    )
+                                    _upw(wb)
                                     CallOp(ple_mac_up_at, [acc, wb, a_rg])
                                     DeallocOp(wb)
                                     CallOp(
@@ -5294,13 +5337,9 @@ def build_module():
                                     )
                                     yield_([])
                                 a_nw = AllocOp(plex_l1, [], [])
-                                ChannelGet(
-                                    "pleW", a_nw, indices=[idx(0), idx(PLE_DEST_UP)]
-                                )
+                                _upw(a_nw)
                                 a_sc = AllocOp(plescale_l1, [], [])
-                                ChannelGet(
-                                    "pleW", a_sc, indices=[idx(0), idx(PLE_DEST_UP)]
-                                )
+                                _upw(a_sc)
                                 # residual = the K-wide head of @gateOut.
                                 CallOp(ple_up_tail_at, [a_y, a_rg, a_nw, a_sc, _arm])
                                 ChannelPut(
