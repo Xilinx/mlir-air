@@ -1078,6 +1078,22 @@ PLE_SHARED_RES = (
     and PLE_BYPASS in (0, 5, 6)
     and int(_os.environ.get("DECODE_PLE_SHARED_RES", "1"))
 )
+# Order the three @pleW destinations are fed in. The compiler splits that one
+# packet channel across TWO shim MM2S ports (proj and up share DMA0, the gate has
+# DMA1 to itself), so the host emission order and the per-port BD order are not
+# the same thing, and which destination goes first measurably changes where the
+# dispatch wedges. Sweepable rather than hardcoded for exactly that reason.
+# MEASURED, all six permutations at UNI_DEC=1 on NPU2: the two DMA0 destinations
+# must be ADJACENT. Split them with the DMA1 one (pgu, ugp) and the dispatch
+# wedges before the KV append even lands; keep them together (gpu, gup, upg, pug)
+# and the layer starts. 6/6, no exceptions. Default gpu.
+PLE_FEED_ORDER = _os.environ.get("DECODE_PLE_FEED_ORDER", "gpu")
+# Program the @pleOut host drain BEFORE the weight feed, on the theory that the
+# up core's 50 @pleW blocks backpressure the shim before it ever reaches the
+# drain BD, so the up core can never put. TESTED AND REFUTED: byte-for-byte the
+# same failure on both gpu and pug. Kept as a knob so the negative does not get
+# re-derived, not because it is a candidate.
+PLE_DRAIN_FIRST = PLE and int(_os.environ.get("DECODE_PLE_DRAIN_FIRST", "0"))
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
     # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
@@ -2774,37 +2790,60 @@ def build_module():
                                 # hands the core's first weight get a 256-element
                                 # vector instead of an 8192 block, and the
                                 # dispatch hangs (observed: ERT_CMD_STATE_TIMEOUT).
-                                _pput(PLE_DEST_PROJ, PLEX0, 0, K)
-                                _pw(PLE_DEST_PROJ, PLE_NBLK_DOWN, PLE_NBLK_DOWN)
-                                _pput(
-                                    PLE_DEST_PROJ,
-                                    PLEW,
-                                    arith.addi(_pb, idx(PLE_EMB_OFF)),
-                                    PLI_D,
-                                )
-                                _pput(
-                                    PLE_DEST_PROJ,
-                                    PLEW,
-                                    arith.addi(_pb, idx(PLE_NORMW_OFF)),
-                                    PLI_D,
-                                )
-                                # dest 0 (gate): weights only.
-                                _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
-                                # dest 2 (up): weights, then the norm weight and
-                                # scale its tail reads -- again, the core's order.
-                                _pw(PLE_DEST_UP, 2 * PLE_NBLK_DOWN, PLE_NBLK_UP)
-                                _pput(
-                                    PLE_DEST_UP,
-                                    PLEW,
-                                    arith.addi(_pb, idx(PLE_UPNORMW_OFF)),
-                                    K,
-                                )
-                                _pput(
-                                    PLE_DEST_UP,
-                                    PLEW,
-                                    arith.addi(_pb, idx(PLE_SCALE_OFF)),
-                                    PLE_SCALE_PAD,
-                                )
+                                def _feed_proj():
+                                    _pput(PLE_DEST_PROJ, PLEX0, 0, K)
+                                    _pw(
+                                        PLE_DEST_PROJ,
+                                        PLE_NBLK_DOWN,
+                                        PLE_NBLK_DOWN,
+                                    )
+                                    _pput(
+                                        PLE_DEST_PROJ,
+                                        PLEW,
+                                        arith.addi(_pb, idx(PLE_EMB_OFF)),
+                                        PLI_D,
+                                    )
+                                    _pput(
+                                        PLE_DEST_PROJ,
+                                        PLEW,
+                                        arith.addi(_pb, idx(PLE_NORMW_OFF)),
+                                        PLI_D,
+                                    )
+
+                                def _feed_gate():
+                                    # dest 0 (gate): weights only.
+                                    _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
+
+                                def _feed_up():
+                                    # dest 2 (up): weights, then the norm weight
+                                    # and scale its tail reads -- the core's
+                                    # order again.
+                                    _pw(
+                                        PLE_DEST_UP,
+                                        2 * PLE_NBLK_DOWN,
+                                        PLE_NBLK_UP,
+                                    )
+                                    _pput(
+                                        PLE_DEST_UP,
+                                        PLEW,
+                                        arith.addi(_pb, idx(PLE_UPNORMW_OFF)),
+                                        K,
+                                    )
+                                    _pput(
+                                        PLE_DEST_UP,
+                                        PLEW,
+                                        arith.addi(_pb, idx(PLE_SCALE_OFF)),
+                                        PLE_SCALE_PAD,
+                                    )
+
+                                _feeders = {
+                                    "p": _feed_proj,
+                                    "g": _feed_gate,
+                                    "u": _feed_up,
+                                }
+                                assert sorted(PLE_FEED_ORDER) == ["g", "p", "u"]
+                                for _c in PLE_FEED_ORDER:
+                                    _feeders[_c]()
 
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
@@ -3228,7 +3267,8 @@ def build_module():
                             # Still AHEAD of the @pleOut drain below, which is a
                             # shim GET on the up core -- the other half of the
                             # same rule.
-                            _emit_ple_feed()
+                            if not PLE_DRAIN_FIRST:
+                                _emit_ple_feed()
                             # #4: drain the rms layer output (residual2 = h + down). the reference
                             # chaining ABI: write res2 (the new hidden states) IN-PLACE into
                             # arg0 (X) at offset 0, so it feeds the NEXT layer from the same BO.
@@ -3253,6 +3293,8 @@ def build_module():
                                 sizes=[LAYER_RNDS * PAYLOAD],
                                 strides=[1],
                             )
+                            if PLE_DRAIN_FIRST:
+                                _emit_ple_feed()
                             yield_([])
 
                         index_switch(
