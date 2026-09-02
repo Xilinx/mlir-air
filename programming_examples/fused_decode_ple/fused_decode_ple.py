@@ -1053,6 +1053,11 @@ KV_SPLIT = True  # fixed config: decoupled K/V memtile rings
 # separates "gemma4's dimensions do not build" from "the PLE wiring does not
 # build", which is otherwise one failure with two causes.
 PLE = MODEL.get("PLE_DIM", 0) > 0 and not int(_os.environ.get("DECODE_NO_PLE", "0"))
+# BISECT ONLY (DECODE_PLE_BYPASS=1): build and feed nothing but the relay, which
+# forwards the rms residual straight out. Everything else about the PLE build is
+# unchanged, so a pass here puts the fault in the gate/up chain rather than in
+# the rms->relay->shim hand-off.
+PLE_BYPASS = PLE and int(_os.environ.get("DECODE_PLE_BYPASS", "0"))
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
     # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
@@ -2629,7 +2634,24 @@ def build_module():
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state).
                             ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
-                            if PLE:
+
+                            def _emit_ple_feed():
+                                # DEFERRED into the phase loop, to after the LAST
+                                # phase's weight feed -- exactly like
+                                # _emit_mixer_feeds, and for exactly the same
+                                # reason. The shim runs ONE ordered instruction
+                                # stream. The gate core cannot take its weights
+                                # until @toPle arrives, @toPle needs the rms
+                                # core's post-FFN residual, and that residual
+                                # needs every phase's weights -- which come LATER
+                                # in this same stream. Emitted here (before the
+                                # phase loop) the shim blocks on the gate's first
+                                # weight put and never issues @inW at all, so the
+                                # layer cannot start: the dispatch times out with
+                                # not even the KV append landing. Measured on
+                                # NPU2, 3/3 runs.
+                                if not PLE or PLE_BYPASS:
+                                    return
                                 # This layer's PLE slab, same _lb form the rms /
                                 # KV / Y slabs use.
                                 _pb = _pbase
@@ -2672,11 +2694,11 @@ def build_module():
                                 # not ready blocks every destination behind it.
                                 # The gate core waits on @toPle, which needs
                                 # @pliOut from the proj core, which needs ITS
-                                # weights -- so feeding the gate first wedges
-                                # the dispatch (observed: ERT_CMD_STATE_TIMEOUT).
-                                # PROJ MUST COME FIRST. Then gate, which stalls
-                                # harmlessly until the rms core finishes the
-                                # layer, and then up.
+                                # weights, so PROJ COMES FIRST; then gate, then
+                                # up. That ordering is necessary but NOT
+                                # sufficient on its own -- the whole block also
+                                # has to be deferred past the phase feed, which
+                                # is what _emit_ple_feed's call site does.
                                 #
                                 # dest 1 (proj). x0 is the TOKEN EMBEDDING and
                                 # is layer-invariant -- offset 0 every layer,
@@ -2721,6 +2743,7 @@ def build_module():
                                     arith.addi(_pb, idx(PLE_SCALE_OFF)),
                                     PLE_SCALE_PAD,
                                 )
+
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
@@ -3126,6 +3149,24 @@ def build_module():
                                             strides=[1],
                                         )
                                 roff += ROUNDS_PER_DEST[p]
+                            # DEFERRED to here from before the phase loop, and it
+                            # has to be THIS late -- see _emit_ple_feed for the
+                            # rule. Past the phase feed is not enough: the gate
+                            # core waits on the rms core's post-FFN residual, and
+                            # the rms core cannot get there until the per-dest
+                            # egress above is drained, because an undrained proj
+                            # egress backs up and the down phase never lands. Emit
+                            # the feed before that loop and the shim blocks on the
+                            # gate's first weight put while the drain that would
+                            # release it sits behind the block. Measured: emitting
+                            # it before the phase loop appends no KV at all;
+                            # emitting it inside the loop at DOWN_PHASE appends
+                            # wave 0's KV and then wedges; emitting it here runs.
+                            #
+                            # Still AHEAD of the @pleOut drain below, which is a
+                            # shim GET on the up core -- the other half of the
+                            # same rule.
+                            _emit_ple_feed()
                             # #4: drain the rms layer output (residual2 = h + down). the reference
                             # chaining ABI: write res2 (the new hidden states) IN-PLACE into
                             # arg0 (X) at offset 0, so it feeds the NEXT layer from the same BO.
@@ -4756,6 +4797,30 @@ def build_module():
                         )
 
                         def _relay_dec():
+                            if PLE_BYPASS:
+                                # BISECT ONLY: relay the rms residual straight to
+                                # the layer output, so the decode arm becomes the
+                                # no-PLE dataflow with the PLE cores still built
+                                # and still fed. Isolates the rms->relay->shim
+                                # hand-off from the gate/up chain behind it.
+                                ChannelGet(
+                                    "layerOut",
+                                    _rb,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                ChannelPut(
+                                    "pleOut",
+                                    _rb,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                yield_([])
+                                return
                             # Merge the post-FFN residual with the per-layer
                             # input into ONE stream. A compute tile has 2 S2MM,
                             # and doing this merge here is what keeps every PLE
@@ -4848,6 +4913,9 @@ def build_module():
                         @herd(name="plegate", sizes=[1, 1], operands=[_arm_ple])
                         def plegate_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
+                                if PLE_BYPASS:
+                                    yield_([])
+                                    return
                                 # [residual(K) ++ pli(PLI_D)], merged by the
                                 # relay memtile so this core needs only two
                                 # S2MM (this and @pleW).
@@ -4895,6 +4963,9 @@ def build_module():
                         @herd(name="pleproj", sizes=[1, 1], operands=[_arm_ple])
                         def pleproj_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
+                                if PLE_BYPASS:
+                                    yield_([])
+                                    return
                                 # x0 is the TOKEN EMBEDDING, not the running
                                 # hidden state. Feeding the hidden state here is
                                 # the bug that put CPU-reference layer 8 at
@@ -4958,6 +5029,9 @@ def build_module():
                         @herd(name="pleup", sizes=[1, 1], operands=[_arm_ple])
                         def pleup_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
+                                if PLE_BYPASS:
+                                    yield_([])
+                                    return
                                 # [residual ++ pli*gate]; the gate was already
                                 # applied on the gate core.
                                 a_rg = AllocOp(plegate_l1, [], [])
