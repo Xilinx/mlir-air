@@ -161,6 +161,13 @@ void ple_mac_up(float *restrict acc, bf16 *restrict w, bf16 *restrict x) {
   mvm_blk<BF16_PROJ_M_BLOCK, BF16_PROJ_K_BLOCK>(acc, w, x);
 }
 
+// Same, reading the gated pli from the tail of the packed
+// [residual ++ pli*gate] buffer the up core receives.
+void ple_mac_up_at(float *restrict acc, bf16 *restrict w,
+                   bf16 *restrict packed) {
+  ple_mac_up(acc, w, packed + MODEL_DIM);
+}
+
 // Write one finished output tile (32 values) at tile index i.
 static inline void flush_at(bf16 *y, float *acc, int i) {
   aie::vector<float, BF16_PROJ_M_BLOCK> v = aie::load_v<BF16_PROJ_M_BLOCK>(acc);
@@ -209,56 +216,45 @@ void ple_gate_act(bf16 *restrict g, int _arm) {
   }
 }
 
-// ---- the merged stream (FastFlowLM's proj_layer_merge) ----------------------
-// The merge core concatenates the gate core's [residual ++ gate] with the proj
-// core's [pli ++ up_norm ++ scale]. That concatenation is everything the up
-// core needs, so it takes ONE input and no second channel. Offsets into it:
-static constexpr int MERGE_RES = 0;
-static constexpr int MERGE_GATE = MODEL_DIM;
-static constexpr int MERGE_PLI = MODEL_DIM + PLI_D;
-static constexpr int MERGE_UPNORM = MODEL_DIM + 2 * PLI_D;
-static constexpr int MERGE_SCALE = 2 * MODEL_DIM + 2 * PLI_D;
-
-// proj tail that writes the per-layer input back over the head of the norm
-// bundle. norm_w arrives as [proj_norm(PLI_D) | up_norm(MODEL_DIM) | scale(32)]
-// and leaves as [pli | up_norm | scale] -- the 1824-wide packet FLM's proj core
-// emits, carrying the up core's norm weight and layer scale down the chain
-// instead of routing them to it separately.
-void ple_proj_tail_into(bf16 *restrict norm_w, bf16 *restrict x_proj,
-                        bf16 *restrict emb) {
-  ple_proj_tail(x_proj, emb, norm_w); // reads proj_norm from norm_w[0:PLI_D]
-  for (int i = 0; i < PLI_D; i += 16)
-    aie::store_v(norm_w + i, aie::load_v<16>(x_proj + i));
+// pli *= gate, before the 256->1536 up projection.
+void ple_apply_gate(bf16 *restrict pli, bf16 *restrict gate) {
+  mul_inplace<PLI_D>(pli, gate);
 }
 
-// pli *= gate, both already inside the merged buffer. The gate core no longer
-// applies the gate itself -- it never sees pli.
-void ple_merge_gate(bf16 *restrict m) {
-  mul_inplace<PLI_D>(m + MERGE_PLI, m + MERGE_GATE);
-}
-
-// PLI_D -> MODEL_DIM mac, reading the gated per-layer input out of the merge.
-void ple_mac_up_m(float *restrict acc, bf16 *restrict w, bf16 *restrict m) {
-  ple_mac_up(acc, w, m + MERGE_PLI);
-}
-
-// up tail against the merged buffer: norm weight, residual and layer scale all
-// travel inside it.
-void ple_up_tail_m(bf16 *restrict y, bf16 *restrict m, int _arm) {
-  (void)_arm;
-  aie_round_nearest_even();
-  rmsnorm<MODEL_DIM>(y, y, m + MERGE_UPNORM);
-  add_inplace<MODEL_DIM>(y, m + MERGE_RES);
-  scale_inplace<MODEL_DIM>(y, *(m + MERGE_SCALE));
-}
-
-// The gate core emits one packet, [residual(MODEL_DIM) ++ gate(PLI_D)], which
-// the merge core concatenates with the proj core's.
+// The gate core emits one packet, [residual(MODEL_DIM) ++ gate(PLI_D)], so the
+// up core takes both halves in a single channel get instead of racing two.
+// These three "_at" entry points index into that packed buffer.
 void ple_pack_gate(bf16 *restrict y, bf16 *restrict x, bf16 *restrict g) {
   for (int i = 0; i < MODEL_DIM; i += 16)
     aie::store_v(y + i, aie::load_v<16>(x + i));
   for (int i = 0; i < PLI_D; i += 16)
     aie::store_v(y + MODEL_DIM + i, aie::load_v<16>(g + i));
+}
+
+// Apply the gate to the pli that is ALREADY sitting in the packed buffer's
+// tail, in place: packed = [residual(MODEL_DIM) ++ pli(PLI_D)] on the way in,
+// [residual ++ pli*gate] on the way out. Doing it here rather than on the up
+// core is what keeps every core inside the 2-S2MM budget -- see the dataflow
+// note in fused_decode_ple.py.
+void ple_gate_into(bf16 *restrict packed, bf16 *restrict gate) {
+  mul_inplace<PLI_D>(packed + MODEL_DIM, gate);
+}
+
+// per_layer_up tail: y = (residual + rmsnorm(y, w)) * layer_output_scale.
+// layer_scale is a 1-element buffer (the bundle stores it as shape (1,)).
+void ple_up_tail(bf16 *restrict y, bf16 *restrict residual, bf16 *restrict w,
+                 bf16 *restrict layer_scale, int _arm) {
+  (void)_arm;
+  aie_round_nearest_even();
+  rmsnorm<MODEL_DIM>(y, y, w);
+  add_inplace<MODEL_DIM>(y, residual);
+  scale_inplace<MODEL_DIM>(y, *layer_scale);
+}
+
+// Same, taking the residual from the head of the packed [residual ++ gate].
+void ple_up_tail_at(bf16 *restrict y, bf16 *restrict packed, bf16 *restrict w,
+                    bf16 *restrict layer_scale, int _arm) {
+  ple_up_tail(y, packed, w, layer_scale, _arm);
 }
 
 } // extern "C"

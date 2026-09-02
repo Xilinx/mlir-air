@@ -1053,6 +1053,11 @@ KV_SPLIT = True  # fixed config: decoupled K/V memtile rings
 # separates "gemma4's dimensions do not build" from "the PLE wiring does not
 # build", which is otherwise one failure with two causes.
 PLE = MODEL.get("PLE_DIM", 0) > 0 and not int(_os.environ.get("DECODE_NO_PLE", "0"))
+# BISECT ONLY (DECODE_PLE_BYPASS=1): build and feed nothing but the relay, which
+# forwards the rms residual straight out. Everything else about the PLE build is
+# unchanged, so a pass here puts the fault in the gate/up chain rather than in
+# the rms->relay->shim hand-off.
+PLE_BYPASS = PLE and int(_os.environ.get("DECODE_PLE_BYPASS", "0"))
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
     # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
@@ -1482,29 +1487,20 @@ if PLE:
     # these constants.
     PLE_GATE_LOC = (3, 2)
     PLE_PROJ_LOC = (3, 3)
-    PLE_MERGE_LOC = (3, 4)
-    PLE_UP_LOC = (3, 5)
+    PLE_UP_LOC = (3, 4)
+    PLE_RELAY_PCOL = 3
     _ATTN_COLS_USED = {_l[0] for _l in ATTN_CU_LOC}
     for _nm, _loc in (
         ("gate", PLE_GATE_LOC),
         ("proj", PLE_PROJ_LOC),
-        ("merge", PLE_MERGE_LOC),
         ("up", PLE_UP_LOC),
     ):
         assert _loc[0] not in PCOL, f"PLE {_nm} core at {_loc} lands on a proj column"
         assert (
             _loc[0] not in _ATTN_COLS_USED
         ), f"PLE {_nm} core at {_loc} lands on an attention column {_ATTN_COLS_USED}"
-    assert (
-        len({PLE_GATE_LOC, PLE_PROJ_LOC, PLE_MERGE_LOC, PLE_UP_LOC}) == 4
-    ), "PLE cores collide"
-    # The merged stream FLM's proj_layer_merge emits:
-    #   [residual(K) | gate(PLI_D) | pli(PLI_D) | up_norm(K) | scale(32)]
-    # Everything the up core needs travels inside it, which is what lets the up
-    # core take ONE data input. Offsets must match kernels/ple.cc's MERGE_*.
-    PLE_GATE_LEN = K + PLI_D  # gate core -> merge
-    PLE_PROJ_LEN = PLI_D + K + PLE_SCALE_PAD  # proj core -> merge
-    PLE_MERGE_LEN = PLE_GATE_LEN + PLE_PROJ_LEN
+    assert PLE_RELAY_PCOL not in _ATTN_COLS_USED, "PLE relay lands on attention"
+    assert len({PLE_GATE_LOC, PLE_PROJ_LOC, PLE_UP_LOC}) == 3, "PLE cores collide"
 
 HOST_ROUNDS = sum(ROUNDS_PER_DEST[p] for p in HOST_DRAIN)  # host-drained egress rounds
 # #4: the down egresses as the rms layer output (residual2), drained on its own channel.
@@ -1614,11 +1610,6 @@ def build_module():
             # overwritten in place each layer. Conflating the two is the layer-8
             # bug (cos 0.79) in host-buffer form.
             plex0_l3 = MemRefType.get([K], bf16)
-            # Scratch for the PLE residual round trip. Its OWN argument, not a
-            # slice of Y: air-dependency cannot order a read against a write of
-            # the same L3 buffer, and reusing Y for both wedged the dispatch
-            # before even the KV append landed.
-            pleres_l3 = MemRefType.get([K], bf16)
 
         # ---- L1 buffers ----
         xblk_l1 = MemRefType.get([COL_BLOCK], bf16, memory_space=l1)  # 256 X chunk
@@ -1652,10 +1643,6 @@ def build_module():
             # gate core egress: [residual(K) ++ gelu'd gate(PLI_D)], one packet
             # so the up core gets both halves in a single get.
             plegate_l1 = MemRefType.get([K + PLI_D], bf16, memory_space=l1)
-            # The proj core's 1824 bundle ([proj_norm|up_norm|scale] in, then
-            # [pli|up_norm|scale] out) and the 3616 merged stream.
-            plebundle_l1 = MemRefType.get([PLE_PROJ_LEN], bf16, memory_space=l1)
-            plemerge_l1 = MemRefType.get([PLE_MERGE_LEN], bf16, memory_space=l1)
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
@@ -1818,23 +1805,22 @@ def build_module():
             # (x is K wide, j picks the input block); "up" contracts
             # PLI_D -> K, and PLI_D == PLE_K_BLK so there is exactly one input
             # block and no index.
-            ple_mac_down = _ple_fn("ple_mac_down", [pleacc_l1, pleblk_l1, plex_l1, i32])
-            ple_mac_up_m = _ple_fn("ple_mac_up_m", [pleacc_l1, pleblk_l1, plemerge_l1])
+            ple_mac_down = _ple_fn(
+                "ple_mac_down", [pleacc_l1, pleblk_l1, plegate_l1, i32]
+            )
+            ple_mac_up_at = _ple_fn("ple_mac_up_at", [pleacc_l1, pleblk_l1, plegate_l1])
             ple_flush_down = _ple_fn("ple_flush_down", [plev_l1, pleacc_l1, i32])
             ple_flush_up = _ple_fn("ple_flush_up", [plex_l1, pleacc_l1, i32])
             ple_proj_tail = _ple_fn("ple_proj_tail", [plev_l1, plev_l1, plev_l1])
             ple_gate_act = _ple_fn("ple_gate_act", [plev_l1, i32])
-            # proj tail writing pli back over the head of the norm bundle, so
-            # the up core's norm weight and layer scale ride the chain with it.
-            ple_proj_tail_into = _ple_fn(
-                "ple_proj_tail_into", [plebundle_l1, plev_l1, plev_l1]
-            )
-            # pli *= gate, both already inside the merged buffer.
-            ple_merge_gate = _ple_fn("ple_merge_gate", [plemerge_l1])
-            ple_up_tail_m = _ple_fn("ple_up_tail_m", [plex_l1, plemerge_l1, i32])
-            # The gate core emits ONE packet, [residual(K) ++ gate(PLI_D)],
-            # which the merge core concatenates with the proj core's bundle.
+            # The gate core emits ONE packet, [residual(K) ++ gate(PLI_D)], so
+            # the up core takes both halves in a single get rather than racing
+            # two channels. The "_at" entry points index into that packing.
             ple_pack_gate = _ple_fn("ple_pack_gate", [plegate_l1, plex_l1, plev_l1])
+            ple_gate_into = _ple_fn("ple_gate_into", [plegate_l1, plev_l1])
+            ple_up_tail_at = _ple_fn(
+                "ple_up_tail_at", [plex_l1, plegate_l1, plex_l1, plescale_l1, i32]
+            )
         if HYBRID_MIXER:
             # The hybrid's rope shares its input buffer with the ShortConv
             # staging call, and rope_compute rewrites that buffer in place (see
@@ -2126,12 +2112,6 @@ def build_module():
             # and AIRToAIE gives them a channel each: collapsed onto one they
             # form a ring its diagnoseBDChain oracle calls out of step, and
             # spreadCollapsedPacketChannels peels one onto the idle channel.
-            # ONE index, ONE consumer: the shim, on both arms. Giving it a
-            # second index for the PLE hand-off puts two flows on the rms core's
-            # MM2S 0 with arm-dependent sequences, which air-to-aie rejects
-            # ("the ring was built for one path's transfers and will slip on the
-            # others"). The residual reaches the gate core through the shim
-            # instead -- see the PLE feed.
             channel_decl("layerOut", size=[1])
         # GLU path: id-demux delivers gate-up DIRECTLY to the GLU herd (no relay);
         # GLU -> gluOut -> down memtile accumulate (8192). FAITHFUL: that 8192 is
@@ -2166,13 +2146,9 @@ def build_module():
             # MM2S0, xnorm on MM2S1); it is a compute tile and has only the two,
             # which is why a third flow for the PLE hand-off could not be added
             # there. A memtile has more DMA channels and no such restriction.
-            # FLM's topology: gate and proj are INDEPENDENT and their outputs
-            # are concatenated afterwards, on a compute tile. Merging before the
-            # gate (in a memtile) instead makes the gate wait on the proj core
-            # and wedges the wave -- see the FLM IR diff in the port notes.
-            channel_decl("gateOut", size=[1])  # gate  -> merge, PLE_GATE_LEN
-            channel_decl("pliOut", size=[1])  # proj  -> merge, PLE_PROJ_LEN
-            channel_decl("mergeOut", size=[1])  # merge -> up,    PLE_MERGE_LEN
+            channel_decl("toPle", size=[1])
+            channel_decl("gateOut", size=[1])
+            channel_decl("pliOut", size=[1])
             # Weight/parameter feed. ONE packet channel id-demuxed to the
             # three PLE cores, NOT one channel per feed.
             #
@@ -2238,7 +2214,7 @@ def build_module():
         # The PLE pair is appended AFTER the weight groups and BEFORE the DYNSEQ
         # scalar, which has to stay last. A non-PLE model contributes nothing
         # here, so every existing host binding position is unchanged.
-        _ple_args = [plew_l3, plex0_l3, pleres_l3] if PLE else []
+        _ple_args = [plew_l3, plex0_l3] if PLE else []
         _fn_args = (
             [x_l3, w_l3, rms_l3, y_l3]
             + ([kvc_l3] if MULTIBLK else [])
@@ -2252,7 +2228,6 @@ def build_module():
         WARG = [1] + [_w_base_n + i for i in range(len(_w_extra))]
         PLEW_ARG = _w_base_n + len(_w_extra)  # func-arg index of plew_l3
         PLEX0_ARG = PLEW_ARG + 1
-        PLERES_ARG = PLEX0_ARG + 1
 
         @FuncOp.from_py_func(*_fn_args)
         def q4nx_decode(*_fa):
@@ -2275,7 +2250,6 @@ def build_module():
                 KVC = _la[8] if MULTIBLK else None
                 PLEW = _la[4 + PLEW_ARG] if PLE else None
                 PLEX0 = _la[4 + PLEX0_ARG] if PLE else None
-                PLERES = _la[4 + PLERES_ARG] if PLE else None
                 # The dispatch-time context length (DYNSEQ). Last operand before
                 # the multi-layer induction variable.
                 L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
@@ -2645,7 +2619,11 @@ def build_module():
                             # drain logits (natural order): rms LM branch
                             # forwards VOCAB_RNDS x PAYLOAD via layerOut; ONE 2D-strided get.
                             ChannelGet(
-                                "layerOut",
+                                (
+                                    "layerOut"
+                                    if (not PLE or PLE_BYPASS == 4)
+                                    else "pleOut"
+                                ),
                                 Y,
                                 indices=[idx(0)],
                                 offsets=[_vyb],
@@ -2676,7 +2654,7 @@ def build_module():
                                 # layer cannot start: the dispatch times out with
                                 # not even the KV append landing. Measured on
                                 # NPU2, 3/3 runs.
-                                if not PLE:
+                                if not PLE or PLE_BYPASS:
                                     return
                                 # This layer's PLE slab, same _lb form the rms /
                                 # KV / Y slabs use.
@@ -2714,35 +2692,30 @@ def build_module():
                                 # Within a destination, the puts must match the
                                 # order its core gets them.
                                 #
-                                # ACROSS destinations it matters because all
-                                # three streams share one shim MM2S: a
-                                # destination whose core is not ready blocks the
-                                # ones behind it. Since the FLM restructure the
-                                # gate and proj cores are INDEPENDENT -- neither
-                                # waits on the other -- so this order is no
-                                # longer load-bearing for correctness, only for
-                                # latency. Proj still goes first: it is the one
-                                # with no other input, so it can start at once.
+                                # ACROSS destinations, the order decides whether
+                                # the design deadlocks. All three streams share
+                                # one shim MM2S, so a destination whose core is
+                                # not ready blocks every destination behind it.
+                                # The gate core waits on @toPle, which needs
+                                # @pliOut from the proj core, which needs ITS
+                                # weights, so PROJ COMES FIRST; then gate, then
+                                # up. That ordering is necessary but NOT
+                                # sufficient on its own -- the whole block also
+                                # has to be deferred past the phase feed, which
+                                # is what _emit_ple_feed's call site does.
                                 #
                                 # dest 1 (proj). x0 is the TOKEN EMBEDDING and
                                 # is layer-invariant -- offset 0 every layer,
                                 # unlike X which is the chained hidden state.
                                 # Its own BO for that reason.
                                 #
-                                # emb and the norm bundle come AFTER the weights
+                                # The emb/norm_w pair comes AFTER the weights
                                 # because that is the order pleproj_h gets them:
                                 # it projects first and only then reads the two
-                                # its tail needs. Sending them earlier hands the
-                                # core's first weight get a 256-element vector
-                                # instead of an 8192 block (observed:
-                                # ERT_CMD_STATE_TIMEOUT).
-                                #
-                                # The norm bundle is ONE put of PLE_PROJ_LEN =
-                                # [proj_norm | up_norm | scale], already
-                                # contiguous in DDR. The up core's norm and
-                                # scale are NOT sent to it -- they ride this
-                                # bundle through the merge core, which is what
-                                # keeps the up core at a single data input.
+                                # vectors its tail needs. Sending them earlier
+                                # hands the core's first weight get a 256-element
+                                # vector instead of an 8192 block, and the
+                                # dispatch hangs (observed: ERT_CMD_STATE_TIMEOUT).
                                 _pput(PLE_DEST_PROJ, PLEX0, 0, K)
                                 _pw(PLE_DEST_PROJ, PLE_NBLK_DOWN, PLE_NBLK_DOWN)
                                 _pput(
@@ -2755,25 +2728,25 @@ def build_module():
                                     PLE_DEST_PROJ,
                                     PLEW,
                                     arith.addi(_pb, idx(PLE_NORMW_OFF)),
-                                    PLE_PROJ_LEN,
+                                    PLI_D,
                                 )
-                                # dest 0 (gate): the RESIDUAL first, then its
-                                # weights -- the order the core gets them.
-                                #
-                                # The residual is a round trip through DDR: the
-                                # rms core has two MM2S ports and both are
-                                # taken, so a direct rms->gate channel puts a
-                                # second flow on the port @layerOut already
-                                # uses, with a different BD sequence per arm,
-                                # and air-to-aie rejects it. Draining it to the
-                                # Y scratch slot (just above) and feeding it
-                                # back costs 3 KB each way per layer -- about
-                                # 0.01% of this model's weight traffic -- and
-                                # keeps every existing flow exactly as it is in
-                                # the no-PLE build, which passes.
-                                _pput(PLE_DEST_GATE, PLERES, 0, K)
+                                # dest 0 (gate): weights only.
                                 _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
+                                # dest 2 (up): weights, then the norm weight and
+                                # scale its tail reads -- again, the core's order.
                                 _pw(PLE_DEST_UP, 2 * PLE_NBLK_DOWN, PLE_NBLK_UP)
+                                _pput(
+                                    PLE_DEST_UP,
+                                    PLEW,
+                                    arith.addi(_pb, idx(PLE_UPNORMW_OFF)),
+                                    K,
+                                )
+                                _pput(
+                                    PLE_DEST_UP,
+                                    PLEW,
+                                    arith.addi(_pb, idx(PLE_SCALE_OFF)),
+                                    PLE_SCALE_PAD,
+                                )
 
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
@@ -3197,18 +3170,6 @@ def build_module():
                             # Still AHEAD of the @pleOut drain below, which is a
                             # shim GET on the up core -- the other half of the
                             # same rule.
-                            if PLE:
-                                # The rms core's @layerOut is the post-FFN
-                                # residual here. Land it in the scratch slot so
-                                # the feed below can hand it to the gate core.
-                                ChannelGet(
-                                    "layerOut",
-                                    PLERES,
-                                    indices=[idx(0)],
-                                    offsets=[0],
-                                    sizes=[K],
-                                    strides=[1],
-                                )
                             _emit_ple_feed()
                             # #4: drain the rms layer output (residual2 = h + down). the reference
                             # chaining ABI: write res2 (the new hidden states) IN-PLACE into
@@ -3219,13 +3180,15 @@ def build_module():
                             _out_base = 0
                             # BD-COMPACTION: single full-size drain (matches the rms single
                             # layerOut put) instead of LAYER_RNDS per-round gets.
-                            # With a PLE the rms core's @layerOut is the post-FFN
-                            # RESIDUAL, not the layer output: it lands in the Y
-                            # scratch slot, the feed above hands it to the gate
-                            # core, and the real layer output arrives separately
-                            # from the up core on @pleOut.
                             ChannelGet(
-                                "pleOut" if PLE else "layerOut",
+                                # With a PLE the layer output is produced by the
+                                # up core, not the rms core; @layerOut in the
+                                # decode arm is the rms->gate hand-off.
+                                (
+                                    "layerOut"
+                                    if (not PLE or PLE_BYPASS == 4)
+                                    else "pleOut"
+                                ),
                                 _out_bo,
                                 indices=[idx(0)],
                                 offsets=[_out_base],
@@ -4819,32 +4782,135 @@ def build_module():
                         glu_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), GLU_PCOL)
                         glu_h.attributes["y_loc"] = IntegerAttr.get(T.i64(), 3)
 
-                    # ===== per-layer embeddings (PLE) ==========================================
-                    # FOUR cores, in FastFlowLM's arrangement. The shape of it is the whole
-                    # point: gate and proj are INDEPENDENT, and their outputs are
-                    # concatenated afterwards by a compute tile.
+                    # ===== per-layer embeddings (PLE) ==========================
+                    # Three cores, mirroring FastFlowLM's relative layout. They
+                    # sit between the post-FFN residual and the layer output:
+                    # the rms core stops driving @layerOut and hands its residual
+                    # to @toPle instead (see _rms_body step3).
                     #
-                    #   rms  --@layerOut[1]--> gate    the post-FFN residual
-                    #   gate --@gateOut------> merge   [residual(K) ++ gate(PLI_D)]
-                    #   proj --@pliOut-------> merge   [pli ++ up_norm ++ scale]
-                    #   merge--@mergeOut-----> up      the two concatenated
-                    #   up   --@pleOut-------> shim    the layer output
-                    #
-                    # S2MM per core: gate{layerOut,pleW}=2, proj{pleW}=1,
-                    # merge{gateOut,pliOut}=2, up{mergeOut,pleW}=2 -- all inside the
-                    # 2-per-tile budget with NO memtile anywhere.
-                    #
-                    # The earlier design merged the residual with pli BEFORE the gate, in a
-                    # memtile relay. That made the gate core wait on the proj core, and the
-                    # decode wave wedged after the KV append on every run. Merging after,
-                    # as FLM does, removes the dependency and the memtile with it.
-                    #
-                    # up_norm and the layer scale are NOT sent to the up core: they ride
-                    # the proj core's 1824 bundle down the chain, which is what keeps the
-                    # up core at one data input. The DDR layout already stores them
-                    # contiguously in that order (PLE_NORMW_OFF..PLE_LAYER).
+                    #   gate (PLE_GATE_LOC): gelu(x @ inp_gate.T), 1536 -> 256
+                    #   projE(PLE_PROJ_LOC): the per-layer input, from the token
+                    #                        EMBEDDING, 1536 -> 256
+                    #   up   (PLE_UP_LOC)  : (pli*gate) @ per_layer_proj.T,
+                    #                        256 -> 1536, + norm + residual +
+                    #                        layer_output_scale -> @layerOut
                     if PLE:
                         _arm_ple = _seg_arm
+
+                        # ---- @layerOut relay memtile (see the channel decl) ----
+                        plerelay_l2 = MemRefType.get([K + PLI_D], bf16, memory_space=l2)
+                        _rb = AllocOp(plerelay_l2, [], [])
+                        _rb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                            T.i32(), PLE_RELAY_PCOL
+                        )
+
+                        def _relay_bypass_ops():
+                            # BISECT ONLY: relay the rms residual straight to the
+                            # layer output, so the decode arm becomes the no-PLE
+                            # dataflow with the PLE cores still built and still
+                            # fed. Isolates the rms->relay->shim hand-off from the
+                            # gate/up chain behind it. No yield: the caller owns
+                            # the terminator (BYPASS=2 emits these at herd scope,
+                            # where a yield would terminate the enclosing block).
+                            ChannelGet(
+                                "layerOut",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(K)],
+                                strides=[idx(1)],
+                            )
+                            ChannelPut(
+                                "pleOut",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(K)],
+                                strides=[idx(1)],
+                            )
+
+                        def _relay_dec():
+                            if PLE_BYPASS:
+                                _relay_bypass_ops()
+                                yield_([])
+                                return
+                            # Merge the post-FFN residual with the per-layer
+                            # input into ONE stream. A compute tile has 2 S2MM,
+                            # and doing this merge here is what keeps every PLE
+                            # core inside that budget -- see the dataflow note
+                            # at the channel decls.
+                            ChannelGet(
+                                "layerOut",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(K)],
+                                strides=[idx(1)],
+                            )
+                            ChannelGet(
+                                "pliOut",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(K)],
+                                sizes=[idx(PLI_D)],
+                                strides=[idx(1)],
+                            )
+                            ChannelPut(
+                                "toPle",
+                                _rb,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(K + PLI_D)],
+                                strides=[idx(1)],
+                            )
+                            yield_([])
+
+                        def _relay_voc():
+                            # The vocab arm relays the logits in the same K-sized
+                            # blocks the rms core emits them in.
+                            for _rv in for_(idx(0), idx(_VOC_BLKS_2K), idx(1)):
+                                ChannelGet(
+                                    "layerOut",
+                                    _rb,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                ChannelPut(
+                                    "pleOut",
+                                    _rb,
+                                    indices=[idx(0)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                yield_([])
+                            yield_([])
+
+                        if PLE_BYPASS == 4:
+                            # BISECT ONLY (4): emit NO relay at all and let the
+                            # shim drain @layerOut directly, so the dataflow is
+                            # the no-PLE one with the PLE cores merely present
+                            # and idle. Separates "the PLE cores/channels exist"
+                            # from "the relay + @pleOut wiring".
+                            pass
+                        elif PLE_BYPASS == 2:
+                            # BISECT ONLY: no arm switch at all, so the relay's
+                            # program is unambiguously the 1-block decode one.
+                            # Tests whether the switch itself is what wedges
+                            # wave 0 (a memtile cannot branch, so both arms
+                            # otherwise land in one static program). Vocab is
+                            # expected to hang here -- nothing relays its logits.
+                            _relay_bypass_ops()
+                        else:
+                            index_switch(
+                                [],
+                                arith.index_cast(idx_t, _seg_arm),
+                                [0],
+                                case_body_builder=lambda op, i, cv: _relay_voc(),
+                                default_body_builder=lambda op: _relay_dec(),
+                            )
 
                         def _ple_proj_down(acc, y, w_dest, x, _nout):
                             """K -> PLI_D projection, block-streamed.
@@ -4872,41 +4938,38 @@ def build_module():
                                 )
                                 yield_([])
 
-                        # ---- gate core: gelu(residual @ inp_gate.T) ----
+                        # ---- gate core ----
                         @herd(name="plegate", sizes=[1, 1], operands=[_arm_ple])
                         def plegate_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
-                                # The residual, handed back by the shim (see
-                                # the feed). @pleW is this core's ONLY inbound
-                                # channel as a result.
-                                a_x = AllocOp(plex_l1, [], [])
-                                ChannelGet(
-                                    "pleW",
-                                    a_x,
-                                    indices=[idx(0), idx(PLE_DEST_GATE)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
+                                if PLE_BYPASS:
+                                    yield_([])
+                                    return
+                                # [residual(K) ++ pli(PLI_D)], merged by the
+                                # relay memtile so this core needs only two
+                                # S2MM (this and @pleW).
+                                a_x = AllocOp(plegate_l1, [], [])
+                                ChannelGet("toPle", a_x, indices=[idx(0)])
                                 a_g = AllocOp(plev_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
                                 _ple_proj_down(
                                     acc, a_g, PLE_DEST_GATE, a_x, PLI_D // PLE_M_BLK
                                 )
                                 CallOp(ple_gate_act, [a_g, _arm])
-                                a_o = AllocOp(plegate_l1, [], [])
-                                CallOp(ple_pack_gate, [a_o, a_x, a_g])
+                                # Apply the gate here, in place, so the up core
+                                # receives [residual ++ pli*gate] and needs no
+                                # third input.
+                                CallOp(ple_gate_into, [a_x, a_g])
                                 ChannelPut(
                                     "gateOut",
-                                    a_o,
+                                    a_x,
                                     offsets=[idx(0)],
-                                    sizes=[idx(PLE_GATE_LEN)],
+                                    sizes=[idx(K + PLI_D)],
                                     strides=[idx(1)],
                                 )
                                 DeallocOp(a_x)
                                 DeallocOp(a_g)
                                 DeallocOp(acc)
-                                DeallocOp(a_o)
                                 yield_([])
 
                             index_switch(
@@ -4925,15 +4988,20 @@ def build_module():
                             T.i64(), PLE_GATE_LOC[1]
                         )
 
-                        # ---- proj core: the per-layer input, from the token EMBEDDING ----
+                        # ---- per-layer input (projection of the EMBEDDING) ----
                         @herd(name="pleproj", sizes=[1, 1], operands=[_arm_ple])
                         def pleproj_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
-                                # x0 is the TOKEN EMBEDDING, not the running hidden state.
-                                # Feeding the hidden state here is the bug that put CPU
-                                # reference layer 8 at cos 0.79; it is nearly invisible
-                                # because early layers barely differ from their embedding.
-                                a_x0 = AllocOp(plex_l1, [], [])
+                                if PLE_BYPASS:
+                                    yield_([])
+                                    return
+                                # x0 is the TOKEN EMBEDDING, not the running
+                                # hidden state. Feeding the hidden state here is
+                                # the bug that put CPU-reference layer 8 at
+                                # cos 0.79 (0.30 on this block alone); it is
+                                # nearly invisible because early layers barely
+                                # differ from their embedding.
+                                a_x0 = AllocOp(plegate_l1, [], [])
                                 ChannelGet(
                                     "pleW",
                                     a_x0,
@@ -4951,17 +5019,16 @@ def build_module():
                                 ChannelGet(
                                     "pleW", a_e, indices=[idx(0), idx(PLE_DEST_PROJ)]
                                 )
-                                # [proj_norm | up_norm | scale] in, [pli | up_norm | scale] out.
-                                a_nw = AllocOp(plebundle_l1, [], [])
+                                a_nw = AllocOp(plev_l1, [], [])
                                 ChannelGet(
                                     "pleW", a_nw, indices=[idx(0), idx(PLE_DEST_PROJ)]
                                 )
-                                CallOp(ple_proj_tail_into, [a_nw, a_p, a_e])
+                                CallOp(ple_proj_tail, [a_p, a_e, a_nw])
                                 ChannelPut(
                                     "pliOut",
-                                    a_nw,
+                                    a_p,
                                     offsets=[idx(0)],
-                                    sizes=[idx(PLE_PROJ_LEN)],
+                                    sizes=[idx(PLI_D)],
                                     strides=[idx(1)],
                                 )
                                 DeallocOp(a_x0)
@@ -4987,80 +5054,44 @@ def build_module():
                             T.i64(), PLE_PROJ_LOC[1]
                         )
 
-                        # ---- merge core: concatenate, and apply the gate ----
-                        @herd(name="plemerge", sizes=[1, 1], operands=[_arm_ple])
-                        def plemerge_h(tx, ty, _sx, _sy, _arm):
-                            def _dec():
-                                a_m = AllocOp(plemerge_l1, [], [])
-                                ChannelGet(
-                                    "gateOut",
-                                    a_m,
-                                    indices=[idx(0)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(PLE_GATE_LEN)],
-                                    strides=[idx(1)],
-                                )
-                                ChannelGet(
-                                    "pliOut",
-                                    a_m,
-                                    indices=[idx(0)],
-                                    offsets=[idx(PLE_GATE_LEN)],
-                                    sizes=[idx(PLE_PROJ_LEN)],
-                                    strides=[idx(1)],
-                                )
-                                # pli *= gate here: this is the first core that holds both.
-                                CallOp(ple_merge_gate, [a_m])
-                                ChannelPut(
-                                    "mergeOut",
-                                    a_m,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(PLE_MERGE_LEN)],
-                                    strides=[idx(1)],
-                                )
-                                DeallocOp(a_m)
-                                yield_([])
-
-                            index_switch(
-                                [],
-                                arith.index_cast(idx_t, _arm),
-                                [0],
-                                case_body_builder=lambda op, i, cv: yield_([]),
-                                default_body_builder=lambda op: _dec(),
-                            )
-
-                        plemerge_h.attributes["link_with"] = StringAttr.get("ple.o")
-                        plemerge_h.attributes["x_loc"] = IntegerAttr.get(
-                            T.i64(), PLE_MERGE_LOC[0]
-                        )
-                        plemerge_h.attributes["y_loc"] = IntegerAttr.get(
-                            T.i64(), PLE_MERGE_LOC[1]
-                        )
-
-                        # ---- up core: (pli*gate) @ per_layer_proj.T + norm + residual ----
+                        # ---- up projection + layer output ----
                         @herd(name="pleup", sizes=[1, 1], operands=[_arm_ple])
                         def pleup_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
-                                a_m = AllocOp(plemerge_l1, [], [])
-                                ChannelGet("mergeOut", a_m, indices=[idx(0)])
+                                if PLE_BYPASS:
+                                    yield_([])
+                                    return
+                                # [residual ++ pli*gate]; the gate was already
+                                # applied on the gate core.
+                                a_rg = AllocOp(plegate_l1, [], [])
+                                ChannelGet("gateOut", a_rg, indices=[idx(0)])
                                 a_y = AllocOp(plex_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
-                                # PLI_D == PLE_K_BLK, so one input block per output tile
-                                # and no j loop.
+                                # PLI_D == PLE_K_BLK, so one input block per
+                                # output tile and no j loop.
                                 for _i in for_(idx(0), idx(K // PLE_M_BLK), idx(1)):
                                     CallOp(ple_zero, [acc])
                                     wb = AllocOp(pleblk_l1, [], [])
                                     ChannelGet(
                                         "pleW", wb, indices=[idx(0), idx(PLE_DEST_UP)]
                                     )
-                                    CallOp(ple_mac_up_m, [acc, wb, a_m])
+                                    CallOp(ple_mac_up_at, [acc, wb, a_rg])
                                     DeallocOp(wb)
                                     CallOp(
                                         ple_flush_up,
                                         [a_y, acc, arith.index_cast(T.i32(), _i)],
                                     )
                                     yield_([])
-                                # norm weight, residual and layer scale all ride inside a_m.
-                                CallOp(ple_up_tail_m, [a_y, a_m, _arm])
+                                a_nw = AllocOp(plex_l1, [], [])
+                                ChannelGet(
+                                    "pleW", a_nw, indices=[idx(0), idx(PLE_DEST_UP)]
+                                )
+                                a_sc = AllocOp(plescale_l1, [], [])
+                                ChannelGet(
+                                    "pleW", a_sc, indices=[idx(0), idx(PLE_DEST_UP)]
+                                )
+                                # residual = the K-wide head of @gateOut.
+                                CallOp(ple_up_tail_at, [a_y, a_rg, a_nw, a_sc, _arm])
                                 ChannelPut(
                                     "pleOut",
                                     a_y,
@@ -5068,9 +5099,11 @@ def build_module():
                                     sizes=[idx(K)],
                                     strides=[idx(1)],
                                 )
-                                DeallocOp(a_m)
+                                DeallocOp(a_rg)
                                 DeallocOp(a_y)
                                 DeallocOp(acc)
+                                DeallocOp(a_nw)
+                                DeallocOp(a_sc)
                                 yield_([])
 
                             index_switch(
@@ -5647,18 +5680,21 @@ def build_module():
                                     sizes=[idx(K)],
                                     strides=[idx(1)],
                                 )
-                                # BISECT ONLY (3): drop the vocab arm's
-                                # @layerOut puts, leaving the channel with a
-                                # single put site and a single get site.
-                                # Tests whether the per-arm put count (1 in
-                                # decode, 9 here) is what makes air-to-aie
-                                ChannelPut(
-                                    "layerOut",
-                                    a_v,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
+                                if PLE_BYPASS != 3:
+                                    # BISECT ONLY (3): drop the vocab arm's
+                                    # @layerOut puts, leaving the channel with a
+                                    # single put site and a single get site.
+                                    # Tests whether the per-arm put count (1 in
+                                    # decode, 9 here) is what makes air-to-aie
+                                    # drop the relay flow. Vocab is expected to
+                                    # hang; every DECODE wave should now run.
+                                    ChannelPut(
+                                        "layerOut",
+                                        a_v,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
                                 yield_([])
                             DeallocOp(a_xl)
                             DeallocOp(a_wl)
@@ -5774,10 +5810,8 @@ def build_module():
                             # path's transfers and will slip on the others").
                             # So the hand-off REUSES @layerOut and it is the
                             # CONSUMER that differs by arm: the PLE gate core in
-                            # With a PLE this is the hand-off to the gate core
-                            # (index 1); the vocab arm's logits go out on index
-                            # 0. One consumer per index, so the rms core still
-                            # drives exactly one channel from this port.
+                            # decode, the host in vocab. The real layer output
+                            # then leaves the PLE up core on @pleOut.
                             ChannelPut(
                                 "layerOut",
                                 g_x,
@@ -5875,7 +5909,7 @@ def build_module():
                             # herds).
                             if PLE:
                                 ChannelPut(
-                                    "layerOut",
+                                    "toPle",
                                     a_r2,
                                     offsets=[idx(0)],
                                     sizes=[idx(DOWN_RNDS * PAYLOAD)],
