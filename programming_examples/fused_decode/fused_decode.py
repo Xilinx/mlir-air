@@ -3013,7 +3013,11 @@ def build_module():
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
                     + [RMS, X]
-                    + ([KVC] if (APPEND_DMA and KVC is not None) else [])
+                    + (
+                        [KVC]
+                        if ((APPEND_DMA or CONVST_DMA) and KVC is not None)
+                        else []
+                    )
                     + ([L_rt] if DYNSEQ else [])
                 )
                 # Index of RMS above; keeps _sa[-1] meaning L_rt for DYNSEQ.
@@ -3031,7 +3035,7 @@ def build_module():
                     # DMAs. Appended after X so _sa[-1] still means L_rt.
                     _seg_KVC = (
                         _sa[_seg_rms_idx + 2]
-                        if (APPEND_DMA and KVC is not None)
+                        if ((APPEND_DMA or CONVST_DMA) and KVC is not None)
                         else None
                     )
                     # The context length reaches the attention herd from here, as a
@@ -3708,10 +3712,15 @@ def build_module():
                         # (see _rope_opers) and this list is empty, which keeps
                         # conv_h's signature unchanged for every model that is
                         # not a hybrid.
-                        _conv_append_opers = (
-                            ([_seg_KVC, _seg_iv] if _seg_iv is not None else [_seg_KVC])
-                            if ((APPEND_DMA or CONVST_DMA) and _seg_KVC is not None)
-                            else []
+                        # Same split as the rope herd's: @appendK wants the KV
+                        # cache AND the wave index, @ropeLUT and @convW only the
+                        # index. Coupling them made forcing APPEND_DMA off drop the
+                        # index and trip _lut_slab_off's assertion -- caught by the
+                        # attribute-parity gate, which is the arm that exercises it.
+                        _has_ckvc = (APPEND_DMA or CONVST_DMA) and _seg_KVC is not None
+                        _has_civ = _seg_iv is not None
+                        _conv_append_opers = ([_seg_KVC] if _has_ckvc else []) + (
+                            [_seg_iv] if _has_civ else []
                         )
                         _n_capp = len(_conv_append_opers)
                         _n_cqmt = 1 if _qmtb_pre is not None else 0
@@ -3868,8 +3877,8 @@ def build_module():
                             # so the wave index comes in as an operand and the
                             # offset is recomputed from it -- the same friction
                             # @appendK's _apoff and @rmsW's _rbase_h have.
-                            _cst_kvc = _ckv[0] if _n_capp > 0 else None
-                            _cst_iv = _ckv[1] if _n_capp > 1 else None
+                            _cst_kvc = _ckv[0] if _has_ckvc else None
+                            _cst_iv = _ckv[1 if _has_ckvc else 0] if _has_civ else None
                             _ckiv = _cst_iv
                             _crms = (
                                 _ckv[_n_capp + _n_cqmt]
@@ -4054,8 +4063,8 @@ def build_module():
                                         if len(_ckv) > _n_capp + _n_cqmt
                                         else None
                                     ),
-                                    kvc=_ckv[0] if _n_capp > 0 else None,
-                                    kiv=_ckv[1] if _n_capp > 1 else None,
+                                    kvc=_cst_kvc,
+                                    kiv=_cst_iv,
                                     qmt=(_ckv[_n_capp] if _n_cqmt else None),
                                 )
                                 for _w in range(1, CONV_WAVES):
