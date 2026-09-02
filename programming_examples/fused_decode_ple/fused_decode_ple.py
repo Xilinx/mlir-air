@@ -286,22 +286,34 @@ _MODELS = {
     # numerics gate is green. Do not quote its tok/s as the port's ceiling.
     #
     #   I2P = [M, K, 2*INTER, K]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS)
-    #       = [5120, 1536, 24576, 1536]/512 = [10, 3, 48, 3]
+    #       = [6144, 1536, 24576, 1536]/512 = [12, 3, 48, 3]
     #   J2P = [K, DQ, K, INTER]/(2*COL_BLOCK)
     #       = [1536, 4096, 1536, 12288]/512 = [3, 8, 3, 24]
+    #
+    # TWO CUs FOR ONE KV HEAD, and the second one is not optional. This is MQA:
+    # 8 q heads share a single k/v head, so one CU is arithmetically enough. But
+    # N_ATTN_CU=1 is the only setting that reaches _attn_col's CU_PER_COL==1
+    # branch, and no shipping model does -- every other entry lands on 2 CUs per
+    # column. Measured on NPU2 with everything else held fixed (same K, dims,
+    # N_NORMS, DH=256): 1 CU times out with wave 0's KV appended and wave 1 never
+    # starting, 2 CUs complete both waves and drain the full vocab. So the single
+    # kv head is REPLICATED across both CUs (the packer duplicates those rows)
+    # and the 8 q heads split 4/4. The cost is one extra head of KV cache and
+    # k/v fan; the alternative is fixing the one-CU path, which nothing else
+    # needs. FLM likewise runs two attention tile-pairs in its column.
     "gemma4-e2b": dict(
         K=1536,
-        M=5120,  # DQ+DK+DV at the FULL layer = 4096+512+512
+        M=6144,  # DQ+DK+DV at the FULL layer = 4096 + 2*512 + 2*512
         DH_A=512,  # full-attention head dim; sliding layers use DH_SWA
         DH_SWA=256,
         SLIDING_WINDOW=512,
-        KV_PER_CU=1,  # 1 kv head, 1 CU
-        N_ATTN_CU=1,
+        KV_PER_CU=1,  # the one real kv head, replicated to each of the 2 CUs
+        N_ATTN_CU=2,
         NPH=4,
-        I2P=[10, 3, 48, 3],
+        I2P=[12, 3, 48, 3],
         J2P=[3, 8, 3, 24],
         DEST=["rope", "rms", "glu", "rms"],
-        GQA_SEG=8,  # 8 q / 1 kv, exactly one group -> no padding
+        GQA_SEG=4,  # 4 q heads per CU against its copy of the kv head
         PAIR_ROWS=1,  # NON-PAIRED egress (K=1536 -> 3 blocks/tile, odd in pairs)
         # Gemma3's 4-norm sandwich PLUS a fifth on the PLE branch
         # (post_layernorm), applied to the 256->1536 projection before its
@@ -1456,28 +1468,33 @@ if PLE:
     _VOC_BLKS_2K = VOCAB_RNDS * PAYLOAD // K
     # PLE core placement, as (col, row), plus the @layerOut relay memtile.
     #
-    # COLUMN 4, and do not "correct" it to 3. ATTN_PCOL is 4, but with a single
-    # attention CU the placer actually lands @attn_blk on column 3 rows 2-3, so
-    # asking for column 3 collided and the placer silently relocated two of the
-    # three cores -- one onto column 5, whose shim has no spare MM2S. @pleW then
-    # had no source, and the build failed a long way from the cause with "no
-    # ShimNOCTile has sufficient DMA capacity ... near centroid column 5". If
-    # that error returns, read the REAL placement out of
-    # air_project/placed.air.mlir rather than trusting these constants.
+    # COLUMN 3. The two attention CUs occupy ATTN_PCOL (4) rows 2-5, proj owns
+    # 0,1,6,7, rms is 2,2, rope 2,3 and glu 5,3 -- which leaves column 3 free end
+    # to end, so the whole PLE chain sits in one column as it does in
+    # FastFlowLM's own layout.
     #
-    # Column 4 is free end to end for this model (proj owns 0,1,6,7; rms 2,2;
-    # rope 2,3; attention 3,2-3; glu 5,3), so the whole PLE chain sits in one
-    # column -- as it does in FastFlowLM's own layout.
-    PLE_GATE_LOC = (4, 2)
-    PLE_PROJ_LOC = (4, 3)
-    PLE_UP_LOC = (4, 4)
-    PLE_RELAY_PCOL = 4
+    # Collide with attention and the failure surfaces a long way from the cause:
+    # the placer silently relocates a core, one lands on column 5 whose shim has
+    # no spare MM2S, and the build dies with "no ShimNOCTile has sufficient DMA
+    # capacity ... near centroid column 5" -- naming a column nothing asked for.
+    # The assert below turns that into a direct message; if it ever fires, read
+    # the REAL placement out of air_project/placed.air.mlir rather than trusting
+    # these constants.
+    PLE_GATE_LOC = (3, 2)
+    PLE_PROJ_LOC = (3, 3)
+    PLE_UP_LOC = (3, 4)
+    PLE_RELAY_PCOL = 3
+    _ATTN_COLS_USED = {_l[0] for _l in ATTN_CU_LOC}
     for _nm, _loc in (
         ("gate", PLE_GATE_LOC),
         ("proj", PLE_PROJ_LOC),
         ("up", PLE_UP_LOC),
     ):
         assert _loc[0] not in PCOL, f"PLE {_nm} core at {_loc} lands on a proj column"
+        assert (
+            _loc[0] not in _ATTN_COLS_USED
+        ), f"PLE {_nm} core at {_loc} lands on an attention column {_ATTN_COLS_USED}"
+    assert PLE_RELAY_PCOL not in _ATTN_COLS_USED, "PLE relay lands on attention"
     assert len({PLE_GATE_LOC, PLE_PROJ_LOC, PLE_UP_LOC}) == 3, "PLE cores collide"
 
 HOST_ROUNDS = sum(ROUNDS_PER_DEST[p] for p in HOST_DRAIN)  # host-drained egress rounds

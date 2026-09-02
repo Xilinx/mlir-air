@@ -153,7 +153,13 @@ def build_requant_cache(model, fd, cache_path, layers=None, verbose=True):
         # --- attention, padded into the build's head geometry ---
         q = _pad_head(w["q"], NQ, dh, DH)
         if "k" in w:
-            k, v = _pad_head(w["k"], NKV, dh, DH), _pad_head(w["v"], NKV, dh, DH)
+            # MQA against a 2-CU build: the device wants NKV kv heads, the model
+            # has one, and each CU needs its own copy (see the N_ATTN_CU note in
+            # the gemma4-e2b entry). Duplicate the rows BEFORE padding, so every
+            # copy gets the same head interleave.
+            _rep = NKV // (w["k"].shape[0] // dh)
+            k = _pad_head(np.tile(w["k"], (_rep, 1)), NKV, dh, DH)
+            v = _pad_head(np.tile(w["v"], (_rep, 1)), NKV, dh, DH)
         else:
             # Layers >= FIRST_KV_SHARED carry no k/v at all: they reuse a lower
             # layer's cache. Their QKV phase still has to be the same shape, so

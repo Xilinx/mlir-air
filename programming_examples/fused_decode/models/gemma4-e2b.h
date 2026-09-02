@@ -54,9 +54,12 @@ constexpr float PER_LAYER_MODEL_PROJECTION_SCALE = 0.7071067811865476f;
 constexpr int BF16_PROJ_M_BLOCK = 32;
 constexpr int BF16_PROJ_K_BLOCK = 256;
 
-// 1 kv head -> KV_HEADS_PER_CU=1 with a single CU; 8 q heads per group, so no
-// GQA padding is needed (Q_HEADS_PER_GROUP=8 == GQA_SEG).
-#define ATTN_IMPL ATTN_IMPL_1x8x1
+// MQA: 1 real kv head, REPLICATED to each of 2 CUs, with the 8 q heads split
+// 4/4. One CU would be arithmetically enough, but N_ATTN_CU=1 is the only
+// setting that selects the builder's untested CU_PER_COL==1 attention path, and
+// that path wedges the decode wave on NPU2 -- see the gemma4-e2b entry in
+// fused_decode_ple.py for the measurement.
+#define ATTN_IMPL ATTN_IMPL_1x4x1
 #define A_FUNC A_GELU
 // qk-norm: RMSNorm(DH) on Q,K per head before RoPE (rope_w carries q/k norm w).
 #define HAS_QK_NORM
