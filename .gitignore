@@ -60,3 +60,8 @@ CLAUDE.md
 /docs/AIRTransformPasses.md
 /docs/AIRTransformOps.md
 /docs/build_info.json
+
+# Sub-layer ground truth captured by
+# programming_examples/llms/gemma4_e2b_q4nx/dump_sublayer_reference.py.
+# Regenerable (`make sublayer-ref`) and ~3 MB, so it stays out of the tree.
+sublayer_ref.npz
