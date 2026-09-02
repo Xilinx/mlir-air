@@ -10,7 +10,7 @@ to AMD™ NPUs and GPUs.**
 
 <img src="https://mlir.llvm.org/mlir-logo.png" width="180">
 
-📖 **[Documentation](https://xilinx.github.io/mlir-air/)** &nbsp;·&nbsp; 🚀 **[Programming Guide](docs/programming_guide.md)** &nbsp;·&nbsp; 🧩 **[Compute Model](docs/AIRComputeModel.md)** &nbsp;·&nbsp; 💡 **[Examples](programming_examples/)**
+📖 **[Documentation](https://xilinx.github.io/mlir-air/)** &nbsp;·&nbsp; 🚀 **[Programming Guide](https://xilinx.github.io/mlir-air/dev/programming_guide/)** &nbsp;·&nbsp; 🧩 **[Compute Model](https://xilinx.github.io/mlir-air/dev/AIRComputeModel/)** &nbsp;·&nbsp; 💡 **[Examples](https://xilinx.github.io/mlir-air/dev/programming_examples/)**
 
 The AIR dialect represents a design as a hierarchy of compute regions
 (`air.launch`, `air.segment`, `air.herd`) over an explicit memory hierarchy
@@ -95,16 +95,16 @@ Prebuilt wheels are the recommended path. Each guide also covers a source build.
 
 | Host | Start here |
 | --- | --- |
-| Ryzen™ AI on Linux | [Ryzen AI (Linux)](docs/buildingRyzenLin.md) |
-| Ryzen™ AI on Windows 11 | [Ryzen AI (Windows)](docs/buildingRyzenWin.md) |
-| GPU on Linux | [GPU (Linux)](docs/buildingGPU.md) |
+| Ryzen™ AI on Linux | [Ryzen AI (Linux)](https://xilinx.github.io/mlir-air/dev/buildingRyzenLin/) |
+| Ryzen™ AI on Windows 11 | [Ryzen AI (Windows)](https://xilinx.github.io/mlir-air/dev/buildingRyzenWin/) |
+| GPU on Linux | [GPU (Linux)](https://xilinx.github.io/mlir-air/dev/buildingGPU/) |
 
 ## Learn more
 
-- [Programming Examples](programming_examples/) — operators and designs, with per-target test status
+- [Programming Examples](https://xilinx.github.io/mlir-air/dev/programming_examples/) — operators and designs, with per-target test status
 - [LLMs on NPU](https://xilinx.github.io/mlir-air/dev/llms/) — decoder-only models running end to end, with a nightly benchmark
 - [AIR dialect and pass reference](https://xilinx.github.io/mlir-air/dev/mlir_reference/)
-- [Used in / cited in](docs/used_in.md)
+- [Used in / cited in](https://xilinx.github.io/mlir-air/dev/used_in/)
 
 -----
 
