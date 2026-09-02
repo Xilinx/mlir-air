@@ -2447,6 +2447,72 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
 private:
 };
 
+// Do several channel ops in one loop body TILE a contiguous run?
+//
+// A ping/pong producer writes its buffer with two ops per iteration, at base
+// and base+size. That is one transfer written two ways, and recognising it lets
+// the loop fold below treat the body as a single wider transfer. Returns the
+// combined element count, or nullopt for anything that is not one channel, one
+// direction, 1-D, unit-stride, equal-sized and offset by exactly its own size.
+static std::optional<int64_t>
+getContiguousTiledRun(ArrayRef<air::ChannelInterface> chans) {
+  auto first = chans.front();
+  auto sizes = air::getSizesAsValues(first);
+  auto strides = air::getStridesAsValues(first);
+  auto offsets = air::getOffsetsAsValues(first);
+  if (sizes.size() != 1 || strides.size() != 1 || offsets.size() != 1)
+    return std::nullopt;
+  auto szc = getConstantIntValue(sizes[0]);
+  auto stc = getConstantIntValue(strides[0]);
+  if (!szc || !stc || *stc != 1)
+    return std::nullopt;
+  bool isPut = isa<air::ChannelPutOp>(first.getOperation());
+  for (unsigned k = 1; k < chans.size(); k++) {
+    auto c = chans[k];
+    if (c.getChanName() != first.getChanName())
+      return std::nullopt;
+    if (isa<air::ChannelPutOp>(c.getOperation()) != isPut)
+      return std::nullopt;
+    if (c.getMemref() != first.getMemref())
+      return std::nullopt;
+    if (c.getIndices().size() != first.getIndices().size())
+      return std::nullopt;
+    for (auto [a, b] : llvm::zip(c.getIndices(), first.getIndices()))
+      if (a != b)
+        return std::nullopt;
+    if (air::getSizesAsValues(c).size() != 1 ||
+        air::getStridesAsValues(c).size() != 1 ||
+        air::getOffsetsAsValues(c).size() != 1)
+      return std::nullopt;
+    if (getConstantIntValue(air::getSizesAsValues(c)[0]) != szc)
+      return std::nullopt;
+    if (getConstantIntValue(air::getStridesAsValues(c)[0]) != stc)
+      return std::nullopt;
+    // offset[k] must be offset[0] + k*size, either as constants or as an
+    // arith.addi of that exact amount onto the same base.
+    int64_t want = (int64_t)k * *szc;
+    auto o0 = getConstantIntValue(offsets[0]);
+    auto ok = getConstantIntValue(air::getOffsetsAsValues(c)[0]);
+    if (o0 && ok) {
+      if (*ok - *o0 != want)
+        return std::nullopt;
+      continue;
+    }
+    auto add = air::getOffsetsAsValues(c)[0].getDefiningOp<arith::AddIOp>();
+    if (!add)
+      return std::nullopt;
+    Value base = add.getLhs() == offsets[0]   ? add.getRhs()
+                 : add.getRhs() == offsets[0] ? add.getLhs()
+                                              : nullptr;
+    if (!base)
+      return std::nullopt;
+    auto delta = getConstantIntValue(base);
+    if (!delta || *delta != want)
+      return std::nullopt;
+  }
+  return (int64_t)chans.size() * *szc;
+}
+
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -2464,21 +2530,56 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     auto loc = for_op->getLoc();
     auto ctx = for_op->getContext();
 
-    // Check if the loop is the outermost loop in a perfect loop nest
-    if (!hasNImpureOps(for_op.getBody(), 1))
+    // The loop must carry ONE transfer -- or several on one channel that TILE a
+    // contiguous run, which is the same transfer written N ways.
+    //
+    // Declining on the op COUNT sends the tiled case to
+    // AIRUnrollScfForIntoBDChain instead, which emits trip*N descriptors for a
+    // region that needs one. On a memtile fill each descriptor is a separate
+    // lock release, so a consumer whose counting lock was derived from the
+    // single-descriptor form is off by that factor and the design hangs. The
+    // one-op case already folds to a single transfer; this lets the N-op case
+    // reach the same answer instead of a different one.
+    SmallVector<air::ChannelInterface> bodyChans(
+        for_op.getBody()->getOps<air::ChannelInterface>());
+    if (bodyChans.empty())
       return failure();
+    int64_t tiledSize = 0;
+    if (bodyChans.size() > 1) {
+      auto run = getContiguousTiledRun(bodyChans);
+      if (!run)
+        return failure();
+      tiledSize = *run;
+    }
+    air::ChannelInterface channel_op = bodyChans.front();
 
-    // Check if the loop contains exactly one channel op
-    if (llvm::range_size(for_op.getBody()->getOps<air::ChannelInterface>()) !=
-        1)
+    // Check if the loop is the outermost loop in a perfect loop nest. The tiled
+    // run counts as the one transfer it is.
+    if (!hasNImpureOps(for_op.getBody(), bodyChans.size()))
       return failure();
-    air::ChannelInterface channel_op =
-        *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
 
     // Fold for loops into channel op's wrap and stride fields
     SmallVector<Value> offsets = air::getOffsetsAsValues(channel_op);
     SmallVector<Value> wraps = air::getSizesAsValues(channel_op);
     SmallVector<Value> strides = air::getStridesAsValues(channel_op);
+    if (tiledSize) {
+      // Widen the survivor to cover the run, then drop the rest.
+      OpBuilder wb(channel_op);
+      wraps[0] = arith::ConstantIndexOp::create(wb, loc, tiledSize);
+      // The survivor now performs the dropped ops' work, so whatever waited on
+      // them waits on it instead. Erasing without this trips the rewriter's
+      // "expected 'op' to have no uses": every one of them yields a token the
+      // loop carries.
+      Value survivorTok = air::isAsyncOp(channel_op)
+                              ? air::getAsyncTokenFromOp(channel_op)
+                              : Value();
+      for (unsigned i = 1; i < bodyChans.size(); i++) {
+        if (survivorTok && air::isAsyncOp(bodyChans[i]))
+          rewriter.replaceOp(bodyChans[i], survivorTok);
+        else
+          rewriter.eraseOp(bodyChans[i]);
+      }
+    }
 
     // A hardware buffer descriptor has a constant shape per dimension. If the
     // channel op already carries a non-constant wrap or stride (e.g. an
