@@ -145,6 +145,10 @@ void ple_zero(float *restrict acc) {
 // (per_layer_projection) contracts PLI_D -> MODEL_DIM, and PLI_D == 256 ==
 // BF16_PROJ_K_BLOCK exactly, so there is only ever one input block and no
 // index is needed.
+// x is the PACKED [residual ++ pli] buffer on the gate core and a plain
+// MODEL_DIM vector on the proj core; only the leading MODEL_DIM entries are
+// read either way, so one signature serves both and the builder gives both the
+// wider buffer.
 void ple_mac_down(float *restrict acc, bf16 *restrict w, bf16 *restrict x,
                   int j) {
   aie_round_nearest_even();
@@ -155,6 +159,13 @@ void ple_mac_down(float *restrict acc, bf16 *restrict w, bf16 *restrict x,
 void ple_mac_up(float *restrict acc, bf16 *restrict w, bf16 *restrict x) {
   aie_round_nearest_even();
   mvm_blk<BF16_PROJ_M_BLOCK, BF16_PROJ_K_BLOCK>(acc, w, x);
+}
+
+// Same, reading the gated pli from the tail of the packed
+// [residual ++ pli*gate] buffer the up core receives.
+void ple_mac_up_at(float *restrict acc, bf16 *restrict w,
+                   bf16 *restrict packed) {
+  ple_mac_up(acc, w, packed + MODEL_DIM);
 }
 
 // Write one finished output tile (32 values) at tile index i.
@@ -220,8 +231,13 @@ void ple_pack_gate(bf16 *restrict y, bf16 *restrict x, bf16 *restrict g) {
     aie::store_v(y + MODEL_DIM + i, aie::load_v<16>(g + i));
 }
 
-void ple_apply_gate_at(bf16 *restrict pli, bf16 *restrict packed) {
-  mul_inplace<PLI_D>(pli, packed + MODEL_DIM);
+// Apply the gate to the pli that is ALREADY sitting in the packed buffer's
+// tail, in place: packed = [residual(MODEL_DIM) ++ pli(PLI_D)] on the way in,
+// [residual ++ pli*gate] on the way out. Doing it here rather than on the up
+// core is what keeps every core inside the 2-S2MM budget -- see the dataflow
+// note in fused_decode_ple.py.
+void ple_gate_into(bf16 *restrict packed, bf16 *restrict gate) {
+  mul_inplace<PLI_D>(packed + MODEL_DIM, gate);
 }
 
 // per_layer_up tail: y = (residual + rmsnorm(y, w)) * layer_output_scale.
