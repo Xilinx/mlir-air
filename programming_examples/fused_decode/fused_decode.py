@@ -532,7 +532,12 @@ HYBRID_MIXER = bool(ATTN_LAYERS)
 # Only the dedicated @rope herd carries RMS as an operand; a HYBRID build runs
 # _rope_body on the conv mixer's stage tile, which does not, so that build keeps
 # the hand-written pair.
-ROPELUT_DMA = not HYBRID_MIXER
+ROPELUT_DMA = True
+# Where the derived put belongs. On a non-hybrid the hand-written one sits ahead
+# of the rms group; on a HYBRID the whole mixer feed block is deferred into the
+# phase loop, to the last mixer phase, and the LUT lands immediately before
+# @convW there. Naming @rmsX on a hybrid would move it ~40 slots earlier.
+_ROPELUT_ANCHOR = "convW" if HYBRID_MIXER else "rmsX"
 # Same treatment for the rms WEIGHT feed. The rms herd has to carry RMS (and the
 # wave index, for the decode arm's per-layer slab offset) for the DMA to name
 # both endpoints. @rmsX and @ropeLUT are anchored to @rmsW, so once @rmsW is
@@ -3419,7 +3424,7 @@ def build_module():
                                 # weight stream. Without it the derived put lands
                                 # at the herd's position, slot 6 -> 18, and the
                                 # rope core deadlocks waiting on its LUT.
-                                hoist_before="rmsX",
+                                hoist_before=_ROPELUT_ANCHOR,
                             )
                         else:
                             ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
@@ -3697,8 +3702,20 @@ def build_module():
                             else []
                         )
                         _n_capp = len(_conv_append_opers)
-                        _conv_kv_opers = _conv_append_opers + (
-                            [_qmtb_pre] if _qmtb_pre is not None else []
+                        _n_cqmt = 1 if _qmtb_pre is not None else 0
+                        # RMS rides along too, for the ported @ropeLUT: a hybrid
+                        # runs _rope_body on THIS herd's stage tile rather than on
+                        # a dedicated rope herd, so the weight BO the LUT is read
+                        # from has to be visible here. That absence, not anything
+                        # about the LUT itself, is why the hybrid kept the
+                        # hand-written pair.
+                        _conv_rms_opers = (
+                            [_seg_RMS] if (ROPELUT_DMA and _seg_RMS is not None) else []
+                        )
+                        _conv_kv_opers = (
+                            _conv_append_opers
+                            + ([_qmtb_pre] if _qmtb_pre is not None else [])
+                            + _conv_rms_opers
                         )
 
                         @herd(
@@ -3989,11 +4006,14 @@ def build_module():
                                 _rope_body(
                                     _arm,
                                     _lands[0],
+                                    rms=(
+                                        _ckv[_n_capp + _n_cqmt]
+                                        if len(_ckv) > _n_capp + _n_cqmt
+                                        else None
+                                    ),
                                     kvc=_ckv[0] if _n_capp > 0 else None,
                                     kiv=_ckv[1] if _n_capp > 1 else None,
-                                    qmt=(
-                                        _ckv[_n_capp] if len(_ckv) > _n_capp else None
-                                    ),
+                                    qmt=(_ckv[_n_capp] if _n_cqmt else None),
                                 )
                                 for _w in range(1, CONV_WAVES):
                                     _land(_w)
