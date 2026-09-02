@@ -10,8 +10,11 @@
 constexpr int MODEL_DIM = 1536;
 constexpr int NUM_ATTN_HEADS = 8;
 constexpr int NUM_KV_HEADS = 1;
-// Widest of the two per-layer FFNs. Layers <15 are half this (6144); the
-// builder zero-pads them, so the kernel only ever sees the wide shape.
+// DELIBERATELY NOT FLM's VALUE. FastFlowLM sets this to the narrow 6144 and
+// switches the wide layers on with a DOUBLE_WIDE_MLP define; this builder
+// instead pads every layer up to the wide shape (see the gemma4-e2b entry in
+// fused_decode_ple.py), so the kernel only ever sees 12288. Revisit together
+// with that staging decision, not on its own.
 constexpr int INTERMEDIATE_SIZE = 12288;
 constexpr int GLU_SLICE = 1024;
 // TWO head dims in one model: full-attention layers (4,9,...,34) use 512,
@@ -25,6 +28,31 @@ constexpr int VOCAB_SIZE = 262144;
 // 1.0, NOT 1/sqrt(DH): Gemma4 folds query_pre_attn_scalar into the q weights.
 // Verified against FLM's own golden activations (their ATTN_SCALE is also 1.0).
 constexpr float ATTN_SCALE = 1.0f;
+constexpr float SWA_ATTN_SCALE = 1.0f;
+// Claim the model_spec.h exemption: 1.0 is NOT 1/sqrt(DH) here and that is
+// deliberate, not a value copied from a neighbouring header. Gemma4 folds
+// query_pre_attn_scalar into the q weights, so the kernel must not scale again.
+// Confirmed two ways: FastFlowLM's own gemma4-e2b.h also sets 1.0, and the
+// numpy reference reproduces their golden activations with ATTN_SCALE=1.0.
+#define ATTN_SCALE_NOT_INV_SQRT_DH
+
+// --- per-layer embeddings (PLE) ---
+// Names match FastFlowLM's gemma4-e2b.h exactly so their kernels port over
+// unmodified.
+constexpr int PLI_D = 256; // PLI = Per Layer Input
+// THESE TWO NAMES ARE SWAPPED relative to what they do, and the swap is FLM's.
+// PER_LAYER_INPUT_SCALE is 1536**-0.5 and is applied FIRST, to the model
+// projection; PER_LAYER_MODEL_PROJECTION_SCALE is 2**-0.5 and is applied LAST,
+// after the token-embedding residual. The ORDER in proj_layer_embedding is what
+// is correct -- do not "fix" the names into each other's slots.
+constexpr float PER_LAYER_INPUT_SCALE = 0.02551551815399144f;
+constexpr float PER_LAYER_MODEL_PROJECTION_SCALE = 0.7071067811865476f;
+
+// bf16 (non-q4) projection tiling, used by the three PLE kernels. One weight
+// block is M_BLOCK*K_BLOCK = 8192 bf16, laid out [in][out] with 32 contiguous
+// outputs per input element.
+constexpr int BF16_PROJ_M_BLOCK = 32;
+constexpr int BF16_PROJ_K_BLOCK = 256;
 
 // 1 kv head -> KV_HEADS_PER_CU=1 with a single CU; 8 q heads per group, so no
 // GQA padding is needed (Q_HEADS_PER_GROUP=8 == GQA_SEG).
@@ -36,7 +64,6 @@ constexpr float ATTN_SCALE = 1.0f;
 // embedding branch (post_layernorm), applied to the PLE projection before its
 // residual add.
 #define HAS_PER_LAYER_EMBEDDING
-constexpr int PER_LAYER_INPUT_DIM = 256;
 constexpr int NUM_LAYERS = 35;
 // Layers >= this index reuse a lower layer's KV cache and carry the double-wide
 // FFN. The two switches are the same bit -- see the builder's LAYER_CLASS note.
