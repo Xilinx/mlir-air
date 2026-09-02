@@ -2644,16 +2644,37 @@ def build_module():
                                             PLE_BLK,
                                         )
 
-                                # ORDER IS THE CONTRACT: each destination's puts
-                                # must match the order its core gets them.
-                                # dest 0 (gate): weights only.
-                                _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
-                                # dest 1 (proj): x0 first. x0 is the TOKEN
-                                # EMBEDDING and is layer-invariant -- offset 0
-                                # every layer, unlike X which is the chained
-                                # hidden state. Its own BO for exactly that
-                                # reason.
+                                # ORDER IS THE CONTRACT, TWICE OVER.
+                                #
+                                # Within a destination, the puts must match the
+                                # order its core gets them.
+                                #
+                                # ACROSS destinations, the order decides whether
+                                # the design deadlocks. All three streams share
+                                # one shim MM2S, so a destination whose core is
+                                # not ready blocks every destination behind it.
+                                # The gate core waits on @toPle, which needs
+                                # @pliOut from the proj core, which needs ITS
+                                # weights -- so feeding the gate first wedges
+                                # the dispatch (observed: ERT_CMD_STATE_TIMEOUT).
+                                # PROJ MUST COME FIRST. Then gate, which stalls
+                                # harmlessly until the rms core finishes the
+                                # layer, and then up.
+                                #
+                                # dest 1 (proj). x0 is the TOKEN EMBEDDING and
+                                # is layer-invariant -- offset 0 every layer,
+                                # unlike X which is the chained hidden state.
+                                # Its own BO for that reason.
+                                #
+                                # The emb/norm_w pair comes AFTER the weights
+                                # because that is the order pleproj_h gets them:
+                                # it projects first and only then reads the two
+                                # vectors its tail needs. Sending them earlier
+                                # hands the core's first weight get a 256-element
+                                # vector instead of an 8192 block, and the
+                                # dispatch hangs (observed: ERT_CMD_STATE_TIMEOUT).
                                 _pput(PLE_DEST_PROJ, PLEX0, 0, K)
+                                _pw(PLE_DEST_PROJ, PLE_NBLK_DOWN, PLE_NBLK_DOWN)
                                 _pput(
                                     PLE_DEST_PROJ,
                                     PLEW,
@@ -2666,8 +2687,11 @@ def build_module():
                                     arith.addi(_pb, idx(PLE_NORMW_OFF)),
                                     PLI_D,
                                 )
-                                _pw(PLE_DEST_PROJ, PLE_NBLK_DOWN, PLE_NBLK_DOWN)
-                                # dest 2 (up): norm weight, scale, then weights.
+                                # dest 0 (gate): weights only.
+                                _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
+                                # dest 2 (up): weights, then the norm weight and
+                                # scale its tail reads -- again, the core's order.
+                                _pw(PLE_DEST_UP, 2 * PLE_NBLK_DOWN, PLE_NBLK_UP)
                                 _pput(
                                     PLE_DEST_UP,
                                     PLEW,
@@ -2680,7 +2704,6 @@ def build_module():
                                     arith.addi(_pb, idx(PLE_SCALE_OFF)),
                                     PLE_SCALE_PAD,
                                 )
-                                _pw(PLE_DEST_UP, 2 * PLE_NBLK_DOWN, PLE_NBLK_UP)
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
