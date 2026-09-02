@@ -1047,6 +1047,29 @@ ATTNO_DMA = True
 # anchor. The staging buffers move to segment scope so they dominate the herd;
 # air-fuse-alloc-dealloc sinks them back into the loop afterwards.
 TOKV_DMA = True
+# And the proj egress gather: the 8 paired core emitters landing their row
+# blocks in a group memtile. Three things the DMA spelling needs that a
+# hand-written put did not:
+#   - `dest`, the runtime packet-demux destination. This is the ORIGINATOR of
+#     @outY's routing header; without it the demux has no header source.
+#   - static `channel_indices`. The sub-channel is [logical col, pair] and the
+#     column looks like a herd IV -- but inside the tx guard below it is a
+#     COMPILE-TIME CONSTANT, so no runtime selector is needed and the derived
+#     memtile get is the same constant-indexed op the design used to hand-write.
+#   - a `hoist_before` anchor on @toMain, so the derived gets land back inside
+#     each phase arm's round loop next to the put that forwards the assembled
+#     buffer, rather than beside the herd.
+# The group buffers move to segment scope so they dominate the herds, as
+# @gluOut's did. The header asymmetry -- the first lead sends HDR+PAIR_PAY and
+# the rest send PAIR_PAY -- costs nothing: a dma_memcpy_nd has independent
+# source and destination extents, so it is one op either way.
+#
+# Paired emitters only. The non-paired path (PAIR_ROWS == 1, gemma3-4b and
+# friends) is a different herd body with one group per COLUMN rather than two
+# per block, so its emitter and its group-to-herd map both differ; porting it is
+# its own change, and threading a buffer into a herd whose body does not take
+# one is a TypeError at build time, not a compile error.
+OUTA_DMA = True and MODEL["PAIR_ROWS"] != 1
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3255,14 +3278,34 @@ def build_module():
                     # it must be vocab-sized in vocab mode (as the validated standalone)
                     # -- else the col-0/1/6 assembly memtiles stall on outA rounds the
                     # vocab proj never produces. CDO-identity needs this count-free later.
+                    # Allocated UP FRONT so they dominate the proj herds: with
+                    # OUTA_DMA the emitters name both endpoints in one op, so the
+                    # group buffer has to be an operand of the herd. Same move
+                    # @gluOut's down buffer makes.
+                    _grp_pre = []
+                    if OUTA_DMA:
+                        for g in range(N_GRP):
+                            _gb = AllocOp(grp_l2, [], [])
+                            _gb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), GRP_PCOL[g])
+                            )
+                            _grp_pre.append(_gb)
+
                     def _egress(_nrc):
                         for _r in for_(idx(0), idx(_nrc), idx(1)):
                             for g in range(N_GRP):
-                                grp = AllocOp(grp_l2, [], [])
-                                grp.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), GRP_PCOL[g])
-                                )
+                                if OUTA_DMA:
+                                    grp = _grp_pre[g]
+                                else:
+                                    grp = AllocOp(grp_l2, [], [])
+                                    grp.operation.attributes["air.memtile_col"] = (
+                                        IntegerAttr.get(T.i32(), GRP_PCOL[g])
+                                    )
                                 for k, (cx, pp) in enumerate(grp_leads(g)):
+                                    if OUTA_DMA:
+                                        # derived from the emitters' DMAs, anchored
+                                        # back into this loop by hoist_before=@toMain
+                                        continue
                                     off = 0 if k == 0 else HDR + k * PAIR_PAY
                                     sz = (HDR + PAIR_PAY) if k == 0 else PAIR_PAY
                                     ChannelGet(
@@ -3281,7 +3324,8 @@ def build_module():
                                     sizes=[GRP_ROWS],
                                     strides=[1],
                                 )
-                                DeallocOp(grp)
+                                if not OUTA_DMA:
+                                    DeallocOp(grp)
                             ml = AllocOp(main_l2, [], [])
                             ml.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), MAIN_PCOL)
@@ -5367,7 +5411,9 @@ def build_module():
                             c1b0,
                             c1b1,
                             _arm,
+                            *_og,
                         ):
+                            _ogrp = _og[0] if _og else None
                             # [2,4] block herd over TWO contiguous proj columns.
                             # tx in {0,1} = the block's two columns (logical col =
                             # base_cx + tx); ty in 0..3 = the four rows (row = 2 + ty).
@@ -5437,22 +5483,80 @@ def build_module():
                                 # keeping each pair's shared-L1 + owner-tile analysis exact.
                                 # scf.if (not index_switch): air-dependency's graph builder
                                 # has no IndexSwitchOp async case (Util/Dependency.cpp).
+                                def _outa_dma(a_acc, buf, pp_c, pktv):
+                                    # Where in the group buffer this emitter lands
+                                    # is k = tx*PAIRS_PC + pp_c, and both the offset
+                                    # and the LENGTH depend on it -- only k == 0
+                                    # carries the two header words. A BD length
+                                    # cannot be a runtime value, so specialise on
+                                    # tx. The guard is a direct tile-IV comparison
+                                    # and folds per-tile at the air-to-aie clone,
+                                    # leaving one constant-extent descriptor per
+                                    # core -- and it makes the logical column a
+                                    # constant, so the sub-channel is static too.
+                                    for _txc in range(NCX // N_GRP):
+                                        _k = _txc * PAIRS_PC + pp_c
+                                        _off = 0 if _k == 0 else HDR + _k * PAIR_PAY
+                                        _sz = (HDR + PAIR_PAY) if _k == 0 else PAIR_PAY
+                                        _ift = IfOp(
+                                            arith.cmpi(
+                                                arith.CmpIPredicate.eq, tx, idx(_txc)
+                                            ),
+                                            [],
+                                            has_else=False,
+                                        )
+                                        with InsertionPoint(_ift.thenRegion.blocks[0]):
+                                            # The flush comes INSIDE the guard,
+                                            # with the transfer, not before it.
+                                            # The lock placer brackets each
+                                            # buffer-touching op on its own, so a
+                                            # guard standing between the write and
+                                            # the send splits one critical section
+                                            # into two: the buffer is released to
+                                            # the consumer once with no data, and
+                                            # the consumer lock is signalled twice
+                                            # per production. Siblings in one
+                                            # region are one section, which is what
+                                            # the hand-written put had.
+                                            CallOp(flush_row, [a_acc, buf, c0i])
+                                            DmaMemcpyNd(
+                                                _ogrp,
+                                                buf,
+                                                dst_offsets=[_off],
+                                                dst_sizes=[_sz],
+                                                dst_strides=[1],
+                                                src_offsets=[14],
+                                                src_sizes=[HDR + PAIR_PAY],
+                                                src_strides=[1],
+                                                channel="outA",
+                                                channel_indices=[
+                                                    base_cx + _txc,
+                                                    pp_c,
+                                                ],
+                                                dest=pktv,
+                                                hoist_before="toMain",
+                                            )
+                                            yield_([])
+
                                 def _role(bufs, lead_row, pp_c):
                                     _is_lead = arith.cmpi(
                                         arith.CmpIPredicate.eq, ty, idx(lead_row)
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        CallOp(flush_row, [a_acc, bufs[yb], c0i])
-                                        ChannelPut(
-                                            "outA",
-                                            bufs[yb],
-                                            indices=[gcx, idx(pp_c)],
-                                            offsets=[idx(14)],
-                                            sizes=[idx(HDR + PAIR_PAY)],
-                                            strides=[idx(1)],
-                                            dest=pktv,
-                                        )
+                                        if OUTA_DMA and _ogrp is not None:
+                                            _outa_dma(a_acc, bufs[yb], pp_c, pktv)
+                                        else:
+                                            CallOp(flush_row, [a_acc, bufs[yb], c0i])
+                                            ChannelPut(
+                                                "outA",
+                                                bufs[yb],
+                                                indices=[gcx, idx(pp_c)],
+                                                offsets=[idx(14)],
+                                                sizes=[idx(HDR + PAIR_PAY)],
+                                                strides=[idx(1)],
+                                                dest=pktv,
+                                            )
                                         yield_([])
                                     with InsertionPoint(_if.elseRegion.blocks[0]):
                                         CallOp(flush_row, [a_acc, bufs[yb], c1i])
@@ -5584,6 +5688,11 @@ def build_module():
                         else:
                             bufs = [AllocOp(ypair_l1, [], []) for _ in range(8)]
                             _ops = [b.result for b in bufs] + [_arm_proj]
+                        # A block spans NCX//N_GRP contiguous logical columns and a
+                        # group gathers exactly those, so the block-to-group map is
+                        # the column division -- one buffer per herd, never two.
+                        if OUTA_DMA:
+                            _ops = _ops + [_grp_pre[base_cx // (NCX // N_GRP)]]
                         blk_h = herd(
                             name=f"proj_blk{blk}",
                             sizes=[2, 4],
