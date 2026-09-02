@@ -1028,6 +1028,11 @@ CONVST_DMA = HYBRID_MIXER
 # LUT takes the cos/sin prefix, @convW the taps -- so the same RMS operand and
 # the same rebuilt offset serve both.
 CONVW_DMA = HYBRID_MIXER
+# The GLU hidden slices. Two adjacent slots per loop iteration on one channel,
+# which needs the loop fold to recognise a tiled contiguous run -- otherwise the
+# derived consumer is NGLU descriptors where the hand-written one is a single
+# fill, and the refeed MM2S's counting lock is off by that factor.
+GLUOUT_DMA = True
 # And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
 # get on an L2 buffer, which air-dma-to-channel handles natively -- the only
 # obstacle was that the L2 buffer is allocated after the rope herd, so it does
@@ -5091,15 +5096,29 @@ def build_module():
                         # stalling on gate-up (id8) never produced in vocab mode.
                         _arm_glu = _seg_arm
 
-                        @herd(name="glu", sizes=[1, 1], operands=[_arm_glu])
-                        def glu_h(tx, ty, _sx, _sy, _arm):
+                        # Allocated UP FRONT so it dominates the herd: @gluOut is
+                        # spelled as a DMA on the core side, which names both
+                        # endpoints in one place.
+                        db = AllocOp(down_l2, [], [])
+                        db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                            T.i32(), DOWN_PCOL
+                        )
+
+                        @herd(
+                            name="glu",
+                            sizes=[1, 1],
+                            operands=[_arm_glu] + ([db] if GLUOUT_DMA else []),
+                        )
+                        def glu_h(tx, ty, _sx, _sy, _arm, *_gd):
+                            _gdb = _gd[0] if _gd else None
+
                             def _dec():
                                 # FAITHFUL 2-slot ring (reproducer core_5_2: TWO glu_aie
                                 # calls per loop iter, ping x_0/hid_0 + pong x_1/hid_1).
                                 # Two distinct allocs per iter give air-to-aie a 2-deep
                                 # S2MM/MM2S ring (lock init 2), matching tile_5_2 -- a
                                 # rolled 1-call loop collapses to 1-slot (no overlap).
-                                def _slice():
+                                def _slice(_sl=None):
                                     gx = AllocOp(glu_x_l1, [], [])
                                     # get 1024 = TWO stripped demux packets DIRECTLY from
                                     # the id-demux dest (reproducer mem_1_1 DMA5 ->
@@ -5114,13 +5133,34 @@ def build_module():
                                     )
                                     gh = AllocOp(glu_hid_l1, [], [])
                                     CallOp(glu_aie, [gh, gx, _arm])
-                                    ChannelPut(
-                                        "gluOut",
-                                        gh,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(GLU_HID)],
-                                        strides=[idx(1)],
-                                    )
+                                    if GLUOUT_DMA and _gdb is not None:
+                                        # Slot 2*s + ping/pong. The two slots per
+                                        # iteration are adjacent, so the pair tiles
+                                        # a contiguous run and the loop fold
+                                        # recovers the single whole-buffer fill the
+                                        # hand-written get had -- which is what the
+                                        # refeed MM2S's counting lock is derived
+                                        # from.
+                                        DmaMemcpyNd(
+                                            _gdb,
+                                            gh,
+                                            dst_offsets=[_sl],
+                                            dst_sizes=[GLU_HID],
+                                            dst_strides=[1],
+                                            src_offsets=[0],
+                                            src_sizes=[GLU_HID],
+                                            src_strides=[1],
+                                            channel="gluOut",
+                                            channel_indices=[0],
+                                        )
+                                    else:
+                                        ChannelPut(
+                                            "gluOut",
+                                            gh,
+                                            offsets=[idx(0)],
+                                            sizes=[idx(GLU_HID)],
+                                            strides=[idx(1)],
+                                        )
                                     DeallocOp(gx)
                                     DeallocOp(gh)
 
@@ -5133,8 +5173,9 @@ def build_module():
                                     f"(GLU_PKTS={GLU_PKTS})"
                                 )
                                 for _s in for_(idx(0), idx(NGLU // 2), idx(1)):
-                                    _slice()  # ping
-                                    _slice()  # pong
+                                    _base = arith.muli(_s, idx(2 * GLU_HID))
+                                    _slice(_base)  # ping
+                                    _slice(arith.addi(_base, idx(GLU_HID)))  # pong
                                     yield_([])
 
                                 yield_([])
@@ -5163,19 +5204,16 @@ def build_module():
                         # lock_5_1 init=4: one GLU fill -> 4 re-sends = the 4 down output
                         # row-blocks each re-reading all 8192). The X memtile chunks each
                         # 8192 into 16x512 -> inX for ph3.
-                        db = AllocOp(down_l2, [], [])
-                        db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            T.i32(), DOWN_PCOL
-                        )
                         for _s in for_(idx(0), idx(NGLU), idx(1)):
                             soff = arith.muli(_s, idx(GLU_HID))
-                            ChannelGet(
-                                "gluOut",
-                                db,
-                                offsets=[soff],
-                                sizes=[idx(GLU_HID)],
-                                strides=[idx(1)],
-                            )
+                            if not GLUOUT_DMA:
+                                ChannelGet(
+                                    "gluOut",
+                                    db,
+                                    offsets=[soff],
+                                    sizes=[idx(GLU_HID)],
+                                    strides=[idx(1)],
+                                )
                             yield_([])
                         # re-broadcast the resident 8192 into the convergent X feed.
                         refeed(
