@@ -537,7 +537,9 @@ ROPELUT_DMA = True
 # of the rms group; on a HYBRID the whole mixer feed block is deferred into the
 # phase loop, to the last mixer phase, and the LUT lands immediately before
 # @convW there. Naming @rmsX on a hybrid would move it ~40 slots earlier.
-_ROPELUT_ANCHOR = "convW" if HYBRID_MIXER else "rmsX"
+_ROPELUT_KW, _ROPELUT_ANCHOR = (
+    ("hoist_after", "inKV_V") if HYBRID_MIXER else ("hoist_before", "rmsX")
+)
 # Same treatment for the rms WEIGHT feed. The rms herd has to carry RMS (and the
 # wave index, for the decode arm's per-layer slab offset) for the DMA to name
 # both endpoints. @rmsX and @ropeLUT are anchored to @rmsW, so once @rmsW is
@@ -1022,6 +1024,10 @@ APPEND_DMA = not DYNSEQ_APPEND
 # so both name KVC -- which already reaches conv_h for the ported append. Only
 # a hybrid has them.
 CONVST_DMA = HYBRID_MIXER
+# And the depthwise taps. Same slab as @ropeLUT, read from the other end -- the
+# LUT takes the cos/sin prefix, @convW the taps -- so the same RMS operand and
+# the same rebuilt offset serve both.
+CONVW_DMA = HYBRID_MIXER
 # And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
 # get on an L2 buffer, which air-dma-to-channel handles natively -- the only
 # obstacle was that the L2 buffer is allocated after the rope herd, so it does
@@ -2607,12 +2613,16 @@ def build_module():
                                             strides=[1],
                                         )
                                     ),
-                                    lambda: ChannelPut(
-                                        "convW",
-                                        RMS,
-                                        offsets=[_rope_off],
-                                        sizes=[CONV_W_LEN],
-                                        strides=[1],
+                                    (
+                                        (lambda: None)
+                                        if (CONVW_DMA and RMS is not None)
+                                        else lambda: ChannelPut(
+                                            "convW",
+                                            RMS,
+                                            offsets=[_rope_off],
+                                            sizes=[CONV_W_LEN],
+                                            strides=[1],
+                                        )
                                     ),
                                     # Rope AND the mixer both run on every decode
                                     # wave, so both LUTs have to arrive on every
@@ -3359,6 +3369,26 @@ def build_module():
                     # the fix for the fused vocab deadlock: in vocab mode dest0
                     # never flows, and an idle compute-tile S2MM does NOT stall the
                     # col-2 memtile that the vocab X-feed/rms share.
+                    def _lut_slab_off(kiv):
+                        """The rope_w slab offset, rebuilt inside a herd.
+
+                        _rope_off is a launch-scope expression and a herd is
+                        IsolatedFromAbove, so it has to be recomputed from the
+                        wave index. Both readers of that slab want it: @ropeLUT
+                        takes the cos/sin + qk-norm prefix and @convW the
+                        depthwise taps, out of the SAME per-layer region.
+                        """
+                        _o = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                        if not (ROPE_W_PER_LAYER and MULTIBLK):
+                            return _o
+                        assert kiv is not None, (
+                            "the rope_w slab is per-layer but the wave index did "
+                            "not reach this herd: the launch-scope put is "
+                            "suppressed and the get would be unpaired"
+                        )
+                        _b = arith.muli(kiv, idx(ROPE_W_LEN))
+                        return arith.addi(_b, idx(_o)) if _o else _b
+
                     def _rope_body(
                         _arm, a_qkv=None, rms=None, kvc=None, kiv=None, qmt=None
                     ):
@@ -3386,25 +3416,7 @@ def build_module():
                                 strides=[idx(1)],
                             )
                         a_lut = AllocOp(ropelut_l1, [], [])
-                        # _rope_off is a launch-scope expression, and a herd is
-                        # IsolatedFromAbove, so recompute the offset here. When the
-                        # rope weights are PER LAYER it depends on the wave index,
-                        # which now reaches this herd on its own terms -- see
-                        # _has_riv. That is the whole reason six models kept the
-                        # hand-written pair.
-                        _lut_off_h = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
-                        if ROPE_W_PER_LAYER and MULTIBLK:
-                            assert kiv is not None, (
-                                "@ropeLUT is derived but the wave index did not "
-                                "reach this herd: the launch-scope put is "
-                                "suppressed and the get would be unpaired"
-                            )
-                            _b = arith.muli(kiv, idx(ROPE_W_LEN))
-                            _rope_off_h = (
-                                arith.addi(_b, idx(_lut_off_h)) if _lut_off_h else _b
-                            )
-                        else:
-                            _rope_off_h = _lut_off_h
+                        _rope_off_h = _lut_slab_off(kiv)
                         if ROPELUT_DMA_OK and rms is not None:
                             # Spelled as a DMA naming @ropeLUT rather than as a
                             # get with a matching put at launch scope: the pass
@@ -3424,7 +3436,7 @@ def build_module():
                                 # weight stream. Without it the derived put lands
                                 # at the herd's position, slot 6 -> 18, and the
                                 # rope core deadlocks waiting on its LUT.
-                                hoist_before=_ROPELUT_ANCHOR,
+                                **{_ROPELUT_KW: _ROPELUT_ANCHOR},
                             )
                         else:
                             ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
@@ -3710,7 +3722,9 @@ def build_module():
                         # about the LUT itself, is why the hybrid kept the
                         # hand-written pair.
                         _conv_rms_opers = (
-                            [_seg_RMS] if (ROPELUT_DMA and _seg_RMS is not None) else []
+                            [_seg_RMS]
+                            if ((ROPELUT_DMA or CONVW_DMA) and _seg_RMS is not None)
+                            else []
                         )
                         _conv_kv_opers = (
                             _conv_append_opers
@@ -3777,14 +3791,37 @@ def build_module():
 
                             def _convw_get():
                                 # Taps land in the tail of the shared buffer.
-                                ChannelGet(
-                                    "convW",
-                                    mix,
-                                    indices=[idx(0)],
-                                    offsets=[idx(CONV_IN)],
-                                    sizes=[idx(CONV_W_LEN)],
-                                    strides=[idx(1)],
-                                )
+                                if CONVW_DMA and _crms is not None:
+                                    DmaMemcpyNd(
+                                        mix,
+                                        _crms,
+                                        dst_offsets=[CONV_IN],
+                                        dst_sizes=[CONV_W_LEN],
+                                        dst_strides=[1],
+                                        src_offsets=[_lut_slab_off(_ckiv)],
+                                        src_sizes=[CONV_W_LEN],
+                                        src_strides=[1],
+                                        channel="convW",
+                                        channel_indices=[0],
+                                        # The group is a CHAIN rooted at the last
+                                        # hand-written endpoint before it:
+                                        #   inKV_V <- ropeLUT <- convW
+                                        #          <- convStIn <- convStOut
+                                        # Two transfers sharing one hoist_after
+                                        # anchor come out reversed, so each links
+                                        # to the one it follows rather than all of
+                                        # them to @inKV_V.
+                                        hoist_after="ropeLUT",
+                                    )
+                                else:
+                                    ChannelGet(
+                                        "convW",
+                                        mix,
+                                        indices=[idx(0)],
+                                        offsets=[idx(CONV_IN)],
+                                        sizes=[idx(CONV_W_LEN)],
+                                        strides=[idx(1)],
+                                    )
 
                             def _stage(_lands):
                                 # Taking the taps on THIS core also makes the stage
@@ -3833,6 +3870,12 @@ def build_module():
                             # @appendK's _apoff and @rmsW's _rbase_h have.
                             _cst_kvc = _ckv[0] if _n_capp > 0 else None
                             _cst_iv = _ckv[1] if _n_capp > 1 else None
+                            _ckiv = _cst_iv
+                            _crms = (
+                                _ckv[_n_capp + _n_cqmt]
+                                if len(_ckv) > _n_capp + _n_cqmt
+                                else None
+                            )
 
                             def _cst_h():
                                 if _cst_iv is None:
