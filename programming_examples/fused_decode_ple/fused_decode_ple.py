@@ -1071,8 +1071,12 @@ PLE_BYPASS = PLE and int(_os.environ.get("DECODE_PLE_BYPASS", "0"))
 # Forced off under PLE_BYPASS: every rung of that ladder is defined against the
 # relay topology (it bisects the relay), so leaving it on would silently change
 # what the ladder measures.
+# Rung 5 of the ladder is the exception: it exists to test the shared hand-off
+# itself, so it keeps this on.
 PLE_SHARED_RES = (
-    PLE and not PLE_BYPASS and int(_os.environ.get("DECODE_PLE_SHARED_RES", "1"))
+    PLE
+    and PLE_BYPASS in (0, 5, 6)
+    and int(_os.environ.get("DECODE_PLE_SHARED_RES", "1"))
 )
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
@@ -2177,7 +2181,8 @@ def build_module():
             #   gate   --gateOut(K+PLI_D)---------->  up     (residual ++ gate)
             #   projE  --pliOut(PLI_D)------------->  up
             #   up     --pleOut(K)----------------->  host   (the layer output)
-            channel_decl("pleOut", size=[1])
+            if PLE_BYPASS != 6:
+                channel_decl("pleOut", size=[1])
             # @layerOut must keep EXACTLY ONE consumer, and it cannot be a core
             # in one arm and the shim in the other -- air-to-aie then fails to
             # allocate a shim DMA for the host drain. So an L2 relay is its sole
@@ -2195,7 +2200,8 @@ def build_module():
             if not PLE_SHARED_RES:
                 channel_decl("toPle", size=[1])
             channel_decl("gateOut", size=[1])
-            channel_decl("pliOut", size=[1])
+            if PLE_BYPASS != 5:
+                channel_decl("pliOut", size=[1])
             # Weight/parameter feed. ONE packet channel id-demuxed to the
             # three PLE cores, NOT one channel per feed.
             #
@@ -2210,7 +2216,8 @@ def build_module():
             #   dest 0 (gate): 48 weight blocks
             #   dest 1 (proj): x0(K), emb(PLI_D), norm_w(PLI_D), 48 blocks
             #   dest 2 (up)  : post_ple_norm_w(K), scale(32), 48 blocks
-            channel_decl("pleW", size=[1, 3], channel_type="npu_dma_packet")
+            if PLE_BYPASS != 5:
+                channel_decl("pleW", size=[1, 3], channel_type="npu_dma_packet")
 
         def idx(v):
             return arith.ConstantOp.create_index(v)
@@ -2668,7 +2675,11 @@ def build_module():
                             ChannelGet(
                                 (
                                     "layerOut"
-                                    if (not PLE or PLE_BYPASS == 4)
+                                    if (
+                                        not PLE
+                                        or PLE_SHARED_RES
+                                        or PLE_BYPASS in (4, 6)
+                                    )
                                     else "pleOut"
                                 ),
                                 Y,
@@ -3233,7 +3244,7 @@ def build_module():
                                 # decode arm is the rms->gate hand-off.
                                 (
                                     "layerOut"
-                                    if (not PLE or PLE_BYPASS == 4)
+                                    if (not PLE or PLE_BYPASS in (4, 6))
                                     else "pleOut"
                                 ),
                                 _out_bo,
@@ -4896,7 +4907,7 @@ def build_module():
                             )
 
                         def _relay_dec():
-                            if PLE_BYPASS:
+                            if PLE_BYPASS and not PLE_SHARED_RES:
                                 _relay_bypass_ops()
                                 yield_([])
                                 return
@@ -4961,7 +4972,26 @@ def build_module():
                                 yield_([])
                             yield_([])
 
-                        if PLE_BYPASS == 4:
+                        if PLE_SHARED_RES:
+                            # NO RELAY. Its whole job was to be @layerOut's
+                            # single consumer and fan it out per arm, and the
+                            # shared-L1 residual removes the decode arm's
+                            # @layerOut entirely -- so the rms core drains the
+                            # vocab logits to the shim directly, exactly as it
+                            # does in the passing no-PLE build.
+                            #
+                            # This is also the FIX for the hang, and it is the
+                            # one thing rungs 5 and 6 differ by. @pleOut used to
+                            # carry TWO arm-exclusive producers (this relay in
+                            # vocab, the PLE up core in decode) into one shim
+                            # S2MM. A shim S2MM BD program is static and cannot
+                            # branch, so the decode arm's single 1536 put never
+                            # satisfied a chain built for both. Measured: rung 5
+                            # (up core puts @pleOut) TIMEOUT, rung 6 (identical
+                            # but the put removed) COMPLETED. One producer per
+                            # channel is the rule.
+                            pass
+                        elif PLE_BYPASS in (4, 6):
                             # BISECT ONLY (4): emit NO relay at all and let the
                             # shim drain @layerOut directly, so the dataflow is
                             # the no-PLE one with the PLE cores merely present
@@ -5023,7 +5053,25 @@ def build_module():
                         )
                         def plegate_h(tx, ty, _sx, _sy, _arm, *_sh):
                             def _dec():
-                                if PLE_BYPASS:
+                                if PLE_BYPASS and PLE_BYPASS not in (5, 6):
+                                    yield_([])
+                                    return
+                                if PLE_BYPASS in (5, 6):
+                                    # BISECT ONLY (5): the shared-L1 residual and
+                                    # NOTHING else -- no weights, no @pliOut, no
+                                    # compute. Splits "the rms->gate hand-off and
+                                    # the gate->up->shim chain" from "the @pleW
+                                    # feed and the projections".
+                                    a_b = AllocOp(plegate_l1, [], [])
+                                    CallOp(ple_res_in, [_sh[0], a_b])
+                                    ChannelPut(
+                                        "gateOut",
+                                        a_b,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K + PLI_D)],
+                                        strides=[idx(1)],
+                                    )
+                                    DeallocOp(a_b)
                                     yield_([])
                                     return
                                 # [residual(K) ++ pli(PLI_D)] assembled here.
@@ -5156,7 +5204,30 @@ def build_module():
                         @herd(name="pleup", sizes=[1, 1], operands=[_arm_ple])
                         def pleup_h(tx, ty, _sx, _sy, _arm):
                             def _dec():
-                                if PLE_BYPASS:
+                                if PLE_BYPASS and PLE_BYPASS not in (5, 6):
+                                    yield_([])
+                                    return
+                                if PLE_BYPASS in (5, 6):
+                                    # BISECT ONLY. 5 forwards to @pleOut; 6 DEAD
+                                    # ENDS here and the layer output leaves the
+                                    # rms core on @layerOut the way the passing
+                                    # no-PLE build does. The pair splits "the
+                                    # shared-L1 hand-off and the gate->up chain"
+                                    # from "@pleOut", which is the one channel
+                                    # with two arm-exclusive producers feeding a
+                                    # single shim S2MM -- and which rung 4 never
+                                    # touched.
+                                    a_b = AllocOp(plegate_l1, [], [])
+                                    ChannelGet("gateOut", a_b, indices=[idx(0)])
+                                    if PLE_BYPASS == 5:
+                                        ChannelPut(
+                                            "pleOut",
+                                            a_b,
+                                            offsets=[idx(0)],
+                                            sizes=[idx(K)],
+                                            strides=[idx(1)],
+                                        )
+                                    DeallocOp(a_b)
                                     yield_([])
                                     return
                                 # [residual ++ pli*gate]; the gate was already
@@ -5916,6 +5987,14 @@ def build_module():
                                     DOWN_RNDS * PAYLOAD == K
                                 ), "the shared residual buffer is K-wide"
                                 CallOp(ple_res_out, [g_x, _pleres_karg])
+                                if PLE_BYPASS == 6:
+                                    ChannelPut(
+                                        "layerOut",
+                                        g_x,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                        strides=[idx(1)],
+                                    )
                             else:
                                 # The rms core's MM2S port can only carry a BD
                                 # ring that is the same shape on every
