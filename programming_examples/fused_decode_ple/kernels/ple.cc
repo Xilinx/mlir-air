@@ -257,4 +257,13 @@ void ple_up_tail_at(bf16 *restrict y, bf16 *restrict packed, bf16 *restrict w,
   ple_up_tail(y, packed, w, layer_scale, _arm);
 }
 
+// The consumer half of the shared-L1 residual hand-off (rms_residual.cc's
+// ple_res_out is the producer). The shared buffer is FIRST and the packed
+// buffer LAST, because AIR reads the last memref of an external call as the
+// written one and that is what marks this core the consumer.
+void ple_res_in(bf16 *restrict shared, bf16 *restrict packed) {
+  for (int i = 0; i < MODEL_DIM; i += 16)
+    aie::store_v(packed + i, aie::load_v<16>(shared + i));
+}
+
 } // extern "C"

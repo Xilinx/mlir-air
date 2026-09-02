@@ -1058,6 +1058,22 @@ PLE = MODEL.get("PLE_DIM", 0) > 0 and not int(_os.environ.get("DECODE_NO_PLE", "
 # unchanged, so a pass here puts the fault in the gate/up chain rather than in
 # the rms->relay->shim hand-off.
 PLE_BYPASS = PLE and int(_os.environ.get("DECODE_PLE_BYPASS", "0"))
+# The rms -> gate residual hand-off. 1 (default) passes it through a SHARED L1
+# buffer, the way FastFlowLM does: their gate core calls
+# gate_layer_embedding(%y_out_2_3, ...) on the rms core's own buffer, with zero
+# flows between the two tiles. AIR supports this -- a segment-scope
+# memref.alloc(space 2) handed to both herds becomes one aie.buffer plus
+# prod/cons locks (AIRToAIEPass, and the shortconv mixer below already relies on
+# it). 0 keeps the older topology, where the residual is a channel and an L2
+# relay merges it with @pliOut before the gate. Kept as a knob because the two
+# differ in exactly one edge, which is what makes an A/B on it meaningful.
+#
+# Forced off under PLE_BYPASS: every rung of that ladder is defined against the
+# relay topology (it bisects the relay), so leaving it on would silently change
+# what the ladder measures.
+PLE_SHARED_RES = (
+    PLE and not PLE_BYPASS and int(_os.environ.get("DECODE_PLE_SHARED_RES", "1"))
+)
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
     # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
@@ -1821,6 +1837,26 @@ def build_module():
             ple_up_tail_at = _ple_fn(
                 "ple_up_tail_at", [plex_l1, plegate_l1, plex_l1, plescale_l1, i32]
             )
+            if PLE_SHARED_RES:
+                # The two halves of the shared-L1 residual hand-off. OPERAND
+                # ORDER IS LOAD-BEARING, the same way it is for shortconv_compute
+                # below: AIR reads the LAST memref of an external call as the
+                # written one, and that is the only thing that tells it which
+                # core is the shared buffer's producer and which its consumer
+                # (allocateSharedL1BufferLocks). Put the shared buffer last on
+                # the rms side and first on the gate side, or the prod/cons locks
+                # come out backwards and the pair deadlocks.
+                #
+                # Also: exactly ONE call per side per wave. AIR wraps each
+                # external call in its own acquire/release on a shared buffer, so
+                # N calls on one side against 1 on the other is a cadence
+                # mismatch -- measured on the shortconv mixer, where 2 staging
+                # calls against 1 consumer hung.
+                ple_res_in = _ple_fn("ple_res_in", [plex_l1, plegate_l1])
+                ple_res_out = FuncOp(
+                    "ple_res_out", ([rms_l1, plex_l1], []), visibility="private"
+                )
+                ple_res_out.attributes["link_with"] = StringAttr.get("rms_residual.o")
         if HYBRID_MIXER:
             # The hybrid's rope shares its input buffer with the ShortConv
             # staging call, and rope_compute rewrites that buffer in place (see
@@ -2121,8 +2157,18 @@ def build_module():
         # below), NOT drained to host.
         channel_decl("gluOut", size=[1])
         if PLE:
-            # PLE dataflow. FastFlowLM hops rms->gate through adjacent-tile
-            # shared L1; AIR's idiom is a channel, so that hop is @toPle here.
+            # PLE dataflow. With PLE_SHARED_RES (the default) the rms->gate hop
+            # is NOT a channel at all -- it is a shared L1 buffer, the way
+            # FastFlowLM does it -- and @layerOut carries the vocab arm only:
+            #   rms    ==shared L1(K)=============>  gate   (decode arm)
+            #   rms    --layerOut(K)-------------->  relay -> host (vocab arm)
+            #   projE  --pliOut(PLI_D)------------>  gate
+            #   gate   --gateOut(K+PLI_D)--------->  up     (residual ++ gate)
+            #   up     --pleOut(K)---------------->  host   (the layer output)
+            # Every core stays at <= 2 inbound DMA: gate takes @pliOut + @pleW,
+            # up takes @gateOut + @pleW, proj takes @pleW alone.
+            #
+            # The older topology (PLE_SHARED_RES=0) is described below.
             #   rms    --layerOut(K)--------------->  gate   (decode arm only;
             #                                                the vocab arm sends
             #                                                the same channel to
@@ -2146,7 +2192,8 @@ def build_module():
             # MM2S0, xnorm on MM2S1); it is a compute tile and has only the two,
             # which is why a third flow for the PLE hand-off could not be added
             # there. A memtile has more DMA channels and no such restriction.
-            channel_decl("toPle", size=[1])
+            if not PLE_SHARED_RES:
+                channel_decl("toPle", size=[1])
             channel_decl("gateOut", size=[1])
             channel_decl("pliOut", size=[1])
             # Weight/parameter feed. ONE packet channel id-demuxed to the
@@ -4797,6 +4844,25 @@ def build_module():
                     if PLE:
                         _arm_ple = _seg_arm
 
+                        # ---- the rms -> gate residual, as SHARED L1 ----------
+                        # Segment scope, handed to the rms herd and the gate herd
+                        # as an operand each. AIRToAIE then places ONE aie.buffer
+                        # on whichever of the two tiles has legal memory affinity
+                        # with the other and emits prod/cons locks; rms is (2,2)
+                        # and the gate is (3,2), so they are east/west
+                        # neighbours. No channel, no DMA, no relay -- which is
+                        # what frees the rms core's second MM2S and lets
+                        # @layerOut become a vocab-only flow.
+                        #
+                        # If the placer ever moves either core so the two are not
+                        # adjacent, isLegalMemAffinity fails and AIRToAIE falls
+                        # back to giving each core its OWN copy of the buffer.
+                        # That is silent and numerically wrong, so the build
+                        # checks for a shared_l1 buffer in the emitted IR below.
+                        _pleres = None
+                        if PLE_SHARED_RES:
+                            _pleres = AllocOp(plex_l1, [], [])
+
                         # ---- @layerOut relay memtile (see the channel decl) ----
                         plerelay_l2 = MemRefType.get([K + PLI_D], bf16, memory_space=l2)
                         _rb = AllocOp(plerelay_l2, [], [])
@@ -4832,6 +4898,13 @@ def build_module():
                         def _relay_dec():
                             if PLE_BYPASS:
                                 _relay_bypass_ops()
+                                yield_([])
+                                return
+                            if PLE_SHARED_RES:
+                                # Nothing to relay: the residual crosses to the
+                                # gate through shared L1 and @pliOut goes there
+                                # straight from the proj core. This memtile is
+                                # the vocab arm's logit relay and nothing else.
                                 yield_([])
                                 return
                             # Merge the post-FFN residual with the per-layer
@@ -4939,17 +5012,42 @@ def build_module():
                                 yield_([])
 
                         # ---- gate core ----
-                        @herd(name="plegate", sizes=[1, 1], operands=[_arm_ple])
-                        def plegate_h(tx, ty, _sx, _sy, _arm):
+                        @herd(
+                            name="plegate",
+                            sizes=[1, 1],
+                            operands=(
+                                [_arm_ple, _pleres.result]
+                                if PLE_SHARED_RES
+                                else [_arm_ple]
+                            ),
+                        )
+                        def plegate_h(tx, ty, _sx, _sy, _arm, *_sh):
                             def _dec():
                                 if PLE_BYPASS:
                                     yield_([])
                                     return
-                                # [residual(K) ++ pli(PLI_D)], merged by the
-                                # relay memtile so this core needs only two
-                                # S2MM (this and @pleW).
+                                # [residual(K) ++ pli(PLI_D)] assembled here.
                                 a_x = AllocOp(plegate_l1, [], [])
-                                ChannelGet("toPle", a_x, indices=[idx(0)])
+                                if PLE_SHARED_RES:
+                                    # The pli lands in the tail by DMA; the
+                                    # residual is copied out of the rms core's
+                                    # shared buffer into the head. ONE call, and
+                                    # the shared buffer is NOT the last memref
+                                    # operand -- that is what marks this core the
+                                    # consumer (see the ple_res_in decl).
+                                    ChannelGet(
+                                        "pliOut",
+                                        a_x,
+                                        indices=[idx(0)],
+                                        offsets=[idx(K)],
+                                        sizes=[idx(PLI_D)],
+                                        strides=[idx(1)],
+                                    )
+                                    CallOp(ple_res_in, [_sh[0], a_x])
+                                else:
+                                    # Merged by the relay memtile so this core
+                                    # needs only two S2MM (this and @pleW).
+                                    ChannelGet("toPle", a_x, indices=[idx(0)])
                                 a_g = AllocOp(plev_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
                                 _ple_proj_down(
@@ -5548,7 +5646,10 @@ def build_module():
 
                         refeed(XN_REFEED, _put)
 
-                    def _rms_body(tx, ty, _sx, _sy, _arm):
+                    def _rms_body(tx, ty, _sx, _sy, _arm, *_sh):
+                        # _sh[0], under PLE_SHARED_RES, is the shared L1 residual
+                        # this core hands to the neighbouring PLE gate core.
+                        _pleres_karg = _sh[0] if _sh else None
                         # DIAGNOSTIC (later43e): make rms SINGLE-mode in the LM_HEAD build
                         # (standalone form). The dual-mode index_switch over DATAFLOW puts
                         # BOTH branches' channel ops in the rms mem block -> doubled BDs on
@@ -5714,7 +5815,7 @@ def build_module():
                             yield_([])  # index_switch case terminator
 
                         def _rms_decode():
-                            _rms_decode_body(_arm)
+                            _rms_decode_body(_arm, _pleres_karg)
                             yield_([])  # index_switch default terminator
 
                         _arm_i = arith.index_cast(idx_t, _arm)
@@ -5726,7 +5827,7 @@ def build_module():
                             default_body_builder=lambda op: _rms_decode(),
                         )
 
-                    def _rms_decode_body(_arm):
+                    def _rms_decode_body(_arm, _pleres_karg=None):
                         if N_NORMS >= 4:
                             # ===== Gemma sandwich (4 norms) =====================
                             # input / post_attn / pre_ffn / post_ffn. The two "post"
@@ -5800,25 +5901,41 @@ def build_module():
                             # so res2 is only the post-FFN residual and the layer
                             # output is produced by the PLE up core -- hand res2
                             # to @toPle instead of draining it.
-                            # NOTE this stays @layerOut even with a PLE. The rms
-                            # core's MM2S port can only carry a BD ring that is
-                            # the same shape on every control-flow path, and it
-                            # already multiplexes @xnorm here. Adding a third
-                            # flow for the PLE hand-off makes the decode and
-                            # vocab arms deliver different BD sequences, and
-                            # air-to-aie rejects it ("the ring was built for one
-                            # path's transfers and will slip on the others").
-                            # So the hand-off REUSES @layerOut and it is the
-                            # CONSUMER that differs by arm: the PLE gate core in
-                            # decode, the host in vocab. The real layer output
-                            # then leaves the PLE up core on @pleOut.
-                            ChannelPut(
-                                "layerOut",
-                                g_x,
-                                offsets=[idx(0)],
-                                sizes=[idx(DOWN_RNDS * PAYLOAD)],
-                                strides=[idx(1)],
-                            )
+                            if PLE_SHARED_RES:
+                                # Straight into the shared L1 buffer the gate
+                                # core reads -- no channel, so this arm costs the
+                                # rms core no MM2S at all and @layerOut is left
+                                # to the vocab arm alone. The shared buffer is the
+                                # LAST memref operand, which is what marks this
+                                # core the producer (see the ple_res_out decl).
+                                # ONE call: AIR wraps each external call in its
+                                # own acquire/release, so a second one here would
+                                # signal twice against a gate core that waits
+                                # once.
+                                assert (
+                                    DOWN_RNDS * PAYLOAD == K
+                                ), "the shared residual buffer is K-wide"
+                                CallOp(ple_res_out, [g_x, _pleres_karg])
+                            else:
+                                # The rms core's MM2S port can only carry a BD
+                                # ring that is the same shape on every
+                                # control-flow path, and it already multiplexes
+                                # @xnorm here. Adding a third flow for the PLE
+                                # hand-off makes the decode and vocab arms
+                                # deliver different BD sequences, and air-to-aie
+                                # rejects it ("the ring was built for one path's
+                                # transfers and will slip on the others"). So the
+                                # hand-off REUSES @layerOut and it is the CONSUMER
+                                # that differs by arm: the PLE gate core in
+                                # decode, the host in vocab. The real layer output
+                                # then leaves the PLE up core on @pleOut.
+                                ChannelPut(
+                                    "layerOut",
+                                    g_x,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                    strides=[idx(1)],
+                                )
                             DeallocOp(g_x)
                             return
                         a_x = AllocOp(rms_l1, [], [])
@@ -5907,7 +6024,9 @@ def build_module():
                             # PLE gate core and @layerOut is driven by the PLE
                             # up core instead (see the plegate/pleproj/pleup
                             # herds).
-                            if PLE:
+                            if PLE_SHARED_RES:
+                                CallOp(ple_res_out, [a_r2, _pleres_karg])
+                            elif PLE:
                                 ChannelPut(
                                     "toPle",
                                     a_r2,
@@ -5926,9 +6045,13 @@ def build_module():
                                 )
                             DeallocOp(a_r2)
 
-                    rms_h = herd(name="rms", sizes=[1, 1], operands=[_arm_rms])(
-                        _rms_body
-                    )
+                    rms_h = herd(
+                        name="rms",
+                        sizes=[1, 1],
+                        operands=(
+                            [_arm_rms, _pleres.result] if PLE_SHARED_RES else [_arm_rms]
+                        ),
+                    )(_rms_body)
                     rms_h.attributes["link_with"] = StringAttr.get("rms_residual.o")
                     rms_h.attributes["x_loc"] = IntegerAttr.get(T.i64(), RMS_PCOL)
                     rms_h.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
