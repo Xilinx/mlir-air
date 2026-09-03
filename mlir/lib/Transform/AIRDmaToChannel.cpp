@@ -728,14 +728,20 @@ static std::optional<int64_t> staticVolume(ArrayRef<OpFoldResult> sizes,
 // wide then the near side takes it N pieces at a time, in order, and the far
 // half is what produces exactly that: N windows of the near size, ascending.
 //
-// N SEPARATE transfers, not one N-wide descriptor. Matching the byte sequence
-// is necessary and NOT sufficient: a channel is a FIFO of TRANSFERS, and each
-// one is a lock event, so N gets expect N puts. A single 2-D descriptor
-// [base,0] [N,near] [near,1] sends the same bytes in the same order as N puts
-// of [base+i*near] [near] [1] and raises the semaphore once instead of N times.
-// The consumer's Nth acquire then never arrives and the design hangs -- and it
-// hangs at whatever dispatch the count first drifts far enough, not at the
-// first, so it reads like an unrelated intermittent fault.
+// N SEPARATE transfers, not one N-wide descriptor -- but NOT because the event
+// counts have to match. They do not: the shipped design's memtile feeds two
+// 256-word consumer gets from ONE folded 512-word BD, and that is what runs.
+//
+// The reason is that N pieces is the honest description of what was derived,
+// and it is the form the descriptor optimizer can act on.
+// air-opt-memtile-dma-bds recognises N ops tiling a contiguous run and folds
+// them to the single widest descriptor -- the same answer it gives the loop
+// spelling a front end would have written. A 2-D [base,0] [N,near] [near,1]
+// written here is already a shaped access, so that fold never sees a run to
+// recognise, and the two spellings diverge at the hardware for no reason
+// visible in the source.
+//
+// So: state the tiling, and let the pass whose job it is decide the descriptor.
 //
 // This rewrites `offsets`/`sizes`/`strides` to piece 0 and returns N; the
 // caller emits the remaining N-1. Returns 0 when the tiling is declined.

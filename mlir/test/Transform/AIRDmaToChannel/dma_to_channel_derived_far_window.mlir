@@ -15,11 +15,14 @@
 // pieces at a time, in order, and the far half is what produces that: N windows
 // of the near size, ascending.
 //
-// N SEPARATE puts, not one N-wide descriptor. Matching the byte sequence is
-// necessary and not sufficient: a channel is a FIFO of TRANSFERS, and each is a
-// lock event, so N gets expect N puts. [0, 0] [N, 256] [256, 1] sends the same
-// bytes in the same order and raises the semaphore ONCE. The consumer's Nth
-// acquire never arrives.
+// N SEPARATE puts, not one N-wide descriptor -- and NOT because a consumer that
+// does N gets needs N puts. It does not: fused_decode's shipped memtile feeds
+// two 256-word gets from one folded 512-word BD. The reason is that N pieces is
+// what was actually derived, and it is the form air-opt-memtile-dma-bds can
+// recognise as a tiled run and fold to one descriptor -- the same answer it
+// gives the loop spelling. A 2-D [0, 0] [N, 256] [256, 1] is already a shaped
+// access and that fold never fires, so the two spellings diverge at the
+// hardware.
 //
 // Position follows too. A far half carrying a whole buffer's worth belongs once
 // per FILL, not once per near execution, so it goes where the buffer is filled.
@@ -43,11 +46,12 @@
 // The far half lands inside the fill's loop, right after the fill...
 // CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@f
-// ...as the buffer tiled by the near window: TWO puts of 256, ascending. One
-// event each, because the near side does one acquire each.
+// ...as the buffer tiled by the near window: TWO puts of 256, ascending, which
+// air-opt-memtile-dma-bds later folds into the one descriptor they are.
 // CHECK: air.channel.put{{.*}}@x{{.*}}[0] [256] [1]
 // CHECK: air.channel.put{{.*}}@x{{.*}}[256] [256] [1]
-// Never the wrapped single descriptor: same bytes, one event instead of two.
+// Never the wrapped single descriptor: same bytes, but already a shaped access,
+// so the tiled-run fold has nothing to recognise.
 // CHECK-NOT: [2, 256] [256, 1]
 // The near half keeps the window it asked for.
 // CHECK: air.channel.get{{.*}}@x{{.*}}[] [] []
@@ -91,7 +95,7 @@ func.func @derived(%arg0: memref<64xbf16>) {
 
 // CHECK-LABEL: func.func @equal_windows
 // CHECK: air.channel.put{{.*}}@x2{{.*}}[] [] []
-// One transfer, and only one: no tiling means no extra events either.
+// One transfer, and only one: no tiling means no pieces to emit either.
 // CHECK-NOT: air.channel.put
 air.channel @x2 [1]
 air.channel @f2 [1]
@@ -124,7 +128,7 @@ func.func @equal_windows(%arg0: memref<64xbf16>) {
 
 // CHECK-LABEL: func.func @not_a_multiple
 // CHECK: air.channel.put{{.*}}@x3{{.*}}[] [] []
-// One transfer, and only one: no tiling means no extra events either.
+// One transfer, and only one: no tiling means no pieces to emit either.
 // CHECK-NOT: air.channel.put
 air.channel @x3 [1]
 air.channel @f3 [1]
@@ -162,7 +166,7 @@ func.func @not_a_multiple(%arg0: memref<64xbf16>) {
 
 // CHECK-LABEL: func.func @far_never_filled
 // CHECK: air.channel.put{{.*}}@x4{{.*}}[] [] []
-// One transfer, and only one: no tiling means no extra events either.
+// One transfer, and only one: no tiling means no pieces to emit either.
 // CHECK-NOT: air.channel.put
 air.channel @x4 [1]
 func.func @far_never_filled(%arg0: memref<512xbf16>) {
