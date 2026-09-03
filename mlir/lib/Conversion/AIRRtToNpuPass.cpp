@@ -374,8 +374,7 @@ static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
   for (Value s : staticSides) {
     if (residual && residual.getType() != s.getType())
       return nullptr;
-    residual = residual ? arith::AddIOp::create(builder, loc, residual, s)
-                        : s;
+    residual = residual ? arith::AddIOp::create(builder, loc, residual, s) : s;
   }
   return v;
 }
@@ -442,8 +441,7 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
                                                  Value &residual) {
   if (!module)
     return nullptr;
-  Value dynamic =
-      peelStaticAddends(offset, builder, offset.getLoc(), residual);
+  Value dynamic = peelStaticAddends(offset, builder, offset.getLoc(), residual);
   if (!dynamic)
     return nullptr;
   int64_t scale, addend;
@@ -465,8 +463,7 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
     OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointToStart(module.getBody());
     xilinx::AIEX::ScratchpadParameterOp::create(
-        builder, module.getLoc(), name,
-        TypeAttr::get(builder.getI32Type()),
+        builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
         /*state_table_idx=*/nullptr, /*kind=*/nullptr);
   }
   return name;
@@ -1124,11 +1121,11 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       // instruction stream constant. Same mechanism as a herd's runtime
       // scalar, in its `addr` flavour.
       Value offsetResidual;
-      StringAttr paramName =
-          outputElf ? declareBlockArgOffsetParameter(
-                        op->getParentOfType<ModuleOp>(), dynOffsetI32,
-                        rewriter, offsetResidual)
-                    : nullptr;
+      StringAttr paramName = outputElf
+                                 ? declareBlockArgOffsetParameter(
+                                       op->getParentOfType<ModuleOp>(),
+                                       dynOffsetI32, rewriter, offsetResidual)
+                                 : nullptr;
       if (paramName) {
         bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(paramName));
         // The base keeps its ordinary place on the BD; the parameter is added
@@ -3042,12 +3039,21 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           Operation *anchor = nullptr;
           SmallVector<Operation *> rtps;
           SmallVector<Operation *> locks;
+          // The scratchpad sync has to lead its arm for the same reason the
+          // RTP writes do, and more strictly: it is what puts a herd's runtime
+          // scalar in place, and the set_locks below it are what let the cores
+          // read that scalar.
+          SmallVector<Operation *> syncs;
+          // A PDI reload rewrites tile memory, so the per-core parameter
+          // buffers the sync populated are gone and the arm needs its own.
+          bool afterLoadPdi = false;
         };
         SmallVector<ArmGroup> groups(1);
         std::optional<int64_t> curWave;
         for (Operation *o : ops) {
           if (isa<AIEX::NpuLoadPdiOp>(o)) {
             groups.emplace_back();
+            groups.back().afterLoadPdi = true;
             curWave.reset();
             continue;
           }
@@ -3059,14 +3065,32 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           ArmGroup &g = groups.back();
           if (isa<AIEX::NpuWriteRTPOp>(o))
             g.rtps.push_back(o);
+          else if (isa<AIEX::SyncScratchpadParametersFromHostOp>(o))
+            g.syncs.push_back(o);
           else if (isa<AIEX::SetLockOp>(o))
             g.locks.push_back(o);
           else if (!o->hasAttr(air::attrs::RuntimeHoist) && !g.anchor)
             g.anchor = o;
         }
+        // Each move inserts immediately before the anchor, so the order these
+        // run in is the order they end up in: sync, then RTP writes, then the
+        // releases that let the cores read both.
+        Operation *anySync = nullptr;
+        for (auto &g : groups)
+          if (!g.syncs.empty() && !anySync)
+            anySync = g.syncs.front();
         for (auto &g : groups) {
           if (!g.anchor)
             continue;
+          // An arm that reloads its PDI has lost the parameter buffers the
+          // earlier sync wrote, so give it its own.
+          if (anySync && g.syncs.empty() && g.afterLoadPdi &&
+              !g.locks.empty()) {
+            OpBuilder b(g.anchor);
+            g.syncs.push_back(b.clone(*anySync));
+          }
+          for (auto *sy : g.syncs)
+            sy->moveBefore(g.anchor);
           for (auto *rtp : g.rtps)
             moveRtpBefore(rtp, g.anchor);
           for (auto *lk : g.locks)

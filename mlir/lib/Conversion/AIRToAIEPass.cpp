@@ -111,16 +111,40 @@ struct AIRToAIEConversionOptions {
 // that built correctly before. The value has to be genuinely unknowable at
 // compile time, which means it traces back to a block argument (the runtime
 // sequence's own operand) rather than to any computation on constants.
+// Not every block argument qualifies. The scratchpad holds ONE value per
+// dispatch, so a value that varies within a dispatch cannot live there: an
+// scf.for induction variable is a block argument too, and routing it to the
+// scratchpad would freeze it at whatever the host last wrote. The operand has
+// to reach the enclosing function's own argument, which is the only thing that
+// is fixed for a dispatch and supplied by the host.
+//
+// Herd operands normally arrive through air.launch/segment/herd nesting rather
+// than directly, so the walk resolves each hierarchy block argument to the
+// operand it is tied to and keeps going.
 static bool isRuntimeHerdOperand(Value koperand) {
   Value v = koperand;
-  // Look through the width/type adjustments AIR inserts around scalars.
-  while (Operation *def = v.getDefiningOp()) {
-    if (!llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
-                   arith::ExtSIOp, arith::BitcastOp>(def))
+  while (true) {
+    // Look through the width/type adjustments AIR inserts around scalars.
+    while (Operation *def = v.getDefiningOp()) {
+      if (!llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                     arith::ExtSIOp, arith::BitcastOp>(def))
+        return false;
+      v = def->getOperand(0);
+    }
+    auto blockArg = llvm::dyn_cast<BlockArgument>(v);
+    if (!blockArg)
       return false;
-    v = def->getOperand(0);
+    Operation *owner = blockArg.getOwner()->getParentOp();
+    if (llvm::isa<func::FuncOp>(owner))
+      return true;
+    auto hier = llvm::dyn_cast<air::HierarchyInterface>(owner);
+    if (!hier)
+      return false; // a loop IV, or any other region we cannot see through
+    Value tied = hier.getTiedKernelOperand(blockArg);
+    if (!tied) // an induction variable of the hierarchy op itself
+      return false;
+    v = tied;
   }
-  return llvm::isa<BlockArgument>(v);
 }
 
 // The name both halves of the lowering agree on. AIRRtToNpu re-derives it to
