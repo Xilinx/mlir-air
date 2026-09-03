@@ -1068,6 +1068,26 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     }
   }
 
+  // On a BROADCAST channel the index identifies the RECEIVER, so it belongs to
+  // the consuming half only. There is one source and it addresses no
+  // sub-channel: that is what makes it a broadcast rather than a bundle.
+  //
+  // The same rule is already applied on the broadcast_set path, where only the
+  // internal half inherits the affine.if's operands. It has to hold here too,
+  // for a channel whose fan-out comes from its DECLARATION instead of a guard.
+  // Without it a DMA written on the core side hands the producer the consumer's
+  // tile indices -- herd induction variables, which do not exist where the
+  // producer lands, so the hoist emits IR that does not verify:
+  //
+  //   error: operand #0 does not dominate this use
+  //
+  // Whether the external half is the source is not assumed: a broadcast's
+  // external half is the put by construction, and clearing indices off a get
+  // would silently redirect a consumer to sub-channel 0.
+  if (namedChanOp && namedChanOp.getBroadcastShape() &&
+      air::getMemorySpace(src_type) != innerMemorySpace)
+    channel_idx_external.clear();
+
   // Extract padding attributes from the DMA op (applies to source/put side).
   DenseI32ArrayAttr padBefore = op.getPadBeforeAttr();
   DenseI32ArrayAttr padAfter = op.getPadAfterAttr();

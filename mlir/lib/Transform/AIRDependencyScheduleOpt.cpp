@@ -3543,6 +3543,31 @@ public:
   void broadcastDetection() {
     for (unsigned i = 0; i < dma_op_history.size(); i++) {
       auto dma_op = dma_op_history[i];
+      // A DMA naming a channel whose DECLARATION already carries a
+      // broadcast_shape has stated its fan-out. Deriving a second one from the
+      // enclosing herd is the same fact written twice, and the two do not have
+      // to agree: this pass reads the herd it happens to sit in, so a [4, 4]
+      // declaration read from inside a [2, 4] block herd comes back [2, 4].
+      //
+      // The cost is not only the disagreement. Specialization turns the derived
+      // pattern into an affine.if around the consumer, and that region is what
+      // stops canonicalize from folding away the ping-pong duplicates the
+      // transform speculatively allocates -- so a core that shared one 2-deep
+      // ring across its two GEMV sites ends up with a separate ring per site,
+      // and the design blows its core-memory BD budget and hangs on device.
+      //
+      // The declaration is the single spelling. Leave it alone.
+      //
+      // Only where there is nothing to specialize: a transfer whose window
+      // VARIES with a herd index is genuinely different per core, and the
+      // affine.if is what turns that variance into one constant descriptor
+      // apiece. Skipping it there would leave a herd induction variable in the
+      // producer's offsets, which is a dominance error, not a redundancy.
+      bool declaredBroadcast = false;
+      if (auto chanAttr = dma_op->getAttrOfType<FlatSymbolRefAttr>("channel"))
+        if (auto decl = air::getChannelDeclarationThroughSymbol(
+                dma_op.getOperation(), chanAttr))
+          declaredBroadcast = decl.getBroadcastShape() != nullptr;
       SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
       air::HerdOp hl_op = nullptr;
       bool isVariantWrtHerdRows = false;
@@ -3605,6 +3630,12 @@ public:
         // If a dma op is independent of herd induction vars, then we broadcast
         // it to every core in the herd.
         if (numRows == 1 && numCols == 1)
+          continue;
+        // ...which is what a declared broadcast_shape already says. See above:
+        // deriving it again writes the same fact twice, from the herd this DMA
+        // happens to sit in rather than from the channel, so a [4, 4]
+        // declaration read inside a [2, 4] block herd comes back [2, 4].
+        if (declaredBroadcast)
           continue;
         else if (numRows > 1 && numCols == 1) {
           SmallVector<AffineExpr, 5> constraints{
