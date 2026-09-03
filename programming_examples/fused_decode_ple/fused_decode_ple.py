@@ -1153,6 +1153,23 @@ PLE_UP_W_FIRST = PLE and int(_os.environ.get("DECODE_PLE_UP_W_FIRST", "0"))
 # (O.O.O.O.O.O.O.O. with no double-fail to re-phase it). @pliOut is not it.
 # Kept so the negative is not re-derived.
 PLE_NO_PLIOUT = PLE and int(_os.environ.get("DECODE_PLE_NO_PLIOUT", "0"))
+# DIAGNOSTIC (DECODE_PLE_1TASK=1): drop every @pleW transfer on the proj and
+# gate cores that is NOT one of their 8192-element weight blocks, at both ends.
+# Numerically wrong -- x0, the embedding, the norm weight and the up core's
+# norm weight/scale all go missing -- but it leaves each of those two tiles with
+# exactly ONE BD task on its inbound channel, which is the point.
+#
+# WHY. AIRToAIESchedulingUtils::getRepeatCounts opens a new BD task whenever the
+# enclosing loop trip count changes between consecutive transfers, and
+# generateDmaBdProgram only emits infinite-BD-loop mode when the channel has
+# exactly one task. With two or more, every chain terminates at aie.end, so the
+# channel's BD program runs ONCE PER PDI LOAD instead of once per wave. The proj
+# core gets x0 (rep 0), 48 weight blocks (rep 23) and two tail vectors (rep 0) =
+# THREE tasks; the gate core gets 48 blocks (rep 23) then two vectors (rep 0) =
+# TWO. The up core, whose tail was packed into @gateOut, has ONE and is the only
+# one that self-loops. Of all 26 DMA-bearing tiles in this design those two are
+# the only multi-task channels.
+PLE_1TASK = PLE and int(_os.environ.get("DECODE_PLE_1TASK", "0"))
 # Stage the up core's weight stream through an L2 FIFO instead of shim-direct.
 #
 # THE MECHANISM THIS EXISTS FOR. The runtime sequence is not fire-and-forget: it
@@ -2932,12 +2949,15 @@ def build_module():
                                 # vector instead of an 8192 block, and the
                                 # dispatch hangs (observed: ERT_CMD_STATE_TIMEOUT).
                                 def _feed_proj():
-                                    _pput(PLE_DEST_PROJ, PLEX0, 0, K)
+                                    if not PLE_1TASK:
+                                        _pput(PLE_DEST_PROJ, PLEX0, 0, K)
                                     _pw(
                                         PLE_DEST_PROJ,
                                         PLE_NBLK_DOWN,
                                         PLE_NBLK_DOWN,
                                     )
+                                    if PLE_1TASK:
+                                        return
                                     _pput(
                                         PLE_DEST_PROJ,
                                         PLEW,
@@ -2956,7 +2976,7 @@ def build_module():
                                     # UP core's norm weight and scale, which this
                                     # core forwards in the @gateOut bundle.
                                     _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
-                                    if PLE_SHARED_RES:
+                                    if PLE_SHARED_RES and not PLE_1TASK:
                                         _pput(
                                             PLE_DEST_GATE,
                                             PLEW,
@@ -5411,7 +5431,7 @@ def build_module():
                                 # receives [residual ++ pli*gate] and needs no
                                 # third input.
                                 CallOp(ple_gate_into, [a_x, a_g])
-                                if PLE_SHARED_RES:
+                                if PLE_SHARED_RES and not PLE_1TASK:
                                     # The up core's norm weight and scale ride
                                     # THIS core's @pleW stream and go out in the
                                     # bundle. FastFlowLM routes them the same
@@ -5486,27 +5506,33 @@ def build_module():
                                     [],
                                     [],
                                 )
-                                ChannelGet(
-                                    "pleW",
-                                    a_x0,
-                                    indices=[idx(0), idx(PLE_DEST_PROJ)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
+                                if not PLE_1TASK:
+                                    ChannelGet(
+                                        "pleW",
+                                        a_x0,
+                                        indices=[idx(0), idx(PLE_DEST_PROJ)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
                                 a_p = AllocOp(plev_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
                                 _ple_proj_down(
                                     acc, a_p, PLE_DEST_PROJ, a_x0, PLI_D // PLE_M_BLK
                                 )
                                 a_e = AllocOp(plev_l1, [], [])
-                                ChannelGet(
-                                    "pleW", a_e, indices=[idx(0), idx(PLE_DEST_PROJ)]
-                                )
                                 a_nw = AllocOp(plev_l1, [], [])
-                                ChannelGet(
-                                    "pleW", a_nw, indices=[idx(0), idx(PLE_DEST_PROJ)]
-                                )
+                                if not PLE_1TASK:
+                                    ChannelGet(
+                                        "pleW",
+                                        a_e,
+                                        indices=[idx(0), idx(PLE_DEST_PROJ)],
+                                    )
+                                    ChannelGet(
+                                        "pleW",
+                                        a_nw,
+                                        indices=[idx(0), idx(PLE_DEST_PROJ)],
+                                    )
                                 CallOp(ple_proj_tail, [a_p, a_e, a_nw])
                                 if not PLE_NO_PLIOUT:
                                     ChannelPut(
