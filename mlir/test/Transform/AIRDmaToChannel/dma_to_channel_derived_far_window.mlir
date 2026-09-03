@@ -125,3 +125,31 @@ func.func @not_a_multiple(%arg0: memref<64xbf16>) {
   }
   return
 }
+
+// -----
+
+// NEGATIVE CONTROL: nothing REFILLS the far buffer, so there is no cycle to
+// read. "The near side takes it N pieces at a time" is true of a buffer that is
+// filled, then taken from, then filled again; a function argument read once is
+// not that, and tiling it would send N times what was asked for -- silently,
+// and it would compile. The window and the position rest on the same piece of
+// evidence, so with no fill there is neither.
+
+// CHECK-LABEL: func.func @far_never_filled
+// CHECK-NOT: [2, 256]
+// CHECK: air.channel.put{{.*}}@x4
+air.channel @x4 [1]
+func.func @far_never_filled(%arg0: memref<512xbf16>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%ls=%c1) args(%la=%arg0) : memref<512xbf16> {
+    air.segment @seg args(%sa=%la) : memref<512xbf16> {
+      %c1_s = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) args(%b=%sa) : memref<512xbf16> {
+        %a = memref.alloc() : memref<256xbf16, 2>
+        air.dma_memcpy_nd (%a[] [] [], %b[] [] []) {id = 1 : i32, channel = @x4, channel_indices = array<i64: 0>} : (memref<256xbf16, 2>, memref<512xbf16>)
+        memref.dealloc %a : memref<256xbf16, 2>
+      }
+    }
+  }
+  return
+}

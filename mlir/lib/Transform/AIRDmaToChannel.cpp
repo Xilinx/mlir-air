@@ -769,6 +769,34 @@ static bool deriveTiledFarWindow(OpBuilder &b, Value farMemref,
   return true;
 }
 
+// Where the far buffer is FILLED, outside the hierarchy being hoisted out of.
+//
+// A far half carrying a whole buffer's worth belongs once per fill, not once
+// per near execution, so its position is not a free choice and does not need to
+// be named: it is wherever something writes the buffer it reads. Finding that
+// site by the BUFFER rather than by a channel symbol is what lets it work when
+// the loop it must land in holds no channel endpoint of its own -- which is the
+// ordinary case for a feed whose inner loop exists only to step the window.
+//
+// Returns the last such writer (the fill completes before the forward), or
+// null.
+static Operation *findFillSite(Value farMemref, Operation *hier_op) {
+  Value root = air::resolveBufferRoot(farMemref);
+  Operation *found = nullptr;
+  hier_op->getParentRegion()->walk([&](Operation *o) {
+    if (hier_op->isAncestor(o))
+      return WalkResult::advance();
+    if (o == hier_op)
+      return WalkResult::advance();
+    // A get lands bytes in it; that is a fill. A put reads it, and is not.
+    if (auto g = dyn_cast<air::ChannelGetOp>(o))
+      if (air::resolveBufferRoot(g.getMemref()) == root)
+        found = o;
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     OpBuilder &builder, air::MemorySpace innerMemorySpace,
     air::DmaMemcpyNdOp op,
@@ -792,12 +820,25 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   // several of it. See deriveTiledFarWindow: this is the descriptor that makes
   // the two byte sequences match, and the front end frequently cannot write it.
   bool derivedFarWindow = false;
-  if (dst_type && src_type) {
+  auto enclosingHier = op->getParentOfType<air::HierarchyInterface>();
+  if (dst_type && src_type && enclosingHier) {
     bool dstIsInner = air::getMemorySpace(dst_type) == innerMemorySpace;
     Value nearMemref = dstIsInner ? dst : src;
+    Value farMemref = dstIsInner ? src : dst;
     std::optional<int64_t> nearVol =
         staticVolume(dstIsInner ? dst_sizes : src_sizes, nearMemref);
-    if (nearVol) {
+    // Only when something actually REFILLS the far buffer.
+    //
+    // The tiling reads "the near side takes this buffer N pieces at a time",
+    // and what makes that a reading rather than a guess is that the buffer is
+    // REUSED: a fill, then N takes, then the next fill. With no fill there is
+    // no such cycle -- the far side is an argument the near side reads once --
+    // and tiling it would send N times the data that was asked for, silently.
+    // The same fill is where the derived half is then placed, so the window and
+    // the position rest on one piece of evidence rather than two guesses.
+    bool refilled =
+        findFillSite(farMemref, enclosingHier.getOperation()) != nullptr;
+    if (nearVol && refilled) {
       if (dstIsInner)
         derivedFarWindow = deriveTiledFarWindow(
             builder, src, src_offsets, src_sizes, src_strides, *nearVol);
@@ -1513,34 +1554,6 @@ static Operation *findEmittedTransfer(air::ChannelInterface getput,
       return &o;
   }
   return nullptr;
-}
-
-// Where the far buffer is FILLED, outside the hierarchy being hoisted out of.
-//
-// A far half carrying a whole buffer's worth belongs once per fill, not once
-// per near execution, so its position is not a free choice and does not need to
-// be named: it is wherever something writes the buffer it reads. Finding that
-// site by the BUFFER rather than by a channel symbol is what lets it work when
-// the loop it must land in holds no channel endpoint of its own -- which is the
-// ordinary case for a feed whose inner loop exists only to step the window.
-//
-// Returns the last such writer (the fill completes before the forward), or
-// null.
-static Operation *findFillSite(Value farMemref, Operation *hier_op) {
-  Value root = air::resolveBufferRoot(farMemref);
-  Operation *found = nullptr;
-  hier_op->getParentRegion()->walk([&](Operation *o) {
-    if (hier_op->isAncestor(o))
-      return WalkResult::advance();
-    if (o == hier_op)
-      return WalkResult::advance();
-    // A get lands bytes in it; that is a fill. A put reads it, and is not.
-    if (auto g = dyn_cast<air::ChannelGetOp>(o))
-      if (air::resolveBufferRoot(g.getMemref()) == root)
-        found = o;
-    return WalkResult::advance();
-  });
-  return found;
 }
 
 // Drop async dependencies that do not reach where the op landed.
