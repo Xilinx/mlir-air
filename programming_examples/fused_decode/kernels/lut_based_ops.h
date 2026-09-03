@@ -230,6 +230,17 @@ alignas(aie::vector_decl_align) unsigned char m_inv_lut[128] = {
     13,  12,  11,  11,  10,  10,  9,   9,   8,   7,   7,   6,   6,   5,   5,
     4,   4,   3,   3,   2,   2,   1,   1};
 
+// alignas is load-bearing under Peano. chess_storage(%chess_alignof(...)) is a
+// Chess-only attribute that clang ignores, so without it these tables sit at
+// alignment 4 while the exp LUTs above get 64 from their own alignas. aie::lut
+// reads them with vector loads, which made correctness a matter of where the
+// linker happened to land the table: gemma4's PLE gate core got 0x...04 and
+// getActivationBf16 returned values tracking no table at all (gelu(0) came back
+// at 0.54 of max, everything outside |x| < 4 came back 0), while the glu core
+// got 0x...400 and was fine. Aligned, the two agree to cos 0.9984 on device.
+#define ACT_LUT                                                                \
+  alignas(aie::vector_decl_align) float chess_storage(% chess_alignof(v32int8))
+
 #if A_FUNC == A_SILU
 #ifdef SILU_LUT_FINE
 // 4x-finer SiLU LUT: 256 segments of 2^-4 over the SAME [-8, 8) range the
@@ -247,7 +258,7 @@ alignas(aie::vector_decl_align) unsigned char m_inv_lut[128] = {
 // OPT-IN (-DSILU_LUT_FINE), not the default: it costs 6 KB more core data
 // memory, and a model whose gate is wide gains far less than LFM2 does. Any
 // model can turn it on after re-running its own verify.
-float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[1024] = {
+ACT_LUT activation_lut_ab[1024] = {
     -0.00241045f, -0.02196643f, -0.00254278f, -0.02301676f, -0.00268214f,
     -0.02411422f, -0.00282889f, -0.02526072f, -0.00241045f, -0.02196643f,
     -0.00254278f, -0.02301676f, -0.00268214f, -0.02411422f, -0.00282889f,
@@ -454,7 +465,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[1024] = {
     -0.02196643f, 1.00282889f,  -0.02526072f, 1.00268214f,  -0.02411422f,
     1.00254278f,  -0.02301676f, 1.00241045f,  -0.02196643f};
 
-float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[1024] = {
+ACT_LUT activation_lut_cd[1024] = {
     -0.00241045f, -0.02196643f, -0.00254278f, -0.02301676f, -0.00268214f,
     -0.02411422f, -0.00282889f, -0.02526072f, -0.00241045f, -0.02196643f,
     -0.00254278f, -0.02301676f, -0.00268214f, -0.02411422f, -0.00282889f,
@@ -661,7 +672,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[1024] = {
     -0.02196643f, 1.00282889f,  -0.02526072f, 1.00268214f,  -0.02411422f,
     1.00254278f,  -0.02301676f, 1.00241045f,  -0.02196643f};
 #else
-float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
+ACT_LUT activation_lut_ab[256] = {
     -0.00000000f, -0.00000000f, -0.00323609f, -0.02841651f, -0.00399708f,
     -0.03412396f, -0.00492899f, -0.04088030f, -0.00000000f, -0.00000000f,
     -0.00323609f, -0.02841651f, -0.00399708f, -0.03412396f, -0.00492899f,
@@ -715,7 +726,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
     1.00399708f,  -0.03412396f, 1.00323609f,  -0.02841651f, 1.00000000f,
     -0.00000000f};
 
-float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
+ACT_LUT activation_lut_cd[256] = {
     -0.00000000f, -0.00000000f, -0.00323609f, -0.02841651f, -0.00399708f,
     -0.03412396f, -0.00492899f, -0.04088030f, -0.00000000f, -0.00000000f,
     -0.00323609f, -0.02841651f, -0.00399708f, -0.03412396f, -0.00492899f,
@@ -770,7 +781,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
     -0.00000000f};
 #endif // SILU_LUT_FINE
 #elif A_FUNC == A_GELU
-float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
+ACT_LUT activation_lut_ab[256] = {
     -0.00000000f, -0.00000000f, -0.00099681f, -0.00406485f, -0.00153315f,
     -0.00607442f, -0.00231779f, -0.00891632f, -0.00000000f, -0.00000000f,
     -0.00099681f, -0.00406485f, -0.00153315f, -0.00607442f, -0.00231779f,
@@ -824,7 +835,7 @@ float chess_storage(% chess_alignof(v32int8)) activation_lut_ab[256] = {
     1.00153348f,  -0.00607561f, 1.00099703f,  -0.00406568f, 1.00000000f,
     -0.00000000f};
 
-float chess_storage(% chess_alignof(v32int8)) activation_lut_cd[256] = {
+ACT_LUT activation_lut_cd[256] = {
     -0.00000000f, -0.00000000f, -0.00099681f, -0.00406485f, -0.00153315f,
     -0.00607442f, -0.00231779f, -0.00891632f, -0.00000000f, -0.00000000f,
     -0.00099681f, -0.00406485f, -0.00153315f, -0.00607442f, -0.00231779f,
