@@ -206,8 +206,14 @@ def main():
         pw_bo = xrt.bo(dev, fd.UNI_DEC * fd.PLE_LAYER * 2, HO, g(8))
         px_bo = xrt.bo(dev, K * 2, HO, g(9))
 
-    # --- weights. The vocab region stays zero: this test never reads logits. ---
-    Wbuf = np.zeros(n_w, np.int16)
+    # --- weights. The vocab region is never READ by this test -- it scores the
+    # layer output, not logits -- but it must not be ZERO. The decode wave is
+    # followed by UNI_LM vocab waves, and this design routes packets by a header
+    # the kernels compute from the data (rms_residual.cc's
+    # residual_add_aie_hdr). All-zero weights there can produce a zero header,
+    # misroute a packet and hang a dispatch that is otherwise fine. Filling it
+    # with a nonzero pattern makes the logits garbage, which is what we want. ---
+    Wbuf = np.full(n_w, 0x1111, np.int16)
     Wbuf[: z["W"].size] = z["W"]
     w_bo.write(Wbuf, 0)
     w_bo.sync(TO)
@@ -258,6 +264,15 @@ def main():
     c = cos_sim(got, want)
     rg, rw = float(np.sqrt((got**2).mean())), float(np.sqrt((want**2).mean()))
     print(f"  cos={c:.6f}  rms npu={rg:.4f} cpu={rw:.4f}  ratio={rg/(rw+1e-30):.4f}")
+    # NaN FIRST. `nan < tol` is False, so without this a device that returns all
+    # NaN scored PASS -- which it did, and it hid a real base-layer bug.
+    n_bad = int((~np.isfinite(got)).sum())
+    if n_bad or not np.isfinite(c):
+        print(
+            f"FAIL: layer {L} device output is not finite "
+            f"({n_bad}/{got.size} non-finite, cos={c})"
+        )
+        return 1
     if c < a.tol:
         print(
             f"FAIL: layer {L} cos {c:.6f} < {a.tol}\n"
