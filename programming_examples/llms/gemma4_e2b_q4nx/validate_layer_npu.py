@@ -129,6 +129,11 @@ def main():
     ap.add_argument("--tol", type=float, default=0.99)
     ap.add_argument("--rebuild-cache", action="store_true")
     ap.add_argument(
+        "--dump",
+        help="save the device readback and the reference to an .npz, so a "
+        "mismatch can be hypothesis-tested offline without re-dispatching.",
+    )
+    ap.add_argument(
         "--no-ple",
         action="store_true",
         help="score a DECODE_NO_PLE=1 build (no PLE branch). Numerically wrong "
@@ -261,6 +266,9 @@ def main():
     x_bo.sync(FROM)
     got = np.frombuffer(x_bo.map(), dtype=bfloat16, count=K).astype(np.float32)
 
+    if a.dump:
+        np.savez(a.dump, got=got, want=want, x=x, x0=x0, emb_L=emb_L, L=L)
+        print(f"  dumped -> {a.dump}")
     c = cos_sim(got, want)
     rg, rw = float(np.sqrt((got**2).mean())), float(np.sqrt((want**2).mean()))
     print(f"  cos={c:.6f}  rms npu={rg:.4f} cpu={rw:.4f}  ratio={rg/(rw+1e-30):.4f}")
