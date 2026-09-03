@@ -65,12 +65,20 @@ def ple_embed(gw, qm, L, tok):
     )
 
 
-def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True):
+def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1):
     """The reference layer, at T=1 and position 0.
 
     Mirrors check_vs_flm_reference.layer(); kept here rather than imported so
     the device is scored against the SAME expression the per-layer gate uses,
     with no shared mutable state between the two.
+
+    attn_l is the device's ATTN_L. The design applies no validity mask -- it
+    attends over all ATTN_L cache slots and appends this token at slot
+    ATTN_L-1 -- so at position 0 the other slots are real zero keys competing
+    in the softmax, not absent ones. Scoring a 16-slot device against a 1-key
+    reference reads as a 0.71 failure when the device is in fact correct to
+    0.998, which is exactly what it did until the two 1x4x1 attention bugs were
+    fixed. attn_l=1 is the clean case, where the two expressions coincide.
     """
     w, nm, pw = qm.layer_weights(L), qm.layer_norms(L), qm.layer_ple(L)
     dh = gw.head_dim(L)
@@ -94,7 +102,10 @@ def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True):
     v = gw._rmsnorm((x1 @ w["v"].T).reshape(T, gw.N_KV_HEADS, dh), None)
     ke = np.stack([gw.apply_rope(k[t], cos, sin, dh) for t in range(T)])
 
-    kh, vh = ke[:, 0], v[:, 0]
+    # The cache the device attends over: zeros, with this token at slot L-1.
+    kh = np.zeros((attn_l, dh), np.float32)
+    vh = np.zeros((attn_l, dh), np.float32)
+    kh[attn_l - 1], vh[attn_l - 1] = ke[0, 0], v[0, 0]
     s = np.einsum("thd,sd->hts", qe, kh) * gw.ATTN_SCALE
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
@@ -173,7 +184,16 @@ def main():
     x = x0.copy()
 
     emb_L = ple_embed(gw, qm, L, tok)
-    want = cpu_layer(gw, qm, L, x[None, :], x0[None, :], emb_L, ple=not a.no_ple)
+    want = cpu_layer(
+        gw,
+        qm,
+        L,
+        x[None, :],
+        x0[None, :],
+        emb_L,
+        ple=not a.no_ple,
+        attn_l=fd.ATTN_L,
+    )
 
     import pyxrt as xrt
 
