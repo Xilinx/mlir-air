@@ -80,6 +80,75 @@ struct AIRToAIEConversionOptions {
   unsigned stack_size;
 };
 
+// --- Runtime herd parameters via the scratchpad ---------------------------
+//
+// A herd's scalar operands reach its cores through the `__air_herd_rtp` buffer,
+// which the runtime sequence fills with `aiex.npu.write32`. That works only
+// when the value is a compile-time constant: a static TXN binary -- what the
+// full-ELF output format emits -- has nowhere to put a value the host has not
+// supplied yet, and rejects the write with
+//
+//   'aiex.npu.write32' op Cannot translate write32 with non-constant address
+//   or value to a static TXN binary
+//
+// mlir-aie's scratchpad parameters are the data-plane alternative: the core
+// reads the value from a firmware scratchpad the host writes per dispatch, so
+// the instruction stream stays constant. Only *runtime* operands are routed
+// this way; a constant keeps the existing RTP path, which costs no state-table
+// entry (there are 32 for the whole module) and leaves every existing design
+// lowering exactly as before.
+//
+// The slot numbering is deliberately left alone -- a runtime operand still
+// consumes its `__air_herd_rtp` word, it just goes unread. Keeping the two
+// sides' slot arithmetic identical is worth one wasted word per parameter.
+// "Not an arith.constant" is too weak a test here: this pass runs long before
+// the canonicalization that folds an index_cast of a constant, so it would
+// classify values that do end up constant as runtime, move them to the
+// scratchpad, and leave nobody to write them -- silently changing a design
+// that built correctly before. The value has to be genuinely unknowable at
+// compile time, which means it traces back to a block argument (the runtime
+// sequence's own operand) rather than to any computation on constants.
+static bool isRuntimeHerdOperand(Value koperand) {
+  Value v = koperand;
+  // Look through the width/type adjustments AIR inserts around scalars.
+  while (Operation *def = v.getDefiningOp()) {
+    if (!llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                   arith::ExtSIOp, arith::BitcastOp>(def))
+      return false;
+    v = def->getOperand(0);
+  }
+  return llvm::isa<BlockArgument>(v);
+}
+
+// The name both halves of the lowering agree on. AIRRtToNpu re-derives it to
+// decide whether to skip a write, so this must stay a pure function of the
+// herd's symbol and the slot. Herds without a symbol keep the RTP path: there
+// would be no stable name to agree on.
+static std::string getHerdParamName(air::HerdOp h, unsigned slot) {
+  auto sym = h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+  if (!sym)
+    return "";
+  return "__air_param_" + sym.getValue().str() + "_" + std::to_string(slot);
+}
+
+// Declare the parameter at module scope, once. The scratchpad is one hardware
+// resource shared by every PDI a runtime sequence loads, so the declaration is
+// global and every core of the herd refers to the same one -- which is also
+// why a herd spanning N cores costs one state-table entry per slot rather than
+// N.
+static void declareHerdScratchpadParameter(air::HerdOp h, StringRef name,
+                                           Type type) {
+  auto module = h->getParentOfType<ModuleOp>();
+  if (!module || module.lookupSymbol(name))
+    return;
+  OpBuilder b(module.getBodyRegion());
+  b.setInsertionPointToStart(module.getBody());
+  AIEX::ScratchpadParameterOp::create(b, h.getLoc(), b.getStringAttr(name),
+                                      TypeAttr::get(type),
+                                      /*state_table_idx=*/nullptr,
+                                      /*kind=*/nullptr);
+}
+
 // Breakpoint stages for debugging with --test-patterns
 // Each stage represents a point in the pipeline where execution can stop
 // for debugging purposes.
@@ -467,12 +536,32 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         // rtp buffer and remap uses of the kernel operand to the loaded value.
         if (llvm::isa<IntegerType, IndexType, FloatType>(karg.getType())) {
 
-          // load from rtp buffer
-          SmallVector<Value> offsets{
-              arith::ConstantIndexOp::create(core_builder, hloc, rtp_slot)};
-          auto load = memref::LoadOp::create(core_builder, hloc,
-                                             IntegerType::get(ctx, 32),
-                                             rtp_buffer, offsets);
+          // A runtime operand is read from the scratchpad instead of the RTP
+          // buffer, so that nothing downstream has to encode its value into a
+          // static instruction stream. Both reads produce an i32 that the
+          // conversion below treats identically.
+          std::string paramName = getHerdParamName(h, rtp_slot);
+          Value load;
+          if (!paramName.empty() && isRuntimeHerdOperand(koperand)) {
+            declareHerdScratchpadParameter(h, paramName,
+                                           IntegerType::get(ctx, 32));
+            load = AIEX::ReadScratchpadParameterOp::create(
+                core_builder, hloc, IntegerType::get(ctx, 32),
+                FlatSymbolRefAttr::get(ctx, paramName),
+                /*buffer=*/nullptr);
+            // AIR already gates the core on its herd lock, which the runtime
+            // sequence releases only after the parameters are synced. Letting
+            // --aie-lower-scratchpad-parameters add its own lock as well would
+            // put two independent protocols on the same core.
+            core->setAttr("emit_parameter_sync_preamble",
+                          core_builder.getBoolAttr(false));
+          } else {
+            SmallVector<Value> offsets{
+                arith::ConstantIndexOp::create(core_builder, hloc, rtp_slot)};
+            load = memref::LoadOp::create(core_builder, hloc,
+                                          IntegerType::get(ctx, 32), rtp_buffer,
+                                          offsets);
+          }
 
           // truncate, extend or bitcast the value to the correct type
           Value rtp = nullptr;

@@ -270,6 +270,146 @@ static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
 
 namespace {
 
+// The core placed at (x, y) in this device, or null. AIRToAIE stamps each core
+// with `air.herd_name`, which is how the herd a tile belongs to is recovered
+// here without rebuilding a tile-to-herd map.
+static xilinx::AIE::CoreOp getCoreAt(xilinx::AIE::DeviceOp device, int x,
+                                     int y) {
+  xilinx::AIE::CoreOp found = nullptr;
+  device.walk([&](xilinx::AIE::CoreOp core) {
+    if (found)
+      return;
+    auto tile = core.getTileOp();
+    if (tile.getCol() == x && tile.getRow() == y)
+      found = core;
+  });
+  return found;
+}
+
+// True when AIRToAIE routed this herd slot through the scratchpad rather than
+// the RTP buffer. The declaration it emits at module scope is the contract
+// between the two passes; see the comment on isRuntimeHerdOperand in
+// AIRToAIEPass.cpp for why the decision is recorded rather than recomputed.
+static bool isScratchpadParameterSlot(ModuleOp module,
+                                      xilinx::AIE::CoreOp coreOp,
+                                      unsigned slot) {
+  if (!coreOp)
+    return false;
+  auto herdName = coreOp->getAttrOfType<StringAttr>("air.herd_name");
+  if (!herdName)
+    return false;
+  std::string name =
+      "__air_param_" + herdName.getValue().str() + "_" + std::to_string(slot);
+  return static_cast<bool>(
+      module.lookupSymbol<xilinx::AIEX::ScratchpadParameterOp>(name));
+}
+
+// A BD offset that traces back to the runtime sequence's own operand is
+// unknowable at compile time and belongs in the scratchpad. Anything else --
+// a constant, or an offset computed from constants -- stays on the normal
+// path, so this only fires where the static encoding was impossible anyway.
+// Returns the parameter's name, or null if the offset is not a block argument.
+//
+// The name is keyed on the argument number rather than on the transfer, so
+// that every BD driven by the same operand (a KV append writes one chunk per
+// group) shares one parameter and one state-table entry.
+// Does this value reach the runtime sequence's own argument? Pure predicate --
+// no declaration, no IR change -- used to decide which side of an add is the
+// per-dispatch one.
+static bool reachesSequenceArg(Value v) {
+  while (Operation *def = v.getDefiningOp()) {
+    if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                  arith::ExtSIOp, arith::BitcastOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    if (llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def)) {
+      if (reachesSequenceArg(def->getOperand(0)))
+        return true;
+      v = def->getOperand(1);
+      continue;
+    }
+    return false;
+  }
+  auto blockArg = llvm::dyn_cast<BlockArgument>(v);
+  return blockArg && llvm::isa<xilinx::AIE::RuntimeSequenceOp>(
+                         blockArg.getOwner()->getParentOp());
+}
+
+// On success, `residual` is the part of the offset the parameter does *not*
+// cover -- the loop-varying base -- which the caller leaves on the BD as its
+// ordinary offset. mlir-aie applies the parameter additively
+// ("update_from_scratchpad to add the runtime offset to the BD address
+// register", AIEDmaToNpu.cpp), so base and delta compose rather than compete,
+// and the base folds to a constant when the enclosing loop unrolls.
+static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
+                                                 OpBuilder &builder,
+                                                 Value &residual) {
+  if (!module)
+    return nullptr;
+  // Walk back through the address arithmetic AIR builds around a scalar --
+  // casts, and adds/multiplies against constants -- to whatever ultimately
+  // varies. Stopping at the first arith op (the earlier version did) means
+  // never recognising an offset like `(L-1) * stride`, which is exactly the
+  // shape a KV append has.
+  Value v = offset;
+  while (Operation *def = v.getDefiningOp()) {
+    if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                  arith::ExtSIOp, arith::BitcastOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    if (llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def)) {
+      // Follow the one varying side; if both vary this is not a single
+      // parameter and the caller keeps the SSA offset.
+      Value lhs = def->getOperand(0), rhs = def->getOperand(1);
+      bool lhsConst = matchPattern(lhs, m_Constant());
+      bool rhsConst = matchPattern(rhs, m_Constant());
+      if (lhsConst != rhsConst) {
+        v = lhsConst ? rhs : lhs;
+        continue;
+      }
+      // Neither side is constant. An add of two varying terms is still
+      // separable when exactly one of them reaches the sequence argument --
+      // that is the KV append's shape, a per-iteration base plus a
+      // per-dispatch delta. Split it: follow the runtime side and give the
+      // other back as the residual. Anything else (a product of two varying
+      // terms, both sides runtime) genuinely has no single parameter.
+      if (!llvm::isa<arith::AddIOp>(def) || residual)
+        return nullptr;
+      bool lhsRuntime = reachesSequenceArg(lhs);
+      bool rhsRuntime = reachesSequenceArg(rhs);
+      if (lhsRuntime == rhsRuntime)
+        return nullptr;
+      residual = lhsRuntime ? rhs : lhs;
+      v = lhsRuntime ? lhs : rhs;
+      continue;
+    }
+    return nullptr;
+  }
+  auto blockArg = llvm::dyn_cast<BlockArgument>(v);
+  if (!blockArg)
+    return nullptr;
+  // Only the runtime sequence's own argument is a per-dispatch value. A loop
+  // induction variable is also a block argument but varies per iteration, and
+  // the scratchpad holds one value per dispatch -- those offsets are folded
+  // by unrolling further down the pipeline instead.
+  if (!llvm::isa<xilinx::AIE::RuntimeSequenceOp>(
+          blockArg.getOwner()->getParentOp()))
+    return nullptr;
+  auto name = builder.getStringAttr("__air_param_argoff_" +
+                                    std::to_string(blockArg.getArgNumber()));
+  if (!module.lookupSymbol(name)) {
+    OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    xilinx::AIEX::ScratchpadParameterOp::create(
+        builder, module.getLoc(), name,
+        TypeAttr::get(builder.getI32Type()),
+        /*state_table_idx=*/nullptr, /*kind=*/nullptr);
+  }
+  return name;
+}
+
 // Helper function to check if a value is a memref on host memory (space 0)
 static bool isHostMemory(Value val) {
   if (auto memrefType = dyn_cast_if_present<BaseMemRefType>(val.getType()))
@@ -904,8 +1044,34 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                      : AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
                                             static_cast<int>(transferLen),
                                             dimsAttr));
-      bd.getOffsetMutable().assign(dynOffsetI32);
-      bd.removeStaticOffsetAttr();
+      // A runtime offset carried as an SSA operand becomes a BD word computed
+      // at dispatch, which only the C++ TXN target can encode -- a static TXN,
+      // and therefore the full-ELF output, cannot. When the offset is
+      // genuinely the sequence's own operand, hand it to the scratchpad
+      // instead: `offset_parameter` names a parameter the host writes per
+      // dispatch and firmware folds into the BD address, leaving the
+      // instruction stream constant. Same mechanism as a herd's runtime
+      // scalar, in its `addr` flavour.
+      Value offsetResidual;
+      if (StringAttr paramName = declareBlockArgOffsetParameter(
+              op->getParentOfType<ModuleOp>(), dynOffsetI32, rewriter,
+              offsetResidual)) {
+        bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(paramName));
+        // The base keeps its ordinary place on the BD; the parameter is added
+        // to it at dispatch.
+        if (offsetResidual) {
+          // The BD's offset operand is i32; the residual is whatever type the
+          // address arithmetic left it in (index, here).
+          if (!offsetResidual.getType().isInteger(32))
+            offsetResidual = arith::IndexCastOp::create(
+                rewriter, op.getLoc(), rewriter.getI32Type(), offsetResidual);
+          bd.getOffsetMutable().assign(offsetResidual);
+          bd.removeStaticOffsetAttr();
+        }
+      } else {
+        bd.getOffsetMutable().assign(dynOffsetI32);
+        bd.removeStaticOffsetAttr();
+      }
     } else if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
@@ -1024,6 +1190,35 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
     // and set_locks so the per-wave hoist groups this arm by its iteration.
     auto waveAttr = op->getAttr(air::attrs::LaunchWave);
 
+    // Any herd scalar that AIRToAIE routed through the scratchpad has to be
+    // in place before a core is let past its herd lock, so the sync goes ahead
+    // of the whole arm. One per sequence is enough -- it syncs the table, not
+    // an individual parameter -- and AIR's own herd lock is what orders the
+    // cores against it, which is why the pass's built-in preamble is off.
+    if (!module.getOps<AIEX::ScratchpadParameterOp>().empty()) {
+      if (auto seq = op->getParentOfType<AIE::RuntimeSequenceOp>()) {
+        // The marker is what --aie-lower-scratchpad-parameters expands into
+        // the real preamble, and it must be a *direct* child of the sequence
+        // (HasParent), while this pattern may be rewriting several regions
+        // deep. Walk out to the ancestor that does sit at sequence level and
+        // put the marker in front of it, which keeps it ahead of this herd's
+        // set_locks without hoisting it past unrelated work.
+        Operation *anchor = op;
+        while (anchor && anchor->getParentOp() != seq.getOperation())
+          anchor = anchor->getParentOp();
+        bool alreadyMarked = false;
+        seq.walk([&](AIEX::SyncScratchpadParametersFromHostOp) {
+          alreadyMarked = true;
+        });
+        if (anchor && !alreadyMarked) {
+          OpBuilder::InsertionGuard g(rewriter);
+          rewriter.setInsertionPoint(anchor);
+          AIEX::SyncScratchpadParametersFromHostOp::create(rewriter,
+                                                           op.getLoc());
+        }
+      }
+    }
+
     // for each herd core, emit write_rtp ops for every herd operand
     // followed by a write32 to the herd lock, setting it to 1.
     for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
@@ -1045,6 +1240,8 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
           });
         }
 
+        xilinx::AIE::CoreOp coreOp =
+            device ? getCoreAt(device, phys_x, phys_y) : xilinx::AIE::CoreOp();
         if (rtpBufferExists) {
           unsigned rtp_slot = 0;
           for (int i = 0, e = op.getNumOperands(); i < e; i++) {
@@ -1078,6 +1275,19 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
                 vVal =
                     arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, oper);
               }
+            }
+            // AIRToAIE routes a herd's *runtime* scalars through the
+            // scratchpad instead of this buffer, so that the value never has
+            // to be encoded into a static instruction stream (see
+            // isRuntimeHerdOperand there). It signals that by declaring
+            // `__air_param_<herd>_<slot>` at module scope; the host writes
+            // that parameter per dispatch and the core reads it directly, so
+            // there is nothing to write here. The symbol is the contract
+            // between the two passes -- re-deciding "is this constant?" here
+            // would risk the two disagreeing after canonicalization.
+            if (isScratchpadParameterSlot(module, coreOp, rtp_slot)) {
+              rtp_slot++;
+              continue;
             }
             if (vVal) {
               auto rtpOp = AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(),
