@@ -258,6 +258,16 @@ This is the whole recipe for the **optimized block 8** — the configuration
 against shipping's 147.7**, i.e. `b` is 8.83 ms/token lower, and every claim
 below is gated.
 
+**Block 8 is the right block size and stays it.** The b16 checkpoint is not
+pinned to 16 — it runs at 8 and 4 without retraining — and re-pricing the
+block-size sweep with this engine puts block 8 at **1.79×** against block 16's
+1.44× (`docs/BZeroPlan.md`, "Why not block 16"). Speeding the engine up cannot
+move the optimal block size: it shrinks the step time and the marginal cost of a
+slot together, so it multiplies the speedup at every block size and leaves the
+argmax alone. Do not read a lower `b` as an argument for a bigger block.
+Batch 16 also builds and **hangs in wave 0**, and cannot use
+`RMS_MEMTILE_REFEED=3` at all.
+
 ### The environment variables that define it
 
 ```bash

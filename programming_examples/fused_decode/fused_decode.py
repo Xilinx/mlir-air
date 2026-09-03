@@ -2296,6 +2296,31 @@ if RMS_BAND_STREAM >= 3:
         "@xnorm chunk, and that only lines up if a chunk IS a band."
     )
     assert K % STG_W == 0
+    # MODE 3 AND BAND STREAMING ARE STRUCTURALLY INCOMPATIBLE, and the failure
+    # without this check is a `func.call` operand type mismatch 2500 lines into
+    # the LOWERED IR ("expected memref<40960xbf16>, provided memref<8192xbf16>
+    # for operand number 1"), which names neither knob.
+    #
+    # rms_row_aie emits ONE WHOLE ROW of K values per call -- that is the whole
+    # point of mode 3, and it is what lets the memtile do the cross-row
+    # interleave in a read descriptor. Under band streaming the rms core never
+    # holds a whole row: it holds one STG_W-wide band of it, and the residual
+    # buffer is [BATCH][STG_W] rather than [BATCH][K]. So the call is not just
+    # mis-typed, there is no row to emit.
+    #
+    # Fixing it means a per-band row producer plus a memtile that assembles
+    # bands into rows -- a real change to the refeed geometry, not a signature.
+    # Nobody has needed it: mode 3 was built at batch 8, where the residual fits
+    # and band streaming is off. It is batch 16 that forces them together, and
+    # docs/BZeroPlan.md ("BLOCK 16 IS NOT WORTH BUILDING") prices batch 16 at
+    # 1.44x against block 8's 1.79x, so this is deliberately not built.
+    assert RMS_MEMTILE_REFEED != 3, (
+        "RMS_MEMTILE_REFEED=3 and RMS_BAND_STREAM>=3 cannot be combined: mode 3's "
+        "rms_row_aie emits a whole K-wide row, and band streaming leaves only a "
+        f"{STG_W}-wide band on the core. Drop one of the two. (This pairing is "
+        "forced by DECODE_BATCH=16, which needs band streaming to fit the rms "
+        "core's L1 -- see docs/BZeroPlan.md on why block 16 is not worth it.)"
+    )
 
 # RMS_W_ON_X: the norm weights ride the @rmsX band stream instead of owning
 # channels of their own. THE RMS CORE HAS TWO S2MM PORTS AND LEVEL 3 NEEDS
