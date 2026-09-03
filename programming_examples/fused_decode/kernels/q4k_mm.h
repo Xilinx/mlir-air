@@ -117,6 +117,47 @@ static_assert(sizeof(q4k_block_t) != 2 * Q4K_BLOCK_BF16,
 #else
 #define Q4K_MM_LOOP
 #endif
+
+// Q4K_MM_UNROLL=N: partial unroll of the CONTRACTION loop only -- the innermost
+// `for i < colA` that carries the mac chains -- leaving the z and j blocking
+// loops alone. The same lever as Q4K_UNPACK_UNROLL, tried for the same reason:
+// with the unpack's arithmetic fixed the two halves share ONE budget (either
+// one shedding 13.4 ms of core reaches the memory floor), and the mmul body
+// looked like the sparser of the two -- 1.6 ops per bundle against the unpack's
+// 2.7, which reads as dependency stalls that more copies in flight would fill.
+//
+// AT BATCH 8 IT DOES NOTHING. That reading was wrong: `vmac.f` on 8x8
+// accumulators is multi-cycle, so a sparse bundle count is not a fillable
+// stall. Static bundles for the contraction loop, x32 iterations, against the
+// 576 the rolled form takes under FMA + unroll 8:
+//
+//   N=2   768   1.091        N=8   860   1.222
+//   N=4   816   1.159        N=16  854   1.213
+//
+// and N=2, the least-bad, measured NEUTRAL on device -- 84.480 / 86.624 /
+// 86.451 against a control's 85.923 / 84.514 / 86.303 over three paired
+// replicates at L161. Fully overlapping.
+//
+// THE FIRST REPLICATE READ 84.480 AND LOOKED LIKE A 1.4 ms WIN. It was noise.
+// Run-to-run spread on a single unchanged build here is 1.8 ms, wider than the
+// ~1 ms build-to-build figure quoted elsewhere, so on this instrument nothing
+// under about 2 ms is a result no matter how clean one run looks.
+//
+// KEPT ANYWAY, unset, because batch 16 uses a different multiply --
+// q4k_mmul's 2x2 blocking with four live accumulators, not q4k_mmul_small's
+// 1x4 -- and the sweep above says nothing about that shape. Re-sweep it there
+// rather than assuming this answer transfers.
+//
+// BIT-EXACT by construction: unrolling changes neither the order of the macs
+// nor which accumulator each lands in. Unlike Q4K_UNPACK_FMA, dump_layer_output
+// must read IDENTICAL, and anything else is a bug.
+//
+// Unset by default -- shipping kernels stay byte-identical.
+#ifdef Q4K_MM_UNROLL
+#define Q4K_MM_ILOOP AIE_LOOP_UNROLL(Q4K_MM_UNROLL)
+#else
+#define Q4K_MM_ILOOP Q4K_MM_LOOP
+#endif
 //
 // Q4K_UNPACK_UNROLL=N is the middle ground the paragraph above never tried: a
 // PARTIAL unroll (AIE_LOOP_UNROLL(N), i.e. clang's unroll_count) rather than
@@ -414,7 +455,7 @@ static inline void q4k_mmul(const bf16 *__restrict pA, const bf16 *__restrict pB
 
       AIE_PREPARE_FOR_PIPELINING
       AIE_LOOP_RANGE(colA, colA)
-      Q4K_MM_LOOP
+      Q4K_MM_ILOOP
       for (unsigned i = 0; i < colA; ++i) {
         aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pA1);
         pA1 += rowA * MMUL::size_A;
@@ -493,7 +534,7 @@ static inline void q4k_mmul_2x4(const bf16 *__restrict pA,
 
       AIE_PREPARE_FOR_PIPELINING
       AIE_LOOP_RANGE(colA, colA)
-      Q4K_MM_LOOP
+      Q4K_MM_ILOOP
       for (unsigned i = 0; i < colA; ++i) {
         aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pA1);
         pA1 += rowA * MMUL::size_A;
@@ -584,7 +625,7 @@ static inline void q4k_mmul_small(const bf16 *__restrict pA,
 
     AIE_PREPARE_FOR_PIPELINING
     AIE_LOOP_RANGE(colA, colA)
-    Q4K_MM_LOOP
+    Q4K_MM_ILOOP
     for (unsigned i = 0; i < colA; ++i) {
       aie::vector<bf16, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pA1);
       pA1 += MMUL::size_A; // rowA == 1
