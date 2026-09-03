@@ -1546,8 +1546,10 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 # THAT 30.8 ms IS THE MOTIVATION FOR THIS KNOB, NOT THE CURRENT STATE. With
 # mode 3 on, the same deletion is worth 0.20 ms of a 108.074 ms dispatch -- the
 # regeneration is GONE, not reduced, and RMS_CHUNK_PROBE is no longer a useful
-# bisector on a mode-3 build. The critical path is now the q4k unpack, at ~35
-# ms. See docs/BZeroPlan.md, "RE-PRICED 2026-09-03".
+# bisector on a mode-3 build. Nor is the q4k unpack the critical path any more:
+# Q4K_UNPACK_FMA took the whole projection to within 13.4 ms of the memory
+# floor, so NEITHER half of it is exposed on its own. See docs/BZeroPlan.md,
+# "CAVEAT 2 IS CLOSED".
 #
 # The memtile has 512 KB, so it can hold what the core cannot. ph1 and ph3
 # already work this way ("mechanism-2": a memtile L2 buffer plus

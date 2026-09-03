@@ -18,7 +18,7 @@ inversely related:
 | `fused_decode/dump_layer_output.py` | two builds produce the **same layer output, bit for bit**, on the same seed | **yes** — two dispatches, no prefill, ~30 s. Start here |
 | `fused_decode/dflash_build_diff.py` | two builds are **bit-identical** on synthetic weights — **decode layers and KV only** | **yes**, at L161, and only because it now retries until two dispatches agree |
 | `fused_decode/batch_equiv.py` | the batched dataflow matches batch 1, token 0 | yes, but token 0 only |
-| `fused_decode/dflash_template_time.py`, `dispatch_time.py` | **how fast** a template dispatches (median of N, synthetic weights) | yes — p90 within 0.1 ms of the median |
+| `fused_decode/dflash_template_time.py`, `dispatch_time.py` | **how fast** a template dispatches (median of N, synthetic weights) | **within a run, yes; across runs, ±1.8 ms** — see the warning below |
 | `dflash_verify_gate.py` | real model, real weights, **logits** | yes, but only because it retries until two dispatches agree — see §4 |
 | `dflash_loop.py`, `dflash_acceptance_device.py` | end-to-end speculative decode | inherits §4, and **does not retry** — one dispatch per verify block. The **speedup** reproduces; the **mean accepted** is a noisy sample, ±0.22 |
 
@@ -32,6 +32,16 @@ against 45.70, a thrashing host, and the whole thing was noise.
 `dump_layer_output.py` settled it in two dispatches: **0 of 757,760 elements
 differed.** A 12-minute end-to-end gate should never be the first thing you
 reach for, and its anomalies mean *distrust the run*, not *ignore that column*.
+
+**AND `dispatch_time.py`'S OWN BANDS UNDERSTATE ITS NOISE.** A single run
+reports p10-p90 within a few tenths of a millisecond, which reads as high
+precision and is not: that band is the spread *within* one run, and it does not
+contain the spread *across* runs. Three paired replicates of one unchanged
+build at L161 read **85.923, 84.514, 86.303** — a 1.8 ms spread, with every
+individual band far tighter than that. `Q4K_MM_UNROLL=2` was nearly written up
+as a 1.4 ms win on the strength of one such run before the replicates killed
+it. **Below about 2 ms, run it three times or do not claim it.** Above that the
+method is fine — the 22.9 ms the unpack FMA is worth has bands 18 ms apart.
 
 If you change the compiler or the builder, start with `dflash_build_diff.py`.
 It is the only tool here that gives the same answer twice — but it earns that
@@ -346,7 +356,10 @@ python dump_layer_output.py --diff ctrl.npy opt.npy
 #    bit-identical, and it is the control proving the whole difference belongs
 #    to the FMA's one removed rounding.
 
-# 2. DEVICE BUILD DIFF, decode layers + KV, at L161 where builds are bit-exact
+# 2. DEVICE BUILD DIFF, decode layers + KV, at L161 where builds are bit-exact.
+#    ONLY MEANINGFUL FOR BIT-EXACT CHANGES, so this is the gate for mode 3 and
+#    the ring, NOT for the FMA -- it reports element counts, and the FMA moves
+#    ~20% of them by 1 on purpose. Use level 1 and level 3 for that.
 for T in 161 162; do
   cp -f ../llms/qwen3_4b_q4nx/_v50/decode_b8_L$T.{xclbin,insts.bin}  . # control
   cp -f ../llms/qwen3_4b_q4nx/_v50w/decode_b8_L$T.{xclbin,insts.bin} . # under test
@@ -354,11 +367,13 @@ done   # rename to _v50_b8_L<T>.* and _v50w_b8_L<T>.* -- --a/--b are PREFIXES
 env DECODE_STACK=6080 W_DUAL_CHAN=1 DECODE_NO_LM_WAVES=0 UNI_LM=6 \
   python dflash_build_diff.py --a _v50 --b _v50w --L 161 --vocab-chunk-i2 50
 
-# 3. THE REAL GATE: real model, real weights, LOGITS. This is the one.
+# 3. THE REAL GATE: real model, real weights, LOGITS. This is the one, and it
+#    is the gate the FMA has to pass. Run it against the CONTROL too -- "corr
+#    went up" means nothing without the number it went up from.
 cd ../llms/qwen3_4b_q4nx
 env -u UNI_LM -u VOCAB_CHUNK_I2 python dflash_verify_gate.py \
-  --prompt-len 150 --tag v50w \
-  --bB-env "Q4NX_QWEN3_4B_DECODE_DIR=$PWD/_v50w,VOCAB_CHUNK_I2=50,UNI_LM=6"
+  --prompt-len 150 --tag v50wf \
+  --bB-env "Q4NX_QWEN3_4B_DECODE_DIR=$PWD/_v50wf,VOCAB_CHUNK_I2=50,UNI_LM=6"
 
 # 4. the loop's own correctness control: the `accepted` row
 ```
@@ -392,6 +407,15 @@ mmul, and the gate's own header prices that gap with the argmax unchanged.
 reference at `DECODE_HIDDEN_TAPS=1` with `VOCAB_CHUNK_I2=50` times out on its
 own, with **and** without mode 3. That is the reference side being broken, not
 your change. `dump_layer_output.py` exists because of it.
+
+**The batch-1 timeout is broader than that, and it costs a number.** A plain
+`decode`-prefix batch-1 template at **L161** also times out — at
+`VOCAB_CHUNK_I2=30`, with `DECODE_NO_LM_WAVES=0` and with `=1`, and at
+`--wait 600000`. So the batch-1 anchor `B1` in `docs/BZeroPlan.md` cannot be
+re-measured at the length everything else is measured at, and every absolute
+`b = (B8 - B1)/7` there carries an unverified constant. Differences between
+builds do not. Do not spend dispatches re-deriving this; it needs the batch-1
+timeout fixed first, which is its own problem.
 
 ---
 

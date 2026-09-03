@@ -49,6 +49,15 @@
 //     python3 q4k_mm_gate.py --mode exact     # the layout gate
 //     python3 q4k_mm_gate.py --mode random    # + the accuracy number
 //
+// ONE EXCEPTION, AND IT IS EXPECTED: the gate's numpy model reproduces the
+// SHIPPING rounding sequence, so `--mode exact` fails by construction under
+// -DQ4K_UNPACK_FMA, which removes one of those roundings. That is the model
+// being right about the old arithmetic, not the kernel being wrong. The FMA
+// path is gated on dump_layer_output.py --diff (small and nonzero, +/-1 in the
+// bf16 bit pattern) plus dflash_verify_gate.py instead -- see the
+// Q4K_UNPACK_FMA block below. Everything else here still owes the gate an
+// exact pass.
+//
 // Accuracy against an exact fp32 matmul of the same inputs, on realistically
 // quantized weights: 1.3% rms, no bias, flat in contraction depth [measured].
 //
@@ -161,11 +170,11 @@ static_assert(sizeof(q4k_block_t) != 2 * Q4K_BLOCK_BF16,
 //
 // Q4K_UNPACK_UNROLL=N is the middle ground the paragraph above never tried: a
 // PARTIAL unroll (AIE_LOOP_UNROLL(N), i.e. clang's unroll_count) rather than
-// the full one that crashes the backend. It matters because the unpack is now
-// the single largest term in a decode dispatch -- 34.98 ms of 108.074, against
-// 16.37 for the multiply it feeds (docs/BZeroPlan.md, "RE-PRICED 2026-09-03")
-// -- and this loop runs MROWS*KCOL/128 = 64 rolled iterations with a
-// loop-carried pointer, which is exactly the shape a small unroll helps.
+// the full one that crashes the backend. This loop runs MROWS*KCOL/128 = 64
+// rolled iterations with a loop-carried pointer, which is the shape an unroll
+// helps -- but ONLY alongside Q4K_UNPACK_FMA, and the sign flips without it.
+// N=8 is what the shipping configuration uses; see the measured table in
+// q4k_unpack_block.
 //
 // Unset by default, so the shipping kernels are byte-identical and
 // check_kernels_inert.py stays satisfied. If a value crashes Peano the way
