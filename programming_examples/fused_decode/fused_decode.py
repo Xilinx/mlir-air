@@ -1070,6 +1070,16 @@ TOKV_DMA = True
 # its own change, and threading a buffer into a herd whose body does not take
 # one is a TypeError at build time, not a compile error.
 OUTA_DMA = True and MODEL["PAIR_ROWS"] != 1
+# LAYEROUT_DMA: the rms core names @layerOut on an air.dma_memcpy_nd whose far
+# operand is X, the L3 buffer it already holds for @rmsX. Only the DECODE arm:
+# the vocab arm drains into Y, which is not a rms-herd operand.
+#
+# The anchor is @appendV, which has EXACTLY ONE launch-scope endpoint, in the
+# slot immediately before this drain. That uniqueness is the whole reason this
+# one is portable and @inKV is not -- an anchor names a channel and resolves to
+# its LAST endpoint, so a channel that repeats cannot name a slot in the middle
+# of its own run.
+LAYEROUT_DMA = int(_os.environ.get("LAYEROUT_DMA", "1")) != 0
 # INX_DMA: the cores name @inX on an air.dma_memcpy_nd whose far operand is the
 # X memtile buffer, and air-dma-to-channel derives the memtile puts -- window,
 # count and position all. The `_jj` sub-block loop in the feed goes away
@@ -3001,14 +3011,18 @@ def build_module():
                             _out_base = 0
                             # BD-COMPACTION: single full-size drain (matches the rms single
                             # layerOut put) instead of LAYER_RNDS per-round gets.
-                            ChannelGet(
-                                "layerOut",
-                                _out_bo,
-                                indices=[idx(0)],
-                                offsets=[_out_base],
-                                sizes=[LAYER_RNDS * PAYLOAD],
-                                strides=[1],
-                            )
+                            # LAYEROUT_DMA: derived from the rms core's DMA, which
+                            # names X as the far end -- writing it here as well
+                            # would double the drain.
+                            if not LAYEROUT_DMA:
+                                ChannelGet(
+                                    "layerOut",
+                                    _out_bo,
+                                    indices=[idx(0)],
+                                    offsets=[_out_base],
+                                    sizes=[LAYER_RNDS * PAYLOAD],
+                                    strides=[1],
+                                )
                             yield_([])
 
                         index_switch(
@@ -6280,14 +6294,26 @@ def build_module():
                             CallOp(residual_add_aie, [a_r2, a_h, a_dn])
                             DeallocOp(a_h)
                             DeallocOp(a_dn)
-                            # BD-COMPACTION: single full-size layerOut put.
-                            ChannelPut(
-                                "layerOut",
-                                a_r2,
-                                offsets=[idx(0)],
-                                sizes=[idx(DOWN_RNDS * PAYLOAD)],
-                                strides=[idx(1)],
-                            )
+                            # BD-COMPACTION: single full-size layerOut drain.
+                            if LAYEROUT_DMA:
+                                DmaMemcpyNd(
+                                    _x,
+                                    a_r2,
+                                    dst_offsets=[0],
+                                    dst_sizes=[DOWN_RNDS * PAYLOAD],
+                                    dst_strides=[1],
+                                    channel="layerOut",
+                                    channel_indices=[0],
+                                    hoist_after="appendV",
+                                )
+                            else:
+                                ChannelPut(
+                                    "layerOut",
+                                    a_r2,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                    strides=[idx(1)],
+                                )
                             DeallocOp(a_r2)
 
                     # RMS and the wave index reach the rms herd because the @rmsW
