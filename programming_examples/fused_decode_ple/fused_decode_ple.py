@@ -1142,6 +1142,17 @@ PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
 # this whole line of reasoning rested on, was small-sample noise. The up core
 # blocking on @gateOut ahead of its weight run is NOT the cause.
 PLE_UP_W_FIRST = PLE and int(_os.environ.get("DECODE_PLE_UP_W_FIRST", "0"))
+# DIAGNOSTIC (DECODE_PLE_NO_PLIOUT=1): drop @pliOut at BOTH ends -- the proj
+# core stops putting it and the gate core stops getting it. Numerically wrong
+# (ple_gate_into then scales an uninitialised tail) but every @pleW stream keeps
+# its exact volume and order, so only that one core-to-core channel disappears.
+# Meant to localise the per-wave flip: rungs 5 and 6 have @gateOut, @pleOut and
+# the shared-L1 residual and are clean, and @pliOut was the remaining
+# one-transfer-per-wave channel the real design adds on top of them.
+# TESTED AND REFUTED: 8/16, and the alternation is if anything cleaner
+# (O.O.O.O.O.O.O.O. with no double-fail to re-phase it). @pliOut is not it.
+# Kept so the negative is not re-derived.
+PLE_NO_PLIOUT = PLE and int(_os.environ.get("DECODE_PLE_NO_PLIOUT", "0"))
 # Stage the up core's weight stream through an L2 FIFO instead of shim-direct.
 #
 # THE MECHANISM THIS EXISTS FOR. The runtime sequence is not fire-and-forget: it
@@ -5347,6 +5358,8 @@ def build_module():
                                 )
 
                                 def _get_pli():
+                                    if PLE_NO_PLIOUT:
+                                        return
                                     ChannelGet(
                                         "pliOut",
                                         a_x,
@@ -5495,13 +5508,14 @@ def build_module():
                                     "pleW", a_nw, indices=[idx(0), idx(PLE_DEST_PROJ)]
                                 )
                                 CallOp(ple_proj_tail, [a_p, a_e, a_nw])
-                                ChannelPut(
-                                    "pliOut",
-                                    a_p,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(PLI_D)],
-                                    strides=[idx(1)],
-                                )
+                                if not PLE_NO_PLIOUT:
+                                    ChannelPut(
+                                        "pliOut",
+                                        a_p,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(PLI_D)],
+                                        strides=[idx(1)],
+                                    )
                                 DeallocOp(a_x0)
                                 DeallocOp(a_p)
                                 DeallocOp(acc)
