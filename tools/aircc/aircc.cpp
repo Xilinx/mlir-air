@@ -1241,6 +1241,10 @@ static LogicalResult runAieCompilation() {
        << (useLockRaceConditionFix ? "true" : "false");
     os << " use-lock-race-condition-fix-v2="
        << (useLockRaceConditionFixV2 ? "true" : "false");
+    // The full-ELF output is a static TXN, which cannot hold a runtime herd
+    // scalar; only there does AIRToAIE route one through a scratchpad
+    // parameter instead of the RTP control-plane write.
+    os << " output-elf=" << (outputFormat == OF_elf ? "true" : "false");
     if (stackSize.getNumOccurrences() > 0)
       os << " stack-size=" << stackSize.getValue();
     os << "}";

@@ -76,6 +76,9 @@ struct AIRToAIEConversionOptions {
   // forming a strict producer-ordering chain, eliminating concurrent-
   // access races on the memtile DMA. Mutually exclusive with v1.
   bool use_lock_race_condition_fix_v2;
+  // Target a static TXN binary (full ELF). Only then does a herd's runtime
+  // scalar have to leave the control plane for a scratchpad parameter.
+  bool output_elf;
   AIE::AIEDevice device;
   unsigned stack_size;
 };
@@ -542,7 +545,8 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
           // conversion below treats identically.
           std::string paramName = getHerdParamName(h, rtp_slot);
           Value load;
-          if (!paramName.empty() && isRuntimeHerdOperand(koperand)) {
+          if (options.output_elf && !paramName.empty() &&
+              isRuntimeHerdOperand(koperand)) {
             declareHerdScratchpadParameter(h, paramName,
                                            IntegerType::get(ctx, 32));
             load = AIEX::ReadScratchpadParameterOp::create(
@@ -7942,6 +7946,7 @@ public:
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
           /*.use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
+          /*.output_elf = */ clOutputElf,
           /*.device = */ *device,
           /*.stack_size = */ clStackSize};
 
@@ -8074,6 +8079,7 @@ public:
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
         /* .use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
+        /* .output_elf = */ clOutputElf,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
     if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
@@ -8629,6 +8635,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .insert_trace_packet_flow = */ false,
       /* .use_lock_race_condition_fix = */ true,
       /* .use_lock_race_condition_fix_v2 = */ false,
+      /* .output_elf = */ false,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
   p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });

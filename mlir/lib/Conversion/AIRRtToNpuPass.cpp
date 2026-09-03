@@ -756,8 +756,17 @@ struct FoldConstIndexSwitchPattern
 struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   using OpConversionPattern<airrt::DmaMemcpyNdOp>::OpConversionPattern;
 
-  DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
+  // Only the static-TXN (full ELF) output cannot encode a runtime BD offset.
+  // Everywhere else the SSA offset is a legal BD word, and rerouting it to the
+  // scratchpad would silently change the host contract: an unwritten parameter
+  // reads as zero, so an existing design would keep running and transfer from
+  // the wrong address.
+  bool outputElf = false;
+
+  DmaToNpuPattern(MLIRContext *context, bool outputElf = false,
+                  PatternBenefit benefit = 1)
+      : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit),
+        outputElf(outputElf) {}
 
   LogicalResult
   matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
@@ -1115,9 +1124,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       // instruction stream constant. Same mechanism as a herd's runtime
       // scalar, in its `addr` flavour.
       Value offsetResidual;
-      if (StringAttr paramName = declareBlockArgOffsetParameter(
-              op->getParentOfType<ModuleOp>(), dynOffsetI32, rewriter,
-              offsetResidual)) {
+      StringAttr paramName =
+          outputElf ? declareBlockArgOffsetParameter(
+                        op->getParentOfType<ModuleOp>(), dynOffsetI32,
+                        rewriter, offsetResidual)
+                    : nullptr;
+      if (paramName) {
         bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(paramName));
         // The base keeps its ordinary place on the BD; the parameter is added
         // to it at dispatch.
@@ -2869,10 +2881,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
 
     RewritePatternSet patterns(ctx);
-    patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
+    patterns.add<HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
                  ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
                  AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
+    patterns.add<DmaToNpuPattern>(ctx, clOutputElf);
     patterns.add<AIRRtWaitAllOpConversion>(ctx, clOutputElf);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
