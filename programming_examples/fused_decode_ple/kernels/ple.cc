@@ -202,17 +202,53 @@ void ple_proj_tail(bf16 *restrict x_proj, bf16 *restrict emb,
   scale_inplace<PLI_D>(x_proj, (bf16)PER_LAYER_MODEL_PROJECTION_SCALE);
 }
 
-// gate_layer_embedding tail: GELU over the 256-wide gate. A_FUNC is A_GELU for
-// this model, so getActivationBf16 is the GELU LUT (see lut_based_ops.h).
+// gate_layer_embedding tail: GELU over the 256-wide gate.
+//
+// Written out rather than routed through getActivationBf16. Measured on device
+// (a synthetic inp_gate making z a known ramp, then solving the 1536x256
+// projection back for the gate): the shared activation LUT returns 0 outside
+// |z| < 4 and, inside, does not track its own table -- f(0) came out at 0.54 of
+// the maximum where gelu(0) is 0. The table itself reconstructs gelu to cos
+// 1.0000 offline and the index arithmetic checks out, so the fault is in the
+// lookup, not the data. This gate is PLI_D=256 wide, so evaluating gelu
+// directly costs nothing next to the 1536x256 matmuls either side of it.
+//
+//   gelu_tanh(x) = x * sigmoid(w),  w = 2*sqrt(2/pi)*(x + 0.044715 x^3)
+//
+// sigmoid is evaluated as e/(1+e) with e = exp(-|w|) so the exponent is never
+// positive: getExpBf16 is only exercised on negative arguments anywhere else in
+// this design (attention feeds it s - max), and that is the range it is proven
+// in.
+static constexpr float GELU_W = 1.5957691216f; // 2*sqrt(2/pi)
+static constexpr float GELU_C = 0.044715f;
+
 void ple_gate_act(bf16 *restrict g, int _arm) {
   (void)_arm; // arm-gate operand, kept alive so AIR emits the arm lock
   aie_round_nearest_even();
+  const aie::vector<float, 16> one = aie::broadcast<float, 16>(1.0f);
+  const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0.0f);
   for (int i = 0; i < PLI_D; i += 16) {
-    aie::vector<bf16, 16> v = aie::load_v<16>(g + i);
-    // getActivationBf16 returns the raw v16bfloat16; bind it to a named
-    // aie::vector so the implicit conversion happens before store_v.
-    aie::vector<bf16, 16> act = getActivationBf16(v);
-    aie::store_v(g + i, act);
+    aie::vector<bf16, 16> xb = aie::load_v<16>(g + i);
+    aie::accum<accfloat, 16> xa;
+    xa.from_vector(xb);
+    aie::vector<float, 16> x = xa.to_vector<float>();
+
+    aie::vector<float, 16> x2 = aie::mul(x, x).to_vector<float>();
+    aie::vector<float, 16> x3 = aie::mul(x2, x).to_vector<float>();
+    aie::vector<float, 16> w =
+        aie::add(x, aie::mul(x3, GELU_C).to_vector<float>());
+    w = aie::mul(w, GELU_W).to_vector<float>();
+
+    // e = exp(-|w|) in (0, 1]; sigmoid(w) = (w >= 0 ? 1 : e) / (1 + e).
+    aie::vector<float, 16> nw = aie::sub(zero, aie::abs(w));
+    aie::accum<accfloat, 16> nwa;
+    nwa.from_vector(nw);
+    aie::accum<accfloat, 16> ea(getExpBf16(nwa.to_vector<bf16>()));
+    aie::vector<float, 16> e = ea.to_vector<float>();
+    aie::vector<float, 16> num = aie::select(e, one, aie::ge(w, zero));
+    aie::vector<float, 16> s =
+        aie::mul(num, aie::inv(aie::add(one, e))).to_vector<float>();
+    aie::store_v(g + i, aie::mul(x, s).to_vector<bf16>());
   }
 }
 
