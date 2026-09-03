@@ -117,8 +117,23 @@ static_assert(sizeof(q4k_block_t) != 2 * Q4K_BLOCK_BF16,
 #else
 #define Q4K_MM_LOOP
 #endif
+//
+// Q4K_UNPACK_UNROLL=N is the middle ground the paragraph above never tried: a
+// PARTIAL unroll (AIE_LOOP_UNROLL(N), i.e. clang's unroll_count) rather than
+// the full one that crashes the backend. It matters because the unpack is now
+// the single largest term in a decode dispatch -- 34.98 ms of 108.074, against
+// 16.37 for the multiply it feeds (docs/BZeroPlan.md, "RE-PRICED 2026-09-03")
+// -- and this loop runs MROWS*KCOL/128 = 64 rolled iterations with a
+// loop-carried pointer, which is exactly the shape a small unroll helps.
+//
+// Unset by default, so the shipping kernels are byte-identical and
+// check_kernels_inert.py stays satisfied. If a value crashes Peano the way
+// AIE_LOOP_UNROLL_FULL does, that is the answer for that value; try a smaller
+// one rather than concluding the loop cannot be unrolled at all.
 #if defined(Q4K_MM_FULL_UNROLL) && defined(Q4K_UNPACK_NOPERM)
 #define Q4K_UNPACK_LOOP AIE_LOOP_UNROLL_FULL
+#elif defined(Q4K_UNPACK_UNROLL)
+#define Q4K_UNPACK_LOOP AIE_LOOP_UNROLL(Q4K_UNPACK_UNROLL)
 #else
 #define Q4K_UNPACK_LOOP
 #endif
@@ -149,6 +164,9 @@ q4k_unpack_step(const uint4 *&qs_ptr, const bf16 *scales, const bf16 *mins) {
   aie::vector<bf16, PR * 8> ws = aie::mul(qb, sv).template to_vector<bf16>();
   return aie::add(ws, mv);
 }
+
+// The six concats above ARE redundant three times out of four -- see the
+// measured note in q4k_unpack_block on why hoisting them loses anyway.
 
 // Unpack a whole MROWS x KCOL block into the layout aie::mmul wants for A.
 //
@@ -210,6 +228,28 @@ static inline void q4k_unpack_block(const q4k_block_t *A, bf16 *__restrict W) {
   static_assert(KCOL % 32 == 0, "a 32-column quant group must be whole");
   const uint4 *qs_ptr = A->qs;
 
+  // THE FLAT ROLLED LOOP IS THE FAST SHAPE, and two obvious-looking attacks on
+  // it are measured LOSSES. Both were tried on the configuration where this
+  // kernel is the critical path -- qwen3-4b batch 8, mode 3 + PROJ_PP_ONLY=w,
+  // where the unpack is 34.98 ms of a 108.074 ms dispatch (dispatch_time.py,
+  // L=128, median of 25):
+  //
+  //   Q4K_UNPACK_UNROLL=2   114.328   +6.3 ms
+  //   Q4K_UNPACK_UNROLL=4   108.478   neutral
+  //   hoisting the broadcast  134.300  +26.2 ms, and BIT-IDENTICAL output
+  //
+  // The hoist is the one worth knowing about, because the redundancy it
+  // removes is real: `off` is (cb/4)*MROWS + R*PR, so the four contraction
+  // blocks of a 32-column group rebuild the identical 128-lane scale and min
+  // vectors -- two loads and six concats, three times out of four. Restructured
+  // as (row half, group) outer x 4 inner with the ladder lifted, the answer is
+  // bit-for-bit the same and it costs 24% MORE. A 4-iteration inner loop cannot
+  // amortise a software-pipeline prologue, and that dominates the arithmetic
+  // saved. The redundant concats are cheaper than the pipeline they would cost.
+  //
+  // So do not re-derive either of these. What is left for this kernel is
+  // algorithmic -- not materialising bf16 weights at all -- and that is a
+  // datapath change, not a loop rewrite.
   AIE_PREPARE_FOR_PIPELINING
   AIE_LOOP_RANGE(NSTEP, NSTEP)
   Q4K_UNPACK_LOOP
