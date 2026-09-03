@@ -396,7 +396,28 @@ Expected, and what these actually returned:
 | 1. `dump_layer_output.py --diff`, with the FMA | 1 ulp, nothing else | **79.7% equal, 11.8% differ by exactly 1** |
 | 2. `dflash_build_diff.py` (mode 3 + ring) | IDENTICAL | **8/8 tokens + 12,976,128/12,976,128 KV** |
 | 3. `dflash_verify_gate.py` | PASS | **PASS, argmax = at all 8 positions** |
-| 4. `accepted` | within 0.57 of 3.792 | **3.667 ± 0.322** |
+| 4. `accepted` (mode 3 + ring) | within 0.57 of 3.792 | **3.667 ± 0.322** |
+| 4. `--exactness` (with the FMA) | 6/6 | **6/6 prompts reproduce the non-speculative stream** |
+
+Level 4 has a stronger form than the `accepted` mean, and it is the one to use:
+`--exactness` re-runs each prompt with the drafter OFF and requires the two
+token streams to agree. `accepted` is a performance measurement with a ±0.35
+standard error — the runner itself warns not to read a difference under 0.70
+tokens — so it cannot settle a correctness question. `--exactness` can.
+
+**These two kernel flags are for the 36-layer target only.** The DFlash drafter
+is a separate template (`draft_b8_L<N>`, `DECODE_MODEL=qwen3-4b-draft`) and the
+same pair is a small LOSS on it: 34.969 → 36.085 ms at L511, bands nearly
+disjoint, and 41.02 → 41.90 in the loop's step breakdown. The drafter is not
+core-bound the way the target is — most of its dispatch is the tied head plus a
+weight stream over only five layers — so the arithmetic the FMA saves was
+already hidden while the unroll's code growth is not. `_build_draft_fma.sh`
+reproduces that measurement; do not ship its output.
+
+Where a DFlash step goes now, measured: **target 104 ms (47%), pre-pass 75–87
+(34%), draft 41 (19%).** The target is within ~13 ms of its memory floor, so
+the remaining end-to-end levers are the pre-pass and `accepted` itself — not
+the projection.
 
 Level 3 was also run against the pre-FMA control for a like-for-like read, and
 the FMA build comes out **slightly better**: mean `corr` 0.9742 vs 0.9720, mean

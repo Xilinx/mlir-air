@@ -230,6 +230,16 @@ static_assert(sizeof(q4k_block_t) != 2 * Q4K_BLOCK_BF16,
 // still a static count and it cannot see a memory stall, so device timing is
 // the verdict -- but it is a cheap and calibrated way to reject candidates.
 //
+// THESE TWO FLAGS ARE FOR THE 36-LAYER TARGET, NOT FOR EVERY DISPATCH. On the
+// 5-layer DFlash drafter (DECODE_MODEL=qwen3-4b-draft, same kernels, same batch)
+// the identical pair is a small LOSS: 34.969 ms -> 36.085 at L511, bands nearly
+// disjoint, and 41.02 -> 41.90 in the loop's own step breakdown. The drafter is
+// not core-bound the way the target is -- most of its dispatch is the tied head
+// and the weight stream over only five layers -- so the arithmetic the FMA saves
+// was already hidden, while the unroll's code growth (proj_qmm_mm_acc roughly
+// doubles) is not. Do not switch the drafter templates over; measure any new
+// dispatch shape before assuming these transfer to it.
+//
 // Unset by default so the shipping kernels stay byte-identical and
 // check_kernels_inert.py stays satisfied. The switch itself is in
 // q4k_unpack_step below.
