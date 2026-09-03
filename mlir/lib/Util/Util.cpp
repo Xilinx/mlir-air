@@ -799,18 +799,28 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
 
 // Get channel declaration through channel symbol
 air::ChannelOp
-air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
-  if (!op)
+air::getChannelDeclarationThroughSymbol(Operation *from,
+                                        mlir::SymbolRefAttr name) {
+  if (!from || !name)
     return air::ChannelOp();
-  Operation *parent = op;
+  Operation *parent = from;
   while ((parent = parent->getParentOp())) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
-      auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
+      auto st = mlir::SymbolTable::lookupSymbolIn(parent, name);
       if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
         return chanOp;
     }
   }
   return air::ChannelOp();
+}
+
+air::ChannelOp
+air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
+  return getChannelDeclarationThroughSymbol(
+      op.getOperation(),
+      mlir::FlatSymbolRefAttr::get(op->getContext(), op.getChanName()));
 }
 
 int64_t air::getRefeedCount(Operation *op) {

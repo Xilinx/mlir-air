@@ -107,6 +107,7 @@ from air.dialects.air import (
     Channel,
     ChannelGet,
     ChannelPut,
+    DmaMemcpyNd,
     MemorySpace,
     T,
     herd,
@@ -526,6 +527,52 @@ CONV_MIXER = MODEL["DEST"][0].split("#")[0] in ("conv", "mix")
 # ATTN_LAYERS is the wave-index schedule; it is irregular, so it is a LIST.
 ATTN_LAYERS = tuple(MODEL.get("ATTN_LAYERS", ()))
 HYBRID_MIXER = bool(ATTN_LAYERS)
+# Spell the rope LUT feed as an air.dma_memcpy_nd naming @ropeLUT and let
+# air-dma-to-channel derive the shim put, instead of writing a put/get pair.
+# Only the dedicated @rope herd carries RMS as an operand; a HYBRID build runs
+# _rope_body on the conv mixer's stage tile, which does not, so that build keeps
+# the hand-written pair.
+ROPELUT_DMA = True
+# Where the derived put belongs. On a non-hybrid the hand-written one sits ahead
+# of the rms group; on a HYBRID the whole mixer feed block is deferred into the
+# phase loop, to the last mixer phase, and the LUT lands immediately before
+# @convW there. Naming @rmsX on a hybrid would move it ~40 slots earlier.
+_ROPELUT_KW, _ROPELUT_ANCHOR = (
+    ("hoist_after", "inKV_V") if HYBRID_MIXER else ("hoist_before", "rmsX")
+)
+# Same treatment for the rms WEIGHT feed. The rms herd has to carry RMS (and the
+# wave index, for the decode arm's per-layer slab offset) for the DMA to name
+# both endpoints. @rmsX and @ropeLUT are anchored to @rmsW, so once @rmsW is
+# derived too the anchor chain is inW0c0 <- rmsW <- {rmsX, ropeLUT} -- which is
+# why @rmsW anchors to a channel that stays hand-written rather than to @rmsX
+# (that would close a cycle, and a cyclic chain has no correct hoist order).
+# The anchor is @rmsW2 on a POST_RMS model, not @inW0c0. Every one of the four
+# `if not RMSW_DMA:` suppression sites is immediately followed by a @rmsW2
+# endpoint, so the hand-written order is `rmsX rmsW rmsW2 inW0c0` and the
+# derived put belongs ahead of @rmsW2 -- @inW0c0 is simply the wrong neighbour,
+# and it is the FOURTH occurrence of a channel that repeats once per wave.
+# Off POST_RMS there is no @rmsW2 and @inW0c0 is right.
+#
+# This flag was off for several sessions because @inW0c0 hung qwen3_8b_q4nx,
+# gemma3_4b_q4nx and qwen25_7b_q4nx while passing the other six -- deriving
+# @rmsW collapsed the three shim tasks at slots 2-4 into one and pushed two
+# @rmsW2 tasks ~70 slots later, the same shape as the @ropeLUT 66->28 move that
+# hung lfm2. No predicate distinguished the two groups: POST_RMS, N_NORMS,
+# ROPE_W_PER_LAYER, UNI_DEC and NGLU were each checked against the split and
+# each refuted. There was no discriminator because the anchor, not the model,
+# was wrong.
+#
+# With @rmsW2 the derived form is order-identical to the hand-written one on all
+# ten models that share this builder -- same channel order at air-dma-to-channel
+# and the same shim task order, task for task, at airrt-to-npu (95 to 287 tasks
+# depending on the model), each measured at the LBUILD its own verify lit uses.
+RMSW_DMA = True
+
+# @rmsW2 is @rmsW's twin: same L3 weight BO, same shim MM2S, emitted one slot
+# later. It is ported on the same terms. Its anchor is not the same, though --
+# see _RMSW2_ANCHOR, which has to name whichever channel followed the
+# hand-written put in THIS model's arm.
+RMSW2_DMA = True
 # The mixer -> CU broadcast exists exactly when a hybrid has a mixer. A get with
 # no put is "channel op not in pairs" at emit time, so the decl, the put and the
 # four gets all key off this one predicate.
@@ -930,6 +977,120 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+
+# And the KV append. Both halves are visible in one place only if the KV cache
+# reaches the rope herd, so KVC is threaded through the segment the way RMS and
+# X are. Guarded on DYNSEQ_APPEND: with a runtime context length the append
+# offset depends on the L RTP, which would have to be threaded in as well.
+# ON for hybrids too, as of the KVC threading below. It was off for several
+# sessions, and the reason recorded for that was wrong twice over.
+#
+# The stated reason was that `hoist_before="inKV_K"` lands 40 shim slots off on
+# a hybrid. Forcing the flag True showed there was no misplaced BD because there
+# was no DMA at all -- `@appendK: 1 put(s), 0 get(s), 0 dma(s)`. On a hybrid the
+# rope body runs inside the CONV herd, called positionally as
+# `_rope_body(_arm, _lands[0])` with no kvc, so the `kvc is not None` guard was
+# false while the get suppression tested only APPEND_DMA. Fifth asymmetric port,
+# third caught by the emit-time pairing assertion.
+#
+# Threading KVC and the layer index into conv_h fixes that (see _conv_kv_opers).
+# What is left is a 4-line shim task move: @convStIn from slot 64 to 26 and the
+# second wave's @ropeLUT from 66 to 30. Three experiments place it:
+#
+#   anchor removed entirely  -> @ropeLUT STILL moves, and the appends fall to
+#                               the end of the queue. Anchor is innocent.
+#   operands threaded, DMA   -> shim task order IDENTICAL, 114/114. Threading
+#     suppressed                is innocent.
+#   both                     -> the 4-line move.
+#
+# So it is the hoist of the external half out of conv_h, and it first appears
+# inside air-to-aie: the channel op order is identical through pass 048 and
+# diverges at 049. Not an anchoring problem, which is where two sessions of
+# effort went.
+#
+# The move is BENIGN, measured rather than assumed: lfm2-1.2b -- the only model
+# with HYBRID_MIXER -- verifies topk 2/0 through its own run_npu2_verify.lit,
+# which is 32 greedy tokens x 2 prompts and would not survive a wrong KV append
+# offset. The historical "device timed out at decode pos 8" was recorded against
+# a build that could not emit the DMA, so it was never this design.
+#
+# For the record: `inKV_K` DOES repeat -- two launch-scope endpoints on lfm2,
+# one per ph0 wave -- which is the property that made `inW0c0` the wrong anchor
+# for @rmsW. But the hand-written `get @appendK` sits at launch-scope index 51
+# and the first `put @inKV_K` at 53, so first-occurrence resolution is right.
+APPEND_DMA = not DYNSEQ_APPEND
+# The hybrid's conv state, the same way. @convStIn reads [BX(t-2)|BX(t-1)] out
+# of the KV BO and @convStOut writes the shifted state back over the SAME slot,
+# so both name KVC -- which already reaches conv_h for the ported append. Only
+# a hybrid has them.
+CONVST_DMA = HYBRID_MIXER
+# And the depthwise taps. Same slab as @ropeLUT, read from the other end -- the
+# LUT takes the cos/sin prefix, @convW the taps -- so the same RMS operand and
+# the same rebuilt offset serve both.
+CONVW_DMA = HYBRID_MIXER
+# The GLU hidden slices. Two adjacent slots per loop iteration on one channel,
+# which needs the loop fold to recognise a tiled contiguous run -- otherwise the
+# derived consumer is NGLU descriptors where the hand-written one is a single
+# fill, and the refeed MM2S's counting lock is off by that factor.
+GLUOUT_DMA = True
+# And rope's Q broadcast, the one L1 -> L2 feed. Its consumer is a SEGMENT-scope
+# get on an L2 buffer, which air-dma-to-channel handles natively -- the only
+# obstacle was that the L2 buffer is allocated after the rope herd, so it does
+# not dominate it. Allocating it up front is the whole change; no new op.
+ROPEQ_DMA = True
+TOATTNQ_DMA = True
+ATTNO_DMA = True
+# And the KV re-block feed. Its consumers sit inside the attn herd's inner
+# scf.for, and its producer is a guarded segment-scope loop, so the derived
+# put has to end up back in that loop -- air-dma-to-channel does that itself
+# (it merges the rebuilt guard and fuses the loop), which is why this needs no
+# anchor. The staging buffers move to segment scope so they dominate the herd;
+# air-fuse-alloc-dealloc sinks them back into the loop afterwards.
+TOKV_DMA = True
+# And the proj egress gather: the 8 paired core emitters landing their row
+# blocks in a group memtile. Three things the DMA spelling needs that a
+# hand-written put did not:
+#   - `dest`, the runtime packet-demux destination. This is the ORIGINATOR of
+#     @outY's routing header; without it the demux has no header source.
+#   - static `channel_indices`. The sub-channel is [logical col, pair] and the
+#     column looks like a herd IV -- but inside the tx guard below it is a
+#     COMPILE-TIME CONSTANT, so no runtime selector is needed and the derived
+#     memtile get is the same constant-indexed op the design used to hand-write.
+#   - a `hoist_before` anchor on @toMain, so the derived gets land back inside
+#     each phase arm's round loop next to the put that forwards the assembled
+#     buffer, rather than beside the herd.
+# The group buffers move to segment scope so they dominate the herds, as
+# @gluOut's did. The header asymmetry -- the first lead sends HDR+PAIR_PAY and
+# the rest send PAIR_PAY -- costs nothing: a dma_memcpy_nd has independent
+# source and destination extents, so it is one op either way.
+#
+# Paired emitters only. The non-paired path (PAIR_ROWS == 1, gemma3-4b and
+# friends) is a different herd body with one group per COLUMN rather than two
+# per block, so its emitter and its group-to-herd map both differ; porting it is
+# its own change, and threading a buffer into a herd whose body does not take
+# one is a TypeError at build time, not a compile error.
+OUTA_DMA = True and MODEL["PAIR_ROWS"] != 1
+# LAYEROUT_DMA: the rms core names @layerOut on an air.dma_memcpy_nd whose far
+# operand is X, the L3 buffer it already holds for @rmsX. Only the DECODE arm:
+# the vocab arm drains into Y, which is not a rms-herd operand.
+#
+# The anchor is @appendV, which has EXACTLY ONE launch-scope endpoint, in the
+# slot immediately before this drain. That uniqueness is the whole reason this
+# one is portable and @inKV is not -- an anchor names a channel and resolves to
+# its LAST endpoint, so a channel that repeats cannot name a slot in the middle
+# of its own run.
+LAYEROUT_DMA = int(_os.environ.get("LAYEROUT_DMA", "1")) != 0
+# INX_DMA: the cores name @inX on an air.dma_memcpy_nd whose far operand is the
+# X memtile buffer, and air-dma-to-channel derives the memtile puts -- window,
+# count and position all. The `_jj` sub-block loop in the feed goes away
+# entirely: it existed only to step a window the compiler can read off the two
+# buffer sizes (512 memtile / 256 core = two pieces, ascending, one lock event
+# each). The buffer has to be a herd operand for that, which is why it is
+# allocated once at segment scope instead of per feed round.
+# Scoped off the non-paired proj body for the same reason OUTA_DMA is: that
+# herd body does not take the extra operand, and threading one in is a
+# TypeError at build time rather than a compile error.
+INX_DMA = int(_os.environ.get("INX_DMA", "1")) != 0 and MODEL["PAIR_ROWS"] != 1
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -959,6 +1120,38 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # The append->readback RAW on the shared cache is ordered in the runtime sequence by
 # air-annotate-append-barrier, which derives it from the shared L3 memref (= the
 # reference's dma_wait). Only for MULTIBLK (L>1); L=1 uses the trivial on-chip-KV path.
+# ---- port predicates -------------------------------------------------------
+# One per ported feed, tested by BOTH the producer suppression and the consumer
+# emission. Four separate device failures in this file came from a producer
+# keyed on its flag alone while the consumer also required a buffer or a config
+# term: the consumer correctly fell back to the hand-written channel op and the
+# producer had already been deleted, leaving it unpaired (or, worse, compiling
+# and hanging). Anything a consumer tests belongs here.
+#
+# The per-buffer half (`rms is not None`, `qmt is not None`, ...) cannot live
+# here -- those are herd operands -- so each site ANDs it in. The static half
+# must not be duplicated.
+# The per-layer clause is gone: _rope_off_h rebuilds the slab offset from the
+# wave index now, so ROPE_W_PER_LAYER is no longer a reason to keep the
+# hand-written pair. _rope_body asserts if that index is ever missing, which
+# turns a silently unpaired channel into a build error.
+ROPELUT_DMA_OK = ROPELUT_DMA
+
+# Which channel the derived @rmsW2 put has to land ahead of in a DECODE arm:
+# whichever one followed the hand-written put there.
+#
+# @ropeLUT is emitted between them in the source, but it is DERIVED on every
+# model now and anchored `hoist_after="rmsW"`, so it lands between @rmsW and
+# @rmsW2 rather than after the pair. @inW0c0 -- the first weight put -- is the
+# next fixed thing along, and it is the answer for the hybrid too, which has no
+# @ropeLUT in this arm at all.
+#
+# Naming @ropeLUT instead was measured while the LUT was still hand-written on
+# five models, and it is wrong now that it is not: it moves the whole rms group,
+# because @rmsW chains onto @rmsW2 and @rmsX onto @rmsW.
+_RMSW2_ANCHOR = "inW0c0"
+
+
 KV_APPEND = MULTIBLK
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
 # IN-PLACE into arg0 (the hidden_states BO), so layer N's output == layer N+1's input
@@ -1341,6 +1534,47 @@ CONV_ST_BASE = UNI_DEC * KV_LAYER if HYBRID_MIXER else 0
 Y_LAYER = sum(
     ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p not in MIXER_DESTS
 )  # Y / layer
+
+
+def _assert_channels_paired(module):
+    """Every air.channel must have at least one producer and one consumer.
+
+    A ported feed is spelled as an air.dma_memcpy_nd naming the channel, and
+    air-dma-to-channel derives the other half -- so the hand-written op on that
+    side has to be deleted, or the feed would be doubled. Deleting it under a
+    weaker condition than the one the DMA is emitted under leaves the surviving
+    half unpaired. Ten models import this builder with different configs, and
+    that mistake has been made four times (@toAttnQ, @attnO, @appendK/@appendV,
+    @ropeLUT), each time found only on the model it broke.
+
+    aircc does catch it -- `'air.channel.get' op found channel op not in pairs`
+    -- but tens of minutes later, pointing at a line of generated IR, naming
+    neither the feed nor the flag. Catch it here, where the name is still known.
+    """
+    import re as _re
+    from collections import Counter as _Counter
+
+    text = str(module)
+    puts = _Counter(_re.findall(r"air\.channel\.put[^@]*@([A-Za-z0-9_]+)", text))
+    gets = _Counter(_re.findall(r"air\.channel\.get[^@]*@([A-Za-z0-9_]+)", text))
+    # A DMA naming a channel supplies whichever half the pass will derive, so it
+    # counts for both.
+    dmas = _Counter(_re.findall(r"channel = @([A-Za-z0-9_]+)", text))
+    bad = []
+    for ch in sorted(set(puts) | set(gets) | set(dmas)):
+        has_src = puts[ch] or dmas[ch]
+        has_dst = gets[ch] or dmas[ch]
+        if not (has_src and has_dst):
+            bad.append(
+                f"@{ch}: {puts[ch]} put(s), {gets[ch]} get(s), {dmas[ch]} dma(s)"
+            )
+    if bad:
+        raise AssertionError(
+            f"DECODE_MODEL={MODEL_NAME}: channel op not in pairs, at emit time:\n  "
+            + "\n  ".join(bad)
+            + "\nA port's producer suppression must test exactly what its "
+            "consumer tests -- see the port predicates near KV_APPEND."
+        )
 
 
 def build_module():
@@ -2243,7 +2477,6 @@ def build_module():
                             # weights; drain VOCAB_SIZE_PADDED logits into Y. No attn/rope/
                             # glu/KV feeds (those herds are parked -- RTP-unarmed -- so they
                             # need no input; feeding them would only back-pressure).
-                            ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
                             # real-lm-head final norm (model.norm.weight): a DEDICATED slot
                             # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
                             # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
@@ -2260,41 +2493,45 @@ def build_module():
                                 # LO half is the last rope-region K -- a harmless in-bounds
                                 # dummy ([_final_norm_off-K .. +2K] is the BO's last 2K). rmsW2
                                 # is a 2K dummy. Keeps the shared packet group hole-free.
-                                ChannelPut(
-                                    "rmsW",
-                                    RMS,
-                                    offsets=[_final_norm_off - K],
-                                    sizes=[2 * K],
-                                    strides=[1],
-                                )
-                                ChannelPut(
-                                    "rmsW2",
-                                    RMS,
-                                    offsets=[0],
-                                    sizes=[2 * K],
-                                    strides=[1],
-                                )
+                                if not RMSW_DMA:
+                                    ChannelPut(
+                                        "rmsW",
+                                        RMS,
+                                        offsets=[_final_norm_off - K],
+                                        sizes=[2 * K],
+                                        strides=[1],
+                                    )
+                                if not RMSW2_DMA:
+                                    ChannelPut(
+                                        "rmsW2",
+                                        RMS,
+                                        offsets=[0],
+                                        sizes=[2 * K],
+                                        strides=[1],
+                                    )
                             else:
-                                ChannelPut(
-                                    "rmsW",
-                                    RMS,
-                                    offsets=[_final_norm_off],
-                                    sizes=[K],
-                                    strides=[1],
-                                )
+                                if not RMSW_DMA:
+                                    ChannelPut(
+                                        "rmsW",
+                                        RMS,
+                                        offsets=[_final_norm_off],
+                                        sizes=[K],
+                                        strides=[1],
+                                    )
                                 if POST_RMS:
                                     # DUMMY post-LN weight: rmsW2 is decode-only but packet-
                                     # muxes onto the same shim MM2S as the vocab-active rmsX
                                     # (rms tile has only 2 S2MM). Feeding + consuming a dummy
                                     # in vocab keeps that packet group hole-free so the vocab
                                     # tail doesn't stall (consumed by _rms_lm_head dummy get).
-                                    ChannelPut(
-                                        "rmsW2",
-                                        RMS,
-                                        offsets=[0],
-                                        sizes=[K],
-                                        strides=[1],
-                                    )
+                                    if not RMSW2_DMA:
+                                        ChannelPut(
+                                            "rmsW2",
+                                            RMS,
+                                            offsets=[0],
+                                            sizes=[K],
+                                            strides=[1],
+                                        )
                             # vocab weight feed: round-major, NCY-fanned. Python-unrolled
                             # (NOT an AIR for_ -- a launch-scope for_ DEADLOCKS the shim
                             # sequence). inW puts are issue_token=false so the shim reuses BD
@@ -2335,43 +2572,46 @@ def build_module():
                             # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
                             # on-chip rms normalizes + re-feeds X (see refeed()). X is
                             # in-place (offset 0 every layer -- the chained hidden state).
-                            ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
                                 # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
                                 # post_ffn] (slab 2K..4K). Keeps the rms tile at <=4 packet
                                 # ids per S2MM port; the lo/hi kernels slice each half.
-                                ChannelPut(
-                                    "rmsW",
-                                    RMS,
-                                    offsets=[_rbase],
-                                    sizes=[2 * K],
-                                    strides=[1],
-                                )
-                                ChannelPut(
-                                    "rmsW2",
-                                    RMS,
-                                    offsets=[_lo(_rbase, 2 * K)],
-                                    sizes=[2 * K],
-                                    strides=[1],
-                                )
-                            else:
-                                ChannelPut(
-                                    "rmsW",
-                                    RMS,
-                                    offsets=[_rbase],
-                                    sizes=[K],
-                                    strides=[1],
-                                )
-                                if POST_RMS:
-                                    # post_attention_layernorm weight on its own channel.
+                                if not RMSW_DMA:
+                                    ChannelPut(
+                                        "rmsW",
+                                        RMS,
+                                        offsets=[_rbase],
+                                        sizes=[2 * K],
+                                        strides=[1],
+                                    )
+                                if not RMSW2_DMA:
                                     ChannelPut(
                                         "rmsW2",
                                         RMS,
-                                        offsets=[_lo(_rbase, K)],
+                                        offsets=[_lo(_rbase, 2 * K)],
+                                        sizes=[2 * K],
+                                        strides=[1],
+                                    )
+                            else:
+                                if not RMSW_DMA:
+                                    ChannelPut(
+                                        "rmsW",
+                                        RMS,
+                                        offsets=[_rbase],
                                         sizes=[K],
                                         strides=[1],
                                     )
+                                if POST_RMS:
+                                    # post_attention_layernorm weight on its own channel.
+                                    if not RMSW2_DMA:
+                                        ChannelPut(
+                                            "rmsW2",
+                                            RMS,
+                                            offsets=[_lo(_rbase, K)],
+                                            sizes=[K],
+                                            strides=[1],
+                                        )
                             # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
                             # ONE per-position LUT SHARED across layers (single theta) at a
                             # layer-independent offset. ROPE_W_PER_LAYER (gemma/qwen3
@@ -2407,19 +2647,31 @@ def build_module():
                             # unchanged.
                             def _emit_mixer_feeds():
                                 _mix_gate(
-                                    lambda: ChannelPut(
-                                        "ropeLUT",
-                                        RMS,
-                                        offsets=[_rope_off],
-                                        sizes=[ROPE_LUT_LEN],
-                                        strides=[1],
+                                    # ROPELUT_DMA: the rope core spells this feed
+                                    # as an air.dma_memcpy_nd naming @ropeLUT, so
+                                    # air-dma-to-channel derives this put and
+                                    # writing it here as well would double it.
+                                    (
+                                        (lambda: None)
+                                        if (ROPELUT_DMA_OK and RMS is not None)
+                                        else lambda: ChannelPut(
+                                            "ropeLUT",
+                                            RMS,
+                                            offsets=[_rope_off],
+                                            sizes=[ROPE_LUT_LEN],
+                                            strides=[1],
+                                        )
                                     ),
-                                    lambda: ChannelPut(
-                                        "convW",
-                                        RMS,
-                                        offsets=[_rope_off],
-                                        sizes=[CONV_W_LEN],
-                                        strides=[1],
+                                    (
+                                        (lambda: None)
+                                        if (CONVW_DMA and RMS is not None)
+                                        else lambda: ChannelPut(
+                                            "convW",
+                                            RMS,
+                                            offsets=[_rope_off],
+                                            sizes=[CONV_W_LEN],
+                                            strides=[1],
+                                        )
                                     ),
                                     # Rope AND the mixer both run on every decode
                                     # wave, so both LUTs have to arrive on every
@@ -2440,6 +2692,8 @@ def build_module():
                                     _cst = _lo(_lb(CONV_ST_LAYER), CONV_ST_BASE)
 
                                     def _conv_state():
+                                        if CONVST_DMA:
+                                            return
                                         ChannelPut(
                                             "convStIn",
                                             KVC,
@@ -2496,6 +2750,13 @@ def build_module():
                                     # each, CU-order); the nd write places group gi at its
                                     # region slot (ATTN_L-1)*REGION_W. outer dim=NGRP at
                                     # REGION_STRIDE, inner REGION_W contiguous.
+                                    if APPEND_DMA:
+                                        # Derived from the DMAs in the rope herd.
+                                        # Converting a get to a DMA means deleting
+                                        # the matching hand-written put -- and
+                                        # here the pair is the other way round, so
+                                        # it is these gets that go.
+                                        return
                                     _apkG = ChannelGet(
                                         "appendK",
                                         KVC,
@@ -2750,14 +3011,18 @@ def build_module():
                             _out_base = 0
                             # BD-COMPACTION: single full-size drain (matches the rms single
                             # layerOut put) instead of LAYER_RNDS per-round gets.
-                            ChannelGet(
-                                "layerOut",
-                                _out_bo,
-                                indices=[idx(0)],
-                                offsets=[_out_base],
-                                sizes=[LAYER_RNDS * PAYLOAD],
-                                strides=[1],
-                            )
+                            # LAYEROUT_DMA: derived from the rms core's DMA, which
+                            # names X as the far end -- writing it here as well
+                            # would double the drain.
+                            if not LAYEROUT_DMA:
+                                ChannelGet(
+                                    "layerOut",
+                                    _out_bo,
+                                    indices=[idx(0)],
+                                    offsets=[_out_base],
+                                    sizes=[LAYER_RNDS * PAYLOAD],
+                                    strides=[1],
+                                )
                             yield_([])
 
                         index_switch(
@@ -2792,15 +3057,40 @@ def build_module():
                     if (HYBRID_MIXER and a_iv is not None)
                     else None
                 )
+                # RMS reaches segment scope because the rope LUT feed is spelled
+                # as an air.dma_memcpy_nd naming @ropeLUT, and a DMA has to name
+                # BOTH endpoints in one place -- air-dma-to-channel derives the
+                # shim put from it. The explicit put/get form does not need this,
+                # which is why no other L3 buffer is a segment operand.
                 _seg_opers = (
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
+                    + [RMS, X]
+                    + (
+                        [KVC]
+                        if ((APPEND_DMA or CONVST_DMA) and KVC is not None)
+                        else []
+                    )
                     + ([L_rt] if DYNSEQ else [])
+                )
+                # Index of RMS above; keeps _sa[-1] meaning L_rt for DYNSEQ.
+                _seg_rms_idx = (1 if a_iv is not None else 0) + (
+                    1 if _seg_arm_rt is not None else 0
                 )
 
                 @segment(name="seg", operands=_seg_opers)
                 def seg(*_sa):
                     _seg_iv = _sa[0] if a_iv is not None else None
+                    _seg_RMS = _sa[_seg_rms_idx]
+                    # X follows RMS, for the @rmsX feed spelled as a DMA.
+                    _seg_X = _sa[_seg_rms_idx + 1]
+                    # KVC follows X, for the @appendK/@appendV feeds spelled as
+                    # DMAs. Appended after X so _sa[-1] still means L_rt.
+                    _seg_KVC = (
+                        _sa[_seg_rms_idx + 2]
+                        if ((APPEND_DMA or CONVST_DMA) and KVC is not None)
+                        else None
+                    )
                     # The context length reaches the attention herd from here, as a
                     # herd operand: an RTP slot the instruction stream writes per
                     # dispatch, not a constant folded into the core ELF.
@@ -2879,26 +3169,46 @@ def build_module():
                     # times over @xnorm) in 512 chunks -> broadcast
                     # 256-blocks. RMS_REFEED*(2048/512) gets. (reproducer core_2_2 +
                     # mem_1_1 x_buffer 512.)
+                    # Allocated UP FRONT under INX_DMA so it dominates every proj
+                    # herd: the cores name both endpoints in one op, so the X
+                    # memtile buffer has to be a herd operand. Same move @outA's
+                    # group buffers and @gluOut's down buffer make.
+                    _xb_pre = None
+                    if INX_DMA:
+                        _xb_pre = AllocOp(xmt_l2, [], [])
+                        _xb_pre.operation.attributes["air.memtile_col"] = (
+                            IntegerAttr.get(T.i32(), XMT_PCOL)
+                        )
+
                     def _feed_inX(src, total_chunks):
                         for _rc in for_(idx(0), idx(total_chunks), idx(1)):
-                            xb = AllocOp(xmt_l2, [], [])
-                            xb.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(T.i32(), XMT_PCOL)
-                            )
+                            if INX_DMA:
+                                xb = _xb_pre
+                            else:
+                                xb = AllocOp(xmt_l2, [], [])
+                                xb.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), XMT_PCOL)
+                                )
                             ChannelGet(
                                 src, xb, offsets=[0], sizes=[2 * COL_BLOCK], strides=[1]
                             )
-                            for _jj in for_(idx(0), idx(2), idx(1)):
-                                joff = arith.muli(_jj, idx(COL_BLOCK))
-                                ChannelPut(
-                                    "inX",
-                                    xb,
-                                    offsets=[joff],
-                                    sizes=[COL_BLOCK],
-                                    strides=[1],
-                                )
-                                yield_([])
-                            DeallocOp(xb)
+                            if not INX_DMA:
+                                # The sub-block loop exists only to step the window,
+                                # which is why it disappears when the cores spell the
+                                # transfer: the compiler reads the two pieces off the
+                                # buffer sizes and emits one put per piece, in order,
+                                # right here after the fill.
+                                for _jj in for_(idx(0), idx(2), idx(1)):
+                                    joff = arith.muli(_jj, idx(COL_BLOCK))
+                                    ChannelPut(
+                                        "inX",
+                                        xb,
+                                        offsets=[joff],
+                                        sizes=[COL_BLOCK],
+                                        strides=[1],
+                                    )
+                                    yield_([])
+                                DeallocOp(xb)
                             yield_([])
 
                     # ONE feed loop reading the convergent @xnorm: rms-X (RMS_REFEED
@@ -3013,14 +3323,34 @@ def build_module():
                     # it must be vocab-sized in vocab mode (as the validated standalone)
                     # -- else the col-0/1/6 assembly memtiles stall on outA rounds the
                     # vocab proj never produces. CDO-identity needs this count-free later.
+                    # Allocated UP FRONT so they dominate the proj herds: with
+                    # OUTA_DMA the emitters name both endpoints in one op, so the
+                    # group buffer has to be an operand of the herd. Same move
+                    # @gluOut's down buffer makes.
+                    _grp_pre = []
+                    if OUTA_DMA:
+                        for g in range(N_GRP):
+                            _gb = AllocOp(grp_l2, [], [])
+                            _gb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), GRP_PCOL[g])
+                            )
+                            _grp_pre.append(_gb)
+
                     def _egress(_nrc):
                         for _r in for_(idx(0), idx(_nrc), idx(1)):
                             for g in range(N_GRP):
-                                grp = AllocOp(grp_l2, [], [])
-                                grp.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), GRP_PCOL[g])
-                                )
+                                if OUTA_DMA:
+                                    grp = _grp_pre[g]
+                                else:
+                                    grp = AllocOp(grp_l2, [], [])
+                                    grp.operation.attributes["air.memtile_col"] = (
+                                        IntegerAttr.get(T.i32(), GRP_PCOL[g])
+                                    )
                                 for k, (cx, pp) in enumerate(grp_leads(g)):
+                                    if OUTA_DMA:
+                                        # derived from the emitters' DMAs, anchored
+                                        # back into this loop by hoist_before=@toMain
+                                        continue
                                     off = 0 if k == 0 else HDR + k * PAIR_PAY
                                     sz = (HDR + PAIR_PAY) if k == 0 else PAIR_PAY
                                     ChannelGet(
@@ -3039,7 +3369,8 @@ def build_module():
                                     sizes=[GRP_ROWS],
                                     strides=[1],
                                 )
-                                DeallocOp(grp)
+                                if not OUTA_DMA:
+                                    DeallocOp(grp)
                             ml = AllocOp(main_l2, [], [])
                             ml.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), MAIN_PCOL)
@@ -3136,7 +3467,29 @@ def build_module():
                     # the fix for the fused vocab deadlock: in vocab mode dest0
                     # never flows, and an idle compute-tile S2MM does NOT stall the
                     # col-2 memtile that the vocab X-feed/rms share.
-                    def _rope_body(_arm, a_qkv=None):
+                    def _lut_slab_off(kiv):
+                        """The rope_w slab offset, rebuilt inside a herd.
+
+                        _rope_off is a launch-scope expression and a herd is
+                        IsolatedFromAbove, so it has to be recomputed from the
+                        wave index. Both readers of that slab want it: @ropeLUT
+                        takes the cos/sin + qk-norm prefix and @convW the
+                        depthwise taps, out of the SAME per-layer region.
+                        """
+                        _o = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                        if not (ROPE_W_PER_LAYER and MULTIBLK):
+                            return _o
+                        assert kiv is not None, (
+                            "the rope_w slab is per-layer but the wave index did "
+                            "not reach this herd: the launch-scope put is "
+                            "suppressed and the get would be unpaired"
+                        )
+                        _b = arith.muli(kiv, idx(ROPE_W_LEN))
+                        return arith.addi(_b, idx(_o)) if _o else _b
+
+                    def _rope_body(
+                        _arm, a_qkv=None, rms=None, kvc=None, kiv=None, qmt=None
+                    ):
                         # a_qkv given => the caller owns the buffer and has
                         # already filled it (the hybrid hands rope the ph0
                         # landing). None => rope allocates and fills its own.
@@ -3161,7 +3514,30 @@ def build_module():
                                 strides=[idx(1)],
                             )
                         a_lut = AllocOp(ropelut_l1, [], [])
-                        ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
+                        _rope_off_h = _lut_slab_off(kiv)
+                        if ROPELUT_DMA_OK and rms is not None:
+                            # Spelled as a DMA naming @ropeLUT rather than as a
+                            # get with a matching put at launch scope: the pass
+                            # hoists the shim put out for us. The declaration is
+                            # untouched, so channel_type and the placement pins
+                            # on it survive.
+                            DmaMemcpyNd(
+                                a_lut,
+                                rms,
+                                src_offsets=[_rope_off_h],
+                                src_sizes=[ROPE_LUT_LEN],
+                                src_strides=[1],
+                                channel="ropeLUT",
+                                channel_indices=[0],
+                                # Keep this feed's shim BD where the hand-written
+                                # put had it: straight after @rmsW, ahead of the
+                                # weight stream. Without it the derived put lands
+                                # at the herd's position, slot 6 -> 18, and the
+                                # rope core deadlocks waiting on its LUT.
+                                **{_ROPELUT_KW: _ROPELUT_ANCHOR},
+                            )
+                        else:
+                            ChannelGet("ropeLUT", a_lut, indices=[idx(0)])
                         a_q = AllocOp(ropeq_l1, [], [])
                         a_k = AllocOp(ropekv_l1, [], [])
                         a_v = AllocOp(ropekv_l1, [], [])
@@ -3177,19 +3553,94 @@ def build_module():
                         # natural [qh,dh] -> [dc,qh,de], the kernel's q layout.
                         # q (whole 2048) -> q broadcast memtile (1 rope MM2S);
                         # the memtile fans out per-CU reordered (reference mem_5_1).
-                        ChannelPut(
-                            "ropeQ",
-                            a_q,
-                            indices=[idx(0)],
-                            offsets=[idx(0)],
-                            sizes=[idx(DQ_PADDED)],
-                            strides=[idx(1)],
-                        )
+                        if ROPEQ_DMA and qmt is not None:
+                            # rope's Q broadcast, spelled as a DMA naming @ropeQ. Unlike
+                            # the other feeds this one never touches the shim: it is
+                            # L1 -> L2, so the derived half lands at SEGMENT scope. The
+                            # anchor still matters, because the get has to precede the
+                            # per-CU fan-out that reads the same buffer.
+                            DmaMemcpyNd(
+                                qmt,
+                                a_q,
+                                dst_offsets=[0],
+                                dst_sizes=[DQ_PADDED],
+                                dst_strides=[1],
+                                src_offsets=[0],
+                                src_sizes=[DQ_PADDED],
+                                src_strides=[1],
+                                channel="ropeQ",
+                                channel_indices=[0],
+                                hoist_unguarded=HYBRID_MIXER,
+                            )
+                        else:
+                            ChannelPut(
+                                "ropeQ",
+                                a_q,
+                                indices=[idx(0)],
+                                offsets=[idx(0)],
+                                sizes=[idx(DQ_PADDED)],
+                                strides=[idx(1)],
+                            )
                         if MULTIBLK:
                             # the reference append: this token's roped K (all heads) and
                             # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
                             # whole cache is then read back for the block loop.
-                            if KV_APPEND:
+                            if KV_APPEND and APPEND_DMA and kvc is not None:
+                                # Spelled as DMAs naming @appendK / @appendV.
+                                # The pass derives the shim S2MM half, and the
+                                # SECOND run of air-annotate-append-barrier --
+                                # after air-dma-to-channel, once both L3
+                                # endpoints share the launch block -- puts the
+                                # append->readback barrier back on it.
+                                #
+                                # The dst pattern is the launch-scope scatter the
+                                # hand-written get had: group gi lands at its
+                                # region slot. _kbase and the slot offset are
+                                # launch-scope, so they are rebuilt here from the
+                                # wave index (a herd is IsolatedFromAbove).
+                                _kb_h = (
+                                    arith.muli(kiv, idx(KV_LAYER))
+                                    if kiv is not None
+                                    else 0
+                                )
+                                _slot_h = (ATTN_L - 1) * REGION_W
+
+                                def _apoff(extra):
+                                    _e = extra + _slot_h
+                                    if kiv is None:
+                                        return _e
+                                    return arith.addi(_kb_h, idx(_e)) if _e else _kb_h
+
+                                DmaMemcpyNd(
+                                    kvc,
+                                    a_k,
+                                    dst_offsets=[_apoff(0)],
+                                    dst_sizes=[NGRP, REGION_W],
+                                    dst_strides=[REGION_STRIDE, 1],
+                                    src_offsets=[0],
+                                    src_sizes=[DK_TOT_A],
+                                    src_strides=[1],
+                                    channel="appendK",
+                                    channel_indices=[0],
+                                    # Keep the shim BD where the hand-written get
+                                    # had it: ahead of the readback that must
+                                    # observe it.
+                                    hoist_before="inKV_K",
+                                )
+                                DmaMemcpyNd(
+                                    kvc,
+                                    a_v,
+                                    dst_offsets=[_apoff(_vreg_off(0))],
+                                    dst_sizes=[NGRP, REGION_W],
+                                    dst_strides=[REGION_STRIDE, 1],
+                                    src_offsets=[0],
+                                    src_sizes=[DK_TOT_A],
+                                    src_strides=[1],
+                                    channel="appendV",
+                                    channel_indices=[0],
+                                    hoist_after="appendK",
+                                )
+                            elif KV_APPEND:
                                 ChannelPut(
                                     "appendK",
                                     a_k,
@@ -3235,6 +3686,47 @@ def build_module():
                         DeallocOp(a_k)
                         DeallocOp(a_v)
 
+                    # The q broadcast memtile buffer, hoisted ahead of the rope
+                    # herd so it DOMINATES it and can be passed in as an operand.
+                    # That is what lets rope's Q feed be spelled as a DMA naming
+                    # @ropeQ: a DMA names both endpoints in one place, and this
+                    # is the only place both are visible. Allocated at segment
+                    # scope rather than inside the decode arm for the same
+                    # reason -- the rope herd is a sibling of that arm.
+                    _omtb_pre = None
+                    _qmtb_pre = None
+                    if ATTN_SUBSYS and ATTNO_DMA:
+                        _omtb_pre = AllocOp(omt_l2, [], [])
+                        _omtb_pre.operation.attributes["air.memtile_col"] = (
+                            IntegerAttr.get(T.i32(), 5)
+                        )
+                    if ATTN_SUBSYS and ROPEQ_DMA:
+                        _qmtb_pre = AllocOp(qmt_l2, [], [])
+                        # Same pin the hand-written qmtb carries (#1969): the
+                        # derived column is template-length dependent, and at
+                        # ATTN_MAXL=128 qwen3-4b lands on mem_2_1 and times out.
+                        # The ported path returns before that alloc is reached,
+                        # so the attribute has to be repeated here or the port
+                        # silently drops the fix.
+                        _qmtb_pre.operation.attributes["air.memtile_col"] = (
+                            IntegerAttr.get(T.i32(), 5)
+                        )
+                        _qmtb_pre.operation.attributes["air.no_split"] = UnitAttr.get()
+                    # One (K, V) staging pair per attn column group. Per-iteration
+                    # in the channel form; at segment scope here because a herd
+                    # operand must dominate the herd, and the producer loop is a
+                    # sibling of the arm the herd lives in.
+                    _kvstage_pre = []
+                    if ATTN_SUBSYS and KV_SPLIT and TOKV_DMA:
+                        for _gcol, _gcus in ATTN_COL_GROUPS:
+                            _pair = []
+                            for _ in range(2):
+                                _b = AllocOp(kvblk_l2, [], [])
+                                _b.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), _gcol)
+                                )
+                                _pair.append(_b)
+                            _kvstage_pre.append(_pair)
                     if ATTN_SUBSYS and not HYBRID_MIXER:
                         # BUG FIX (later43c): the rope arm MUST track the mode like
                         # proj/rms (0 in vocab). Hardcoded 1 kept rope in _dec()
@@ -3243,10 +3735,29 @@ def build_module():
                         # the LM launch waits on -> TIMEOUT.
                         _arm_rope = _seg_arm
 
-                        @herd(name="rope", sizes=[1, 1], operands=[_arm_rope])
-                        def rope_h(tx, ty, _sx, _sy, _arm):
+                        # The wave index rides along on its OWN terms, not on the
+                        # KV cache's. @appendK wants both; @ropeLUT wants only the
+                        # index, because a per-layer rope_w slab is offset by it.
+                        # Coupling them kept the LUT hand-written on every qk-norm
+                        # model for no reason but the operand list's shape.
+                        _has_kvc = _seg_KVC is not None
+                        _has_riv = _seg_iv is not None
+                        _rope_opers = (
+                            [_arm_rope, _seg_RMS]
+                            + ([_seg_KVC] if _has_kvc else [])
+                            + ([_seg_iv] if _has_riv else [])
+                            + ([_qmtb_pre] if _qmtb_pre is not None else [])
+                        )
+                        _n_kv = (1 if _has_kvc else 0) + (1 if _has_riv else 0)
+
+                        @herd(name="rope", sizes=[1, 1], operands=_rope_opers)
+                        def rope_h(tx, ty, _sx, _sy, _arm, _rms, *_rest):
+                            _kvc = _rest[0] if _has_kvc else None
+                            _kiv = _rest[1 if _has_kvc else 0] if _has_riv else None
+                            _qmt = _rest[_n_kv] if len(_rest) > _n_kv else None
+
                             def _dec():
-                                _rope_body(_arm)
+                                _rope_body(_arm, rms=_rms, kvc=_kvc, kiv=_kiv, qmt=_qmt)
                                 yield_([])
 
                             def _voc():
@@ -3289,6 +3800,41 @@ def build_module():
                         # per-layer IS_ATTN and has to survive to runtime.
                         _arm_conv = _core_arm
 
+                        # The hybrid runs rope inside THIS herd, so the ported
+                        # append's operands have to reach it here. On the
+                        # attention-only path they reach the rope herd instead
+                        # (see _rope_opers) and this list is empty, which keeps
+                        # conv_h's signature unchanged for every model that is
+                        # not a hybrid.
+                        # Same split as the rope herd's: @appendK wants the KV
+                        # cache AND the wave index, @ropeLUT and @convW only the
+                        # index. Coupling them made forcing APPEND_DMA off drop the
+                        # index and trip _lut_slab_off's assertion -- caught by the
+                        # attribute-parity gate, which is the arm that exercises it.
+                        _has_ckvc = (APPEND_DMA or CONVST_DMA) and _seg_KVC is not None
+                        _has_civ = _seg_iv is not None
+                        _conv_append_opers = ([_seg_KVC] if _has_ckvc else []) + (
+                            [_seg_iv] if _has_civ else []
+                        )
+                        _n_capp = len(_conv_append_opers)
+                        _n_cqmt = 1 if _qmtb_pre is not None else 0
+                        # RMS rides along too, for the ported @ropeLUT: a hybrid
+                        # runs _rope_body on THIS herd's stage tile rather than on
+                        # a dedicated rope herd, so the weight BO the LUT is read
+                        # from has to be visible here. That absence, not anything
+                        # about the LUT itself, is why the hybrid kept the
+                        # hand-written pair.
+                        _conv_rms_opers = (
+                            [_seg_RMS]
+                            if ((ROPELUT_DMA or CONVW_DMA) and _seg_RMS is not None)
+                            else []
+                        )
+                        _conv_kv_opers = (
+                            _conv_append_opers
+                            + ([_qmtb_pre] if _qmtb_pre is not None else [])
+                            + _conv_rms_opers
+                        )
+
                         @herd(
                             name="conv",
                             # Two vertically adjacent tiles: ty=0 stages the ph0
@@ -3296,9 +3842,15 @@ def build_module():
                             # buffer and computes. They hand it over as NEIGHBOUR
                             # MEMORY, not DMA -- see shortconv.cc.
                             sizes=[1, 2],
-                            operands=[a_mix.result, _arm_conv],
+                            # KVC and the layer index ride along only for the
+                            # ported append: the DMA names both endpoints in one
+                            # place, so the L3 cache has to be visible inside the
+                            # herd. A herd is IsolatedFromAbove, which is why the
+                            # layer index comes in too -- the append offset is
+                            # rebuilt from it here rather than carried in.
+                            operands=[a_mix.result, _arm_conv] + _conv_kv_opers,
                         )
-                        def conv_h(tx, ty, _sx, _sy, mix, _arm):
+                        def conv_h(tx, ty, _sx, _sy, mix, _arm, *_ckv):
                             def _stage_ingest():
                                 """Land ph0's whole egress, WHATEVER the layer type.
 
@@ -3342,14 +3894,37 @@ def build_module():
 
                             def _convw_get():
                                 # Taps land in the tail of the shared buffer.
-                                ChannelGet(
-                                    "convW",
-                                    mix,
-                                    indices=[idx(0)],
-                                    offsets=[idx(CONV_IN)],
-                                    sizes=[idx(CONV_W_LEN)],
-                                    strides=[idx(1)],
-                                )
+                                if CONVW_DMA and _crms is not None:
+                                    DmaMemcpyNd(
+                                        mix,
+                                        _crms,
+                                        dst_offsets=[CONV_IN],
+                                        dst_sizes=[CONV_W_LEN],
+                                        dst_strides=[1],
+                                        src_offsets=[_lut_slab_off(_ckiv)],
+                                        src_sizes=[CONV_W_LEN],
+                                        src_strides=[1],
+                                        channel="convW",
+                                        channel_indices=[0],
+                                        # The group is a CHAIN rooted at the last
+                                        # hand-written endpoint before it:
+                                        #   inKV_V <- ropeLUT <- convW
+                                        #          <- convStIn <- convStOut
+                                        # Two transfers sharing one hoist_after
+                                        # anchor come out reversed, so each links
+                                        # to the one it follows rather than all of
+                                        # them to @inKV_V.
+                                        hoist_after="ropeLUT",
+                                    )
+                                else:
+                                    ChannelGet(
+                                        "convW",
+                                        mix,
+                                        indices=[idx(0)],
+                                        offsets=[idx(CONV_IN)],
+                                        sizes=[idx(CONV_W_LEN)],
+                                        strides=[idx(1)],
+                                    )
 
                             def _stage(_lands):
                                 # Taking the taps on THIS core also makes the stage
@@ -3391,16 +3966,56 @@ def build_module():
                                         [_lands[0], _lands[1], mix, _arm],
                                     )
 
+                            # The conv state slot, rebuilt inside the herd. _cst is
+                            # a launch-scope value and a herd is IsolatedFromAbove,
+                            # so the wave index comes in as an operand and the
+                            # offset is recomputed from it -- the same friction
+                            # @appendK's _apoff and @rmsW's _rbase_h have.
+                            _cst_kvc = _ckv[0] if _has_ckvc else None
+                            _cst_iv = _ckv[1 if _has_ckvc else 0] if _has_civ else None
+                            _ckiv = _cst_iv
+                            _crms = (
+                                _ckv[_n_capp + _n_cqmt]
+                                if len(_ckv) > _n_capp + _n_cqmt
+                                else None
+                            )
+
+                            def _cst_h():
+                                if _cst_iv is None:
+                                    return CONV_ST_BASE
+                                b = arith.muli(_cst_iv, idx(CONV_ST_LAYER))
+                                return (
+                                    arith.addi(b, idx(CONV_ST_BASE))
+                                    if CONV_ST_BASE
+                                    else b
+                                )
+
                             def _mix():
                                 a_st = AllocOp(convst_l1, [], [])
-                                ChannelGet(
-                                    "convStIn",
-                                    a_st,
-                                    indices=[idx(0)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(2 * CONV_DIM)],
-                                    strides=[idx(1)],
-                                )
+                                if CONVST_DMA and _cst_kvc is not None:
+                                    DmaMemcpyNd(
+                                        a_st,
+                                        _cst_kvc,
+                                        src_offsets=[_cst_h()],
+                                        src_sizes=[2 * CONV_DIM],
+                                        src_strides=[1],
+                                        channel="convStIn",
+                                        channel_indices=[0],
+                                        # @convW, not @inW0c0: the hand-written pair
+                                        # sits in a LATER wave than the decode arm's
+                                        # first weight put, and first-occurrence
+                                        # resolution would land it ~40 slots early.
+                                        hoist_after="convW",
+                                    )
+                                else:
+                                    ChannelGet(
+                                        "convStIn",
+                                        a_st,
+                                        indices=[idx(0)],
+                                        offsets=[idx(0)],
+                                        sizes=[idx(2 * CONV_DIM)],
+                                        strides=[idx(1)],
+                                    )
                                 a_y = AllocOp(convo_l1, [], [])
                                 a_bx = AllocOp(convst_l1, [], [])
                                 CallOp(shortconv_compute, [mix, a_st, a_y, a_bx, _arm])
@@ -3416,14 +4031,33 @@ def build_module():
                                 # sub-channel -- the constraint that the first
                                 # hybrid violated and hung on.
                                 def _put_stout():
-                                    ChannelPut(
-                                        "convStOut",
-                                        a_bx,
-                                        indices=[idx(0)],
-                                        offsets=[idx(0)],
-                                        sizes=[idx(2 * CONV_DIM)],
-                                        strides=[idx(1)],
-                                    )
+                                    if CONVST_DMA and _cst_kvc is not None:
+                                        DmaMemcpyNd(
+                                            _cst_kvc,
+                                            a_bx,
+                                            dst_offsets=[_cst_h()],
+                                            dst_sizes=[2 * CONV_DIM],
+                                            dst_strides=[1],
+                                            src_offsets=[0],
+                                            src_sizes=[2 * CONV_DIM],
+                                            src_strides=[1],
+                                            channel="convStOut",
+                                            channel_indices=[0],
+                                            # Chained off its own partner, not off
+                                            # @convW: two transfers sharing one
+                                            # anchor come out REVERSED, because each
+                                            # is inserted directly after it.
+                                            hoist_after="convStIn",
+                                        )
+                                    else:
+                                        ChannelPut(
+                                            "convStOut",
+                                            a_bx,
+                                            indices=[idx(0)],
+                                            offsets=[idx(0)],
+                                            sizes=[idx(2 * CONV_DIM)],
+                                            strides=[idx(1)],
+                                        )
 
                                 if MIX_TO_CU:
                                     # NOT straight to @xnorm: that would be a
@@ -3510,7 +4144,23 @@ def build_module():
                                 # q/k/v have to arrive on every decode wave too.
                                 # rope_compute_hyb's own IS_ATTN branch is where
                                 # the layer type is decided.
-                                _rope_body(_arm, _lands[0])
+                                # kvc/kiv are the ported append's operands, empty
+                                # unless APPEND_DMA is on for this build. Passed
+                                # by keyword so the positional a_qkv stays
+                                # _lands[0] -- the hybrid's rope reads the ph0
+                                # landing as its QKV.
+                                _rope_body(
+                                    _arm,
+                                    _lands[0],
+                                    rms=(
+                                        _ckv[_n_capp + _n_cqmt]
+                                        if len(_ckv) > _n_capp + _n_cqmt
+                                        else None
+                                    ),
+                                    kvc=_cst_kvc,
+                                    kiv=_cst_iv,
+                                    qmt=(_ckv[_n_capp] if _n_cqmt else None),
+                                )
                                 for _w in range(1, CONV_WAVES):
                                     _land(_w)
                                 # Same rule one level up: the mixer core runs
@@ -3573,6 +4223,14 @@ def build_module():
                         # q broadcast memtile (reference mem_5_1): get rope q (2048),
                         # fan out per-CU 512 reordered (pack_q [8,8,8]/[8,64,1]).
                         def _qmtb_dec():
+                            if _qmtb_pre is not None:
+                                # Allocated ahead of the rope herd and filled by
+                                # the @ropeQ DMA inside it, so the get here is
+                                # derived and the hand-written one is gone. The
+                                # buffer outlives the arm, so it is not
+                                # deallocated here either.
+                                _qmtb_fan(_qmtb_pre, dealloc=False)
+                                return
                             qmtb = AllocOp(qmt_l2, [], [])
                             # Pinned: the derived column is template-length
                             # dependent (qwen3-4b at ATTN_MAXL=128 lands on
@@ -3582,7 +4240,20 @@ def build_module():
                             )
                             qmtb.operation.attributes["air.no_split"] = UnitAttr.get()
                             ChannelGet("ropeQ", qmtb, indices=[idx(0)])
-                            for c in range(N_ATTN_CU):
+                            _qmtb_fan(qmtb)
+
+                        def _qmtb_fan(qmtb, dealloc=True):
+                            # Suppress the hand-written fan only when the DMA
+                            # form is actually in effect. _qmtb_pre is None on a
+                            # HYBRID build (the staging buffer is allocated only
+                            # for `ATTN_SUBSYS and not HYBRID_MIXER`), and there
+                            # the consumer falls back to a ChannelGet -- keying
+                            # this on the flag alone left those gets unpaired.
+                            for c in range(
+                                0
+                                if (TOATTNQ_DMA and _qmtb_pre is not None)
+                                else N_ATTN_CU
+                            ):
                                 ChannelPut(
                                     "toAttnQ",
                                     qmtb,
@@ -3608,7 +4279,8 @@ def build_module():
                                     ],
                                     strides=[idx(8), idx(DH), idx(1)],
                                 )
-                            DeallocOp(qmtb)
+                            if dealloc:
+                                DeallocOp(qmtb)
 
                         # gate-off 2026-07-15b: q-broadcast is decode-only (vocab attn idle).
                         if _seg_arm_i is not None:
@@ -3747,63 +4419,77 @@ def build_module():
                                         if c != _cus[0]:
                                             return
                                         _gw = len(_cus) * KVPC_DH
+                                        _pre = (
+                                            _kvstage_pre[_gi]
+                                            if TOKV_DMA and _kvstage_pre
+                                            else None
+                                        )
                                         for _blk in for_(idx(0), _seg_rounds(), idx(1)):
-                                            _kbuf = AllocOp(kvblk_l2, [], [])
-                                            _kbuf.operation.attributes[
-                                                "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
-                                            _vbuf = AllocOp(kvblk_l2, [], [])
-                                            _vbuf.operation.attributes[
-                                                "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
+                                            if _pre is not None:
+                                                _kbuf, _vbuf = _pre
+                                            else:
+                                                _kbuf = AllocOp(kvblk_l2, [], [])
+                                                _kbuf.operation.attributes[
+                                                    "air.memtile_col"
+                                                ] = IntegerAttr.get(T.i32(), col)
+                                                _vbuf = AllocOp(kvblk_l2, [], [])
+                                                _vbuf.operation.attributes[
+                                                    "air.memtile_col"
+                                                ] = IntegerAttr.get(T.i32(), col)
                                             ChannelGet(
                                                 "inKV_K", _kbuf, indices=[idx(_gi)]
                                             )
                                             ChannelGet(
                                                 "inKV_V", _vbuf, indices=[idx(_gi)]
                                             )
-                                            for _lc, _cc in enumerate(_cus):
-                                                ChannelPut(
-                                                    "toK",
-                                                    _kbuf,
-                                                    indices=[idx(_cc)],
-                                                    offsets=[
-                                                        idx(0),
-                                                        idx(0),
-                                                        idx(_lc * KVPC_DH),
-                                                    ],
-                                                    sizes=[
-                                                        idx(KVPC_DH // 8),
-                                                        idx(16),
-                                                        idx(8),
-                                                    ],
-                                                    strides=[idx(8), idx(_gw), idx(1)],
-                                                )
-                                                ChannelPut(
-                                                    "toV",
-                                                    _vbuf,
-                                                    indices=[idx(_cc)],
-                                                    offsets=[
-                                                        idx(0),
-                                                        idx(0),
-                                                        idx(0),
-                                                        idx(_lc * KVPC_DH),
-                                                    ],
-                                                    sizes=[
-                                                        idx(2),
-                                                        idx(KVPC_DH // 8),
-                                                        idx(8),
-                                                        idx(8),
-                                                    ],
-                                                    strides=[
-                                                        idx(_gw * 8),
-                                                        idx(8),
-                                                        idx(_gw),
-                                                        idx(1),
-                                                    ],
-                                                )
-                                            DeallocOp(_kbuf)
-                                            DeallocOp(_vbuf)
+                                            if _pre is None:
+                                                for _lc, _cc in enumerate(_cus):
+                                                    ChannelPut(
+                                                        "toK",
+                                                        _kbuf,
+                                                        indices=[idx(_cc)],
+                                                        offsets=[
+                                                            idx(0),
+                                                            idx(0),
+                                                            idx(_lc * KVPC_DH),
+                                                        ],
+                                                        sizes=[
+                                                            idx(KVPC_DH // 8),
+                                                            idx(16),
+                                                            idx(8),
+                                                        ],
+                                                        strides=[
+                                                            idx(8),
+                                                            idx(_gw),
+                                                            idx(1),
+                                                        ],
+                                                    )
+                                                    ChannelPut(
+                                                        "toV",
+                                                        _vbuf,
+                                                        indices=[idx(_cc)],
+                                                        offsets=[
+                                                            idx(0),
+                                                            idx(0),
+                                                            idx(0),
+                                                            idx(_lc * KVPC_DH),
+                                                        ],
+                                                        sizes=[
+                                                            idx(2),
+                                                            idx(KVPC_DH // 8),
+                                                            idx(8),
+                                                            idx(8),
+                                                        ],
+                                                        strides=[
+                                                            idx(_gw * 8),
+                                                            idx(8),
+                                                            idx(_gw),
+                                                            idx(1),
+                                                        ],
+                                                    )
+                                            if _pre is None:
+                                                DeallocOp(_kbuf)
+                                                DeallocOp(_vbuf)
                                             yield_([])
                                         return
                                     # ROLLED (was Python for blk in range(ATTN_ROUNDS)): AIR for_
@@ -3900,9 +4586,42 @@ def build_module():
                                     )
                                     return arith.index_cast(idx_t, _q)
 
-                                def _qk_body(sh, Lh, _c, _arm=None):
+                                # KV staging geometry for CU `_c`: its group's
+                                # (K, V) pair, and where this CU's slice sits.
+                                def _kv_src(_c, kvs):
+                                    if not (TOKV_DMA and kvs):
+                                        return None
+                                    _g = ATTN_CU_GROUP[_c]
+                                    _cus_g = ATTN_COL_GROUPS[_g][1]
+                                    return (
+                                        kvs[_g],
+                                        _cus_g.index(_c),
+                                        len(_cus_g) * KVPC_DH,
+                                    )
+
+                                def _qk_body(sh, Lh, _c, _arm=None, qmt=None, kvs=None):
                                     a_q = AllocOp(aq_l1, [], [])
-                                    ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                                    if TOATTNQ_DMA and qmt is not None:
+                                        DmaMemcpyNd(
+                                            a_q,
+                                            qmt,
+                                            src_offsets=[
+                                                0,
+                                                _c * Q_HEADS_PADDED_PER_CU,
+                                                0,
+                                            ],
+                                            src_sizes=[
+                                                DH // 8,
+                                                Q_HEADS_PADDED_PER_CU,
+                                                8,
+                                            ],
+                                            src_strides=[8, DH, 1],
+                                            channel="toAttnQ",
+                                            channel_indices=[_c],
+                                            hoist_after="ropeQ",
+                                        )
+                                    else:
+                                        ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
                                     a_m = AllocOp(m_l1, [], [])
                                     a_cc = AllocOp(c_l1, [], [])
                                     # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
@@ -3918,7 +4637,20 @@ def build_module():
                                         # the wrong buffer vs the DMA rotation -> misaligned KV ->
                                         # garbage chat. Single-buffer is aligned.
                                         a_k = AllocOp(ak_l1, [], [])
-                                        ChannelGet("toK", a_k, indices=[idx(_c)])
+                                        _src = _kv_src(_c, kvs)
+                                        if _src is not None:
+                                            _pair, _lc, _gw = _src
+                                            DmaMemcpyNd(
+                                                a_k,
+                                                _pair[0],
+                                                src_offsets=[0, 0, _lc * KVPC_DH],
+                                                src_sizes=[KVPC_DH // 8, 16, 8],
+                                                src_strides=[8, _gw, 1],
+                                                channel="toK",
+                                                channel_indices=[_c],
+                                            )
+                                        else:
+                                            ChannelGet("toK", a_k, indices=[idx(_c)])
                                         blk_c = arith.index_cast(i32, _blk)
                                         CallOp(
                                             attn_qk_blk,
@@ -3930,7 +4662,7 @@ def build_module():
                                     DeallocOp(a_m)
                                     DeallocOp(a_cc)
 
-                                def _kv_body(sh, Lh, _c, _arm=None):
+                                def _kv_body(sh, Lh, _c, _arm=None, omt=None, kvs=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
                                     a_o = AllocOp(ao_l1, [], [])
@@ -3947,7 +4679,20 @@ def build_module():
                                         # the wrong buffer vs the DMA rotation -> misaligned KV ->
                                         # garbage chat. Single-buffer is aligned.
                                         a_k = AllocOp(ak_l1, [], [])
-                                        ChannelGet("toK", a_k, indices=[idx(_c)])
+                                        _src = _kv_src(_c, kvs)
+                                        if _src is not None:
+                                            _pair, _lc, _gw = _src
+                                            DmaMemcpyNd(
+                                                a_k,
+                                                _pair[0],
+                                                src_offsets=[0, 0, _lc * KVPC_DH],
+                                                src_sizes=[KVPC_DH // 8, 16, 8],
+                                                src_strides=[8, _gw, 1],
+                                                channel="toK",
+                                                channel_indices=[_c],
+                                            )
+                                        else:
+                                            ChannelGet("toK", a_k, indices=[idx(_c)])
                                         blk_c = arith.index_cast(i32, _blk)
                                         CallOp(
                                             attn_qk_blk,
@@ -3959,7 +4704,7 @@ def build_module():
                                     DeallocOp(a_m)
                                     DeallocOp(a_cc)
 
-                                def _kv_body(sh, Lh, _c, _arm=None):
+                                def _kv_body(sh, Lh, _c, _arm=None, omt=None, kvs=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
                                     a_o = AllocOp(ao_l1, [], [])
@@ -3971,7 +4716,20 @@ def build_module():
                                         # consumption aligned with the DMA rotation (no unroll-by-2
                                         # remainder desync -> no misaligned KV).
                                         a_v = AllocOp(av_l1, [], [])
-                                        ChannelGet("toV", a_v, indices=[idx(_c)])
+                                        _src = _kv_src(_c, kvs)
+                                        if _src is not None:
+                                            _pair, _lc, _gw = _src
+                                            DmaMemcpyNd(
+                                                a_v,
+                                                _pair[1],
+                                                src_offsets=[0, 0, 0, _lc * KVPC_DH],
+                                                src_sizes=[2, KVPC_DH // 8, 8, 8],
+                                                src_strides=[_gw * 8, 8, _gw, 1],
+                                                channel="toV",
+                                                channel_indices=[_c],
+                                            )
+                                        else:
+                                            ChannelGet("toV", a_v, indices=[idx(_c)])
                                         blk_c = arith.index_cast(i32, _blk)
                                         CallOp(
                                             attn_kv_blk,
@@ -4017,6 +4775,33 @@ def build_module():
                                         DeallocOp(a_mix)
 
                                     def _put_o():
+                                        if ATTNO_DMA and omt is not None:
+                                            # All four name @attnO as anchor: the
+                                            # first finds no endpoint yet and builds
+                                            # the arm, the rest resolve to it and
+                                            # land in that same arm.
+                                            DmaMemcpyNd(
+                                                omt,
+                                                a_o,
+                                                dst_offsets=[_c * DQ_PER_CU],
+                                                dst_sizes=[DQ_PER_CU],
+                                                dst_strides=[1],
+                                                src_offsets=[0, 0, 0],
+                                                src_sizes=[
+                                                    Q_HEADS_PER_CU,
+                                                    DH // 8,
+                                                    8,
+                                                ],
+                                                src_strides=[
+                                                    8,
+                                                    Q_HEADS_PER_CU * 8,
+                                                    1,
+                                                ],
+                                                channel="attnO",
+                                                channel_indices=[_c],
+                                                hoist_after="attnO",
+                                            )
+                                            return
                                         ChannelPut(
                                             "attnO",
                                             a_o,
@@ -4074,60 +4859,164 @@ def build_module():
                         _qkb = _cus[0][4]
                         _kvb = _cus[0][5]
 
-                        def _attn_leaf(ty_arg, cu, sh, Lh, qk_ty, _arm=None):
+                        def _attn_leaf(
+                            ty_arg,
+                            cu,
+                            sh,
+                            Lh,
+                            qk_ty,
+                            _arm=None,
+                            qmt=None,
+                            omt=None,
+                            kvs=None,
+                        ):
                             _isqk = arith.cmpi(
                                 arith.CmpIPredicate.eq, ty_arg, idx(qk_ty)
                             )
                             _if = IfOp(_isqk, [], has_else=True)
                             with InsertionPoint(_if.thenRegion.blocks[0]):
-                                _qkb(sh, Lh, cu, _arm)
+                                _qkb(sh, Lh, cu, _arm, qmt, kvs)
                                 yield_([])
                             with InsertionPoint(_if.elseRegion.blocks[0]):
-                                _kvb(sh, Lh, cu, _arm)
+                                _kvb(sh, Lh, cu, _arm, omt, kvs)
                                 yield_([])
 
-                        def _attn_pairsel(ty_arg, shs, Lh, cu_lo, cu_hi, _arm=None):
+                        def _attn_pairsel(
+                            ty_arg,
+                            shs,
+                            Lh,
+                            cu_lo,
+                            cu_hi,
+                            _arm=None,
+                            qmt=None,
+                            omt=None,
+                            kvs=None,
+                        ):
                             _lo = arith.cmpi(arith.CmpIPredicate.slt, ty_arg, idx(2))
                             _ifp = IfOp(_lo, [], has_else=True)
                             with InsertionPoint(_ifp.thenRegion.blocks[0]):
-                                _attn_leaf(ty_arg, cu_lo, shs[cu_lo], Lh, 0, _arm)
+                                _attn_leaf(
+                                    ty_arg,
+                                    cu_lo,
+                                    shs[cu_lo],
+                                    Lh,
+                                    0,
+                                    _arm,
+                                    qmt,
+                                    omt,
+                                    kvs,
+                                )
                                 yield_([])
                             with InsertionPoint(_ifp.elseRegion.blocks[0]):
-                                _attn_leaf(ty_arg, cu_hi, shs[cu_hi], Lh, 2, _arm)
+                                _attn_leaf(
+                                    ty_arg,
+                                    cu_hi,
+                                    shs[cu_hi],
+                                    Lh,
+                                    2,
+                                    _arm,
+                                    qmt,
+                                    omt,
+                                    kvs,
+                                )
                                 yield_([])
 
-                        def _attn_col(ty_arg, shs, Lh, ci, _arm=None):
+                        def _attn_col(
+                            ty_arg, shs, Lh, ci, _arm=None, qmt=None, omt=None, kvs=None
+                        ):
                             """The CU_PER_COL compute units of attn column `ci`,
                             selected by the herd's row index."""
                             _lo = ci * CU_PER_COL
                             if CU_PER_COL == 1:
-                                _attn_leaf(ty_arg, _lo, shs[_lo], Lh, 0, _arm)
+                                _attn_leaf(
+                                    ty_arg, _lo, shs[_lo], Lh, 0, _arm, qmt, omt, kvs
+                                )
                             else:
-                                _attn_pairsel(ty_arg, shs, Lh, _lo, _lo + 1, _arm)
+                                _attn_pairsel(
+                                    ty_arg, shs, Lh, _lo, _lo + 1, _arm, qmt, omt, kvs
+                                )
 
-                        def _attn_dec(tx_arg, ty_arg, shs, Lh, _arm=None):
+                        def _attn_dec(
+                            tx_arg,
+                            ty_arg,
+                            shs,
+                            Lh,
+                            _arm=None,
+                            qmt=None,
+                            omt=None,
+                            kvs=None,
+                        ):
                             if ATTN_COLS == 1:
-                                _attn_col(ty_arg, shs, Lh, 0, _arm)
+                                _attn_col(ty_arg, shs, Lh, 0, _arm, qmt, omt, kvs)
                                 return
                             _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx_arg, idx(0))
                             _ifc = IfOp(_isc0, [], has_else=True)
                             with InsertionPoint(_ifc.thenRegion.blocks[0]):
-                                _attn_col(ty_arg, shs, Lh, 0, _arm)  # first attn col
+                                _attn_col(
+                                    ty_arg, shs, Lh, 0, _arm, qmt, omt, kvs
+                                )  # first attn col
                                 yield_([])
                             with InsertionPoint(_ifc.elseRegion.blocks[0]):
-                                _attn_col(ty_arg, shs, Lh, 1, _arm)  # second attn col
+                                _attn_col(
+                                    ty_arg, shs, Lh, 1, _arm, qmt, omt, kvs
+                                )  # second attn col
                                 yield_([])
+
+                        _has_qmt = bool(TOATTNQ_DMA and _qmtb_pre)
+                        _has_omt = bool(ATTNO_DMA and _omtb_pre)
+                        # The staging pairs go in group order, so a CU picks its
+                        # own out with ATTN_CU_GROUP.
+                        _kv_flat = [b for pair in _kvstage_pre for b in pair]
+                        _attn_extra = (
+                            ([_qmtb_pre] if _has_qmt else [])
+                            + ([_omtb_pre] if _has_omt else [])
+                            + _kv_flat
+                        )
 
                         if _seg_arm_i is not None:
 
                             @herd(
                                 name="attn_blk",
                                 sizes=ATTN_HERD_SIZES,
-                                operands=[t.result for t in _sh] + [_Lc, _core_arm],
+                                operands=[t.result for t in _sh]
+                                # _seg_arm, not _core_arm, for THIS herd only.
+                                #
+                                # @attnO's consumer sits in a segment-scope arm
+                                # switching on a value derived from the layer
+                                # INDEX. Hoisting the ported put rebuilds the
+                                # herd-side guard out there, and a guard on
+                                # _core_arm rebuilds as an index_cast of the
+                                # segment's i32 RTP block argument, which does
+                                # not survive the segment becoming an aie.device.
+                                # Feeding the herd the segment-derived arm makes
+                                # the rebuild a clone of a legal segment-scope
+                                # chain, and no anchor is needed at all.
+                                #
+                                # The note on _core_arm above says deriving the
+                                # layer type inside the segment once compiled
+                                # both hybrids to identical flow sets with the
+                                # CUs' @attnO puts erased. That does NOT
+                                # reproduce here: the arm reaches air-to-aie as a
+                                # live select chain rather than a folded
+                                # constant, all four puts survive as DMAs, and
+                                # lfm2_1_2b_q4nx -- mixed attention and ShortConv
+                                # layers -- verifies topk 2/0 through its lit.
+                                # No-op off a hybrid, where _core_arm IS
+                                # _seg_arm already.
+                                + [_Lc, _seg_arm] + _attn_extra,
                             )
                             def attn_blk(_tx, _ty, _sx, _sy, *_a):
                                 shs = list(_a[:N_ATTN_CU])
                                 Lh, _arm = _a[N_ATTN_CU], _a[N_ATTN_CU + 1]
+                                _ei = N_ATTN_CU + 2
+                                _qmt = _a[_ei] if _has_qmt else None
+                                _ei += 1 if _has_qmt else 0
+                                _omt = _a[_ei] if _has_omt else None
+                                _ei += 1 if _has_omt else 0
+                                _kvs = [
+                                    list(_a[_ei + 2 * _g : _ei + 2 * _g + 2])
+                                    for _g in range(len(_kvstage_pre))
+                                ]
 
                                 def _voc():
                                     yield_([])
@@ -4157,7 +5046,9 @@ def build_module():
                                 _arm_only(
                                     arith.index_cast(idx_t, _arm),
                                     {1, 2} if MIX_TO_CU else {2},
-                                    lambda: _attn_dec(_tx, _ty, shs, Lh, _arm),
+                                    lambda: _attn_dec(
+                                        _tx, _ty, shs, Lh, _arm, _qmt, _omt, _kvs
+                                    ),
                                 )
 
                         else:
@@ -4180,8 +5071,11 @@ def build_module():
                     # reorder) into 2048, then ONE egress -> host (oGathered). This
                     # is the reference o_buffer; the loop-close step routes it to
                     # mem_1_1 (id2) = o-proj X instead of host.
-                    def _omtb_dec(_conv=CONV_MIXER):
-                        omtb = AllocOp(omt_l2, [], [])
+                    def _omtb_dec(_conv=CONV_MIXER, omtb=None):
+                        if _omtb_pre is not None:
+                            omtb = _omtb_pre
+                        if omtb is None:
+                            omtb = AllocOp(omt_l2, [], [])
                         # Stays pinned: gemma3-4b fails to place without it
                         # ('aie.masterset' op targets same destination DMA: 0).
                         omtb.operation.attributes["air.memtile_col"] = IntegerAttr.get(
@@ -4211,7 +5105,14 @@ def build_module():
                             )
 
                         def _src_attn():
-                            for c in range(N_ATTN_CU):
+                            # Same coupling as the @toAttnQ fan above: keyed on
+                            # the buffer, not the flag, so a HYBRID build keeps its
+                            # hand-written puts.
+                            for c in range(
+                                0
+                                if (ATTNO_DMA and _omtb_pre is not None)
+                                else N_ATTN_CU
+                            ):
                                 ChannelGet(
                                     "attnO",
                                     omtb,
@@ -4244,7 +5145,9 @@ def build_module():
                                 strides=[idx(1)],
                             ),
                         )
-                        DeallocOp(omtb)
+                        if _omtb_pre is None:
+                            # The hoisted buffer outlives this arm.
+                            DeallocOp(omtb)
 
                     _skip_omtb = False
                     # gate-off 2026-07-15b: o-gather (attnO get + xnorm o-proj put) is
@@ -4282,15 +5185,29 @@ def build_module():
                         # stalling on gate-up (id8) never produced in vocab mode.
                         _arm_glu = _seg_arm
 
-                        @herd(name="glu", sizes=[1, 1], operands=[_arm_glu])
-                        def glu_h(tx, ty, _sx, _sy, _arm):
+                        # Allocated UP FRONT so it dominates the herd: @gluOut is
+                        # spelled as a DMA on the core side, which names both
+                        # endpoints in one place.
+                        db = AllocOp(down_l2, [], [])
+                        db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
+                            T.i32(), DOWN_PCOL
+                        )
+
+                        @herd(
+                            name="glu",
+                            sizes=[1, 1],
+                            operands=[_arm_glu] + ([db] if GLUOUT_DMA else []),
+                        )
+                        def glu_h(tx, ty, _sx, _sy, _arm, *_gd):
+                            _gdb = _gd[0] if _gd else None
+
                             def _dec():
                                 # FAITHFUL 2-slot ring (reproducer core_5_2: TWO glu_aie
                                 # calls per loop iter, ping x_0/hid_0 + pong x_1/hid_1).
                                 # Two distinct allocs per iter give air-to-aie a 2-deep
                                 # S2MM/MM2S ring (lock init 2), matching tile_5_2 -- a
                                 # rolled 1-call loop collapses to 1-slot (no overlap).
-                                def _slice():
+                                def _slice(_sl=None):
                                     gx = AllocOp(glu_x_l1, [], [])
                                     # get 1024 = TWO stripped demux packets DIRECTLY from
                                     # the id-demux dest (reproducer mem_1_1 DMA5 ->
@@ -4305,13 +5222,34 @@ def build_module():
                                     )
                                     gh = AllocOp(glu_hid_l1, [], [])
                                     CallOp(glu_aie, [gh, gx, _arm])
-                                    ChannelPut(
-                                        "gluOut",
-                                        gh,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(GLU_HID)],
-                                        strides=[idx(1)],
-                                    )
+                                    if GLUOUT_DMA and _gdb is not None:
+                                        # Slot 2*s + ping/pong. The two slots per
+                                        # iteration are adjacent, so the pair tiles
+                                        # a contiguous run and the loop fold
+                                        # recovers the single whole-buffer fill the
+                                        # hand-written get had -- which is what the
+                                        # refeed MM2S's counting lock is derived
+                                        # from.
+                                        DmaMemcpyNd(
+                                            _gdb,
+                                            gh,
+                                            dst_offsets=[_sl],
+                                            dst_sizes=[GLU_HID],
+                                            dst_strides=[1],
+                                            src_offsets=[0],
+                                            src_sizes=[GLU_HID],
+                                            src_strides=[1],
+                                            channel="gluOut",
+                                            channel_indices=[0],
+                                        )
+                                    else:
+                                        ChannelPut(
+                                            "gluOut",
+                                            gh,
+                                            offsets=[idx(0)],
+                                            sizes=[idx(GLU_HID)],
+                                            strides=[idx(1)],
+                                        )
                                     DeallocOp(gx)
                                     DeallocOp(gh)
 
@@ -4324,8 +5262,9 @@ def build_module():
                                     f"(GLU_PKTS={GLU_PKTS})"
                                 )
                                 for _s in for_(idx(0), idx(NGLU // 2), idx(1)):
-                                    _slice()  # ping
-                                    _slice()  # pong
+                                    _base = arith.muli(_s, idx(2 * GLU_HID))
+                                    _slice(_base)  # ping
+                                    _slice(arith.addi(_base, idx(GLU_HID)))  # pong
                                     yield_([])
 
                                 yield_([])
@@ -4354,19 +5293,16 @@ def build_module():
                         # lock_5_1 init=4: one GLU fill -> 4 re-sends = the 4 down output
                         # row-blocks each re-reading all 8192). The X memtile chunks each
                         # 8192 into 16x512 -> inX for ph3.
-                        db = AllocOp(down_l2, [], [])
-                        db.operation.attributes["air.memtile_col"] = IntegerAttr.get(
-                            T.i32(), DOWN_PCOL
-                        )
                         for _s in for_(idx(0), idx(NGLU), idx(1)):
                             soff = arith.muli(_s, idx(GLU_HID))
-                            ChannelGet(
-                                "gluOut",
-                                db,
-                                offsets=[soff],
-                                sizes=[idx(GLU_HID)],
-                                strides=[idx(1)],
-                            )
+                            if not GLUOUT_DMA:
+                                ChannelGet(
+                                    "gluOut",
+                                    db,
+                                    offsets=[soff],
+                                    sizes=[idx(GLU_HID)],
+                                    strides=[idx(1)],
+                                )
                             yield_([])
                         # re-broadcast the resident 8192 into the convergent X feed.
                         refeed(
@@ -4520,7 +5456,18 @@ def build_module():
                             c1b0,
                             c1b1,
                             _arm,
+                            *_og,
                         ):
+                            # Trailing operands, in the order _ops appends them.
+                            _ogi = 0
+                            _ogrp = None
+                            if OUTA_DMA:
+                                _ogrp = _og[_ogi]
+                                _ogi += 1
+                            _oxb = None
+                            if INX_DMA:
+                                _oxb = _og[_ogi]
+                                _ogi += 1
                             # [2,4] block herd over TWO contiguous proj columns.
                             # tx in {0,1} = the block's two columns (logical col =
                             # base_cx + tx); ty in 0..3 = the four rows (row = 2 + ty).
@@ -4563,7 +5510,21 @@ def build_module():
                                 CallOp(zero, [a_acc, _arm])
                                 for _j in for_(idx(0), J2x2, idx(1)):
                                     a_x = AllocOp(xblk_l1, [], [])
-                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                    if INX_DMA:
+                                        # Both endpoints in one op. The core's
+                                        # window is its whole 256 block; the
+                                        # memtile side is derived -- the 512
+                                        # buffer holds two of it, so two puts,
+                                        # ascending, placed after the @xnorm fill
+                                        # that writes it.
+                                        DmaMemcpyNd(
+                                            a_x,
+                                            _oxb,
+                                            channel="inX",
+                                            dynamic_channel_indices=[gcx, gcy],
+                                        )
+                                    else:
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
                                     a_w = AllocOp(wblk_l1, [], [])
                                     ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
                                     if a_rc is None:
@@ -4590,22 +5551,80 @@ def build_module():
                                 # keeping each pair's shared-L1 + owner-tile analysis exact.
                                 # scf.if (not index_switch): air-dependency's graph builder
                                 # has no IndexSwitchOp async case (Util/Dependency.cpp).
+                                def _outa_dma(a_acc, buf, pp_c, pktv):
+                                    # Where in the group buffer this emitter lands
+                                    # is k = tx*PAIRS_PC + pp_c, and both the offset
+                                    # and the LENGTH depend on it -- only k == 0
+                                    # carries the two header words. A BD length
+                                    # cannot be a runtime value, so specialise on
+                                    # tx. The guard is a direct tile-IV comparison
+                                    # and folds per-tile at the air-to-aie clone,
+                                    # leaving one constant-extent descriptor per
+                                    # core -- and it makes the logical column a
+                                    # constant, so the sub-channel is static too.
+                                    for _txc in range(NCX // N_GRP):
+                                        _k = _txc * PAIRS_PC + pp_c
+                                        _off = 0 if _k == 0 else HDR + _k * PAIR_PAY
+                                        _sz = (HDR + PAIR_PAY) if _k == 0 else PAIR_PAY
+                                        _ift = IfOp(
+                                            arith.cmpi(
+                                                arith.CmpIPredicate.eq, tx, idx(_txc)
+                                            ),
+                                            [],
+                                            has_else=False,
+                                        )
+                                        with InsertionPoint(_ift.thenRegion.blocks[0]):
+                                            # The flush comes INSIDE the guard,
+                                            # with the transfer, not before it.
+                                            # The lock placer brackets each
+                                            # buffer-touching op on its own, so a
+                                            # guard standing between the write and
+                                            # the send splits one critical section
+                                            # into two: the buffer is released to
+                                            # the consumer once with no data, and
+                                            # the consumer lock is signalled twice
+                                            # per production. Siblings in one
+                                            # region are one section, which is what
+                                            # the hand-written put had.
+                                            CallOp(flush_row, [a_acc, buf, c0i])
+                                            DmaMemcpyNd(
+                                                _ogrp,
+                                                buf,
+                                                dst_offsets=[_off],
+                                                dst_sizes=[_sz],
+                                                dst_strides=[1],
+                                                src_offsets=[14],
+                                                src_sizes=[HDR + PAIR_PAY],
+                                                src_strides=[1],
+                                                channel="outA",
+                                                channel_indices=[
+                                                    base_cx + _txc,
+                                                    pp_c,
+                                                ],
+                                                dest=pktv,
+                                                hoist_before="toMain",
+                                            )
+                                            yield_([])
+
                                 def _role(bufs, lead_row, pp_c):
                                     _is_lead = arith.cmpi(
                                         arith.CmpIPredicate.eq, ty, idx(lead_row)
                                     )
                                     _if = IfOp(_is_lead, [], has_else=True)
                                     with InsertionPoint(_if.thenRegion.blocks[0]):
-                                        CallOp(flush_row, [a_acc, bufs[yb], c0i])
-                                        ChannelPut(
-                                            "outA",
-                                            bufs[yb],
-                                            indices=[gcx, idx(pp_c)],
-                                            offsets=[idx(14)],
-                                            sizes=[idx(HDR + PAIR_PAY)],
-                                            strides=[idx(1)],
-                                            dest=pktv,
-                                        )
+                                        if OUTA_DMA and _ogrp is not None:
+                                            _outa_dma(a_acc, bufs[yb], pp_c, pktv)
+                                        else:
+                                            CallOp(flush_row, [a_acc, bufs[yb], c0i])
+                                            ChannelPut(
+                                                "outA",
+                                                bufs[yb],
+                                                indices=[gcx, idx(pp_c)],
+                                                offsets=[idx(14)],
+                                                sizes=[idx(HDR + PAIR_PAY)],
+                                                strides=[idx(1)],
+                                                dest=pktv,
+                                            )
                                         yield_([])
                                     with InsertionPoint(_if.elseRegion.blocks[0]):
                                         CallOp(flush_row, [a_acc, bufs[yb], c1i])
@@ -4737,6 +5756,16 @@ def build_module():
                         else:
                             bufs = [AllocOp(ypair_l1, [], []) for _ in range(8)]
                             _ops = [b.result for b in bufs] + [_arm_proj]
+                        # A block spans NCX//N_GRP contiguous logical columns and a
+                        # group gathers exactly those, so the block-to-group map is
+                        # the column division -- one buffer per herd, never two.
+                        if OUTA_DMA:
+                            _ops = _ops + [_grp_pre[base_cx // (NCX // N_GRP)]]
+                        # The X memtile buffer, for the same reason: with INX_DMA
+                        # the cores name it as the far end of their own transfer.
+                        # One buffer for every block -- it IS one buffer.
+                        if INX_DMA:
+                            _ops = _ops + [_xb_pre]
                         blk_h = herd(
                             name=f"proj_blk{blk}",
                             sizes=[2, 4],
@@ -4770,7 +5799,25 @@ def build_module():
 
                         refeed(XN_REFEED, _put)
 
-                    def _rms_body(tx, ty, _sx, _sy, _arm):
+                    def _rbase_h(_iv):
+                        """a_iv * RMS_LAYER, recomputed inside the herd.
+
+                        _rbase is a LAUNCH-scope value and a herd is
+                        IsolatedFromAbove, so the @rmsW DMA cannot reference it;
+                        the wave index comes in as a herd operand instead and the
+                        offset is rebuilt here. Same friction @ropeLUT's
+                        _rope_off had.
+                        """
+                        return 0 if _iv is None else arith.muli(_iv, idx(RMS_LAYER))
+
+                    def _rbase_h2(_iv, extra):
+                        """_rbase_h(_iv) + extra, in whichever form _iv is."""
+                        b = _rbase_h(_iv)
+                        if _iv is None:
+                            return b + extra
+                        return arith.addi(b, idx(extra)) if extra else b
+
+                    def _rms_body(tx, ty, _sx, _sy, _arm, _x, _rms=None, _iv=None):
                         # DIAGNOSTIC (later43e): make rms SINGLE-mode in the LM_HEAD build
                         # (standalone form). The dual-mode index_switch over DATAFLOW puts
                         # BOTH branches' channel ops in the rms mem block -> doubled BDs on
@@ -4793,14 +5840,72 @@ def build_module():
                                 rms_norm_hi_aie if N_NORMS >= 4 else rms_norm_aie
                             )
                             a_xl = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsX", a_xl, indices=[idx(0)])
+                            # @rmsX spelled as a DMA: air-dma-to-channel derives the shim
+                            # put from it, so the hand-written launch-scope put is gone.
+                            # hoist_before pins the derived put to the slot that put had --
+                            # opening the arm, immediately ahead of @rmsW -- so the shim BD
+                            # order this design depends on is unchanged.
+                            DmaMemcpyNd(
+                                a_xl,
+                                _x,
+                                src_offsets=[0],
+                                src_sizes=[K],
+                                src_strides=[1],
+                                channel="rmsX",
+                                channel_indices=[0],
+                                hoist_before="rmsW",
+                            )
                             a_wl = AllocOp(_rms_w_ty, [], [])
-                            ChannelGet("rmsW", a_wl, indices=[idx(0)])
+                            # @rmsW spelled as a DMA, same as @rmsX above: the pass
+                            # derives the shim put, so the hand-written launch-scope
+                            # put is gone. Anchored to @inW0c0 -- a channel that stays
+                            # hand-written -- because @rmsX and @ropeLUT are themselves
+                            # anchored to @rmsW, and anchoring @rmsW back onto @rmsX
+                            # would make the chain cyclic. On POST_RMS that neighbour
+                            # is @rmsW2, which follows every hand-written @rmsW get;
+                            # @inW0c0 repeats once per wave and resolved to the wrong
+                            # occurrence.
+                            if RMSW_DMA and _rms is not None:
+                                _fn_off = (
+                                    UNI_DEC * RMS_LAYER
+                                    + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN
+                                )
+                                DmaMemcpyNd(
+                                    a_wl,
+                                    _rms,
+                                    src_offsets=[
+                                        _fn_off - K if N_NORMS >= 4 else _fn_off
+                                    ],
+                                    src_sizes=[2 * K if N_NORMS >= 4 else K],
+                                    src_strides=[1],
+                                    channel="rmsW",
+                                    channel_indices=[0],
+                                    hoist_before="rmsW2" if POST_RMS else "inW0c0",
+                                )
+                            else:
+                                ChannelGet("rmsW", a_wl, indices=[idx(0)])
                             if POST_RMS:
                                 # consume the vocab dummy rmsW2 (see _uni_voc) so the
                                 # shared rmsX/rmsW2 packet group has no vocab-mode hole.
                                 a_w2l = AllocOp(_rms_w_ty, [], [])
-                                ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
+                                if RMSW2_DMA and _rms is not None:
+                                    DmaMemcpyNd(
+                                        a_w2l,
+                                        _rms,
+                                        src_offsets=[0],
+                                        src_sizes=[2 * K if N_NORMS >= 4 else K],
+                                        src_strides=[1],
+                                        channel="rmsW2",
+                                        channel_indices=[0],
+                                        # Vocab arm: always @inW0c0. There is no
+                                        # @ropeLUT endpoint in this arm, and an
+                                        # anchor that misses its arm resolves onto
+                                        # the decode arm's copy, emitting the vocab
+                                        # feed over there.
+                                        hoist_before="inW0c0",
+                                    )
+                                else:
+                                    ChannelGet("rmsW2", a_w2l, indices=[idx(0)])
                                 DeallocOp(a_w2l)
                             a_xnl = AllocOp(rms_l1, [], [])
                             # x re-broadcast. Baking the WHOLE count N=VOCAB_RNDS into one
@@ -4928,7 +6033,7 @@ def build_module():
                             yield_([])  # index_switch case terminator
 
                         def _rms_decode():
-                            _rms_decode_body(_arm)
+                            _rms_decode_body(_arm, _x, _rms, _iv)
                             yield_([])  # index_switch default terminator
 
                         _arm_i = arith.index_cast(idx_t, _arm)
@@ -4940,7 +6045,7 @@ def build_module():
                             default_body_builder=lambda op: _rms_decode(),
                         )
 
-                    def _rms_decode_body(_arm):
+                    def _rms_decode_body(_arm, _x, _rms=None, _iv=None):
                         if N_NORMS >= 4:
                             # ===== Gemma sandwich (4 norms) =====================
                             # input / post_attn / pre_ffn / post_ffn. The two "post"
@@ -4955,11 +6060,58 @@ def build_module():
                             # the lo/hi kernels. o-proj & down share g_sub, their norm-out
                             # g_subn; residual2 reuses g_x (dead after residual1).
                             g_x = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsX", g_x, indices=[idx(0)])
+                            # @rmsX spelled as a DMA: air-dma-to-channel derives the shim
+                            # put from it, so the hand-written launch-scope put is gone.
+                            # hoist_before pins the derived put to the slot that put had --
+                            # opening the arm, immediately ahead of @rmsW -- so the shim BD
+                            # order this design depends on is unchanged.
+                            DmaMemcpyNd(
+                                g_x,
+                                _x,
+                                src_offsets=[0],
+                                src_sizes=[K],
+                                src_strides=[1],
+                                channel="rmsX",
+                                channel_indices=[0],
+                                hoist_before="rmsW",
+                            )
                             g_wa = AllocOp(rms_w2k_l1, [], [])
-                            ChannelGet("rmsW", g_wa, indices=[idx(0)])
+                            # @rmsW spelled as a DMA, same as @rmsX above: the pass
+                            # derives the shim put, so the hand-written launch-scope
+                            # put is gone. Anchored to @inW0c0 -- a channel that stays
+                            # hand-written -- because @rmsX and @ropeLUT are themselves
+                            # anchored to @rmsW, and anchoring @rmsW back onto @rmsX
+                            # would make the chain cyclic. On POST_RMS that neighbour
+                            # is @rmsW2, which follows every hand-written @rmsW get;
+                            # @inW0c0 repeats once per wave and resolved to the wrong
+                            # occurrence.
+                            if RMSW_DMA and _rms is not None:
+                                DmaMemcpyNd(
+                                    g_wa,
+                                    _rms,
+                                    src_offsets=[_rbase_h(_iv)],
+                                    src_sizes=[2 * K],
+                                    src_strides=[1],
+                                    channel="rmsW",
+                                    channel_indices=[0],
+                                    hoist_before="rmsW2" if POST_RMS else "inW0c0",
+                                )
+                            else:
+                                ChannelGet("rmsW", g_wa, indices=[idx(0)])
                             g_wb = AllocOp(rms_w2k_l1, [], [])
-                            ChannelGet("rmsW2", g_wb, indices=[idx(0)])
+                            if RMSW2_DMA and _rms is not None:
+                                DmaMemcpyNd(
+                                    g_wb,
+                                    _rms,
+                                    src_offsets=[_rbase_h2(_iv, 2 * K)],
+                                    src_sizes=[2 * K],
+                                    src_strides=[1],
+                                    channel="rmsW2",
+                                    channel_indices=[0],
+                                    hoist_before=_RMSW2_ANCHOR,
+                                )
+                            else:
+                                ChannelGet("rmsW2", g_wb, indices=[idx(0)])
                             g_xn = AllocOp(rms_l1, [], [])
                             g_sub = AllocOp(rms_l1, [], [])  # o-proj, then down
                             g_subn = AllocOp(
@@ -5019,14 +6171,60 @@ def build_module():
                             DeallocOp(g_x)
                             return
                         a_x = AllocOp(rms_l1, [], [])
-                        ChannelGet("rmsX", a_x, indices=[idx(0)])
+                        # @rmsX spelled as a DMA: air-dma-to-channel derives the shim
+                        # put from it, so the hand-written launch-scope put is gone.
+                        # hoist_before pins the derived put to the slot that put had --
+                        # opening the arm, immediately ahead of @rmsW -- so the shim BD
+                        # order this design depends on is unchanged.
+                        DmaMemcpyNd(
+                            a_x,
+                            _x,
+                            src_offsets=[0],
+                            src_sizes=[K],
+                            src_strides=[1],
+                            channel="rmsX",
+                            channel_indices=[0],
+                            hoist_before="rmsW",
+                        )
                         a_w = AllocOp(rms_l1, [], [])
-                        ChannelGet("rmsW", a_w, indices=[idx(0)])
+                        # @rmsW spelled as a DMA, same as @rmsX above: the pass
+                        # derives the shim put, so the hand-written launch-scope
+                        # put is gone. Anchored to @inW0c0 -- a channel that stays
+                        # hand-written -- because @rmsX and @ropeLUT are themselves
+                        # anchored to @rmsW, and anchoring @rmsW back onto @rmsX
+                        # would make the chain cyclic. On POST_RMS that neighbour is
+                        # @rmsW2, which follows every hand-written @rmsW get; @inW0c0
+                        # repeats once per wave and resolved to the wrong occurrence.
+                        if RMSW_DMA and _rms is not None:
+                            DmaMemcpyNd(
+                                a_w,
+                                _rms,
+                                src_offsets=[_rbase_h(_iv)],
+                                src_sizes=[K],
+                                src_strides=[1],
+                                channel="rmsW",
+                                channel_indices=[0],
+                                hoist_before="rmsW2" if POST_RMS else "inW0c0",
+                            )
+                        else:
+                            ChannelGet("rmsW", a_w, indices=[idx(0)])
                         a_w2 = None
                         if POST_RMS:
                             # post_attention_layernorm weight (own channel).
                             a_w2 = AllocOp(rms_l1, [], [])
-                            ChannelGet("rmsW2", a_w2, indices=[idx(0)])
+                            if RMSW2_DMA and _rms is not None:
+                                DmaMemcpyNd(
+                                    a_w2,
+                                    _rms,
+                                    src_offsets=[_rbase_h2(_iv, K)],
+                                    src_sizes=[K],
+                                    src_strides=[1],
+                                    channel="rmsW2",
+                                    channel_indices=[0],
+                                    hoist_before=_RMSW2_ANCHOR,
+                                )
+                            else:
+                                ChannelGet("rmsW2", a_w2, indices=[idx(0)])
                         # step1: input layernorm -> X feed (re-fed RMS_REFEED via xnorm)
                         a_xn = AllocOp(rms_l1, [], [])
                         CallOp(rms_norm_aie, [a_xn, a_x, a_w, _arm])
@@ -5096,17 +6294,38 @@ def build_module():
                             CallOp(residual_add_aie, [a_r2, a_h, a_dn])
                             DeallocOp(a_h)
                             DeallocOp(a_dn)
-                            # BD-COMPACTION: single full-size layerOut put.
-                            ChannelPut(
-                                "layerOut",
-                                a_r2,
-                                offsets=[idx(0)],
-                                sizes=[idx(DOWN_RNDS * PAYLOAD)],
-                                strides=[idx(1)],
-                            )
+                            # BD-COMPACTION: single full-size layerOut drain.
+                            if LAYEROUT_DMA:
+                                DmaMemcpyNd(
+                                    _x,
+                                    a_r2,
+                                    dst_offsets=[0],
+                                    dst_sizes=[DOWN_RNDS * PAYLOAD],
+                                    dst_strides=[1],
+                                    channel="layerOut",
+                                    channel_indices=[0],
+                                    hoist_after="appendV",
+                                )
+                            else:
+                                ChannelPut(
+                                    "layerOut",
+                                    a_r2,
+                                    offsets=[idx(0)],
+                                    sizes=[idx(DOWN_RNDS * PAYLOAD)],
+                                    strides=[idx(1)],
+                                )
                             DeallocOp(a_r2)
 
-                    rms_h = herd(name="rms", sizes=[1, 1], operands=[_arm_rms])(
+                    # RMS and the wave index reach the rms herd because the @rmsW
+                    # feed is spelled as an air.dma_memcpy_nd, and a DMA has to name
+                    # both endpoints in one place. _seg_iv is absent in a
+                    # single-layer build, where the slab offset is the constant 0.
+                    _rms_opers = [_arm_rms, _seg_X] + (
+                        [_seg_RMS] + ([_seg_iv] if _seg_iv is not None else [])
+                        if RMSW_DMA or RMSW2_DMA
+                        else []
+                    )
+                    rms_h = herd(name="rms", sizes=[1, 1], operands=_rms_opers)(
                         _rms_body
                     )
                     rms_h.attributes["link_with"] = StringAttr.get("rms_residual.o")
@@ -5150,9 +6369,8 @@ def run():
         print(globals()[_const])
         return 0
 
-    import pyxrt as xrt
-
     module = build_module()
+    _assert_channels_paired(module)
 
     # Emit-only hook: dump the built AIR MLIR and stop before the (expensive) NPU
     # compile. Used to byte-diff the IR across no-op refactors (e.g. the incremental
@@ -5160,6 +6378,11 @@ def run():
     if _os.environ.get("FUSED_DECODE_EMIT_ONLY"):
         print(str(module))
         return 0
+
+    # Imported here, not at the top of main: emitting the IR is supposed to stop
+    # before anything that needs the runtime, and a CI job that only checks the
+    # IR has no pyxrt.
+    import pyxrt as xrt
 
     # use_lock_race_condition_fix_v2: emit the reference-style daisy-chained locks for the
     # shared-L2 fan-in (group/main asymmetric gather) -- matches the reproducer's

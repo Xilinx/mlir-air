@@ -148,3 +148,48 @@ func.func @mutually_exclusive_branches(%kv: memref<1024xbf16>, %sel: index) {
   }
   return
 }
+
+// -----
+
+// An append spelled as an air.dma_memcpy_nd. The early run of this pass cannot
+// see the pair: a DMA names both endpoints in ONE op, so its L3 side is still
+// inside the herd and does not share a block with the readback. The two only
+// become a pair once air-dma-to-channel has hoisted the external half out to
+// launch scope, which is why aircc runs this pass a SECOND time there.
+//
+// Without that second run the pair is silently unordered and the readback can
+// see stale bytes -- the failure this pass exists to prevent, reintroduced by
+// changing how the transfer is spelled.
+
+// RUN: air-opt %s -air-annotate-append-barrier -air-dependency \
+// RUN:   -air-dma-to-channel -canonicalize -cse -air-annotate-append-barrier \
+// RUN:   --split-input-file | FileCheck %s --check-prefix=DMA
+
+// DMA-LABEL: @append_as_dma
+// DMA: air.channel.get{{.*}}@appendK{{.*}}{air.append_barrier}
+// DMA: air.channel.put{{.*}}@inKV{{.*}}air.await_appends
+air.channel @appendK [1]
+air.channel @inKV [1]
+func.func @append_as_dma(%kv: memref<4096xbf16>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%ls=%c1) args(%lkv=%kv) : memref<4096xbf16> {
+    %c0 = arith.constant 0 : index
+    %c512 = arith.constant 512 : index
+    %c1_l = arith.constant 1 : index
+    air.segment @seg args(%skv=%lkv) : memref<4096xbf16> {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%skv) : memref<4096xbf16> {
+        %c0_h = arith.constant 0 : index
+        %c512_h = arith.constant 512 : index
+        %c1_h = arith.constant 1 : index
+        %l1 = memref.alloc() : memref<512xbf16, 2>
+        // dst is the L3 cache, so the derived external half is a channel.get:
+        // the shim WRITE. hoist_before keeps it ahead of the readback.
+        air.dma_memcpy_nd (%a[%c0_h] [%c512_h] [%c1_h], %l1[] [] []) {id = 1 : i32, channel = @appendK, channel_indices = array<i64: 0>, hoist_before = @inKV} : (memref<4096xbf16>, memref<512xbf16, 2>)
+        memref.dealloc %l1 : memref<512xbf16, 2>
+      }
+    }
+    air.channel.put @inKV[%c0] (%lkv[%c0] [%c512] [%c1_l]) : (memref<4096xbf16>)
+  }
+  return
+}

@@ -139,14 +139,30 @@ void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
     collectDynamic(memcpyif_op.getMixedDstStrides());
   }
 
-  // Check for dependency through any parent affine if guards
-  if (auto parentAffineIf =
-          memcpyif_op->getParentOfType<affine::AffineIfOp>()) {
-    if (parentAffineIf->getParentOfType<air::HerdOp>()) {
+  // Check for dependency through any parent guard, of either flavour, all the
+  // way out to the herd -- not just the innermost one.
+  //
+  // A guard is a dependence on whatever it tests. A transfer under
+  // `scf.if (tx == 0 && ty / 2 == 0)` happens on one tile and not another, so
+  // it is not invariant across the herd however constant its own operands look.
+  //
+  // scf.if matters as much as affine.if and was previously invisible here. It
+  // is how a front end selects between per-tile BUFFERS -- which cannot be
+  // arithmetic, being SSA operands, so a guard is the only way to write it. The
+  // memref operand itself is not a scalar and is never traced, so with the
+  // guard also unseen such a transfer looked completely herd-invariant.
+  // fused_decode's weight fan is exactly that: broadcast detection called it
+  // invariant across the two columns and specialization merged two producers
+  // that read DIFFERENT buffers into one.
+  for (Operation *p = memcpyif_op->getParentOp(); p; p = p->getParentOp()) {
+    if (isa<air::HerdOp>(p))
+      break;
+    if (auto aif = dyn_cast<affine::AffineIfOp>(p))
       candidate_scalar_operands.insert(candidate_scalar_operands.end(),
-                                       parentAffineIf.getOperands().begin(),
-                                       parentAffineIf.getOperands().end());
-    }
+                                       aif.getOperands().begin(),
+                                       aif.getOperands().end());
+    else if (auto sif = dyn_cast<scf::IfOp>(p))
+      candidate_scalar_operands.push_back(sif.getCondition());
   }
 
   // Start recursion.
@@ -1591,6 +1607,52 @@ air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
   return wa_op;
 }
 
+// An air.dma_memcpy_nd that NAMES its channel does not touch its L3/L2 side
+// from inside the hierarchy: air-dma-to-channel splits it and hoists that half
+// out to the enclosing scope, where it becomes a transfer of its own with its
+// own dependencies. Counting it as an access BY the hierarchy orders the
+// hierarchy against every other user of the buffer, and with an issue-order
+// anchor the derived half can then be placed BEFORE the op the hierarchy was
+// ordered after
+// -- an edge that outlives its justification.
+static bool dmaHoistsItsL3SideOut(Operation *o) {
+  auto dma = dyn_cast<air::DmaMemcpyNdOp>(o);
+  return dma && dma.getChannelAttr();
+}
+
+// Does anything in `body` READ through `root` (or a view of it)?
+static bool isReadThroughInRegion(Value root, Region &body) {
+  llvm::SmallPtrSet<Value, 4> aliases;
+  SmallVector<Value> worklist{root};
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!aliases.insert(v).second)
+      continue;
+    for (Operation *user : v.getUsers())
+      if (isa<ViewLikeOpInterface>(user))
+        for (Value res : user->getResults())
+          if (isa<BaseMemRefType>(res.getType()))
+            worklist.push_back(res);
+  }
+  bool read = false;
+  body.walk([&](Operation *o) {
+    if (dmaHoistsItsL3SideOut(o))
+      return WalkResult::advance();
+    auto reads = getAllReadAccessedMemrefOperandsFromOp(o);
+    if (failed(reads)) {
+      read = true;
+      return WalkResult::interrupt();
+    }
+    for (auto &entry : *reads)
+      if (aliases.contains(entry.first)) {
+        read = true;
+        return WalkResult::interrupt();
+      }
+    return WalkResult::advance();
+  });
+  return read;
+}
+
 // Get memref operands which are read accessed by op. Each entry has the
 // following format: pair<memref, tuple<offsets, sizes, strides>>.
 FailureOr<SmallVector<MemrefAccessPattern>>
@@ -1638,6 +1700,15 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
     pushMemrefEntryToVector(getMemrefEntry(loadOp.getMemRef()), operands);
   } else if (isa<memref::StoreOp>(op)) {
     // memref.store writes to the memref -- no read of the memref itself
+  } else if (auto hier = dyn_cast_if_present<air::HierarchyInterface>(op)) {
+    // Classify from the body, as for writes.
+    for (unsigned i = 0, e = hier.getNumKernelOperands(); i < e; i++) {
+      Value oper = hier.getKernelOperand(i);
+      if (!isa<BaseMemRefType>(oper.getType()))
+        continue;
+      if (isReadThroughInRegion(hier.getKernelArgument(i), op->getRegion(0)))
+        pushMemrefEntryToVector(getMemrefEntry(oper), operands);
+    }
   } else { // If unknown op, then assume all operands are read.
     for (auto oper : op->getOperands())
       pushMemrefEntryToVector(getMemrefEntry(oper), operands);
@@ -1652,6 +1723,53 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
     }
   }
   return operands;
+}
+
+// Does anything in `body` write through `root` (or a view of it)?
+//
+// Used to classify an air hierarchy op's memref operands. A hierarchy op is not
+// opaque -- its body is right there -- so falling through to the "unknown op"
+// case and marking every memref operand written manufactures WAR/WAW edges
+// against reads of the same buffer outside it.
+//
+// Nested hierarchy ops are deliberately NOT skipped: getAllWriteAccessed... now
+// handles them too, so walking into a herd inside a segment asks the same
+// question one level down. The recursion is bounded by launch > segment > herd.
+static bool isWrittenThroughInRegion(Value root, Region &body) {
+  // The argument itself plus anything aliasing it through a view-like op.
+  llvm::SmallPtrSet<Value, 4> aliases;
+  SmallVector<Value> worklist{root};
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!aliases.insert(v).second)
+      continue;
+    for (Operation *user : v.getUsers())
+      if (isa<ViewLikeOpInterface>(user))
+        for (Value res : user->getResults())
+          if (isa<BaseMemRefType>(res.getType()))
+            worklist.push_back(res);
+  }
+
+  bool written = false;
+  body.walk([&](Operation *o) {
+    if (dmaHoistsItsL3SideOut(o))
+      return WalkResult::advance();
+    auto writes = getAllWriteAccessedMemrefOperandsFromOp(o);
+    if (failed(writes)) {
+      // Could not classify: assume it writes, matching the conservative
+      // default this helper exists to refine.
+      written = true;
+      return WalkResult::interrupt();
+    }
+    for (auto &entry : *writes) {
+      if (aliases.contains(entry.first)) {
+        written = true;
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return written;
 }
 
 // Get memref operands which are write accessed by op. Each entry has the
@@ -1702,6 +1820,25 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
     pushMemrefEntryToVector(getMemrefEntry(storeOp.getMemRef()), operands);
   } else if (isa<memref::LoadOp>(op)) {
     // memref.load reads from the memref -- no write access
+  } else if (auto hier = dyn_cast_if_present<air::HierarchyInterface>(op)) {
+    // Classify each memref operand by what the body actually does with the
+    // matching kernel argument. Without this a hierarchy op lands in the
+    // "unknown op" case below and every memref passed into it is treated as
+    // written, which orders it after every prior READER of that buffer.
+    //
+    // That is not academic: spelling a feed as an air.dma_memcpy_nd forces the
+    // L3 buffer to become a hierarchy operand (a DMA has to name both endpoints
+    // in one place), where the equivalent air.channel.put/get pair never passes
+    // it in. The resulting WAR edge against the launch-scope puts that read the
+    // same buffer made the enclosing scf.index_switch carry an async token,
+    // whose arm-terminating air.wait_all air-to-aie then could not legalize.
+    for (unsigned i = 0, e = hier.getNumKernelOperands(); i < e; i++) {
+      Value oper = hier.getKernelOperand(i);
+      if (!isa<BaseMemRefType>(oper.getType()))
+        continue;
+      if (isWrittenThroughInRegion(hier.getKernelArgument(i), op->getRegion(0)))
+        pushMemrefEntryToVector(getMemrefEntry(oper), operands);
+    }
   } else { // If unknown op, then assume all operands and results are written
            // to.
     for (auto oper : llvm::concat<Value>(op->getOperands(), op->getResults()))
@@ -2047,12 +2184,19 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_put.getSrc());
     std::vector<air::ChannelGetOp> channel_gets =
         getTheOtherChannelOpThroughSymbol(channel_put);
-    if (!channel_gets.size()) {
+    // An unpaired channel is a front-end error and is diagnosed as one, but
+    // this op still EXISTS in the IR and the caller is going to record edges
+    // against whatever vertex id comes back. Returning 0 hands it the id of a
+    // real, unrelated vertex, so the graph is silently miswired and
+    // DirectedAdjacencyMap::getClosure() later indexes out of range and
+    // aborts -- a std::vector assertion and a core dump, several passes after
+    // a diagnostic that already said exactly what was wrong. Give the op its
+    // own vertex instead and let the diagnostic be the outcome.
+    bool unpaired = channel_gets.empty();
+    if (unpaired)
       op->emitOpError("found channel op not in pairs");
-      return 0;
-    }
     std::string memorySpaceDstStr =
-        getMemorySpaceAsString(channel_gets[0].getDst());
+        unpaired ? "unknown" : getMemorySpaceAsString(channel_gets[0].getDst());
     std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
                              "(" + memorySpaceSrcStr + "-->" +
                              memorySpaceDstStr + ")";
@@ -2085,12 +2229,13 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_get.getDst());
     std::vector<air::ChannelPutOp> channel_puts =
         getTheOtherChannelOpThroughSymbol(channel_get);
-    if (!channel_puts.size()) {
+    // Same as the put side above: diagnose, but still give the op a vertex of
+    // its own rather than vertex 0, which belongs to something else.
+    bool unpaired = channel_puts.empty();
+    if (unpaired)
       op->emitOpError("found channel op not in pairs");
-      return 0;
-    }
     std::string memorySpaceSrcStr =
-        getMemorySpaceAsString(channel_puts[0].getSrc());
+        unpaired ? "unknown" : getMemorySpaceAsString(channel_puts[0].getSrc());
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
                              "(" + memorySpaceDstStr + "<--" +
                              memorySpaceSrcStr + ")";

@@ -347,9 +347,19 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_offsets=[],
         src_sizes=[],
         src_strides=[],
+        dest=None,
+        dynamic_channel_indices=None,
         pad_before=None,
         pad_after=None,
+        channel=None,
+        channel_indices=None,
+        hoist_after=None,
+        hoist_before=None,
+        hoist_unguarded=False,
+        hoist_outside_loops=False,
     ):
+        if channel is None and channel_indices is not None:
+            raise ValueError("channel_indices requires channel")
         if (pad_before is None) != (pad_after is None):
             raise ValueError(
                 "pad_before and pad_after must both be specified or both omitted"
@@ -373,6 +383,15 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             dynamic_src_offsets=dyn_src_offsets,
             dynamic_src_sizes=dyn_src_sizes,
             dynamic_src_strides=dyn_src_strides,
+            # Runtime packet-demux destination: which consumer of the demux this
+            # transfer is for. A gather whose producers pick their consumer at
+            # run time cannot be spelled as a DMA without it.
+            dest=None if dest is None else pyint_to_index(dest),
+            # Sub-channel selectors known only at run time. A transfer indexed
+            # by a herd induction variable has no static form.
+            dynamic_channel_indices=[
+                pyint_to_index(i) for i in (dynamic_channel_indices or [])
+            ],
             static_dst_offsets=static_dst_offsets,
             static_dst_sizes=static_dst_sizes,
             static_dst_strides=static_dst_strides,
@@ -386,6 +405,37 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
         if pad_after is not None:
             self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
+        # Name the air.channel this copy lowers onto, instead of letting
+        # air-dma-to-channel mint a fresh single-put/single-get one. The channel
+        # must already be declared; that is where channel_type, broadcast_shape
+        # and the placement attributes live.
+        if channel is not None:
+            self.operation.attributes["channel"] = FlatSymbolRefAttr.get(channel)
+        if channel_indices is not None:
+            self.operation.attributes["channel_indices"] = DenseI64ArrayAttr.get(
+                channel_indices
+            )
+        # Issue-order anchor: place the derived external half straight after this
+        # channel's last endpoint, instead of at the consumer hierarchy.
+        if hoist_after is not None:
+            self.operation.attributes["hoist_after"] = FlatSymbolRefAttr.get(
+                hoist_after
+            )
+        if hoist_before is not None:
+            self.operation.attributes["hoist_before"] = FlatSymbolRefAttr.get(
+                hoist_before
+            )
+        # "place by default, but do not rebuild my guards". Distinct from the
+        # anchors above: those say WHERE, this says what control structure not
+        # to synthesise around it. Needed when the guard is on a runtime
+        # parameter, which cannot be rebuilt outside the hierarchy at all.
+        if hoist_unguarded:
+            self.operation.attributes["hoist_unguarded"] = UnitAttr.get()
+        # "resolve my anchor, then step out of any loops around it". An anchor
+        # makes the transfer its target's sibling, so it inherits the target's
+        # DEPTH; this says to inherit the predicate but not the trip count.
+        if hoist_outside_loops:
+            self.operation.attributes["hoist_outside_loops"] = UnitAttr.get()
 
 
 dma_memcpy_nd = DmaMemcpyNd

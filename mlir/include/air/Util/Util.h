@@ -155,6 +155,12 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Same lookup, for an op that names a channel without being a channel op
+// itself -- an air.dma_memcpy_nd carrying the optional `channel` attribute.
+// Walks `from`'s ancestors for the innermost enclosing symbol table that
+// declares `name`. Returns null when nothing declares it.
+ChannelOp getChannelDeclarationThroughSymbol(mlir::Operation *from,
+                                             mlir::SymbolRefAttr name);
 // Single-buffer count-free re-broadcast count (see AIRDialect.h
 // attrs::RefeedCount): N re-sends of one resident buffer per production. Reads
 // the count off `op` (per-emission override) falling back to its channel

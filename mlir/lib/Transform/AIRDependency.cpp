@@ -551,7 +551,32 @@ private:
         dma_op.getMixedDstSizes(), dma_op.getMixedDstStrides(),
         dma_op.getSrcMemref(), dma_op.getMixedSrcOffsets(),
         dma_op.getMixedSrcSizes(), dma_op.getMixedSrcStrides(),
+        // A runtime packet-demux destination is an OPERAND, so the attribute
+        // sweep below cannot carry it -- and dropping it turns a demux into a
+        // point-to-point transfer with no diagnostic.
+        dma_op.getDest(), dma_op.getDynamicChannelIndices(),
         dma_op.getPadBeforeAttr(), dma_op.getPadAfterAttr());
+
+    // Re-instantiating drops every attribute the builder does not take. That
+    // silently lost `channel` / `channel_indices` (air-dependency runs before
+    // air-dma-to-channel, so a named channel never reached the pass that reads
+    // it) and `src_rank` / `dst_rank` with it. Carry the whole attribute
+    // dictionary across instead of enumerating what is known today; the builder
+    // owns only the operand-segment and access-pattern entries, so those are
+    // the ones to skip. `id` is skipped too -- assignOpId issues a fresh one
+    // below.
+    static constexpr StringLiteral builderOwnedAttrs[] = {
+        "operandSegmentSizes", "static_dst_offsets",
+        "static_dst_sizes",    "static_dst_strides",
+        "static_src_offsets",  "static_src_sizes",
+        "static_src_strides",  "pad_before",
+        "pad_after",           "id"};
+    for (auto namedAttr : dma_op->getAttrs()) {
+      if (llvm::is_contained(builderOwnedAttrs, namedAttr.getName().strref()))
+        continue;
+      new_dmaNd_op->setAttr(namedAttr.getName(), namedAttr.getValue());
+    }
+
     assignOpId(new_dmaNd_op);
 
     // Update op-to-graph map
@@ -1016,9 +1041,21 @@ private:
       if (auto hier =
               sink_air_op
                   ->template getParentOfType<air::HierarchyInterface>()) {
-        // Search for deps outside (before) hierarchy op
+        // Search for deps outside (before) hierarchy op.
+        //
+        // Not for a DMA that NAMES its channel: air-dma-to-channel splits it
+        // and hoists the L3/L2 half out of the hierarchy, so the hierarchy
+        // itself never touches that buffer. Ordering the hierarchy against
+        // every other user of it is wrong once the derived half carries an
+        // issue-order anchor -- it can be placed BEFORE the op the hierarchy
+        // was ordered after, leaving an edge that outlives its justification.
+        // Downstream that forces an scf.index_switch to carry an async token
+        // whose arm-terminating air.wait_all air-to-aie cannot legalize.
+        auto sinkDma = dyn_cast<air::DmaMemcpyNdOp>(sink_air_op.getOperation());
+        bool sinkHoistsOut = sinkDma && sinkDma.getChannelAttr();
         for (unsigned hier_operand_id = 0;
-             hier_operand_id < hier.getNumKernelOperands(); hier_operand_id++) {
+             !sinkHoistsOut && hier_operand_id < hier.getNumKernelOperands();
+             hier_operand_id++) {
           if (hier.getKernelArguments()[hier_operand_id] ==
               operand.memrefValue) {
             auto ancestor_op = hier.getKernelOperand(hier_operand_id);

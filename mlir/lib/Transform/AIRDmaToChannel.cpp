@@ -15,6 +15,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -111,6 +112,70 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
   return output;
 }
 
+// Materialize the PURE defs a labelled op depends on but which were not
+// themselves labelled.
+//
+// cloneOpsInBlock skips an unlabelled non-async op outright: nothing clones it
+// and nothing maps it. A later clone of a labelled CONSUMER then resolves that
+// operand through lookupOrDefault and keeps the ORIGINAL value -- which still
+// lives in the block being left behind. The result is an op at the outer scope
+// referring to a def at the inner one, and the failure surfaces far away as
+// "operand #0 does not dominate this use".
+//
+// The shape that hits this in practice is a rebuilt arm guard:
+// `scf.index_switch` is labelled (it carries the async token the hoisted
+// transfer depends on) while the `arith.index_cast` feeding its condition is
+// not (it produces no token, so no dependence edge reaches it).
+//
+// A pure op is free to duplicate, so clone it on demand rather than drop the
+// dependence. Ops with regions are excluded: cloning one would duplicate a
+// whole nest, and a region-carrying op on this path is always labelled anyway.
+static void materializePureDefs(Operation *o, Block *blk, OpBuilder &builder,
+                                IRMapping &remap,
+                                SmallVector<Operation *> &clonedOps) {
+  SmallVector<Value> worklist;
+  auto collect = [&](Operation *op) {
+    for (auto v : op->getOperands())
+      worklist.push_back(v);
+    for (auto &r : op->getRegions()) {
+      SetVector<Value> above;
+      getUsedValuesDefinedAbove(r, above);
+      for (auto v : above)
+        worklist.push_back(v);
+    }
+  };
+  collect(o);
+  SmallVector<Operation *> toClone;
+  llvm::SmallDenseSet<Operation *> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (remap.contains(v))
+      continue;
+    auto *d = v.getDefiningOp();
+    if (!d || d->getBlock() != blk)
+      continue;
+    // Labelled ops are the main loop's business.
+    if (d->hasAttr("hoist"))
+      continue;
+    if (d->getNumRegions() || !air::isPure(d))
+      continue;
+    if (!seen.insert(d).second)
+      continue;
+    toClone.push_back(d);
+    collect(d);
+  }
+  // Clone defs before uses.
+  llvm::sort(toClone,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (auto *d : toClone) {
+    auto *c = builder.clone(*d, remap);
+    // Label it: the caller's cleanup erases every unlabelled op in the newly
+    // built outer loop, and this clone has uses.
+    c->setAttr("hoist", StringAttr::get(c->getContext(), "dep"));
+    clonedOps.push_back(c);
+  }
+}
+
 // Clone ops in a block.
 SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                                               IRMapping &remap) {
@@ -124,6 +189,7 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
       }
       continue;
     }
+    materializePureDefs(&o, blk, builder, remap, clonedOps);
     if (auto child_for_op = dyn_cast_if_present<LoopLikeOpInterface>(o)) {
       auto clonedScfLoopOps =
           air::cloneScfLoopUsingRemap(builder, remap, child_for_op);
@@ -160,6 +226,11 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
           air::cloneScfIfUsingRemap(builder, remap, scf_if_op);
       clonedOps.insert(clonedOps.end(), clonedScfIfOps.begin(),
                        clonedScfIfOps.end());
+    } else if (auto switch_op = dyn_cast_if_present<scf::IndexSwitchOp>(o)) {
+      auto clonedSwitchOps =
+          air::cloneIndexSwitchUsingRemap(builder, remap, switch_op);
+      clonedOps.insert(clonedOps.end(), clonedSwitchOps.begin(),
+                       clonedSwitchOps.end());
     } else if (auto dma_op = dyn_cast_if_present<air::DmaMemcpyNdOp>(o)) {
       if (o.hasAttr("loop-carried-dep"))
         clonedOps.push_back(builder.clone(o, remap));
@@ -217,7 +288,15 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
     if (hasAsyncTokenResult) {
       // Collect async tokens produced by cloned ops to create a wait_all.
       SmallVector<Value> asyncDeps;
+      // Only ops landing directly in the destination block can be waited on
+      // here. cloneOpsInBlock returns what it cloned at EVERY depth -- that is
+      // how the caller finds channel ops buried in a hoisted loop body -- so if
+      // a branch held a loop, its interior tokens are in `clonedOps` too, and
+      // waiting on one produces "operand #N does not dominate this use".
+      Block *destBlk = builder.getInsertionBlock();
       for (auto *clonedOp : clonedOps) {
+        if (clonedOp->getBlock() != destBlk)
+          continue;
         if (auto asyncOp =
                 dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
           if (auto token = asyncOp.getAsyncToken())
@@ -291,7 +370,15 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
     air::WaitAllOp waitAllOp;
     if (hasAsyncTokenResult) {
       SmallVector<Value> asyncDeps;
+      // Only ops landing directly in the destination block can be waited on
+      // here. cloneOpsInBlock returns what it cloned at EVERY depth -- that is
+      // how the caller finds channel ops buried in a hoisted loop body -- so if
+      // a branch held a loop, its interior tokens are in `clonedOps` too, and
+      // waiting on one produces "operand #N does not dominate this use".
+      Block *destBlk = builder.getInsertionBlock();
       for (auto *clonedOp : clonedOps) {
+        if (clonedOp->getBlock() != destBlk)
+          continue;
         if (auto asyncOp =
                 dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
           if (auto token = asyncOp.getAsyncToken())
@@ -359,6 +446,117 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
         clonedOps.push_back(op);
     }
   }
+
+  return clonedOps;
+}
+
+// Clone an scf.index_switch, preserving the switch so a hoisted external
+// channel op stays on the arm it was written for.
+//
+// Without this the op is simply DROPPED: cloneOpsInBlock has no case for
+// scf.index_switch, so the external half of a DMA written inside a switch arm
+// never reaches the parent scope and its partner get is left unpaired. That
+// does not fail here -- it fails 30-odd passes later in
+// air-verify-hierarchy-locality with "found channel op not in pairs", pointing
+// at the surviving half rather than at the arm the other one was lost from.
+//
+// Only the no-results form is rebuilt, which is the shape external channel ops
+// take (they are async and do not yield through the switch). A switch WITH
+// results falls back to flattening, matching cloneScfIfUsingRemap: the arms
+// stop being mutually exclusive, which is wrong in general, so it is reported
+// rather than done silently.
+SmallVector<Operation *>
+air::cloneIndexSwitchUsingRemap(OpBuilder builder, IRMapping &remap,
+                                scf::IndexSwitchOp switch_op) {
+  SmallVector<Operation *> clonedOps;
+  auto loc = switch_op.getLoc();
+  auto *ctx = switch_op->getContext();
+
+  // Async token results are the norm here, not an edge case: air-dependency
+  // runs before air-dma-to-channel in aircc, so by the time a switch reaches
+  // this pass every arm yields a token. Flattening it -- the fallback
+  // cloneScfIfUsingRemap takes for scf.if -- would make a copy written on one
+  // arm issue on EVERY arm, so rebuild the switch instead and give each arm a
+  // token of its own.
+  bool hasToken = false;
+  for (Value res : switch_op.getResults())
+    if (isa<air::AsyncTokenType>(res.getType()))
+      hasToken = true;
+  if (switch_op.getNumResults() > (hasToken ? 1u : 0u)) {
+    switch_op->emitWarning(
+        "hoisting an external channel op out of an scf.index_switch yielding "
+        "non-token results; the arms are flattened, so a copy written on one "
+        "arm will issue on every arm");
+    for (Region &region : switch_op->getRegions()) {
+      if (region.empty())
+        continue;
+      auto cloned = cloneOpsInBlock(&region.front(), builder, remap);
+      for (auto *op : cloned)
+        if (isa<air::ChannelInterface>(op))
+          clonedOps.push_back(op);
+    }
+    return clonedOps;
+  }
+
+  SmallVector<Type> resTys;
+  if (hasToken)
+    resTys.push_back(air::AsyncTokenType::get(ctx));
+  Value arg = remap.lookupOrDefault(switch_op.getArg());
+  auto newSwitch = scf::IndexSwitchOp::create(
+      builder, loc, resTys, arg, switch_op.getCases(), switch_op.getNumCases());
+  // Keep it through the cleanup that erases non-hoisted ops from the hoisted
+  // scf.parallel, exactly as cloneScfIfUsingRemap does for its scf.if.
+  newSwitch->setAttr("hoist", StringAttr::get(ctx, "dep"));
+
+  auto cloneRegionInto = [&](Region &src, Region &dst) {
+    if (dst.empty())
+      dst.emplaceBlock();
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToEnd(&dst.front());
+    SmallVector<Operation *> cloned;
+    if (!src.empty())
+      cloned = cloneOpsInBlock(&src.front(), builder, remap);
+    for (auto *op : cloned)
+      if (isa<air::ChannelInterface>(op))
+        clonedOps.push_back(op);
+    if (!hasToken) {
+      scf::YieldOp::create(builder, loc);
+      return;
+    }
+    // Every arm must yield a token, including one that got nothing: an empty
+    // air.wait_all is the identity the other arms' tokens are typed against.
+    //
+    // Collect the deps from the destination BLOCK, not from `cloned`.
+    // cloneOpsInBlock returns the ops it cloned at EVERY depth -- that is how
+    // the caller finds channel ops buried in a hoisted loop body (see the
+    // clonedOps scan in AIRHoistExternalAIRChannelPattern) -- so an arm holding
+    // a loop would otherwise yield tokens defined inside that loop's region and
+    // fail verification with "operand #N does not dominate this use". One
+    // switch is enough to hit this; it needs no second level of nesting.
+    //
+    // Taking only the tokens still unused in this block yields exactly what the
+    // arm has left outstanding: a nested loop contributes its own result, and
+    // the ops inside it stay where they belong.
+    SmallVector<Value> deps;
+    for (Operation &op : dst.front())
+      for (Value res : op.getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
+          deps.push_back(res);
+    auto wa = air::WaitAllOp::create(builder, loc,
+                                     air::AsyncTokenType::get(ctx), deps);
+    wa->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    scf::YieldOp::create(builder, loc, SmallVector<Value>{wa.getAsyncToken()});
+  };
+
+  cloneRegionInto(switch_op.getDefaultRegion(), newSwitch.getDefaultRegion());
+  for (unsigned i = 0; i < switch_op.getNumCases(); i++)
+    cloneRegionInto(switch_op.getCaseRegions()[i],
+                    newSwitch.getCaseRegions()[i]);
+
+  if (hasToken)
+    for (Value res : switch_op.getResults())
+      if (isa<air::AsyncTokenType>(res.getType()))
+        remap.map(res, newSwitch.getResult(0));
 
   return clonedOps;
 }
@@ -502,7 +700,166 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
   return channel_op;
 }
 
-static void replaceAIRDmaWithAIRChannelPairs(
+// Volume of an access pattern in elements, or nullopt if it is not static.
+static std::optional<int64_t> staticVolume(ArrayRef<OpFoldResult> sizes,
+                                           Value memref) {
+  if (sizes.empty()) {
+    auto ty = dyn_cast<MemRefType>(memref.getType());
+    if (!ty || !ty.hasStaticShape())
+      return std::nullopt;
+    return (int64_t)air::getTensorVolume(ty);
+  }
+  int64_t v = 1;
+  for (OpFoldResult s : sizes) {
+    std::optional<int64_t> c = getConstantIntValue(s);
+    if (!c)
+      return std::nullopt;
+    v *= *c;
+  }
+  return v;
+}
+
+// When the far buffer holds SEVERAL of the near window, the far half is that
+// buffer tiled by it.
+//
+// Nothing states this and nothing needs to. A channel is a FIFO, and the near
+// side's sequence is fixed by its own access pattern and its enclosing nest;
+// the far buffer is named on the same op. If the far buffer is N near-windows
+// wide then the near side takes it N pieces at a time, in order, and the far
+// half is what produces exactly that: N windows of the near size, ascending.
+//
+// N SEPARATE transfers, not one N-wide descriptor -- but NOT because the event
+// counts have to match. They do not: the shipped design's memtile feeds two
+// 256-word consumer gets from ONE folded 512-word BD, and that is what runs.
+//
+// The reason is that N pieces is the honest description of what was derived,
+// and it is the form the descriptor optimizer can act on.
+// air-opt-memtile-dma-bds recognises N ops tiling a contiguous run and folds
+// them to the single widest descriptor -- the same answer it gives the loop
+// spelling a front end would have written. A 2-D [base,0] [N,near] [near,1]
+// written here is already a shaped access, so that fold never sees a run to
+// recognise, and the two spellings diverge at the hardware for no reason
+// visible in the source.
+//
+// So: state the tiling, and let the pass whose job it is decide the descriptor.
+//
+// This rewrites `offsets`/`sizes`/`strides` to piece 0 and returns N; the
+// caller emits the remaining N-1. Returns 0 when the tiling is declined.
+//
+// Deriving it is what lets the front end stop hand-writing the far half's
+// offsets -- which it often CANNOT write, because they step with a loop that
+// does not exist where the transfer is spelled.
+//
+// Only a 1-D far window is folded, and only an exact multiple. Anything else is
+// left alone: a partial tiling has no unique reading, and guessing one is how a
+// silent misroute gets built.
+static int64_t deriveTiledFarWindow(OpBuilder &b, Value farMemref,
+                                    SmallVector<OpFoldResult> &offsets,
+                                    SmallVector<OpFoldResult> &sizes,
+                                    SmallVector<OpFoldResult> &strides,
+                                    int64_t nearVolume, bool foldWillNotRun) {
+  if (nearVolume <= 0)
+    return 0;
+  if (sizes.size() > 1)
+    return 0;
+  std::optional<int64_t> farVol = staticVolume(sizes, farMemref);
+  if (!farVol || *farVol <= nearVolume)
+    return 0;
+  if (*farVol % nearVolume)
+    return 0;
+  int64_t n = *farVol / nearVolume;
+  // A unit stride is what makes "the buffer holds N windows back to back" true;
+  // anything else is already a shaped access and is left as written.
+  if (!strides.empty()) {
+    std::optional<int64_t> st = getConstantIntValue(strides[0]);
+    if (!st || *st != 1)
+      return 0;
+  }
+  if (offsets.size() > 1)
+    return 0;
+  // The base needs to be a single position, not a constant one. Where the
+  // window SITS is not what the tiling reads -- N and the piece size come from
+  // the two volumes, and each piece is that base plus a static displacement.
+  // Requiring a constant here would decline exactly the case the derivation
+  // exists for: a drain into a slab whose origin is chosen at runtime, where
+  // the front end cannot write the far offsets because it does not know them.
+  OpFoldResult base =
+      offsets.empty() ? OpFoldResult(b.getIndexAttr(0)) : offsets[0];
+  // N pieces is the honest description and the form the descriptor optimizer
+  // can act on -- but only where that optimizer runs. A launch marked
+  // air.preserve_shim_dma_order has opted OUT of per-channel BD folding for its
+  // whole region, deliberately: the cross-channel issue order there is
+  // load-bearing and is not expressed as SSA dependences, so regrouping would
+  // reorder it into a deadlock. Nothing downstream will ever fold these.
+  //
+  // So the argument for N pieces inverts. Emitting them leaves N descriptors
+  // standing for good, and a shim tile has sixteen; the failure is a hard
+  // `'aiex.dma_configure_task' op Too many simultaneously active buffer
+  // descriptors`. Write the wrapped descriptor the fold would have produced --
+  // the same bytes, the same access pattern, and exactly what a front end
+  // hand-writes for this feed.
+  if (foldWillNotRun) {
+    offsets.assign({base});
+    sizes.assign({b.getIndexAttr(n), b.getIndexAttr(nearVolume)});
+    strides.assign({b.getIndexAttr(nearVolume), b.getIndexAttr(1)});
+    return 1;
+  }
+  offsets.assign({base});
+  sizes.assign({b.getIndexAttr(nearVolume)});
+  strides.assign({b.getIndexAttr(1)});
+  return n;
+}
+
+// Where the far buffer is FILLED, outside the hierarchy being hoisted out of.
+//
+// A far half carrying a whole buffer's worth belongs once per fill, not once
+// per near execution, so its position is not a free choice and does not need to
+// be named: it is wherever something writes the buffer it reads. Finding that
+// site by the BUFFER rather than by a channel symbol is what lets it work when
+// the loop it must land in holds no channel endpoint of its own -- which is the
+// ordinary case for a feed whose inner loop exists only to step the window.
+//
+// Returns the last writer PER REGION (the fill completes before the forward),
+// not one writer overall.
+//
+// One buffer is commonly filled in several mutually exclusive places -- a vocab
+// arm and a decode arm of the same scf.index_switch, each with its own feed
+// loop. Those are not competing candidates to choose between; the derived half
+// belongs in every one of them, exactly as an anchored hoist replicates across
+// arms. Returning a single site silently starves the arms that did not win:
+// their consumers wait on a producer emitted somewhere they never execute, and
+// the design hangs with no missing-endpoint diagnostic anywhere.
+//
+// Grouping by REGION rather than by switch arm keeps it simple and is the same
+// rule in the cases that matter: two arms are two regions, and a second fill in
+// the same region really is a later fill of the same buffer, where last wins.
+static void findFillSites(Value farMemref, Operation *hier_op,
+                          SmallVectorImpl<Operation *> &out) {
+  Value root = air::resolveBufferRoot(farMemref);
+  llvm::MapVector<Region *, Operation *> lastPerRegion;
+  hier_op->getParentRegion()->walk([&](Operation *o) {
+    if (hier_op->isAncestor(o))
+      return WalkResult::advance();
+    if (o == hier_op)
+      return WalkResult::advance();
+    // A get lands bytes in it; that is a fill. A put reads it, and is not.
+    if (auto g = dyn_cast<air::ChannelGetOp>(o))
+      if (air::resolveBufferRoot(g.getMemref()) == root)
+        lastPerRegion[o->getParentRegion()] = o;
+    return WalkResult::advance();
+  });
+  for (auto &kv : lastPerRegion)
+    out.push_back(kv.second);
+}
+
+// Whether anything outside the hierarchy refills the buffer at all.
+static bool hasFillSite(Value farMemref, Operation *hier_op) {
+  SmallVector<Operation *> sites;
+  findFillSites(farMemref, hier_op, sites);
+  return !sites.empty();
+}
+
+static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     OpBuilder &builder, air::MemorySpace innerMemorySpace,
     air::DmaMemcpyNdOp op,
     SmallVector<air::ChannelInterface, 1> &internalGetPutVector,
@@ -521,6 +878,76 @@ static void replaceAIRDmaWithAIRChannelPairs(
   SmallVector<OpFoldResult> src_strides = op.getMixedSrcStrides();
   SmallVector<OpFoldResult> dst_strides = op.getMixedDstStrides();
 
+  // Derive the far half's window from the near one, when the far buffer holds
+  // several of it. See deriveTiledFarWindow: this is the descriptor that makes
+  // the two byte sequences match, and the front end frequently cannot write it.
+  // 0 = not derived. Otherwise the number of pieces the far buffer is tiled
+  // into; the descriptor built below is piece 0 and the rest are emitted after.
+  int64_t farPieces = 0;
+  int64_t farPieceVolume = 0;
+  bool coversNearLoop = false;
+  auto enclosingHier = op->getParentOfType<air::HierarchyInterface>();
+  if (dst_type && src_type && enclosingHier) {
+    bool dstIsInner = air::getMemorySpace(dst_type) == innerMemorySpace;
+    Value nearMemref = dstIsInner ? dst : src;
+    Value farMemref = dstIsInner ? src : dst;
+    std::optional<int64_t> nearVol =
+        staticVolume(dstIsInner ? dst_sizes : src_sizes, nearMemref);
+    // The tiling reads "the near side takes this buffer N pieces at a time".
+    // Two independent ways to know that is a reading and not a guess, and one
+    // of them has to hold.
+    //
+    // 1. COUNT. If the near side's trip count is static it must be exactly N.
+    //    That is the invariant the tiling asserts, checked directly. It is also
+    //    what catches a far buffer nothing writes, read once by a near side
+    //    with no loop: N is 2 against a trip count of 1, and tiling it would
+    //    silently send twice what was asked for.
+    //
+    // 2. REUSE. With a non-static trip count there is nothing to compare, so
+    //    fall back to evidence that the buffer cycles -- a fill, then N takes,
+    //    then the next fill. That same fill is where the derived half is then
+    //    placed, so window and position rest on one fact rather than two
+    //    guesses.
+    //
+    // Deliberately NOT "either alone suffices": a static trip count that
+    // disagrees is a refutation, and no amount of reuse evidence overrides it.
+    std::optional<int64_t> nearTrip = air::getStaticTripCountInRange(
+        op.getOperation(), enclosingHier.getOperation());
+    std::optional<int64_t> farVol =
+        staticVolume(dstIsInner ? src_sizes : dst_sizes, farMemref);
+    bool countAgrees = false, countRefutes = false;
+    if (nearTrip && nearVol && farVol && *nearVol > 0 &&
+        *farVol % *nearVol == 0) {
+      int64_t n = *farVol / *nearVol;
+      countAgrees = *nearTrip == n;
+      countRefutes = *nearTrip != n;
+    }
+    bool refilled = hasFillSite(farMemref, enclosingHier.getOperation());
+    // Which licence applied decides WHERE the far half goes, and the two
+    // answers differ. Recorded here because only this point knows.
+    coversNearLoop = countAgrees && !refilled;
+    if (nearVol && !countRefutes && (countAgrees || refilled)) {
+      // Whether anything downstream will fold the pieces back. Only the
+      // LAUNCH region opts out, and only a far half that lands there is
+      // affected -- an L2 far half is folded by the segment-scope pass and by
+      // air-opt-memtile-dma-bds regardless.
+      auto farTy =
+          llvm::dyn_cast_if_present<BaseMemRefType>(farMemref.getType());
+      bool foldWillNotRun = false;
+      if (farTy && air::isL3(farTy))
+        if (auto launch = op->getParentOfType<air::LaunchOp>())
+          foldWillNotRun = launch->hasAttr(air::attrs::PreserveShimDmaOrder);
+      if (dstIsInner)
+        farPieces = deriveTiledFarWindow(builder, src, src_offsets, src_sizes,
+                                         src_strides, *nearVol, foldWillNotRun);
+      else
+        farPieces = deriveTiledFarWindow(builder, dst, dst_offsets, dst_sizes,
+                                         dst_strides, *nearVol, foldWillNotRun);
+      if (farPieces)
+        farPieceVolume = *nearVol;
+    }
+  }
+
   // The internal channel op shall inherit the dma op's dep list
   SmallVector<Value, 4> internalDeps = op.getAsyncDependencies();
   // The external channel op shall inherit the loop-carried token only
@@ -536,9 +963,72 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   // Create channel symbol
   auto module = op->getParentOfType<ModuleOp>();
-  std::string cname = air::createChannelName(module);
 
-  if (op->hasAttr("broadcast_set")) {
+  // A DMA naming a channel lowers onto THAT declaration instead of a fresh one.
+  // This is what lets several DMAs share one channel (a convergent
+  // multi-producer feed), and what keeps author-written channel properties --
+  // channel_type, broadcast_shape, air.shared_resident_ring,
+  // air.tile_dma_channel -- attached to a symbol the front end controls.
+  //
+  // The declaration is never created here. A name with nothing behind it is a
+  // typo, and minting an empty channel for it would convert that typo into a
+  // silent point-to-point circuit flow that deadlocks much further downstream,
+  // in air-to-aie, with no trace of where the name came from.
+  air::ChannelOp namedChanOp = nullptr;
+  if (op.hasNamedChannel()) {
+    namedChanOp = air::getChannelDeclarationThroughSymbol(op.getOperation(),
+                                                          op.getChannelAttr());
+    if (!namedChanOp)
+      return op.emitOpError()
+             << "names channel " << op.getChannelAttr()
+             << ", which is not declared in any enclosing symbol table";
+  }
+  std::string cname = namedChanOp ? namedChanOp.getSymName().str()
+                                  : air::createChannelName(module);
+
+  if (namedChanOp) {
+    // The declaration already carries its bundle shape and every property the
+    // front end wrote on it; re-deriving either would overwrite the reason for
+    // naming it in the first place.
+    //
+    // A broadcast still works when the channel is named: the set is forwarded
+    // to the put below, and the internal indices come from the affine.if that
+    // guards it, exactly as for an unnamed channel. Only the SHAPE comes from
+    // the declaration rather than being derived from the set. So say nothing
+    // while the two agree, and report it when they do not -- a declaration
+    // whose fan-out disagrees with the guard that implements it is a real bug,
+    // and silently preferring either one hides it.
+    if (auto setAttr =
+            op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
+      SmallVector<int, 2> lbs_int = {-1, -1};
+      SmallVector<int, 2> ubs_int = {-1, -1};
+      air::getSizesFromIntegerSet(ctx, setAttr.getValue(), lbs_int, ubs_int);
+      SmallVector<int64_t, 2> fromSet = {ubs_int[0] - lbs_int[0] + 1,
+                                         ubs_int[1] - lbs_int[1] + 1};
+      SmallVector<int64_t, 2> declared;
+      if (auto bs = namedChanOp.getBroadcastShape())
+        for (auto d : bs)
+          if (auto i = llvm::dyn_cast<IntegerAttr>(d))
+            declared.push_back(i.getInt());
+      if (declared != fromSet) {
+        auto fmt = [](ArrayRef<int64_t> v) {
+          std::string s;
+          llvm::raw_string_ostream os(s);
+          os << "[";
+          llvm::interleaveComma(v, os);
+          os << "]";
+          return s;
+        };
+        std::string declStr = fmt(declared), setStr = fmt(fromSet);
+        op->emitWarning()
+            << "broadcast_set on this DMA implies a fan-out of " << setStr
+            << ", but the channel it names, @" << namedChanOp.getSymName()
+            << ", declares broadcast_shape " << declStr
+            << ". The declaration wins; the guard is unchanged, so the two "
+               "disagree on device.";
+      }
+    }
+  } else if (op->hasAttr("broadcast_set")) {
     // If the data movement is subject to a broadcasting pattern, then
     // specialize each broadcast source in a bundle into a separate channel.
     // Infer broadcast shape from integer set, if broadcast_set attribute is
@@ -582,7 +1072,26 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   SmallVector<Value, 1> channel_idx_internal{};
   SmallVector<Value, 1> channel_idx_external{};
-  if (op->hasAttr("broadcast_set")) {
+  if (!op.getDynamicChannelIndices().empty()) {
+    // Sub-channel selectors known only at run time -- a tile indexing its own
+    // column, say. They win over the static form and over the spatial
+    // inference: the front end said exactly which sub-channel this is, and it
+    // is not a constant. Both halves index the same one.
+    for (Value v : op.getDynamicChannelIndices()) {
+      channel_idx_internal.push_back(v);
+      channel_idx_external.push_back(v);
+    }
+  } else if (auto staticIndices = op.getChannelIndices()) {
+    // An explicit index overrides the spatial inference below. It is what a
+    // sub-channel of a bundle is selected with when the index is NOT the
+    // enclosing spatial index -- e.g. a per-column weight feed inside a loop
+    // whose IV is not the column. Both halves index the same sub-channel.
+    for (int64_t idx : *staticIndices) {
+      auto c = arith::ConstantIndexOp::create(builder, loc, idx);
+      channel_idx_internal.push_back(c);
+      channel_idx_external.push_back(c);
+    }
+  } else if (op->hasAttr("broadcast_set")) {
     // If broadcasting, let internal channel inherit affine.if's operands
     auto parent_affine_if_op = op->getParentOfType<affine::AffineIfOp>();
     for (auto operand : parent_affine_if_op->getOperands()) {
@@ -601,6 +1110,48 @@ static void replaceAIRDmaWithAIRChannelPairs(
       channel_idx_external.push_back(iv);
     }
   }
+
+  // For a named channel the DECLARATION fixes the bundle rank, and the spatial
+  // inference above knows nothing about it -- it counts enclosing herd /
+  // scf.parallel dimensions. Those agree only when the bundle *is* the spatial
+  // iteration. When they disagree, indexing a rank-N bundle with M != N indices
+  // is malformed IR that survives all the way to air-to-aie, so resolve it
+  // here.
+  if (namedChanOp && !op.getChannelIndices()) {
+    size_t declRank = namedChanOp.getSize().size();
+    if (declRank == 0) {
+      // Unbundled: a single flow, addressed with no index.
+      channel_idx_internal.clear();
+      channel_idx_external.clear();
+    } else if (declRank != channel_idx_internal.size()) {
+      return op.emitOpError()
+             << "names channel @" << namedChanOp.getSymName() << ", declared "
+             << "with " << declRank << " bundle dimension(s), but the "
+             << "enclosing spatial iteration supplies "
+             << channel_idx_internal.size()
+             << ". Give the sub-channel explicitly with channel_indices.";
+    }
+  }
+
+  // On a BROADCAST channel the index identifies the RECEIVER, so it belongs to
+  // the consuming half only. There is one source and it addresses no
+  // sub-channel: that is what makes it a broadcast rather than a bundle.
+  //
+  // The same rule is already applied on the broadcast_set path, where only the
+  // internal half inherits the affine.if's operands. It has to hold here too,
+  // for a channel whose fan-out comes from its DECLARATION instead of a guard.
+  // Without it a DMA written on the core side hands the producer the consumer's
+  // tile indices -- herd induction variables, which do not exist where the
+  // producer lands, so the hoist emits IR that does not verify:
+  //
+  //   error: operand #0 does not dominate this use
+  //
+  // Whether the external half is the source is not assumed: a broadcast's
+  // external half is the put by construction, and clearing indices off a get
+  // would silently redirect a consumer to sub-channel 0.
+  if (namedChanOp && namedChanOp.getBroadcastShape() &&
+      air::getMemorySpace(src_type) != innerMemorySpace)
+    channel_idx_external.clear();
 
   // Extract padding attributes from the DMA op (applies to source/put side).
   DenseI32ArrayAttr padBefore = op.getPadBeforeAttr();
@@ -627,29 +1178,35 @@ static void replaceAIRDmaWithAIRChannelPairs(
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
 
+  // A runtime packet-demux destination rides on the INTERNAL put -- the one
+  // that stays on the core, which is where the demux index is computed and what
+  // air-annotate-packet-ids reads. The external half is the memtile/shim side
+  // and has no destination to select.
+  Value demuxDest = op.getDest();
+
   if (air::getMemorySpace(src_type) == innerMemorySpace) {
     auto internal = air::ChannelPutOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, src, src_offsets, src_sizes, src_strides,
-        padBefore, padAfter);
+        demuxDest, padBefore, padAfter);
     internalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(internal.getOperation());
   } else {
     auto external = air::ChannelPutOp::create(
         builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_external, src, src_offsets, src_sizes, src_strides,
-        padBefore, padAfter);
+        demuxDest, padBefore, padAfter);
     externalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
 
   if (!internalGetPut) {
-    op->emitOpError("has unexpected memref memory space at internal-side");
-    return;
+    return op->emitOpError(
+        "has unexpected memref memory space at internal-side");
   }
   if (!externalGetPut) {
-    op->emitOpError("has unexpected memref memory space at external-side");
-    return;
+    return op->emitOpError(
+        "has unexpected memref memory space at external-side");
   }
 
   // Replace all uses to dma token with internal put/get token
@@ -665,11 +1222,167 @@ static void replaceAIRDmaWithAIRChannelPairs(
                           StringAttr::get(op->getContext(), "internalGetPut"));
   externalGetPut->setAttr("loop-carried-dep",
                           StringAttr::get(op->getContext(), "external"));
+  // A derived far window is a whole buffer's worth per execution, so it belongs
+  // where the buffer is FILLED -- once per fill, not once per near execution.
+  // The hoist finds that site from the buffer itself.
+  if (farPieces)
+    externalGetPut->setAttr("air.derived_far_window",
+                            UnitAttr::get(op->getContext()));
+  // A far half licensed by the COUNT reading covers the WHOLE near loop -- that
+  // is what nearTrip == N says -- so it belongs ONCE, outside it. The fill-site
+  // licence answers the same question differently and has its own marker above;
+  // this one is for the case where there is no fill to go to.
+  if (farPieces && coversNearLoop)
+    externalGetPut->setAttr("air.derived_covers_near_loop",
+                            UnitAttr::get(op->getContext()));
   if (op->hasAttr("broadcast_set"))
     externalGetPut->setAttr("broadcast_set", op->getAttr("broadcast_set"));
+  // Carry the issue-order anchor onto the EXTERNAL half only. It is the
+  // producer/consumer that leaves the hierarchy and lands in the destination
+  // block, so it is the only one whose position is a free choice.
+  if (auto anchor = op.getHoistAfterAttr())
+    externalGetPut->setAttr("air.hoist_after", anchor);
+  if (auto anchor = op.getHoistBeforeAttr())
+    externalGetPut->setAttr("air.hoist_before", anchor);
+  // Same reasoning for "do not carry my guards": it is a statement about where
+  // the external half lands, so it belongs on the external half only.
+  if (op->hasAttr("hoist_unguarded"))
+    externalGetPut->setAttr("air.hoist_unguarded",
+                            UnitAttr::get(op->getContext()));
+  if (op->hasAttr("hoist_outside_loops"))
+    externalGetPut->setAttr("air.hoist_outside_loops",
+                            UnitAttr::get(op->getContext()));
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
+
+  // The remaining N-1 pieces of a derived tiling. One per near execution, so
+  // that the number of lock events on the far side equals the number on the
+  // near side -- see deriveTiledFarWindow. Bytes alone would be satisfied by
+  // the single wrapped descriptor these replace.
+  //
+  // Everything but the base offset is identical, so the piece is a clone with
+  // that one offset displaced. Emitting them adjacent and ascending keeps the
+  // FIFO order the near side reads them in.
+  //
+  // The base may be dynamic -- a slab whose origin is a runtime value is the
+  // ordinary case for a drain -- so the displacement is added rather than
+  // folded, and the addition is emitted where the piece is. It dominates:
+  // piece i sits immediately after the op that already uses the base.
+  if (farPieces > 1) {
+    bool farIsSrc = isa<air::ChannelPutOp>(externalGetPut.getOperation());
+    SmallVector<OpFoldResult> &farOffsets =
+        farIsSrc ? src_offsets : dst_offsets;
+    if (farOffsets.size() == 1) {
+      OpFoldResult base = farOffsets[0];
+      OpBuilder::InsertionGuard guard(builder);
+      Operation *prev = externalGetPut.getOperation();
+      for (int64_t i = 1; i < farPieces; i++) {
+        builder.setInsertionPointAfter(prev);
+        int64_t delta = i * farPieceVolume;
+        OpFoldResult off;
+        if (auto c = getConstantIntValue(base))
+          off = builder.getIndexAttr(*c + delta);
+        else {
+          Value d = arith::ConstantIndexOp::create(builder, loc, delta);
+          off = OpFoldResult(
+              arith::AddIOp::create(builder, loc, cast<Value>(base), d)
+                  .getResult());
+        }
+        Operation *piece = builder.clone(*externalGetPut.getOperation());
+        if (farIsSrc)
+          cast<air::ChannelPutOp>(piece).setMixedSrcOffsets({off});
+        else
+          cast<air::ChannelGetOp>(piece).setMixedDstOffsets({off});
+        externalGetPutVector.push_back(dyn_cast<air::ChannelInterface>(piece));
+        prev = piece;
+      }
+    }
+  }
+  return success();
+}
+
+// A far half licensed by the COUNT reading belongs ONCE, outside the near loop.
+//
+// "nearTrip == N" says the far window covers the whole loop, so issuing it per
+// trip sends N times what was asked for. cloneOpsInBlock rebuilds the near nest
+// around the hoisted half, which is right for a transfer that steps with the
+// loop and wrong for one that spans it.
+//
+// The move is always legal, and for the same reason the licence held: covering
+// the loop means the window cannot be a function of the induction variable.
+// That is checked here rather than assumed -- a transfer that does read the IV
+// is left exactly where it is.
+//
+// Only the token chain needs fixing, and the DIRECTION matters. Inside, the
+// transfer takes the loop's carried token and yields into it. Outside it takes
+// the loop's INIT -- but the loop must NOT then be seeded from the transfer.
+// Seeding it that way reads "the loop may not start until this transfer has
+// completed", and this transfer completes only once the loop has produced every
+// piece of what it carries: a circular wait, and on device a decode-dispatch
+// timeout rather than anything that looks like a scheduling bug.
+//
+// The transfer is issued ahead of the loop and finishes after it, so its token
+// joins the loop's RESULT instead: whatever waited on the loop now waits on
+// both.
+static void hoistFarHalfCoveringLoop(air::ChannelInterface chan) {
+  auto forOp = dyn_cast_if_present<scf::ForOp>(chan->getParentOp());
+  if (!forOp || chan->getBlock() != forOp.getBody())
+    return;
+
+  // Whatever the transfer reads that was computed in this body comes with it.
+  SetVector<Operation *> slice;
+  BackwardSliceOptions opts;
+  opts.filter = [&](Operation *o) { return o->getBlock() == forOp.getBody(); };
+  (void)getBackwardSlice(chan.getOperation(), &slice, opts);
+  SmallVector<Operation *> toMove;
+  for (Operation *o : slice) {
+    if (o->getBlock() != forOp.getBody())
+      continue;
+    if (isa<air::ChannelInterface>(o) || o->getNumRegions())
+      return; // another transfer, or structure: not a plain window computation
+    toMove.push_back(o);
+  }
+  auto readsIV = [&](Operation *o) {
+    return llvm::is_contained(o->getOperands(), forOp.getInductionVar());
+  };
+  if (readsIV(chan.getOperation()) || llvm::any_of(toMove, readsIV))
+    return;
+
+  SmallVector<unsigned> reseed;
+  if (auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation())) {
+    OperandRange deps = async.getAsyncDependencies();
+    unsigned base = deps.getBeginOperandIndex();
+    for (unsigned k = 0; k < deps.size(); k++) {
+      auto ba = dyn_cast<BlockArgument>(deps[k]);
+      if (!ba || ba.getOwner() != forOp.getBody())
+        continue;
+      unsigned i = ba.getArgNumber() - 1; // past the induction variable
+      if (i >= forOp.getInitArgs().size())
+        continue;
+      reseed.push_back(i);
+      chan->setOperand(base + k, forOp.getInitArgs()[i]);
+    }
+  }
+
+  for (Operation *o : toMove)
+    o->moveBefore(forOp);
+  chan->moveBefore(forOp);
+
+  if (!reseed.empty() && air::isAsyncOp(chan.getOperation())) {
+    Value tok = air::getAsyncTokenFromOp(chan.getOperation());
+    OpBuilder b(forOp->getContext());
+    b.setInsertionPointAfter(forOp);
+    for (unsigned i : reseed) {
+      Value res = forOp.getResult(i);
+      if (!isa<air::AsyncTokenType>(res.getType()))
+        continue;
+      auto join = air::WaitAllOp::create(
+          b, forOp.getLoc(), air::AsyncTokenType::get(forOp->getContext()),
+          SmallVector<Value>{res, tok});
+      res.replaceAllUsesExcept(join.getAsyncToken(), join.getOperation());
+    }
+  }
 }
 
 // Check whether an channel op is within a matching air hierarchy (launch for
@@ -698,6 +1411,31 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
       return true;
   }
   return false;
+}
+
+// Whether hoisting `getput` out of `hier_op` lands it in its matching memory
+// hierarchy, i.e. whether this is the LAST hop of the walk outwards.
+//
+// An issue-order anchor may only be honoured on the last hop. A channel that
+// stages through memory -- an L3 -> L2 -> L1 weight feed, say -- has endpoints
+// at more than one level, so naming it as an anchor from inside a herd matches
+// its SEGMENT-level endpoint and pins the transfer two levels short of where it
+// belongs. The anchor is then consumed, and the remaining hop is unanchored, so
+// the transfer silently lands at the hierarchy's position after all.
+static bool hoistReachesMatchingHierarchy(air::ChannelInterface getput,
+                                          Operation *hier_op) {
+  auto memrefType =
+      llvm::dyn_cast_if_present<BaseMemRefType>(getput.getMemref().getType());
+  if (!memrefType)
+    return false;
+  auto destHier = hier_op->getParentOfType<air::HierarchyInterface>();
+  if (!destHier || isa<air::LaunchOp>(destHier.getOperation()))
+    return true;
+  if (isa<air::SegmentOp>(destHier.getOperation()))
+    return air::isL2(memrefType) || air::isL1(memrefType);
+  if (isa<air::HerdOp>(destHier.getOperation()))
+    return air::isL1(memrefType);
+  return true;
 }
 
 // Check whether a channel op is an "external" side channel op.
@@ -766,14 +1504,452 @@ class AIRDmaToAIRChannelConversion
     SmallVector<air::ChannelInterface, 1> externalGetPut;
     SmallVector<air::ChannelInterface, 1> internalGetPut;
 
-    replaceAIRDmaWithAIRChannelPairs(rewriter, innerMemorySpace, op,
-                                     internalGetPut, externalGetPut);
+    if (failed(replaceAIRDmaWithAIRChannelPairs(
+            rewriter, innerMemorySpace, op, internalGetPut, externalGetPut)))
+      return failure();
 
     rewriter.eraseOp(op);
 
     return success();
   }
 };
+
+// The anchor symbol a batch agrees on, or null. Same rule as
+// findIssueOrderAnchor: one insertion point serves the whole batch, so a batch
+// that disagrees has no anchor.
+static FlatSymbolRefAttr
+anchorAttrOf(ArrayRef<air::ChannelInterface> externalGetPuts) {
+  FlatSymbolRefAttr anchor;
+  for (auto getput : externalGetPuts) {
+    auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+    if (!a)
+      continue;
+    if (anchor && anchor != a)
+      return nullptr;
+    anchor = a;
+  }
+  return anchor;
+}
+
+// Find the op named by an "air.hoist_after" anchor on any of the external
+// channel ops: the LAST endpoint of that channel in the region the hierarchy op
+// lives in, skipping anything inside the hierarchy op itself. Returns null when
+// nothing is anchored or the anchor names a channel with no endpoint out here.
+static SmallVector<Operation *>
+findIssueOrderAnchors(ArrayRef<air::ChannelInterface> externalGetPuts,
+                      Operation *hier_op, bool &placeBefore) {
+  FlatSymbolRefAttr anchor;
+  placeBefore = false;
+  for (auto getput : externalGetPuts) {
+    if (!hoistReachesMatchingHierarchy(getput, hier_op))
+      continue;
+    auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+    if (!a) {
+      a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
+      if (a)
+        placeBefore = true;
+    }
+    if (!a)
+      continue;
+    // One shared insertion point is used for the whole batch, so only honour
+    // the anchor when the batch agrees on it.
+    if (anchor && anchor != a)
+      return {};
+    anchor = a;
+  }
+  if (!anchor)
+    return {};
+
+  // Only endpoints at the SAME hierarchy level count. Without this the herd
+  // -level hoist would match an endpoint of the anchor channel sitting inside a
+  // SIBLING herd, and drop the transfer in there.
+  auto *hierParent =
+      hier_op->getParentOfType<air::HierarchyInterface>()
+          ? hier_op->getParentOfType<air::HierarchyInterface>().getOperation()
+          : nullptr;
+  // Which arm of an enclosing scf.index_switch an op sits in, or -1 if none.
+  // scf.index_switch numbers its DEFAULT region 0 and its cases 1..n, but
+  // prints the cases first -- so "last in walk order" is NOT "last in program
+  // order", and picking by walk order lands a decode-only feed in the vocab
+  // arm. Match the arm instead, which is what the front end means.
+  // The whole PATH of arms, outermost first, not just the innermost one.
+  // Matching a single index treats two different switches' region 1 as the same
+  // place: a transfer guarded by the outer switch's case 0 then resolves onto
+  // an endpoint sitting in a NESTED switch's case 0 and is emitted there, so
+  // the arm it belonged to loses its feed entirely and another arm gets it
+  // twice. The consumer in the starved arm waits forever. That is what withdrew
+  // RMSW_DMA: on qwen3_8b the outer vocab arm's @rmsW put vanished and a
+  // duplicate appeared two levels down.
+  auto armPathOf = [](Operation *o) -> SmallVector<int, 4> {
+    SmallVector<int, 4> path;
+    for (Operation *p = o->getParentOp(); p; p = p->getParentOp()) {
+      if (isa<air::HierarchyInterface>(p))
+        break;
+      if (isa<scf::IndexSwitchOp>(p))
+        for (unsigned r = 0; r < p->getNumRegions(); r++)
+          if (p->getRegion(r).isAncestor(o->getParentRegion()) ||
+              &p->getRegion(r) == o->getParentRegion()) {
+            path.push_back((int)r);
+            break;
+          }
+    }
+    std::reverse(path.begin(), path.end());
+    return path;
+  };
+  SmallVector<int, 4> wantArm;
+  bool haveWantArm = false;
+  for (auto getput : externalGetPuts)
+    if (getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after") ||
+        getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before")) {
+      wantArm = armPathOf(getput.getOperation());
+      haveWantArm = true;
+    }
+
+  // "After the LAST endpoint" and "before the FIRST endpoint" are the mirror
+  // pair. Taking the last one in both directions would drop a hoist_before
+  // transfer in between a multi-endpoint anchor's own transfers instead of
+  // ahead of the group -- e.g. anchoring ahead of a weight feed that is spelled
+  // as two contiguous halves.
+  // Three rankings, best first. EXACT is the endpoint standing in precisely the
+  // arm the transfer belongs to. INSIDE is one standing in a switch NESTED in
+  // that arm -- still the right arm, just further in; a weight feed split per
+  // column group is the usual source. ANY is a last resort and is where a
+  // wrong answer comes from, so it is only taken when the other two are empty.
+  Operation *pickExact = nullptr, *pickAny = nullptr;
+  // Inside matches kept ONE PER ARM. A transfer shallower than its anchor
+  // belongs in every arm the anchor has an endpoint in, not in one of them, so
+  // which arms those are is the answer -- collapsing them to a single winner
+  // throws the question away.
+  SmallVector<std::pair<SmallVector<int, 4>, Operation *>, 4> insideByArm;
+  hier_op->getParentRegion()->walk([&](air::ChannelInterface o) {
+    if (hier_op->isAncestor(o.getOperation()))
+      return WalkResult::advance();
+    if (o.getChanName() != anchor.getAttr())
+      return WalkResult::advance();
+    auto oParent = o->getParentOfType<air::HierarchyInterface>();
+    if ((oParent ? oParent.getOperation() : nullptr) != hierParent)
+      return WalkResult::advance();
+    auto path = armPathOf(o.getOperation());
+    bool exact = haveWantArm && path == wantArm;
+    bool inside = haveWantArm && path.size() > wantArm.size() &&
+                  std::equal(wantArm.begin(), wantArm.end(), path.begin());
+    auto keep = [&](Operation *&slot) {
+      // "After the LAST endpoint" and "before the FIRST" are the mirror pair.
+      if (!placeBefore || !slot)
+        slot = o.getOperation();
+    };
+    if (exact)
+      keep(pickExact);
+    else if (inside) {
+      auto *hit = llvm::find_if(
+          insideByArm, [&](const auto &kv) { return kv.first == path; });
+      if (hit == insideByArm.end())
+        insideByArm.push_back({path, o.getOperation()});
+      else
+        keep(hit->second);
+    }
+    keep(pickAny);
+    return WalkResult::advance();
+  });
+
+  if (pickExact)
+    return {pickExact};
+
+  // Climbing out of an ARM is free; climbing out of a LOOP is not.
+  //
+  // That is the same distinction the anchored placement rests on elsewhere: an
+  // arm changes only WHETHER the transfer is issued, which is context and is
+  // what an anchor is for, while a loop changes how MANY times, which is a
+  // property of the transfer itself and must never be inherited or discarded.
+  // So ask of each inside match whether reaching the transfer's own arm depth
+  // would cross a loop.
+  auto climbCrossesLoop = [&](Operation *o) {
+    for (Operation *p = o->getParentOp();
+         p && !isa<air::HierarchyInterface>(p) &&
+         armPathOf(p).size() >= wantArm.size();
+         p = p->getParentOp()) {
+      if (isa<LoopLikeOpInterface>(p))
+        return true;
+      if (armPathOf(p).size() == wantArm.size())
+        break;
+    }
+    return false;
+  };
+
+  if (insideByArm.size() > 1 && llvm::any_of(insideByArm, [&](const auto &kv) {
+        return climbCrossesLoop(kv.second);
+      })) {
+    // The anchor has endpoints in several arms, each inside a loop, and the
+    // transfer is in none of them -- so it belongs in all of them: one copy per
+    // arm, at that arm's own endpoint, inside that arm's loop.
+    //
+    // Climbing out issues the transfer the right number of TIMES, which is why
+    // it looks equivalent, but it lands outside every one of those loops. In
+    // fused_decode's egress the arms are the two phases and each runs its own
+    // round loop, so what should be four memtile descriptors per round becomes
+    // four times the round count, chained, at segment scope -- and
+    // air-dependency-canonicalize rejects the result.
+    //
+    // The starvation this replaces -- a transfer landing in ONE nested arm
+    // while the others wait forever, which withdrew RMSW_DMA on qwen3_8b -- is
+    // the failure of picking one arm. Taking all of them answers it rather than
+    // returning to it.
+    SmallVector<Operation *> sites;
+    for (auto &kv : insideByArm)
+      sites.push_back(kv.second);
+    return sites;
+  }
+
+  Operation *pickInside = nullptr;
+  for (auto &kv : insideByArm)
+    if (!placeBefore || !pickInside)
+      pickInside = kv.second;
+  Operation *pick = pickInside ? pickInside : pickAny;
+  // An INSIDE match is deeper than the transfer, and no loop stands in the way.
+  // Climb back out to the structure that holds every arm: before it covers each
+  // arm's first endpoint, after it covers each arm's last.
+  if (pick && pickInside) {
+    while (armPathOf(pick).size() > wantArm.size()) {
+      auto *p = pick->getParentOp();
+      if (!p || isa<air::HierarchyInterface>(p))
+        break;
+      pick = p;
+    }
+  }
+  LLVM_DEBUG(llvm::dbgs() << "[dma-to-channel] anchor " << anchor
+                          << " hoisting out of " << hier_op->getName()
+                          << ": armDepth=" << wantArm.size() << " resolved="
+                          << (pickExact
+                                  ? "same-arm"
+                                  : (!insideByArm.empty()
+                                         ? "inside-arm"
+                                         : (pickAny ? "any-arm" : "NONE")))
+                          << " sites=" << (pick ? 1 : 0) << "\n");
+  if (!pick)
+    return {};
+  return {pick};
+}
+
+// Do two access-pattern lists describe the same window?
+//
+// By VALUE, not by SSA identity. Each hoisted transfer materializes its own
+// copy of the pure defs it needs -- that is what lets a clone stand alone in
+// the block it lands in -- so two spellings of one constant offset are
+// different Values by construction. Comparing the Values answers "not the same
+// window" for every transfer this is ever asked about.
+static bool sameWindow(ArrayRef<OpFoldResult> a, ArrayRef<OpFoldResult> b) {
+  if (a.size() != b.size())
+    return false;
+  for (auto [x, y] : llvm::zip_equal(a, b)) {
+    std::optional<int64_t> cx = getConstantIntValue(x);
+    std::optional<int64_t> cy = getConstantIntValue(y);
+    if (cx || cy) {
+      // One side constant and the other not is a difference this cannot see
+      // through, so say so rather than guess.
+      if (cx != cy)
+        return false;
+      continue;
+    }
+    if (x != y)
+      return false;
+  }
+  return true;
+}
+
+// Is `a` the same transfer as `b`, ignoring async plumbing?
+//
+// Same channel, same sub-channel, same buffer, same window. The async
+// dependency lists are deliberately NOT compared: they are how the transfer is
+// SCHEDULED, not what it moves, and two clones of one transfer reaching the
+// same point by different paths carry different tokens by construction.
+static bool sameTransfer(air::ChannelInterface a, air::ChannelInterface b) {
+  if (a->getName() != b->getName())
+    return false;
+  if (a.getChanName() != b.getChanName())
+    return false;
+  if (a.getMemref() != b.getMemref())
+    return false;
+  // Note OperandRange's own == compares the RANGE rather than its elements,
+  // and two distinct ops never share one.
+  SmallVector<OpFoldResult> ai, bi;
+  for (Value v : a.getIndices())
+    ai.push_back(v);
+  for (Value v : b.getIndices())
+    bi.push_back(v);
+  return sameWindow(ai, bi) &&
+         sameWindow(a.getMixedOffsets(), b.getMixedOffsets()) &&
+         sameWindow(a.getMixedSizes(), b.getMixedSizes()) &&
+         sameWindow(a.getMixedStrides(), b.getMixedStrides());
+}
+
+// A transfer already emitted at this point, or null.
+//
+// A producer stream SHARED by several consumer sites is one transfer, and the
+// hoist sees it once per site: each site names the same channel, the same
+// memtile buffer and the same window, and each is anchored to the same feed. A
+// second descriptor for it is not a second transfer -- it re-sends bytes the
+// first already sent, on the same sub-channel, acquiring the fill lock a second
+// time for a fill that happens once. The memtile MM2S ring then carries two
+// acquires per release against an S2MM that still has one, and the design reads
+// stale weights.
+//
+// The front end could not have said this differently: with the transfer spelled
+// as an air.channel.put it writes ONE put in the producer's own loop and lets
+// several gets share it -- which is legal, and is the shape this restores.
+static Operation *findEmittedTransfer(air::ChannelInterface getput,
+                                      Block *blk) {
+  for (Operation &o : *blk) {
+    if (&o == getput.getOperation())
+      continue;
+    auto other = dyn_cast<air::ChannelInterface>(&o);
+    if (!other)
+      continue;
+    if (sameTransfer(getput, other))
+      return &o;
+  }
+  return nullptr;
+}
+
+// Drop async dependencies that do not reach where the op landed.
+//
+// The external half inherits the loop-carried token of the loop it was written
+// in. When it is placed by position -- at an anchor, or at the fill its derived
+// window belongs to -- it leaves that loop behind, and the token becomes a
+// block argument of a region it is no longer inside. Rebuilding the loop is not
+// an option here: that is the whole point of placing by position rather than by
+// structure. Drop the stale edges; air-dependency-canonicalize re-derives the
+// real ones from the buffers.
+static void pruneNonDominatingDeps(Operation *op) {
+  auto async = dyn_cast<air::AsyncOpInterface>(op);
+  if (!async)
+    return;
+  auto func = op->getParentOfType<func::FuncOp>();
+  if (!func)
+    return;
+  DominanceInfo dom(func);
+  // Erase from the back so the earlier indices stay valid.
+  SmallVector<unsigned> drop;
+  for (auto [i, d] : llvm::enumerate(async.getAsyncDependencies()))
+    if (!dom.properlyDominates(d, op))
+      drop.push_back(i);
+  for (unsigned i : llvm::reverse(drop))
+    async.eraseAsyncDependency(i);
+}
+
+// How many tiles of `hier_op` actually execute `getput`?
+//
+// A DMA carries one multiplicity, the CONSUMER's: it sits inside the hierarchy,
+// under whatever scf.if chain selects a tile. The PRODUCER's multiplicity has
+// to be derived, and it is derivable -- it is the number of tiles satisfying
+// the guard. Wrapping a one-tile transfer in an scf.parallel over the whole
+// iteration space issues it once per tile instead of once.
+//
+// Do NOT read this off `broadcast_set`. That attribute is the herd's BOUNDING
+// BOX -- for a 2x4 herd it is literally `0 <= s0 <= 1, 0 <= s1 <= 3`, with no
+// equalities -- so it says "all tiles" no matter what the guards say. The guard
+// lives in the scf.if chain, still intact around the external half here because
+// that half is created in the DMA's own position.
+//
+// Herd extents are compile-time constants, so enumerate rather than reach for
+// affine machinery: it is exact, and it handles the else-branch case
+// (`ty < 2` then `not (ty == 0)` gives `ty == 1`) that constraint solving needs
+// integer reasoning for. Returns nullopt for anything that is not a constant
+// comparison against a hierarchy induction variable, which keeps every existing
+// design on the old path.
+static std::optional<int64_t>
+countExecutingTiles(air::ChannelInterface getput,
+                    air::HierarchyInterface hier_op) {
+  SmallVector<int64_t> extents;
+  for (auto sz : hier_op.getSizeOperands()) {
+    auto c = getConstantIntValue(sz);
+    if (!c || *c <= 0 || *c > 64)
+      return std::nullopt;
+    extents.push_back(*c);
+  }
+  if (extents.empty())
+    return std::nullopt;
+  auto ids = hier_op.getIds();
+  auto dimOf = [&](Value v) -> std::optional<unsigned> {
+    for (unsigned i = 0; i < ids.size(); i++)
+      if (ids[i] == v)
+        return i;
+    return std::nullopt;
+  };
+
+  struct Guard {
+    unsigned dim;
+    arith::CmpIPredicate pred;
+    int64_t rhs;
+    bool inThen;
+  };
+  SmallVector<Guard> guards;
+  Operation *child = getput.getOperation();
+  for (Operation *p = child->getParentOp(); p && p != hier_op.getOperation();
+       child = p, p = p->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(p);
+    if (!ifOp)
+      continue;
+    auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp)
+      return std::nullopt;
+    auto d = dimOf(cmp.getLhs());
+    auto rhs = getConstantIntValue(cmp.getRhs());
+    if (!d || !rhs)
+      return std::nullopt;
+    guards.push_back(
+        {*d, cmp.getPredicate(), *rhs,
+         ifOp.getThenRegion().isAncestor(child->getParentRegion())});
+  }
+  if (guards.empty())
+    return std::nullopt;
+
+  int64_t total = 1;
+  for (auto e : extents)
+    total *= e;
+  int64_t hits = 0;
+  SmallVector<int64_t> iv(extents.size(), 0);
+  for (int64_t flat = 0; flat < total; flat++) {
+    int64_t r = flat;
+    for (int i = (int)extents.size() - 1; i >= 0; i--) {
+      iv[i] = r % extents[i];
+      r /= extents[i];
+    }
+    bool ok = true;
+    for (auto &g : guards) {
+      int64_t v = iv[g.dim];
+      bool t;
+      switch (g.pred) {
+      case arith::CmpIPredicate::eq:
+        t = v == g.rhs;
+        break;
+      case arith::CmpIPredicate::ne:
+        t = v != g.rhs;
+        break;
+      case arith::CmpIPredicate::slt:
+        t = v < g.rhs;
+        break;
+      case arith::CmpIPredicate::sle:
+        t = v <= g.rhs;
+        break;
+      case arith::CmpIPredicate::sgt:
+        t = v > g.rhs;
+        break;
+      case arith::CmpIPredicate::sge:
+        t = v >= g.rhs;
+        break;
+      default:
+        return std::nullopt;
+      }
+      if (t != g.inThen) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok)
+      hits++;
+  }
+  return hits;
+}
 
 // Hoist the "external" half of the data movement out by one level of air
 // hierarchy, based on the memory space that it is operating on.
@@ -805,6 +1981,80 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     if (externalGetPuts.empty())
       return failure();
 
+    // "air.hoist_unguarded": place by default, but do NOT rebuild my guards.
+    //
+    // An unanchored hoist clones the guards the transfer sat under so the
+    // external half stays conditional; an anchored one skips them and inherits
+    // the anchor's context instead. A transfer whose hand-written counterpart
+    // was UNGUARDED at the outer scope wants neither.
+    //
+    // It is not merely cosmetic. A guard on the hierarchy's own induction
+    // variable is fine -- the tile-count machinery collapses it. A guard on an
+    // i32 RUNTIME PARAMETER is not: rebuilding it at segment scope emits an
+    // `arith.index_cast` on the segment's own i32 block argument, and that
+    // cannot survive the segment becoming an aie.device. air-to-aie reports
+    // "'arith.index_cast' op using value defined outside the region".
+    //
+    // fused_decode's hybrid is exactly that shape -- its arm is a per-layer
+    // IS_ATTN RTP that must survive to runtime -- and anchoring, the other way
+    // to skip the rebuild, has no endpoint at the right depth to name there.
+    bool unguarded =
+        llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
+          return getput->hasAttr("air.hoist_unguarded");
+        });
+
+    // Resolve the issue-order anchor up front: it decides whether the enclosing
+    // control ops are pulled in and rebuilt at all.
+    // Partition the batch by the anchor each op names.
+    //
+    // One shared insertion point used to serve the whole batch, so a batch that
+    // disagreed simply lost its anchors. That is not a disagreement to resolve:
+    // a weight fan written from the core side puts every column's transfers on
+    // ONE channel while each names the feed IT is fed from, so sixteen
+    // transfers name eight anchors and every one of them is right. Resolve and
+    // place per group; a batch that agrees is the one-group case and is
+    // unchanged.
+    llvm::MapVector<Attribute, SmallVector<air::ChannelInterface>> byAnchor;
+    bool everyOpAnchored = true;
+    for (auto getput : externalGetPuts) {
+      auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+      if (!a)
+        a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
+      if (!a) {
+        everyOpAnchored = false;
+        break;
+      }
+      byAnchor[a].push_back(getput);
+    }
+    // Mixed anchored/unanchored keeps the old single-point behaviour: the
+    // unanchored ops have no site of their own to go to.
+    if (!everyOpAnchored || byAnchor.size() < 2) {
+      byAnchor.clear();
+      byAnchor[FlatSymbolRefAttr()] = SmallVector<air::ChannelInterface>(
+          externalGetPuts.begin(), externalGetPuts.end());
+    }
+
+    bool placeBefore = false;
+    // A derived far window has a position that follows from the buffer, so it
+    // needs no anchor: place it after the fill, in the fill's loop.
+    SmallVector<Operation *> derivedSites;
+    for (auto getput : externalGetPuts)
+      if (getput->hasAttr("air.derived_far_window")) {
+        SmallVector<Operation *> fills;
+        findFillSites(getput.getMemref(), hier_op.getOperation(), fills);
+        for (Operation *fill : fills)
+          if (!llvm::is_contained(derivedSites, fill))
+            derivedSites.push_back(fill);
+      }
+
+    SmallVector<Operation *> anchorOps = findIssueOrderAnchors(
+        byAnchor.front().second, hier_op.getOperation(), placeBefore);
+    // More than one site means the anchor lives in several switch arms and the
+    // transfer belongs in each; the clone below runs once per site.
+    if (anchorOps.empty() && !derivedSites.empty())
+      anchorOps = derivedSites;
+    Operation *anchorOp = anchorOps.empty() ? nullptr : anchorOps.front();
+
     // Get backward slices to the target "external" side channel ops, to be
     // hoisted together.
     SetVector<Operation *> backwardSlice;
@@ -812,12 +2062,17 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     for (auto op : externalGetPuts) {
       (void)getBackwardSlice(op.getOperation(), &backwardSlice, bsOptions);
 
-      for (auto parent = op->getParentOp();
-           !isa<air::HierarchyInterface>(parent);
-           parent = parent->getParentOp()) {
-        (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
-        backwardSlice.insert(parent);
-      }
+      // Anchored: the op is placed inside the anchor's control context, so the
+      // guards it sits under on the hierarchy side must NOT come along -- their
+      // conditions are defined in the region being left behind, which is what
+      // "using value defined outside the region" reports.
+      if (!anchorOp && !unguarded)
+        for (auto parent = op->getParentOp();
+             !isa<air::HierarchyInterface>(parent);
+             parent = parent->getParentOp()) {
+          (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
+          backwardSlice.insert(parent);
+        }
     }
     // Get constant values used by backward slices, and add to backward
     // slices. Collect into a temporary first: inserting into backwardSlice
@@ -864,7 +2119,33 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       b->setAttr("hoist", StringAttr::get(ctx, "dep"));
     }
 
+    // The backward slice is operand-producers only, so it never contains the
+    // CONTROL ops a target is nested in. cloneOpsInBlock turns every unlabelled
+    // op into a wait_all, so an unlabelled enclosing region op takes the target
+    // inside it down with it -- the external half is silently dropped and its
+    // partner is left unpaired, surfacing 30-odd passes later in
+    // air-verify-hierarchy-locality. Label the ancestors up to the hierarchy op
+    // being hoisted out of, so the structure is rebuilt around the target.
+    //
+    // Skipped when anchored: the op is being placed INSIDE the anchor's control
+    // context, so rebuilding the hierarchy-side guards would both duplicate
+    // that context and reference conditions defined in the region being left
+    // behind.
+    if (!anchorOp && !unguarded) {
+      for (auto getput : externalGetPuts) {
+        for (Operation *p = getput->getParentOp();
+             p && p != hier_op.getOperation(); p = p->getParentOp()) {
+          if (isa<air::HierarchyInterface>(p))
+            break;
+          if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp,
+                  LoopLikeOpInterface>(p))
+            p->setAttr("hoist", StringAttr::get(ctx, "dep"));
+        }
+      }
+    }
+
     // Hoist hierarchy op into scf op
+    bool anchored = false;
     Operation *scf_loop = nullptr;
     mlir::OpBuilder::InsertPoint
         insertionPointAtHierOp; // To keep a record of the insertion point as
@@ -873,14 +2154,119 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     rewriter.setInsertionPoint(hier_op);
     insertionPointAtHierOp = rewriter.saveInsertionPoint();
 
+    // Issue-order anchor. By default the external half lands immediately before
+    // the hierarchy op, i.e. after every producer the front end wrote by hand.
+    // On a launch carrying air.preserve_shim_dma_order that reorders the shim
+    // BD queue, which is load-bearing in real designs -- moving one feed from
+    // slot 6 to slot 18 behind a weight stream is enough to deadlock a core
+    // waiting on it. When the front end names an anchor, place the op straight
+    // after that channel's LAST endpoint instead, so it inherits both the
+    // anchor's position and its control context (no new guard is synthesised;
+    // if the anchor sits in a switch arm, so does this).
+    // Turn one resolved anchor into an insertion point. Factored so that every
+    // anchor GROUP gets the same treatment -- the outside-loops climb and the
+    // group-ordering walk are properties of the anchor, not of being first.
+    auto siteFor = [&](Operation *at, ArrayRef<air::ChannelInterface> ops,
+                       bool before) -> mlir::OpBuilder::InsertPoint {
+      if (llvm::any_of(ops, [](air::ChannelInterface getput) {
+            return getput->hasAttr("air.hoist_outside_loops");
+          })) {
+        while (auto *parent = at->getParentOp()) {
+          if (!isa<LoopLikeOpInterface>(parent))
+            break;
+          at = parent;
+        }
+        before = true;
+      }
+      if (before) {
+        rewriter.setInsertionPoint(at);
+      } else {
+        Operation *tail = at;
+        for (Operation *n = at->getNextNode(); n; n = n->getNextNode()) {
+          auto a = n->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+          if (!a || a != anchorAttrOf(ops))
+            break;
+          tail = n;
+        }
+        rewriter.setInsertionPointAfter(tail);
+      }
+      return rewriter.saveInsertionPoint();
+    };
+
+    if (anchorOp) {
+      // "air.hoist_outside_loops": resolve the anchor, then step OUT of any
+      // loops enclosing it, stopping at the first non-loop parent.
+      //
+      // An anchor names a channel, so it resolves to an op, so the transfer
+      // becomes that op's SIBLING -- it inherits the anchor's depth exactly.
+      // When the transfer belongs one level shallower there is nothing to say,
+      // and the failure is quiet: land a transfer inside a loop its consumers
+      // sit outside of and the consumers stop dominating it.
+      //
+      // Stepping out of LOOPS specifically, and not out of arms, is the same
+      // distinction this whole hoist rests on. A loop changes how MANY times
+      // the transfer is issued, which is a property of the transfer and must
+      // not be inherited from a neighbour. An arm changes only WHETHER it is
+      // issued, which is a property of the surrounding context and is exactly
+      // what an anchor is for. So: inherit the anchor's predicate, not its
+      // trip count.
+      if (llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
+            return getput->hasAttr("air.hoist_outside_loops");
+          })) {
+        while (auto *parent = anchorOp->getParentOp()) {
+          if (!isa<LoopLikeOpInterface>(parent))
+            break;
+          anchorOp = parent;
+        }
+        // Stepping out inverts the direction: "after the last endpoint" inside
+        // a loop means "after the loop", but "before the first" likewise means
+        // "before the loop", and the group-ordering walk below keys off
+        // siblings that no longer exist at this level. Place before the loop in
+        // both directions, which is where the hand-written endpoint sat.
+        placeBefore = true;
+      }
+      if (placeBefore) {
+        // Inserting each op directly before the anchor already preserves the
+        // group's order: [A, T], then [A, B, T].
+        rewriter.setInsertionPoint(anchorOp);
+      } else {
+        // "After the anchor" does NOT preserve order -- inserting each op
+        // directly after T gives [T, A], then [T, B, A], so a group of N
+        // siblings sharing one anchor comes out reversed. A per-CU fan is
+        // exactly that shape, and reversal is silent: the transfers are all
+        // legal, just issued back to front. Step past everything already
+        // anchored to the same target so the group keeps its order.
+        Operation *tail = anchorOp;
+        for (Operation *n = anchorOp->getNextNode(); n; n = n->getNextNode()) {
+          auto a = n->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+          if (!a || a != anchorAttrOf(externalGetPuts))
+            break;
+          tail = n;
+        }
+        rewriter.setInsertionPointAfter(tail);
+      }
+      insertionPointAtHierOp = rewriter.saveInsertionPoint();
+      anchored = true;
+    }
+
     // Check if broadcasting happens for any "external" side channel ops. If so,
     // the hoisted scf parallel should respect the broadcast shape instead. If
     // broadcasting is detected, then hoist and specialize each data movement
     // (i.e. do not hoist the air.hierarchy iteration space.)
-    if (llvm::any_of(externalGetPuts, [](air::ChannelInterface getput) {
-          return air::getChannelDeclarationThroughSymbol(getput)->hasAttr(
-              "broadcast_shape");
-        }))
+    if (anchored || unguarded) {
+      // The anchor fixes position and control context. Wrapping the iteration
+      // space in an scf.parallel here would move it back to the hierarchy op.
+      // An unguarded hoist keeps the default position but has likewise asked
+      // not to have control structure synthesised around it.
+    } else if (llvm::any_of(externalGetPuts,
+                            [](air::ChannelInterface getput) {
+                              return air::getChannelDeclarationThroughSymbol(
+                                         getput)
+                                  ->hasAttr("broadcast_shape");
+                            }) ||
+               llvm::all_of(externalGetPuts, [&](air::ChannelInterface getput) {
+                 return countExecutingTiles(getput, hier_op) == 1;
+               }))
       insertionPointAtHierOp = rewriter.saveInsertionPoint();
     else {
       if (hier_op.getNumDims()) {
@@ -901,7 +2287,106 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // Hoist ops to "external" side code region, by cloning with remap.
     SmallVector<Operation *> clonedOps;
     IRMapping remap;
-    if (auto scf_par = dyn_cast_or_null<scf::ParallelOp>(scf_loop)) {
+    if (anchored || unguarded) {
+      // Anchored, or unguarded: clone ONLY the external ops and what feeds
+      // them, straight in at the insertion point. cloneOpsInBlock is not usable
+      // here -- it walks the hierarchy's top-level block and turns everything
+      // unlabelled into a wait_all, so an op nested in a guard whose ancestors
+      // are deliberately not labelled (they belong to the context being left
+      // behind) would be dropped and its partner left unpaired.
+      //
+      // The two cases differ only in WHERE: an anchored op goes to the anchor,
+      // an unguarded one to the default point just before the hierarchy op.
+      // They agree on what to clone, which is why they share this path.
+      SetVector<Operation *> toClone;
+      for (auto *b : backwardSlice) {
+        if (isa<air::ChannelInterface>(b) ||
+            b->hasTrait<OpTrait::IsTerminator>() || b->getNumRegions())
+          continue;
+        // An op nested inside a region op cannot stand alone where this lands:
+        // its wrapper is what defines the values it uses, and cloning it out of
+        // that wrapper orphans it. The slice reaches such ops only by following
+        // ASYNC TOKENS -- the wrapper's token, not any value the transfer reads
+        // -- and those edges are dropped anyway when the transfer is placed by
+        // position, so nothing here is lost.
+        if (auto *parent = b->getParentOp())
+          if (isa<air::ExecuteOp>(parent))
+            continue;
+        toClone.insert(b);
+      }
+
+      // One emission per anchor site. Unanchored, and in the ordinary anchored
+      // case, that is a single site and this loop runs once; several sites
+      // means the anchor's endpoints are spread over sibling switch arms and
+      // the transfer belongs in each of them.
+      //
+      // Each site gets its OWN mapping. Sharing one would make the second site
+      // reuse the first site's clones, which sit in a sibling region and
+      // dominate nothing here.
+      // Set when a clone was dropped as a duplicate of a transfer already at
+      // the site. Emitting nothing is then the correct outcome, not a failure.
+      bool dedupedAny = false;
+
+      // Several GROUPS means the ops name different anchors; several SITES
+      // within a group means that anchor's endpoints are spread over sibling
+      // switch arms.
+      for (auto &group : byAnchor) {
+        bool firstGroup = &group == &byAnchor.front();
+        SmallVector<mlir::OpBuilder::InsertPoint> sites;
+        if (anchored) {
+          bool groupBefore = placeBefore;
+          SmallVector<Operation *> groupAnchors =
+              firstGroup
+                  ? anchorOps
+                  : findIssueOrderAnchors(group.second, hier_op.getOperation(),
+                                          groupBefore);
+          // The first group with a single site already has its insertion point
+          // computed above, outside-loops climb and ordering walk included.
+          // Recomputing it here would drop both.
+          if (firstGroup && groupAnchors.size() < 2)
+            sites.push_back(insertionPointAtHierOp);
+          else
+            for (Operation *site : groupAnchors)
+              sites.push_back(siteFor(site, group.second, groupBefore));
+        }
+        if (sites.empty())
+          sites.push_back(insertionPointAtHierOp);
+
+        for (auto &site : sites) {
+          IRMapping siteRemap;
+          int arg_idx = 0;
+          for (auto arg : hier_op.getKernelArguments())
+            siteRemap.map(arg, hier_op.getKernelOperand(arg_idx++));
+          rewriter.restoreInsertionPoint(site);
+          // getBackwardSlice fills the SetVector defs-before-uses, so its own
+          // order is already a valid clone order.
+          for (auto *b : toClone)
+            pruneNonDominatingDeps(rewriter.clone(*b, siteRemap));
+          for (auto getput : group.second) {
+            Operation *c = rewriter.clone(*getput.getOperation(), siteRemap);
+            pruneNonDominatingDeps(c);
+            // Already emitted here by another consumer site sharing this
+            // producer stream: keep the one descriptor and let this site's
+            // internal half share it, exactly as the hand-written form does.
+            if (auto ci = dyn_cast<air::ChannelInterface>(c)) {
+              if (Operation *prior = findEmittedTransfer(ci, c->getBlock())) {
+                c->replaceAllUsesWith(prior);
+                rewriter.eraseOp(c);
+                dedupedAny = true;
+                continue;
+              }
+            }
+            clonedOps.push_back(c);
+          }
+        }
+      }
+      // Every clone being a duplicate is success: the transfer is already at
+      // the site, and the internal halves left behind will share it. Failing
+      // here rolls the whole conversion back and strands this DMA's external
+      // half inside the hierarchy.
+      if (clonedOps.empty() && !dedupedAny)
+        return failure();
+    } else if (auto scf_par = dyn_cast_or_null<scf::ParallelOp>(scf_loop)) {
       // If air.hierarchy is hoisted into an scf.parallel loop.
 
       // Remap the air.hierarchy to the hoisted scf.parallel.
@@ -958,6 +2443,12 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
           air::cloneOpsInBlock(&hier_op.getBody().front(), rewriter, remap);
       if (clonedOps.empty())
         return failure();
+      // The near nest has just been rebuilt around every hoisted op. A far half
+      // that COVERS that nest's loop belongs outside it.
+      for (Operation *c : clonedOps)
+        if (c->hasAttr("air.derived_covers_near_loop"))
+          if (auto ci = dyn_cast<air::ChannelInterface>(c))
+            hoistFarHalfCoveringLoop(ci);
     }
 
     // Check if hoisted channel ops are now under a matching air.hierarchy.
@@ -998,6 +2489,14 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     for (auto cloned : clonedOps) {
       if (cloned->hasAttr("hoist"))
         cloned->removeAttr("hoist");
+      // The anchor is a front-end directive, not output metadata. Drop it once
+      // it has been honoured, but only then -- an unanchored hoist has to carry
+      // it further out (herd -> segment -> launch) to be honoured later.
+      // NOTE: deliberately NOT removing air.hoist_after here. A later sibling
+      // anchored to the same target has to see it, to step past this op rather
+      // than land in front of it. Cleared for everything in the final sweep.
+      if (anchored)
+        cloned->removeAttr("air.hoist_before");
     }
 
     // Remove the original "external" side puts and gets.
@@ -1419,6 +2918,402 @@ class AIRDemoteDmaToAIRHierarchyConversion
     return success();
   }
 };
+// Hoisting clones the ops a transfer depends on, so the guard condition around
+// the hoisted copy is usually a duplicate SSA value rather than the original --
+// `%48 = arith.index_cast %13` beside the `%14 = arith.index_cast %13` the
+// producer switches on. CSE merges the two, but not until two passes later, so
+// equality here has to be structural. Pure ops only: two calls to something
+// with side effects are two events, not one value.
+static bool sameValue(Value a, Value b, unsigned depth = 4) {
+  if (a == b)
+    return true;
+  if (!depth)
+    return false;
+  Operation *da = a.getDefiningOp(), *db = b.getDefiningOp();
+  if (!da || !db || da->getName() != db->getName() ||
+      da->getAttrDictionary() != db->getAttrDictionary() ||
+      da->getNumOperands() != db->getNumOperands() || !isMemoryEffectFree(da) ||
+      !isMemoryEffectFree(db))
+    return false;
+  if (cast<OpResult>(a).getResultNumber() !=
+      cast<OpResult>(b).getResultNumber())
+    return false;
+  for (auto [x, y] : llvm::zip(da->getOperands(), db->getOperands()))
+    if (!sameValue(x, y, depth - 1))
+      return false;
+  return true;
+}
+
+// Two guards select the same arm for the same reason: same op kind, the same
+// operands up to the equivalence above, and -- for a switch -- the same cases.
+static bool sameGuard(Operation *a, Operation *b) {
+  if (a->getName() != b->getName() ||
+      a->getNumOperands() != b->getNumOperands() ||
+      a->getNumRegions() != b->getNumRegions())
+    return false;
+  for (auto [x, y] : llvm::zip(a->getOperands(), b->getOperands()))
+    if (!sameValue(x, y))
+      return false;
+  auto sw = dyn_cast<scf::IndexSwitchOp>(a);
+  auto esw = dyn_cast<scf::IndexSwitchOp>(b);
+  if (sw && esw && sw.getCases() != esw.getCases())
+    return false;
+  return true;
+}
+
+// Every memref any channel endpoint under `op` touches.
+static llvm::SmallSetVector<Value, 8> channelMemrefsUnder(Operation *op) {
+  llvm::SmallSetVector<Value, 8> memrefs;
+  op->walk([&](air::ChannelInterface ci) { memrefs.insert(ci.getMemref()); });
+  return memrefs;
+}
+
+static bool touchesAny(Operation *op,
+                       const llvm::SmallSetVector<Value, 8> &memrefs) {
+  bool touches = false;
+  auto scan = [&](Operation *o) {
+    for (Value operand : o->getOperands())
+      if (memrefs.contains(operand))
+        touches = true;
+  };
+  scan(op);
+  op->walk(scan);
+  return touches;
+}
+
+// The two loops must agree on trip count for fusion to preserve meaning. The
+// bounds are compared as SSA values first, then as constants, because the
+// hoisted loop is a clone: it usually reuses the producer's own bound values,
+// but a bound that was materialised inside the hierarchy comes out as a fresh
+// arith.constant.
+static bool sameTripCount(scf::ForOp a, scf::ForOp b) {
+  auto same = [](Value x, Value y) {
+    if (x == y)
+      return true;
+    APInt xc, yc;
+    return matchPattern(x, m_ConstantInt(&xc)) &&
+           matchPattern(y, m_ConstantInt(&yc)) && xc == yc;
+  };
+  return same(a.getLowerBound(), b.getLowerBound()) &&
+         same(a.getUpperBound(), b.getUpperBound()) &&
+         same(a.getStep(), b.getStep());
+}
+
+// The memrefs a loop's channel endpoints touch.
+static llvm::SmallSetVector<Value, 4> channelMemrefsIn(scf::ForOp loop) {
+  llvm::SmallSetVector<Value, 4> memrefs;
+  loop.walk([&](air::ChannelInterface ci) { memrefs.insert(ci.getMemref()); });
+  return memrefs;
+}
+
+// Merge a hoisted transfer's rebuilt guard into the identical guard already
+// standing in front of it.
+//
+// cloneIndexSwitchUsingRemap rebuilds the guard around a hoisted transfer
+// rather than flattening it, which is right -- flattening would make a copy
+// written on one arm issue on every arm. But it rebuilds unconditionally, so a
+// design whose producer is already guarded ends up with two switches on the
+// same condition, the fill in one arm and the derived drain in the other's.
+// They cannot then be fused as loops: a value defined in one scf.index_switch
+// arm is invisible from a sibling switch's arm, so the producer loop's result
+// can never stand in for the hoisted loop's. The guards have to become one
+// first; after that the two loops are ordinary siblings and the fusion below
+// handles them.
+//
+// Moving the later guard's work earlier is only sound when nothing it reads was
+// produced in between, and nothing in between touches the buffers it moves --
+// both are checked. Everything else is left where it is.
+static void mergeHoistedGuards(func::FuncOp f, DominanceInfo &dom) {
+  auto hasHoistedLoop = [](Operation *op) {
+    bool found = false;
+    op->walk([&](scf::ForOp forOp) {
+      auto a = forOp->getAttrOfType<StringAttr>("loop-carried-dep");
+      if (a && a.getValue() == "hoistedLoop")
+        found = true;
+    });
+    return found;
+  };
+  auto singleBlockArms = [](Operation *op) {
+    for (Region &r : op->getRegions())
+      if (!r.hasOneBlock())
+        return false;
+    return op->getNumRegions() > 0;
+  };
+
+  SmallVector<Operation *> guards;
+  f.walk([&](Operation *op) {
+    if (isa<scf::IndexSwitchOp, scf::IfOp>(op) && hasHoistedLoop(op) &&
+        singleBlockArms(op))
+      guards.push_back(op);
+  });
+
+  for (Operation *late : guards) {
+    // One token in, one token out, or the yield rewiring below has no meaning.
+    if (late->getNumResults() > 1 ||
+        (late->getNumResults() == 1 &&
+         !isa<air::AsyncTokenType>(late->getResult(0).getType())))
+      continue;
+    auto memrefs = channelMemrefsUnder(late);
+
+    Operation *early = nullptr;
+    for (Operation *e = late->getPrevNode(); e; e = e->getPrevNode()) {
+      // Same condition is not enough: a design guards several independent
+      // feeds on one predicate, so the first switch scanned backwards is
+      // usually somebody else's. The one we want is the one holding an endpoint
+      // on a buffer this transfer touches.
+      if (sameGuard(late, e) && singleBlockArms(e) &&
+          e->getNumResults() == late->getNumResults()) {
+        // The endpoint that qualifies `e` must be one the front end wrote, not
+        // another hoisted copy waiting its turn -- otherwise the first two
+        // guards pair off with each other and the producer is never reached.
+        // A guard that has ALREADY absorbed a hoisted transfer still qualifies,
+        // which is what lets a fan of several transfers collect in one place.
+        bool sharesBuffer = false;
+        e->walk([&](air::ChannelInterface ci) {
+          if (!memrefs.contains(ci.getMemref()))
+            return;
+          for (Operation *a = ci->getParentOp(); a && a != e;
+               a = a->getParentOp()) {
+            auto attr = a->getAttrOfType<StringAttr>("loop-carried-dep");
+            if (attr && attr.getValue() == "hoistedLoop")
+              return;
+          }
+          sharesBuffer = true;
+        });
+        if (sharesBuffer) {
+          early = e;
+          break;
+        }
+      }
+      if (touchesAny(e, memrefs))
+        break;
+    }
+    if (!early)
+      continue;
+
+    // Nothing the late guard's ARMS read may have been defined after the early
+    // one. The guard's own condition is deliberately not part of this: it is a
+    // clone that CSE would fold into the early guard's condition anyway, and it
+    // dies with the op being erased.
+    bool readsSomethingInBetween = false;
+    for (Region &r : late->getRegions())
+      r.walk([&](Operation *inner) {
+        for (Value operand : inner->getOperands()) {
+          Operation *def = operand.getDefiningOp();
+          if (!def || late->isProperAncestor(def))
+            continue;
+          if (!dom.properlyDominates(def, early))
+            readsSomethingInBetween = true;
+        }
+      });
+    if (readsSomethingInBetween)
+      continue;
+
+    OpBuilder builder(late);
+    for (unsigned i = 0, e = late->getNumRegions(); i < e; ++i) {
+      Block *src = &late->getRegion(i).front();
+      Block *dst = &early->getRegion(i).front();
+      Operation *dstTerm = dst->getTerminator();
+      Operation *srcTerm = src->getTerminator();
+
+      SmallVector<Operation *> body;
+      for (Operation &op : src->without_terminator())
+        body.push_back(&op);
+      for (Operation *op : body)
+        op->moveBefore(dstTerm);
+
+      // The arm now does both halves, so it must wait on both. Dep tracing
+      // reruns over this and will prune whatever is redundant.
+      if (dstTerm->getNumOperands() == 1 && srcTerm->getNumOperands() == 1) {
+        builder.setInsertionPoint(dstTerm);
+        SmallVector<Value> deps{dstTerm->getOperand(0), srcTerm->getOperand(0)};
+        auto joined = air::WaitAllOp::create(
+            builder, late->getLoc(),
+            air::AsyncTokenType::get(late->getContext()), deps);
+        dstTerm->setOperand(0, joined.getAsyncToken());
+      }
+    }
+    for (auto [oldRes, newRes] :
+         llvm::zip(late->getResults(), early->getResults()))
+      oldRes.replaceAllUsesWith(newRes);
+    late->erase();
+  }
+}
+
+// Fuse a hoisted transfer's freshly built loop into the loop that fills the
+// buffer it reads.
+//
+// Hoisting a transfer out of a hierarchy clones its whole enclosing loop nest,
+// so a design whose producer is one loop --
+//
+//   scf.for { %b = alloc; air.channel.get @fill (%b); air.channel.put @drain
+//   (%b) }
+//
+// -- comes back as two sibling loops over the same buffer with the same trip
+// count when the drain half is spelled as an air.dma_memcpy_nd instead: the
+// clone has no way to know its transfer belongs in the loop already standing
+// next to it. Two things then go wrong, and only the first is visible:
+//
+//   - The derived put's only incoming dependency is the buffer's alloc token,
+//     not the get that writes the buffer. The RAW edge is simply absent.
+//   - air-fuse-alloc-dealloc can no longer sink the alloc into a loop, because
+//     the uses are split across two. air-label-scf-for-to-ping-pong keys on a
+//     loop owning its buffer, so it skips both, and a producer that should be a
+//     ring of N independently locked slots is emitted as N/2 double-buffered
+//     pairs -- same buffers, same bytes, coarser synchronisation, and 6 fewer
+//     locks per memtile.
+//
+// Fusing restores both. The guards below are what make it safe: identical trip
+// count, a shared memref, and nothing in between that touches that memref (an
+// intervening reader or writer would be reordered across the appended ops).
+static void fuseHoistedLoopsIntoProducer(func::FuncOp f, DominanceInfo &dom) {
+  // "hoist" is stripped by AIRHoistExternalAIRChannelPattern once the transfer
+  // reaches its destination; "loop-carried-dep" is the marker that survives to
+  // here, and is what the rest of the pipeline keys on too.
+  auto isHoisted = [](Operation *op) {
+    auto a = op->getAttrOfType<StringAttr>("loop-carried-dep");
+    return a && a.getValue() == "hoistedLoop";
+  };
+  SmallVector<scf::ForOp> hoisted;
+  f.walk([&](scf::ForOp forOp) {
+    if (isHoisted(forOp))
+      hoisted.push_back(forOp);
+  });
+
+  for (scf::ForOp newFor : hoisted) {
+    // Async plumbing below rewires exactly one token through the fused body.
+    if (newFor.getNumResults() != 1 ||
+        !isa<air::AsyncTokenType>(newFor.getResult(0).getType()))
+      continue;
+    auto memrefs = channelMemrefsIn(newFor);
+    if (memrefs.empty())
+      continue;
+
+    // An op may be stepped over on the way back only if it leaves our buffers
+    // alone; anything that reads or writes one would be reordered across the
+    // ops we are about to append.
+    auto touchesOurMemrefs = [&](Operation *p) {
+      bool touches = false;
+      auto scan = [&](Operation *o) {
+        for (Value operand : o->getOperands())
+          if (memrefs.contains(operand))
+            touches = true;
+      };
+      scan(p);
+      p->walk(scan);
+      return touches;
+    };
+    auto isCandidate = [&](Operation *p, Value &shared) {
+      auto candidate = dyn_cast<scf::ForOp>(p);
+      if (!candidate || isHoisted(candidate) ||
+          candidate.getNumResults() != 1 ||
+          !isa<air::AsyncTokenType>(candidate.getResult(0).getType()) ||
+          !sameTripCount(candidate, newFor))
+        return scf::ForOp();
+      for (Value m : channelMemrefsIn(candidate))
+        if (memrefs.contains(m)) {
+          shared = m;
+          return candidate;
+        }
+      return scf::ForOp();
+    };
+    // Scan one block backwards from `from` (exclusive), or from its end when
+    // `from` is null.
+    auto scanBack = [&](Block *block, Operation *from, Value &shared) {
+      Operation *start = from ? from->getPrevNode()
+                              : (block->empty() ? nullptr : &block->back());
+      for (Operation *p = start; p; p = p->getPrevNode()) {
+        if (scf::ForOp hit = isCandidate(p, shared))
+          return hit;
+        if (touchesOurMemrefs(p))
+          break;
+      }
+      return scf::ForOp();
+    };
+
+    scf::ForOp producer;
+    Value shared;
+    producer = scanBack(newFor->getBlock(), newFor, shared);
+
+    if (!producer)
+      continue;
+
+    // The body is about to move backwards, into the producer. Anything it reads
+    // from outside itself has to already be available there. When it is not --
+    // a hoisted transfer whose operands were materialised alongside it, past
+    // the producer -- leave the pair alone rather than build invalid IR.
+    bool dominates = true;
+    newFor.getBody()->walk([&](Operation *inner) {
+      for (Value operand : inner->getOperands()) {
+        if (Operation *def = operand.getDefiningOp()) {
+          if (newFor->isProperAncestor(def))
+            continue;
+          if (!dom.properlyDominates(def, producer))
+            dominates = false;
+        } else if (auto arg = dyn_cast<BlockArgument>(operand)) {
+          if (arg.getOwner() != newFor.getBody() &&
+              !dom.dominates(arg.getOwner(), producer->getBlock()))
+            dominates = false;
+        }
+      }
+    });
+    if (!dominates)
+      continue;
+
+    // Land the reads before the producer tears the buffer down, not at the end
+    // of its body: a loop that frees what it filled -- which is the norm, the
+    // buffer is per-iteration -- would otherwise get its dealloc ordered ahead
+    // of the transfers now reading it.
+    Operation *producerYield = producer.getBody()->getTerminator();
+    Operation *insertPt = producerYield;
+    for (Operation &op : producer.getBody()->without_terminator()) {
+      bool frees = false;
+      op.walk([&](memref::DeallocOp d) {
+        if (memrefs.contains(d.getMemref()))
+          frees = true;
+      });
+      if (frees) {
+        insertPt = &op;
+        break;
+      }
+    }
+
+    // The hoisted loop's iter_arg becomes the token of the last endpoint in the
+    // producer that writes the buffer -- the RAW edge the clone lost. Falling
+    // back to the loop's own iter_arg keeps the ordering no weaker than before.
+    Value carriedIn = producer.getRegionIterArgs()[0];
+    for (Operation &op : producer.getBody()->without_terminator()) {
+      if (&op == insertPt)
+        break;
+      auto ci = dyn_cast<air::ChannelInterface>(&op);
+      if (ci && memrefs.contains(ci.getMemref()) && op.getNumResults() &&
+          isa<air::AsyncTokenType>(op.getResult(0).getType()))
+        carriedIn = op.getResult(0);
+    }
+    Value newYield = newFor.getBody()->getTerminator()->getOperand(0);
+
+    newFor.getInductionVar().replaceAllUsesWith(producer.getInductionVar());
+    newFor.getRegionIterArgs()[0].replaceAllUsesWith(carriedIn);
+
+    SmallVector<Operation *> body;
+    for (Operation &op : newFor.getBody()->without_terminator())
+      body.push_back(&op);
+    for (Operation *op : body)
+      op->moveBefore(insertPt);
+
+    // The iteration now carries both halves of the feed.
+    OpBuilder yb(producerYield);
+    SmallVector<Value> joined{producerYield->getOperand(0), newYield};
+    producerYield->setOperand(
+        0, air::WaitAllOp::create(
+               yb, producer.getLoc(),
+               air::AsyncTokenType::get(producer.getContext()), joined)
+               .getAsyncToken());
+    newFor.getResult(0).replaceAllUsesWith(producer.getResult(0));
+    newFor.erase();
+  }
+}
+
 struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   DmaToChannelPass() = default;
@@ -1494,7 +3389,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     air_dma_demotion.add<AIRDemoteDmaToAIRHierarchyConversion>(context);
     if (failed(applyPartialConversion(module, target_0,
                                       std::move(air_dma_demotion)))) {
-      emitError(UnknownLoc::get(context), "error\n");
+      // No diagnostic here: applyPartialConversion already reported the
+      // op it could not legalize, and the failing pattern reported why.
+      // A contentless error on top of those only obscures them.
       signalPassFailure();
     }
 
@@ -1525,7 +3422,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     air_dma_conversion.add<AIRDmaToAIRChannelConversion>(context);
     if (failed(applyPartialConversion(module, target_1,
                                       std::move(air_dma_conversion)))) {
-      emitError(UnknownLoc::get(context), "error\n");
+      // No diagnostic here: applyPartialConversion already reported the
+      // op it could not legalize, and the failing pattern reported why.
+      // A contentless error on top of those only obscures them.
       signalPassFailure();
     }
 
@@ -1545,13 +3444,121 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                       StringAttr::get(context, "internalGetPut"));
     }
 
+    // Anchors CHAIN: a transfer can be anchored to a channel whose own external
+    // half is derived by this pass too. In a real design the head of an arm's
+    // feed block ends up entirely derived, each feed pinned behind the previous
+    // one. Anchor resolution searches the live IR, so a target that has not
+    // been hoisted yet is simply not found and the anchored transfer silently
+    // falls back to the hierarchy's position. Hoist a channel before whatever
+    // is anchored to it.
+    //
+    // Rank = length of the anchor chain back to a channel that is hand-written
+    // or unanchored. A channel in a CYCLE keeps rank 0, i.e. its original
+    // relative order: a cyclic chain has no correct order, and reordering it on
+    // a guess would be worse than leaving it alone.
+    llvm::StringMap<FlatSymbolRefAttr> anchorOfChan;
+    llvm::DenseSet<StringRef> derivedChans;
     for (auto getput : externalChannelOps) {
+      derivedChans.insert(getput.getChanName());
+      auto a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_after");
+      if (!a)
+        a = getput->getAttrOfType<FlatSymbolRefAttr>("air.hoist_before");
+      if (a)
+        anchorOfChan[getput.getChanName()] = a;
+    }
+    llvm::StringMap<unsigned> rank;
+    std::function<unsigned(StringRef, unsigned)> rankOf =
+        [&](StringRef c, unsigned depth) -> unsigned {
+      if (auto it = rank.find(c); it != rank.end())
+        return it->second;
+      // Deeper than the number of channels means a cycle was walked.
+      if (depth > derivedChans.size())
+        return 0;
+      auto it = anchorOfChan.find(c);
+      if (it == anchorOfChan.end() ||
+          !derivedChans.count(it->second.getValue()))
+        return 0;
+      unsigned r = 1 + rankOf(it->second.getValue(), depth + 1);
+      rank[c] = r;
+      return r;
+    };
+    SmallVector<air::ChannelInterface> hoistOrder(externalChannelOps.begin(),
+                                                  externalChannelOps.end());
+    llvm::stable_sort(
+        hoistOrder, [&](air::ChannelInterface a, air::ChannelInterface b) {
+          return rankOf(a.getChanName(), 0) < rankOf(b.getChanName(), 0);
+        });
+
+    // Hoist one transfer per round, EXCEPT that transfers sharing a channel and
+    // an enclosing loop go in the same round.
+    //
+    // One round marks one op "external" and runs the patterns, so the hoisting
+    // pattern sees a batch of one and rebuilds the enclosing loop for that op
+    // alone. Two rounds therefore produce two loops -- and two loops in
+    // sequence do not mean what one loop containing two transfers meant. The
+    // loop INTERLEAVES them (a, b, a, b, ...) and the pair of loops SERIALISES
+    // them (a*N, then b*N). A channel is a FIFO, so its consumer's Nth transfer
+    // takes the Nth arrival: serialising the producer sends arrival 1 where
+    // arrival 2 belonged. Measured as wrong output on device, not as a
+    // different schedule.
+    //
+    // Marking the whole group before the patterns run makes the batch complete,
+    // and one clone of the hierarchy body reproduces the interleave exactly.
+    // Grouping is by nearest enclosing loop as well as by channel: two
+    // transfers on one channel in DIFFERENT loops are already ordered by those
+    // loops and have nothing to preserve.
+    auto nearestLoop = [](air::ChannelInterface gp) -> Operation * {
+      for (Operation *p = gp->getParentOp(); p; p = p->getParentOp()) {
+        if (isa<air::HierarchyInterface>(p))
+          return nullptr;
+        if (isa<LoopLikeOpInterface>(p))
+          return p;
+      }
+      return nullptr;
+    };
+    // Membership only -- these handles are never dereferenced. An op hoisted in
+    // an earlier round has been erased, and asking a dangling ChannelInterface
+    // for its name is a segfault.
+    llvm::SmallDenseSet<Operation *> queued;
+    for (auto gp : hoistOrder)
+      queued.insert(gp.getOperation());
+    llvm::SmallDenseSet<Operation *> hoisted;
+    for (auto getput : hoistOrder) {
+      if (!hoisted.insert(getput.getOperation()).second)
+        continue;
       getput->setAttr("loop-carried-dep", StringAttr::get(context, "external"));
+      // Siblings come from a walk of the LIVE IR, not from hoistOrder, for the
+      // same reason.
+      if (auto *loop = nearestLoop(getput)) {
+        auto name = getput.getChanName();
+        loop->walk([&](air::ChannelInterface sibling) {
+          if (sibling == getput)
+            return;
+          if (!queued.count(sibling.getOperation()))
+            return;
+          if (sibling.getChanName() != name)
+            return;
+          if (nearestLoop(sibling) != loop)
+            return;
+          if (!hoisted.insert(sibling.getOperation()).second)
+            return;
+          sibling->setAttr("loop-carried-dep",
+                           StringAttr::get(context, "external"));
+        });
+      }
       RewritePatternSet hoistChannelPatterns(context);
       hoistChannelPatterns
           .add<AIRHoistExternalAIRChannelPattern<air::HerdOp>,
                AIRHoistExternalAIRChannelPattern<air::SegmentOp>>(context);
       (void)applyPatternsGreedily(module, std::move(hoistChannelPatterns));
+    }
+
+    // Put each hoisted transfer back in the loop that feeds it, before dep
+    // tracing re-derives tokens over the result.
+    for (auto f : funcOps) {
+      DominanceInfo dom(f);
+      mergeHoistedGuards(f, dom);
+      fuseHoistedLoopsIntoProducer(f, dom);
     }
 
     // Dep tracing
@@ -1564,6 +3571,12 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       f.walk([&](Operation *op) {
         op->removeAttr("loop-carried-dep");
         op->removeAttr("hoist");
+        op->removeAttr("air.hoist_after");
+        op->removeAttr("air.hoist_before");
+        op->removeAttr("air.hoist_unguarded");
+        op->removeAttr("air.hoist_outside_loops");
+        op->removeAttr("air.derived_covers_near_loop");
+        op->removeAttr("air.derived_far_window");
       });
     }
 

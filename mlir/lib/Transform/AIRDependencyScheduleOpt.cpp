@@ -2447,6 +2447,162 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
 private:
 };
 
+// Do several channel ops in one loop body TILE a contiguous run?
+//
+// A ping/pong producer writes its buffer with two ops per iteration, at base
+// and base+size. That is one transfer written two ways, and recognising it lets
+// the loop fold below treat the body as a single wider transfer. Returns the
+// combined element count, or nullopt for anything that is not one channel, one
+// direction, 1-D, unit-stride, equal-sized and offset by exactly its own size.
+static std::optional<int64_t>
+getContiguousTiledRun(ArrayRef<air::ChannelInterface> chans) {
+  auto first = chans.front();
+  auto sizes = air::getSizesAsValues(first);
+  auto strides = air::getStridesAsValues(first);
+  auto offsets = air::getOffsetsAsValues(first);
+  if (sizes.size() != 1 || strides.size() != 1 || offsets.size() != 1)
+    return std::nullopt;
+  auto szc = getConstantIntValue(sizes[0]);
+  auto stc = getConstantIntValue(strides[0]);
+  if (!szc || !stc || *stc != 1)
+    return std::nullopt;
+  bool isPut = isa<air::ChannelPutOp>(first.getOperation());
+  for (unsigned k = 1; k < chans.size(); k++) {
+    auto c = chans[k];
+    if (c.getChanName() != first.getChanName())
+      return std::nullopt;
+    if (isa<air::ChannelPutOp>(c.getOperation()) != isPut)
+      return std::nullopt;
+    if (c.getMemref() != first.getMemref())
+      return std::nullopt;
+    if (c.getIndices().size() != first.getIndices().size())
+      return std::nullopt;
+    for (auto [a, b] : llvm::zip(c.getIndices(), first.getIndices()))
+      if (a != b)
+        return std::nullopt;
+    if (air::getSizesAsValues(c).size() != 1 ||
+        air::getStridesAsValues(c).size() != 1 ||
+        air::getOffsetsAsValues(c).size() != 1)
+      return std::nullopt;
+    if (getConstantIntValue(air::getSizesAsValues(c)[0]) != szc)
+      return std::nullopt;
+    if (getConstantIntValue(air::getStridesAsValues(c)[0]) != stc)
+      return std::nullopt;
+    // offset[k] must be offset[0] + k*size, either as constants or as an
+    // arith.addi of that exact amount onto the same base.
+    int64_t want = (int64_t)k * *szc;
+    auto o0 = getConstantIntValue(offsets[0]);
+    auto ok = getConstantIntValue(air::getOffsetsAsValues(c)[0]);
+    if (o0 && ok) {
+      if (*ok - *o0 != want)
+        return std::nullopt;
+      continue;
+    }
+    auto add = air::getOffsetsAsValues(c)[0].getDefiningOp<arith::AddIOp>();
+    if (!add)
+      return std::nullopt;
+    Value base = add.getLhs() == offsets[0]   ? add.getRhs()
+                 : add.getRhs() == offsets[0] ? add.getLhs()
+                                              : nullptr;
+    if (!base)
+      return std::nullopt;
+    auto delta = getConstantIntValue(base);
+    if (!delta || *delta != want)
+      return std::nullopt;
+  }
+  return (int64_t)chans.size() * *szc;
+}
+
+// Fold SIBLING channel ops that tile a contiguous run into the one transfer
+// they are.
+//
+// getContiguousTiledRun above recognises the run when it is the whole body of
+// an scf.for, which is how a front end writes it: an inner loop whose only job
+// is to step the window. But the same run also arrives with no loop around it
+// at all -- as N ops side by side, which is what air-dma-to-channel derives
+// when it reads the tiling off the buffer sizes instead of a loop, and equally
+// what an unrolled front end emits.
+//
+// Those two spellings have to reach the same descriptor. When they do not, the
+// loop form folds to one whole-buffer BD and the sibling form stays N, and on
+// a memtile that is N lock releases where the consumer's counting lock expects
+// one -- so the design hangs, in the sibling form only, for no reason visible
+// in the source. That is exactly how @inX failed: its producer BD went missing
+// from the memtile entirely and every consumer waited forever.
+//
+// Same admission test as the loop case, so a run that is not genuinely
+// contiguous still declines and is left alone.
+struct AIRFoldSiblingTiledContiguousRun
+    : public OpInterfaceRewritePattern<air::ChannelInterface> {
+  using OpInterfaceRewritePattern<
+      air::ChannelInterface>::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(air::ChannelInterface op,
+                                PatternRewriter &rewriter) const override {
+    // Only ever fold FORWARD from the head of a run, so the rewrite is
+    // deterministic and converges: an op preceded by a sibling that would
+    // absorb it is not a head.
+    SmallVector<air::ChannelInterface> run{op};
+    for (Operation *n = op->getNextNode(); n; n = n->getNextNode()) {
+      auto c = dyn_cast<air::ChannelInterface>(n);
+      if (!c)
+        break;
+      if (c.getChanName() != op.getChanName())
+        break;
+      run.push_back(c);
+    }
+    if (run.size() < 2)
+      return failure();
+    // A head has no same-channel sibling immediately before it; otherwise that
+    // one is the head and this match would fold the same bytes twice.
+    if (auto prev = dyn_cast_if_present<air::ChannelInterface>(
+            op->getPrevNode() ? op->getPrevNode() : nullptr))
+      if (prev.getChanName() == op.getChanName())
+        return failure();
+
+    std::optional<int64_t> total = getContiguousTiledRun(run);
+    if (!total)
+      return failure();
+
+    auto wraps = air::getSizesAsValues(op);
+    if (wraps.size() != 1)
+      return failure();
+    if (getConstantIntValue(wraps[0]) == total)
+      return failure();
+
+    // getContiguousTiledRun admits only constant, 1-D, unit-stride windows, so
+    // the size lives entirely in the static attribute and widening the survivor
+    // is a one-attribute edit rather than a rebuild.
+    bool isPut = isa<air::ChannelPutOp>(op.getOperation());
+    StringRef szAttrName = isPut ? "static_src_sizes" : "static_dst_sizes";
+    auto szAttr = op->getAttrOfType<DenseI64ArrayAttr>(szAttrName);
+    if (!szAttr || szAttr.size() != 1)
+      return failure();
+    // The size must live in the ATTRIBUTE, not as a dynamic operand that
+    // happens to be a constant. Overwriting the attribute of a mixed list
+    // leaves an operand with no dynamic slot to fill and the next reader
+    // asserts.
+    if (ShapedType::isDynamic(szAttr[0]))
+      return failure();
+
+    // Whatever waited on a dropped op waits on the survivor, which now does its
+    // work; erasing without that trips "expected 'op' to have no uses", since
+    // each one yields a token its neighbours and the enclosing loop carry.
+    Value survivorTok =
+        air::isAsyncOp(op) ? air::getAsyncTokenFromOp(op) : Value();
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setAttr(szAttrName, rewriter.getDenseI64ArrayAttr({*total}));
+    });
+    for (unsigned i = run.size(); i-- > 1;) {
+      if (survivorTok && air::isAsyncOp(run[i]))
+        rewriter.replaceOp(run[i], survivorTok);
+      else
+        rewriter.eraseOp(run[i]);
+    }
+    return success();
+  }
+};
+
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -2464,21 +2620,56 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     auto loc = for_op->getLoc();
     auto ctx = for_op->getContext();
 
-    // Check if the loop is the outermost loop in a perfect loop nest
-    if (!hasNImpureOps(for_op.getBody(), 1))
+    // The loop must carry ONE transfer -- or several on one channel that TILE a
+    // contiguous run, which is the same transfer written N ways.
+    //
+    // Declining on the op COUNT sends the tiled case to
+    // AIRUnrollScfForIntoBDChain instead, which emits trip*N descriptors for a
+    // region that needs one. On a memtile fill each descriptor is a separate
+    // lock release, so a consumer whose counting lock was derived from the
+    // single-descriptor form is off by that factor and the design hangs. The
+    // one-op case already folds to a single transfer; this lets the N-op case
+    // reach the same answer instead of a different one.
+    SmallVector<air::ChannelInterface> bodyChans(
+        for_op.getBody()->getOps<air::ChannelInterface>());
+    if (bodyChans.empty())
       return failure();
+    int64_t tiledSize = 0;
+    if (bodyChans.size() > 1) {
+      auto run = getContiguousTiledRun(bodyChans);
+      if (!run)
+        return failure();
+      tiledSize = *run;
+    }
+    air::ChannelInterface channel_op = bodyChans.front();
 
-    // Check if the loop contains exactly one channel op
-    if (llvm::range_size(for_op.getBody()->getOps<air::ChannelInterface>()) !=
-        1)
+    // Check if the loop is the outermost loop in a perfect loop nest. The tiled
+    // run counts as the one transfer it is.
+    if (!hasNImpureOps(for_op.getBody(), bodyChans.size()))
       return failure();
-    air::ChannelInterface channel_op =
-        *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
 
     // Fold for loops into channel op's wrap and stride fields
     SmallVector<Value> offsets = air::getOffsetsAsValues(channel_op);
     SmallVector<Value> wraps = air::getSizesAsValues(channel_op);
     SmallVector<Value> strides = air::getStridesAsValues(channel_op);
+    if (tiledSize) {
+      // Widen the survivor to cover the run, then drop the rest.
+      OpBuilder wb(channel_op);
+      wraps[0] = arith::ConstantIndexOp::create(wb, loc, tiledSize);
+      // The survivor now performs the dropped ops' work, so whatever waited on
+      // them waits on it instead. Erasing without this trips the rewriter's
+      // "expected 'op' to have no uses": every one of them yields a token the
+      // loop carries.
+      Value survivorTok = air::isAsyncOp(channel_op)
+                              ? air::getAsyncTokenFromOp(channel_op)
+                              : Value();
+      for (unsigned i = 1; i < bodyChans.size(); i++) {
+        if (survivorTok && air::isAsyncOp(bodyChans[i]))
+          rewriter.replaceOp(bodyChans[i], survivorTok);
+        else
+          rewriter.eraseOp(bodyChans[i]);
+      }
+    }
 
     // A hardware buffer descriptor has a constant shape per dimension. If the
     // channel op already carries a non-constant wrap or stride (e.g. an
@@ -3352,6 +3543,31 @@ public:
   void broadcastDetection() {
     for (unsigned i = 0; i < dma_op_history.size(); i++) {
       auto dma_op = dma_op_history[i];
+      // A DMA naming a channel whose DECLARATION already carries a
+      // broadcast_shape has stated its fan-out. Deriving a second one from the
+      // enclosing herd is the same fact written twice, and the two do not have
+      // to agree: this pass reads the herd it happens to sit in, so a [4, 4]
+      // declaration read from inside a [2, 4] block herd comes back [2, 4].
+      //
+      // The cost is not only the disagreement. Specialization turns the derived
+      // pattern into an affine.if around the consumer, and that region is what
+      // stops canonicalize from folding away the ping-pong duplicates the
+      // transform speculatively allocates -- so a core that shared one 2-deep
+      // ring across its two GEMV sites ends up with a separate ring per site,
+      // and the design blows its core-memory BD budget and hangs on device.
+      //
+      // The declaration is the single spelling. Leave it alone.
+      //
+      // Only where there is nothing to specialize: a transfer whose window
+      // VARIES with a herd index is genuinely different per core, and the
+      // affine.if is what turns that variance into one constant descriptor
+      // apiece. Skipping it there would leave a herd induction variable in the
+      // producer's offsets, which is a dominance error, not a redundancy.
+      bool declaredBroadcast = false;
+      if (auto chanAttr = dma_op->getAttrOfType<FlatSymbolRefAttr>("channel"))
+        if (auto decl = air::getChannelDeclarationThroughSymbol(
+                dma_op.getOperation(), chanAttr))
+          declaredBroadcast = decl.getBroadcastShape() != nullptr;
       SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
       air::HerdOp hl_op = nullptr;
       bool isVariantWrtHerdRows = false;
@@ -3414,6 +3630,12 @@ public:
         // If a dma op is independent of herd induction vars, then we broadcast
         // it to every core in the herd.
         if (numRows == 1 && numCols == 1)
+          continue;
+        // ...which is what a declared broadcast_shape already says. See above:
+        // deriving it again writes the same fact twice, from the herd this DMA
+        // happens to sit in rather than from the channel, so a [4, 4]
+        // declaration read inside a [2, 4] block herd comes back [2, 4].
+        if (declaredBroadcast)
           continue;
         else if (numRows > 1 && numCols == 1) {
           SmallVector<AffineExpr, 5> constraints{
@@ -4159,7 +4381,8 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
                   CanonicalizeArithMuliOpOnLoopInductionVar,
                   CanonicalizeArithAddiOpOnLoopInductionVar,
                   CanonicalizeArithIndexCastOpOnLoopInductionVar,
-                  AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+                  AIRSpecializeChannelWrapAndStrideInAffineFor,
+                  AIRFoldSiblingTiledContiguousRun>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
       ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
@@ -4372,6 +4595,137 @@ public:
         bucket.push_back({std::move(key), async.getAsyncToken()});
       }
     });
+
+    warnOnUnorderedSameEndpointOps();
+  }
+
+  // The walk above can only order same-block siblings. Endpoints that address
+  // one channel slot from DIFFERENT blocks are left alone, and when nothing
+  // else orders them they race: a channel is a FIFO, so which producer's bytes
+  // arrive first decides what the consumer reads.
+  //
+  // This is reachable from the front end (two puts written into separate loop
+  // nests) and from air-dma-to-channel, which hoists each DMA's external half
+  // into its own scf.parallel wrapper -- so two DMAs naming one channel become
+  // two puts in two sibling blocks with no token between them.
+  //
+  // Warn rather than order. Convergent producers are usually time-disjoint by
+  // construction (different phases of a kernel), in which case an ordering edge
+  // is redundant; and where they are not, the fix is a front-end decision about
+  // which producer goes first, not one this pass can make. Cross-block ordering
+  // would also need loop-carried deps, which canonicalize strips -- the reason
+  // this pass runs late and stays within a block in the first place.
+  void warnOnUnorderedSameEndpointOps() {
+    SmallVector<std::pair<ChannelEndpointKey, air::ChannelInterface>> seen;
+    // One diagnostic per channel+direction, not per pair: a fan of N unordered
+    // producers would otherwise report N*(N-1)/2 times for one root cause.
+    llvm::DenseSet<std::pair<StringRef, unsigned>> reported;
+
+    getOperation().walk([&](air::ChannelInterface chan) {
+      auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
+      if (!async || !async.getAsyncToken())
+        return;
+      ChannelEndpointKey key = getChannelEndpointKey(chan);
+      for (auto &[priorKey, priorOp] : seen) {
+        // channelEndpointsResourceDep, not sameChannelEndpoint: the ordering
+        // walk needs indices provably EQUAL before it dares add an edge, while
+        // a hazard check needs them not provably DISTINCT. Two puts in sibling
+        // scf.parallel wrappers are indexed by different block arguments, so
+        // the strict predicate would miss exactly the case this exists for.
+        if (!channelEndpointsResourceDep(priorKey, key))
+          continue;
+        if (priorOp->getBlock() == chan->getBlock())
+          continue; // handled by the ordering walk above
+        if (isGuarded(priorOp) || isGuarded(chan))
+          continue; // may be mutually exclusive arms; cannot tell, stay quiet
+        if (isSanctionedMultiEndpoint(chan, key.isPut))
+          continue; // the declaration says multi-endpoint is the intent
+        if (provablyOrdered(priorOp.getOperation(), chan.getOperation()))
+          continue;
+        auto tag = std::make_pair(key.name, (unsigned)key.isPut);
+        if (!reported.insert(tag).second)
+          continue;
+        auto diag = chan->emitWarning()
+                    << "is a second " << (key.isPut ? "producer" : "consumer")
+                    << " on channel @" << key.name
+                    << ", unordered against an earlier one and in a different "
+                       "block, so air-enforce-channel-fifo-order cannot order "
+                       "them. A channel is a FIFO, so the arrival order is "
+                       "undefined. If the two are meant to converge, declare "
+                       "the channel npu_dma_packet; if they are meant to share "
+                       "a resident ring, mark it air.shared_resident_ring; "
+                       "otherwise order them explicitly.";
+        diag.attachNote(priorOp->getLoc()) << "earlier endpoint here";
+      }
+      seen.push_back({std::move(key), chan});
+    });
+  }
+
+  // A declaration can say that several endpoints are the point, in which case
+  // there is nothing to report:
+  //
+  //   - broadcast_shape: fanning one put out to many gets IS the channel.
+  //   - air.shared_resident_ring: two sibling get-loops deliberately share one
+  //     2-deep resident ring (air-ping-pong-transform merges them).
+  //   - npu_dma_packet, for producers only: converging several same-id sources
+  //     onto one destination S2MM is what a packet flow is for. A CIRCUIT
+  //     channel is point-to-point, and a second producer on one is the case
+  //     worth shouting about -- air-to-aie's channel specialization keeps only
+  //     one producer tile and leaves the other with a complete DMA program and
+  //     no flow behind it, so it stalls on its acquire forever.
+  static bool isSanctionedMultiEndpoint(air::ChannelInterface chan,
+                                        bool isPut) {
+    auto decl = air::getChannelDeclarationThroughSymbol(chan);
+    if (!decl)
+      return false;
+    if (decl.getBroadcastShape())
+      return true;
+    if (decl->hasAttr("air.shared_resident_ring"))
+      return true;
+    if (isPut && decl.getChannelType() == "npu_dma_packet")
+      return true;
+    return false;
+  }
+
+  // Conditionally executed ops are exempt: two endpoints in different arms of a
+  // condition are mutually exclusive, and proving that here is out of scope.
+  static bool isGuarded(air::ChannelInterface chan) {
+    if (chan->hasAttr("broadcast_set"))
+      return true;
+    for (Operation *p = chan->getParentOp(); p; p = p->getParentOp())
+      if (isa<scf::IfOp, affine::AffineIfOp>(p))
+        return true;
+    return false;
+  }
+
+  // True when one of the two provably runs before the other. Both ops are
+  // lifted to their ancestors inside the nearest common block first: an op
+  // nested in a loop is ordered by that loop's token, not its own, and
+  // air::isAsyncDependent compares tokens without crossing region boundaries.
+  static bool provablyOrdered(Operation *a, Operation *b) {
+    Block *commonBlock = nullptr;
+    for (Operation *pa = a; pa && !commonBlock; pa = pa->getParentOp())
+      for (Operation *pb = b; pb; pb = pb->getParentOp())
+        if (pa->getBlock() == pb->getBlock()) {
+          commonBlock = pa->getBlock();
+          break;
+        }
+    if (!commonBlock)
+      return false;
+    auto liftTo = [commonBlock](Operation *op) -> Operation * {
+      for (Operation *p = op; p; p = p->getParentOp())
+        if (p->getBlock() == commonBlock)
+          return p;
+      return nullptr;
+    };
+    Operation *aa = liftTo(a), *bb = liftTo(b);
+    if (!aa || !bb)
+      return false;
+    // Same enclosing op: either the ordering walk covered them, or they sit in
+    // sibling regions of one op and are not comparable here. Stay quiet.
+    if (aa == bb)
+      return true;
+    return air::isAsyncDependent(aa, bb) || air::isAsyncDependent(bb, aa);
   }
 };
 

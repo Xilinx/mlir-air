@@ -28,6 +28,12 @@ SmallVector<Operation *> cloneAffineIfUsingRemap(OpBuilder builder,
                                                  affine::AffineIfOp aif_op);
 SmallVector<Operation *>
 cloneScfIfUsingRemap(OpBuilder builder, IRMapping &remap, scf::IfOp scf_if_op);
+// Same, for scf.index_switch. Hoisting an external channel op out of a switch
+// arm has to rebuild the switch, or the op is dropped and its partner is left
+// unpaired.
+mlir::SmallVector<mlir::Operation *>
+cloneIndexSwitchUsingRemap(OpBuilder builder, IRMapping &remap,
+                           mlir::scf::IndexSwitchOp switch_op);
 
 template <typename T>
 SmallVector<Operation *>

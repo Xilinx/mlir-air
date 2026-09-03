@@ -3753,10 +3753,11 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
     // link, and a silent hang if they disagreed. The put already has the
     // compiler inject its locks; the routing header is the same kind of
     // plumbing.
-    auto emitHeaderStore = [&](air::ChannelPutOp put,
+    auto emitHeaderStore = [&](air::PacketEndpoint put,
                                ArrayRef<int64_t> ids) -> LogicalResult {
       Value dst = put.getDest();
-      auto memTy = dyn_cast<MemRefType>(put.getSrc().getType());
+      Value srcBuf = put.getMemref();
+      auto memTy = dyn_cast<MemRefType>(srcBuf.getType());
       if (!memTy)
         return put.emitOpError("dest requires a ranked memref source");
       unsigned eltBits = memTy.getElementType().getIntOrFloatBitWidth();
@@ -3808,11 +3809,11 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
       // regions -- otherwise nothing is ever found and the store falls back to
       // sitting beside the put, in a section of its own.
       auto touchesSrc = [&](Operation *o) {
-        if (llvm::is_contained(o->getOperands(), put.getSrc()))
+        if (llvm::is_contained(o->getOperands(), srcBuf))
           return true;
         bool found = false;
         o->walk([&](Operation *n) {
-          if (llvm::is_contained(n->getOperands(), put.getSrc())) {
+          if (llvm::is_contained(n->getOperands(), srcBuf)) {
             found = true;
             return WalkResult::interrupt();
           }
@@ -3821,7 +3822,8 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
         return found;
       };
       Operation *writer = nullptr;
-      for (Operation *o = put->getPrevNode(); o; o = o->getPrevNode()) {
+      for (Operation *o = put.getOperation()->getPrevNode(); o;
+           o = o->getPrevNode()) {
         if (barriers.contains(o))
           break; // a value the store needs is defined here; cannot go earlier
         if (touchesSrc(o)) {
@@ -3908,7 +3910,7 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
               break;
             }
       }
-      vector::StoreOp::create(b, loc, v2, put.getSrc(), idx,
+      vector::StoreOp::create(b, loc, v2, srcBuf, idx,
                               /*nontemporal=*/false, b.getI64IntegerAttr(4));
 
       // Drop the operand now that the header exists.
@@ -3920,7 +3922,7 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
       // transfers, so they stopped sharing an MM2S allocation and the demux
       // sprouted a flow per producer -- 73 packet flows instead of 43, and the
       // device timed out.
-      put.getDestMutable().clear();
+      put.clearDest();
       return success();
     };
 
@@ -3939,7 +3941,7 @@ void AIRAnnotatePacketIDsPass::runOnOperation() {
     if (emitHeaders) {
       for (const air::PacketRoutingDomain &domRef : domains.getDomains()) {
         air::PacketRoutingDomain dom = domRef;
-        for (air::ChannelPutOp put : dom.originators)
+        for (air::PacketEndpoint put : dom.originators)
           if (failed(emitHeaderStore(put, dom.ids)))
             emitFailed = true;
       }

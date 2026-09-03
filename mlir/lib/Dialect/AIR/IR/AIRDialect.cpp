@@ -2918,9 +2918,44 @@ void air::DmaMemcpyNdOp::build(
   auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
   build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
         dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
-        dynSrcStrides, staticDstOffsets, staticDstSizes, staticDstStrides,
-        staticSrcOffsets, staticSrcSizes, staticSrcStrides, pad_before,
-        pad_after, /*src_rank=*/IntegerAttr(), /*dst_rank=*/IntegerAttr());
+        dynSrcStrides, /*dest=*/Value(),
+        /*dynamic_channel_indices=*/ValueRange{}, staticDstOffsets,
+        staticDstSizes, staticDstStrides, staticSrcOffsets, staticSrcSizes,
+        staticSrcStrides, pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        /*dst_rank=*/IntegerAttr(),
+        /*channel=*/FlatSymbolRefAttr(),
+        /*channel_indices=*/DenseI64ArrayAttr(),
+        /*hoist_after=*/FlatSymbolRefAttr(),
+        /*hoist_before=*/FlatSymbolRefAttr());
+}
+
+void air::DmaMemcpyNdOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, Value dst,
+    ArrayRef<OpFoldResult> dst_offsets, ArrayRef<OpFoldResult> dst_sizes,
+    ArrayRef<OpFoldResult> dst_strides, Value src,
+    ArrayRef<OpFoldResult> src_offsets, ArrayRef<OpFoldResult> src_sizes,
+    ArrayRef<OpFoldResult> src_strides, Value dest,
+    ValueRange dynamic_channel_indices, DenseI32ArrayAttr pad_before,
+    DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynDstOffsets, dynDstSizes, dynDstStrides;
+  SmallVector<Value> dynSrcOffsets, dynSrcSizes, dynSrcStrides;
+  auto staticDstOffsets = splitMixed(b, dst_offsets, dynDstOffsets);
+  auto staticDstSizes = splitMixed(b, dst_sizes, dynDstSizes);
+  auto staticDstStrides = splitMixed(b, dst_strides, dynDstStrides);
+  auto staticSrcOffsets = splitMixed(b, src_offsets, dynSrcOffsets);
+  auto staticSrcSizes = splitMixed(b, src_sizes, dynSrcSizes);
+  auto staticSrcStrides = splitMixed(b, src_strides, dynSrcStrides);
+  build(b, result, resultTypes, async_dependencies, dst, dynDstOffsets,
+        dynDstSizes, dynDstStrides, src, dynSrcOffsets, dynSrcSizes,
+        dynSrcStrides, dest, dynamic_channel_indices, staticDstOffsets,
+        staticDstSizes, staticDstStrides, staticSrcOffsets, staticSrcSizes,
+        staticSrcStrides, pad_before, pad_after, /*src_rank=*/IntegerAttr(),
+        /*dst_rank=*/IntegerAttr(),
+        /*channel=*/FlatSymbolRefAttr(),
+        /*channel_indices=*/DenseI64ArrayAttr(),
+        /*hoist_after=*/FlatSymbolRefAttr(),
+        /*hoist_before=*/FlatSymbolRefAttr());
 }
 
 void air::DmaMemcpyNdOp::build(
@@ -2930,12 +2965,17 @@ void air::DmaMemcpyNdOp::build(
     ValueRange src_offsets, ValueRange src_sizes, ValueRange src_strides,
     DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
   build(b, result, resultTypes, async_dependencies, dst, dst_offsets, dst_sizes,
-        dst_strides, src, src_offsets, src_sizes, src_strides,
+        dst_strides, src, src_offsets, src_sizes, src_strides, /*dest=*/Value(),
+        /*dynamic_channel_indices=*/ValueRange{},
         allDynamic(b, dst_offsets.size()), allDynamic(b, dst_sizes.size()),
         allDynamic(b, dst_strides.size()), allDynamic(b, src_offsets.size()),
         allDynamic(b, src_sizes.size()), allDynamic(b, src_strides.size()),
-        pad_before, pad_after, /*src_rank=*/IntegerAttr(),
-        /*dst_rank=*/IntegerAttr());
+        pad_before, pad_after,
+        /*src_rank=*/IntegerAttr(),
+        /*dst_rank=*/IntegerAttr(), /*channel=*/FlatSymbolRefAttr(),
+        /*channel_indices=*/DenseI64ArrayAttr(),
+        /*hoist_after=*/FlatSymbolRefAttr(),
+        /*hoist_before=*/FlatSymbolRefAttr());
 }
 
 void air::ChannelPutOp::build(
@@ -2951,6 +2991,21 @@ void air::ChannelPutOp::build(
   build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
         dynOffsets, dynSizes, dynStrides, /*dest=*/Value(), staticOffsets,
         staticSizes, staticStrides, pad_before, pad_after);
+}
+
+void air::ChannelPutOp::build(
+    OpBuilder &b, OperationState &result, TypeRange resultTypes,
+    ValueRange async_dependencies, FlatSymbolRefAttr chan_name,
+    ValueRange indices, Value src, ArrayRef<OpFoldResult> src_offsets,
+    ArrayRef<OpFoldResult> src_sizes, ArrayRef<OpFoldResult> src_strides,
+    Value dest, DenseI32ArrayAttr pad_before, DenseI32ArrayAttr pad_after) {
+  SmallVector<Value> dynOffsets, dynSizes, dynStrides;
+  auto staticOffsets = splitMixed(b, src_offsets, dynOffsets);
+  auto staticSizes = splitMixed(b, src_sizes, dynSizes);
+  auto staticStrides = splitMixed(b, src_strides, dynStrides);
+  build(b, result, resultTypes, async_dependencies, chan_name, indices, src,
+        dynOffsets, dynSizes, dynStrides, dest, staticOffsets, staticSizes,
+        staticStrides, pad_before, pad_after);
 }
 
 void air::ChannelPutOp::build(OpBuilder &b, OperationState &result,
@@ -3152,6 +3207,51 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
     if (getDstRank().has_value() &&
         failed(requireSymmetricAlloc(getDst(), "dst")))
       return failure();
+  }
+
+  // Named-channel lowering (see the `channel` attribute in AIR.td).
+  auto chanIndices = getChannelIndices();
+  if (chanIndices.has_value() && !hasNamedChannel())
+    return emitOpError("channel_indices requires a channel attribute: there is "
+                       "no bundle to index without a named channel");
+  if (hasNamedChannel()) {
+    // Resolving the declaration is deliberately NOT required here. An
+    // unresolvable name is diagnosed by air-dma-to-channel, which can say what
+    // it was looking for; failing in the verifier instead would make the op
+    // unbuildable before its channel is declared, which is an ordering trap for
+    // any pass that creates the two in the other order.
+    // Resolved inline rather than through
+    // air::getChannelDeclarationThroughSymbol: that lives in the Util library,
+    // which depends on this dialect, so calling it from here would invert the
+    // layering.
+    air::ChannelOp chanOp = nullptr;
+    for (Operation *p = (*this)->getParentOp(); p && !chanOp;
+         p = p->getParentOp()) {
+      if (!p->hasTrait<OpTrait::SymbolTable>())
+        continue;
+      chanOp = dyn_cast_if_present<air::ChannelOp>(
+          mlir::SymbolTable::lookupSymbolIn(p, getChannelAttr()));
+    }
+    if (chanOp && chanIndices.has_value()) {
+      auto declSize = chanOp.getSize();
+      if ((size_t)chanIndices->size() != declSize.size())
+        return emitOpError() << "channel_indices has " << chanIndices->size()
+                             << " entries but @" << chanOp.getSymName()
+                             << " is declared with " << declSize.size()
+                             << " bundle dimensions";
+      for (size_t i = 0; i < chanIndices->size(); i++) {
+        int64_t idx = (*chanIndices)[i];
+        auto boundAttr = llvm::dyn_cast<IntegerAttr>(declSize[i]);
+        if (!boundAttr)
+          continue;
+        int64_t bound = boundAttr.getInt();
+        if (idx < 0 || idx >= bound)
+          return emitOpError()
+                 << "channel_indices[" << i << "] = " << idx
+                 << " is out of bounds for @" << chanOp.getSymName()
+                 << " bundle dimension " << i << " of size " << bound;
+      }
+    }
   }
   return success();
 }

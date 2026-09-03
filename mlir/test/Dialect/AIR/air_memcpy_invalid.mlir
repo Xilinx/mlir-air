@@ -136,3 +136,35 @@ func.func @dma_dst_rank_negative() {
   }
   return
 }
+
+// -----
+
+// Test: channel_indices without a channel has no bundle to index.
+func.func @dma_channel_indices_without_channel(%m0: memref<64xi32, 2>, %m1: memref<64xi32>) {
+  // expected-error @+1 {{'air.dma_memcpy_nd' op channel_indices requires a channel attribute}}
+  air.dma_memcpy_nd (%m0[] [] [], %m1[] [] []) {channel_indices = array<i64: 0>}
+      : (memref<64xi32, 2>, memref<64xi32>)
+  return
+}
+
+// -----
+
+// Test: channel_indices rank must match the declaration's bundle rank.
+air.channel @bundled2d [2, 2]
+func.func @dma_channel_indices_rank_mismatch(%m0: memref<64xi32, 2>, %m1: memref<64xi32>) {
+  // expected-error @+1 {{'air.dma_memcpy_nd' op channel_indices has 1 entries but @bundled2d is declared with 2 bundle dimensions}}
+  air.dma_memcpy_nd (%m0[] [] [], %m1[] [] []) {channel = @bundled2d, channel_indices = array<i64: 0>}
+      : (memref<64xi32, 2>, memref<64xi32>)
+  return
+}
+
+// -----
+
+// Test: channel_indices must be in bounds for the declared bundle.
+air.channel @bundled1d [4]
+func.func @dma_channel_indices_out_of_bounds(%m0: memref<64xi32, 2>, %m1: memref<64xi32>) {
+  // expected-error @+1 {{'air.dma_memcpy_nd' op channel_indices[0] = 4 is out of bounds for @bundled1d bundle dimension 0 of size 4}}
+  air.dma_memcpy_nd (%m0[] [] [], %m1[] [] []) {channel = @bundled1d, channel_indices = array<i64: 4>}
+      : (memref<64xi32, 2>, memref<64xi32>)
+  return
+}
