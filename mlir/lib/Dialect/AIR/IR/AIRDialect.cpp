@@ -2926,7 +2926,11 @@ void air::DmaMemcpyNdOp::build(
         /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
         /*hoist_after=*/FlatSymbolRefAttr(),
-        /*hoist_before=*/FlatSymbolRefAttr());
+        /*hoist_before=*/FlatSymbolRefAttr(),
+        /*external_offsets=*/AffineMapAttr(),
+        /*external_sizes=*/DenseI64ArrayAttr(),
+        /*external_strides=*/DenseI64ArrayAttr(),
+        /*distinct_transfer=*/UnitAttr());
 }
 
 void air::DmaMemcpyNdOp::build(
@@ -2955,7 +2959,11 @@ void air::DmaMemcpyNdOp::build(
         /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
         /*hoist_after=*/FlatSymbolRefAttr(),
-        /*hoist_before=*/FlatSymbolRefAttr());
+        /*hoist_before=*/FlatSymbolRefAttr(),
+        /*external_offsets=*/AffineMapAttr(),
+        /*external_sizes=*/DenseI64ArrayAttr(),
+        /*external_strides=*/DenseI64ArrayAttr(),
+        /*distinct_transfer=*/UnitAttr());
 }
 
 void air::DmaMemcpyNdOp::build(
@@ -2975,7 +2983,11 @@ void air::DmaMemcpyNdOp::build(
         /*dst_rank=*/IntegerAttr(), /*channel=*/FlatSymbolRefAttr(),
         /*channel_indices=*/DenseI64ArrayAttr(),
         /*hoist_after=*/FlatSymbolRefAttr(),
-        /*hoist_before=*/FlatSymbolRefAttr());
+        /*hoist_before=*/FlatSymbolRefAttr(),
+        /*external_offsets=*/AffineMapAttr(),
+        /*external_sizes=*/DenseI64ArrayAttr(),
+        /*external_strides=*/DenseI64ArrayAttr(),
+        /*distinct_transfer=*/UnitAttr());
 }
 
 void air::ChannelPutOp::build(

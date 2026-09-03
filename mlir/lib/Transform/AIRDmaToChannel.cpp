@@ -982,6 +982,33 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     externalGetPut->setAttr("air.hoist_after", anchor);
   if (auto anchor = op.getHoistBeforeAttr())
     externalGetPut->setAttr("air.hoist_before", anchor);
+  // The external half's own access pattern, written in the anchor's loop. Only
+  // meaningful on the external half, and only once it has landed -- the map is
+  // over induction variables that do not exist here.
+  if (auto m = op.getExternalOffsetsAttr()) {
+    if (!op.getHoistAfterAttr() && !op.getHoistBeforeAttr())
+      return op.emitOpError(
+          "carries external_offsets but names no anchor; the map is written "
+          "over the anchor's loop induction variables, so without an anchor "
+          "there is no loop to write it against");
+    if (!op.getExternalSizesAttr() || !op.getExternalStridesAttr())
+      return op.emitOpError(
+          "carries external_offsets without external_sizes and "
+          "external_strides; a partial access pattern has no meaning");
+    if (m.getValue().getNumResults() !=
+            (size_t)op.getExternalSizesAttr().size() ||
+        m.getValue().getNumResults() !=
+            (size_t)op.getExternalStridesAttr().size())
+      return op.emitOpError("external_offsets, external_sizes and "
+                            "external_strides must have the same rank");
+    externalGetPut->setAttr("air.external_offsets", m);
+    externalGetPut->setAttr("air.external_sizes", op.getExternalSizesAttr());
+    externalGetPut->setAttr("air.external_strides",
+                            op.getExternalStridesAttr());
+  }
+  if (op.getDistinctTransfer())
+    externalGetPut->setAttr("air.distinct_transfer",
+                            UnitAttr::get(op->getContext()));
   // Same reasoning for "do not carry my guards": it is a statement about where
   // the external half lands, so it belongs on the external half only.
   if (op->hasAttr("hoist_unguarded"))
@@ -1419,6 +1446,92 @@ static Operation *findEmittedTransfer(air::ChannelInterface getput,
       return &o;
   }
   return nullptr;
+}
+
+// Rewrite a landed external half to the access pattern the front end wrote for
+// it, materialized against the loops it actually landed in.
+//
+// `air.external_offsets` is a map over the enclosing loops INNERMOST FIRST --
+// d0 is the loop the transfer sits directly in, d1 its parent, and so on. That
+// order is the useful one: the innermost loop is the one stepping the window,
+// and a map that only mentions d0 keeps working when an outer loop is added.
+//
+// Returns the replacement, or null with a diagnostic already emitted.
+static Operation *applyExternalPattern(OpBuilder &b, air::ChannelInterface ci) {
+  auto mapAttr = ci->getAttrOfType<AffineMapAttr>("air.external_offsets");
+  if (!mapAttr)
+    return ci.getOperation();
+  auto sizesAttr = ci->getAttrOfType<DenseI64ArrayAttr>("air.external_sizes");
+  auto stridesAttr =
+      ci->getAttrOfType<DenseI64ArrayAttr>("air.external_strides");
+  AffineMap map = mapAttr.getValue();
+  Location loc = ci.getLoc();
+
+  // The loops this transfer landed in, innermost first, stopping at the
+  // hierarchy it now belongs to.
+  SmallVector<Value> ivs;
+  for (Operation *p = ci->getParentOp();
+       p && !isa<air::HierarchyInterface>(p) && !isa<func::FuncOp>(p);
+       p = p->getParentOp()) {
+    if (auto f = dyn_cast<scf::ForOp>(p))
+      ivs.push_back(f.getInductionVar());
+    else if (auto par = dyn_cast<scf::ParallelOp>(p))
+      for (Value iv : par.getInductionVars())
+        ivs.push_back(iv);
+  }
+  if (map.getNumDims() > ivs.size()) {
+    ci->emitOpError("external_offsets is written over ")
+        << map.getNumDims() << " enclosing loop(s), but the transfer landed in "
+        << ivs.size()
+        << " -- the anchor does not sit as deep as the map assumes";
+    return nullptr;
+  }
+  ivs.truncate(map.getNumDims());
+
+  b.setInsertionPoint(ci);
+  SmallVector<OpFoldResult> ivOfr;
+  for (Value v : ivs)
+    ivOfr.push_back(v);
+  SmallVector<OpFoldResult> offsets, sizes, strides;
+  for (unsigned i = 0; i < map.getNumResults(); i++)
+    offsets.push_back(affine::makeComposedFoldedAffineApply(
+        b, loc, map.getSubMap({i}), ivOfr));
+  // Sizes and strides stay STATIC. A descriptor length cannot be a runtime
+  // value on this hardware, so there is nothing a map would buy here.
+  for (int64_t sz : sizesAttr.asArrayRef())
+    sizes.push_back(b.getIndexAttr(sz));
+  for (int64_t st : stridesAttr.asArrayRef())
+    strides.push_back(b.getIndexAttr(st));
+
+  SmallVector<Value> indices(ci.getIndices());
+  SmallVector<Value> deps;
+  if (auto async = dyn_cast<air::AsyncOpInterface>(ci.getOperation()))
+    deps = SmallVector<Value>(async.getAsyncDependencies());
+  SmallVector<Type> tys(ci->getResultTypes());
+  auto chanAttr = FlatSymbolRefAttr::get(ci->getContext(), ci.getChanName());
+
+  Operation *rep = nullptr;
+  if (isa<air::ChannelPutOp>(ci.getOperation()))
+    rep = air::ChannelPutOp::create(b, loc, tys, deps, chanAttr, indices,
+                                    ci.getMemref(), offsets, sizes, strides)
+              .getOperation();
+  else
+    rep = air::ChannelGetOp::create(b, loc, tys, deps, chanAttr, indices,
+                                    ci.getMemref(), offsets, sizes, strides)
+              .getOperation();
+  // Everything but the directive itself carries over: the directive has been
+  // honoured and must not be seen again by a later sibling.
+  for (NamedAttribute na : ci->getAttrs()) {
+    StringRef n = na.getName();
+    if (n.starts_with("air.external_") || n == "operandSegmentSizes" ||
+        n.starts_with("static_"))
+      continue;
+    if (!rep->hasAttr(n))
+      rep->setAttr(n, na.getValue());
+  }
+  ci->replaceAllUsesWith(rep);
+  ci->erase();
+  return rep;
 }
 
 // How many tiles of `hier_op` actually execute `getput`?
@@ -1928,6 +2041,13 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
             // producer stream: keep the one descriptor and let this site's
             // internal half share it, exactly as the hand-written form does.
             if (auto ci = dyn_cast<air::ChannelInterface>(c)) {
+              // Now that it has landed, give it the pattern the front end wrote
+              // for it -- materialized against the loops it landed in.
+              Operation *pat = applyExternalPattern(rewriter, ci);
+              if (!pat)
+                return failure();
+              c = pat;
+              ci = cast<air::ChannelInterface>(c);
               if (Operation *prior = findEmittedTransfer(ci, c->getBlock())) {
                 c->replaceAllUsesWith(prior);
                 rewriter.eraseOp(c);

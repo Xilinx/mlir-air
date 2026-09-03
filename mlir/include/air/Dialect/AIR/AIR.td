@@ -500,7 +500,44 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         OptionalAttr<FlatSymbolRefAttr>:$channel,
         OptionalAttr<DenseI64ArrayAttr>:$channel_indices,
         OptionalAttr<FlatSymbolRefAttr>:$hoist_after,
-        OptionalAttr<FlatSymbolRefAttr>:$hoist_before
+        OptionalAttr<FlatSymbolRefAttr>:$hoist_before,
+        // The EXTERNAL half's access pattern, written in the anchor's loop.
+        //
+        // One op naming both endpoints can only describe a window it can name.
+        // When the far side's offset is a function of the far side's OWN loop
+        // -- a memtile feed stepping its source per chunk while the core that
+        // consumes it runs a different loop entirely -- there is no value here
+        // to write it with, and the transfer cannot be spelled at all.
+        //
+        // So write it as a map over the ANCHOR's enclosing loops, innermost
+        // first: `affine_map<(d0) -> (d0 * 256)>` says "at the anchor, offset
+        // by 256 per iteration of the loop you land in". air-dma-to-channel
+        // materializes it against the real induction variables once it knows
+        // where the external half goes.
+        //
+        // Supplying this also states the external half's MULTIPLICITY -- it
+        // iterates with the anchor's loop, not with this op's -- which is the
+        // other half of what one op cannot otherwise say. The two are one
+        // statement, because binding the pattern to those IVs is what makes the
+        // trip count theirs.
+        //
+        // That correspondence is NOT checked. The two halves sit in different
+        // nests with different trip counts, and one of them may be a broadcast
+        // whose volume is not additive over its consumers, so there is no local
+        // sum to compare -- a check written anyway would reject valid designs.
+        // Rank and the presence of all three components are checked; the map
+        // itself is taken on trust, like any other access pattern the front end
+        // writes.
+        //
+        // Requires an anchor: without one there is no loop to write against.
+        OptionalAttr<AffineMapAttr>:$external_offsets,
+        OptionalAttr<DenseI64ArrayAttr>:$external_sizes,
+        OptionalAttr<DenseI64ArrayAttr>:$external_strides,
+        // Opt out of shared-stream deduplication. Several transfers naming one
+        // channel, one sub-channel and one window are taken to be one transfer
+        // reached from several consumer sites, and derive a single producer.
+        // Set this where a design really does mean to send the same bytes twice.
+        UnitAttr:$distinct_transfer
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
