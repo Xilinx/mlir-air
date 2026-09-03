@@ -267,7 +267,14 @@ def main():
     got = np.frombuffer(x_bo.map(), dtype=bfloat16, count=K).astype(np.float32)
 
     if a.dump:
-        np.savez(a.dump, got=got, want=want, x=x, x0=x0, emb_L=emb_L, L=L)
+        # the KV cache too: at pos 0 the correct attention output is just v, so
+        # what the device stored there says whether the QKV path or the attend
+        # path is at fault.
+        kv_bo.sync(FROM)
+        kv_out = np.frombuffer(kv_bo.map(), dtype=bfloat16, count=n_kv).astype(
+            np.float32
+        )
+        np.savez(a.dump, got=got, want=want, x=x, x0=x0, emb_L=emb_L, L=L, kv=kv_out)
         print(f"  dumped -> {a.dump}")
     c = cos_sim(got, want)
     rg, rw = float(np.sqrt((got**2).mean())), float(np.sqrt((want**2).mean()))
