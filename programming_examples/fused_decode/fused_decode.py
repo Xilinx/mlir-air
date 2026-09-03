@@ -1487,9 +1487,22 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 
 # ---- proj core input ring depth ---------------------------------------------
 # How many physical L1 instances of the batched proj core's xblk/wblk buffers
-# exist. 2 (the default) is what `air-label-scf-for-to-ping-pong` produces
-# automatically from a single alloc-per-iteration loop -- see PROJ_MM_BATCH's
-# _mm below, whose depth-2 path is exactly that pattern, untouched.
+# the design ASKS for.
+#
+# IT ASKS AND IT DOES NOT GET. Neither setting produces a ring: the lowered
+# tile_0_2 of a qwen3-4b batch-8 build has ONE x buffer, ONE w buffer, one
+# mm_acc call and 3 aie.dma_bd at depth 2 AND at depth 3. This comment used to
+# say 2 "is what air-label-scf-for-to-ping-pong produces automatically from a
+# single alloc-per-iteration loop", and it is not -- air-fuse-alloc-dealloc
+# sinks the 16 KB unpack scratch into that loop one pass earlier, and
+# isUnsafeToDuplicate then rejects the whole loop because that buffer's first
+# access is an opaque func.call. Depth 3 fails differently and lands in the
+# same place (see _mm_ring_deeper: it pre-tags `unroll`, so
+# isPingPongCandidate returns on its first line).
+#
+# A real ring is what PROJ_WS_NO_SINK + PROJ_PP_ONLY give; read those. The
+# consequence for this knob is that the recorded 8.692-vs-9.091 comparison
+# below is depth 1 against depth 1 and measures nothing.
 #
 # Exists to test whether ring depth is why the batched layer runs at 3.65x its
 # weight-streaming floor with the arithmetic deleted (PROJ_DELAY, see
@@ -1529,6 +1542,12 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 # is 12*5 chunks for ph0 and 38*5 for ph2 -- 250 a layer for 10 distinct ones,
 # and rms_chunk is 30.8 ms of a 134 ms dispatch (measured by deletion,
 # RMS_CHUNK_PROBE=2).
+#
+# THAT 30.8 ms IS THE MOTIVATION FOR THIS KNOB, NOT THE CURRENT STATE. With
+# mode 3 on, the same deletion is worth 0.20 ms of a 108.074 ms dispatch -- the
+# regeneration is GONE, not reduced, and RMS_CHUNK_PROBE is no longer a useful
+# bisector on a mode-3 build. The critical path is now the q4k unpack, at ~35
+# ms. See docs/BZeroPlan.md, "RE-PRICED 2026-09-03".
 #
 # The memtile has 512 KB, so it can hold what the core cannot. ph1 and ph3
 # already work this way ("mechanism-2": a memtile L2 buffer plus
