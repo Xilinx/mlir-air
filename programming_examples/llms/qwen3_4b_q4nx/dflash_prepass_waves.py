@@ -866,6 +866,12 @@ class WavePrepass:
     the pre-pass is worth anything: the third program cost 36.5 ms of ELF
     load/unload per block on top of its 82.0 ms of dispatch, at 0.46 GB/s.
 
+    "THE SAME DEVICE PROGRAM" IS TRUE AT MODE 0 AND FALSE AT
+    RMS_MEMTILE_REFEED=3, where lowering prunes the relay by range-analysing
+    the scf.for bounds and a narrow range produces a DIFFERENT device. Measured
+    2026-09-02; `HybridPrepass` below exists for exactly that and states the
+    two routings. Read it before using this class on a mode-3 target.
+
     MEASURED, one xclbin, qwen3-4b batch 8 at L=157, median of 7 [hw]:
 
         stream         waves       ms   marginal
