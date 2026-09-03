@@ -1323,11 +1323,41 @@ FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
         return t;
       }
     }
-    if (t.foundAlloc(tile, getChannelDeclarationThroughSymbol(
-                               dyn_cast_if_present<air::ChannelInterface>(
-                                   memcpyOp.getOperation())))) {
-      t.memcpyOps.push_back(memcpyOp.getOperation());
-      return t;
+    auto chanIf =
+        dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation());
+    auto decl = getChannelDeclarationThroughSymbol(chanIf);
+    if (t.foundAlloc(tile, decl)) {
+      // One channel declaration is normally one flow, so every endpoint of it
+      // on a tile shares that tile's allocation -- which is why this reuse
+      // exists, and why it overrides the channel the caller just picked.
+      //
+      // AN INDEXED DEMUX IS NOT ONE FLOW. Its `packet_ids` name one routing id
+      // per destination (AIR.td: "destination i is routed with packet_ids[i]"),
+      // so destination i is its own flow with its own id. Folding two of them
+      // onto one allocation puts both on ONE BD chain, and a chain advances one
+      // BD per completed transfer -- so the leaves alternate BDs, which is
+      // precisely the interleaving a demux exists to avoid. It also silently
+      // discards an `air.memtile_dma_channel_min` steer aimed at parting them:
+      // the caller honours the floor, and this reuse then throws the result
+      // away.
+      //
+      // So for such a decl, only endpoints that are the SAME logical flow (same
+      // decl AND same constant bundle indices) may share. Endpoints sitting at
+      // ONE index still converge, which is what "N ids to one destination"
+      // needs, and a decl with a single id is untouched.
+      bool demuxKeepsApart = false;
+      if (decl && chanIf) {
+        auto ids = decl->getAttrOfType<ArrayAttr>(air::attrs::PacketIDs);
+        if (ids && ids.size() > 1)
+          demuxKeepsApart = !llvm::any_of(t.memcpyOps, [&](Operation *o) {
+            auto e = dyn_cast_if_present<air::MemcpyInterface>(o);
+            return e && isSameLogicalFlowEndpoint(e, memcpyOp);
+          });
+      }
+      if (!demuxKeepsApart) {
+        t.memcpyOps.push_back(memcpyOp.getOperation());
+        return t;
+      }
     }
   }
   air::allocation_info_t output = {tile,
