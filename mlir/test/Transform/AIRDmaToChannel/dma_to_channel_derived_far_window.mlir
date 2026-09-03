@@ -9,12 +9,17 @@
 
 // The far half's window and position are DERIVED, not declared.
 //
-// A channel is a FIFO, so the only correctness requirement is that the byte
-// sequence put equals the byte sequence got. The near side's sequence is fixed
-// by its own access pattern and its enclosing nest, and the far buffer is named
-// on the same op -- so when that buffer holds N of the near window, the near
-// side takes it N pieces at a time, in order, and there is exactly one far
-// descriptor that produces that: N windows of the near size, ascending.
+// A channel is a FIFO. The near side's sequence is fixed by its own access
+// pattern and its enclosing nest, and the far buffer is named on the same op --
+// so when that buffer holds N of the near window, the near side takes it N
+// pieces at a time, in order, and the far half is what produces that: N windows
+// of the near size, ascending.
+//
+// N SEPARATE puts, not one N-wide descriptor. Matching the byte sequence is
+// necessary and not sufficient: a channel is a FIFO of TRANSFERS, and each is a
+// lock event, so N gets expect N puts. [0, 0] [N, 256] [256, 1] sends the same
+// bytes in the same order and raises the semaphore ONCE. The consumer's Nth
+// acquire never arrives.
 //
 // Position follows too. A far half carrying a whole buffer's worth belongs once
 // per FILL, not once per near execution, so it goes where the buffer is filled.
@@ -38,8 +43,12 @@
 // The far half lands inside the fill's loop, right after the fill...
 // CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@f
-// ...as the buffer tiled by the near window: 2 x 256, stride 256.
-// CHECK: air.channel.put{{.*}}@x{{.*}}[0, 0] [2, 256] [256, 1]
+// ...as the buffer tiled by the near window: TWO puts of 256, ascending. One
+// event each, because the near side does one acquire each.
+// CHECK: air.channel.put{{.*}}@x{{.*}}[0] [256] [1]
+// CHECK: air.channel.put{{.*}}@x{{.*}}[256] [256] [1]
+// Never the wrapped single descriptor: same bytes, one event instead of two.
+// CHECK-NOT: [2, 256] [256, 1]
 // The near half keeps the window it asked for.
 // CHECK: air.channel.get{{.*}}@x{{.*}}[] [] []
 // The marker is internal and must not survive.
@@ -81,8 +90,9 @@ func.func @derived(%arg0: memref<64xbf16>) {
 // beside the hierarchy, moving the whole buffer once.
 
 // CHECK-LABEL: func.func @equal_windows
-// CHECK-NOT: [2, 256]
-// CHECK: air.channel.put{{.*}}@x2
+// CHECK: air.channel.put{{.*}}@x2{{.*}}[] [] []
+// One transfer, and only one: no tiling means no extra events either.
+// CHECK-NOT: air.channel.put
 air.channel @x2 [1]
 air.channel @f2 [1]
 func.func @equal_windows(%arg0: memref<64xbf16>) {
@@ -113,8 +123,9 @@ func.func @equal_windows(%arg0: memref<64xbf16>) {
 // silent misroute gets built.
 
 // CHECK-LABEL: func.func @not_a_multiple
-// CHECK-NOT: [2, 256]
-// CHECK: air.channel.put{{.*}}@x3
+// CHECK: air.channel.put{{.*}}@x3{{.*}}[] [] []
+// One transfer, and only one: no tiling means no extra events either.
+// CHECK-NOT: air.channel.put
 air.channel @x3 [1]
 air.channel @f3 [1]
 func.func @not_a_multiple(%arg0: memref<64xbf16>) {
@@ -150,8 +161,9 @@ func.func @not_a_multiple(%arg0: memref<64xbf16>) {
 // REFUTATION, and no amount of reuse evidence overrides it.
 
 // CHECK-LABEL: func.func @far_never_filled
-// CHECK-NOT: [2, 256]
-// CHECK: air.channel.put{{.*}}@x4
+// CHECK: air.channel.put{{.*}}@x4{{.*}}[] [] []
+// One transfer, and only one: no tiling means no extra events either.
+// CHECK-NOT: air.channel.put
 air.channel @x4 [1]
 func.func @far_never_filled(%arg0: memref<512xbf16>) {
   %c1 = arith.constant 1 : index

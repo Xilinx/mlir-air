@@ -722,13 +722,23 @@ static std::optional<int64_t> staticVolume(ArrayRef<OpFoldResult> sizes,
 // When the far buffer holds SEVERAL of the near window, the far half is that
 // buffer tiled by it.
 //
-// Nothing states this and nothing needs to: a channel is a FIFO, so the only
-// correctness requirement is that the byte sequence put equals the byte
-// sequence got. The near side's sequence is fixed by its own access pattern and
-// its enclosing nest; the far buffer is named on the same op. If the far buffer
-// is N near-windows wide then the near side takes it N pieces at a time, in
-// order, and the far half is the one descriptor that produces exactly that:
-// N windows of the near size, ascending, stride = that size.
+// Nothing states this and nothing needs to. A channel is a FIFO, and the near
+// side's sequence is fixed by its own access pattern and its enclosing nest;
+// the far buffer is named on the same op. If the far buffer is N near-windows
+// wide then the near side takes it N pieces at a time, in order, and the far
+// half is what produces exactly that: N windows of the near size, ascending.
+//
+// N SEPARATE transfers, not one N-wide descriptor. Matching the byte sequence
+// is necessary and NOT sufficient: a channel is a FIFO of TRANSFERS, and each
+// one is a lock event, so N gets expect N puts. A single 2-D descriptor
+// [base,0] [N,near] [near,1] sends the same bytes in the same order as N puts
+// of [base+i*near] [near] [1] and raises the semaphore once instead of N times.
+// The consumer's Nth acquire then never arrives and the design hangs -- and it
+// hangs at whatever dispatch the count first drifts far enough, not at the
+// first, so it reads like an unrelated intermittent fault.
+//
+// This rewrites `offsets`/`sizes`/`strides` to piece 0 and returns N; the
+// caller emits the remaining N-1. Returns 0 when the tiling is declined.
 //
 // Deriving it is what lets the front end stop hand-writing the far half's
 // offsets -- which it often CANNOT write, because they step with a loop that
@@ -737,36 +747,36 @@ static std::optional<int64_t> staticVolume(ArrayRef<OpFoldResult> sizes,
 // Only a 1-D far window is folded, and only an exact multiple. Anything else is
 // left alone: a partial tiling has no unique reading, and guessing one is how a
 // silent misroute gets built.
-static bool deriveTiledFarWindow(OpBuilder &b, Value farMemref,
-                                 SmallVector<OpFoldResult> &offsets,
-                                 SmallVector<OpFoldResult> &sizes,
-                                 SmallVector<OpFoldResult> &strides,
-                                 int64_t nearVolume) {
+static int64_t deriveTiledFarWindow(OpBuilder &b, Value farMemref,
+                                    SmallVector<OpFoldResult> &offsets,
+                                    SmallVector<OpFoldResult> &sizes,
+                                    SmallVector<OpFoldResult> &strides,
+                                    int64_t nearVolume) {
   if (nearVolume <= 0)
-    return false;
+    return 0;
   if (sizes.size() > 1)
-    return false;
+    return 0;
   std::optional<int64_t> farVol = staticVolume(sizes, farMemref);
   if (!farVol || *farVol <= nearVolume)
-    return false;
+    return 0;
   if (*farVol % nearVolume)
-    return false;
+    return 0;
   int64_t n = *farVol / nearVolume;
   // A unit stride is what makes "the buffer holds N windows back to back" true;
   // anything else is already a shaped access and is left as written.
   if (!strides.empty()) {
     std::optional<int64_t> st = getConstantIntValue(strides[0]);
     if (!st || *st != 1)
-      return false;
+      return 0;
   }
   OpFoldResult base =
       offsets.empty() ? OpFoldResult(b.getIndexAttr(0)) : offsets[0];
   if (!getConstantIntValue(base))
-    return false;
-  offsets.assign({base, b.getIndexAttr(0)});
-  sizes.assign({b.getIndexAttr(n), b.getIndexAttr(nearVolume)});
-  strides.assign({b.getIndexAttr(nearVolume), b.getIndexAttr(1)});
-  return true;
+    return 0;
+  offsets.assign({base});
+  sizes.assign({b.getIndexAttr(nearVolume)});
+  strides.assign({b.getIndexAttr(1)});
+  return n;
 }
 
 // Where the far buffer is FILLED, outside the hierarchy being hoisted out of.
@@ -819,7 +829,10 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   // Derive the far half's window from the near one, when the far buffer holds
   // several of it. See deriveTiledFarWindow: this is the descriptor that makes
   // the two byte sequences match, and the front end frequently cannot write it.
-  bool derivedFarWindow = false;
+  // 0 = not derived. Otherwise the number of pieces the far buffer is tiled
+  // into; the descriptor built below is piece 0 and the rest are emitted after.
+  int64_t farPieces = 0;
+  int64_t farPieceVolume = 0;
   auto enclosingHier = op->getParentOfType<air::HierarchyInterface>();
   if (dst_type && src_type && enclosingHier) {
     bool dstIsInner = air::getMemorySpace(dst_type) == innerMemorySpace;
@@ -860,11 +873,13 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
         findFillSite(farMemref, enclosingHier.getOperation()) != nullptr;
     if (nearVol && !countRefutes && (countAgrees || refilled)) {
       if (dstIsInner)
-        derivedFarWindow = deriveTiledFarWindow(
-            builder, src, src_offsets, src_sizes, src_strides, *nearVol);
+        farPieces = deriveTiledFarWindow(builder, src, src_offsets, src_sizes,
+                                         src_strides, *nearVol);
       else
-        derivedFarWindow = deriveTiledFarWindow(
-            builder, dst, dst_offsets, dst_sizes, dst_strides, *nearVol);
+        farPieces = deriveTiledFarWindow(builder, dst, dst_offsets, dst_sizes,
+                                         dst_strides, *nearVol);
+      if (farPieces)
+        farPieceVolume = *nearVol;
     }
   }
 
@@ -1125,7 +1140,7 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   // A derived far window is a whole buffer's worth per execution, so it belongs
   // where the buffer is FILLED -- once per fill, not once per near execution.
   // The hoist finds that site from the buffer itself.
-  if (derivedFarWindow)
+  if (farPieces)
     externalGetPut->setAttr("air.derived_far_window",
                             UnitAttr::get(op->getContext()));
   if (op->hasAttr("broadcast_set"))
@@ -1148,6 +1163,34 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
 
   externalGetPutVector.push_back(externalGetPut);
   internalGetPutVector.push_back(internalGetPut);
+
+  // The remaining N-1 pieces of a derived tiling. One per near execution, so
+  // that the number of lock events on the far side equals the number on the
+  // near side -- see deriveTiledFarWindow. Bytes alone would be satisfied by
+  // the single wrapped descriptor these replace.
+  //
+  // Everything but the base offset is identical, and the base is constant by
+  // construction (deriveTiledFarWindow declines otherwise), so the piece is a
+  // clone with one static offset rewritten. Emitting them adjacent and
+  // ascending keeps the FIFO order the near side reads them in.
+  if (farPieces > 1) {
+    bool farIsSrc = isa<air::ChannelPutOp>(externalGetPut.getOperation());
+    StringRef offsAttrName =
+        farIsSrc ? "static_src_offsets" : "static_dst_offsets";
+    auto base = externalGetPut->getAttrOfType<DenseI64ArrayAttr>(offsAttrName);
+    if (base && base.size() == 1) {
+      OpBuilder::InsertionGuard guard(builder);
+      Operation *prev = externalGetPut.getOperation();
+      for (int64_t i = 1; i < farPieces; i++) {
+        builder.setInsertionPointAfter(prev);
+        Operation *piece = builder.clone(*externalGetPut.getOperation());
+        piece->setAttr(offsAttrName, builder.getDenseI64ArrayAttr(
+                                         {base[0] + i * farPieceVolume}));
+        externalGetPutVector.push_back(dyn_cast<air::ChannelInterface>(piece));
+        prev = piece;
+      }
+    }
+  }
   return success();
 }
 
