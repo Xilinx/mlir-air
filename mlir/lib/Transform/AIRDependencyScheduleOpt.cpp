@@ -2513,6 +2513,96 @@ getContiguousTiledRun(ArrayRef<air::ChannelInterface> chans) {
   return (int64_t)chans.size() * *szc;
 }
 
+// Fold SIBLING channel ops that tile a contiguous run into the one transfer
+// they are.
+//
+// getContiguousTiledRun above recognises the run when it is the whole body of
+// an scf.for, which is how a front end writes it: an inner loop whose only job
+// is to step the window. But the same run also arrives with no loop around it
+// at all -- as N ops side by side, which is what air-dma-to-channel derives
+// when it reads the tiling off the buffer sizes instead of a loop, and equally
+// what an unrolled front end emits.
+//
+// Those two spellings have to reach the same descriptor. When they do not, the
+// loop form folds to one whole-buffer BD and the sibling form stays N, and on
+// a memtile that is N lock releases where the consumer's counting lock expects
+// one -- so the design hangs, in the sibling form only, for no reason visible
+// in the source. That is exactly how @inX failed: its producer BD went missing
+// from the memtile entirely and every consumer waited forever.
+//
+// Same admission test as the loop case, so a run that is not genuinely
+// contiguous still declines and is left alone.
+struct AIRFoldSiblingTiledContiguousRun
+    : public OpInterfaceRewritePattern<air::ChannelInterface> {
+  using OpInterfaceRewritePattern<
+      air::ChannelInterface>::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(air::ChannelInterface op,
+                                PatternRewriter &rewriter) const override {
+    // Only ever fold FORWARD from the head of a run, so the rewrite is
+    // deterministic and converges: an op preceded by a sibling that would
+    // absorb it is not a head.
+    SmallVector<air::ChannelInterface> run{op};
+    for (Operation *n = op->getNextNode(); n; n = n->getNextNode()) {
+      auto c = dyn_cast<air::ChannelInterface>(n);
+      if (!c)
+        break;
+      if (c.getChanName() != op.getChanName())
+        break;
+      run.push_back(c);
+    }
+    if (run.size() < 2)
+      return failure();
+    // A head has no same-channel sibling immediately before it; otherwise that
+    // one is the head and this match would fold the same bytes twice.
+    if (auto prev = dyn_cast_if_present<air::ChannelInterface>(
+            op->getPrevNode() ? op->getPrevNode() : nullptr))
+      if (prev.getChanName() == op.getChanName())
+        return failure();
+
+    std::optional<int64_t> total = getContiguousTiledRun(run);
+    if (!total)
+      return failure();
+
+    auto wraps = air::getSizesAsValues(op);
+    if (wraps.size() != 1)
+      return failure();
+    if (getConstantIntValue(wraps[0]) == total)
+      return failure();
+
+    // getContiguousTiledRun admits only constant, 1-D, unit-stride windows, so
+    // the size lives entirely in the static attribute and widening the survivor
+    // is a one-attribute edit rather than a rebuild.
+    bool isPut = isa<air::ChannelPutOp>(op.getOperation());
+    StringRef szAttrName = isPut ? "static_src_sizes" : "static_dst_sizes";
+    auto szAttr = op->getAttrOfType<DenseI64ArrayAttr>(szAttrName);
+    if (!szAttr || szAttr.size() != 1)
+      return failure();
+    // The size must live in the ATTRIBUTE, not as a dynamic operand that
+    // happens to be a constant. Overwriting the attribute of a mixed list
+    // leaves an operand with no dynamic slot to fill and the next reader
+    // asserts.
+    if (ShapedType::isDynamic(szAttr[0]))
+      return failure();
+
+    // Whatever waited on a dropped op waits on the survivor, which now does its
+    // work; erasing without that trips "expected 'op' to have no uses", since
+    // each one yields a token its neighbours and the enclosing loop carry.
+    Value survivorTok =
+        air::isAsyncOp(op) ? air::getAsyncTokenFromOp(op) : Value();
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setAttr(szAttrName, rewriter.getDenseI64ArrayAttr({*total}));
+    });
+    for (unsigned i = run.size(); i-- > 1;) {
+      if (survivorTok && air::isAsyncOp(run[i]))
+        rewriter.replaceOp(run[i], survivorTok);
+      else
+        rewriter.eraseOp(run[i]);
+    }
+    return success();
+  }
+};
+
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -4260,7 +4350,8 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
                   CanonicalizeArithMuliOpOnLoopInductionVar,
                   CanonicalizeArithAddiOpOnLoopInductionVar,
                   CanonicalizeArithIndexCastOpOnLoopInductionVar,
-                  AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+                  AIRSpecializeChannelWrapAndStrideInAffineFor,
+                  AIRFoldSiblingTiledContiguousRun>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
       ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);

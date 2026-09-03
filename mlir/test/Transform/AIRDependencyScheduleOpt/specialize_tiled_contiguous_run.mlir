@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dependency -air-opt-memtile-dma-bds='device=npu2' | FileCheck %s
+// RUN: air-opt %s -air-dependency -air-opt-memtile-dma-bds='device=npu2' -split-input-file | FileCheck %s
 
 // Several channel ops in one loop body that TILE a contiguous run are one
 // transfer written N ways, and have to fold to one descriptor.
@@ -57,6 +57,91 @@ func.func @tiled_run() {
         air.channel.get @c[%c0] (%b[%o2] [%c512] [%c1_s]) : (memref<8192xbf16, 1>)
       }
       memref.dealloc %b : memref<8192xbf16, 1>
+    }
+  }
+  return
+}
+
+// -----
+
+// The same run with NO LOOP AROUND IT: N ops side by side. That is what
+// air-dma-to-channel derives when it reads the tiling off the buffer sizes
+// rather than a loop, and what an unrolled front end emits.
+//
+// It has to reach the same descriptor the loop form reaches. When it does not,
+// the loop form folds to one whole-buffer BD and the sibling form stays N, and
+// on a memtile that is N lock releases where the consumer's counting lock
+// expects one -- so the design hangs in the sibling spelling only, for no
+// reason visible in the source. fused_decode's @inX lost its memtile producer
+// BD outright this way: air-to-aie could not build the broadcast flow from two
+// half-buffer puts, emitted nothing, and every consumer waited forever.
+
+// CHECK-LABEL: func.func @sibling_run
+// One transfer over the whole buffer, the same answer the loop form gives.
+// CHECK: air.channel.put{{.*}}@s[%c0] (%results[] [] [])
+// CHECK-NOT: air.channel.put{{.*}}@s
+air.channel @s [1]
+func.func @sibling_run() {
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%ls=%c1) {
+    air.segment @seg {
+      %c0 = arith.constant 0 : index
+      %b = memref.alloc() : memref<512xbf16, 1>
+      air.channel.put @s[%c0] (%b[0] [256] [1]) : (memref<512xbf16, 1>)
+      air.channel.put @s[%c0] (%b[256] [256] [1]) : (memref<512xbf16, 1>)
+      memref.dealloc %b : memref<512xbf16, 1>
+    }
+  }
+  return
+}
+
+// -----
+
+// NEGATIVE CONTROL, and the one that matters: siblings that do NOT tile a
+// contiguous run. The second starts at 384, not 256, so the two describe an
+// overlapping region with a hole after it -- there is no single descriptor
+// with the same byte sequence. Folding anyway would send 512 words from offset
+// 0, silently reading 128 words nobody asked for and skipping the tail.
+
+// CHECK-LABEL: func.func @sibling_not_contiguous
+// CHECK: air.channel.put{{.*}}@n2[%c0] (%results[0] [256] [1])
+// CHECK: air.channel.put{{.*}}@n2[%c0] (%results[384] [256] [1])
+air.channel @n2 [1]
+func.func @sibling_not_contiguous() {
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%ls=%c1) {
+    air.segment @seg {
+      %c0 = arith.constant 0 : index
+      %b = memref.alloc() : memref<640xbf16, 1>
+      air.channel.put @n2[%c0] (%b[0] [256] [1]) : (memref<640xbf16, 1>)
+      air.channel.put @n2[%c0] (%b[384] [256] [1]) : (memref<640xbf16, 1>)
+      memref.dealloc %b : memref<640xbf16, 1>
+    }
+  }
+  return
+}
+
+// -----
+
+// NEGATIVE CONTROL: adjacent siblings on DIFFERENT channels are two transfers,
+// not one written twice. They tile the buffer perfectly and folding on offsets
+// alone would merge them -- and send both halves down the first channel, so
+// the second channel's consumer waits forever.
+
+// CHECK-LABEL: func.func @sibling_two_channels
+// CHECK: air.channel.put{{.*}}@t1[%c0] (%results[0] [256] [1])
+// CHECK: air.channel.put{{.*}}@t2[%c0] (%results[256] [256] [1])
+air.channel @t1 [1]
+air.channel @t2 [1]
+func.func @sibling_two_channels() {
+  %c1 = arith.constant 1 : index
+  air.launch (%lx) in (%ls=%c1) {
+    air.segment @seg {
+      %c0 = arith.constant 0 : index
+      %b = memref.alloc() : memref<512xbf16, 1>
+      air.channel.put @t1[%c0] (%b[0] [256] [1]) : (memref<512xbf16, 1>)
+      air.channel.put @t2[%c0] (%b[256] [256] [1]) : (memref<512xbf16, 1>)
+      memref.dealloc %b : memref<512xbf16, 1>
     }
   }
   return
