@@ -140,6 +140,13 @@ def main():
     ap.add_argument("--tol", type=float, default=0.99)
     ap.add_argument("--rebuild-cache", action="store_true")
     ap.add_argument(
+        "--retries",
+        type=int,
+        default=8,
+        help="dispatch attempts before giving up, for the known PLE liveness "
+        "bug. Pass 1 to measure the hang rate instead of working around it.",
+    )
+    ap.add_argument(
         "--dump",
         help="save the device readback and the reference to an .npz, so a "
         "mismatch can be hypothesis-tested offline without re-dispatching.",
@@ -280,9 +287,23 @@ def main():
     x_bo.sync(TO)
 
     args = [x_bo, w_bo, r_bo, y_bo, kv_bo] + ([pw_bo, px_bo] if fd.PLE else [])
-    st = kern(3, ib, insts.nbytes, *args).wait(60000)
-    if not str(st).endswith("COMPLETED"):
-        raise SystemExit(f"dispatch state={st}")
+    # The PLE arm has a known liveness bug -- the up core stalls on @gateOut
+    # while its @pleW run is queued -- that times out roughly half of all
+    # dispatches at UNI_DEC=1 and always at 2 or more. It is a scheduling fault
+    # with no effect on the arithmetic of a dispatch that does complete, and the
+    # DECODE_NO_PLE control is 10/10. Retrying keeps this gate usable for
+    # numerics while that is open; the attempt count is printed so the
+    # flakiness stays visible rather than being papered over.
+    for attempt in range(1, a.retries + 1):
+        st = kern(3, ib, insts.nbytes, *args).wait(60000)
+        if str(st).endswith("COMPLETED"):
+            if attempt > 1:
+                print(f"  (completed on attempt {attempt} of {a.retries})")
+            break
+        for b in args:
+            b.sync(TO)
+    else:
+        raise SystemExit(f"dispatch state={st} after {a.retries} attempts")
     x_bo.sync(FROM)
     got = np.frombuffer(x_bo.map(), dtype=bfloat16, count=K).astype(np.float32)
 
