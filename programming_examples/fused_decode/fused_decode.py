@@ -1070,6 +1070,17 @@ TOKV_DMA = True
 # its own change, and threading a buffer into a herd whose body does not take
 # one is a TypeError at build time, not a compile error.
 OUTA_DMA = True and MODEL["PAIR_ROWS"] != 1
+# INX_DMA: the cores name @inX on an air.dma_memcpy_nd whose far operand is the
+# X memtile buffer, and air-dma-to-channel derives the memtile puts -- window,
+# count and position all. The `_jj` sub-block loop in the feed goes away
+# entirely: it existed only to step a window the compiler can read off the two
+# buffer sizes (512 memtile / 256 core = two pieces, ascending, one lock event
+# each). The buffer has to be a herd operand for that, which is why it is
+# allocated once at segment scope instead of per feed round.
+# Scoped off the non-paired proj body for the same reason OUTA_DMA is: that
+# herd body does not take the extra operand, and threading one in is a
+# TypeError at build time rather than a compile error.
+INX_DMA = int(_os.environ.get("INX_DMA", "1")) != 0 and MODEL["PAIR_ROWS"] != 1
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3144,26 +3155,46 @@ def build_module():
                     # times over @xnorm) in 512 chunks -> broadcast
                     # 256-blocks. RMS_REFEED*(2048/512) gets. (reproducer core_2_2 +
                     # mem_1_1 x_buffer 512.)
+                    # Allocated UP FRONT under INX_DMA so it dominates every proj
+                    # herd: the cores name both endpoints in one op, so the X
+                    # memtile buffer has to be a herd operand. Same move @outA's
+                    # group buffers and @gluOut's down buffer make.
+                    _xb_pre = None
+                    if INX_DMA:
+                        _xb_pre = AllocOp(xmt_l2, [], [])
+                        _xb_pre.operation.attributes["air.memtile_col"] = (
+                            IntegerAttr.get(T.i32(), XMT_PCOL)
+                        )
+
                     def _feed_inX(src, total_chunks):
                         for _rc in for_(idx(0), idx(total_chunks), idx(1)):
-                            xb = AllocOp(xmt_l2, [], [])
-                            xb.operation.attributes["air.memtile_col"] = (
-                                IntegerAttr.get(T.i32(), XMT_PCOL)
-                            )
+                            if INX_DMA:
+                                xb = _xb_pre
+                            else:
+                                xb = AllocOp(xmt_l2, [], [])
+                                xb.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), XMT_PCOL)
+                                )
                             ChannelGet(
                                 src, xb, offsets=[0], sizes=[2 * COL_BLOCK], strides=[1]
                             )
-                            for _jj in for_(idx(0), idx(2), idx(1)):
-                                joff = arith.muli(_jj, idx(COL_BLOCK))
-                                ChannelPut(
-                                    "inX",
-                                    xb,
-                                    offsets=[joff],
-                                    sizes=[COL_BLOCK],
-                                    strides=[1],
-                                )
-                                yield_([])
-                            DeallocOp(xb)
+                            if not INX_DMA:
+                                # The sub-block loop exists only to step the window,
+                                # which is why it disappears when the cores spell the
+                                # transfer: the compiler reads the two pieces off the
+                                # buffer sizes and emits one put per piece, in order,
+                                # right here after the fill.
+                                for _jj in for_(idx(0), idx(2), idx(1)):
+                                    joff = arith.muli(_jj, idx(COL_BLOCK))
+                                    ChannelPut(
+                                        "inX",
+                                        xb,
+                                        offsets=[joff],
+                                        sizes=[COL_BLOCK],
+                                        strides=[1],
+                                    )
+                                    yield_([])
+                                DeallocOp(xb)
                             yield_([])
 
                     # ONE feed loop reading the convergent @xnorm: rms-X (RMS_REFEED
@@ -5413,7 +5444,16 @@ def build_module():
                             _arm,
                             *_og,
                         ):
-                            _ogrp = _og[0] if _og else None
+                            # Trailing operands, in the order _ops appends them.
+                            _ogi = 0
+                            _ogrp = None
+                            if OUTA_DMA:
+                                _ogrp = _og[_ogi]
+                                _ogi += 1
+                            _oxb = None
+                            if INX_DMA:
+                                _oxb = _og[_ogi]
+                                _ogi += 1
                             # [2,4] block herd over TWO contiguous proj columns.
                             # tx in {0,1} = the block's two columns (logical col =
                             # base_cx + tx); ty in 0..3 = the four rows (row = 2 + ty).
@@ -5456,7 +5496,21 @@ def build_module():
                                 CallOp(zero, [a_acc, _arm])
                                 for _j in for_(idx(0), J2x2, idx(1)):
                                     a_x = AllocOp(xblk_l1, [], [])
-                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
+                                    if INX_DMA:
+                                        # Both endpoints in one op. The core's
+                                        # window is its whole 256 block; the
+                                        # memtile side is derived -- the 512
+                                        # buffer holds two of it, so two puts,
+                                        # ascending, placed after the @xnorm fill
+                                        # that writes it.
+                                        DmaMemcpyNd(
+                                            a_x,
+                                            _oxb,
+                                            channel="inX",
+                                            dynamic_channel_indices=[gcx, gcy],
+                                        )
+                                    else:
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
                                     a_w = AllocOp(wblk_l1, [], [])
                                     ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
                                     if a_rc is None:
@@ -5693,6 +5747,11 @@ def build_module():
                         # the column division -- one buffer per herd, never two.
                         if OUTA_DMA:
                             _ops = _ops + [_grp_pre[base_cx // (NCX // N_GRP)]]
+                        # The X memtile buffer, for the same reason: with INX_DMA
+                        # the cores name it as the far end of their own transfer.
+                        # One buffer for every block -- it IS one buffer.
+                        if INX_DMA:
+                            _ops = _ops + [_xb_pre]
                         blk_h = herd(
                             name=f"proj_blk{blk}",
                             sizes=[2, 4],
