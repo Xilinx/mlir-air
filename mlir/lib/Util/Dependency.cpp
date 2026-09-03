@@ -2184,12 +2184,19 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_put.getSrc());
     std::vector<air::ChannelGetOp> channel_gets =
         getTheOtherChannelOpThroughSymbol(channel_put);
-    if (!channel_gets.size()) {
+    // An unpaired channel is a front-end error and is diagnosed as one, but
+    // this op still EXISTS in the IR and the caller is going to record edges
+    // against whatever vertex id comes back. Returning 0 hands it the id of a
+    // real, unrelated vertex, so the graph is silently miswired and
+    // DirectedAdjacencyMap::getClosure() later indexes out of range and
+    // aborts -- a std::vector assertion and a core dump, several passes after
+    // a diagnostic that already said exactly what was wrong. Give the op its
+    // own vertex instead and let the diagnostic be the outcome.
+    bool unpaired = channel_gets.empty();
+    if (unpaired)
       op->emitOpError("found channel op not in pairs");
-      return 0;
-    }
     std::string memorySpaceDstStr =
-        getMemorySpaceAsString(channel_gets[0].getDst());
+        unpaired ? "unknown" : getMemorySpaceAsString(channel_gets[0].getDst());
     std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
                              "(" + memorySpaceSrcStr + "-->" +
                              memorySpaceDstStr + ")";
@@ -2222,12 +2229,13 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_get.getDst());
     std::vector<air::ChannelPutOp> channel_puts =
         getTheOtherChannelOpThroughSymbol(channel_get);
-    if (!channel_puts.size()) {
+    // Same as the put side above: diagnose, but still give the op a vertex of
+    // its own rather than vertex 0, which belongs to something else.
+    bool unpaired = channel_puts.empty();
+    if (unpaired)
       op->emitOpError("found channel op not in pairs");
-      return 0;
-    }
     std::string memorySpaceSrcStr =
-        getMemorySpaceAsString(channel_puts[0].getSrc());
+        unpaired ? "unknown" : getMemorySpaceAsString(channel_puts[0].getSrc());
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
                              "(" + memorySpaceDstStr + "<--" +
                              memorySpaceSrcStr + ")";
