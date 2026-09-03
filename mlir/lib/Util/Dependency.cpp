@@ -139,14 +139,30 @@ void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
     collectDynamic(memcpyif_op.getMixedDstStrides());
   }
 
-  // Check for dependency through any parent affine if guards
-  if (auto parentAffineIf =
-          memcpyif_op->getParentOfType<affine::AffineIfOp>()) {
-    if (parentAffineIf->getParentOfType<air::HerdOp>()) {
+  // Check for dependency through any parent guard, of either flavour, all the
+  // way out to the herd -- not just the innermost one.
+  //
+  // A guard is a dependence on whatever it tests. A transfer under
+  // `scf.if (tx == 0 && ty / 2 == 0)` happens on one tile and not another, so
+  // it is not invariant across the herd however constant its own operands look.
+  //
+  // scf.if matters as much as affine.if and was previously invisible here. It
+  // is how a front end selects between per-tile BUFFERS -- which cannot be
+  // arithmetic, being SSA operands, so a guard is the only way to write it. The
+  // memref operand itself is not a scalar and is never traced, so with the
+  // guard also unseen such a transfer looked completely herd-invariant.
+  // fused_decode's weight fan is exactly that: broadcast detection called it
+  // invariant across the two columns and specialization merged two producers
+  // that read DIFFERENT buffers into one.
+  for (Operation *p = memcpyif_op->getParentOp(); p; p = p->getParentOp()) {
+    if (isa<air::HerdOp>(p))
+      break;
+    if (auto aif = dyn_cast<affine::AffineIfOp>(p))
       candidate_scalar_operands.insert(candidate_scalar_operands.end(),
-                                       parentAffineIf.getOperands().begin(),
-                                       parentAffineIf.getOperands().end());
-    }
+                                       aif.getOperands().begin(),
+                                       aif.getOperands().end());
+    else if (auto sif = dyn_cast<scf::IfOp>(p))
+      candidate_scalar_operands.push_back(sif.getCondition());
   }
 
   // Start recursion.
