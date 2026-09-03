@@ -27,13 +27,19 @@
 // CANNOT: the far offsets step with a loop that does not exist where the
 // transfer is spelled. Note what the DMA below says -- a channel, and its own
 // 256-word window. Nothing else.
+//
+// Two independent ways to know the reading holds, and one must:
+//   COUNT -- a static near trip count must equal N, checked directly;
+//   REUSE -- with a non-static count, evidence that the buffer cycles, i.e.
+//            something refills it.
+// A static count that disagrees is a refutation and overrides reuse evidence.
 
 // CHECK-LABEL: func.func @derived
 // The far half lands inside the fill's loop, right after the fill...
 // CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@f
 // ...as the buffer tiled by the near window: 2 x 256, stride 256.
-// CHECK-NEXT: air.channel.put{{.*}}@x{{.*}}[0, 0] [2, 256] [256, 1]
+// CHECK: air.channel.put{{.*}}@x{{.*}}[0, 0] [2, 256] [256, 1]
 // The near half keeps the window it asked for.
 // CHECK: air.channel.get{{.*}}@x{{.*}}[] [] []
 // The marker is internal and must not survive.
@@ -53,9 +59,15 @@ func.func @derived(%arg0: memref<64xbf16>) {
         air.channel.get @f[%c0] (%l2[] [] []) : (memref<512xbf16, 1>)
       }
       air.herd @h tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) args(%b=%l2) : memref<512xbf16, 1> {
-        %a = memref.alloc() : memref<256xbf16, 2>
-        air.dma_memcpy_nd (%a[] [] [], %b[] [] []) {id = 1 : i32, channel = @x, channel_indices = array<i64: 0>} : (memref<256xbf16, 2>, memref<512xbf16, 1>)
-        memref.dealloc %a : memref<256xbf16, 2>
+        %c0_h = arith.constant 0 : index
+        %c1_h = arith.constant 1 : index
+        %c2_h = arith.constant 2 : index
+        // the near side takes the buffer TWICE, which is what it holds
+        scf.for %j = %c0_h to %c2_h step %c1_h {
+          %a = memref.alloc() : memref<256xbf16, 2>
+          air.dma_memcpy_nd (%a[] [] [], %b[] [] []) {id = 1 : i32, channel = @x, channel_indices = array<i64: 0>} : (memref<256xbf16, 2>, memref<512xbf16, 1>)
+          memref.dealloc %a : memref<256xbf16, 2>
+        }
       }
     }
   }
@@ -128,12 +140,14 @@ func.func @not_a_multiple(%arg0: memref<64xbf16>) {
 
 // -----
 
-// NEGATIVE CONTROL: nothing REFILLS the far buffer, so there is no cycle to
-// read. "The near side takes it N pieces at a time" is true of a buffer that is
-// filled, then taken from, then filled again; a function argument read once is
-// not that, and tiling it would send N times what was asked for -- silently,
-// and it would compile. The window and the position rest on the same piece of
-// evidence, so with no fill there is neither.
+// NEGATIVE CONTROL: the near side's trip count REFUTES the tiling. It takes 256
+// once; the buffer holds two of that. N is 2 against a trip count of 1, so
+// "takes it N pieces at a time" is simply false, and tiling would send twice
+// what was asked for -- silently, and it would compile.
+//
+// Nothing refills this buffer either, so neither piece of evidence is available.
+// Note the order the two are applied in: a static trip count that disagrees is a
+// REFUTATION, and no amount of reuse evidence overrides it.
 
 // CHECK-LABEL: func.func @far_never_filled
 // CHECK-NOT: [2, 256]

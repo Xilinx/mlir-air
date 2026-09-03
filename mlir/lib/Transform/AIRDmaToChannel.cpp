@@ -827,18 +827,38 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     Value farMemref = dstIsInner ? src : dst;
     std::optional<int64_t> nearVol =
         staticVolume(dstIsInner ? dst_sizes : src_sizes, nearMemref);
-    // Only when something actually REFILLS the far buffer.
+    // The tiling reads "the near side takes this buffer N pieces at a time".
+    // Two independent ways to know that is a reading and not a guess, and one
+    // of them has to hold.
     //
-    // The tiling reads "the near side takes this buffer N pieces at a time",
-    // and what makes that a reading rather than a guess is that the buffer is
-    // REUSED: a fill, then N takes, then the next fill. With no fill there is
-    // no such cycle -- the far side is an argument the near side reads once --
-    // and tiling it would send N times the data that was asked for, silently.
-    // The same fill is where the derived half is then placed, so the window and
-    // the position rest on one piece of evidence rather than two guesses.
+    // 1. COUNT. If the near side's trip count is static it must be exactly N.
+    //    That is the invariant the tiling asserts, checked directly. It is also
+    //    what catches a far buffer nothing writes, read once by a near side
+    //    with no loop: N is 2 against a trip count of 1, and tiling it would
+    //    silently send twice what was asked for.
+    //
+    // 2. REUSE. With a non-static trip count there is nothing to compare, so
+    //    fall back to evidence that the buffer cycles -- a fill, then N takes,
+    //    then the next fill. That same fill is where the derived half is then
+    //    placed, so window and position rest on one fact rather than two
+    //    guesses.
+    //
+    // Deliberately NOT "either alone suffices": a static trip count that
+    // disagrees is a refutation, and no amount of reuse evidence overrides it.
+    std::optional<int64_t> nearTrip = air::getStaticTripCountInRange(
+        op.getOperation(), enclosingHier.getOperation());
+    std::optional<int64_t> farVol =
+        staticVolume(dstIsInner ? src_sizes : dst_sizes, farMemref);
+    bool countAgrees = false, countRefutes = false;
+    if (nearTrip && nearVol && farVol && *nearVol > 0 &&
+        *farVol % *nearVol == 0) {
+      int64_t n = *farVol / *nearVol;
+      countAgrees = *nearTrip == n;
+      countRefutes = *nearTrip != n;
+    }
     bool refilled =
         findFillSite(farMemref, enclosingHier.getOperation()) != nullptr;
-    if (nearVol && refilled) {
+    if (nearVol && !countRefutes && (countAgrees || refilled)) {
       if (dstIsInner)
         derivedFarWindow = deriveTiledFarWindow(
             builder, src, src_offsets, src_sizes, src_strides, *nearVol);
