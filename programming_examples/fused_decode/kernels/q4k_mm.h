@@ -313,6 +313,28 @@ static inline void q4k_unpack_block(const q4k_block_t *A, bf16 *__restrict W) {
   // the answer is bit-for-bit the same and it costs 24% MORE: a 4-iteration
   // inner loop cannot amortise a software-pipeline prologue, and that dominates
   // the arithmetic saved. Do not re-derive it.
+  // AND SPLITTING THE ROW HALF OUT OF THE LOOP INDEX ALSO LOSES. Scalar
+  // address arithmetic is the largest remaining category in this body -- 14.1
+  // of 47.9 ops per chunk under FMA + unroll 8 -- and all of it exists to
+  // rebuild `i / NCB`, `i % NCB` and the two `(2R+p)*NCB + cb` store addresses
+  // that a nested `for R { for cb { } }` would make plain increments. Unlike
+  // the hoist above, the inner loop would be NCB = 32 iterations, long enough
+  // to amortise a prologue. Static bundles per weight block, against the 1128
+  // the shipping flat loop takes at FMA + unroll 8:
+  //
+  //   nested, no unroll   1856   0.935 of shipping-arithmetic base
+  //   nested, unroll 2    1434   0.723      <- best, and still worse than 0.569
+  //   nested, unroll 4    2510   1.265
+  //   nested, unroll 8    2208   1.113
+  //
+  // The inner body stops software-pipelining once unrolled (156, 274 and 601
+  // bundles for 4, 8 and 16 copies), which no flat-loop unroll does. So those
+  // scalar ops are not costing what their count suggests: they co-issue in the
+  // scalar slots beside the vector work and are close to free, and buying them
+  // back disturbs the vector schedule, which is not. THE FLAT LOOP WITH THE
+  // LINEAR INDEX IS THE FAST SHAPE -- three restructurings have now failed to
+  // beat it. What is left for this kernel is arithmetic (see Q4K_UNPACK_FMA),
+  // not addressing.
   AIE_PREPARE_FOR_PIPELINING
   AIE_LOOP_RANGE(NSTEP, NSTEP)
   Q4K_UNPACK_LOOP
