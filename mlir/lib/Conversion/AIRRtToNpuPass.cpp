@@ -336,56 +336,85 @@ static bool reachesSequenceArg(Value v) {
                          blockArg.getOwner()->getParentOp());
 }
 
-// On success, `residual` is the part of the offset the parameter does *not*
-// cover -- the loop-varying base -- which the caller leaves on the BD as its
-// ordinary offset. mlir-aie applies the parameter additively
-// ("update_from_scratchpad to add the runtime offset to the BD address
-// register", AIEDmaToNpu.cpp), so base and delta compose rather than compete,
-// and the base folds to a constant when the enclosing loop unrolls.
-static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
-                                                 OpBuilder &builder,
-                                                 Value &residual) {
-  if (!module)
-    return nullptr;
-  // Walk back through the address arithmetic AIR builds around a scalar --
-  // casts, and adds/multiplies against constants -- to whatever ultimately
-  // varies. Stopping at the first arith op (the earlier version did) means
-  // never recognising an offset like `(L-1) * stride`, which is exactly the
-  // shape a KV append has.
-  Value v = offset;
+// Peel the offset's top-level additive chain into the part that varies per
+// dispatch and the part that does not. Every addend that does not reach the
+// sequence argument is static -- a loop-varying base, a constant, or both --
+// and stays on the BD as its ordinary offset, which `offset_parameter` is
+// added to rather than replacing ("update_from_scratchpad to add the runtime
+// offset to the BD address register", AIEDmaToNpu.cpp). Returns the remaining
+// per-dispatch term, or null when an add has runtime on both sides (no single
+// parameter can stand for it).
+//
+// Dropping a constant addend here instead of banking it is a silent
+// miscompile, not a missed optimisation: the KV append's V transfer is
+// `base + KV_HALF + f(L)` against the K transfer's `base + f(L)`, so losing
+// KV_HALF lands both on the same slot.
+static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
+                               Value &residual) {
+  SmallVector<Value> staticSides;
+  while (Operation *def = v.getDefiningOp()) {
+    // AIR wraps the offset in width adjustments on the way to the BD
+    // (index -> i64 -> i32); the addends sit underneath them. Narrowing
+    // distributes over the add for the ranges a BD offset can hold.
+    if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                  arith::ExtSIOp, arith::BitcastOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    auto add = llvm::dyn_cast<arith::AddIOp>(def);
+    if (!add)
+      break;
+    Value lhs = add.getLhs(), rhs = add.getRhs();
+    bool lhsRuntime = reachesSequenceArg(lhs);
+    if (lhsRuntime == reachesSequenceArg(rhs))
+      break;
+    staticSides.push_back(lhsRuntime ? rhs : lhs);
+    v = lhsRuntime ? lhs : rhs;
+  }
+  for (Value s : staticSides) {
+    if (residual && residual.getType() != s.getType())
+      return nullptr;
+    residual = residual ? arith::AddIOp::create(builder, loc, residual, s)
+                        : s;
+  }
+  return v;
+}
+
+// Reduce a per-dispatch term to `arg * scale + addend`, walking outside in.
+// Two BDs may share one parameter only if they need the same number written,
+// so these coefficients identify the parameter alongside the argument number.
+// Returns the sequence argument, or null if the term is not affine in one.
+static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
+                                         int64_t &addend) {
+  scale = 1;
+  addend = 0;
   while (Operation *def = v.getDefiningOp()) {
     if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
                   arith::ExtSIOp, arith::BitcastOp>(def)) {
       v = def->getOperand(0);
       continue;
     }
-    if (llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def)) {
-      // Follow the one varying side; if both vary this is not a single
-      // parameter and the caller keeps the SSA offset.
-      Value lhs = def->getOperand(0), rhs = def->getOperand(1);
-      bool lhsConst = matchPattern(lhs, m_Constant());
-      bool rhsConst = matchPattern(rhs, m_Constant());
-      if (lhsConst != rhsConst) {
-        v = lhsConst ? rhs : lhs;
-        continue;
-      }
-      // Neither side is constant. An add of two varying terms is still
-      // separable when exactly one of them reaches the sequence argument --
-      // that is the KV append's shape, a per-iteration base plus a
-      // per-dispatch delta. Split it: follow the runtime side and give the
-      // other back as the residual. Anything else (a product of two varying
-      // terms, both sides runtime) genuinely has no single parameter.
-      if (!llvm::isa<arith::AddIOp>(def) || residual)
-        return nullptr;
-      bool lhsRuntime = reachesSequenceArg(lhs);
-      bool rhsRuntime = reachesSequenceArg(rhs);
-      if (lhsRuntime == rhsRuntime)
-        return nullptr;
-      residual = lhsRuntime ? rhs : lhs;
-      v = lhsRuntime ? lhs : rhs;
-      continue;
+    if (!llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def))
+      return nullptr;
+    Value lhs = def->getOperand(0), rhs = def->getOperand(1);
+    IntegerAttr c;
+    bool constOnRight = matchPattern(rhs, m_Constant(&c));
+    if (!constOnRight && !matchPattern(lhs, m_Constant(&c)))
+      return nullptr;
+    int64_t k = c.getInt();
+    Value inner = constOnRight ? lhs : rhs;
+    // f is what has been applied so far; compose the new innermost op into it.
+    if (llvm::isa<arith::MulIOp>(def)) {
+      scale *= k; // f(k*x) = scale*k*x + addend
+    } else if (llvm::isa<arith::AddIOp>(def)) {
+      addend += scale * k; // f(x+k)
+    } else if (constOnRight) {
+      addend -= scale * k; // f(x-k)
+    } else {
+      addend += scale * k; // f(k-x)
+      scale = -scale;
     }
-    return nullptr;
+    v = inner;
   }
   auto blockArg = llvm::dyn_cast<BlockArgument>(v);
   if (!blockArg)
@@ -397,8 +426,41 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
   if (!llvm::isa<xilinx::AIE::RuntimeSequenceOp>(
           blockArg.getOwner()->getParentOp()))
     return nullptr;
-  auto name = builder.getStringAttr("__air_param_argoff_" +
-                                    std::to_string(blockArg.getArgNumber()));
+  return blockArg;
+}
+
+// A BD offset that traces back to the runtime sequence's own operand is
+// unknowable at compile time and belongs in the scratchpad. Anything else --
+// a constant, or an offset computed from constants -- stays on the normal
+// path, so this only fires where the static encoding was impossible anyway.
+// Returns the parameter's name, or null if the offset is not separable.
+//
+// On success, `residual` is the part of the offset the parameter does *not*
+// cover, which the caller leaves on the BD.
+static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
+                                                 OpBuilder &builder,
+                                                 Value &residual) {
+  if (!module)
+    return nullptr;
+  Value dynamic =
+      peelStaticAddends(offset, builder, offset.getLoc(), residual);
+  if (!dynamic)
+    return nullptr;
+  int64_t scale, addend;
+  BlockArgument blockArg = affineInSequenceArg(dynamic, scale, addend);
+  if (!blockArg)
+    return nullptr;
+  // The host writes the whole affine value, so the coefficients are part of
+  // the parameter's identity: BDs needing `(L-1)*256` and `L*256` are two
+  // parameters, not one shared entry that would be right for one of them.
+  std::string suffix;
+  if (scale != 1 || addend != 0) {
+    suffix = "_x" + std::to_string(scale);
+    suffix += (addend < 0 ? "_m" : "_p") +
+              std::to_string(addend < 0 ? -addend : addend);
+  }
+  auto name = builder.getStringAttr(
+      "__air_param_argoff_" + std::to_string(blockArg.getArgNumber()) + suffix);
   if (!module.lookupSymbol(name)) {
     OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointToStart(module.getBody());
