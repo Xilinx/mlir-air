@@ -1137,6 +1137,25 @@ PLE_UP_W_FIRST = PLE and int(_os.environ.get("DECODE_PLE_UP_W_FIRST", "0"))
 # nowhere to put it. Default OFF; kept because it is the only thing that proved
 # a shallow L2 hop is not the answer.
 PLE_UP_L2 = PLE and int(_os.environ.get("DECODE_PLE_UP_L2", "0"))
+# How many tasks the @pleOut layer-output drain is split into per wave.
+#
+# MUST BE > 2. Under air.preserve_shim_dma_order the fused N-wave launch paces
+# each channel PER WAVE at depth 2 (synthesizeDoubleBufferedAwaits): with only
+# ONE task per channel per wave it FENCES -- start and await emitted inline --
+# instead of batching. The KV path already learned this and carries the same
+# note (see the KV_REGION comment and its NRB >= depth+1 rule).
+#
+# Without a PLE the layer output leaves the rms core, which the no-PLE build
+# drains as one full-size BD and gets away with. With a PLE it leaves the up
+# core at the very END of the dependency chain, so fencing it serializes the
+# wave against a producer that cannot run yet.
+# TESTED, NEUTRAL: 6/6 at both 1 and 3 for one wave, and no effect at all on the
+# two-wave failure. The theory was that @pleOut is one task per channel per wave
+# and so gets FENCED rather than batched under air.preserve_shim_dma_order (the
+# KV path's NRB >= depth+1 rule, see the KV_REGION note). Splitting it into 3
+# changed nothing, so @pleOut is not what fences. Default 1 -- the single
+# full-size BD-compacted drain -- because the split buys nothing and costs BDs.
+PLE_OUT_CHUNKS = int(_os.environ.get("DECODE_PLE_OUT_CHUNKS", "1"))
 # Program the @pleOut host drain BEFORE the weight feed, on the theory that the
 # up core's 50 @pleW blocks backpressure the shim before it ever reaches the
 # drain BD, so the up core can never put. TESTED AND REFUTED: byte-for-byte the
@@ -3363,21 +3382,37 @@ def build_module():
                             _out_base = 0
                             # BD-COMPACTION: single full-size drain (matches the rms single
                             # layerOut put) instead of LAYER_RNDS per-round gets.
-                            ChannelGet(
-                                # With a PLE the layer output is produced by the
-                                # up core, not the rms core; @layerOut in the
-                                # decode arm is the rms->gate hand-off.
-                                (
-                                    "layerOut"
-                                    if (not PLE or PLE_BYPASS in (4, 6))
-                                    else "pleOut"
-                                ),
-                                _out_bo,
-                                indices=[idx(0)],
-                                offsets=[_out_base],
-                                sizes=[LAYER_RNDS * PAYLOAD],
-                                strides=[1],
+                            # With a PLE the layer output is produced by the up
+                            # core, not the rms core; @layerOut in the decode arm
+                            # is the rms->gate hand-off.
+                            _ochan = (
+                                "layerOut"
+                                if (not PLE or PLE_BYPASS in (4, 6))
+                                else "pleOut"
                             )
+                            if _ochan == "pleOut" and PLE_OUT_CHUNKS > 1:
+                                # SPLIT, and it must stay split -- see
+                                # PLE_OUT_CHUNKS. One task per channel per wave
+                                # fences under air.preserve_shim_dma_order.
+                                _cn = LAYER_RNDS * PAYLOAD // PLE_OUT_CHUNKS
+                                for _c in range(PLE_OUT_CHUNKS):
+                                    ChannelGet(
+                                        _ochan,
+                                        _out_bo,
+                                        indices=[idx(0)],
+                                        offsets=[_out_base + _c * _cn],
+                                        sizes=[_cn],
+                                        strides=[1],
+                                    )
+                            else:
+                                ChannelGet(
+                                    _ochan,
+                                    _out_bo,
+                                    indices=[idx(0)],
+                                    offsets=[_out_base],
+                                    sizes=[LAYER_RNDS * PAYLOAD],
+                                    strides=[1],
+                                )
                             if PLE_DRAIN_FIRST:
                                 _emit_ple_feed()
                             yield_([])
@@ -5242,13 +5277,19 @@ def build_module():
                                     # compute. Splits "the rms->gate hand-off and
                                     # the gate->up->shim chain" from "the @pleW
                                     # feed and the projections".
-                                    a_b = AllocOp(plegate_l1, [], [])
+                                    a_b = AllocOp(
+                                        plepk_l1 if PLE_SHARED_RES else plegate_l1,
+                                        [],
+                                        [],
+                                    )
                                     CallOp(ple_res_in, [_sh[0], a_b])
                                     ChannelPut(
                                         "gateOut",
                                         a_b,
                                         offsets=[idx(0)],
-                                        sizes=[idx(K + PLI_D)],
+                                        sizes=[
+                                            idx(PLE_PK if PLE_SHARED_RES else K + PLI_D)
+                                        ],
                                         strides=[idx(1)],
                                     )
                                     DeallocOp(a_b)
@@ -5459,16 +5500,23 @@ def build_module():
                                     # with two arm-exclusive producers feeding a
                                     # single shim S2MM -- and which rung 4 never
                                     # touched.
-                                    a_b = AllocOp(plegate_l1, [], [])
+                                    a_b = AllocOp(
+                                        plepk_l1 if PLE_SHARED_RES else plegate_l1,
+                                        [],
+                                        [],
+                                    )
                                     ChannelGet("gateOut", a_b, indices=[idx(0)])
                                     if PLE_BYPASS == 5:
-                                        ChannelPut(
-                                            "pleOut",
-                                            a_b,
-                                            offsets=[idx(0)],
-                                            sizes=[idx(K)],
-                                            strides=[idx(1)],
-                                        )
+                                        # chunked to match the host drain
+                                        _bn = K // PLE_OUT_CHUNKS
+                                        for _bc in range(PLE_OUT_CHUNKS):
+                                            ChannelPut(
+                                                "pleOut",
+                                                a_b,
+                                                offsets=[idx(_bc * _bn)],
+                                                sizes=[idx(_bn)],
+                                                strides=[idx(1)],
+                                            )
                                     DeallocOp(a_b)
                                     yield_([])
                                     return
@@ -5533,13 +5581,24 @@ def build_module():
                                         ple_up_tail_at,
                                         [a_y, a_rg, a_nw, a_sc, _arm],
                                     )
-                                ChannelPut(
-                                    "pleOut",
-                                    a_y,
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
+                                if PLE_OUT_CHUNKS > 1:
+                                    _cn = K // PLE_OUT_CHUNKS
+                                    for _c in range(PLE_OUT_CHUNKS):
+                                        ChannelPut(
+                                            "pleOut",
+                                            a_y,
+                                            offsets=[idx(_c * _cn)],
+                                            sizes=[idx(_cn)],
+                                            strides=[idx(1)],
+                                        )
+                                else:
+                                    ChannelPut(
+                                        "pleOut",
+                                        a_y,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
                                 DeallocOp(a_rg)
                                 DeallocOp(a_y)
                                 DeallocOp(acc)
