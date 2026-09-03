@@ -757,7 +757,7 @@ static int64_t deriveTiledFarWindow(OpBuilder &b, Value farMemref,
                                     SmallVector<OpFoldResult> &offsets,
                                     SmallVector<OpFoldResult> &sizes,
                                     SmallVector<OpFoldResult> &strides,
-                                    int64_t nearVolume) {
+                                    int64_t nearVolume, bool foldWillNotRun) {
   if (nearVolume <= 0)
     return 0;
   if (sizes.size() > 1)
@@ -775,10 +775,35 @@ static int64_t deriveTiledFarWindow(OpBuilder &b, Value farMemref,
     if (!st || *st != 1)
       return 0;
   }
+  if (offsets.size() > 1)
+    return 0;
+  // The base needs to be a single position, not a constant one. Where the
+  // window SITS is not what the tiling reads -- N and the piece size come from
+  // the two volumes, and each piece is that base plus a static displacement.
+  // Requiring a constant here would decline exactly the case the derivation
+  // exists for: a drain into a slab whose origin is chosen at runtime, where
+  // the front end cannot write the far offsets because it does not know them.
   OpFoldResult base =
       offsets.empty() ? OpFoldResult(b.getIndexAttr(0)) : offsets[0];
-  if (!getConstantIntValue(base))
-    return 0;
+  // N pieces is the honest description and the form the descriptor optimizer
+  // can act on -- but only where that optimizer runs. A launch marked
+  // air.preserve_shim_dma_order has opted OUT of per-channel BD folding for its
+  // whole region, deliberately: the cross-channel issue order there is
+  // load-bearing and is not expressed as SSA dependences, so regrouping would
+  // reorder it into a deadlock. Nothing downstream will ever fold these.
+  //
+  // So the argument for N pieces inverts. Emitting them leaves N descriptors
+  // standing for good, and a shim tile has sixteen; the failure is a hard
+  // `'aiex.dma_configure_task' op Too many simultaneously active buffer
+  // descriptors`. Write the wrapped descriptor the fold would have produced --
+  // the same bytes, the same access pattern, and exactly what a front end
+  // hand-writes for this feed.
+  if (foldWillNotRun) {
+    offsets.assign({base});
+    sizes.assign({b.getIndexAttr(n), b.getIndexAttr(nearVolume)});
+    strides.assign({b.getIndexAttr(nearVolume), b.getIndexAttr(1)});
+    return 1;
+  }
   offsets.assign({base});
   sizes.assign({b.getIndexAttr(nearVolume)});
   strides.assign({b.getIndexAttr(1)});
@@ -860,6 +885,7 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   // into; the descriptor built below is piece 0 and the rest are emitted after.
   int64_t farPieces = 0;
   int64_t farPieceVolume = 0;
+  bool coversNearLoop = false;
   auto enclosingHier = op->getParentOfType<air::HierarchyInterface>();
   if (dst_type && src_type && enclosingHier) {
     bool dstIsInner = air::getMemorySpace(dst_type) == innerMemorySpace;
@@ -897,13 +923,26 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
       countRefutes = *nearTrip != n;
     }
     bool refilled = hasFillSite(farMemref, enclosingHier.getOperation());
+    // Which licence applied decides WHERE the far half goes, and the two
+    // answers differ. Recorded here because only this point knows.
+    coversNearLoop = countAgrees && !refilled;
     if (nearVol && !countRefutes && (countAgrees || refilled)) {
+      // Whether anything downstream will fold the pieces back. Only the
+      // LAUNCH region opts out, and only a far half that lands there is
+      // affected -- an L2 far half is folded by the segment-scope pass and by
+      // air-opt-memtile-dma-bds regardless.
+      auto farTy =
+          llvm::dyn_cast_if_present<BaseMemRefType>(farMemref.getType());
+      bool foldWillNotRun = false;
+      if (farTy && air::isL3(farTy))
+        if (auto launch = op->getParentOfType<air::LaunchOp>())
+          foldWillNotRun = launch->hasAttr(air::attrs::PreserveShimDmaOrder);
       if (dstIsInner)
         farPieces = deriveTiledFarWindow(builder, src, src_offsets, src_sizes,
-                                         src_strides, *nearVol);
+                                         src_strides, *nearVol, foldWillNotRun);
       else
         farPieces = deriveTiledFarWindow(builder, dst, dst_offsets, dst_sizes,
-                                         dst_strides, *nearVol);
+                                         dst_strides, *nearVol, foldWillNotRun);
       if (farPieces)
         farPieceVolume = *nearVol;
     }
@@ -1189,6 +1228,13 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   if (farPieces)
     externalGetPut->setAttr("air.derived_far_window",
                             UnitAttr::get(op->getContext()));
+  // A far half licensed by the COUNT reading covers the WHOLE near loop -- that
+  // is what nearTrip == N says -- so it belongs ONCE, outside it. The fill-site
+  // licence answers the same question differently and has its own marker above;
+  // this one is for the case where there is no fill to go to.
+  if (farPieces && coversNearLoop)
+    externalGetPut->setAttr("air.derived_covers_near_loop",
+                            UnitAttr::get(op->getContext()));
   if (op->hasAttr("broadcast_set"))
     externalGetPut->setAttr("broadcast_set", op->getAttr("broadcast_set"));
   // Carry the issue-order anchor onto the EXTERNAL half only. It is the
@@ -1215,29 +1261,128 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   // near side -- see deriveTiledFarWindow. Bytes alone would be satisfied by
   // the single wrapped descriptor these replace.
   //
-  // Everything but the base offset is identical, and the base is constant by
-  // construction (deriveTiledFarWindow declines otherwise), so the piece is a
-  // clone with one static offset rewritten. Emitting them adjacent and
-  // ascending keeps the FIFO order the near side reads them in.
+  // Everything but the base offset is identical, so the piece is a clone with
+  // that one offset displaced. Emitting them adjacent and ascending keeps the
+  // FIFO order the near side reads them in.
+  //
+  // The base may be dynamic -- a slab whose origin is a runtime value is the
+  // ordinary case for a drain -- so the displacement is added rather than
+  // folded, and the addition is emitted where the piece is. It dominates:
+  // piece i sits immediately after the op that already uses the base.
   if (farPieces > 1) {
     bool farIsSrc = isa<air::ChannelPutOp>(externalGetPut.getOperation());
-    StringRef offsAttrName =
-        farIsSrc ? "static_src_offsets" : "static_dst_offsets";
-    auto base = externalGetPut->getAttrOfType<DenseI64ArrayAttr>(offsAttrName);
-    if (base && base.size() == 1) {
+    SmallVector<OpFoldResult> &farOffsets =
+        farIsSrc ? src_offsets : dst_offsets;
+    if (farOffsets.size() == 1) {
+      OpFoldResult base = farOffsets[0];
       OpBuilder::InsertionGuard guard(builder);
       Operation *prev = externalGetPut.getOperation();
       for (int64_t i = 1; i < farPieces; i++) {
         builder.setInsertionPointAfter(prev);
+        int64_t delta = i * farPieceVolume;
+        OpFoldResult off;
+        if (auto c = getConstantIntValue(base))
+          off = builder.getIndexAttr(*c + delta);
+        else {
+          Value d = arith::ConstantIndexOp::create(builder, loc, delta);
+          off = OpFoldResult(
+              arith::AddIOp::create(builder, loc, cast<Value>(base), d)
+                  .getResult());
+        }
         Operation *piece = builder.clone(*externalGetPut.getOperation());
-        piece->setAttr(offsAttrName, builder.getDenseI64ArrayAttr(
-                                         {base[0] + i * farPieceVolume}));
+        if (farIsSrc)
+          cast<air::ChannelPutOp>(piece).setMixedSrcOffsets({off});
+        else
+          cast<air::ChannelGetOp>(piece).setMixedDstOffsets({off});
         externalGetPutVector.push_back(dyn_cast<air::ChannelInterface>(piece));
         prev = piece;
       }
     }
   }
   return success();
+}
+
+// A far half licensed by the COUNT reading belongs ONCE, outside the near loop.
+//
+// "nearTrip == N" says the far window covers the whole loop, so issuing it per
+// trip sends N times what was asked for. cloneOpsInBlock rebuilds the near nest
+// around the hoisted half, which is right for a transfer that steps with the
+// loop and wrong for one that spans it.
+//
+// The move is always legal, and for the same reason the licence held: covering
+// the loop means the window cannot be a function of the induction variable.
+// That is checked here rather than assumed -- a transfer that does read the IV
+// is left exactly where it is.
+//
+// Only the token chain needs fixing, and the DIRECTION matters. Inside, the
+// transfer takes the loop's carried token and yields into it. Outside it takes
+// the loop's INIT -- but the loop must NOT then be seeded from the transfer.
+// Seeding it that way reads "the loop may not start until this transfer has
+// completed", and this transfer completes only once the loop has produced every
+// piece of what it carries: a circular wait, and on device a decode-dispatch
+// timeout rather than anything that looks like a scheduling bug.
+//
+// The transfer is issued ahead of the loop and finishes after it, so its token
+// joins the loop's RESULT instead: whatever waited on the loop now waits on
+// both.
+static void hoistFarHalfCoveringLoop(air::ChannelInterface chan) {
+  auto forOp = dyn_cast_if_present<scf::ForOp>(chan->getParentOp());
+  if (!forOp || chan->getBlock() != forOp.getBody())
+    return;
+
+  // Whatever the transfer reads that was computed in this body comes with it.
+  SetVector<Operation *> slice;
+  BackwardSliceOptions opts;
+  opts.filter = [&](Operation *o) { return o->getBlock() == forOp.getBody(); };
+  (void)getBackwardSlice(chan.getOperation(), &slice, opts);
+  SmallVector<Operation *> toMove;
+  for (Operation *o : slice) {
+    if (o->getBlock() != forOp.getBody())
+      continue;
+    if (isa<air::ChannelInterface>(o) || o->getNumRegions())
+      return; // another transfer, or structure: not a plain window computation
+    toMove.push_back(o);
+  }
+  auto readsIV = [&](Operation *o) {
+    return llvm::is_contained(o->getOperands(), forOp.getInductionVar());
+  };
+  if (readsIV(chan.getOperation()) || llvm::any_of(toMove, readsIV))
+    return;
+
+  SmallVector<unsigned> reseed;
+  if (auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation())) {
+    OperandRange deps = async.getAsyncDependencies();
+    unsigned base = deps.getBeginOperandIndex();
+    for (unsigned k = 0; k < deps.size(); k++) {
+      auto ba = dyn_cast<BlockArgument>(deps[k]);
+      if (!ba || ba.getOwner() != forOp.getBody())
+        continue;
+      unsigned i = ba.getArgNumber() - 1; // past the induction variable
+      if (i >= forOp.getInitArgs().size())
+        continue;
+      reseed.push_back(i);
+      chan->setOperand(base + k, forOp.getInitArgs()[i]);
+    }
+  }
+
+  for (Operation *o : toMove)
+    o->moveBefore(forOp);
+  chan->moveBefore(forOp);
+
+  if (!reseed.empty() && air::isAsyncOp(chan.getOperation())) {
+    Value tok = air::getAsyncTokenFromOp(chan.getOperation());
+    OpBuilder b(forOp->getContext());
+    b.setInsertionPointAfter(forOp);
+    for (unsigned i : reseed) {
+      Value res = forOp.getResult(i);
+      if (!isa<air::AsyncTokenType>(res.getType()))
+        continue;
+      auto join = air::WaitAllOp::create(
+          b, forOp.getLoc(), air::AsyncTokenType::get(forOp->getContext()),
+          SmallVector<Value>{res, tok});
+      res.replaceAllUsesExcept(join.getAsyncToken(), join.getOperation());
+    }
+  }
 }
 
 // Check whether an channel op is within a matching air hierarchy (launch for
@@ -2298,6 +2443,12 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
           air::cloneOpsInBlock(&hier_op.getBody().front(), rewriter, remap);
       if (clonedOps.empty())
         return failure();
+      // The near nest has just been rebuilt around every hoisted op. A far half
+      // that COVERS that nest's loop belongs outside it.
+      for (Operation *c : clonedOps)
+        if (c->hasAttr("air.derived_covers_near_loop"))
+          if (auto ci = dyn_cast<air::ChannelInterface>(c))
+            hoistFarHalfCoveringLoop(ci);
     }
 
     // Check if hoisted channel ops are now under a matching air.hierarchy.
@@ -3424,6 +3575,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         op->removeAttr("air.hoist_before");
         op->removeAttr("air.hoist_unguarded");
         op->removeAttr("air.hoist_outside_loops");
+        op->removeAttr("air.derived_covers_near_loop");
         op->removeAttr("air.derived_far_window");
       });
     }
