@@ -1804,6 +1804,11 @@ def build_module():
             # core assembles it, the up core's tail reads all four out of it.
             PLE_PK = 2 * K + PLI_D + PLE_SCALE_PAD
             plepk_l1 = MemRefType.get([PLE_PK], bf16, memory_space=l1)
+            # [up_norm_w(K) | scale(32)], the pair the proj core relays to the
+            # gate. Its own buffer: staging it in a_x0 would make one buffer
+            # both a @pleX target and a @pliOut source, and a dispatch in eight
+            # then read it mid-refill.
+            plefw_l1 = MemRefType.get([K + PLE_SCALE_PAD], bf16, memory_space=l1)
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
@@ -2968,19 +2973,19 @@ def build_module():
                                         # second BD task and it has no third
                                         # S2MM to split them onto. This core
                                         # does, and it already has a flow to the
-                                        # gate.
-                                        for _o, _n in (
-                                            (PLE_UPNORMW_OFF, K),
-                                            (PLE_SCALE_OFF, PLE_SCALE_PAD),
-                                        ):
-                                            ChannelPut(
-                                                "pleX",
-                                                PLEW,
-                                                indices=[idx(0)],
-                                                offsets=[arith.addi(_pb, idx(_o))],
-                                                sizes=[idx(_n)],
-                                                strides=[idx(1)],
-                                            )
+                                        # gate. One transfer: the slab stores
+                                        # them adjacently and so does the gate's
+                                        # bundle.
+                                        ChannelPut(
+                                            "pleX",
+                                            PLEW,
+                                            indices=[idx(0)],
+                                            offsets=[
+                                                arith.addi(_pb, idx(PLE_UPNORMW_OFF))
+                                            ],
+                                            sizes=[idx(K + PLE_SCALE_PAD)],
+                                            strides=[idx(1)],
+                                        )
 
                                 def _feed_gate():
                                     # dest 0 (gate): its own weights, then the
@@ -5440,18 +5445,14 @@ def build_module():
                                     # with a 1536 and a 32 on one memtile channel
                                     # produced TWO dma_start blocks for the same
                                     # channel and the tail never forwarded.
-                                    for _off, _n in (
-                                        (K + PLI_D, K),
-                                        (2 * K + PLI_D, PLE_SCALE_PAD),
-                                    ):
-                                        ChannelGet(
-                                            "pliOut",
-                                            a_x,
-                                            indices=[idx(0)],
-                                            offsets=[idx(_off)],
-                                            sizes=[idx(_n)],
-                                            strides=[idx(1)],
-                                        )
+                                    ChannelGet(
+                                        "pliOut",
+                                        a_x,
+                                        indices=[idx(0)],
+                                        offsets=[idx(K + PLI_D)],
+                                        sizes=[idx(K + PLE_SCALE_PAD)],
+                                        strides=[idx(1)],
+                                    )
                                 ChannelPut(
                                     "gateOut",
                                     a_x,
@@ -5521,22 +5522,10 @@ def build_module():
                                 ChannelGet("pleX", a_e, indices=[idx(0)])
                                 a_nw = AllocOp(plev_l1, [], [])
                                 ChannelGet("pleX", a_nw, indices=[idx(0)])
+                                a_fw = None
                                 if PLE_SHARED_RES:
-                                    # Staged at the offsets the gate's bundle
-                                    # wants, so forwarding is a straight copy
-                                    # and no kernel sees a different layout.
-                                    for _off, _n in (
-                                        (K + PLI_D, K),
-                                        (2 * K + PLI_D, PLE_SCALE_PAD),
-                                    ):
-                                        ChannelGet(
-                                            "pleX",
-                                            a_x0,
-                                            indices=[idx(0)],
-                                            offsets=[idx(_off)],
-                                            sizes=[idx(_n)],
-                                            strides=[idx(1)],
-                                        )
+                                    a_fw = AllocOp(plefw_l1, [], [])
+                                    ChannelGet("pleX", a_fw, indices=[idx(0)])
                                 CallOp(ple_proj_tail, [a_p, a_e, a_nw])
                                 if not PLE_NO_PLIOUT:
                                     ChannelPut(
@@ -5547,18 +5536,10 @@ def build_module():
                                         strides=[idx(1)],
                                     )
                                     if PLE_SHARED_RES:
-                                        for _off, _n in (
-                                            (K + PLI_D, K),
-                                            (2 * K + PLI_D, PLE_SCALE_PAD),
-                                        ):
-                                            ChannelPut(
-                                                "pliOut",
-                                                a_x0,
-                                                offsets=[idx(_off)],
-                                                sizes=[idx(_n)],
-                                                strides=[idx(1)],
-                                            )
+                                        ChannelPut("pliOut", a_fw)
                                 DeallocOp(a_x0)
+                                if a_fw is not None:
+                                    DeallocOp(a_fw)
                                 DeallocOp(a_p)
                                 DeallocOp(acc)
                                 DeallocOp(a_e)
