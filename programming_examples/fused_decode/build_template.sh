@@ -85,7 +85,7 @@ fi
 echo ">>> kernels (batch $BATCH)"
 for k in proj_qmm rms_residual glu rope; do
   echo "    $k.o"
-  EXTRA=""; [ "$k" = "proj_qmm" ] && EXTRA="$MMDEF ${PROJ_FLUSH_PROBE:+-DPROJ_FLUSH_PROBE=$PROJ_FLUSH_PROBE} ${PROJ_MM_PROBE:+-DPROJ_MM_PROBE=$PROJ_MM_PROBE} ${PROJ_DELAY:+-DPROJ_DELAY=$PROJ_DELAY} ${Q4K_UNPACK_UNROLL:+-DQ4K_UNPACK_UNROLL=$Q4K_UNPACK_UNROLL}"
+  EXTRA=""; [ "$k" = "proj_qmm" ] && EXTRA="$MMDEF ${PROJ_FLUSH_PROBE:+-DPROJ_FLUSH_PROBE=$PROJ_FLUSH_PROBE} ${PROJ_MM_PROBE:+-DPROJ_MM_PROBE=$PROJ_MM_PROBE} ${PROJ_DELAY:+-DPROJ_DELAY=$PROJ_DELAY} ${Q4K_UNPACK_UNROLL:+-DQ4K_UNPACK_UNROLL=$Q4K_UNPACK_UNROLL} ${Q4K_UNPACK_FMA:+-DQ4K_UNPACK_FMA=1}"
   # RMS_MEMTILE_REFEED=3 needs the row-major producer entry point, which is
   # behind RMS_ROW_OUT so that a build not asking for it stays byte-identical.
   # `$(test && echo)` would exit 1 when the test is false, and the enclosing

@@ -138,6 +138,52 @@ static_assert(sizeof(q4k_block_t) != 2 * Q4K_BLOCK_BF16,
 #define Q4K_UNPACK_LOOP
 #endif
 
+// Q4K_UNPACK_FMA: do w = q*scale + min in ONE accumulator pass.
+//
+// WHAT IT IS FOR. Disassembling proj_qmm_mm_acc says the unpack loop body is 31
+// bundles and 68 ops per 128-lane chunk, and SEVENTEEN of those ops are
+// vconv.bf16.fp32 / vconv.fp32.bf16 -- pure format shuffling with no arithmetic
+// content -- plus the vadd/vsub.f magic-constant pairs that implement the bf16
+// rounding. Only four ops are the stores into W. The unpack is not memory
+// bound and it is not the broadcast; it is the bf16 round trip between every
+// arithmetic step. aie::mul returns an accum, `ws` rounds it to bf16, aie::add
+// lifts it straight back to an accum. Seeding the accumulator with `min` and
+// mac-ing q*scale into it removes one whole round trip.
+//
+// IT CHANGES THE ANSWER, in the direction of the exact result: q*scale is no
+// longer rounded to bf16 before the add, so there is one rounding rather than
+// two. The final w is still bf16 and the mmul still takes it down to bfp16
+// (7 significant bits, shared exponent per 8), so most of the difference is
+// re-quantised away downstream -- but it is NOT bit-identical, and
+// q4k_mm_gate.py --mode exact models the shipping arithmetic. Gate this one on
+// dump_layer_output.py --diff (expect small and nonzero, not zero) followed by
+// dflash_verify_gate.py, not on bit-exactness.
+//
+// IT ALSO UNBLOCKS THE UNROLL. Partial unrolling was a measured device LOSS on
+// the shipping form -- see the note in q4k_unpack_block -- because the body
+// already had no registers to spare. With one fewer accumulator round trip it
+// pays. Static bundles per 128-lane chunk, x64 chunks per weight block:
+//
+//   shipping                       31.0    1984   1.000
+//   FMA                            28.0    1792   0.903
+//   FMA + Q4K_UNPACK_UNROLL=2      19.0    1216   0.613
+//   FMA + Q4K_UNPACK_UNROLL=8      17.6    1128   0.569
+//   FMA + Q4K_UNPACK_UNROLL=16     29.1    1864   0.940
+//   Q4K_UNPACK_UNROLL=2 alone      38.5    2464   1.242
+//   Q4K_UNPACK_UNROLL=4 alone      33.5    2144   1.081
+//
+// THE STATIC COUNT HAS A CONTROL, which is why the numbers above are worth
+// anything. The last two rows are the two configurations that were run on
+// device before this file was touched: unroll 2 alone measured +6.3 ms on a
+// 34.98 ms unpack (1.18x) against a predicted 1.242x, and unroll 4 alone
+// measured neutral against a predicted 1.081x. Same sign, same magnitude. It is
+// still a static count and it cannot see a memory stall, so device timing is
+// the verdict -- but it is a cheap and calibrated way to reject candidates.
+//
+// Unset by default so the shipping kernels stay byte-identical and
+// check_kernels_inert.py stays satisfied. The switch itself is in
+// q4k_unpack_step below.
+
 // One 128-lane unpack step: 128 nibbles -> bf16, scaled by the per-(row,group)
 // scale/min. A 128-lane chunk covers 8 columns x 16 rows and so sits inside ONE
 // 32-column group, which is why a single 16-lane scale/min pair serves it.
@@ -161,8 +207,20 @@ q4k_unpack_step(const uint4 *&qs_ptr, const bf16 *scales, const bf16 *mins) {
   aie::vector<bf16, PR * 8> mv = aie::concat(m64, m64);
 
   // w = q*scale + min  (the additive form -- see the q4_k.h header comment).
+#ifdef Q4K_UNPACK_FMA
+  // ONE accumulator pass instead of two -- see the Q4K_UNPACK_FMA note above.
+  // aie::mul returns an accum that the bf16 result type immediately rounds back
+  // down, and aie::add lifts it straight back up, so the shipping form pays a
+  // full fp32 -> bf16 -> fp32 round trip in the middle of what is one fused
+  // operation. Seeding the accumulator with `min` and mac-ing q*scale into it
+  // removes that round trip.
+  aie::accum<accfloat, PR * 8> out;
+  out.from_vector(mv);
+  return aie::mac(out, qb, sv).template to_vector<bf16>();
+#else
   aie::vector<bf16, PR * 8> ws = aie::mul(qb, sv).template to_vector<bf16>();
   return aie::add(ws, mv);
+#endif
 }
 
 // The six concats above ARE redundant three times out of four -- see the
@@ -228,28 +286,33 @@ static inline void q4k_unpack_block(const q4k_block_t *A, bf16 *__restrict W) {
   static_assert(KCOL % 32 == 0, "a 32-column quant group must be whole");
   const uint4 *qs_ptr = A->qs;
 
-  // THE FLAT ROLLED LOOP IS THE FAST SHAPE, and two obvious-looking attacks on
-  // it are measured LOSSES. Both were tried on the configuration where this
-  // kernel is the critical path -- qwen3-4b batch 8, mode 3 + PROJ_PP_ONLY=w,
-  // where the unpack is 34.98 ms of a 108.074 ms dispatch (dispatch_time.py,
-  // L=128, median of 25):
+  // HOW MUCH TO UNROLL DEPENDS ON Q4K_UNPACK_FMA, and the sign flips. Measured
+  // on the configuration where this kernel is the critical path -- qwen3-4b
+  // batch 8, mode 3 + PROJ_PP_ONLY=w, dispatch_time.py median of 25:
   //
-  //   Q4K_UNPACK_UNROLL=2   114.328   +6.3 ms
-  //   Q4K_UNPACK_UNROLL=4   108.478   neutral
-  //   hoisting the broadcast  134.300  +26.2 ms, and BIT-IDENTICAL output
+  //                                    L=128    L=161    vs its own control
+  //   Q4K_UNPACK_UNROLL=2             114.328            +6.3 ms
+  //   Q4K_UNPACK_UNROLL=4             108.478            neutral
+  //   Q4K_UNPACK_UNROLL=8                      105.543   -3.30 ms, BIT-EXACT
+  //   Q4K_UNPACK_UNROLL=8 + FMA                 85.923   -22.92 ms
+  //   (controls: 108.074 at L=128, 108.840 at L=161)
   //
-  // The hoist is the one worth knowing about, because the redundancy it
-  // removes is real: `off` is (cb/4)*MROWS + R*PR, so the four contraction
-  // blocks of a 32-column group rebuild the identical 128-lane scale and min
-  // vectors -- two loads and six concats, three times out of four. Restructured
-  // as (row half, group) outer x 4 inner with the ladder lifted, the answer is
-  // bit-for-bit the same and it costs 24% MORE. A 4-iteration inner loop cannot
-  // amortise a software-pipeline prologue, and that dominates the arithmetic
-  // saved. The redundant concats are cheaper than the pipeline they would cost.
+  // Small unrolls lose on the shipping arithmetic because the body has no
+  // registers to spare; 8 wins because by then the loop-carried scalar address
+  // chain -- 21 of the body's 68 ops -- amortises across the copies. Layering
+  // the FMA on top is worth another 19.6 ms, because it is what frees the
+  // registers the unroll wants. Neither ordering was predictable from the
+  // other; both were built.
   //
-  // So do not re-derive either of these. What is left for this kernel is
-  // algorithmic -- not materialising bf16 weights at all -- and that is a
-  // datapath change, not a loop rewrite.
+  // AND THE ONE THAT STILL LOSES: hoisting the scale/min broadcast out of the
+  // 4-block group. 134.300 at L=128, +26.2 ms, and BIT-IDENTICAL output. The
+  // redundancy it removes is real -- `off` is (cb/4)*MROWS + R*PR, so the four
+  // contraction blocks of a 32-column group rebuild the identical 128-lane
+  // scale and min vectors, two loads and six concats, three times out of four.
+  // Restructured as (row half, group) outer x 4 inner with the ladder lifted,
+  // the answer is bit-for-bit the same and it costs 24% MORE: a 4-iteration
+  // inner loop cannot amortise a software-pipeline prologue, and that dominates
+  // the arithmetic saved. Do not re-derive it.
   AIE_PREPARE_FOR_PIPELINING
   AIE_LOOP_RANGE(NSTEP, NSTEP)
   Q4K_UNPACK_LOOP
@@ -554,6 +617,49 @@ static inline void q4k_mm_block(const q4k_block_t *A, const bf16 *__restrict B,
   q4k_mmul_any<MROWS, KCOL, BATCH>(B, W, C);
 }
 
+// FUSING THE UNPACK INTO THE MMUL IS A MEASURED LOSS. Do not re-derive it.
+//
+// The idea: q4k_mm_block materialises a whole MROWS x KCOL block into W before
+// the mmul reads a byte of it, so every weight block makes a 16 KB round trip
+// through the same L1 the mmul streams its A operand from. Consume each 64-lane
+// B tile in the mac that needs it instead, and W disappears. It lines up
+// exactly -- q4k_unpack_block's step i = R*NCB + cb and NCB == colA, so steps
+// cb and NCB+cb are precisely the four B tiles contraction block cb needs --
+// and at rowA = 1 the B-tile reuse it would trade away is already 1, so it
+// looks free.
+//
+// IT IS NOT FREE. The four aie::mmul<8,8,8> accumulators are 16 bm registers,
+// which is the ENTIRE file, and q4k_unpack_step's aie::accum<accfloat,128>
+// wants the same registers. Peano spills all four accumulators to the stack and
+// reloads them every iteration: 64 sp references in the loop body against 0 for
+// the unfused pair. Splitting into two half-passes of two accumulators each --
+// which duplicates no unpack work, only the A operand read -- still spills one
+// accumulator per iteration. Static bundles per weight block, disassembling
+// proj_qmm_mm_acc:
+//
+//   unfused   2784   (unpack 32 x 64  +  mmul 23 x 32)
+//   fused     3616   (+29.9%)
+//
+// And the premise was wrong anyway. Of the 31 bundles in the unpack loop body
+// only FOUR are the W stores, so removing them could never have been worth more
+// than ~6%. The real content is format conversion: 17 of 68 ops are
+// vconv.bf16.fp32 / vconv.fp32.bf16 -- see Q4K_UNPACK_FMA above, which attacks
+// that instead and wins.
+//
+// THE "14.3 ms OF CONTENTION" READING OF THE PROBE SPLIT IS ALSO WRONG. Those
+// marginal costs above the 70.990 ms memory floor (qwen3-4b batch 8, L=128,
+// mode 3 + PROJ_PP_ONLY=w) are
+//
+//   unpack alone (PROBE=3) 20.71    mmul alone (PROBE=2) 2.11    both 37.08
+//
+// and 20.71 + 2.11 = 22.8 does fall 14.3 short of 37.08 -- but that is ordinary
+// latency hiding, not L1 contention. Per weight block the dispatch costs
+// max(DMA, core). The mmul's true core cost is 16.37 ms; run alone it hides
+// almost entirely under the weight DMA and only 2.11 is exposed, and run after
+// the unpack has already consumed the DMA shadow all 16.37 is exposed.
+// 37.08 - 20.71 = 16.37 exactly. There is no contention term to reclaim, and
+// the headroom to the floor is core time, all of it.
+//
 // NCHUNK blocks along the contraction, accumulated into one C, through ONE
 // KCOL-wide scratch that each chunk overwrites.
 //
