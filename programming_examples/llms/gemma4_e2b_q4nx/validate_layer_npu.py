@@ -299,17 +299,26 @@ def main():
     x_bo.sync(TO)
 
     args = [x_bo, w_bo, r_bo, y_bo, kv_bo] + ([pw_bo, px_bo] if fd.PLE else [])
-    # The PLE arm has a known liveness bug -- the up core stalls on @gateOut
-    # while its @pleW run is queued -- that times out roughly half of all
-    # dispatches at UNI_DEC=1 and always at 2 or more. It is a scheduling fault
-    # with no effect on the arithmetic of a dispatch that does complete, and the
-    # DECODE_NO_PLE control is 10/10. Retrying keeps this gate usable for
-    # numerics while that is open; the attempt count is printed so the
-    # flakiness stays visible rather than being papered over.
+    # The PLE arm has a known liveness bug: about one dispatch in five times out
+    # in the VOCAB drain, with the decode arm already finished -- X written back
+    # and KV appended. DECODE_NO_PLE=1 is 20/20, so it takes the PLE feed.
+    #
+    # A DISPATCH THAT FOLLOWS A TIMEOUT COMPLETES BUT LIES. The correlation is
+    # exact: ten runs of layer 14, the one that reported a retry scored 0.431573
+    # and the nine that did not all scored 0.992663; layer 9 was 9/9 the same
+    # way. Re-uploading every input BO does not help (the loop below already
+    # does that) and neither does a fresh hw_context, so whatever the timeout
+    # leaves behind is not in these buffers and is not cleared by a PDI reload.
+    #
+    # So a retry is used only to get the process to a verdict, and the verdict
+    # is then INCONCLUSIVE, not PASS or FAIL. Scoring a retried dispatch is how
+    # a clean 0.992663 gets reported as a 0.43 regression.
+    retried = False
     for attempt in range(1, a.retries + 1):
         st = kern(3, ib, insts.nbytes, *args).wait(60000)
         if str(st).endswith("COMPLETED"):
             if attempt > 1:
+                retried = True
                 print(f"  (completed on attempt {attempt} of {a.retries})")
             break
         for b in args:
@@ -342,6 +351,16 @@ def main():
     # NaN FIRST. `nan < tol` is False, so without this a device that returns all
     # NaN scored PASS -- which it did, and it hid a real base-layer bug.
     n_bad = int((~np.isfinite(got)).sum())
+    if retried and not n_bad and np.isfinite(c):
+        # Not PASS and not FAIL: a dispatch that followed a timeout completes
+        # but does not carry a trustworthy answer, so this reading says nothing
+        # about the layer either way. Exit 2 so a sweep can tell "re-run me"
+        # from a real regression.
+        print(
+            f"INCONCLUSIVE: layer {L} needed a retry, and a dispatch after a "
+            f"timeout cannot be scored (cos {c:.6f} is not evidence). Re-run."
+        )
+        return 2
     if n_bad or not np.isfinite(c):
         print(
             f"FAIL: layer {L} device output is not finite "
