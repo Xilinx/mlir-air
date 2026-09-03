@@ -788,11 +788,24 @@ static int64_t deriveTiledFarWindow(OpBuilder &b, Value farMemref,
 // the loop it must land in holds no channel endpoint of its own -- which is the
 // ordinary case for a feed whose inner loop exists only to step the window.
 //
-// Returns the last such writer (the fill completes before the forward), or
-// null.
-static Operation *findFillSite(Value farMemref, Operation *hier_op) {
+// Returns the last writer PER REGION (the fill completes before the forward),
+// not one writer overall.
+//
+// One buffer is commonly filled in several mutually exclusive places -- a vocab
+// arm and a decode arm of the same scf.index_switch, each with its own feed
+// loop. Those are not competing candidates to choose between; the derived half
+// belongs in every one of them, exactly as an anchored hoist replicates across
+// arms. Returning a single site silently starves the arms that did not win:
+// their consumers wait on a producer emitted somewhere they never execute, and
+// the design hangs with no missing-endpoint diagnostic anywhere.
+//
+// Grouping by REGION rather than by switch arm keeps it simple and is the same
+// rule in the cases that matter: two arms are two regions, and a second fill in
+// the same region really is a later fill of the same buffer, where last wins.
+static void findFillSites(Value farMemref, Operation *hier_op,
+                          SmallVectorImpl<Operation *> &out) {
   Value root = air::resolveBufferRoot(farMemref);
-  Operation *found = nullptr;
+  llvm::MapVector<Region *, Operation *> lastPerRegion;
   hier_op->getParentRegion()->walk([&](Operation *o) {
     if (hier_op->isAncestor(o))
       return WalkResult::advance();
@@ -801,10 +814,18 @@ static Operation *findFillSite(Value farMemref, Operation *hier_op) {
     // A get lands bytes in it; that is a fill. A put reads it, and is not.
     if (auto g = dyn_cast<air::ChannelGetOp>(o))
       if (air::resolveBufferRoot(g.getMemref()) == root)
-        found = o;
+        lastPerRegion[o->getParentRegion()] = o;
     return WalkResult::advance();
   });
-  return found;
+  for (auto &kv : lastPerRegion)
+    out.push_back(kv.second);
+}
+
+// Whether anything outside the hierarchy refills the buffer at all.
+static bool hasFillSite(Value farMemref, Operation *hier_op) {
+  SmallVector<Operation *> sites;
+  findFillSites(farMemref, hier_op, sites);
+  return !sites.empty();
 }
 
 static LogicalResult replaceAIRDmaWithAIRChannelPairs(
@@ -869,8 +890,7 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
       countAgrees = *nearTrip == n;
       countRefutes = *nearTrip != n;
     }
-    bool refilled =
-        findFillSite(farMemref, enclosingHier.getOperation()) != nullptr;
+    bool refilled = hasFillSite(farMemref, enclosingHier.getOperation());
     if (nearVol && !countRefutes && (countAgrees || refilled)) {
       if (dstIsInner)
         farPieces = deriveTiledFarWindow(builder, src, src_offsets, src_sizes,
@@ -1868,11 +1888,13 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // needs no anchor: place it after the fill, in the fill's loop.
     SmallVector<Operation *> derivedSites;
     for (auto getput : externalGetPuts)
-      if (getput->hasAttr("air.derived_far_window"))
-        if (Operation *fill =
-                findFillSite(getput.getMemref(), hier_op.getOperation()))
+      if (getput->hasAttr("air.derived_far_window")) {
+        SmallVector<Operation *> fills;
+        findFillSites(getput.getMemref(), hier_op.getOperation(), fills);
+        for (Operation *fill : fills)
           if (!llvm::is_contained(derivedSites, fill))
             derivedSites.push_back(fill);
+      }
 
     SmallVector<Operation *> anchorOps = findIssueOrderAnchors(
         byAnchor.front().second, hier_op.getOperation(), placeBefore);
