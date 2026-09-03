@@ -357,20 +357,9 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         hoist_before=None,
         hoist_unguarded=False,
         hoist_outside_loops=False,
-        external_offsets=None,
-        external_sizes=None,
-        external_strides=None,
-        distinct_transfer=False,
     ):
         if channel is None and channel_indices is not None:
             raise ValueError("channel_indices requires channel")
-        if external_offsets is not None:
-            if hoist_after is None and hoist_before is None:
-                raise ValueError("external_offsets requires an anchor")
-            if external_sizes is None or external_strides is None:
-                raise ValueError(
-                    "external_offsets requires external_sizes and external_strides"
-                )
         if (pad_before is None) != (pad_after is None):
             raise ValueError(
                 "pad_before and pad_after must both be specified or both omitted"
@@ -428,20 +417,6 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             )
         # Issue-order anchor: place the derived external half straight after this
         # channel's last endpoint, instead of at the consumer hierarchy.
-        if external_offsets is not None:
-            self.operation.attributes["external_offsets"] = (
-                external_offsets
-                if isinstance(external_offsets, AffineMapAttr)
-                else AffineMapAttr.get(external_offsets)
-            )
-            self.operation.attributes["external_sizes"] = DenseI64ArrayAttr.get(
-                external_sizes
-            )
-            self.operation.attributes["external_strides"] = DenseI64ArrayAttr.get(
-                external_strides
-            )
-        if distinct_transfer:
-            self.operation.attributes["distinct_transfer"] = UnitAttr.get()
         if hoist_after is not None:
             self.operation.attributes["hoist_after"] = FlatSymbolRefAttr.get(
                 hoist_after
