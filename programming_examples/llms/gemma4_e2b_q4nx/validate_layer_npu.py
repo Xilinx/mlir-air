@@ -274,7 +274,14 @@ def main():
         kv_out = np.frombuffer(kv_bo.map(), dtype=bfloat16, count=n_kv).astype(
             np.float32
         )
-        np.savez(a.dump, got=got, want=want, x=x, x0=x0, emb_L=emb_L, L=L, kv=kv_out)
+        # Y too. The QKV phase is host-drained, so Y[0 : HOST_ROUNDS*PAYLOAD] is
+        # the device's own q|k|v (4096+1024+1024) -- the attention INPUT, and the
+        # only direct observable between the projections and the o gather.
+        y_bo.sync(FROM)
+        y_out = np.frombuffer(y_bo.map(), dtype=bfloat16, count=n_y).astype(np.float32)
+        np.savez(
+            a.dump, got=got, want=want, x=x, x0=x0, emb_L=emb_L, L=L, kv=kv_out, y=y_out
+        )
         print(f"  dumped -> {a.dump}")
     c = cos_sim(got, want)
     rg, rw = float(np.sqrt((got**2).mean())), float(np.sqrt((want**2).mean()))
