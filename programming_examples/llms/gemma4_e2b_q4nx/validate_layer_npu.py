@@ -174,6 +174,18 @@ def main():
         f"{'own kv' if gw.owns_kv(L) else 'shared kv'}) on a 1-layer build",
         flush=True,
     )
+    if not gw.owns_kv(L):
+        # Layers at or past first_kv_shared_layer_idx (35 - 20 = 15) carry no
+        # k/v projection at all -- they reuse the cache of the last non-shared
+        # layer of their own type -- so there is no single-layer expression to
+        # score them against, and cpu_layer just raises KeyError('k'). Checking
+        # them needs a two-layer build that fills the cache from the owning
+        # layer first.
+        raise SystemExit(
+            f"layer {L} shares its KV cache and has no k/v projection, so a "
+            f"one-layer build cannot exercise it. Pick a layer below "
+            f"{gw.NUM_LAYERS - 20}."
+        )
 
     if a.rebuild_cache or not os.path.exists(a.cache):
         rq.build_requant_cache(a.bundle, fd, a.cache, layers=[L])
