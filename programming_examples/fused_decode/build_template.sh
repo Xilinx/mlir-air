@@ -92,7 +92,12 @@ for k in proj_qmm rms_residual glu rope; do
   # assignment inherits that status -- under `set -e` every build that is NOT
   # mode 3 then dies here, silently, after printing "rms_residual.o". Use an
   # if/fi so the substitution always succeeds.
-  [ "$k" = "rms_residual" ] && EXTRA="${RMS_CHUNK_PROBE:+-DRMS_CHUNK_PROBE=$RMS_CHUNK_PROBE} ${RMS_DELAY:+-DRMS_DELAY=$RMS_DELAY} $(if [ "${RMS_MEMTILE_REFEED:-0}" = 3 ]; then echo -DRMS_ROW_OUT; fi)"
+  # RMS_XNORM_DEMUX additionally needs the row written PAST a packet header, so
+  # the routing word the compiler stores at the put's offsets[0] does not land
+  # on x[0]. RMS_ROW_HDR is the payload offset in elements and has to match the
+  # builder's _RF_HDR_PAYLOAD; its own macro so a mode-3 build without the demux
+  # keeps the code it ships today.
+  [ "$k" = "rms_residual" ] && EXTRA="${RMS_CHUNK_PROBE:+-DRMS_CHUNK_PROBE=$RMS_CHUNK_PROBE} ${RMS_DELAY:+-DRMS_DELAY=$RMS_DELAY} $(if [ "${RMS_MEMTILE_REFEED:-0}" = 3 ]; then echo -DRMS_ROW_OUT; fi) $(if [ "${RMS_XNORM_DEMUX:-0}" != 0 ]; then echo "-DRMS_ROW_HDR=${RMS_ROW_HDR:-16}"; fi)"
   # GLU_ROW_PROBE=<n>: diagnostic variants of the batched GLU row (see glu.cc).
   # Batch-only, so the shipping kernel stays inert either way.
   [ "$k" = "glu" ] && [ -n "${GLU_ROW_PROBE:-}" ] && EXTRA="-DGLU_ROW_PROBE=$GLU_ROW_PROBE"

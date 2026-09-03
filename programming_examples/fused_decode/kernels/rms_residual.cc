@@ -505,6 +505,59 @@ void rms_row_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
 }
 #endif
 
+#ifdef RMS_ROW_HDR
+/// rms_row_aie writing its row PAST A PACKET HEADER, at y + RMS_ROW_HDR.
+///
+/// A put that names a `dest` originates a packet, and air-annotate-packet-ids
+/// stores the 32-bit routing header into the payload at the put's offsets[0] --
+/// the switchbox reads the first word of what arrives, so the header IS
+/// offsets[0]. With the row at y+0 that word lands on x[0] and x[1]: the
+/// switchbox strips it at the far end, the consumer receives two elements fewer
+/// than it asked for, and its fill never completes. Reserving room in front is
+/// how @outA has always done it (header at 14, payload at 16).
+///
+/// RMS_ROW_HDR is the PAYLOAD offset in elements and must be a multiple of the
+/// vector width, or every store here is unaligned; 16 bf16 = 32 bytes is the
+/// first that qualifies, which is why @outA's payload sits at 16 and not 2.
+/// The two header elements go at RMS_ROW_HDR-2, named by the put, not here.
+///
+/// Its own #ifdef rather than a parameter on rms_row_aie: mode 3 ships that
+/// symbol, and changing its signature would move every mode-3 build's code even
+/// where no demux exists.
+/// `pkt_id` >= 0 writes the routing word here instead; -1 leaves it to the
+/// compiler, which is what a `dest`-naming put gets. Only the SINGLE-LEAF
+/// bisection uses the first form: a single-destination channel may not carry a
+/// `dest` (the verifier: "selects a destination, but its routing domain has no
+/// demux"), so the one shape that separates "a core can write a header" from "a
+/// core can fan out" has to write it by hand. That is also how this design used
+/// to do it everywhere, before the put's dest became the single spelling.
+void rms_row_hdr_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                     float *restrict scales, int t, int row_stride, int n,
+                     int pkt_id) {
+  constexpr int vector_size = 16;
+  static_assert(RMS_ROW_HDR % vector_size == 0,
+                "the payload offset must keep the row vector-aligned");
+  if (pkt_id >= 0)
+    *reinterpret_cast<int *>(y + RMS_ROW_HDR - 2) = pkt_id;
+  const bf16 *it_x = x + t * row_stride;
+  const bf16 *it_w = w;
+  bf16 *it_y = y + RMS_ROW_HDR;
+  const float s = scales[t];
+  AIE_LOOP_RANGE(8)
+  AIE_LOOP_UNROLL(8)
+  for (int i = 0; i < n / vector_size; i++) {
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+    aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
+    aie::vector<float, vector_size> wx_vec = aie::mul(x_vec, w_vec);
+    aie::vector<bf16, vector_size> o_vec = aie::mul(wx_vec, s);
+    aie::store_v(it_y, o_vec);
+    it_x += vector_size;
+    it_w += vector_size;
+    it_y += vector_size;
+  }
+}
+#endif
+
 /// residual_acc_row_aie, but `acc` is the fresh [batch][n] band fetch being
 /// accumulated into (row_stride=n, offset 0 -- the caller's fetch already
 /// selected the right band, so there is no separate `off` term). `x` (the

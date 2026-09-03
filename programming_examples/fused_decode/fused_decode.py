@@ -2205,12 +2205,76 @@ if _RF_SPLIT:
 # the first 32-byte-aligned start after a 2-element header, which is why @outA
 # uses 14/16 and not 0/2. NOT YET BUILT.
 _RF_DEMUX = int(_os.environ.get("RMS_XNORM_DEMUX", "0")) if BATCH > 1 else 0
-if _RF_DEMUX:
+# RMS_XNORM_DEMUX=2: ONE LEAF. A pure bisection, and the only one that separates
+# the two things the two-leaf build does at once -- write the routing header from
+# a COMPUTE CORE, and fan a core's channel out to TWO destinations. Nothing else
+# in this design does either: @outA writes a header from a core but is
+# single-destination, and @outY fans out but is sourced from a MEMTILE.
+#
+# So: same header machinery (the core stores the id at the put's offsets[0], the
+# row sits past it, the DMA does not stamp), one destination, and the SHIPPING
+# counts -- no split, cycle [12, 38], everything else identical to the mode-3
+# control. It must run and its dump must be BYTE-IDENTICAL to the control's. If
+# it does, core-written headers work and two destinations from a core are the
+# wall; if it hangs, the header machinery is, and it can be chased in this much
+# smaller setting.
+#
+# IT RAN, and its dump is byte-identical to the mode-3 control (0 of 20,480).
+# So a compute core writing its own routing word, with the row past it and the
+# put starting AT the header, is proven bit-exact -- and the switchbox does strip
+# the header, since the relay's fill of BATCH*K completed unchanged.
+#
+# RMS_XNORM_DEMUX=3: TWO LEAVES, KERNEL-WRITTEN HEADER. Keeps everything =2 just
+# proved and adds only the second destination. The core knows its leaf
+# statically at every call site, so naming the id in the kernel costs nothing
+# and avoids the `dest` path entirely -- which also drops the compiler's store,
+# the one part of the two-leaf build that has never run.
+_RF_DEMUX1 = _RF_DEMUX == 2
+_RF_KHDR = _RF_DEMUX in (2, 3)
+if _RF_DEMUX and not _RF_DEMUX1:
     assert _RF_SPLIT, "RMS_XNORM_DEMUX carries RMS_SPLIT_DIRECT's split; set both"
+if _RF_DEMUX1:
+    assert not _RF_SPLIT, "RMS_XNORM_DEMUX=2 is the single-leaf control: no split"
+# Is there a second leaf to emit? Only the two-leaf forms have one.
+_RF_LEAF1 = bool(_RF_DEMUX and not _RF_DEMUX1)
+# The ids. One for the single-leaf control, one per leaf otherwise, and the
+# kernel-written forms pass ids[leaf] to the kernel rather than leaving it to
+# the compiler. 9 and 10 are free in the built design.
+_RF_PKT_IDS = [
+    int(v)
+    for v in _os.environ.get("RMS_DEMUX_PKT_IDS", "9" if _RF_DEMUX1 else "9,10").split(
+        ","
+    )
+]
 # The physical S2MM channel floor for leaf 1's fill on the relay memtile. Its
 # only job is to keep that fill off leaf 0's chain; 3 is the first free one on
 # col 4 (S2MM used=[0,1,2]) and the knob exists to re-aim it if the census moves.
 _RF_LEAF1_CH = int(_os.environ.get("RMS_DEMUX_LEAF1_CH", "3"))
+# Emit leaf 1's sweep and its fill BEFORE leaf 0's ph0, to break the write-lock
+# race between the two fill chains (see _emit_norm). RMS_DEMUX_LEAF1_LAST=1 puts
+# it back at the end, which is the shape that deadlocked.
+_RF_LEAF1_FIRST = not _os.environ.get("RMS_DEMUX_LEAF1_LAST")
+# WHERE THE ROUTING HEADER GOES in the rms core's staging buffer, in elements.
+# HDR is 2 (a 32-bit word of bf16), and the payload has to start on a vector
+# boundary or every store in the kernel is unaligned -- 16 bf16 = 32 bytes is
+# the first offset that qualifies, which is why @outA's payload sits at 16 and
+# its header at 14, and this mirrors it. Must equal the kernel's RMS_ROW_HDR
+# (build_template.sh passes it).
+_RF_HDR_PAYLOAD = int(_os.environ.get("RMS_ROW_HDR", "16"))
+_RF_HDR_OFF = _RF_HDR_PAYLOAD - HDR
+if _RF_DEMUX:
+    assert _RF_HDR_OFF >= 0 and _RF_HDR_PAYLOAD % 16 == 0, (
+        f"RMS_ROW_HDR={_RF_HDR_PAYLOAD} must be a non-negative multiple of the "
+        f"16-element vector width, with room for the {HDR}-element header"
+    )
+    # The row moves up inside the staging buffer, so the buffer has to be long
+    # enough for it. stg is BATCH*STG_W and the row is K; at batch 8 that is
+    # 4096 against 16 + 2560, so this is slack, not a constraint -- but it is
+    # the kind that goes silently wrong at another batch or model.
+    assert _RF_HDR_PAYLOAD + K <= BATCH * STG_W, (
+        f"the rms staging buffer holds {BATCH * STG_W} elements and the "
+        f"header-offset row needs {_RF_HDR_PAYLOAD} + {K}"
+    )
 # The channel the rms core's mode-3 sweeps ride. Under the demux it is a
 # DIFFERENT NAME, not a re-shaped @xnorm: @xnorm has a dozen mode-0 call sites
 # that index it flat, and the core still ends up with exactly two channels
@@ -3122,7 +3186,17 @@ def build_module():
         # GLU_OUT token stride -- so the down phase sees the same layout the
         # rms core's X does, and _feed_inX does not need a second shape.
         down_l2 = MemRefType.get([BATCH * GLU_OUT], bf16, memory_space=l2)
-        rmsrow_l2 = MemRefType.get([BATCH * K], bf16, memory_space=l2)
+        # _RMS_HDR_KEEP: bisection, and the ONE bit it reads is whether the
+        # demux's destination STRIPS the routing header. The relay slab and its
+        # FILL grow by HDR per row; the DRAIN does not, so it sends the first
+        # BATCH*K of a slab whose rows are now HDR longer -- the X is wrong by
+        # construction and that is fine. If the header is NOT stripped the fill
+        # gets its BATCH*(K+HDR) and the dispatch COMPLETES; if it is stripped
+        # the fill is HDR*BATCH short and it hangs exactly as it does today.
+        # Completion is the answer, not the output.
+        _RMS_HDR_KEEP = bool(_RF_DEMUX and _os.environ.get("_RMS_HDR_KEEP"))
+        _RMSROW_W = K + HDR if _RMS_HDR_KEEP else K
+        rmsrow_l2 = MemRefType.get([BATCH * _RMSROW_W], bf16, memory_space=l2)
         # relay memtile columns for the id-demux dests (free cols, not proj/X/MT).
         # GLU dest (gate-up) goes DIRECT to the GLU tile (no relay).
         RELAY_COLS = [3, 5, 4][:NDEST]
@@ -3241,6 +3315,24 @@ def build_module():
                     visibility="private",
                 )
                 rms_row_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+                if _RF_DEMUX:
+                    # Same call, row written at _RF_HDR_PAYLOAD instead of 0, so
+                    # the routing word the compiler stores at the put's
+                    # offsets[0] has somewhere to go that is not x[0]. Behind
+                    # its own kernel macro (-DRMS_ROW_HDR) rather than a
+                    # parameter on rms_row_aie, so a mode-3 build without the
+                    # demux keeps the code it ships today.
+                    rms_row_hdr_aie = FuncOp(
+                        "rms_row_hdr_aie",
+                        (
+                            [rstg_l1, rmsb_l1, rms_l1, rscl_l1, i32, i32, i32, i32],
+                            [],
+                        ),
+                        visibility="private",
+                    )
+                    rms_row_hdr_aie.attributes["link_with"] = StringAttr.get(
+                        "rms_residual.o"
+                    )
             # (acc_batch, round, row, offset_in_row, round_width)
             residual_acc_row_aie = FuncOp(
                 "residual_acc_row_aie",
@@ -3485,8 +3577,32 @@ def build_module():
             #
             # Both leaves land in the SAME slab, so the drain stays the one
             # count-free self-looping BD the mode requires.
-            _xd = Channel("xdemux", size=[1, 1], broadcast_shape=[1, 2])
+            _xd = (
+                Channel("xdemux", size=[1])
+                if _RF_DEMUX1
+                else Channel("xdemux", size=[1, 1], broadcast_shape=[1, 2])
+            )
             _xd.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
+            if _RF_KHDR:
+                # The kernel writes the routing word, so the DMA must not stamp
+                # one in front of it. With several pinned ids
+                # channelSourceWritesHeader infers that anyway ("the DMA cannot
+                # stamp more than one id, so the core must be writing it"), but
+                # with one it cannot -- and saying it outright is the honest
+                # spelling for both.
+                _xd.operation.attributes["air.src_writes_pkt_header"] = UnitAttr.get()
+            # PINNED IDS, because the derived ones COLLIDE. air-annotate-packet-ids
+            # allocates a domain's ids from the top (31, 30, 29 ...) and each
+            # domain starts over, so @xdemux was handed 31 and 30 -- the two the
+            # projection-output demux already carries on 22 flows apiece. Two
+            # packet flows sharing an id along a shared link mis-deliver; this
+            # design has already measured the milder version of that ("two
+            # packet flows sharing an id from two ports of one tile fail with
+            # 'Unable to find a legal routing'"). 9 and 10 are free: the built
+            # design uses 0..8 and 29..31 and nothing between.
+            _xd.operation.attributes["packet_ids"] = ArrayAttr.get(
+                [IntegerAttr.get(T.i32(), v) for v in _RF_PKT_IDS]
+            )
             # Same pin and same reason as @xnorm's below: keep this off MM2S0,
             # where @layerOut is circuit, so the core's two ports stay one
             # circuit and one packet rather than dual-fan packet.
@@ -6002,34 +6118,16 @@ def build_module():
                         # _RMSROW0/_RMSROW2, so this has to follow or the fills
                         # would be got from a channel nobody puts on.
                         if src is None:
-                            src = (_RMSROW_CH, 0) if _RF_DEMUX else "xnorm"
+                            src = (
+                                (_RMSROW_CH, 0)
+                                if (_RF_DEMUX and not _RF_DEMUX1)
+                                else _RMSROW_CH if _RF_DEMUX1 else "xnorm"
+                            )
                         _leaf = None
                         if isinstance(src, tuple):
                             src, _leaf = src
-                        for _cnt in seq:
-                            # `src` is @xnorm for the decode and LM-head arms
-                            # and @tapsX for an extra wave. A DIFFERENT CHANNEL
-                            # is the whole point: DMA chains are per tile AND
-                            # channel, so the extra arm's fill sits on its own
-                            # S2MM chain and returns to its own BD 0, instead of
-                            # advancing the [12, 38] chain the other arms walk.
-                            # The drain below is shared -- same buffer, same
-                            # descriptor, same channel -- so it stays the ONE
-                            # count-free self-looping BD the mode requires.
-                            ChannelGet(
-                                src,
-                                rb,
-                                offsets=[idx(0)],
-                                sizes=[idx(BATCH * K)],
-                                strides=[idx(1)],
-                                **(
-                                    {"indices": [idx(0), idx(_leaf)]}
-                                    if _leaf is not None
-                                    else {}
-                                ),
-                            )
-                            refeed(_cnt, lambda: _xnorm_put(rb, K, chan=out))
-                        if leaf1:
+
+                        def _emit_leaf1():
                             # THE DEMUX'S SECOND LEAF, into THIS ARM'S SLAB.
                             #
                             # It was a slab of its own until the first build
@@ -6057,7 +6155,7 @@ def build_module():
                                 src,
                                 rb,
                                 offsets=[idx(0)],
-                                sizes=[idx(BATCH * K)],
+                                sizes=[idx(BATCH * _RMSROW_W)],
                                 strides=[idx(1)],
                                 indices=[idx(0), idx(1)],
                             )
@@ -6075,6 +6173,34 @@ def build_module():
                                 IntegerAttr.get(T.i32(), 1)
                             )
                             refeed(1, lambda: _xnorm_put(rb, K, chan=out))
+
+                        if leaf1 and _RF_LEAF1_FIRST:
+                            _emit_leaf1()
+                        for _cnt in seq:
+                            # `src` is @xnorm for the decode and LM-head arms
+                            # and @tapsX for an extra wave. A DIFFERENT CHANNEL
+                            # is the whole point: DMA chains are per tile AND
+                            # channel, so the extra arm's fill sits on its own
+                            # S2MM chain and returns to its own BD 0, instead of
+                            # advancing the [12, 38] chain the other arms walk.
+                            # The drain below is shared -- same buffer, same
+                            # descriptor, same channel -- so it stays the ONE
+                            # count-free self-looping BD the mode requires.
+                            ChannelGet(
+                                src,
+                                rb,
+                                offsets=[idx(0)],
+                                sizes=[idx(BATCH * _RMSROW_W)],
+                                strides=[idx(1)],
+                                **(
+                                    {"indices": [idx(0), idx(_leaf)]}
+                                    if _leaf is not None
+                                    else {}
+                                ),
+                            )
+                            refeed(_cnt, lambda: _xnorm_put(rb, K, chan=out))
+                        if leaf1 and not _RF_LEAF1_FIRST:
+                            _emit_leaf1()
 
                     def _feed_inX(src, total_chunks):
                         for _rc in for_(idx(0), idx(total_chunks), idx(1)):
@@ -7785,7 +7911,7 @@ def build_module():
                             # split takes one of ph0's re-sends, so the consumer
                             # must still see 11 + 1 before ph1's o-proj X and
                             # then 38 for ph2.
-                            _rmsrow_relay(_XN1, _RF_PH0_DEC, _rb, leaf1=bool(_RF_DEMUX))
+                            _rmsrow_relay(_XN1, _RF_PH0_DEC, _rb, leaf1=_RF_LEAF1)
                         refeed(
                             OPROJ_REFEED,
                             lambda: _xnorm_put(
@@ -7833,6 +7959,8 @@ def build_module():
                             emits no transfer.
                             """
                             if _RF_DEMUX:
+                                if not _RF_LEAF1:
+                                    return
                                 # THE DEMUX LEAF, and it lives INSIDE the arm's
                                 # own relay call now (_rmsrow_relay(leaf1=True)),
                                 # filling that arm's slab rather than a slab of
@@ -7887,9 +8015,7 @@ def build_module():
                                 _vb.operation.attributes["air.memtile_col"] = (
                                     IntegerAttr.get(T.i32(), RMSROW_COL)
                                 )
-                                _rmsrow_relay(
-                                    _XN1, _RF_PH0_VOC, _vb, leaf1=bool(_RF_DEMUX)
-                                )
+                                _rmsrow_relay(_XN1, _RF_PH0_VOC, _vb, leaf1=_RF_LEAF1)
                                 DeallocOp(_vb)
                             _tapsx_fill(0)
                             yield_([])
@@ -9390,7 +9516,11 @@ def build_module():
                             ):
                                 for _t in for_(idx(0), idx(BATCH), idx(1)):
                                     CallOp(
-                                        rms_row_aie,
+                                        (
+                                            rms_row_hdr_aie
+                                            if ch == "xdemux"
+                                            else rms_row_aie
+                                        ),
                                         [
                                             stg,
                                             xb,
@@ -9399,7 +9529,22 @@ def build_module():
                                             arith.index_cast(i32, _t),
                                             _i32(K),
                                             _i32(K),
-                                        ],
+                                        ]
+                                        + (
+                                            # -1: the compiler writes the header
+                                            # from the put's dest. The single-leaf
+                                            # bisection has no dest to write from,
+                                            # so it names the id here.
+                                            [
+                                                _i32(
+                                                    _RF_PKT_IDS[leaf]
+                                                    if _RF_KHDR
+                                                    else -1
+                                                )
+                                            ]
+                                            if ch == "xdemux"
+                                            else []
+                                        ),
                                     )
                                     # 1-D contiguous, like the chunk put below
                                     # and for the same reason: a compute tile's
@@ -9411,19 +9556,41 @@ def build_module():
                                     # than spatial; without it every leaf would
                                     # receive every sweep. indices sit at the
                                     # size dims ([1,1]), as @outY's put does.
+                                    #
+                                    # AND IT STARTS AT THE HEADER, not at the
+                                    # payload. The compiler stores the routing
+                                    # word at offsets[0], so offsets[0] has to
+                                    # BE the header: the window is
+                                    # [_RF_HDR_OFF, HDR + K) and the kernel above
+                                    # wrote the row at _RF_HDR_PAYLOAD. The
+                                    # switchbox strips the header at the demux's
+                                    # destinations -- @outY puts 4098 and its
+                                    # gets take 4096 -- so the relay still
+                                    # receives exactly K per transfer and its
+                                    # fill is unchanged.
                                     ChannelPut(
                                         ch,
                                         stg,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(K)],
+                                        offsets=[
+                                            idx(_RF_HDR_OFF if ch == "xdemux" else 0)
+                                        ],
+                                        sizes=[idx(K + HDR if ch == "xdemux" else K)],
                                         strides=[idx(1)],
                                         **(
-                                            {
-                                                "indices": [idx(0), idx(0)],
-                                                "dest": idx(leaf),
-                                            }
-                                            if ch == "xdemux"
-                                            else {}
+                                            (
+                                                {}
+                                                if _RF_DEMUX1
+                                                else {"indices": [idx(0), idx(0)]}
+                                            )
+                                            if (ch == "xdemux" and _RF_KHDR)
+                                            else (
+                                                {
+                                                    "indices": [idx(0), idx(0)],
+                                                    "dest": idx(leaf),
+                                                }
+                                                if ch == "xdemux"
+                                                else {}
+                                            )
                                         ),
                                     )
                                     yield_([])
@@ -9778,8 +9945,31 @@ def build_module():
                         w2 = AllocOp(rms_l1, [], []) if POST_RMS else None
 
                         def _emit_norm(wbuf, nrefeed, ch="xnorm", direct=False):
+                            # LEAF 1 GOES FIRST, and the reason is a lock race,
+                            # not taste. A DMA BD acquires its lock BEFORE its
+                            # data arrives. Leaf 0's ph0 fill acquires 38 write
+                            # credits and leaf 1's acquires 1; both chains are
+                            # armed at once and the write lock inits to 38, so
+                            # if leaf 1 arms first it takes one and leaf 0 can
+                            # never reach 38. The core is meanwhile sending leaf
+                            # 0's data, nobody accepts it, the core back-
+                            # pressures, and leaf 1's data -- the only thing that
+                            # would release a credit -- is never sent. Deadlock,
+                            # and it is invisible in the IR: every BD is correct
+                            # on its own.
+                            #
+                            # Sending leaf 1's sweep FIRST orders it: leaf 1
+                            # takes its 1, completes on the data already in
+                            # flight, releases a read credit, the drain returns
+                            # the write credit, and leaf 0 then finds its 38.
+                            # Both sweeps are ph0 replays of the same rows, so
+                            # which of the twelve goes first is not observable.
+                            if direct and _RF_SPLIT and _RF_LEAF1_FIRST:
+                                _rms_batched_norm(
+                                    xb, stg, scl, wbuf, 1, _arm, ch, leaf=1
+                                )
                             _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm, ch)
-                            if direct and _RF_SPLIT:
+                            if direct and _RF_SPLIT and not _RF_LEAF1_FIRST:
                                 # THE SPLIT COUNT's other half. ONE sweep, on
                                 # _XN1 rather than @xnorm, on EVERY arm and
                                 # outside the arm switch -- that is the whole
