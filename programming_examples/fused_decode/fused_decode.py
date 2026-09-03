@@ -876,6 +876,13 @@ ATTN_L = 32  # KV context length
 DECODE_GOLDEN = _os.environ.get("DECODE_GOLDEN", "")
 if DECODE_GOLDEN:
     ATTN_L = int(_os.environ.get("DECODE_GOLDEN_L", "1"))
+# DECODE_ATTN_L sets the context length without the golden harness, which is
+# what a build used purely as a reference for another build wants: two same-
+# ATTN_MAXL builds to calibrate an instruction slope, or a static build to
+# check a runtime-L one against. It defers to DECODE_GOLDEN_L when both are set
+# so the golden path keeps its single source of truth.
+elif _os.environ.get("DECODE_ATTN_L"):
+    ATTN_L = int(_os.environ["DECODE_ATTN_L"])
 # Feed the reference's separate post_attention_layernorm weight to the on-chip 2nd rmsnorm
 # (the reference uses a distinct post_attention_layernorm; required for real the reference parity).
 POST_RMS = bool(DECODE_GOLDEN)
@@ -930,6 +937,32 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+
+
+def _dynseq_knob(name, default):
+    return bool(int(_os.environ.get(name, str(int(default)))))
+
+
+# Individually overridable, for the full-ELF path. A static TXN binary -- what
+# --output-format=elf emits -- is a flat list of literal words, so it can hold
+# a runtime *value* (via a scratchpad parameter) but not a runtime instruction
+# *stream*: a loop whose trip count is unknown at compile time, or a BD payload
+# computed at dispatch, has no representation in it. DYNSEQ as a single switch
+# turns on both kinds at once, which is why it cannot build an ELF.
+#
+# Splitting them allows the combination that can: the mask threshold L runtime
+# (DYNSEQ_RTP), so one build serves every context length, while the core's
+# block loop stays a compile-time ATTN_ROUNDS and the far blocks are skipped by
+# masking (DYNSEQ_TRIP off) -- which is what the shipping xclbin design already
+# does, and it keeps the shim's push count fixed and agreeing with the cores.
+DYNSEQ_RB = _dynseq_knob("DECODE_DYNSEQ_RB", DYNSEQ_RB)
+DYNSEQ_APPEND = _dynseq_knob("DECODE_DYNSEQ_APPEND", DYNSEQ_APPEND)
+DYNSEQ_RTP = _dynseq_knob("DECODE_DYNSEQ_RTP", DYNSEQ_RTP)
+DYNSEQ_MEM = _dynseq_knob("DECODE_DYNSEQ_MEM", DYNSEQ_MEM)
+# The core's attention trip count. Defaults to following DYNSEQ_RTP, which is
+# the existing coupling; set to 0 with DYNSEQ_RTP on to get a runtime L with a
+# static loop.
+DYNSEQ_TRIP = _dynseq_knob("DECODE_DYNSEQ_TRIP", DYNSEQ_RTP)
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -3884,7 +3917,7 @@ def build_module():
                                     pushes, which is what keeps the core off a channel get
                                     that never arrives.
                                     """
-                                    if not DYNSEQ_RTP:
+                                    if not DYNSEQ_TRIP:
                                         return idx(ATTN_ROUNDS)
                                     _s = arith.addi(
                                         Lh,
@@ -5161,14 +5194,40 @@ def run():
         print(str(module))
         return 0
 
+    # DECODE_OUTPUT_FORMAT=elf: build a full ELF instead of an xclbin. The ELF
+    # carries its instruction stream internally, so there is no insts.bin to
+    # patch per token -- see the note on instance_name below, and DYNSEQ.
+    out_fmt = _os.environ.get("DECODE_OUTPUT_FORMAT", "xclbin")
+    if out_fmt not in ("xclbin", "elf"):
+        raise SystemExit(f"DECODE_OUTPUT_FORMAT must be xclbin or elf, got {out_fmt!r}")
+
+    # For ELF, XRT resolves the kernel as "main:<instance_name>", and
+    # instance_name must be the module's func.func name -- the OUTER runtime
+    # sequence, the one holding `aiex.configure @seg` (which lowers to the
+    # load_pdi that configures locks, BDs, routing and core enable). Naming the
+    # inner @seg_sequence instead yields shim DMAs with no tile configuration:
+    # the dispatch does not fault, it hangs (ERT_CMD_STATE_TIMEOUT). Derive it
+    # from the module rather than hardcoding, so it cannot drift.
+    instance_name = ""
+    if out_fmt == "elf":
+        import re as _re
+
+        _fns = _re.findall(r"func\.func @(\w+)\(", str(module))
+        if len(_fns) != 1:
+            raise SystemExit(
+                f"expected exactly one func.func for the ELF entry point, found {_fns}"
+            )
+        instance_name = _fns[0]
+
     # use_lock_race_condition_fix_v2: emit the reference-style daisy-chained locks for the
     # shared-L2 fan-in (group/main asymmetric gather) -- matches the reproducer's
     # serialized 4-writer chain (mem_0_1 lock_0_1->_159->...->_162). Without it AIR
     # emits a counting lock whose writer/reader counts mismatch -> deadlock.
     backend = XRTBackend(
         omit_while_true_loop=False,
-        output_format="xclbin",
+        output_format=out_fmt,
         kernel_name="MLIR_AIE",
+        instance_name=instance_name,
         stack_size=STACK_SIZE,
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=bool(COALESCE),
@@ -5181,7 +5240,10 @@ def run():
         f"8 cascade pairs, NPH={NPH} dests={DEMUX}"
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
-    print(f"[q4nx_decode] emitted {art.output_binary} + {art.insts}")
+    print(
+        f"[q4nx_decode] emitted {art.output_binary} + {art.insts} "
+        f"(kernel {art.kernel!r})"
+    )
     return 0
 
 
