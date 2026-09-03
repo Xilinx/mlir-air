@@ -700,6 +700,75 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
   return channel_op;
 }
 
+// Volume of an access pattern in elements, or nullopt if it is not static.
+static std::optional<int64_t> staticVolume(ArrayRef<OpFoldResult> sizes,
+                                           Value memref) {
+  if (sizes.empty()) {
+    auto ty = dyn_cast<MemRefType>(memref.getType());
+    if (!ty || !ty.hasStaticShape())
+      return std::nullopt;
+    return (int64_t)air::getTensorVolume(ty);
+  }
+  int64_t v = 1;
+  for (OpFoldResult s : sizes) {
+    std::optional<int64_t> c = getConstantIntValue(s);
+    if (!c)
+      return std::nullopt;
+    v *= *c;
+  }
+  return v;
+}
+
+// When the far buffer holds SEVERAL of the near window, the far half is that
+// buffer tiled by it.
+//
+// Nothing states this and nothing needs to: a channel is a FIFO, so the only
+// correctness requirement is that the byte sequence put equals the byte
+// sequence got. The near side's sequence is fixed by its own access pattern and
+// its enclosing nest; the far buffer is named on the same op. If the far buffer
+// is N near-windows wide then the near side takes it N pieces at a time, in
+// order, and the far half is the one descriptor that produces exactly that:
+// N windows of the near size, ascending, stride = that size.
+//
+// Deriving it is what lets the front end stop hand-writing the far half's
+// offsets -- which it often CANNOT write, because they step with a loop that
+// does not exist where the transfer is spelled.
+//
+// Only a 1-D far window is folded, and only an exact multiple. Anything else is
+// left alone: a partial tiling has no unique reading, and guessing one is how a
+// silent misroute gets built.
+static bool deriveTiledFarWindow(OpBuilder &b, Value farMemref,
+                                 SmallVector<OpFoldResult> &offsets,
+                                 SmallVector<OpFoldResult> &sizes,
+                                 SmallVector<OpFoldResult> &strides,
+                                 int64_t nearVolume) {
+  if (nearVolume <= 0)
+    return false;
+  if (sizes.size() > 1)
+    return false;
+  std::optional<int64_t> farVol = staticVolume(sizes, farMemref);
+  if (!farVol || *farVol <= nearVolume)
+    return false;
+  if (*farVol % nearVolume)
+    return false;
+  int64_t n = *farVol / nearVolume;
+  // A unit stride is what makes "the buffer holds N windows back to back" true;
+  // anything else is already a shaped access and is left as written.
+  if (!strides.empty()) {
+    std::optional<int64_t> st = getConstantIntValue(strides[0]);
+    if (!st || *st != 1)
+      return false;
+  }
+  OpFoldResult base =
+      offsets.empty() ? OpFoldResult(b.getIndexAttr(0)) : offsets[0];
+  if (!getConstantIntValue(base))
+    return false;
+  offsets.assign({base, b.getIndexAttr(0)});
+  sizes.assign({b.getIndexAttr(n), b.getIndexAttr(nearVolume)});
+  strides.assign({b.getIndexAttr(nearVolume), b.getIndexAttr(1)});
+  return true;
+}
+
 static LogicalResult replaceAIRDmaWithAIRChannelPairs(
     OpBuilder &builder, air::MemorySpace innerMemorySpace,
     air::DmaMemcpyNdOp op,
@@ -718,6 +787,25 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
   SmallVector<OpFoldResult> dst_sizes = op.getMixedDstSizes();
   SmallVector<OpFoldResult> src_strides = op.getMixedSrcStrides();
   SmallVector<OpFoldResult> dst_strides = op.getMixedDstStrides();
+
+  // Derive the far half's window from the near one, when the far buffer holds
+  // several of it. See deriveTiledFarWindow: this is the descriptor that makes
+  // the two byte sequences match, and the front end frequently cannot write it.
+  bool derivedFarWindow = false;
+  if (dst_type && src_type) {
+    bool dstIsInner = air::getMemorySpace(dst_type) == innerMemorySpace;
+    Value nearMemref = dstIsInner ? dst : src;
+    std::optional<int64_t> nearVol =
+        staticVolume(dstIsInner ? dst_sizes : src_sizes, nearMemref);
+    if (nearVol) {
+      if (dstIsInner)
+        derivedFarWindow = deriveTiledFarWindow(
+            builder, src, src_offsets, src_sizes, src_strides, *nearVol);
+      else
+        derivedFarWindow = deriveTiledFarWindow(
+            builder, dst, dst_offsets, dst_sizes, dst_strides, *nearVol);
+    }
+  }
 
   // The internal channel op shall inherit the dma op's dep list
   SmallVector<Value, 4> internalDeps = op.getAsyncDependencies();
@@ -973,6 +1061,12 @@ static LogicalResult replaceAIRDmaWithAIRChannelPairs(
                           StringAttr::get(op->getContext(), "internalGetPut"));
   externalGetPut->setAttr("loop-carried-dep",
                           StringAttr::get(op->getContext(), "external"));
+  // A derived far window is a whole buffer's worth per execution, so it belongs
+  // where the buffer is FILLED -- once per fill, not once per near execution.
+  // The hoist finds that site from the buffer itself.
+  if (derivedFarWindow)
+    externalGetPut->setAttr("air.derived_far_window",
+                            UnitAttr::get(op->getContext()));
   if (op->hasAttr("broadcast_set"))
     externalGetPut->setAttr("broadcast_set", op->getAttr("broadcast_set"));
   // Carry the issue-order anchor onto the EXTERNAL half only. It is the
@@ -1421,6 +1515,60 @@ static Operation *findEmittedTransfer(air::ChannelInterface getput,
   return nullptr;
 }
 
+// Where the far buffer is FILLED, outside the hierarchy being hoisted out of.
+//
+// A far half carrying a whole buffer's worth belongs once per fill, not once
+// per near execution, so its position is not a free choice and does not need to
+// be named: it is wherever something writes the buffer it reads. Finding that
+// site by the BUFFER rather than by a channel symbol is what lets it work when
+// the loop it must land in holds no channel endpoint of its own -- which is the
+// ordinary case for a feed whose inner loop exists only to step the window.
+//
+// Returns the last such writer (the fill completes before the forward), or
+// null.
+static Operation *findFillSite(Value farMemref, Operation *hier_op) {
+  Value root = air::resolveBufferRoot(farMemref);
+  Operation *found = nullptr;
+  hier_op->getParentRegion()->walk([&](Operation *o) {
+    if (hier_op->isAncestor(o))
+      return WalkResult::advance();
+    if (o == hier_op)
+      return WalkResult::advance();
+    // A get lands bytes in it; that is a fill. A put reads it, and is not.
+    if (auto g = dyn_cast<air::ChannelGetOp>(o))
+      if (air::resolveBufferRoot(g.getMemref()) == root)
+        found = o;
+    return WalkResult::advance();
+  });
+  return found;
+}
+
+// Drop async dependencies that do not reach where the op landed.
+//
+// The external half inherits the loop-carried token of the loop it was written
+// in. When it is placed by position -- at an anchor, or at the fill its derived
+// window belongs to -- it leaves that loop behind, and the token becomes a
+// block argument of a region it is no longer inside. Rebuilding the loop is not
+// an option here: that is the whole point of placing by position rather than by
+// structure. Drop the stale edges; air-dependency-canonicalize re-derives the
+// real ones from the buffers.
+static void pruneNonDominatingDeps(Operation *op) {
+  auto async = dyn_cast<air::AsyncOpInterface>(op);
+  if (!async)
+    return;
+  auto func = op->getParentOfType<func::FuncOp>();
+  if (!func)
+    return;
+  DominanceInfo dom(func);
+  // Erase from the back so the earlier indices stay valid.
+  SmallVector<unsigned> drop;
+  for (auto [i, d] : llvm::enumerate(async.getAsyncDependencies()))
+    if (!dom.properlyDominates(d, op))
+      drop.push_back(i);
+  for (unsigned i : llvm::reverse(drop))
+    async.eraseAsyncDependency(i);
+}
+
 // How many tiles of `hier_op` actually execute `getput`?
 //
 // A DMA carries one multiplicity, the CONSUMER's: it sits inside the hierarchy,
@@ -1620,10 +1768,22 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     }
 
     bool placeBefore = false;
+    // A derived far window has a position that follows from the buffer, so it
+    // needs no anchor: place it after the fill, in the fill's loop.
+    SmallVector<Operation *> derivedSites;
+    for (auto getput : externalGetPuts)
+      if (getput->hasAttr("air.derived_far_window"))
+        if (Operation *fill =
+                findFillSite(getput.getMemref(), hier_op.getOperation()))
+          if (!llvm::is_contained(derivedSites, fill))
+            derivedSites.push_back(fill);
+
     SmallVector<Operation *> anchorOps = findIssueOrderAnchors(
         byAnchor.front().second, hier_op.getOperation(), placeBefore);
     // More than one site means the anchor lives in several switch arms and the
     // transfer belongs in each; the clone below runs once per site.
+    if (anchorOps.empty() && !derivedSites.empty())
+      anchorOps = derivedSites;
     Operation *anchorOp = anchorOps.empty() ? nullptr : anchorOps.front();
 
     // Get backward slices to the target "external" side channel ops, to be
@@ -1870,10 +2030,21 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       // an unguarded one to the default point just before the hierarchy op.
       // They agree on what to clone, which is why they share this path.
       SetVector<Operation *> toClone;
-      for (auto *b : backwardSlice)
-        if (!isa<air::ChannelInterface>(b) &&
-            !b->hasTrait<OpTrait::IsTerminator>() && b->getNumRegions() == 0)
-          toClone.insert(b);
+      for (auto *b : backwardSlice) {
+        if (isa<air::ChannelInterface>(b) ||
+            b->hasTrait<OpTrait::IsTerminator>() || b->getNumRegions())
+          continue;
+        // An op nested inside a region op cannot stand alone where this lands:
+        // its wrapper is what defines the values it uses, and cloning it out of
+        // that wrapper orphans it. The slice reaches such ops only by following
+        // ASYNC TOKENS -- the wrapper's token, not any value the transfer reads
+        // -- and those edges are dropped anyway when the transfer is placed by
+        // position, so nothing here is lost.
+        if (auto *parent = b->getParentOp())
+          if (isa<air::ExecuteOp>(parent))
+            continue;
+        toClone.insert(b);
+      }
 
       // One emission per anchor site. Unanchored, and in the ordinary anchored
       // case, that is a single site and this loop runs once; several sites
@@ -1921,9 +2092,10 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
           // getBackwardSlice fills the SetVector defs-before-uses, so its own
           // order is already a valid clone order.
           for (auto *b : toClone)
-            rewriter.clone(*b, siteRemap);
+            pruneNonDominatingDeps(rewriter.clone(*b, siteRemap));
           for (auto getput : group.second) {
             Operation *c = rewriter.clone(*getput.getOperation(), siteRemap);
+            pruneNonDominatingDeps(c);
             // Already emitted here by another consumer site sharing this
             // producer stream: keep the one descriptor and let this site's
             // internal half share it, exactly as the hand-written form does.
@@ -3128,6 +3300,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         op->removeAttr("air.hoist_before");
         op->removeAttr("air.hoist_unguarded");
         op->removeAttr("air.hoist_outside_loops");
+        op->removeAttr("air.derived_far_window");
       });
     }
 
