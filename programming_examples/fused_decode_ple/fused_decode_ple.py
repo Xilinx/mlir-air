@@ -1198,6 +1198,7 @@ PLE_OUT_CHUNKS = int(_os.environ.get("DECODE_PLE_OUT_CHUNKS", "1"))
 # same failure on both gpu and pug. Kept as a knob so the negative does not get
 # re-derived, not because it is a candidate.
 PLE_DRAIN_FIRST = PLE and int(_os.environ.get("DECODE_PLE_DRAIN_FIRST", "0"))
+PLE_W_ONESHOT = PLE and int(_os.environ.get("DECODE_PLE_W_ONESHOT", "0"))
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
     # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
@@ -2900,10 +2901,31 @@ def build_module():
                                 def _pw(dest, blk0, n):
                                     """n weight blocks starting at block blk0.
 
-                                    Python-unrolled, like the vocab feed: a
-                                    launch-scope for_ deadlocks the shim
+                                    DECODE_PLE_W_ONESHOT=1 sends the run as ONE
+                                    contiguous transfer instead of n. The core's
+                                    inbound chain is a self-looping 2-BD ring
+                                    (see the @pleW comment) and consumes it a
+                                    block at a time either way, so the only
+                                    difference is shim task count: 144 tasks on
+                                    one MM2S port becomes 3. That port carries
+                                    all three destinations now -- @pleX holds the
+                                    other one -- so the pressure is real.
+                                    Only safe since every PLE channel became
+                                    single-task: before that the core's chain
+                                    terminated and a single long put overran it.
+
+                                    Otherwise Python-unrolled, like the vocab
+                                    feed: a launch-scope for_ deadlocks the shim
                                     sequence (see _feed_wcols).
                                     """
+                                    if PLE_W_ONESHOT:
+                                        _pput(
+                                            dest,
+                                            PLEW,
+                                            arith.addi(_pb, idx(blk0 * PLE_BLK)),
+                                            n * PLE_BLK,
+                                        )
+                                        return
                                     for _bi in range(n):
                                         _pput(
                                             dest,
