@@ -2050,7 +2050,71 @@ _PH2_RELAY = RMS_MEMTILE_REFEED in (1, 2, 3)
 # 30); this core's lock ordering (mode 0 emits the identical call; acquire;
 # release). Root cause not isolated; until it is, S stays at the bit-exact
 # value. See docs/BZeroPlan.md item 1.
-_RF_S = XN_REFEED + REFEED[GATEUP_PHASE]
+# RMS_SPLIT_DIRECT: THE SPLIT COUNT. Take ONE of ph0's re-sends off the relay
+# and send it straight from the rms core to the X memtile on _XN1, so that
+# EVERY arm puts on _XN1 exactly once and only the @xnorm FILL counts differ.
+#
+# WHY IT IS THE ONLY WAY IN FOR THE PRE-PASS. A DFlash pre-pass wave contracts
+# over exactly K with i2 = 1, so it re-sends its X ONCE and has nothing to
+# re-broadcast; 1 does not divide the decode arm's 50, so no shared cycle can
+# serve both (the proof is in the _RF_PH0_EX comment below). The wave must
+# therefore BYPASS the relay, and then something has to produce its X on _XN1.
+# A channel only the extra arm names does not survive to flow construction, so
+# the producer has to exist on every arm -- which is exactly what this does.
+#
+# The arithmetic, with the split on:
+#
+#     _RF_CYCLE = [11, 38]   S = 49
+#     decode ph0   relay 11 (BD 0 -> 1)  + 1 direct = 12 re-sends
+#     decode ph2   relay 38 (BD 1 -> 0)              ONE fill, the pin holds
+#     LM           relay 49 (a whole cycle)  + 1 direct = 50
+#     extra        relay  0, leaves the chain at 0    + 1 direct = 1
+#
+# ph2 stays a single fill, so the multi-fill defect this design is pinned
+# around is untouched.
+#
+# CONTENT-IDENTICAL BY CONSTRUCTION. _rmsrow_relay's own docstring: "out's
+# stream is byte-identical to what @xnorm carries today ... so _feed_inX, @inX
+# and the 16 projection cores see exactly the stream they see now". The 12 ph0
+# sweeps are 12 replays of the SAME rows, so which producer emits one of them
+# cannot change a byte. dump_layer_output.py --diff must read IDENTICAL.
+#
+# BUILT 2026-09-03, AND IT HANGS. The builder side is right -- it emits, places,
+# routes and links -- and the device times out on the first dispatch, with and
+# without air.tile_dma_channel pinning @xin's compute end to MM2S1.
+#
+# THE CHAIN CENSUS SAYS WHY, and it confirms the mechanism this was predicted to
+# fail by rather than leaving it a guess. The rms core carries FOUR dma_start
+# chains before the split (MM2S 0, MM2S 1, S2MM 0, S2MM 1) and FOUR after -- one
+# per channel, no new one. So naming @xin from this core does not get it a port;
+# its puts FOLD INTO an existing chain, and a chain carrying two channels
+# alternates their BDs (@xnorm, @xin, @xnorm, ...) while the relay needs all of
+# a phase's fills consecutively. That is "a second channel name on its one free
+# MM2S alternates BDs on the core's own chain", now measured.
+#
+# So the port is a real wall and not a spelling problem. Do not retry this shape.
+#
+# WHAT IS STILL OPEN, and it is a DIFFERENT shape: make @xnorm a packet DEMUX
+# with two destinations -- leaf 0 the col-4 relay, leaf 1 the X memtile -- rather
+# than adding a second channel. One channel, ONE chain, one port; the leaf is
+# stamped per put, so there is no BD alternation to lose. @outA already does
+# exactly this FROM A COMPUTE TILE (`dest=destv` on the projection cores), so
+# the mechanism is proven in this design and only the wiring is new. The counts
+# below are unchanged by that -- [11, 38] is what the demux would carry too.
+#
+# WHAT IT COSTS. One extra core sweep per arm per layer: a pure recompute from
+# resident data, no transfer, against a whole regeneration that measured 0.20 ms.
+# See docs/BZeroPlan.md, "Route 3, priced: THE SPLIT COUNT".
+_RF_SPLIT = int(_os.environ.get("RMS_SPLIT_DIRECT", "0")) if BATCH > 1 else 0
+if _RF_SPLIT:
+    assert RMS_MEMTILE_REFEED == 3, "RMS_SPLIT_DIRECT is a mode-3 relay change"
+    assert XN_REFEED > 1, f"nothing to split off a ph0 of {XN_REFEED}"
+# The relay carries one FEWER re-send than the arm needs on ph0 and on the LM
+# head; the missing one is the core's direct put. Everything below derives from
+# these two rather than from XN_REFEED/VOCAB_RNDS.
+_XN_RELAY = XN_REFEED - _RF_SPLIT
+_VOC_RELAY = VOCAB_RNDS - _RF_SPLIT
+_RF_S = _XN_RELAY + REFEED[GATEUP_PHASE]
 # RF_CYCLE_S: force a SMALLER cycle sum than the gcd, i.e. more fills per layer
 # for the same re-sends. Diagnostic only -- it must still divide the gcd or an
 # arm cannot walk whole cycles, and the asserts below say so. It exists because
@@ -2084,7 +2148,7 @@ if _RF_CYCLE_ENV:
 # bit-exact S it cannot (VOCAB_RNDS=30 is not a multiple of 50), so its sequence
 # is rounded UP to the next boundary -- which OVER-FEEDS that arm and is only
 # safe where it is never dispatched. The guard below refuses to build otherwise.
-_RF_VOC_APPROX = bool(VOCAB_RNDS % _RF_S)
+_RF_VOC_APPROX = bool(_VOC_RELAY % _RF_S)
 if RMS_MEMTILE_REFEED == 3 and _RF_VOC_APPROX and not NO_LM_WAVES:
     raise SystemExit(
         f"RMS_MEMTILE_REFEED=3 needs DECODE_NO_LM_WAVES=1 for this model.\n"
@@ -2100,7 +2164,7 @@ if RMS_MEMTILE_REFEED == 3 and _RF_VOC_APPROX and not NO_LM_WAVES:
         f"  RF_CYCLE_S= forces it anyway, for whoever picks that up.\n"
         f"  See docs/BZeroPlan.md, 'ONE SWEEP PER PHASE'."
     )
-_RF_A = XN_REFEED % _RF_S
+_RF_A = _XN_RELAY % _RF_S
 _RF_CYCLE = _RF_CYCLE_ENV or ([_RF_S] if _RF_A == 0 else [_RF_A, _RF_S - _RF_A])
 assert (
     max(_RF_CYCLE) <= MAX_REFEED
@@ -2136,7 +2200,7 @@ def _rf_seq(start, total):
 # begins on (see _rmsrow_relay), and the relay ping-pongs one slab per cycle
 # position so that a fill boundary never leaves a transfer pending.
 _RF_PH0_DEC_I0 = 0
-_RF_PH0_DEC, _rf_i = _rf_seq(0, XN_REFEED)
+_RF_PH0_DEC, _rf_i = _rf_seq(0, _XN_RELAY)
 _RF_PH2_DEC_I0 = _rf_i
 _RF_PH2_DEC, _rf_i = _rf_seq(_rf_i, REFEED[GATEUP_PHASE])
 assert _rf_i == 0, "decode arm leaves the re-feed chain mid-cycle"
@@ -2144,10 +2208,10 @@ if _RF_VOC_APPROX:
     # Diagnostic builds only (RF_CYCLE_S not dividing the gcd): walk whole
     # cycles until the LM head's re-sends are covered. It over-feeds, so this
     # is only valid where that arm is never dispatched.
-    _rf_n = -(-VOCAB_RNDS // _RF_S) * _RF_S
+    _rf_n = -(-_VOC_RELAY // _RF_S) * _RF_S
     _RF_PH0_VOC, _rf_i = _rf_seq(0, _rf_n)
 else:
-    _RF_PH0_VOC, _rf_i = _rf_seq(0, VOCAB_RNDS)
+    _RF_PH0_VOC, _rf_i = _rf_seq(0, _VOC_RELAY)
 assert _rf_i == 0, "LM head arm leaves the re-feed chain mid-cycle"
 # AN EXTRA WAVE CANNOT WALK THE CYCLE, AND NO WAVE TABLE FIXES THAT.
 #
@@ -3616,6 +3680,23 @@ def build_module():
             # (measured -- see docs/BZeroPlan.md).
             _xc = channel_decl("xin", size=[1], channel_type="npu_dma_packet")
             _xc.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
+            if _RF_SPLIT:
+                # THE SPLIT COUNT makes the rms core a FOURTH producer of @xin,
+                # and that core's two MM2S are both taken. Left alone the placer
+                # packs the new endpoint onto whichever port it likes and the
+                # dispatch times out (measured). Pin the COMPUTE-tile end to
+                # MM2S1 -- the same port @xnorm is pinned to -- so the sharing
+                # is packet-with-packet, both bound for memtiles.
+                #
+                # The alternative packing is what the @layerOut pin above exists
+                # to prevent: sharing MM2S0 flips a CIRCUIT flow to packet, and
+                # that is the combination MEASURED to deadlock. Only the rms
+                # core is a compute-tile endpoint of @xin -- the other three
+                # producers are memtiles, which ignore this attribute by design
+                # (see the outY pin) -- so the pin is local to that core.
+                _xc.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
+                    T.i32(), 1
+                )
         # Batched LM head: the GLU core's second MM2S, carrying the vocab logits to
         # the host. Its own channel and not @layerOut, because a channel with two
         # producers is a shim fan-in and air-to-aie refuses those ("Fan-in for
@@ -9460,8 +9541,21 @@ def build_module():
                         w = AllocOp(rms_l1, [], [])
                         w2 = AllocOp(rms_l1, [], []) if POST_RMS else None
 
-                        def _emit_norm(wbuf, nrefeed, ch="xnorm"):
+                        def _emit_norm(wbuf, nrefeed, ch="xnorm", direct=False):
                             _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm, ch)
+                            if direct and _RF_SPLIT:
+                                # THE SPLIT COUNT's other half. ONE sweep, on
+                                # _XN1 rather than @xnorm, on EVERY arm and
+                                # outside the arm switch -- that is the whole
+                                # point: the relay's fill count is what varies
+                                # per arm, and this put does not, so _XN1 has a
+                                # producer even on an arm that fills nothing.
+                                #
+                                # Same buffer, same descriptor, same weight as
+                                # the sweep above: it IS one of ph0's re-sends,
+                                # just routed past the relay. A literal 1, not
+                                # an arm-selected count, so it cannot drift.
+                                _rms_batched_norm(xb, stg, scl, wbuf, 1, _arm, _XN1)
 
                         def _accumulate(nrnds, stage, guard=None):
                             """Add a projection's output into the residual.
@@ -9657,7 +9751,7 @@ def build_module():
                             _w_row_get(w)
                             if POST_RMS:
                                 _w_row_get(w2)
-                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0)
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0, direct=True)
                         elif RMS_W_ON_X:
                             # BOTH weights first, back to back, before anything
                             # else touches the band buffer -- and in the SAME
@@ -9687,10 +9781,10 @@ def build_module():
                             if POST_RMS:
                                 _rms_band_get(xb)
                                 CallOp(band_to_weight_aie, [w2, xb, _i32(K)])
-                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0)
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0, direct=True)
                         else:
                             ChannelGet("rmsW", w, indices=[idx(0)])
-                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0)
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0, direct=True)
                             if POST_RMS:
                                 # Swap in the post-attention weight BEFORE the
                                 # first o-proj get, not after: rmsW2 packet-muxes
