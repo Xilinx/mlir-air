@@ -1044,6 +1044,55 @@ class WavePrepass:
         return th, k, v
 
 
+def uni_hi_draft(waves=None):
+    """The launch range the DRAFTER carrying the waves is built at: no extras.
+
+    The drafter's decode stream must dispatch its own waves and nothing else.
+    On the target, fc rides the verify pass's tail because that pass has just
+    written the taps into the X slots fc reads; the drafter's X buffer holds the
+    drafter's own rows, so there is nothing to ride and fc takes its own stream
+    with the taps uploaded. That is the whole price of moving them, and it is
+    about a millisecond (fc alone 3.94 against 4.15 riding, plus the upload).
+    """
+    del waves  # the range is the drafter's own waves, whatever the table holds
+    d = _load_draft_fd()
+    return d.UNI_DEC + d.UNI_LM
+
+
+def draft_decoder_args(npz=None, waves=None):
+    """(env_extra, extra_weights) for a DRAFTER template that carries the waves.
+
+    `taps_decoder_args` for the other template, and the reason it exists is the
+    whole point of moving them: the pre-pass has always been built as extra
+    waves of the TARGET's program, which forces that program to mode 0 -- and
+    mode 0 costs the target 65 ms (169.38 against 104.01). Nothing about the
+    waves needs the target. They are the DRAFTER's weights (`wave_specs` takes
+    `fd_draft`), they read the target's taps out of an X slot the host writes
+    either way, and their weights already live in their OWN BO appended after
+    the existing args. So they ride the drafter, which is mode 0 anyway.
+
+    MEASURED on the drafter's own template, dflash_fc_wave_gate.py:
+
+        fc     25 waves  rel 1.999e-02  cos 0.999832   4.34 ms median
+        ctxkv0  4 waves  rel 1.621e-02  cos 0.999815   2.72 ms median
+        ctxkv1..4                       cos 0.9998
+
+    so 7.1 ms against the 6.65 the target's tail gave, for a target that keeps
+    its relay.
+    """
+    if waves is None:
+        waves, _ = wave_specs(_load_draft_fd())
+    import json
+
+    if npz is None:
+        npz = np.load(_HERE / "_draft_q4nx_w2ch.npz")
+    w, _ = build_extra_weights(_load_draft_fd(), npz, verbose=False)
+    return {
+        "DECODE_EXTRA_WAVES": json.dumps([x.as_config() for x in waves]),
+        "UNI_WAVE_HI": str(uni_hi_draft(waves)),
+    }, w
+
+
 def taps_decoder_args(npz=None, waves=None):
     """(env_extra, extra_weights) for a target template that carries the waves.
 

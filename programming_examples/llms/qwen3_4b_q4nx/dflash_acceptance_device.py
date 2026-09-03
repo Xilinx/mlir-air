@@ -74,11 +74,20 @@ def main():
     # RMS_MEMTILE_REFEED=3 usable with the fold: a narrow UNI_WAVE range lowers
     # to a different device under mode 3, so those streams' insts.bin address
     # hardware the verify xclbin does not have. See HybridPrepass.
-    ap.add_argument("--prepass", choices=("waves", "cpu", "hybrid"), default="waves")
+    ap.add_argument(
+        "--prepass", choices=("waves", "cpu", "hybrid", "draft"), default="waves"
+    )
     ap.add_argument("--out", default=None, help="write the raw per-block lengths")
     ap.add_argument("--spec-ms", type=float, default=STEP_MS_SPEC)
     ap.add_argument("--base-ms", type=float, default=STEP_MS_BASE)
     ap.add_argument("--model", default=None)
+    ap.add_argument(
+        "--target-env",
+        action="append",
+        default=[],
+        help="K=V the TARGET template was built with (repeatable), e.g. "
+        "--target-env VOCAB_CHUNK_I2=50 --target-env UNI_LM=6",
+    )
     args = ap.parse_args()
 
     import numpy as np
@@ -125,6 +134,7 @@ def main():
         draft_prefix=args.draft_prefix,
         speculate=True,
         prepass=args.prepass,
+        target_env=dict(kv.split("=", 1) for kv in args.target_env),
     )
 
     all_lens, rows, mismatches = [], [], 0

@@ -90,6 +90,7 @@ def build_draft_decoder(
     npz=None,
     draft_path=None,
     extra_env=None,
+    waves=None,
 ):
     """A `FusedDecoder` running the 5-layer drafter with a BIDIRECTIONAL mask.
 
@@ -102,6 +103,19 @@ def build_draft_decoder(
     from qwen3_4b_draft_weights import DraftWeights
 
     env = {"DECODE_STACK": stack, "DECODE_MASK_BIDIR": "1"}
+    # THE PRE-PASS'S WAVES RIDE THIS TEMPLATE when `waves` is given, which is
+    # what lets the TARGET stay at RMS_MEMTILE_REFEED=3. They were always the
+    # drafter's own weights; only the program they were bolted onto was the
+    # target's, and that forced it to mode 0 at a cost of 65 ms per step. The
+    # template must have been BUILT with the same table (UNI_WAVE_HI at the
+    # drafter's UNI_DEC + UNI_LM, so its decode stream dispatches none of them),
+    # which the env below is what pins.
+    _extra_w = None
+    if waves is not None:
+        import dflash_prepass_waves as P
+
+        _we, _extra_w = P.draft_decoder_args(waves=waves)
+        env.update(_we)
     env.update(extra_env or {})
     return INF.FusedDecoder(
         max_L=max_L,
@@ -112,6 +126,7 @@ def build_draft_decoder(
         template_prefix=template_prefix,
         artifact_dir=artifact_dir or _HERE,
         env_extra=env,
+        extra_weights=_extra_w,
     )
 
 

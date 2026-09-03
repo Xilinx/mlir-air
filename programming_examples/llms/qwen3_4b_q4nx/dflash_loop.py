@@ -76,7 +76,7 @@ TAP_SLOTS = [lid + 1 for lid in TARGET_LAYER_IDS]  # [2, 10, 18, 26, 34]
 MASK_TOKEN_ID = 151669
 
 
-def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None):
+def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None, env=None):
     """The target, built with DECODE_HIDDEN_TAPS so a verify dispatch also
     returns every layer boundary.
 
@@ -125,6 +125,16 @@ def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None):
         "DECODE_HIDDEN_TAPS": "1",
         "DECODE_MASK_BIDIR": "0",
     }
+    # WHAT THE TEMPLATE WAS BUILT WITH, when that is not the default. The host
+    # does not just bind this xclbin -- DecodeInstsGen REGENERATES its
+    # instruction stream per position from its own geometry, so a target built
+    # at VOCAB_CHUNK_I2=50 / UNI_LM=6 driven by a host that assumed 30 gets a
+    # stream for a different LM chunking and returns wrong logits. It shows as
+    # acceptance collapsing to ~1.0 with `--exactness` at 0, which names
+    # nothing; measured 2026-09-03 staging the mode-3 target into the loop.
+    # The drafter must NOT inherit these (its own build is the default), which
+    # is why they go here and not in the process environment.
+    _env.update(env or {})
     _extra_w = None
     if waves is not None:
         import dflash_prepass_waves as P
@@ -174,6 +184,7 @@ class DFlashLoop:
         stack="6080",
         target_prefix="taps_b8_L",
         draft_prefix="draft_b8_L",
+        target_env=None,
         speculate=True,
         verbose=False,
         prepass="waves",
@@ -250,13 +261,28 @@ class DFlashLoop:
         # re-send each and the relay's cycle is 50; see docs/BZeroPlan.md), so
         # this is what lets `--prepass cpu` measure an OPTIMIZED block-8 target
         # in the real loop.
+        # --prepass draft PUTS THE WAVES ON THE DRAFTER, so the target carries
+        # no table at all and can be a RMS_MEMTILE_REFEED=3 build -- which is
+        # worth 65 ms a step (104.01 against 169.38) and is the whole reason the
+        # mode exists. `cpu` also leaves the target clean, for the same reason
+        # stated below; the difference is that `draft` still runs the pre-pass
+        # on device, at 7.1 ms rather than 74.75.
         _waves = None
-        if self.speculate and prepass != "cpu":
+        _draft_waves = None
+        # DFLASH_DRAFT_WAVES=1 gives the DRAFTER the table in any mode. It is
+        # the control for `--prepass draft`: with `cpu` it runs the same
+        # wave-carrying drafter template against a pre-pass that is known good,
+        # so a difference is the drafter's and not the pre-pass's.
+        if self.speculate and os.environ.get("DFLASH_DRAFT_WAVES") == "1":
+            _draft_waves, _ = P.wave_specs(P._load_draft_fd())
+        if self.speculate and prepass == "draft":
+            _draft_waves, _ = P.wave_specs(P._load_draft_fd())
+        elif self.speculate and prepass != "cpu":
             _waves, _ = P.wave_specs(P._load_draft_fd())
         self.target = _taps_decoder(
-            model, max_L, self.B, stack, target_prefix, waves=_waves
+            model, max_L, self.B, stack, target_prefix, waves=_waves, env=target_env
         )
-        if self.speculate:
+        if self.speculate and prepass != "draft":
             self.prepass = (
                 P.CpuPrepass(self.target)
                 if prepass == "cpu"
@@ -266,6 +292,7 @@ class DFlashLoop:
                     else P.WavePrepass(self.target, verbose=verbose)
                 )
             )
+        self._prepass_mode = prepass
 
         # ---- drafter, bidirectional. DECODE_HIDDEN_TAPS explicitly off: the
         # target set it in this same process's environment.
@@ -282,8 +309,14 @@ class DFlashLoop:
                 stack=stack,
                 template_prefix=draft_prefix,
                 extra_env={"DECODE_HIDDEN_TAPS": "0"},
+                waves=_draft_waves,
             )
             self.maxl = min(self.maxl, self.drafter.ATTN_MAXL)
+            if _draft_waves is not None:
+                # WavePrepass takes whatever decoder carries the table -- every
+                # thing it touches (batch, K, x_bo, the artifact dir, base_L) is
+                # a FusedDecoder property, not a target one.
+                self.prepass = P.WavePrepass(self.drafter, verbose=verbose)
         print(
             f"[loop] target ATTN_MAXL {self.target.ATTN_MAXL}, drafter "
             f"{self.drafter.ATTN_MAXL if self.drafter else '-'}, block {self.B}",
@@ -375,7 +408,16 @@ class DFlashLoop:
             # the tap each was added into, and norms the sum.
             if speculate:
                 t0 = time.time()
-                next_th = self.prepass.th_from_verify(taps)
+                # th_from_verify reads partials the verify dispatch's own tail
+                # left in the X buffer. With the waves on the DRAFTER there is
+                # no such tail, so fc takes its own stream with the taps
+                # uploaded -- th_from_taps, which is the path block 0 has always
+                # used. That is the millisecond this move costs.
+                next_th = (
+                    self.prepass.th_from_taps(taps)
+                    if self._prepass_mode == "draft"
+                    else self.prepass.th_from_verify(taps)
+                )
                 t_pre += time.time() - t0
             post = [int(r.argmax()) for r in y]
 
@@ -437,6 +479,13 @@ def main():
     ap.add_argument("--target-prefix", default="taps_b8_L")
     ap.add_argument("--draft-prefix", default="draft_b8_L")
     ap.add_argument("--model", default=None)
+    ap.add_argument(
+        "--target-env",
+        action="append",
+        default=[],
+        help="K=V the TARGET template was built with (repeatable), e.g. "
+        "--target-env VOCAB_CHUNK_I2=50 --target-env UNI_LM=6",
+    )
     ap.add_argument("--prompt", default=None, help="text; default is PARIS_PROMPT ids")
     ap.add_argument("--prompt-ids", default=None, help="comma-separated token ids")
     ap.add_argument(
@@ -446,7 +495,9 @@ def main():
         "commits exactly one token. The token stream is then the plain greedy "
         "one and any difference from --spec is speculation's own.",
     )
-    ap.add_argument("--prepass", choices=("waves", "cpu", "hybrid"), default="waves")
+    ap.add_argument(
+        "--prepass", choices=("waves", "cpu", "hybrid", "draft"), default="waves"
+    )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -490,6 +541,7 @@ def main():
         speculate=not args.no_spec,
         verbose=args.verbose,
         prepass=args.prepass,
+        target_env=dict(kv.split("=", 1) for kv in args.target_env),
     )
     t0 = time.time()
     toks, acc, t = loop.run(args.n_tokens)
