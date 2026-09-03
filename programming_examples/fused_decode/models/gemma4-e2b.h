@@ -9,7 +9,17 @@
 #if MODEL_TYPE == GEMMA4_E2B
 constexpr int MODEL_DIM = 1536;
 constexpr int NUM_ATTN_HEADS = 8;
-constexpr int NUM_KV_HEADS = 1;
+// TWO, not the model's one. Gemma4 is MQA with a single kv head, but this build
+// REPLICATES it to each of two attention CUs (see the ATTN_IMPL note below and
+// the gemma4-e2b entry in fused_decode_ple.py), and the packer tiles the k/v
+// rows to match. NUM_KV_HEADS is what model_spec.h derives DK and DV from, so
+// leaving it at the model's 1 makes the kernel slice
+//   k = qkv[4096:4608]   v = qkv[4608:5120]
+// out of a buffer laid out q(4096) | k(1024) | v(1024). The kernel's "v" is
+// then the replicated SECOND COPY OF K, and unnormalized -- measured in the
+// device's KV cache as two blocks both at cos 0.9992 to k and 1000x apart in
+// scale.
+constexpr int NUM_KV_HEADS = 2;
 // DELIBERATELY NOT FLM's VALUE. FastFlowLM sets this to the narrow 6144 and
 // switches the wide layers on with a DOUBLE_WIDE_MLP define; this builder
 // instead pads every layer up to the wide shape (see the gemma4-e2b entry in
