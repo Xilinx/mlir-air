@@ -7735,11 +7735,43 @@ struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
       });
     };
 
+    // User-facing opt-out: an alloc carrying `air.disable_alloc_sink` stays
+    // where the design put it. Sinking is normally free -- it narrows a live
+    // range -- but it is observable one pass later, because
+    // air-label-scf-for-to-ping-pong duplicates exactly the allocs in a
+    // candidate loop's body and rejects the whole loop if any of them is not
+    // dead on entry (isUnsafeToDuplicate, case (1)). A pure scratch buffer
+    // written by an opaque callee is dead on entry in fact and unprovably so
+    // to the compiler, so sinking one into a loop silently disqualifies the
+    // OTHER allocs in that body -- the channel.get-filled ones that wanted
+    // the ping-pong. Hoisting is the design's statement that the buffer is
+    // loop-invariant scratch; this attribute makes the statement stick.
+    //
+    // Deliberately narrow: it suppresses the move, not the pass. Spelled like
+    // `air.disable_ping_pong`, and on the alloc rather than the loop, because
+    // the fact it records is a property of the buffer.
+    auto carriesNoSink = [](Value memref) {
+      Operation *defOp = memref.getDefiningOp();
+      if (!defOp)
+        return false;
+      if (defOp->hasAttr("air.disable_alloc_sink"))
+        return true;
+      // air-dependency wraps the alloc in an air.execute and the attribute
+      // travels with the alloc, not the wrapper.
+      if (auto exec = dyn_cast<air::ExecuteOp>(defOp))
+        for (auto a : exec.template getOps<memref::AllocOp>())
+          if (a->hasAttr("air.disable_alloc_sink"))
+            return true;
+      return false;
+    };
+
     // Get candidate allocs and deallocs to be fused.
     std::vector<std::pair<memref::AllocOp, memref::DeallocOp>> allocsDeallocs;
     std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> allocDeallocExecs;
     for (auto memref : usedMemrefsDefedAbove) {
       if (!memrefIsOnlyUsedInRegionOrByDealloc(opRegion, memref))
+        continue;
+      if (carriesNoSink(memref))
         continue;
       air::ExecuteOp allocExec = nullptr;
       air::ExecuteOp deallocExec = nullptr;

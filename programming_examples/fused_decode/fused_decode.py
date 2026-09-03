@@ -1665,24 +1665,80 @@ RMS_MEMTILE_COL = int(_os.environ.get("RMS_MEMTILE_COL", "3"))
 PROJ_RING_DEPTH = int(_os.environ.get("PROJ_RING_DEPTH", "2"))
 assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist"
 
-# NEITHER SETTING PRODUCES A RING. Read from the lowered tile_0_2 of a qwen3-4b
-# batch-8 build, at BOTH depths `[static]`: one x buffer, one w buffer, one
-# mm_acc call, 3 aie.dma_bd. The comment above -- "2 is what
-# air-label-scf-for-to-ping-pong produces automatically" -- is wrong for this
-# loop, and depth 3's hand-built ring does not survive either, so the recorded
-# 8.692-vs-9.091 comparison is depth 1 against depth 1.
+# PROJ_WS_NO_SINK: keep the batched proj core's 16 KB unpacked-weight scratch
+# OUT of the j loop, with `air.disable_alloc_sink`.
 #
-# The cause is one pass upstream: air-fuse-alloc-dealloc sinks the 16 KB
-# unpacked-weight scratch into the j loop, and isUnsafeToDuplicate then rejects
-# the whole loop because that buffer's first access is an opaque func.call. So
-# the proj core cannot fetch the next weight block while it computes the current
-# one, which is why the arithmetic ADDS to the weight stream instead of hiding
-# under it: docs/BZeroPlan.md item 2, 9.091 = 5.856 + 3.235.
+# THE DEPTH-2 RING DOES NOT EXIST TODAY, and the comment above PROJ_RING_DEPTH
+# saying it is "what air-label-scf-for-to-ping-pong produces automatically" is
+# wrong for this loop. Read from the per-pass IR dumps of a qwen3-4b batch-8
+# mode-3 build (FUSED_DECODE_DEBUG_IR=1):
 #
-# Hoisting the scratch for real DOES produce the ring (2 x, 2 w, one scratch,
-# lock inits 1 -> 2 on 16 tiles and nothing else on the device changed) and it
-# HANGS -- one decode wave is enough. That work is not in this tree; see
-# BZeroPlan before spending a day on it.
+#   pass_031 air-fuse-alloc-dealloc    SINKS the scratch into the j loop
+#                                      (allocs in body: [2048, 2560] ->
+#                                       [8192, 2048, 2560], at that pass and
+#                                       no other)
+#   pass_033 air-label-scf-for-to-     rejects the loop. isUnsafeToDuplicate
+#            ping-pong                 wants every body alloc dead on entry;
+#                                      the scratch's first access is the
+#                                      func.call, and an opaque callee may
+#                                      read. 14 loops are labeled in this
+#                                      design and this is not one of them.
+#   lowered core_0_2                   ONE x buffer, ONE w buffer, one
+#                                      mm_acc call: acquire / compute /
+#                                      release, no prefetch.
+#
+# So the proj core cannot fetch the next weight block while it computes the
+# current one, which is what makes the arithmetic ADD to the weight stream
+# instead of hiding under it -- docs/BZeroPlan.md's item 2, 9.091 = 5.856 +
+# 3.235 on the vocab probe path, and its open question ("why a core's compute
+# overlaps another core's compute but not its own weight fetch").
+#
+# The attribute suppresses the sink only. The scratch stays SINGLE and the two
+# channel.get-filled buffers get the ping-pong, which is the shape _wscr_alloc's
+# docstring already describes and could not previously get: +9 KB of L1, not
+# +25 KB. Default 0 so the shipping emit is byte-identical.
+#
+# It also retires the PROJ_RING_DEPTH=3 datapoint. NEITHER setting produces a
+# ring: a depth-3 build's lowered tile_0_2 is one x, one w, one mm_acc call and
+# 3 aie.dma_bd, the same shape as the default, because _mm_ring_deeper pre-tags
+# `unroll` and isPingPongCandidate returns on its first line. So 8.692 vs 9.091
+# is depth 1 against depth 1 and the 0.4 ms is noise, not a 12% recovery.
+#
+# AND WITH THE HOIST IT HANGS `[hw]`. batch_equiv.py --smoke at L=128, one
+# dispatch: default COMPLETED, PROJ_RING_DEPTH=3 COMPLETED, this knob TIMEOUT,
+# this knob + depth 3 TIMEOUT, this knob + UNI_WAVE_HI=1 TIMEOUT. Every build
+# that RUNS has depth 1 and the only builds with a real ring hang; one decode
+# wave reproduces it. The whole-device diff against the working build is 16 proj
+# tiles gaining a second x and w slot and 32 lock inits going 1 -> 2 -- no flow,
+# producer BD or lock anywhere else moves. So it is dynamic, and the standing
+# (untested) suspicion is @inX: a 16-way circuit broadcast where a 2-deep
+# consumer ring lets the cores drift a buffer apart. See docs/BZeroPlan.md.
+PROJ_WS_NO_SINK = int(_os.environ.get("PROJ_WS_NO_SINK", "0"))
+
+# PROJ_PP_ONLY: with PROJ_WS_NO_SINK=1, ping-pong only ONE of the proj core's
+# two inputs -- "x", "w", or "" (default: both, which is what hangs).
+#
+# The named one is left in the j loop and gets its ring; the OTHER is hoisted
+# out with air.disable_alloc_sink, so the transform has nothing to duplicate
+# for it. Hoisting is behaviour-preserving by itself -- the get refills one
+# buffer per trip either way, which is exactly what the shipping build does to
+# both -- so this is a clean A/B on which ring is the one the device rejects.
+PROJ_PP_ONLY = _os.environ.get("PROJ_PP_ONLY", "")
+assert PROJ_PP_ONLY in ("", "x", "w"), "PROJ_PP_ONLY is x, w, or unset"
+
+
+def _pp_hoist(ty, which):
+    """Allocate `which` OUTSIDE the j loop, pinned there, or None to leave it in.
+
+    Returns None unless PROJ_PP_ONLY names the OTHER input -- i.e. this one is
+    the one being taken out of the ring.
+    """
+    if not PROJ_PP_ONLY or PROJ_PP_ONLY == which:
+        return None
+    _a = AllocOp(ty, [], [])
+    _a.operation.attributes["air.disable_alloc_sink"] = UnitAttr.get()
+    return _a
+
 
 # RMS_BAND_STREAM: the band-streamed residual (docs/DFlashFeasibility.md, "So
 # the residual has to leave L1"), built in levels so each is gatable and
@@ -7898,16 +7954,21 @@ def build_module():
                         None at batch 1 -- the GEMV has no scratch at all, and an
                         unused alloc is still an op in the no-op diff.
 
-                        "where nothing can ping-pong it" is the INTENT and not
-                        what happens: air-fuse-alloc-dealloc sinks this alloc
+                        "where nothing can ping-pong it" is the intent and it is
+                        NOT what happens: air-fuse-alloc-dealloc sinks this alloc
                         back into the j loop, and its presence there disqualifies
                         the loop's OTHER allocs -- x and w -- from the ping-pong
-                        they want, so the proj core runs with no weight prefetch
-                        at all. See docs/BZeroPlan.md, "Item 2 root cause". The
-                        fix is NOT in this tree: hoisting it for real is built
-                        and it HANGS on device.
+                        they want. PROJ_WS_NO_SINK=1 makes the hoist stick; see
+                        the knob's comment for the pass-by-pass reading.
                         """
-                        return AllocOp(wscr_mm_l1, [], []) if BATCH > 1 else None
+                        if BATCH <= 1:
+                            return None
+                        _a = AllocOp(wscr_mm_l1, [], [])
+                        if PROJ_WS_NO_SINK:
+                            _a.operation.attributes["air.disable_alloc_sink"] = (
+                                UnitAttr.get()
+                            )
+                        return _a
 
                     def _core_blk_np(base_cx):
                         # FLM-gemma NON-PAIRED proj egress (PAIR_ROWS==1): the same
@@ -7964,17 +8025,33 @@ def build_module():
                                 J2x2 = arith.muli(J2v, c2)
                                 a_acc = AllocOp(yacc_mm_l1, [], [])
                                 a_ws = AllocOp(wscr_mm_l1, [], [])
+                                if PROJ_WS_NO_SINK:
+                                    # Same hoist, same reason as _wscr_alloc's.
+                                    a_ws.operation.attributes[
+                                        "air.disable_alloc_sink"
+                                    ] = UnitAttr.get()
                                 CallOp(mm_zero, [a_acc, _arm])
                                 if PROJ_RING_DEPTH <= 2:
+                                    # PROJ_PP_ONLY: hoist the input that is NOT
+                                    # being ringed, so the transform duplicates
+                                    # only the other one. See the knob.
+                                    _hx = _pp_hoist(xblk_mm_l1, "x")
+                                    _hw = _pp_hoist(wblk_l1, "w")
                                     for _j in for_(idx(0), J2x2, idx(1)):
-                                        a_x = AllocOp(xblk_mm_l1, [], [])
+                                        a_x = _hx or AllocOp(xblk_mm_l1, [], [])
                                         ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                        a_w = AllocOp(wblk_l1, [], [])
+                                        a_w = _hw or AllocOp(wblk_l1, [], [])
                                         ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
                                         CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
-                                        DeallocOp(a_x)
-                                        DeallocOp(a_w)
+                                        if _hx is None:
+                                            DeallocOp(a_x)
+                                        if _hw is None:
+                                            DeallocOp(a_w)
                                         yield_([])
+                                    if _hx is not None:
+                                        DeallocOp(_hx)
+                                    if _hw is not None:
+                                        DeallocOp(_hw)
                                 else:
                                     _mm_ring_deeper(
                                         J2x2,
@@ -8220,15 +8297,26 @@ def build_module():
                                 a_ws = _wscr()
                                 CallOp(mm_zero, [a_acc, _arm])
                                 if PROJ_RING_DEPTH <= 2:
+                                    # PROJ_PP_ONLY: hoist the input that is NOT
+                                    # being ringed, so the transform duplicates
+                                    # only the other one. See the knob.
+                                    _hx = _pp_hoist(xblk_mm_l1, "x")
+                                    _hw = _pp_hoist(wblk_l1, "w")
                                     for _j in for_(idx(0), J2x2, idx(1)):
-                                        a_x = AllocOp(xblk_mm_l1, [], [])
+                                        a_x = _hx or AllocOp(xblk_mm_l1, [], [])
                                         ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                        a_w = AllocOp(wblk_l1, [], [])
+                                        a_w = _hw or AllocOp(wblk_l1, [], [])
                                         ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
                                         CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
-                                        DeallocOp(a_x)
-                                        DeallocOp(a_w)
+                                        if _hx is None:
+                                            DeallocOp(a_x)
+                                        if _hw is None:
+                                            DeallocOp(a_w)
                                         yield_([])
+                                    if _hx is not None:
+                                        DeallocOp(_hx)
+                                    if _hw is not None:
+                                        DeallocOp(_hw)
                                 else:
                                     _mm_ring_deeper(
                                         J2x2,
