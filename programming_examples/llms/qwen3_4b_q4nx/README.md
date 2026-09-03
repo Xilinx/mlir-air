@@ -243,24 +243,43 @@ thing that catches it.
 
 ## 3b. DFlash end to end: run it, then verify it
 
-This is the whole recipe for the **optimized block 8** — the configuration two
-commits on `dflash-feasibility` deliver, `RMS_MEMTILE_REFEED=3` plus the
-proj-core weight ring. `b` is 5.87 ms/token lower than shipping and every claim
+This is the whole recipe for the **optimized block 8** — the configuration
+`dflash-feasibility` delivers. A batch-8 verify dispatch at L161 runs **85.9 ms
+against shipping's 147.7**, i.e. `b` is 8.83 ms/token lower, and every claim
 below is gated.
 
-### The four environment variables that define it
+### The environment variables that define it
 
 ```bash
 RMS_MEMTILE_REFEED=3      # the memtile replays X instead of the core regenerating it
 PROJ_WS_NO_SINK=1         # keep the 16 KB unpack scratch out of the j loop ...
 PROJ_PP_ONLY=w            # ... so the WEIGHT input gets a 2-deep ring
+Q4K_UNPACK_FMA=1          # w = q*scale+min in ONE accumulator pass ...
+Q4K_UNPACK_UNROLL=8       # ... which frees the registers that make unrolling pay
 VOCAB_CHUNK_I2=50 UNI_LM=6   # what lets mode 3 carry the LM head
 ```
 
-Both optimizations are **opt-in and default off**. Everything measured is
+What each is worth at L161, `dispatch_time.py` median of 25, each against the
+row above it:
+
+| | B8 ms | delta | output |
+|---|---|---|---|
+| shipping | 147.742 | — | — |
+| `RMS_MEMTILE_REFEED=3` | 116.394 | −31.3 | bit-identical |
+| `+ PROJ_WS_NO_SINK PROJ_PP_ONLY=w` | 108.840 | −7.6 | bit-identical |
+| `+ Q4K_UNPACK_UNROLL=8` | 105.543 | −3.3 | bit-identical |
+| `+ Q4K_UNPACK_FMA=1` | **85.923** | −19.6 | **1 ulp of bf16** |
+
+Every optimization is **opt-in and default off**. Everything measured is
 qwen3-4b batch 8; llama and gemma share the `_mm` path and have not been gated.
 `PROJ_PP_ONLY=x` also works and is bit-exact but loses by 1.3 ms; ringing BOTH
 inputs deadlocks (see `docs/BZeroPlan.md`).
+
+**Only the last row changes the answer**, and it changes it toward the exact
+result: `Q4K_UNPACK_FMA` removes one bf16 rounding (`aie::mul` returns an
+accumulator that the result type rounds down and `aie::add` lifts straight back
+up). So the verify recipe below has one step that must NOT read IDENTICAL —
+see level 1.
 
 ### Build
 
@@ -269,19 +288,19 @@ source ~/air_env.sh
 cd programming_examples/fused_decode
 V="DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=50 UNI_LM=6 W_DUAL_CHAN=1 \
    DECODE_STACK=6080 DECODE_NO_LM_WAVES=0 PYTHON=python"
-OPT="RMS_MEMTILE_REFEED=3 PROJ_WS_NO_SINK=1 PROJ_PP_ONLY=w"
+OPT="RMS_MEMTILE_REFEED=3 PROJ_WS_NO_SINK=1 PROJ_PP_ONLY=w      Q4K_UNPACK_FMA=1 Q4K_UNPACK_UNROLL=8"
 
 # (a) the LOOP's target pair -- taps ABI, two adjacent L for the driver's slope
 for L in 512 511; do
   env -u DECODE_EXTRA_WAVES $V $OPT DECODE_HIDDEN_TAPS=1 DECODE_MASK_BIDIR=0 \
       ./build_template.sh 8 $L
-  mv -f taps_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50m3w/
+  mv -f taps_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50m3wf/
 done
 
 # (b) the GATE's pair -- `decode` ABI, L161/L162
 for L in 161 162; do
   env -u DECODE_EXTRA_WAVES $V $OPT ./build_template.sh 8 $L
-  mv -f decode_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50w/
+  mv -f decode_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50wf/
 done
 
 ./build_template.sh 1 16      # ALWAYS: batch-1 kernels, after any batched build
@@ -289,14 +308,14 @@ done
 
 The two families are **not** interchangeable: `DECODE_HIDDEN_TAPS=1` widens the
 BO ABI, so the gate cannot bind a taps template and the loop cannot bind a
-`decode` one. `_build_w.sh` and `_build_v50w.sh` in `fused_decode/` are these
-two loops, already written.
+`decode` one. `_build_fma.sh` in `fused_decode/` is both loops, already
+written; `_build_w.sh` and `_build_v50w.sh` build the pre-FMA control pair.
 
 ### Run
 
 ```bash
 cd ../llms/qwen3_4b_q4nx
-env -u Q4NX_QWEN3_4B_DECODE_NPZ Q4NX_QWEN3_4B_DECODE_DIR=$PWD/_v50m3w \
+env -u Q4NX_QWEN3_4B_DECODE_NPZ Q4NX_QWEN3_4B_DECODE_DIR=$PWD/_v50m3wf \
     VOCAB_CHUNK_I2=50 UNI_LM=6 python dflash_acceptance_device.py \
     --prompts prompts_gsm8k.json --n 6 --n-tokens 32 --prepass cpu
 ```
@@ -315,9 +334,17 @@ cd ../../fused_decode
 # 1. BYTE LEVEL, ~30 s per build. Same seed => same input; only the xclbin
 #    differs. Run each in its OWN process (one device context per process).
 env $V $OPT DECODE_HIDDEN_TAPS=1 DECODE_MASK_BIDIR=0 \
-    python dump_layer_output.py --out ring.npy
-#    ... rebuild without $OPT, then:
-python dump_layer_output.py --diff ctrl.npy ring.npy      # expect IDENTICAL
+    python dump_layer_output.py --prefix taps --batch 8 --L 511 --out opt.npy
+#    ... swap in the control template, then:
+python dump_layer_output.py --diff ctrl.npy opt.npy
+#
+#    EXPECT IDENTICAL for every flag EXCEPT Q4K_UNPACK_FMA. With the FMA in,
+#    expect ~20% of elements differing by 1 in the bf16 bit pattern and NOTHING
+#    ELSE -- no index shift, no zeroed tail, the same zero count on both sides.
+#    To keep an EXACT gate, build the candidate with Q4K_UNPACK_UNROLL=8 but
+#    WITHOUT the FMA: the unroll is semantics-preserving, so that pair must be
+#    bit-identical, and it is the control proving the whole difference belongs
+#    to the FMA's one removed rounding.
 
 # 2. DEVICE BUILD DIFF, decode layers + KV, at L161 where builds are bit-exact
 for T in 161 162; do
@@ -340,10 +367,18 @@ Expected, and what these actually returned:
 
 | | expected | measured |
 |---|---|---|
-| 1. `dump_layer_output.py --diff` | IDENTICAL | **0 of 757,760 differ** |
-| 2. `dflash_build_diff.py` | IDENTICAL | **8/8 tokens + 12,976,128/12,976,128 KV** |
+| 1. `dump_layer_output.py --diff`, unroll-only | IDENTICAL | **0 of 757,760 differ** |
+| 1. `dump_layer_output.py --diff`, with the FMA | 1 ulp, nothing else | **79.7% equal, 11.8% differ by exactly 1** |
+| 2. `dflash_build_diff.py` (mode 3 + ring) | IDENTICAL | **8/8 tokens + 12,976,128/12,976,128 KV** |
 | 3. `dflash_verify_gate.py` | PASS | **PASS, argmax = at all 8 positions** |
 | 4. `accepted` | within 0.57 of 3.792 | **3.667 ± 0.322** |
+
+Level 3 was also run against the pre-FMA control for a like-for-like read, and
+the FMA build comes out **slightly better**: mean `corr` 0.9742 vs 0.9720, mean
+`rel` 0.189 vs 0.206. Token 7's low `corr` of ~0.86 appears in BOTH and is
+pre-existing. Removing a rounding should improve things, and it does — but the
+point of running the control is that "it improved" only means something beside
+the number it improved on.
 
 Two things about level 3 that look like failures and are not. Both halves exit
 `3221225477` **after writing their result** — the known teardown fault, judge on
