@@ -164,6 +164,22 @@ def _load_fd():
     for k in list(os.environ):
         if k.startswith("DECODE_"):
             os.environ.pop(k, None)
+    # UNI_LM DOES NOT START WITH "DECODE_", so the sweep above misses it, and it
+    # is not independent of the VOCAB_CHUNK_I2 pinned below: fused_decode.py
+    # asserts UNI_LM * VOCAB_CHUNK_I2 == the padded vocab's row-block count. A
+    # caller running the TARGET at the v50 chunking (UNI_LM=6, the configuration
+    # RMS_MEMTILE_REFEED=3 needs) therefore crashed the DRAFTER's load with
+    # "UNI_LM=6 must equal N_VOCAB_CHUNKS=10 (VOCAB_CHUNK_I2=30)". The drafter
+    # pins the chunking, so it has to pin its partner too.
+    #
+    # RESTORED afterwards, unlike the DECODE_* sweep: DFlashLoop loads the
+    # drafter's geometry BEFORE it builds the target, so simply dropping it
+    # would hand the v50 target the v30 default and fail the same assert from
+    # the other side. VOCAB_CHUNK_I2 goes with it -- the update below pins it to
+    # the drafter's 30 and used to leave it that way for the rest of the
+    # process, so a v50 caller got UNI_LM=6 against a chunking this function
+    # had quietly rewritten underneath it.
+    _saved = {k: os.environ.pop(k, None) for k in ("UNI_LM", "VOCAB_CHUNK_I2")}
     os.environ.update(
         DECODE_MODEL="qwen3-4b-draft",
         VOCAB_CHUNK_I2="30",
@@ -178,7 +194,14 @@ def _load_fd():
         "fused_decode_draft", str(fdir / "fused_decode.py")
     )
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        for _k, _v in _saved.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
     return mod
 
 

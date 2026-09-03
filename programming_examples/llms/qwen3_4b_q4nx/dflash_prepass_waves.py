@@ -338,6 +338,26 @@ def _target_fd():
     for k in list(os.environ):
         if k.startswith("DECODE_"):
             os.environ.pop(k, None)
+    # UNI_LM goes with the pinned VOCAB_CHUNK_I2 below and is not a DECODE_ var,
+    # so the sweep above misses it. fused_decode.py asserts the two multiply out
+    # to the padded vocab, so a caller at the v50 chunking (UNI_LM=6) otherwise
+    # contradicts the 30 pinned here and this load dies. Restored below with the
+    # DECODE_ vars, because the caller's own target is built from it.
+    _saved_uni_lm = os.environ.pop("UNI_LM", None)
+    # PINNED AT 30, and do not "fix" this to honour the caller's chunking --
+    # that was tried on 2026-09-02 and it is a REGRESSION, measured:
+    # acceptance collapsed to exactly 1.000 +/- 0.000 (every block accepting
+    # only the bonus token, i.e. the drafter proposing nothing usable) on
+    # templates that had read 3.830 and 3.941 an hour earlier, with the target
+    # dispatch time unchanged at 134.93 ms. Reverting this line restores it.
+    #
+    # The reason it looked wrong is real and still stands as a caveat: this is
+    # what derives the wave table's view of the target, and UNI_LM is not a
+    # DECODE_ var so it survives the sweep above. At VOCAB_CHUNK_I2=50 the
+    # caller must therefore pass the wave RANGE explicitly rather than asking
+    # uni_hi_verify() for it (see _build_folded_m3_v50.sh, which hardcodes
+    # 67/87). Whatever the wave descriptors are keyed to, it is not the
+    # caller's chunking, and the acceptance number is what says so.
     os.environ.update(
         DECODE_MODEL="qwen3-4b",
         VOCAB_CHUNK_I2="30",
@@ -360,6 +380,8 @@ def _target_fd():
             if k.startswith("DECODE_"):
                 os.environ.pop(k, None)
         os.environ.update(saved)
+        if _saved_uni_lm is not None:
+            os.environ["UNI_LM"] = _saved_uni_lm
 
 
 def _target_x_slots():
@@ -1039,6 +1061,60 @@ def taps_decoder_args(npz=None, waves=None):
         "DECODE_EXTRA_WAVES": json.dumps([x.as_config() for x in waves]),
         "UNI_WAVE_HI": str(uni_hi_verify(waves)),
     }, w
+
+
+class HybridPrepass:
+    """WavePrepass for the steady state, CpuPrepass for the ALTERNATE STREAMS.
+
+    Exists because `UNI_WAVE_LO/HI` does not do what WavePrepass's docstring
+    says it does once RMS_MEMTILE_REFEED=3 is on. The claim there -- "the same
+    device program can be driven by" three streams -- is true under mode 0 and
+    FALSE under mode 3, measured 2026-09-02:
+
+        stream            @xnorm from the rms core        packet id
+        verify  [0,67)    -> mem_tile_4_1 DMA 2 (relay)      9
+        ctxkv  [67,87)    -> mem_tile_2_1 DMA 0 (X memtile)  7
+
+    The emitted AIR is byte-identical between the two ranges -- LOWERING prunes,
+    by range-analysing the scf.for bounds and folding the arm switch, and with
+    it the ph0/ph2 relay that only a decode or LM-head arm names. So a narrow
+    range's insts.bin addresses a device the verify xclbin does not contain, and
+    the dispatch times out. Under mode 0 there is no relay to prune, which is
+    why this never showed up before.
+
+    What still works untouched is the half that matters: `fc` rides the VERIFY
+    dispatch's own tail, inside [0,67), so `th_from_verify` -- once per block,
+    and the only one on the steady-state path -- needs no dispatch at all and is
+    taken from the device. Only the two genuinely separate dispatches fall back
+    to numpy: `th_from_taps`, which runs once per PROMPT for block 0's rows that
+    no verify pass produced, and `ctxkv`, which cannot ride the verify tail at
+    all because the sum and the norm between fc and it are the host's (§3.16).
+
+    So this is not a fallback to the CPU pre-pass. It is the wave pre-pass with
+    its two alternate streams replaced, and it costs the difference between
+    ctxkv on device (2.5 ms) and in numpy.
+    """
+
+    def __init__(self, target, npz=None, verbose=True):
+        self.wave = WavePrepass(target, verbose=verbose)
+        self.cpu = CpuPrepass(target, npz=npz, verbose=verbose)
+        self.t_run, self.n_run = 0.0, 0
+
+    # Device: fc already ran in the verify pass's tail. No dispatch.
+    def th_from_verify(self, taps):
+        return self.wave.th_from_verify(taps)
+
+    # Numpy: both of these would need an alternate stream.
+    def th_from_taps(self, taps):
+        return self.cpu.th_from_taps(taps)
+
+    def ctxkv(self, th, positions):
+        return self.cpu.ctxkv(th, positions)
+
+    def run(self, taps, positions):
+        th = self.th_from_taps(taps)
+        k, v = self.ctxkv(th, positions)
+        return th, k, v
 
 
 class CpuPrepass:

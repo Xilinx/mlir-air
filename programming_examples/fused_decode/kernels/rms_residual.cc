@@ -457,6 +457,54 @@ void rms_chunk_banded_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
   rms_chunk_banded(y, x, w, scales, batch, c, n);
 }
 
+#ifdef RMS_ROW_OUT
+/// ONE WHOLE ROW of the normalized batch: y[i] = x[t*row_stride + i] * w[i] *
+/// scales[t], for i in [0, n).
+///
+/// This is rms_chunk with the ROW INDEX and the WEIGHT OFFSET separated, which
+/// is the only reason it cannot be rms_chunk itself: rms_chunk derives both
+/// from the same `c` (`it_x = x + t*MODEL_DIM + c*n` and `w_base = w + c*n`),
+/// so selecting row t by passing c=t would offset the norm weight by t*n too
+/// and silently normalize against the wrong weights.
+///
+/// WHY IT EXISTS. The batched path stages a CROSS-ROW CHUNK ([batch][XCHUNK]),
+/// so consecutive sends need different chunks and the buffer is refilled --
+/// i.e. recomputed -- once per output row-block. Staging ONE WHOLE ROW instead
+/// is smaller (5 KB against 8 KB at batch 8) and computes each value exactly
+/// once, which is what block 1 does; the cross-row interleave the projection
+/// cores need then happens in the memtile's READ descriptor rather than here.
+/// See docs/BZeroPlan.md.
+///
+/// `row_stride` is x's true per-token pitch, matching
+/// rms_scale_row_partial_aie's parameter of the same name: MODEL_DIM while x is
+/// the resident [batch][MODEL_DIM] residual, or n for a phase whose K differs
+/// (the down projection's GLU_OUT).
+///
+/// Behind RMS_ROW_OUT, like proj_qmm.cc's batched entry points and for the same
+/// reason: merely adding a function can move the shipping kernels' codegen, and
+/// check_kernels_inert.py holds them byte-identical.
+void rms_row_aie(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
+                 float *restrict scales, int t, int row_stride, int n) {
+  constexpr int vector_size = 16;
+  const bf16 *it_x = x + t * row_stride;
+  const bf16 *it_w = w;
+  bf16 *it_y = y;
+  const float s = scales[t];
+  AIE_LOOP_RANGE(8)
+  AIE_LOOP_UNROLL(8)
+  for (int i = 0; i < n / vector_size; i++) {
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+    aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
+    aie::vector<float, vector_size> wx_vec = aie::mul(x_vec, w_vec);
+    aie::vector<bf16, vector_size> o_vec = aie::mul(wx_vec, s);
+    aie::store_v(it_y, o_vec);
+    it_x += vector_size;
+    it_w += vector_size;
+    it_y += vector_size;
+  }
+}
+#endif
+
 /// residual_acc_row_aie, but `acc` is the fresh [batch][n] band fetch being
 /// accumulated into (row_stride=n, offset 0 -- the caller's fetch already
 /// selected the right band, so there is no separate `off` term). `x` (the

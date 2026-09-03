@@ -144,7 +144,22 @@ def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None):
     # the wave table set would build a drafter that declares an extra weight BO
     # nobody binds -- so drop the two keys that are the target's alone, for the
     # same reason DECODE_MASK_BIDIR is passed explicitly off above.
-    for _k in ("DECODE_EXTRA_WAVES", "UNI_WAVE_HI", "UNI_WAVE_LO"):
+    # UNI_LM and VOCAB_CHUNK_I2 join the list, and they are the reason it needed
+    # extending. They are the TARGET's vocab chunking -- 50/6 for the build
+    # RMS_MEMTILE_REFEED=3 needs -- and the drafter has its own (30/10), which
+    # fused_decode.py asserts must multiply out to the padded vocab. Leaving
+    # them set builds the drafter against a chunking that is not its own and
+    # dies with "UNI_LM=6 must equal N_VOCAB_CHUNKS=10". It also keeps the wave
+    # table's view of the target at its default, which is what it is keyed to:
+    # honouring the caller's chunking there collapsed acceptance to exactly
+    # 1.000 with the target dispatch unchanged (2026-09-02).
+    for _k in (
+        "DECODE_EXTRA_WAVES",
+        "UNI_WAVE_HI",
+        "UNI_WAVE_LO",
+        "UNI_LM",
+        "VOCAB_CHUNK_I2",
+    ):
         os.environ.pop(_k, None)
     return dec
 
@@ -226,8 +241,17 @@ class DFlashLoop:
         # device program (dflash_prepass_waves.WavePrepass).
         self.speculate = bool(speculate)
         self.prepass = None
+        # ONLY THE WAVE PRE-PASS NEEDS THE TARGET TO CARRY THE WAVE TABLE.
+        # CpuPrepass dequantizes its own copy of the extra BO from the npz and
+        # takes nothing from the target but (B, K) and the tap slots, so making
+        # the target declare 45 waves in cpu mode bound a sixth kernel argument
+        # for no reason -- and it forced the target to be a build that CAN carry
+        # them. RMS_MEMTILE_REFEED=3 cannot (the pre-pass waves need one X
+        # re-send each and the relay's cycle is 50; see docs/BZeroPlan.md), so
+        # this is what lets `--prepass cpu` measure an OPTIMIZED block-8 target
+        # in the real loop.
         _waves = None
-        if self.speculate:
+        if self.speculate and prepass != "cpu":
             _waves, _ = P.wave_specs(P._load_draft_fd())
         self.target = _taps_decoder(
             model, max_L, self.B, stack, target_prefix, waves=_waves
@@ -236,7 +260,11 @@ class DFlashLoop:
             self.prepass = (
                 P.CpuPrepass(self.target)
                 if prepass == "cpu"
-                else P.WavePrepass(self.target, verbose=verbose)
+                else (
+                    P.HybridPrepass(self.target, verbose=verbose)
+                    if prepass == "hybrid"
+                    else P.WavePrepass(self.target, verbose=verbose)
+                )
             )
 
         # ---- drafter, bidirectional. DECODE_HIDDEN_TAPS explicitly off: the
@@ -418,7 +446,7 @@ def main():
         "commits exactly one token. The token stream is then the plain greedy "
         "one and any difference from --spec is speculation's own.",
     )
-    ap.add_argument("--prepass", choices=("waves", "cpu"), default="waves")
+    ap.add_argument("--prepass", choices=("waves", "cpu", "hybrid"), default="waves")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 

@@ -195,6 +195,7 @@ from proj_qmm_pack import (
 # reproduces the original hardcoded values BYTE-IDENTICALLY (no-op).
 import contextlib
 import json as _json
+import math as _math
 import os as _os
 
 _MODELS = {
@@ -1230,7 +1231,8 @@ UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
 # KV appends, and then the rms core starts a decode pass into a chip whose every
 # other tile has taken its vocab arm and gone idle. It looks like a batching fault
 # and it is not one.
-if BATCH > 1 and int(_os.environ.get("DECODE_NO_LM_WAVES", "0")):
+NO_LM_WAVES = bool(BATCH > 1 and int(_os.environ.get("DECODE_NO_LM_WAVES", "0")))
+if NO_LM_WAVES:
     UNI_WAVE_HI = min(UNI_WAVE_HI, UNI_DEC)
 
 # Weight-buffer grouping: G decode layers per weight BO. A shim BD's byte offset
@@ -1278,7 +1280,10 @@ if W_DUAL_CHAN:
 N_XBLK = sum(I2P[p] * PAIR_ROWS * NBJ_PH[p] for p in range(NPH))
 
 # X re-feed: per phase the cores read the full K once per output row-block; a core
-# emits I2*2 row-blocks per phase, so it reads K that many times.
+# emits I2*2 row-blocks per phase, so it reads K that many times. With
+# every downstream count (XN_REFEED, OPROJ_REFEED, GATEUP_REFEED, DOWN_REFEED,
+# _xc_dec, and the ph1/ph3 memtile relays' own refeed counts) follows from this
+# one line.
 REFEED = [I2P[p] * PAIR_ROWS for p in range(NPH)]  # [6, 4, 32, 4]
 REFEED_TOTAL = sum(REFEED)  # all phases
 # Two X sources: phases 0..2 read the rmsnorm'd token X (K=2048); the DOWN phase
@@ -1574,19 +1579,110 @@ assert K % XCHUNK == 0, f"XCHUNK {XCHUNK} does not divide K {K}"
 # Silently inert at batch 1 rather than an error: tools that sweep both batches
 # for comparison (check_channel_balance.py builds batch 1 to scale against)
 # would otherwise die on the knob rather than on anything real.
-RMS_MEMTILE_REFEED = int(_os.environ.get("RMS_MEMTILE_REFEED", "0")) and BATCH > 1
+# `int(...) and BATCH > 1` collapsed EVERY non-zero value to True, i.e. 1 --
+# Python's `and` returns its right operand when the left is truthy. So mode 2
+# never ran: every "=2" result recorded above was mode 1 wearing a 2. Keep the
+# value.
+RMS_MEMTILE_REFEED = int(_os.environ.get("RMS_MEMTILE_REFEED", "0")) if BATCH > 1 else 0
+# Modes that convert BOTH rms phases (ph0 and ph2). 2 converts ph2 alone.
+# 3 is 1 plus the row-major producer: the rms core ships whole rows and computes
+# each value once, and the memtile does the cross-row interleave in its read
+# descriptor. See docs/BZeroPlan.md.
+_MTR_ALL = RMS_MEMTILE_REFEED in (1, 3)
+# Which channel ph0/ph2's X leaves the rms core on. Mode 3 relays through a
+# memtile that re-broadcasts onto @xnorm; every other mode puts on @xnorm direct.
+#
+# The replay count is a lock value baked into a BD and every arm shares one BD
+# chain, so the counts cannot simply be each arm's own total (XN_REFEED +
+# REFEED[GATEUP_PHASE] on decode, VOCAB_RNDS on the LM head, EXTRA_NREFEED on an
+# extra wave). Each arm instead walks a common cycle a whole number of times --
+# see _RF_CYCLE, which is where that constraint is discharged and asserted.
+#
+# WHERE MODE 3'S TWO RELAY SLABS LIVE.
+#
+# Both on ONE memtile, and it has to be a memtile that is otherwise free,
+# because three separate ceilings stack up and none of them is reported at
+# build time -- every violation compiles clean and times out on device with
+# nothing written. All three are check_memtile_chans.py-visible in
+# air_project/npu.air.mlir.
+#
+#  1. SIX MM2S CHANNELS PER MEMTILE, and col 3 already uses all six (ph3's
+#     gluOut relay, the KV slab, two weight pairs). A seventh producer there
+#     WRAPS: AIRToAIESchedulingUtils' allocator is
+#     `chan = minCh + (num_allocs % (6 - minCh))`, so it emits two
+#     `aie.dma_start(MM2S, 1, ...)` chains on one channel and the refeed chain
+#     falls through to `aie.end` after two BDs instead of self-looping.
+#  2. ONE REFEED RELAY PER PHYSICAL MM2S CHANNEL. The repeat IS the BD's
+#     self-loop, so a chain carrying two slabs alternates them -- ph0, ph2, ph0
+#     -- while the consumer needs all of ph0 first. Hence two channel names,
+#     @xin0 and @xin2, each marked air.dedicated_dma_channel so the allocator
+#     does not collapse them back onto one; and two names also mean two packet
+#     ids, which the ROUTER requires (two flows sharing an id from two ports of
+#     one tile fail with "Unable to find a legal routing").
+#  3. THE X MEMTILE (col 2) CANNOT HOST A RELAY. @xnorm and @inX are both packet
+#     flows and the MM2S allocator collapses onto any existing packet-flow
+#     allocation on the tile, so @inX's put lands on whatever channel the relay
+#     took. `air.memtile_dma_channel_min` does not help -- the collapse decision
+#     comes before channel selection.
+#
+# Census: cols 0/1/6/7 have every S2MM taken, col 3 every MM2S, col 5 is ph1's,
+# col 3 is ph3's, col 2 is out. Col 4 is the only memtile left -- and it is
+# enough for BOTH slabs, because they share one inbound chain (a 2-BD cycle,
+# slab0 then slab2, which is the phase order) and need only one MM2S each.
+RMSROW_COL = int(_os.environ.get("RMSROW_COL", "4"))
+# Mode 3 converts BOTH rms phases. It has to: ph0's chunk-puts and ph2's
+# row-puts are different descriptors, so leaving one of them unconverted would
+# need two BDs on the core's single @xnorm chain, and they would alternate.
+_RMSROW0 = _RMSROW2 = "xnorm"
+# Which channel ph1's attnO relay and ph3's gluOut relay drain onto. In mode 3
+# all four phases ride ONE channel, @xin, in phase-time order: ph0 and ph2 from
+# the relay slab on col RMSROW_COL, ph1 from col 5, ph3 from col 3.
+#
+# ONE channel because the consumer is ONE flat _feed_inX loop, and two
+# _feed_inX calls in one arm collapse into a single chain that cycles both
+# channels' buffers -- so it waits on a ph2 buffer three ph0 puts in. One
+# consumer loop therefore means one inbound channel, one packet id, and every
+# producer on a DISTINCT TILE (two packet flows sharing an id from two ports of
+# one tile do not route).
+#
+# That used to cost four tiles, because ph0 and ph2 needed different re-send
+# counts and a count was a property of the BUFFER -- two counts, two buffers,
+# two ports, two ids. air.refeed_count is now per FILL, so they share one slab
+# and one port and the tile count is THREE: col RMSROW_COL, col 5, col 3.
+# Three convergent producers on one channel is exactly what @xnorm does today.
+_XN1 = "xin" if RMS_MEMTILE_REFEED == 3 else "xnorm"
+_XN3 = _XN1
 # Which memtile column holds the gather buffer; see _feed_inX_rf.
 RMS_MEMTILE_COL = int(_os.environ.get("RMS_MEMTILE_COL", "3"))
 # How many X sweeps the RMS CORE emits per phase, per arm. Without the knob the
 # core does the re-broadcasting itself, so this IS the refeed count; with it the
 # memtile re-broadcasts and the core emits exactly one sweep (or none, where the
 # phase does not run on that arm).
-assert not (
-    RMS_MEMTILE_REFEED and N_EXTRA
-), "RMS_MEMTILE_REFEED does not yet carry the extra waves' own refeed counts"
+# RMS_MEMTILE_REFEED and the extra waves do not compose; the refusal lives with
+# _RF_PH0_EX below, where EXTRA_NREFEED exists and the message can name the
+# numbers instead of asserting a bare incompatibility.
 
 PROJ_RING_DEPTH = int(_os.environ.get("PROJ_RING_DEPTH", "2"))
 assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist"
+
+# NEITHER SETTING PRODUCES A RING. Read from the lowered tile_0_2 of a qwen3-4b
+# batch-8 build, at BOTH depths `[static]`: one x buffer, one w buffer, one
+# mm_acc call, 3 aie.dma_bd. The comment above -- "2 is what
+# air-label-scf-for-to-ping-pong produces automatically" -- is wrong for this
+# loop, and depth 3's hand-built ring does not survive either, so the recorded
+# 8.692-vs-9.091 comparison is depth 1 against depth 1.
+#
+# The cause is one pass upstream: air-fuse-alloc-dealloc sinks the 16 KB
+# unpacked-weight scratch into the j loop, and isUnsafeToDuplicate then rejects
+# the whole loop because that buffer's first access is an opaque func.call. So
+# the proj core cannot fetch the next weight block while it computes the current
+# one, which is why the arithmetic ADDS to the weight stream instead of hiding
+# under it: docs/BZeroPlan.md item 2, 9.091 = 5.856 + 3.235.
+#
+# Hoisting the scratch for real DOES produce the ring (2 x, 2 w, one scratch,
+# lock inits 1 -> 2 on 16 tiles and nothing else on the device changed) and it
+# HANGS -- one decode wave is enough. That work is not in this tree; see
+# BZeroPlan before spending a day on it.
 
 # RMS_BAND_STREAM: the band-streamed residual (docs/DFlashFeasibility.md, "So
 # the residual has to leave L1"), built in levels so each is gatable and
@@ -1613,15 +1709,23 @@ assert PROJ_RING_DEPTH in (2, 3), "only 2 (default) and 3 (the experiment) exist
 #      the SAME memref (X) the existing cross-layer chaining already
 #      round-trips through, just at band grain and mid-layer instead of
 #      between layers. This is the part that actually moves the L1 ceiling.
-#      BUILT, IR-correct (checked directly against the design), but does
-#      NOT get past air-to-aie: "operand #0 does not dominate this use" on
-#      the SECOND air.channel.put to @rmsX in one launch invocation, a
-#      port-sharing BD-ring-construction limit (rmsX/rmsW share one S2MM
-#      port), not a bug in this level's own code. See "Level 3 built and
-#      IR-correct, but does not compile" in docs/DFlashFeasibility.md
-#      before changing this level again -- the fix is a cross-herd
-#      redesign (vocab's arm needs matching dummy outY/rmsX/layerOut
-#      transfer counts), not a local patch.
+#      VERIFIED ON DEVICE, qwen3-4b DECODE_BATCH=8 (docs/DFlashFeasibility.md
+#      section 5.4 (x)): batch_equiv 3.86e-03 at one layer and 5.56e-03 at
+#      36, the same output levels 0 and 2 produce, against a 5e-2 gate. It
+#      costs 4.4% -- 166.302 -> 173.624 ms, dispatch_time.py median of 25 --
+#      for streaming the whole residual through DDR twice a layer, so it is
+#      a viable shape in its own right and not only a batch-16 stepping
+#      stone. BATCH_MAX_RMS is 16 with it on.
+#
+#      This comment used to say level 3 "does NOT get past air-to-aie"
+#      ("operand #0 does not dominate this use" on the second @rmsX put).
+#      That was true and was fixed -- see 5.4 (iii) RMS_W_ON_X, which takes
+#      the norm weights off their own S2MM port so rmsX stops sharing one.
+#      It also pointed at a doc heading that is now a section 9 entry
+#      RETRACTING the claim. Level 3 at BATCH=1 is still not a supported
+#      configuration (5.4 (xiii)): the decode arm's band feed gates on
+#      RMS_BAND_STREAM >= 3 alone while the vocab arm also gates on
+#      BATCH > 1, and a batch-1 level-3 build hangs with nothing written.
 RMS_BAND_STREAM = int(_os.environ.get("RMS_BAND_STREAM", "0"))
 assert RMS_BAND_STREAM in (0, 1, 2, 3), "level 3 is the highest level built"
 
@@ -1799,15 +1903,288 @@ for _i, _w in enumerate(EXTRA_WAVES):
         )
     EXTRA_NREFEED.append(_ch // (K // XCHUNK))
 
+# ===== Mode 3's re-feed cycle: one BD chain every arm can traverse ==========
+#
+# A memtile relay's re-send count is a LOCK VALUE BAKED INTO A BD, and a BD
+# chain is hardware: it advances one BD per completed transfer and knows
+# nothing about which scf.index_switch arm is running. Everything else in this
+# design that varies by arm varies as a TRIP COUNT IN A CORE'S PROGRAM (see
+# _cnt), which branches; a BD cannot. So a dispatch has to leave the chain
+# where it found it, on EVERY arm -- and if it does not, the failure is a wrong
+# lock count on some later dispatch, with nothing wrong at compile time.
+#
+# Each arm's TOTAL re-sends are fixed by the model and cannot be traded:
+#   decode      XN_REFEED (ph0) + REFEED[GATEUP_PHASE] (ph2)
+#   LM head     VOCAB_RNDS (ph0; ph2 is a zero-trip loop there, no second
+#               projection phase exists on that arm)
+#   extra wave  its own EXTRA_NREFEED
+# A cycle of sum S is traversed a whole number of times by every arm iff S
+# divides all of them, so S is their gcd. The LARGEST such S is what we want:
+# one fill is one core sweep, and sweeps are the cost this mode exists to cut.
+#
+# The cycle is [a, b] with a = XN_REFEED % S, so ph0 ends exactly on a cycle
+# boundary and ph2 picks up at the next BD. a == 0 means one BD of S.
+#
+# qwen3-4b: decode 12+38 = 50, LM head 30 -> S = 10, cycle [2, 8].
+#   decode ph0  2,8,2                    = 12  (3 fills)
+#   decode ph2  8,2,8,2,8,2,8            = 38  (7 fills)   10 fills, 5 cycles
+#   LM head ph0 2,8,2,8,2,8              = 30  (6 fills)    6 fills, 3 cycles
+# Both land back on BD 0. Total re-sends per arm are UNCHANGED, so no consumer
+# moves: only the number of times the core regenerates the batch does.
+_PH0_RELAY = RMS_MEMTILE_REFEED in (1, 3)
+_PH2_RELAY = RMS_MEMTILE_REFEED in (1, 2, 3)
+
+# EVERY ARM CONSTRAINS THE CYCLE, INCLUDING ONES THIS BUILD WILL NOT DISPATCH.
+# DECODE_NO_LM_WAVES only cuts the runtime sequence at UNI_DEC; the vocab arm's
+# IR is still in the design. Dropping VOCAB_RNDS from the gcd there was tried
+# and it HANGS the decode-only build on device -- so a narrowed wave range must
+# not move the cycle, which is the same rule as "the xclbin is built at the full
+# wave table and UNI_WAVE_LO/HI only narrow the stream against it".
+# ONE SWEEP PER PHASE, AND THAT IS A CORRECTNESS CONSTRAINT, NOT A PREFERENCE.
+#
+# The cycle sum S decides how many times the rms core regenerates the batch per
+# phase: S = XN_REFEED + REFEED[GATEUP_PHASE] gives one fill per phase, and any
+# smaller S gives more. Measured, `dflash_build_diff.py` against the shipping
+# build at batch 8:
+#
+#     one sweep per phase (S = 50)   BIT-IDENTICAL at 1, 4 and 36 layers,
+#                                    layer output and the whole KV region
+#     three and seven (S = 10)       exact at 1 layer, 10 elements wrong at 2,
+#                                    ~55 and KV drifting at 4, 7e-4 at 36
+#     five and fifteen (S = 5)       the SAME error as S = 10, not worse
+#     one and three  (S = 25)        AS WRONG AS S = 10 (2.6e-4 .. 1.8e-3)
+#
+# So it is not the number of fills and not the chain -- doubling the fills does
+# not move it -- and S = 25 puts ph0 at ONE fill while ph2 has three, which is
+# already the full error. PH2 WITH MORE THAN ONE FILL IS NECESSARY AND
+# SUFFICIENT.
+#
+# The undiluted signal is at TWO layers, not 36: ten elements, ALL IN TOKEN 0,
+# all 1 ULP. One ULP in the layer output means the PROJECTION differed by less
+# than a bf16 ULP -- a different f32 accumulation, not corrupted X -- and token
+# 0 is the first row of every sweep, the one the core writes straight after the
+# sweep loop's back-edge. By four layers it has reached the other tokens
+# through the KV cache, which is all the 36-layer number is.
+#
+# Ruled out: the relay's BD chain and locks (the lowered aie.memtile_dma is
+# exactly as designed -- write lock init 8, fills alternating acquire 8/release
+# 2 and acquire 2/release 8, drain one self-looping BD at 1/1); _xc_voc; the
+# arm-selected sweep bound (mode 0 ships with the same dynamic bound at 12 and
+# 30); this core's lock ordering (mode 0 emits the identical call; acquire;
+# release). Root cause not isolated; until it is, S stays at the bit-exact
+# value. See docs/BZeroPlan.md item 1.
+_RF_S = XN_REFEED + REFEED[GATEUP_PHASE]
+# RF_CYCLE_S: force a SMALLER cycle sum than the gcd, i.e. more fills per layer
+# for the same re-sends. Diagnostic only -- it must still divide the gcd or an
+# arm cannot walk whole cycles, and the asserts below say so. It exists because
+# "does the error scale with the number of fills" is the question that separates
+# a memtile-chain fault from a core-side staging race, and it is one build.
+#
+# A value LARGER than the gcd is also allowed, and is diagnostic-only: the LM
+# head arm then cannot walk whole cycles, so its sequence is rounded UP to the
+# next cycle boundary and it would over-feed. Harmless in a DECODE_NO_LM_WAVES
+# build, where that arm is never dispatched -- and it is the only way to build
+# the ONE-SWEEP-PER-PHASE shape (S = XN_REFEED + REFEED[GATEUP_PHASE]) with the
+# vocab arm's IR still present, which is what isolates "the core sweeps more
+# than once" from "the chain has more than one fill".
+_RF_S_ENV = int(_os.environ.get("RF_CYCLE_S", "0"))
+if _RF_S_ENV:
+    _RF_S = _RF_S_ENV
+# RF_CYCLE: the cycle SPELLED OUT, e.g. "6,6,38". A cycle needs neither two
+# entries nor the [a, S-a] split below -- all that is required is that every arm
+# walks it whole. The derived form is the one that puts ph0 on a boundary;
+# naming the entries directly is what lets a build isolate ph0's fill count from
+# ph2's, which the derived form cannot do (there is no S that gives ph0 more
+# than one fill and ph2 exactly one). Diagnostic; every assert below still
+# applies, including the per-arm "leaves the chain mid-cycle" ones, so a cycle
+# an arm cannot walk is refused rather than built.
+_RF_CYCLE_ENV = [
+    int(v) for v in _os.environ.get("RF_CYCLE", "").split(",") if v.strip()
+]
+if _RF_CYCLE_ENV:
+    _RF_S = sum(_RF_CYCLE_ENV)
+# Whether the LM head arm can walk this cycle a whole number of times. At the
+# bit-exact S it cannot (VOCAB_RNDS=30 is not a multiple of 50), so its sequence
+# is rounded UP to the next boundary -- which OVER-FEEDS that arm and is only
+# safe where it is never dispatched. The guard below refuses to build otherwise.
+_RF_VOC_APPROX = bool(VOCAB_RNDS % _RF_S)
+if RMS_MEMTILE_REFEED == 3 and _RF_VOC_APPROX and not NO_LM_WAVES:
+    raise SystemExit(
+        f"RMS_MEMTILE_REFEED=3 needs DECODE_NO_LM_WAVES=1 for this model.\n"
+        f"  The relay's re-send count is a lock value baked into a DMA BD and\n"
+        f"  both index_switch arms share one BD chain, so every arm has to walk\n"
+        f"  one common cycle a whole number of times. The decode arm needs\n"
+        f"  {XN_REFEED}+{REFEED[GATEUP_PHASE]}={_RF_S} and the LM head needs\n"
+        f"  {VOCAB_RNDS}, which do not share a cycle at one sweep per phase.\n"
+        f"  A SMALLER cycle (gcd {_math.gcd(_RF_S, VOCAB_RNDS)}) makes them\n"
+        f"  share one, and it is NUMERICALLY WRONG -- bit-exact at one decode\n"
+        f"  layer, ten 1-ULP elements in token 0 at two, 7e-4 at 36. Narrowed\n"
+        f"  to ph2 with more than one fill; root cause not isolated.\n"
+        f"  RF_CYCLE_S= forces it anyway, for whoever picks that up.\n"
+        f"  See docs/BZeroPlan.md, 'ONE SWEEP PER PHASE'."
+    )
+_RF_A = XN_REFEED % _RF_S
+_RF_CYCLE = _RF_CYCLE_ENV or ([_RF_S] if _RF_A == 0 else [_RF_A, _RF_S - _RF_A])
+assert (
+    max(_RF_CYCLE) <= MAX_REFEED
+), f"re-feed cycle {_RF_CYCLE} exceeds the {MAX_REFEED} lock ceiling"
+# The write lock inits to the LARGEST count on the buffer, and the first fill
+# in the cycle acquires the LAST one's (air-to-aie makes a fill wait for the
+# previous fill's re-sends, not its own). Those two have to be the same number
+# or the lock drifts above its init every cycle and a fill starts running ahead
+# of the drain.
+assert _RF_CYCLE[-1] == max(
+    _RF_CYCLE
+), f"re-feed cycle {_RF_CYCLE} must end on its largest count"
+
+
+def _rf_seq(start, total):
+    """Counts drawn cyclically from _RF_CYCLE at `start`, summing to `total`.
+
+    Returns (counts, next_index). The caller asserts next_index == 0 at the end
+    of an arm: that IS the alignment condition, and it is the only thing
+    standing between this mode and a chain that drifts one BD per dispatch.
+    """
+    seq, i = [], start
+    while sum(seq) < total:
+        seq.append(_RF_CYCLE[i % len(_RF_CYCLE)])
+        i += 1
+    assert (
+        sum(seq) == total
+    ), f"re-feed cycle {_RF_CYCLE} cannot sum to {total} from BD {start}"
+    return seq, i % len(_RF_CYCLE)
+
+
+# The START index matters as much as the sequence now: it is the slab a phase
+# begins on (see _rmsrow_relay), and the relay ping-pongs one slab per cycle
+# position so that a fill boundary never leaves a transfer pending.
+_RF_PH0_DEC_I0 = 0
+_RF_PH0_DEC, _rf_i = _rf_seq(0, XN_REFEED)
+_RF_PH2_DEC_I0 = _rf_i
+_RF_PH2_DEC, _rf_i = _rf_seq(_rf_i, REFEED[GATEUP_PHASE])
+assert _rf_i == 0, "decode arm leaves the re-feed chain mid-cycle"
+if _RF_VOC_APPROX:
+    # Diagnostic builds only (RF_CYCLE_S not dividing the gcd): walk whole
+    # cycles until the LM head's re-sends are covered. It over-feeds, so this
+    # is only valid where that arm is never dispatched.
+    _rf_n = -(-VOCAB_RNDS // _RF_S) * _RF_S
+    _RF_PH0_VOC, _rf_i = _rf_seq(0, _rf_n)
+else:
+    _RF_PH0_VOC, _rf_i = _rf_seq(0, VOCAB_RNDS)
+assert _rf_i == 0, "LM head arm leaves the re-feed chain mid-cycle"
+# AN EXTRA WAVE CANNOT WALK THE CYCLE, AND NO WAVE TABLE FIXES THAT.
+#
+# Only mode 3 replays a fill, so only mode 3 needs a sequence here -- and this
+# loop is skipped otherwise, which is what keeps a FOLDED MODE-0 template
+# buildable. It did not used to be: the walk ran unconditionally, so a build
+# with a wave table and no re-feed knob at all died on the assert inside
+# _rf_seq. The emitted-IR gate never saw it because that gate runs with
+# DECODE_EXTRA_WAVES unset.
+#
+# Under mode 3 the refusal is structural. A wave's re-sends are
+#
+#     EXTRA_NREFEED = i2 * EXTRA_K / K = i2 * j2 / (K / (2*COL_BLOCK))
+#
+# so a wave that contracts over exactly K with i2 = 1 -- which is every wave
+# the DFlash pre-pass emits -- sends its X ONCE and has nothing to re-broadcast.
+# One does not divide the decode arm's 50, so the largest cycle all the arms
+# share is 1, and a cycle of 1 replays each fill once: mode 0 by another name.
+# Reshaping does not help either, because i2 and j2 trade off inside a fixed
+# block count -- fc as a single wave is 25 whichever way it is split, and all
+# five context-K/V layers merged is 20, for a gcd of 5.
+#
+# The way out is for an arm with nothing to re-broadcast to BYPASS the relay
+# rather than walk its cycle, which needs the extra arm's X to reach the X
+# memtile on _XN1 directly. Today it does not: the extra arms sit in
+# ARM_IDLE_CASES and run the LM head's relay (_o_voc), while the consumer side
+# (_xs_extra) reads "xnorm" -- the channel the relay itself owns.
+_RF_PH0_EX = []
+# MODE 3 STILL DOES NOT CARRY THE EXTRA WAVES. The build below is complete
+# enough to compile and place, and it HANGS on the extra-wave stream -- so it is
+# behind a knob rather than available by accident. Measured 2026-09-02.
+#
+# What works: an extra arm contributes NO fill to the relay (see _o_extra), so
+# it leaves the BD chain where it found it, which is the rule the shared chain
+# imposes. That is the right shape and it is why this gets as far as it does --
+# the failure moved off the verify dispatch entirely.
+#
+# What does not: on an extra arm the rms core still puts its X on @xnorm,
+# because that core has two MM2S and both are taken (@layerOut, @xnorm) so
+# there is no second channel to put it on. Under mode 3 @xnorm has TWO
+# consumers -- the relay tile, and the X memtile via _xs_extra -- which makes it
+# a broadcast. With the relay's fill skipped its S2MM is never armed, the put
+# has nowhere to land, and the fc stream times out on its first dispatch
+# (dflash_prepass_waves._dispatch("fc"), before any verify dispatch runs).
+#
+# So the two ways out are unchanged and both are engine work: let the relay
+# consume the extra arm's X (needs a BD on the cycle -- impossible while the
+# decode arm's ph2 pins it at 38), or free an MM2S on the rms core by moving
+# @layerOut off it. See docs/BZeroPlan.md.
+#
+# THE SECOND ONE IS NOT "GIVE THE EXTRA ARM ITS OWN CHANNEL". That reading is
+# wrong for the same reason @tapsX is: a channel only the extra arm names does
+# not survive to flow construction (section 3.15), so a free port buys nothing
+# by itself. What the port would buy is a SPLIT COUNT -- take ONE of the decode
+# arm's twelve ph0 re-sends off the relay and send it straight from the core on
+# _XN1, so that EVERY arm puts on _XN1 exactly once and only the @xnorm fill
+# counts differ:
+#
+#     _RF_CYCLE = [11, 38]      ph0 11 (BD 0 -> 1) + 1 direct = 12
+#                               ph2 38 (BD 1 -> 0), still ONE fill
+#                               extra: 0 fills, leaves the chain at 0
+#
+# ph2 stays a single fill, so the multi-fill defect is untouched; the extra arm
+# still contributes no BD; and _XN1 from the rms core is L1 -> L2, so none of
+# route 6's L3-allocation constraints apply. The whole of what it waits on is
+# the port. See "Route 3, priced: THE SPLIT COUNT" in docs/BZeroPlan.md.
+_RF_EXTRA_OK = int(_os.environ.get("RMS_MEMTILE_REFEED_EXTRA", "0"))
+if RMS_MEMTILE_REFEED == 3 and N_EXTRA and not _RF_EXTRA_OK:
+    raise SystemExit(
+        f"RMS_MEMTILE_REFEED=3 does not carry the {N_EXTRA} extra waves.\n"
+        f"  It BUILDS and it HANGS: the extra-wave stream times out on its\n"
+        f"  first dispatch. The arms' shared BD chain is not the problem any\n"
+        f"  more (an extra arm contributes no fill); the rms core's second\n"
+        f"  MM2S is. See the comment above this refusal, and BZeroPlan.\n"
+        f"  RMS_MEMTILE_REFEED_EXTRA=1 builds it anyway, for whoever picks\n"
+        f"  this up -- the IR and the placement are worth inspecting."
+    )
+if RMS_MEMTILE_REFEED == 3 and N_EXTRA and max(EXTRA_NREFEED) > 1:
+    raise SystemExit(
+        f"an extra wave can only ever contribute no fill, which needs it to\n"
+        f"  re-send its X exactly ONCE; these need {sorted(set(EXTRA_NREFEED))}.\n"
+        f"  A wave that re-sends more has something to re-broadcast, so it\n"
+        f"  would need a fill on the relay chain, whose cycle the decode arm's\n"
+        f"  ph2 pins at {_RF_CYCLE}."
+    )
+# Empty by construction: the refusal above means mode 3 never coexists with an
+# extra wave, and no other mode reads this. _PH0_SWEEPS' mode-3 branch therefore
+# derives the same empty per-wave list the mode-0 branch's [1] * N_EXTRA does.
+
+# One sweep where SOMETHING ELSE re-broadcasts (mode 1's @inX gather), the full
+# refeed count where the core still does its own, and one sweep PER FILL under
+# mode 3 -- where the relay replays each fill by the cycle count above.
 _PH0_SWEEPS = (
-    (1, 1, [1] * N_EXTRA)
-    if RMS_MEMTILE_REFEED == 1
-    else (VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED)
+    # ONE sweep per extra wave, not len(_RF_PH0_EX): an extra arm bypasses the
+    # relay (see _o_extra), so its sweep is not a fill to be replayed -- it is
+    # the single X send the wave needs, going straight to the X memtile.
+    # ZERO core sweeps for an extra wave under mode 3: its X reaches the relay
+    # from the shim on @tapsX (see _o_extra), so the rms core emits nothing on
+    # @xnorm for that arm. A sweep here would be an unwanted fill on the shared
+    # [12, 38] chain -- the exact thing @tapsX exists to avoid.
+    (len(_RF_PH0_VOC), len(_RF_PH0_DEC), [0] * N_EXTRA)
+    if RMS_MEMTILE_REFEED == 3
+    else (
+        (1, 1, [1] * N_EXTRA) if _PH0_RELAY else (VOCAB_RNDS, XN_REFEED, EXTRA_NREFEED)
+    )
 )
 _PH2_SWEEPS = (
-    (0, 1, [0] * N_EXTRA)
-    if RMS_MEMTILE_REFEED
-    else (0, REFEED[GATEUP_PHASE], [0] * N_EXTRA)
+    (0, len(_RF_PH2_DEC), [0] * N_EXTRA)
+    if RMS_MEMTILE_REFEED == 3
+    else (
+        (0, 1, [0] * N_EXTRA)
+        if _PH2_RELAY
+        else (0, REFEED[GATEUP_PHASE], [0] * N_EXTRA)
+    )
 )
 
 # RMS_BAND_STREAM level 2's DMA transfer granularity for banding rmsX, kept
@@ -2469,6 +2846,7 @@ def build_module():
         # GLU_OUT token stride -- so the down phase sees the same layout the
         # rms core's X does, and _feed_inX does not need a second shape.
         down_l2 = MemRefType.get([BATCH * GLU_OUT], bf16, memory_space=l2)
+        rmsrow_l2 = MemRefType.get([BATCH * K], bf16, memory_space=l2)
         # relay memtile columns for the id-demux dests (free cols, not proj/X/MT).
         # GLU dest (gate-up) goes DIRECT to the GLU tile (no relay).
         RELAY_COLS = [3, 5, 4][:NDEST]
@@ -2575,6 +2953,18 @@ def build_module():
                 visibility="private",
             )
             rms_chunk_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
+            if RMS_MEMTILE_REFEED == 3:
+                # (y_row, x_batch, w, scales, row, row_stride, len)
+                # RMS_ROW_OUT: one WHOLE ROW out per call instead of a cross-row
+                # chunk, so each value is computed exactly once. See
+                # docs/BZeroPlan.md and the kernel's own comment for why this
+                # cannot just be rms_chunk with c=t (it would offset w as well).
+                rms_row_aie = FuncOp(
+                    "rms_row_aie",
+                    ([rstg_l1, rmsb_l1, rms_l1, rscl_l1, i32, i32, i32], []),
+                    visibility="private",
+                )
+                rms_row_aie.attributes["link_with"] = StringAttr.get("rms_residual.o")
             # (acc_batch, round, row, offset_in_row, round_width)
             residual_acc_row_aie = FuncOp(
                 "residual_acc_row_aie",
@@ -2785,6 +3175,28 @@ def build_module():
             _rx = channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
             _rx = channel_decl("rmsX", size=[1])
+        # tapsX: the extra waves' X, shim -> the RELAY MEMTILE, bypassing the
+        # rms core entirely. Only declared where it is used, so every other
+        # build's channel set is untouched.
+        #
+        # It exists because an extra arm's X cannot reach the X memtile any
+        # other way under mode 3. It cannot ride @xnorm (that lands on the
+        # relay, whose fill an extra arm must not add -- the [12, 38] cycle),
+        # it cannot come off the rms core on a second channel (two MM2S, both
+        # taken), and it cannot be a shim -> X-memtile channel (that feed
+        # collapses to one structure before flows are built, §3.15).
+        #
+        # What works is a SECOND FILL OF THE SAME SLAB. The relay's drain is
+        # count-free and self-loops -- the count lives on the fill -- so col 4
+        # can be filled from @xnorm at 12/38 on the decode arm and from @tapsX
+        # at 1 here, on a DIFFERENT S2MM chain (chains are per tile AND
+        # channel), while both share the one drain BD into @xin. Each chain
+        # returns to its own BD 0, which is the rule the shared chain imposes.
+        _tx = (
+            channel_decl("tapsX", size=[1])
+            if (N_EXTRA and RMS_MEMTILE_REFEED == 3)
+            else None
+        )
         _rw = channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
@@ -2859,7 +3271,7 @@ def build_module():
         # aie::mmul A-tile order on the way out.
         _XCHUNK = XCHUNK
 
-        def _xnorm_put(buf, width, ssa=False, **kw):
+        def _xnorm_put(buf, width, ssa=False, chan="xnorm", **kw):
             """Put `width` elements per token on @xnorm, chunk-major.
 
             `ssa` picks index-SSA operands over static attributes for the
@@ -2870,7 +3282,7 @@ def build_module():
             if BATCH == 1:
                 _w = idx if ssa else (lambda v: v)
                 return ChannelPut(
-                    "xnorm",
+                    chan,
                     buf,
                     offsets=[_w(0)],
                     sizes=[_w(width)],
@@ -2882,7 +3294,7 @@ def build_module():
                 f"{_XCHUNK}; the X memtile stages whole chunks"
             )
             return ChannelPut(
-                "xnorm",
+                chan,
                 buf,
                 offsets=[idx(0), idx(0), idx(0)],
                 sizes=[idx(width // _XCHUNK), idx(BATCH), idx(_XCHUNK)],
@@ -3067,6 +3479,41 @@ def build_module():
         # the down_buffer fill, derived from the DOWN_REFEED loop around the put
         # below), NOT drained to host.
         channel_decl("gluOut", size=[1])
+        if RMS_MEMTILE_REFEED == 3:
+            # MODE 3 REPOINTS @xnorm INSTEAD OF ADDING A CHANNEL.
+            #
+            # The rms core has TWO MM2S ports and both are taken (@layerOut,
+            # @xnorm), so the whole rows cannot get their own channel out of the
+            # core -- a third flow wraps onto MM2S 0 and both chains there lose
+            # their self-loop. What is NOT fixed is where @xnorm goes: it is a
+            # name. So @xnorm now carries the core's whole rows to the RELAY
+            # memtile, and two new channels carry the re-broadcast on to the X
+            # memtile.
+            #
+            #   rms core --@xnorm (2560-element rows, ONE BD)--> col RMSROW_COL
+            #   col RMSROW_COL --@xin0 (slab0 x REFEED[0])--> X memtile   ph0
+            #   col RMSROW_COL --@xin2 (slab2 x GATEUP)   --> X memtile   ph2
+            #   col 5          --@xin0 (attnO x OPROJ)    --> X memtile   ph1
+            #   col 3          --@xin2 (gluOut x DOWN)    --> X memtile   ph3
+            #
+            # ph1 rides on @xin0 behind ph0 and ph3 on @xin2 behind ph2, in
+            # phase-time order. That keeps the X memtile at TWO inbound channels
+            # -- it has exactly two free S2MM once @xnorm stops arriving there
+            # (five of its six are spent, four of them on a 4-way striped fill
+            # of one 4098-element buffer that cannot be narrowed without costing
+            # ingest bandwidth) -- and each of the two is convergent from two
+            # DIFFERENT tiles, which is the arrangement @xnorm already uses.
+            #
+            # air.dedicated_dma_channel on both: without it AIR's MM2S allocator
+            # "collapses promiscuously onto a packet-flow channel" and puts the
+            # relay tile's two drains on ONE physical channel, whose BDs then
+            # alternate ph0, ph2, ph0, ph2 while the consumer needs all of ph0
+            # first. Two distinct channels also mean two distinct packet ids,
+            # which the ROUTER requires: two packet flows sharing an id from two
+            # ports of one tile fail with "Unable to find a legal routing"
+            # (measured -- see docs/BZeroPlan.md).
+            _xc = channel_decl("xin", size=[1], channel_type="npu_dma_packet")
+            _xc.operation.attributes["air.dedicated_dma_channel"] = UnitAttr.get()
         # Batched LM head: the GLU core's second MM2S, carrying the vocab logits to
         # the host. Its own channel and not @layerOut, because a channel with two
         # producers is a shim fan-in and air-to-aie refuses those ("Fan-in for
@@ -4322,6 +4769,20 @@ def build_module():
                                 sizes=[BATCH * K],
                                 strides=[1],
                             )
+                            if _tx is not None:
+                                # The SAME rows again, to the relay memtile.
+                                # The @rmsX put above stays: the rms core's body
+                                # gets it unconditionally and would stall on a
+                                # hole, exactly as rmsW2 is consumed and
+                                # discarded on the vocab arm. 40 KB against the
+                                # wave's own megabytes.
+                                ChannelPut(
+                                    "tapsX",
+                                    X,
+                                    offsets=[EXTRA_WAVES[k]["x_slot"] * BATCH * K],
+                                    sizes=[BATCH * K],
+                                    strides=[1],
+                                )
                             ChannelPut(
                                 "rmsW",
                                 RMS,
@@ -5144,6 +5605,104 @@ def build_module():
                     # times over @xnorm) in 512 chunks -> broadcast
                     # 256-blocks. RMS_REFEED*(2048/512) gets. (reproducer core_2_2 +
                     # mem_1_1 x_buffer 512.)
+                    def _rmsrow_relay(out, seq, rb, src="xnorm"):
+                        """ph0/ph2 X relay: one fill of a row-major [BATCH][K]
+                        slab from @xnorm per entry of `seq`, each re-broadcast
+                        that entry's number of times onto `out` -- the same
+                        mechanism the o-buf (ph1) and down_buffer (ph3) relays
+                        above/below use, one hop further upstream.
+
+                        `seq` is this phase's slice of the re-feed cycle (see
+                        _rf_seq). It is a SEQUENCE and not a single count
+                        because the count is a lock value baked into a BD, the
+                        arms share one BD chain, and the LM head's total
+                        re-sends differ from the decode arm's -- so the two
+                        arms have to walk the same short cycle a different
+                        number of times rather than each name its own count.
+                        Every entry folds onto one of the len(_RF_CYCLE) BDs.
+
+                        The rms core now emits BATCH WHOLE ROWS instead of
+                        regenerating cross-row chunks once per output row-block,
+                        so each value is computed exactly once. At block 1 the
+                        core could hold its normalized row and re-feed it itself
+                        (one `Release x12` on the @xnorm read lock, no
+                        recompute); at block 8 the normalized batch is 40 KB on
+                        top of a 40 KB residual and it cannot, which is the
+                        whole 4.71 ms.
+
+                        MUST BE CALLED IN PHASE-TIME ORDER, ph0 then ph2. Every
+                        fill reads @xnorm from the same tile, so AIR chains them
+                        into ONE inbound BD cycle, and that cycle is only
+                        correct because it matches the order the core produces
+                        the fills in.
+
+                        `out`'s stream is byte-identical to what @xnorm carries
+                        today. _xnorm_put's batched form is already the
+                        chunk-major read of a row-major slab -- sizes
+                        [K/XCHUNK, BATCH, XCHUNK], strides [XCHUNK, K, 1] -- so
+                        _feed_inX, @inX and the 16 projection cores see exactly
+                        the stream they see now and none of them change.
+                        """
+                        if RMS_MEMTILE_REFEED != 3:
+                            return
+                        # ONE SLAB PER CYCLE POSITION, PING-PONGED. With a
+                        # single slab, fill N+1's BD is not armed until fill N's
+                        # re-sends have all gone -- so the core's row-0 transfer
+                        # of the next sweep STALLS, and because a compute tile's
+                        # channel.put lowers to `call; acquire(avail);
+                        # release(ready)` the core has already written row 1
+                        # into the staging buffer before it blocks. The stalled
+                        # row-0 transfer then carries row 1's bytes, and every
+                        # fill after the first in a phase loses its row 0.
+                        # Measured on the LM head, where only that arm has two
+                        # fills: token 0's logits come back a BLEND of rows 0
+                        # and 1 (corr 0.845 to each, against 0.992/0.681 for the
+                        # single-fill build) while rows 1..7 stay bit-identical.
+                        #
+                        # A SECOND SLAB DOES NOT FIX IT, and the reason is worth
+                        # writing down because it looks like it should. Ping-pong
+                        # the fills across two slabs and each one's BD is armed
+                        # while the other drains, so nothing stalls -- the fill
+                        # side lowers perfectly (each fill acquires its OWN count
+                        # against its own lock's init; see
+                        # memtile_per_fill_refeed_pingpong.mlir). The DRAIN side
+                        # does not. Two slabs are two buffers, so the drain
+                        # becomes a TWO-BD chain that alternates slab0, slab1,
+                        # slab0 -- one transfer per BD, that is what a chain is --
+                        # and what is needed is 12 consecutive sends of slab0 and
+                        # then 38 of slab1. The locks deadlock after 12 of each:
+                        # built, dispatched, hung with nothing written. A
+                        # count-free self-looping drain is only expressible over
+                        # ONE buffer, which is why this stays at one slab.
+                        #
+                        # ONE FLAT GET, not a per-token loop. The core ships
+                        # BATCH whole rows back to back, so a single contiguous
+                        # get of BATCH*K lands exactly the row-major [BATCH][K]
+                        # the strided drain below reads -- same bytes, one
+                        # dma_start instead of BATCH of them. It also has to be
+                        # one op: air-annotate-refeed puts this fill's re-send
+                        # count on the GET, and a fill spread over several gets
+                        # has no single BD to carry it (the pass says so rather
+                        # than guessing).
+                        for _cnt in seq:
+                            # `src` is @xnorm for the decode and LM-head arms
+                            # and @tapsX for an extra wave. A DIFFERENT CHANNEL
+                            # is the whole point: DMA chains are per tile AND
+                            # channel, so the extra arm's fill sits on its own
+                            # S2MM chain and returns to its own BD 0, instead of
+                            # advancing the [12, 38] chain the other arms walk.
+                            # The drain below is shared -- same buffer, same
+                            # descriptor, same channel -- so it stays the ONE
+                            # count-free self-looping BD the mode requires.
+                            ChannelGet(
+                                src,
+                                rb,
+                                offsets=[idx(0)],
+                                sizes=[idx(BATCH * K)],
+                                strides=[idx(1)],
+                            )
+                            refeed(_cnt, lambda: _xnorm_put(rb, K, chan=out))
+
                     def _feed_inX(src, total_chunks):
                         for _rc in for_(idx(0), idx(total_chunks), idx(1)):
                             xb = AllocOp(xmt_l2, [], [])
@@ -5275,7 +5834,20 @@ def build_module():
                         #
                         # That drops a level off the nest, and the nest is what
                         # spends the BD blocks this knob dies on.
-                        _sz, _st = _xfd.xfeed_bd(BATCH, XCHUNK, 1)
+                        # Mode 3: the producer ships WHOLE ROWS, so the gather
+                        # buffer is row-major [BATCH][K] and a token is K apart
+                        # rather than XCHUNK. That is the ONLY difference --
+                        # xfeed_bd already parameterizes the token pitch, and
+                        # enumerating both address lists shows the emitted
+                        # (token, column) sequence is identical for every chunk.
+                        # The projection cores cannot tell the two apart.
+                        _rowmaj = RMS_MEMTILE_REFEED == 3
+                        _sz, _st = _xfd.xfeed_bd(
+                            BATCH, XCHUNK, (K // XCHUNK) if _rowmaj else 1
+                        )
+                        # Chunk stride: XCHUNK elements along a row when
+                        # row-major, a whole [BATCH][XCHUNK] window when not.
+                        _cstride = XCHUNK if _rowmaj else _win
                         # offsets[0] is in units of strides[0], not elements --
                         # the same rule. The chunk base is _win ELEMENTS, so it
                         # is _win // _st[0] here; writing _win flatly would
@@ -5307,7 +5879,7 @@ def build_module():
                         # (air_channel_producer_refeed.mlir says so), which is
                         # why the repeat is a lock count rather than a dimension.
                         _sz4 = [nchunk] + list(_sz)
-                        _st4 = [_win] + list(_st)
+                        _st4 = [_cstride] + list(_st)
 
                         def _put_all():
                             ChannelPut(
@@ -5358,11 +5930,27 @@ def build_module():
                             if RMS_MEMTILE_REFEED == 1:
                                 _feed_inX_rf("xnorm", _NCH, VOCAB_RNDS)
                             else:
-                                _feed_inX("xnorm", _xc_voc)
+                                # Mode 3 reads @xin0 here too. Not because this
+                                # arm works -- it does not, and the knob refuses
+                                # to build unless DECODE_NO_LM_WAVES=1 -- but
+                                # because a get left on @xnorm gives that
+                                # channel a SECOND consumer (the relay tile is
+                                # the first), and air-to-aie builds the flow and
+                                # spends an S2MM on the X memtile for it whether
+                                # or not the arm is ever selected. That channel
+                                # is exactly the one this mode frees.
+                                _feed_inX(
+                                    _XN1 if RMS_MEMTILE_REFEED == 3 else "xnorm",
+                                    _xc_voc,
+                                )
                             yield_([])
 
                         def _xs_dec():
-                            if RMS_MEMTILE_REFEED:
+                            # Mode 3 does its re-broadcast one hop upstream (a
+                            # memtile relay onto @xnorm, like ph1/ph3), so this
+                            # side sees exactly the mode-0 stream and stays the
+                            # ONE flat loop the BD budget requires.
+                            if RMS_MEMTILE_REFEED in (1, 2):
                                 # Phase-time order, matching the producers:
                                 # rms ph0 -> o-memtile ph1 -> rms ph2 -> down ph3.
                                 # Only the two rms phases gather-and-rebroadcast;
@@ -5394,6 +5982,14 @@ def build_module():
                                     _feed_inX(
                                         "xnorm", DOWN_REFEED * (GLU_OUT // XCHUNK)
                                     )
+                            elif RMS_MEMTILE_REFEED == 3:
+                                # ONE inbound channel, convergent from three
+                                # tiles and consumed in phase-time order: ph0
+                                # and ph2 from the relay slab, ph1 from the
+                                # attnO memtile, ph3 from the down buffer. Same
+                                # loop, same count as mode 0 -- only the tile
+                                # the chunks come from changed.
+                                _feed_inX(_XN1, _xc_dec)
                             else:
                                 _feed_inX("xnorm", _xc_dec)
                             yield_([])
@@ -5418,7 +6014,18 @@ def build_module():
                             ]
 
                             def _xs_extra(k):
-                                _feed_inX("xnorm", _xc_extra[k])
+                                # _XN1, NOT the literal "xnorm" -- the comment
+                                # above is the rule and this line used to break
+                                # it. Under mode 0 _XN1 IS "xnorm" so the two
+                                # spellings agree and nothing showed; under
+                                # RMS_MEMTILE_REFEED=3 _XN1 is "xin" and this
+                                # arm was naming a DIFFERENT CHANNEL from every
+                                # other one. A channel named by one arm alone
+                                # does not survive to be allocated (§3.15), so
+                                # the get vanished and the extra arm was left
+                                # with no X source at all -- a verify dispatch
+                                # that times out with nothing wrong on paper.
+                                _feed_inX(_XN1, _xc_extra[k])
                                 yield_([])
 
                             index_switch(
@@ -6776,12 +7383,45 @@ def build_module():
                                 yield_([])
                         else:
                             _o_gather_block()
+                        # BOTH rms phases relay from the SAME set of slabs (one
+                        # per re-feed cycle position -- see _rmsrow_relay), and
+                        # they live
+                        # HERE rather than at segment scope: a value defined
+                        # outside this index_switch arm and used inside it makes
+                        # the SWITCH carry an async token, which the dependency
+                        # canonicalizer has no vertex for. Keeping the slab and
+                        # both of its fill/drain pairs in one region also gives
+                        # air-annotate-refeed what it needs -- each drain loop
+                        # with its own fill in the same block.
+                        #
+                        # PHASE-TIME ORDER on the convergent @xin, which is what
+                        # the single consumer loop reads: ph0 (this slab), ph1
+                        # (the attnO buffer), ph2 (this slab again), then ph3
+                        # (the down buffer, at segment level below). ph2's fill
+                        # cannot run before the core has produced ph2's X, which
+                        # needs o-proj, which needs ph1's X -- delivered by the
+                        # refeed just above it. So program order and data order
+                        # agree and there is no cycle.
+                        _rb = None
+                        if RMS_MEMTILE_REFEED == 3:
+                            _rb = AllocOp(rmsrow_l2, [], [])
+                            _rb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), RMSROW_COL)
+                            )
+                            _rmsrow_relay(_XN1, _RF_PH0_DEC, _rb)
                         refeed(
                             OPROJ_REFEED,
                             lambda: _xnorm_put(
-                                omtb, N_ATTN_CU * DQ_PER_CU, ssa=True, indices=[idx(0)]
+                                omtb,
+                                N_ATTN_CU * DQ_PER_CU,
+                                ssa=True,
+                                chan=_XN1,
+                                indices=[idx(0)],
                             ),
                         )
+                        if _rb is not None:
+                            _rmsrow_relay(_XN3, _RF_PH2_DEC, _rb)
+                            DeallocOp(_rb)
                         _probe_put("O", "probe5", omtb)
                         DeallocOp(omtb)
 
@@ -6790,18 +7430,82 @@ def build_module():
                     # excludes OPROJ_REFEED, so the xnorm convergence stays balanced.
                     if _seg_arm_i is not None:
 
+                        def _tapsx_fill(n):
+                            """The extra waves' X fill, present on EVERY arm.
+
+                            `n` is a PYTHON int -- 0 on the arms that have no
+                            extra wave to fetch, 1 on the ones that do -- so the
+                            loop is statically zero-trip rather than dynamically
+                            so. Both of the other spellings were built and both
+                            are refused:
+
+                              only in the extra arm
+                                'air.channel.put' op failed to get S2MM tile for
+                                L3 allocation. A channel named by ONE arm does
+                                not survive to flow construction, and an L3
+                                channel then dies instead of being dropped
+                                quietly. This is §3.15's failure, reproduced.
+                              outside the switch, with an arm-selected count
+                                'scf.for' op failed to fully unroll. A memtile's
+                                BD program is static; a segment-scope loop over
+                                a runtime bound has nothing to unroll into.
+
+                            A zero-trip loop with CONSTANT bounds is the design's
+                            own idiom for this -- it keeps the op, which is what
+                            the flow and the lock credit are counted from, and
+                            emits no transfer.
+                            """
+                            if RMS_MEMTILE_REFEED != 3 or not N_EXTRA:
+                                return
+                            _eb = AllocOp(rmsrow_l2, [], [])
+                            _eb.operation.attributes["air.memtile_col"] = (
+                                IntegerAttr.get(T.i32(), RMSROW_COL)
+                            )
+                            for _ in for_(idx(0), idx(n), idx(1)):
+                                _rmsrow_relay(_XN1, [1], _eb, src="tapsX")
+                                yield_([])
+                            DeallocOp(_eb)
+
                         def _o_voc():
+                            # The LM head's ph0 relay. No o-gather here (vocab
+                            # produces no attnO) and no ph2 (no second
+                            # projection phase on this arm), so this is the
+                            # whole arm: VOCAB_RNDS re-sends walked out of the
+                            # SAME cycle the decode arm walks, a whole number of
+                            # times, so both arms leave the BD chain on BD 0.
+                            #
+                            # Its slab is a second alloc, which air-to-aie's
+                            # unifyOnChipArmBuffers folds onto one shared buffer
+                            # with the decode arm's -- correct here, because
+                            # every count now lives on a fill (air.refeed_count
+                            # per get) rather than on the alloc, and the two
+                            # arms' fills fold onto the same len(_RF_CYCLE) BDs.
+                            if RMS_MEMTILE_REFEED == 3:
+                                _vb = AllocOp(rmsrow_l2, [], [])
+                                _vb.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), RMSROW_COL)
+                                )
+                                _rmsrow_relay(_XN1, _RF_PH0_VOC, _vb)
+                                DeallocOp(_vb)
+                            _tapsx_fill(0)
                             yield_([])
 
                         def _o_dec():
                             _omtb_dec()
+                            _tapsx_fill(0)
+                            yield_([])
+
+                        def _o_extra():
+                            _tapsx_fill(1)
                             yield_([])
 
                         index_switch(
                             [],
                             _seg_arm_i,
                             ARM_IDLE_CASES,
-                            case_body_builder=lambda op, i, cv: _o_voc(),
+                            case_body_builder=lambda op, i, cv: (
+                                _o_voc() if cv == 0 else _o_extra()
+                            ),
                             default_body_builder=lambda op: _o_dec(),
                         )
                     else:
@@ -7152,9 +7856,10 @@ def build_module():
                         # re-broadcast the resident 8192 into the convergent X feed.
                         refeed(
                             DOWN_REFEED,
-                            lambda: _xnorm_put(db, GLU_OUT),
+                            lambda: _xnorm_put(db, GLU_OUT, chan=_XN3),
                         )
                         _probe_put("D", "probe4", db)
+
                         DeallocOp(db)
 
                     # (FAITHFUL ph2): the gate-up (ph2) X is now emitted by the rms core
@@ -7192,6 +7897,15 @@ def build_module():
 
                         None at batch 1 -- the GEMV has no scratch at all, and an
                         unused alloc is still an op in the no-op diff.
+
+                        "where nothing can ping-pong it" is the INTENT and not
+                        what happens: air-fuse-alloc-dealloc sinks this alloc
+                        back into the j loop, and its presence there disqualifies
+                        the loop's OTHER allocs -- x and w -- from the ping-pong
+                        they want, so the proj core runs with no weight prefetch
+                        at all. See docs/BZeroPlan.md, "Item 2 root cause". The
+                        fix is NOT in this tree: hoisting it for real is built
+                        and it HANGS on device.
                         """
                         return AllocOp(wscr_mm_l1, [], []) if BATCH > 1 else None
 
@@ -8011,7 +8725,9 @@ def build_module():
                             strides=[STG_W, _RMS_DMA_CHUNK, 1],
                         )
 
-                    def _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm):
+                    def _rms_batched_norm(
+                        xb, stg, scl, wbuf, nrefeed, _arm, ch="xnorm"
+                    ):
                         """Re-broadcast rmsnorm(xb) nrefeed times, by chunk.
 
                         The scale pass is per row and runs once; the chunk loop
@@ -8197,6 +8913,71 @@ def build_module():
                         else:
                             for t in range(BATCH):
                                 CallOp(rms_scale_row_aie, [scl, xb, _i32(t), _arm])
+                        if RMS_MEMTILE_REFEED == 3:
+                            # ONE WHOLE ROW per visit, BATCH visits, and that is
+                            # ONE SWEEP -- no chunk loop, so each value is
+                            # computed once per sweep rather than once per
+                            # output row-block. `nrefeed` is the number of
+                            # SWEEPS this arm makes (not re-sends): one per
+                            # relay fill, because the relay replays a fill by a
+                            # count baked into a BD and the arms share that BD
+                            # chain. See the _RF_CYCLE derivation -- qwen3-4b
+                            # lands at 10 sweeps a layer on the decode arm and 6
+                            # on the LM head, against 250 chunk regenerations.
+                            #
+                            # A sweep is a pure recompute from RESIDENT data
+                            # (xb is the [BATCH][K] residual, scl the finished
+                            # scales), so a second sweep costs no transfer.
+                            # The cross-row interleave
+                            # the projection cores need is done by the memtile's
+                            # READ descriptor instead (_feed_inX_rf, row-major
+                            # form), which costs nothing: it is the same
+                            # descriptor with the token stride at K rather than
+                            # XCHUNK, verified to emit the identical (token,
+                            # column) sequence.
+                            #
+                            # An scf.for, NOT a Python-unrolled loop: a compute
+                            # tile's aie.mem holds at most 16 BD blocks and a put
+                            # inside an scf.for costs ONE (the loop becomes a
+                            # repeat count on a single BD), where BATCH unrolled
+                            # puts cost BATCH. Same reason RMS_BAND_STREAM 3
+                            # rolls its band loop.
+                            #
+                            # stg is [BATCH*STG_W] = 4096 and K is 2560, so the
+                            # row lands in the buffer that is already there; no
+                            # new allocation and no change to this core's L1.
+                            _ns = nrefeed if isinstance(nrefeed, int) else None
+                            for _s in for_(
+                                idx(0),
+                                idx(_ns) if _ns is not None else nrefeed,
+                                idx(1),
+                            ):
+                                for _t in for_(idx(0), idx(BATCH), idx(1)):
+                                    CallOp(
+                                        rms_row_aie,
+                                        [
+                                            stg,
+                                            xb,
+                                            wbuf,
+                                            scl,
+                                            arith.index_cast(i32, _t),
+                                            _i32(K),
+                                            _i32(K),
+                                        ],
+                                    )
+                                    # 1-D contiguous, like the chunk put below
+                                    # and for the same reason: a compute tile's
+                                    # wrap field is 8 bits.
+                                    ChannelPut(
+                                        ch,
+                                        stg,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
+                                    yield_([])
+                                yield_([])
+                            return
                         _n = nrefeed if isinstance(nrefeed, int) else None
                         for _r in for_(
                             idx(0), idx(_n) if _n is not None else nrefeed, idx(1)
@@ -8545,8 +9326,8 @@ def build_module():
                         w = AllocOp(rms_l1, [], [])
                         w2 = AllocOp(rms_l1, [], []) if POST_RMS else None
 
-                        def _emit_norm(wbuf, nrefeed):
-                            _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm)
+                        def _emit_norm(wbuf, nrefeed, ch="xnorm"):
+                            _rms_batched_norm(xb, stg, scl, wbuf, nrefeed, _arm, ch)
 
                         def _accumulate(nrnds, stage, guard=None):
                             """Add a projection's output into the residual.
@@ -8742,7 +9523,7 @@ def build_module():
                             _w_row_get(w)
                             if POST_RMS:
                                 _w_row_get(w2)
-                            _emit_norm(w, _cnt(*_PH0_SWEEPS))
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0)
                         elif RMS_W_ON_X:
                             # BOTH weights first, back to back, before anything
                             # else touches the band buffer -- and in the SAME
@@ -8772,10 +9553,10 @@ def build_module():
                             if POST_RMS:
                                 _rms_band_get(xb)
                                 CallOp(band_to_weight_aie, [w2, xb, _i32(K)])
-                            _emit_norm(w, _cnt(*_PH0_SWEEPS))
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0)
                         else:
                             ChannelGet("rmsW", w, indices=[idx(0)])
-                            _emit_norm(w, _cnt(*_PH0_SWEEPS))
+                            _emit_norm(w, _cnt(*_PH0_SWEEPS), _RMSROW0)
                             if POST_RMS:
                                 # Swap in the post-attention weight BEFORE the
                                 # first o-proj get, not after: rmsW2 packet-muxes
@@ -8814,6 +9595,7 @@ def build_module():
                         _emit_norm(
                             w2 if POST_RMS else w,
                             _cnt(*_PH2_SWEEPS),
+                            _RMSROW2,
                         )
                         # residual2: layer output = h + down, in place.
                         _if_decode(

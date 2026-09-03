@@ -89,7 +89,21 @@ def _ensure_requant_cache(fd, model):
     # entry -- a warm single-channel cache would feed the dual-channel xclbin the
     # wrong blocks.
     _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
-    rc = rc or os.path.join(_Q4NX_CACHE, f"requant{_w2}.npz")
+    # ... and so does the vocab chunking, for exactly the same reason. The
+    # lm-head slab is packed ONE WAVE AT A TIME (qwen3_4b_q4nx_requant.py) and
+    # pack_q4k_cascade's outermost loop is the column, so the wave boundary
+    # falls INSIDE the cx dimension: 10 waves of VOCAB_CHUNK_I2=30 and 6 of 50
+    # cover the same rows in a different order. Without this in the key a v50
+    # xclbin warms on a v30 cache and gets the wrong vocab blocks -- no error,
+    # just wrong logits.
+    # Keyed off the model table's own default (UNI_LM there implies the chunk),
+    # so the existing warm cache keeps its name and only a non-default chunking
+    # gets a suffix.
+    _dflt = fd.VOCAB_FULL_ROWBLKS // (
+        fd.MODEL["UNI_LM"] * fd.NCX * fd.NCY * fd.PAIR_ROWS
+    )
+    _vc = "" if fd.VOCAB_I2 == _dflt else f"_v{fd.VOCAB_I2}"
+    rc = rc or os.path.join(_Q4NX_CACHE, f"requant{_w2}{_vc}.npz")
     if not os.path.exists(rc):
         rq.build_requant_cache(model, fd, rc)
     os.environ["Q4NX_QWEN3_4B_DECODE_NPZ"] = rc
@@ -221,15 +235,28 @@ class FusedDecoder:
         # VOCAB_CHUNK_I2=30 is qwen3-4b's own value (build_template.sh), not 8B's 8 --
         # the vocab-chunk divisibility constraints depend on this model's own NCX/NCY/
         # PAIR_ROWS geometry, not a number that transfers between models.
+        #
+        # OVERRIDABLE, because the vocab chunking is not free at batch 8: it
+        # sets VOCAB_RNDS, which has to share a re-feed cycle with the decode
+        # arm's XN_REFEED + REFEED[GATEUP_PHASE] (see docs/BZeroPlan.md item 1).
+        # 30 is the shipping value; 50 is the one that lets RMS_MEMTILE_REFEED=3
+        # carry the LM head. The TEMPLATES and the requant cache must agree with
+        # whatever is set here -- _ensure_requant_cache keys the cache on it, and
+        # a template built at the other chunking has a different wave count.
         _env = dict(
             DECODE_MODEL=decode_model,
             UNIFIED="1",
-            VOCAB_CHUNK_I2="30",
+            VOCAB_CHUNK_I2=os.environ.get("VOCAB_CHUNK_I2", "30"),
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",
             DECODE_GOLDEN_L=str(self.ATTN_MAXL),
         )
+        if os.environ.get("UNI_LM"):
+            # Paired with VOCAB_CHUNK_I2 above: the two must satisfy
+            # UNI_LM * VOCAB_CHUNK_I2 == the padded vocab's row-block count, and
+            # fused_decode.py asserts it rather than deriving one from the other.
+            _env["UNI_LM"] = os.environ["UNI_LM"]
         if DECODE_WGROUP:
             _env["DECODE_WGROUP"] = str(DECODE_WGROUP)
         if self.batch != 1:

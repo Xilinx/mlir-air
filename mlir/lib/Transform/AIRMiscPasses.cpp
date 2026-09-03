@@ -3445,6 +3445,59 @@ static FailureOr<Operation *> getRefeedCarrier(air::ChannelPutOp put) {
   return alloc.getOperation();
 }
 
+// The memref.alloc behind a put's L2 source, or null if it is not an L2 source.
+static Operation *l2SlabOf(air::ChannelPutOp put) {
+  auto memrefTy = dyn_cast<MemRefType>(put.getSrcMemref().getType());
+  if (!memrefTy || !air::isL2(memrefTy))
+    return nullptr;
+  auto alloc = getBackingAlloc(put.getSrcMemref());
+  return alloc ? alloc.getOperation() : nullptr;
+}
+
+// The air.channel.get that FILLS `slab` for the drain loop at `loopOp`.
+//
+// When ONE slab is filled several times with a different re-send count each
+// time, the count is a property of the FILL and air-to-aie reads it off the
+// fill's BD. This finds which fill a given drain loop re-broadcasts: the
+// nearest preceding get into the same slab, in the loop's own block.
+//
+// Refuses rather than guesses. A fill written as SEVERAL gets (a per-token
+// gather, say) has no single BD to carry the count -- splitting it across the
+// gets would multiply the re-sends by the number of gets -- so it is an error
+// here rather than a deadlock on device. Write such a fill as one strided get;
+// _feed_inX_rf in the fused_decode builder already prefers that form for its
+// own reasons ("a loop of offset gets says the same thing in nchunk ops, and
+// each op is a dma_start").
+static FailureOr<Operation *> findFillForDrain(Operation *loopOp,
+                                               Operation *slab) {
+  Operation *fill = nullptr;
+  for (Operation *p = loopOp->getPrevNode(); p; p = p->getPrevNode()) {
+    // The previous drain over this slab bounds the search: gets before it
+    // belong to that fill, not this one. Earlier drain loops have already been
+    // folded to a bare put by the time this one is processed.
+    if (auto prevPut = dyn_cast<air::ChannelPutOp>(p))
+      if (fill && l2SlabOf(prevPut) == slab)
+        break;
+    auto get = dyn_cast<air::ChannelGetOp>(p);
+    if (!get)
+      continue;
+    if (getBackingAlloc(get.getDstMemref()) != slab)
+      continue;
+    if (fill)
+      return get->emitOpError(
+          "re-feed over a slab filled by SEVERAL channel gets; the per-fill "
+          "count has no single BD to sit on. Express the fill as one strided "
+          "get.");
+    fill = get.getOperation();
+  }
+  if (!fill)
+    return loopOp->emitOpError(
+        "re-feed loop over a slab with several fills, but no channel get "
+        "filling it precedes this loop in the same block; the per-fill count "
+        "has no carrier");
+  return fill;
+}
+
 // Add this producer's re-send count to `carrier`, given what this run has
 // already attributed to `put`.
 //
@@ -3494,6 +3547,42 @@ void AIRAnnotateRefeedPass::runOnOperation() {
       loops.push_back(op);
   });
 
+  // Per-fill counts apply when a slab has SEVERAL FILLS **and** SEVERAL DRAIN
+  // LOOPS -- i.e. it is filled repeatedly and re-broadcast its own number of
+  // times each fill. Only then can one buffer-level count not express it, and
+  // only then is there a fill to pair each drain with. The other shapes keep
+  // the buffer carrier and the sibling-ADD rule:
+  //
+  //   several drains, no/one fill  one fill drained by several loops; the fill
+  //                                releases the SUM (see accumulateRefeed).
+  //   one drain, several fills     a fan-in: the fills write disjoint
+  //                                sub-regions and together are ONE fill.
+  llvm::DenseMap<Operation *, int> drainsPerSlab, fillsPerSlab;
+  module.walk([&](air::ChannelGetOp get) {
+    if (auto alloc = getBackingAlloc(get.getDstMemref()))
+      fillsPerSlab[alloc.getOperation()]++;
+  });
+  for (Operation *loopOp : loops) {
+    Block *b = nullptr;
+    Value v;
+    std::optional<int64_t> tc;
+    if (auto sfo = dyn_cast<scf::ForOp>(loopOp)) {
+      b = sfo.getBody();
+      v = sfo.getInductionVar();
+      tc = air::getStaticScfForTripCountAsInt(sfo);
+    } else {
+      auto afo = cast<affine::AffineForOp>(loopOp);
+      b = afo.getBody();
+      v = afo.getInductionVar();
+      tc = air::getStaticAffineForTripCountAsInt(afo);
+    }
+    if (!tc || *tc <= 1)
+      continue;
+    if (auto put = matchRefeedLoop(loopOp, b, v))
+      if (Operation *slab = l2SlabOf(put))
+        drainsPerSlab[slab]++;
+  }
+
   for (Operation *loopOp : loops) {
     Block *body = nullptr;
     Value iv;
@@ -3518,10 +3607,22 @@ void AIRAnnotateRefeedPass::runOnOperation() {
     // carrier fails with the loop still intact rather than half-transformed.
     Operation *carrier = nullptr;
     if (*tripCount > 1) {
-      auto resolved = getRefeedCarrier(put);
-      if (failed(resolved))
-        return signalPassFailure();
-      carrier = *resolved;
+      Operation *slab = l2SlabOf(put);
+      if (slab && drainsPerSlab.lookup(slab) > 1 &&
+          fillsPerSlab.lookup(slab) > 1) {
+        // Per-fill: the count goes on the get that filled the slab for THIS
+        // drain. air-to-aie reads it off that fill's BD and takes the max over
+        // the fills for the buffer's write-lock init.
+        auto fill = findFillForDrain(loopOp, slab);
+        if (failed(fill))
+          return signalPassFailure();
+        carrier = *fill;
+      } else {
+        auto resolved = getRefeedCarrier(put);
+        if (failed(resolved))
+          return signalPassFailure();
+        carrier = *resolved;
+      }
     }
 
     // Hoist the body out and splice the loop's incoming token into the put, so

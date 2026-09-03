@@ -288,6 +288,20 @@ static bool dmasMappedToEquivalentBDs(air::DmaMemcpyNdOp dmaA,
 }
 
 bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
+  // A different re-send count is a DIFFERENT BD, however identical the
+  // descriptors look. The count is the fill BD's lock acquire/release value
+  // (see generateDmaBd), so one slab filled twice and re-broadcast 12 times
+  // then 38 is two BDs, not one BD repeated. Collapsing them keeps only the
+  // first count: the chain then re-sends 12 every fill and the consumer starves
+  // waiting for the other 26 -- silently, because the write lock still inits to
+  // the max and nothing is unbalanced enough to fail at compile time.
+  //
+  // Read the ops directly (no channel-declaration fallback): a count on the
+  // DECLARATION is shared by every emission on that channel, so it cannot make
+  // two of them differ, and consulting it would make every op on a re-fed
+  // channel compare equal to itself for the wrong reason.
+  if (air::getRefeedCount(opA) != air::getRefeedCount(opB))
+    return false;
   if (auto chanA = dyn_cast_if_present<air::ChannelInterface>(opA))
     if (auto chanB = dyn_cast_if_present<air::ChannelInterface>(opB))
       return chansMappedToEquivalentBDs(chanA, chanB);
@@ -601,6 +615,16 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   // Predicate is shape-based on the buffer's user list. Only L2 memtile
   // buffers are eligible (this is a memtile-specific lock pattern).
   if (!isL2MemtileBuffer(buf))
+    return false;
+  // Per-fill re-broadcast counts mean the writers are INDEPENDENT whole-buffer
+  // fills (one per phase, each with its own re-send count), not the disjoint
+  // sub-region writers this template orders. Daisy-chaining them makes fill N+1
+  // acquire the tokens fill N released, which cannot balance when the counts
+  // differ, and the second round deadlocks. The legacy two-lock template is
+  // correct here and self-interlocking: the write lock inits to the MAX count,
+  // so a fill can only start once the drain has returned every token the
+  // previous fill enabled.
+  if (buf->hasAttr(air::attrs::RefeedPerFill))
     return false;
   int nW = 0, nR = 0;
   countChainBufferRoles(buf, nW, nR);

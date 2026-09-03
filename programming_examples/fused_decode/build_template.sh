@@ -86,7 +86,13 @@ echo ">>> kernels (batch $BATCH)"
 for k in proj_qmm rms_residual glu rope; do
   echo "    $k.o"
   EXTRA=""; [ "$k" = "proj_qmm" ] && EXTRA="$MMDEF ${PROJ_FLUSH_PROBE:+-DPROJ_FLUSH_PROBE=$PROJ_FLUSH_PROBE} ${PROJ_MM_PROBE:+-DPROJ_MM_PROBE=$PROJ_MM_PROBE} ${PROJ_DELAY:+-DPROJ_DELAY=$PROJ_DELAY}"
-  [ "$k" = "rms_residual" ] && EXTRA="${RMS_CHUNK_PROBE:+-DRMS_CHUNK_PROBE=$RMS_CHUNK_PROBE} ${RMS_DELAY:+-DRMS_DELAY=$RMS_DELAY}"
+  # RMS_MEMTILE_REFEED=3 needs the row-major producer entry point, which is
+  # behind RMS_ROW_OUT so that a build not asking for it stays byte-identical.
+  # `$(test && echo)` would exit 1 when the test is false, and the enclosing
+  # assignment inherits that status -- under `set -e` every build that is NOT
+  # mode 3 then dies here, silently, after printing "rms_residual.o". Use an
+  # if/fi so the substitution always succeeds.
+  [ "$k" = "rms_residual" ] && EXTRA="${RMS_CHUNK_PROBE:+-DRMS_CHUNK_PROBE=$RMS_CHUNK_PROBE} ${RMS_DELAY:+-DRMS_DELAY=$RMS_DELAY} $(if [ "${RMS_MEMTILE_REFEED:-0}" = 3 ]; then echo -DRMS_ROW_OUT; fi)"
   # GLU_ROW_PROBE=<n>: diagnostic variants of the batched GLU row (see glu.cc).
   # Batch-only, so the shipping kernel stays inert either way.
   [ "$k" = "glu" ] && [ -n "${GLU_ROW_PROBE:-}" ] && EXTRA="-DGLU_ROW_PROBE=$GLU_ROW_PROBE"

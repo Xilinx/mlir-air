@@ -335,3 +335,41 @@ func.func @l2_no_alloc(%m: memref<64xi32, 1>) {
   }
   return
 }
+
+// -----
+
+// PER-FILL. One L2 slab filled TWICE, each fill re-broadcast its own number of
+// times. The count cannot go on the buffer -- one buffer cannot carry two
+// values, and that is what used to force one buffer, hence one DMA chain, hence
+// eventually one memtile, per count. It goes on the GET that filled the slab
+// for each drain, and air-to-aie reads it off that fill's BD.
+
+// CHECK-LABEL: @per_fill_refeed
+// CHECK-NOT: scf.for
+// CHECK: air.channel.get @f0[] (%[[SLAB:.*]][] [] []) {air.refeed_count = 12 : i32}
+// CHECK: air.channel.put @d0[] (%[[SLAB]][] [] [])
+// CHECK-NOT: air.refeed_count
+// CHECK: air.channel.get @f1[] (%[[SLAB]][] [] []) {air.refeed_count = 38 : i32}
+// CHECK: air.channel.put @d0[] (%[[SLAB]][] [] [])
+// The alloc keeps NO count: it is not the carrier any more.
+// CHECK-NOT: memref.alloc{{.*}}air.refeed_count
+air.channel @f0 [1, 1]
+air.channel @f1 [1, 1]
+air.channel @d0 [1, 1]
+func.func @per_fill_refeed() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c12 = arith.constant 12 : index
+  %c38 = arith.constant 38 : index
+  %slab = memref.alloc() : memref<64xi32, 1>
+  air.channel.get @f0[] (%slab[] [] []) : (memref<64xi32, 1>)
+  scf.for %i = %c0 to %c12 step %c1 {
+    air.channel.put @d0[] (%slab[] [] []) : (memref<64xi32, 1>)
+  }
+  air.channel.get @f1[] (%slab[] [] []) : (memref<64xi32, 1>)
+  scf.for %i = %c0 to %c38 step %c1 {
+    air.channel.put @d0[] (%slab[] [] []) : (memref<64xi32, 1>)
+  }
+  memref.dealloc %slab : memref<64xi32, 1>
+  return
+}

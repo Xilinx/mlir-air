@@ -57,6 +57,16 @@ constexpr StringLiteral DedicatedDmaChannel = "air.dedicated_dma_channel";
 // air::getRefeedCount. Written by air-annotate-refeed from a re-feed loop's
 // trip count, not by the front end. Verified on air.channel and on put/get.
 constexpr StringLiteral RefeedCount = "air.refeed_count";
+// Marks an L2 buffer whose re-send count is carried PER FILL rather than once
+// on the buffer, i.e. it is filled several times with a different re-broadcast
+// count each time (a relay re-fed 12 times in one phase and 38 in the next).
+// Set by AllocL2BuffersPattern when it finds counts on the fills; read by
+// air::isChainLockCandidate. Such fills are INDEPENDENT whole-buffer
+// overwrites, not the disjoint sub-region writers the v2 daisy chain is for --
+// chaining them makes each fill wait on the previous fill's token count and
+// deadlocks on the second round. The buffer's own RefeedCount then holds the
+// MAX over the fills, which is what the write lock must init to.
+constexpr StringLiteral RefeedPerFill = "air.refeed_per_fill";
 // User-pinned packet routing ids on an air.channel (channel_type
 // "npu_dma_packet"). One packet_flow per id: N ids to a single dest converge on
 // one buffer for a downstream demux hop; N ids to N dests route dest i with

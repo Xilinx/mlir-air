@@ -2414,6 +2414,48 @@ private:
   uint64_t &BufferId;
 };
 
+// The largest air.refeed_count carried by any channel op that FILLS `alloc`.
+//
+// The count is a property of the FILL (see generateDmaBd), so one slab can be
+// re-broadcast a different number of times per fill. But two decisions are made
+// ONCE PER BUFFER, before every fill has been visited, and both need the
+// largest of them:
+//
+//   - the write/cap lock init. The fill acquires the write lock >= its own
+//     count, so the init must cover the biggest fill or that fill's acquire can
+//     never fire.
+//   - the v2 chain-lock ping-pong twin, which must be suppressed for ANY
+//     re-broadcast buffer (the pong slot is never filled).
+//
+// Summarising onto the buffer keeps both reading one place while the per-BD
+// value still comes from the fill itself.
+static int64_t maxPerFillRefeed(memref::AllocOp alloc) {
+  int64_t maxN = 1;
+  // A bufferized alloc is wrapped in air.execute after air-dependency, so the
+  // channel ops use the EXECUTE's memref result, not the alloc's. Walk both.
+  SmallVector<Value, 2> vals{alloc.getResult()};
+  for (auto *u : alloc.getResult().getUsers()) {
+    auto term = dyn_cast<air::ExecuteTerminatorOp>(u);
+    if (!term)
+      continue;
+    auto exec = term->getParentOfType<air::ExecuteOp>();
+    if (!exec)
+      continue;
+    // Result 0 is the async token; terminator operand i is result i+1.
+    for (auto [i, operand] : llvm::enumerate(term->getOperands()))
+      if (operand == alloc.getResult() && i + 1 < exec->getNumResults())
+        vals.push_back(exec->getResult(i + 1));
+  }
+  for (Value v : vals)
+    for (auto *u : v.getUsers())
+      // Fills only. The drain (a put reading the slab) is count-free; its rate
+      // is set by what the fill released.
+      if (auto get = dyn_cast<air::ChannelGetOp>(u))
+        if (get->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+          maxN = std::max(maxN, air::getRefeedCount(get.getOperation()));
+  return maxN;
+}
+
 struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
@@ -2477,10 +2519,22 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     // channel, applied in allocateCoreLocksPerMemcpyOp). air-to-aie skips the
     // channel re-feed for memtile producers, so the two must NOT be unified --
     // read only the alloc directive here.
-    int64_t refeedN = air::getRefeedCount(alloc.getOperation());
+    //
+    // The alloc directive is one count for every fill. A design that re-sends a
+    // different number of times per fill puts the count on each fill instead;
+    // the buffer then carries the MAX, which is what the lock inits and the
+    // ping-pong-twin guard need (see maxPerFillRefeed). generateDmaBd overrides
+    // it per BD with that fill's own count.
+    int64_t perFillN = maxPerFillRefeed(alloc);
+    int64_t refeedN =
+        std::max(air::getRefeedCount(alloc.getOperation()), perFillN);
     if (refeedN > 1)
       buffer->setAttr(air::attrs::RefeedCount,
                       rewriter.getI32IntegerAttr(refeedN));
+    // Independent whole-buffer fills, not a fan-in of disjoint sub-regions:
+    // the v2 daisy chain must not apply (see attrs::RefeedPerFill).
+    if (perFillN > 1)
+      buffer->setAttr(air::attrs::RefeedPerFill, rewriter.getUnitAttr());
 
     // Propagate the opt-out chain-lock pin from the source alloc to the
     // lowered buffer so isChainLockCandidate can exclude it. Used to keep
@@ -3614,8 +3668,9 @@ static void dedicateArmVaryingGetChannels(scf::IndexSwitchOp sw,
 // (erasing the per-arm allocs + deallocs), and emit one dealloc after the
 // switch. Only one arm runs per dispatch, so the arms share one count-free
 // ring.
-static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
-                                  ArmRegionMap &opRegion) {
+static LogicalResult unifyOnChipArmBuffers(scf::IndexSwitchOp sw,
+                                           ArmChannelMap &byChan,
+                                           ArmRegionMap &opRegion) {
   for (auto &entry : byChan) {
     SmallVector<air::ChannelInterface> &ops = entry.second;
     if (ops.size() < 2)
@@ -3645,7 +3700,8 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
 
     // Hoist one shared buffer above the switch.
     OpBuilder b(sw);
-    Value shared = memref::AllocOp::create(b, sw.getLoc(), memrefTy);
+    auto sharedAlloc = memref::AllocOp::create(b, sw.getLoc(), memrefTy);
+    Value shared = sharedAlloc;
 
     // Redirect every distinct arm buffer to the shared buffer, erasing the
     // per-arm alloc + its deallocs.
@@ -3659,6 +3715,42 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
           handledAllocs.count(allocOp))
         continue;
       handledAllocs.insert(allocOp);
+
+      // CARRY THE ARM ALLOC'S air.* ATTRIBUTES ONTO THE SHARED ONE. They are
+      // not decoration: air.memtile_col places the buffer and air.refeed_count
+      // is the replay count its fill BD is built from, and this hoist erases
+      // the op that held them. Losing either is silent -- a mis-placed memtile
+      // still lowers, and a dropped re-feed count leaves that arm with no
+      // replay at all, which is a device hang with nothing wrong in the IR.
+      for (NamedAttribute na : allocOp->getAttrs()) {
+        if (!na.getName().strref().starts_with("air."))
+          continue;
+        Attribute have = sharedAlloc->getAttr(na.getName());
+        if (!have) {
+          sharedAlloc->setAttr(na.getName(), na.getValue());
+          continue;
+        }
+        if (have == na.getValue())
+          continue;
+        if (na.getName() == air::attrs::RefeedCount)
+          return sw.emitError()
+                 << "scf.index_switch arms share air.channel @"
+                 << entry.first
+                 << " but ask for different air.refeed_count values on the "
+                    "buffer it fills ("
+                 << have << " vs " << na.getValue()
+                 << "). The count is a lock value baked into a DMA BD, and the "
+                    "arms share one BD chain: it advances one BD per completed "
+                    "transfer and cannot branch, so an arm that wants its own "
+                    "count leaves the chain mid-cycle and every later dispatch "
+                    "replays the wrong one. Express both arms as a whole number "
+                    "of passes over one common cycle instead.";
+        return sw.emitError()
+               << "scf.index_switch arms unified on air.channel @"
+               << entry.first << " disagree on " << na.getName() << " ("
+               << have << " vs " << na.getValue()
+               << "); the one shared buffer can only carry one value.";
+      }
       SmallVector<Operation *> deallocs;
       for (Operation *u : armBuf.getUsers())
         if (isa<memref::DeallocOp>(u))
@@ -3672,6 +3764,7 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
     OpBuilder db(sw->getBlock(), std::next(Block::iterator(sw)));
     memref::DeallocOp::create(db, sw.getLoc(), shared);
   }
+  return success();
 }
 
 // For a scf.index_switch whose mutually-exclusive arms each consume the SAME
@@ -3686,7 +3779,7 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
 // shared ring instead of one buffer per wave-arm. Runs three phases per switch:
 // (a) break get->put relays, (b) dedicate arm-varying get channels, (c) unify
 // the per-arm buffers.
-static void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
+static LogicalResult unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
   SmallVector<scf::IndexSwitchOp> switches;
   d.walk([&](scf::IndexSwitchOp sw) { switches.push_back(sw); });
   for (auto sw : switches) {
@@ -3725,8 +3818,10 @@ static void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
 
     breakIndexSwitchGetPutRelays(sw, regions);
     dedicateArmVaryingGetChannels(sw, byChan, opRegion);
-    unifyOnChipArmBuffers(sw, byChan, opRegion);
+    if (failed(unifyOnChipArmBuffers(sw, byChan, opRegion)))
+      return failure();
   }
+  return success();
 }
 
 // Remove orphaned specialized channels after specializeChannelBundle.
@@ -4048,7 +4143,8 @@ public:
     if (device->hasAttr("segment_unroll_x") ||
         device->hasAttr("segment_unroll_y"))
       removeOrphanedChannels(device);
-    unifyIndexSwitchArmBuffers(device);
+    if (failed(unifyIndexSwitchArmBuffers(device)))
+      return failure();
     if (stopAfter == PipelineStage::AfterSpecializeChannel)
       return success();
 
@@ -6278,6 +6374,65 @@ public:
       sharedStagingBuffer = sameBufCount > 1;
     }
 
+    // AN OUTBOUND PUT'S ACQUIRE MUST PRECEDE THE OPS THAT WRITE THE BUFFER,
+    // not merely the put. The producer is `write buffer; put buffer`, so an
+    // acquire placed on the put lets the write for iteration N+1 land while
+    // iteration N's transfer is still in flight; the core only blocks
+    // afterwards, having already destroyed the bytes the DMA is reading.
+    //
+    // It is invisible whenever the consumer keeps up -- which is why it
+    // survived -- and deterministic as soon as anything downstream stalls.
+    // Measured on qwen3-4b's LM head, where a memtile relay's fill boundary
+    // stalls the stream for exactly one transfer: every fill after the first
+    // lost its row 0, and token 0's logits came back a blend of rows 0 and 1
+    // (corr 0.845 to each, against 0.992/0.681 when correct) with rows 1..7
+    // bit-identical.
+    //
+    // Hoisting stops at the first preceding op that does not name the buffer,
+    // and at any other memcpy on it, so it only ever moves above the producing
+    // computation itself. Inbound gets are left alone: their acquire means
+    // "data has arrived" and belongs where it is.
+    // `alloc` may be named inside a region (an air.execute wrapping the kernel
+    // call), so look through nested ops as well as direct operands.
+    auto usesAlloc = [&](Operation *o) {
+      if (llvm::any_of(o->getOperands(), [&](Value v) { return v == alloc; }))
+        return true;
+      bool found = false;
+      o->walk([&](Operation *n) {
+        if (llvm::any_of(n->getOperands(),
+                         [&](Value v) { return v == alloc; })) {
+          found = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      return found;
+    };
+    auto hoistAboveProducer = [&](Operation *from) -> Operation * {
+      if (tileInbound.value())
+        return from;
+      Operation *ip = from;
+      for (Operation *prev = from->getPrevNode(); prev;
+           prev = prev->getPrevNode()) {
+        if (isa<air::MemcpyInterface>(prev))
+          break;
+        if (usesAlloc(prev)) {
+          ip = prev;
+          continue;
+        }
+        // Scan past what sits between the producing call and the put rather
+        // than stopping at it: the put's offset/size/stride constants, and
+        // air.wait_all, which is token plumbing with no memory effect of its
+        // own (it does not advertise itself as effect-free, so it has to be
+        // named). Both are safe to leave below the acquire -- the constants
+        // still dominate the put, and the acquire produces no value.
+        if (isa<air::WaitAllOp>(prev) || isMemoryEffectFree(prev))
+          continue;
+        break;
+      }
+      return ip;
+    };
+
     if (auto bco = dyn_cast_if_present<bufferization::ToBufferOp>(
             alloc.getDefiningOp()))
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
@@ -6286,10 +6441,9 @@ public:
     else if (!tileInbound.value() &&
              isa<AIE::BufferOp>(alloc.getDefiningOp())) {
       if (sharedStagingBuffer) {
-        // Interleaved mode: acquire immediately before this specific put, so
-        // the core waits for the DMA to finish reading the previous put's
-        // data before overwriting the buffer.
-        builder.setInsertionPoint(memcpyOpIf);
+        // Interleaved mode: the core waits for the DMA to finish reading the
+        // previous put's data before overwriting the buffer.
+        builder.setInsertionPoint(hoistAboveProducer(memcpyOpIf));
       } else {
         auto br = dyn_cast_if_present<cf::BranchOp>(
             memcpyOpIf->getBlock()->getTerminator());
@@ -6299,7 +6453,7 @@ public:
           builder.setInsertionPointToStart(memcpyOpIf->getBlock());
       }
     } else
-      builder.setInsertionPoint(memcpyOpIf);
+      builder.setInsertionPoint(hoistAboveProducer(memcpyOpIf));
 
     AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), acqLockOp,
                            UsesSemaphoreLocks
@@ -6463,9 +6617,61 @@ public:
               lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
+          // A FILL BD MUST WAIT FOR THE PREVIOUS FILL'S RE-SENDS, NOT ITS OWN.
+          // The fill acquires the write lock and the drain releases it once per
+          // re-send, so acquiring N means "N re-sends have completed" -- and the
+          // N that matters is the count the PREVIOUS fill released, not this
+          // one's. With one count per buffer the two are the same number and
+          // this is a no-op. With PER-FILL counts they are not: a fill of 2
+          // following a fill of 8 acquires 2, which is satisfied after 2 of the
+          // 8 re-sends, and it then overwrites the slab while the other 6 are
+          // still being read. `task_ops` is this chain in program order and
+          // infiniteBDLoopMode says it closes into a cycle, so the predecessor
+          // is the previous entry, wrapping.
+          //
+          // ON THE SAME BUFFER, though, not simply the previous entry. The
+          // lock pair belongs to the BUFFER, so "how many re-sends have
+          // completed" is only a question about the fills of that buffer. A
+          // relay that PING-PONGS two slabs -- one armed while the other
+          // drains, which is how a fill boundary stops stalling the producing
+          // core -- interleaves them on one chain, and taking the immediate
+          // predecessor would make each slab acquire the OTHER's count against
+          // its own lock's init and hang. With a single slab the previous
+          // same-buffer op IS the immediate predecessor, so this is exactly the
+          // behaviour above (pinned by memtile_per_fill_refeed_onechan.mlir).
+          int64_t predRefeed = -1;
+          // Only re-feed BDs care, and the walk is skipped otherwise so that
+          // every design without per-fill counts keeps the untouched path.
+          // Buffers are compared by the memcpy op's TILE-SIDE MEMREF rather
+          // than by asking the allocator: getBuffer is not a pure query (it
+          // allocates and registers on first use for a given op), so calling
+          // it for predecessors here perturbed shim BD allocation and broke
+          // air_shimcpy_to_aie{,2}_with_shim_dma_bds.
+          if (memcpyOp->hasAttrOfType<IntegerAttr>(air::attrs::RefeedCount)) {
+            size_t n = task_ops.size();
+            auto tileSide = [&](air::MemcpyInterface mc) {
+              return dir == AIE::DMAChannelDir::S2MM ? mc.getDstMemref()
+                                                     : mc.getSrcMemref();
+            };
+            Value self = tileSide(memcpyOp);
+            for (size_t k = 1; k <= n; ++k) {
+              // Walk back from i, wrapping only when the chain is a cycle. At
+              // k == n this lands back on i, which is the right answer for a
+              // ping-ponged relay: the previous fill of THIS slab is this fill.
+              if (i < k && !infiniteBDLoopMode)
+                break;
+              size_t j = (i + n - (k % n)) % n;
+              if (tileSide(cast<air::MemcpyInterface>(task_ops[j])) != self)
+                continue;
+              if (auto a = task_ops[j]->getAttrOfType<IntegerAttr>(
+                      air::attrs::RefeedCount))
+                predRefeed = a.getInt();
+              break;
+            }
+          }
           auto newBD = generateDmaBd<bufferOpTy>(
               loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
-              bufferOp.value(), chan, lockRaceConditionFixV2);
+              bufferOp.value(), chan, lockRaceConditionFixV2, predRefeed);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -6560,7 +6766,8 @@ public:
                 std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileLike tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
                 air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
-                bool lockRaceConditionFixV2 = false) {
+                bool lockRaceConditionFixV2 = false,
+                int64_t predRefeedCount = -1) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -6618,12 +6825,45 @@ public:
     // fire). N = air.refeed_count, propagated onto the memtile buffer op (the
     // shared fill/drain rendezvous) by AllocL2BuffersPattern; read via the same
     // helper the lock allocator uses so init and acq/rel cannot diverge.
+    //
+    // PER-FILL COUNT. The buffer is the fallback -- one count shared by every
+    // fill, which is the original encoding and all a single-phase relay needs.
+    // An explicit count on the FILL OP overrides it, and that is what lets ONE
+    // slab carry a different count per fill: a relay filled once per phase and
+    // re-broadcast that phase's number of times (12 then 38) is two fill BDs
+    // over one buffer, not two buffers. Without it each count needs its own
+    // buffer, hence its own DMA chain, hence -- once the channels and packet
+    // ids run out -- its own memtile.
+    //
+    // Read the op DIRECTLY rather than through the ChannelInterface overload:
+    // that one falls back to the channel DECLARATION, and a channel-level count
+    // is the CORE-producer mechanism (allocateCoreLocksPerMemcpyOp scales the
+    // core's release). The two must not be unified -- see AllocL2BuffersPattern
+    // -- so only an attribute on this very op counts here. Same precedence rule
+    // as getRefeedCount(ChannelInterface): an explicit integer wins for ANY
+    // value, so a fill can opt out with 1 against a buffer-level default.
     if (isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
-        UsesSemaphoreLocks && !isMM2S) {
-      int64_t refeedN = air::getRefeedCount(bufferOp.getOperation());
-      if (refeedN > 1) {
-        lockAqValue = refeedN;
+        UsesSemaphoreLocks &&
+        air::getRefeedCount(bufferOp.getOperation()) > 1) {
+      if (isMM2S) {
+        // The DRAIN of a count-free re-broadcast ring moves exactly ONE token
+        // per fire; its rate is set entirely by what the fill released. With a
+        // single fill the legacy pair already gave 1, so this never showed. With
+        // SEVERAL fills getLockValuePair gives the drain one token per writer,
+        // and a fill releasing 12 would then enable only 12/nfills re-sends.
+        lockAqValue = 1;
+        lockRelValue = 1;
+      } else {
+        int64_t refeedN = air::getRefeedCount(bufferOp.getOperation());
+        if (memcpyOp->getAttrOfType<IntegerAttr>(air::attrs::RefeedCount))
+          refeedN = air::getRefeedCount(memcpyOp.getOperation());
+        // Release what THIS fill enables; acquire what the PREVIOUS fill
+        // enabled, so the slab is only overwritten once every one of the
+        // previous fill's re-sends has been read. Identical numbers unless the
+        // counts differ per fill -- see the predRefeed comment at the call
+        // site for what goes wrong when they do.
         lockRelValue = refeedN;
+        lockAqValue = predRefeedCount > 0 ? predRefeedCount : refeedN;
       }
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
@@ -8130,7 +8370,10 @@ public:
         if (device->hasAttr("segment_unroll_x") ||
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
-        unifyIndexSwitchArmBuffers(device);
+        if (failed(unifyIndexSwitchArmBuffers(device))) {
+          signalPassFailure();
+          return;
+        }
         air::renumberMemcpyIfOps(&device.getRegion());
         LowerAIRPingPong(device);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
@@ -8153,7 +8396,10 @@ public:
         if (device->hasAttr("segment_unroll_x") ||
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
-        unifyIndexSwitchArmBuffers(device);
+        if (failed(unifyIndexSwitchArmBuffers(device))) {
+          signalPassFailure();
+          return;
+        }
         specializeL2MemrefsIntoMemtiles(device);
         allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
