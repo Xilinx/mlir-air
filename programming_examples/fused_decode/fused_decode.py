@@ -2109,6 +2109,77 @@ _RF_SPLIT = int(_os.environ.get("RMS_SPLIT_DIRECT", "0")) if BATCH > 1 else 0
 if _RF_SPLIT:
     assert RMS_MEMTILE_REFEED == 3, "RMS_SPLIT_DIRECT is a mode-3 relay change"
     assert XN_REFEED > 1, f"nothing to split off a ph0 of {XN_REFEED}"
+# RMS_XNORM_DEMUX: carry the split on a TWO-LEAF PACKET DEMUX instead of a
+# second channel. This is the shape RMS_SPLIT_DIRECT alone could not have.
+#
+# The bare split hangs because naming a second channel from the rms core does
+# not get it a port -- the chain census shows four dma_start chains before and
+# four after, so its puts fold into an existing chain and alternate BDs with
+# @xnorm's. A demux is ONE channel: one chain, one port, and the leaf chosen per
+# transfer. docs/AIRComputeModel.md is normative about it:
+#
+#     no dest    SPATIAL fan-out -- every destination receives every transfer
+#     dest(%d)   TEMPORAL fan-out -- each transfer goes to exactly one
+#                destination, and which one may differ from transfer to transfer
+#
+# `%d` is "the index the matching get sits at" and is a runtime value; temporal
+# selection needs a packet interconnect, which this channel already is. @outA
+# already does exactly this FROM A COMPUTE TILE (the projection cores put with a
+# runtime `dest=destv`), so the mechanism is proven here.
+#
+# WHERE LEAF 1 GOES, and why this is small. Not to the X memtile -- that would
+# need a chunk-major producer and a new consumer loop. To COL 4, the relay tile
+# itself, as a SECOND FILL OF THE SAME SLAB. The relay's drain is count-free and
+# self-loops, the count lives on the fill, and DMA chains are per tile AND
+# channel -- so col 4 takes leaf 0's fills on the [11, 38] cycle and leaf 1's
+# single fill on its own chain, each returning to its own BD 0, both sharing the
+# one drain BD into @xin. Per decode layer the drain still emits 11 + 1 + 38 =
+# 50 sweeps, exactly as today.
+#
+# THAT IS ROUTE 6's TOPOLOGY, and route 6 was right about the shape and wrong
+# only about the feed: it filled the second chain from the SHIM (@tapsX), which
+# is an L3 allocation needing an unconditional consumer, and there was no
+# harmless sink for its drain. A demux leaf is L1 -> L2 from a producer that
+# already exists on every arm, so neither constraint applies. The relay already
+# takes a second `src` -- that is what `src="tapsX"` is -- so the machinery is
+# in place and only the feed changes.
+#
+# BUILT 2026-09-03, AND IT STILL HANGS -- but it got much further, and it needed
+# two real compiler fixes to get there (both landed, both regression-clean):
+#
+#   'air.channel.put' op selects a destination, but its routing domain has no
+#   demux                     -- classify() fell through to a VOLUME heuristic
+#                                that needs every put's trip count static, and
+#                                an arm-varying count has none. A put naming a
+#                                dest settles space-vs-time by itself.
+#   @outA forwards into two   -- the rms core lands @outY in its staging buffer
+#   routing domains              and later fills that same buffer from a kernel
+#                                call and puts it on @xdemux. The buffer is
+#                                reused, the payload is recomputed; reading that
+#                                as a forwarding edge merged the two domains.
+#
+# With those fixed it emits, places, routes and links, and THE CORE STAYS AT TWO
+# CHAINS -- MM2S 0 and MM2S 1, one per port, which is what the bare split could
+# not do. The dispatch still times out.
+#
+# WHERE IT STOPS NOW, from the chain census: col 4 has THREE S2MM chains, the
+# same as before the demux. Both leaves land on the same tile, so AIR gave them
+# ONE S2MM chain -- and two fills on one chain alternate BDs, which is the
+# failure moved from the core to the memtile. Route 6's premise was explicitly
+# "a DIFFERENT S2MM chain (chains are per tile AND channel)", and that is the
+# part still unmet: leaf 1 needs its own S2MM channel on col 4 (free=[3,4,5]),
+# or a destination that is not the same tile as leaf 0.
+_RF_DEMUX = int(_os.environ.get("RMS_XNORM_DEMUX", "0")) if BATCH > 1 else 0
+if _RF_DEMUX:
+    assert _RF_SPLIT, "RMS_XNORM_DEMUX carries RMS_SPLIT_DIRECT's split; set both"
+# The channel the rms core's mode-3 sweeps ride. Under the demux it is a
+# DIFFERENT NAME, not a re-shaped @xnorm: @xnorm has a dozen mode-0 call sites
+# that index it flat, and the core still ends up with exactly two channels
+# either way (@layerOut and this one), which is the whole point.
+_RMSROW_CH = "xdemux" if _RF_DEMUX else "xnorm"
+if _RF_DEMUX:
+    # _RMSROW0/_RMSROW2 are set to "xnorm" far above, before this knob is read.
+    _RMSROW0 = _RMSROW2 = _RMSROW_CH
 # The relay carries one FEWER re-send than the arm needs on ph0 and on the LM
 # head; the missing one is the core's direct put. Everything below derives from
 # these two rather than from XN_REFEED/VOCAB_RNDS.
@@ -3360,9 +3431,29 @@ def build_module():
         # returns to its own BD 0, which is the rule the shared chain imposes.
         _tx = (
             channel_decl("tapsX", size=[1])
-            if (N_EXTRA and RMS_MEMTILE_REFEED == 3)
+            if (N_EXTRA and RMS_MEMTILE_REFEED == 3 and not _RF_DEMUX)
             else None
         )
+        if _RF_DEMUX:
+            # The rms core's mode-3 sweeps, as a TWO-LEAF TEMPORAL DEMUX.
+            # size=[1,1] with broadcast_shape=[1,2] is @outY's exact shape; the
+            # get sits at [0, leaf] and the put names the leaf with `dest`.
+            # Packet type is required -- temporal selection needs an
+            # interconnect that routes each transfer independently.
+            #
+            #   leaf 0  -> col 4 relay, the [11, 38] cycle (ph0 and ph2 fills)
+            #   leaf 1  -> col 4 relay, ONE fill on its OWN chain, every arm
+            #
+            # Both leaves land in the SAME slab, so the drain stays the one
+            # count-free self-looping BD the mode requires.
+            _xd = Channel("xdemux", size=[1, 1], broadcast_shape=[1, 2])
+            _xd.operation.attributes["channel_type"] = StringAttr.get("npu_dma_packet")
+            # Same pin and same reason as @xnorm's below: keep this off MM2S0,
+            # where @layerOut is circuit, so the core's two ports stay one
+            # circuit and one packet rather than dual-fan packet.
+            _xd.operation.attributes["air.tile_dma_channel"] = IntegerAttr.get(
+                T.i32(), 1
+            )
         _rw = channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
@@ -5788,7 +5879,7 @@ def build_module():
                     # times over @xnorm) in 512 chunks -> broadcast
                     # 256-blocks. RMS_REFEED*(2048/512) gets. (reproducer core_2_2 +
                     # mem_1_1 x_buffer 512.)
-                    def _rmsrow_relay(out, seq, rb, src="xnorm"):
+                    def _rmsrow_relay(out, seq, rb, src=None):
                         """ph0/ph2 X relay: one fill of a row-major [BATCH][K]
                         slab from @xnorm per entry of `seq`, each re-broadcast
                         that entry's number of times onto `out` -- the same
@@ -5867,6 +5958,15 @@ def build_module():
                         # count on the GET, and a fill spread over several gets
                         # has no single BD to carry it (the pass says so rather
                         # than guessing).
+                        # Default: leaf 0 of the demux, or plain @xnorm without
+                        # it. The CORE's put channel moved to @xdemux with
+                        # _RMSROW0/_RMSROW2, so this has to follow or the fills
+                        # would be got from a channel nobody puts on.
+                        if src is None:
+                            src = (_RMSROW_CH, 0) if _RF_DEMUX else "xnorm"
+                        _leaf = None
+                        if isinstance(src, tuple):
+                            src, _leaf = src
                         for _cnt in seq:
                             # `src` is @xnorm for the decode and LM-head arms
                             # and @tapsX for an extra wave. A DIFFERENT CHANNEL
@@ -5883,6 +5983,11 @@ def build_module():
                                 offsets=[idx(0)],
                                 sizes=[idx(BATCH * K)],
                                 strides=[idx(1)],
+                                **(
+                                    {"indices": [idx(0), idx(_leaf)]}
+                                    if _leaf is not None
+                                    else {}
+                                ),
                             )
                             refeed(_cnt, lambda: _xnorm_put(rb, K, chan=out))
 
@@ -7638,6 +7743,26 @@ def build_module():
                             the flow and the lock credit are counted from, and
                             emits no transfer.
                             """
+                            if _RF_DEMUX:
+                                # THE DEMUX LEAF, and the difference from the
+                                # tapsX shape below is the whole point: ONE fill
+                                # on EVERY arm, with no zero-trip loop to
+                                # canonicalize away and no L3 allocation to fail.
+                                # `n` is ignored -- the count that varies per arm
+                                # is leaf 0's, not this one.
+                                #
+                                # Its own slab; air-to-aie's
+                                # unifyOnChipArmBuffers folds the arms' slabs
+                                # together, so leaf 0 and leaf 1 end up filling
+                                # the SAME buffer on col 4 and the drain stays
+                                # the one count-free self-looping BD.
+                                _eb = AllocOp(rmsrow_l2, [], [])
+                                _eb.operation.attributes["air.memtile_col"] = (
+                                    IntegerAttr.get(T.i32(), RMSROW_COL)
+                                )
+                                _rmsrow_relay(_XN1, [1], _eb, src=(_RMSROW_CH, 1))
+                                DeallocOp(_eb)
+                                return
                             if RMS_MEMTILE_REFEED != 3 or not N_EXTRA:
                                 return
                             _eb = AllocOp(rmsrow_l2, [], [])
@@ -8941,7 +9066,7 @@ def build_module():
                         )
 
                     def _rms_batched_norm(
-                        xb, stg, scl, wbuf, nrefeed, _arm, ch="xnorm"
+                        xb, stg, scl, wbuf, nrefeed, _arm, ch="xnorm", leaf=0
                     ):
                         """Re-broadcast rmsnorm(xb) nrefeed times, by chunk.
 
@@ -9183,12 +9308,27 @@ def build_module():
                                     # 1-D contiguous, like the chunk put below
                                     # and for the same reason: a compute tile's
                                     # wrap field is 8 bits.
+                                    #
+                                    # Under the demux this put names its LEAF.
+                                    # `dest` is what makes the fan-out temporal
+                                    # -- one destination per transfer -- rather
+                                    # than spatial; without it every leaf would
+                                    # receive every sweep. indices sit at the
+                                    # size dims ([1,1]), as @outY's put does.
                                     ChannelPut(
                                         ch,
                                         stg,
                                         offsets=[idx(0)],
                                         sizes=[idx(K)],
                                         strides=[idx(1)],
+                                        **(
+                                            {
+                                                "indices": [idx(0), idx(0)],
+                                                "dest": idx(leaf),
+                                            }
+                                            if ch == "xdemux"
+                                            else {}
+                                        ),
                                     )
                                     yield_([])
                                 yield_([])
@@ -9555,7 +9695,16 @@ def build_module():
                                 # the sweep above: it IS one of ph0's re-sends,
                                 # just routed past the relay. A literal 1, not
                                 # an arm-selected count, so it cannot drift.
-                                _rms_batched_norm(xb, stg, scl, wbuf, 1, _arm, _XN1)
+                                _rms_batched_norm(
+                                    xb,
+                                    stg,
+                                    scl,
+                                    wbuf,
+                                    1,
+                                    _arm,
+                                    ch if _RF_DEMUX else _XN1,
+                                    leaf=1,
+                                )
 
                         def _accumulate(nrnds, stage, guard=None):
                             """Add a projection's output into the residual.
