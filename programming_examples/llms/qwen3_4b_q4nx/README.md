@@ -341,10 +341,43 @@ env -u Q4NX_QWEN3_4B_DECODE_NPZ Q4NX_QWEN3_4B_DECODE_DIR=$PWD/_v50m3wf \
 ```
 
 `--prepass cpu` runs the pre-pass in numpy off the same q4k bytes. It is the
-CONTROL, not a shipping mode: the folded (`waves`) pre-pass does not compose
-with mode 3 yet. **Read the `target` row of the step breakdown, not the
-speedup** — the host pre-pass drifts by 10x with machine load while the target
-moves <1%.
+CONTROL. **Read the `target` row of the step breakdown, not the speedup** — the
+host pre-pass drifts by 10x with machine load while the target moves <1%.
+
+#### The shipping configuration: `--prepass draft`
+
+The pre-pass runs on device AND the target keeps `RMS_MEMTILE_REFEED=3`. The 45
+pre-pass waves ride the **drafter's** template, not the target's — they were
+always the drafter's weights, they read the target's taps out of an X slot the
+host writes either way, and their weights already have their own BO. Putting
+them on the target is what used to force it to mode 0, at a cost of 65 ms a step.
+
+```bash
+cd ../llms/qwen3_4b_q4nx
+# taps_b8_L511,512      <- _v50m3wf     (mode3 + FMA)
+# draft_b8_L511,512     <- _draftw      (the drafter carrying the 45-wave table)
+# _L511_{fc,ctxkv}.insts.bin <- _draftw (built against THAT drafter)
+python dflash_acceptance_device.py --prompts prompts_gsm8k.json \
+    --n 8 --n-tokens 32 --prepass draft --exactness \
+    --target-env VOCAB_CHUNK_I2=50 --target-env UNI_LM=6
+```
+
+`fused_decode/_build_draft_waves.sh` builds the drafter and its two extra
+instruction streams. Measured, 8 gsm8k prompts x 32 tokens, `--exactness` 8/8:
+
+| | acc | step ms | target | pre-pass | draft | tok/s |
+|---|---|---|---|---|---|---|
+| mode3 + CPU pre-pass | 3.923 | 220.7 | 104.01 | 74.75 | 41.90 | 17.78 |
+| folded + wave pre-pass | 3.896 | 218.0 | 169.38 | 9.28 | 39.33 | 17.87 |
+| **`--prepass draft`** | **4.000** | **160.5** | 104.30 | 17.10 | 39.06 | **24.92** |
+
+against a measured batch-1 baseline of 15.03 tok/s — **1.66x**.
+
+**`--target-env` is not optional here.** The host does not merely bind the
+xclbin: `DecodeInstsGen` regenerates the instruction stream per position from
+its own geometry, so a `VOCAB_CHUNK_I2=50 / UNI_LM=6` target driven by a host
+that assumed the default 30 returns wrong logits. It shows as acceptance
+collapsing to ~1.05 with `--exactness` at 0, which names nothing.
 
 ### Verify — four levels, cheapest first
 
