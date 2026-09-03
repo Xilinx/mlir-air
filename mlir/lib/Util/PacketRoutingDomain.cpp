@@ -145,6 +145,32 @@ static PacketChannelFacts classify(ChannelOp chanOp,
     return c;
   }
 
+  // A put ON THIS CHANNEL naming a `dest` settles space-vs-time by itself, and
+  // buildDomains() already says why: it is choosing, at run time, which leaf
+  // the packet is for, and nothing else it could mean. So classify it here
+  // rather than falling through to the volume arithmetic below.
+  //
+  // The volumes are a HEURISTIC, and they are the right one only for a channel
+  // whose own puts do NOT name a dest -- @outY, say, whose header is written by
+  // an upstream hop, so nothing local says whether the fan-out replicates or
+  // partitions and the volumes are the only evidence available. That heuristic
+  // needs every put's trip count to be static.
+  //
+  // A design that varies a put's TRIP COUNT per arm has no static volume to
+  // offer, and reporting "unknown [a put has a non-static volume]" rejects a
+  // construct docs/AIRComputeModel.md defines as legal -- arm-varying counts on
+  // a shared channel are the idiom the whole re-feed mechanism is built on.
+  // Requiring the volumes to agree in that case would also be wrong on its own
+  // terms: which leaf each transfer goes to is a run-time choice, so the
+  // per-leaf totals are not a static property at all.
+  if (llvm::any_of(puts, [](ChannelInterface p) {
+        auto put = dyn_cast<ChannelPutOp>(p.getOperation());
+        return put && put.getDest();
+      })) {
+    c.fanout = PacketFanout::Demux;
+    return c;
+  }
+
   int64_t putVol = 0;
   for (ChannelInterface p : puts) {
     std::optional<int64_t> v = totalVolume(p, scopeRoot);
@@ -299,6 +325,44 @@ static bool isForwardingPair(ChannelInterface g, ChannelInterface p,
   for (Operation *o = first->getNextNode(); o && o != last;
        o = o->getNextNode())
     if (opWritesRoot(o, root))
+      return false;
+
+  // A write NESTED INSIDE one of the two ancestors still sits between the get
+  // and the put, and the sibling scan above cannot see it: it stops AT `last`
+  // rather than descending into it.
+  //
+  // The shape that needs this is a compute core, not a data mover. The rms core
+  // lands @outY in its staging buffer, and later -- inside a loop -- fills that
+  // same buffer from a kernel call and puts it onward. The buffer is reused;
+  // the PAYLOAD is not forwarded, it is recomputed. Reading that as a
+  // forwarding edge puts the core's own channel in the upstream channel's
+  // routing domain, and a channel that then feeds two domains has no single id
+  // set its switchbox could admit -- which is a build error on a design that is
+  // physically fine.
+  //
+  // Only a KERNEL CALL counts here, not opWritesRoot's full set. Descending
+  // into an ancestor means looking at ops that are not between the get and the
+  // put in the flat sense the sibling scan uses, so the evidence has to be
+  // unambiguous: a call handed this buffer produces its contents, which is
+  // exactly what distinguishes a compute core from a data mover. Channel ops
+  // are not evidence either way -- a get deposits bytes it did not transform
+  // and a put reads them -- and a relay whose loop body is nothing but a put
+  // must keep its link.
+  auto callFillsRoot = [&](Operation *anc) {
+    bool found = false;
+    anc->walk([&](CallOpInterface call) {
+      for (Value operand : call.getArgOperands())
+        if (isa<BaseMemRefType>(operand.getType()) &&
+            resolveBufferRoot(operand) == root) {
+          found = true;
+          return WalkResult::interrupt();
+        }
+      return WalkResult::advance();
+    });
+    return found;
+  };
+  for (Operation *anc : {first, last})
+    if (anc != g.getOperation() && anc != p.getOperation() && callFillsRoot(anc))
       return false;
   return true;
 }
