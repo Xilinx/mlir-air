@@ -1089,13 +1089,34 @@ PLE_SHARED_RES = (
 # those points are 2/5 or 3/5, so that rule was partly noise. Do not reinstate
 # it.
 #
-# What survives repetition (UNI_DEC=1, 5 runs each):
-#   pug + PLE_UP_W_FIRST      5/5    the only stable PLE configuration
-#   upg + PLE_UP_W_FIRST      3/5
-#   gpu                       2/5    correct arithmetic, best correct order
-#   gup / pgu / ugp           0/5
-#   no-PLE control            5/5
-# Default gpu: it is the best order whose arithmetic is right.
+# SUPERSEDED 2026-09-03 -- five repeats was still far too few. At 12 to 20
+# repeats every configuration that runs at all sits at the SAME ~50% ceiling,
+# and the claim that pug + PLE_UP_W_FIRST was "the only stable configuration"
+# does not survive:
+#   gpu (default)             8-10/20 across three builds
+#   gpu + PLE_UP_W_FIRST      10/20   -- identical to baseline, see below
+#   pug + PLE_UP_W_FIRST      10/20   -- was recorded as 5/5
+#   pgu / pug / upg alone     0/12
+#   no-PLE control            10/10 at UNI_DEC=1 and 3
+#   bisect rungs 4, 5, 6      10/10 at UNI_DEC=1, 6/6 at UNI_DEC=2
+# Default gpu: still the best order whose arithmetic is right, and the only one
+# that runs at all without PLE_UP_W_FIRST.
+#
+# THE FAILURE IS A STRICT ALTERNATION, NOT A RACE. Sixteen back-to-back
+# dispatches of the default build give .O.O..O.O.O.O.O. -- a successful dispatch
+# is followed by a failing one and vice versa, with an occasional double-fail
+# that re-phases it. That holds at OUT_CHUNKS 1, 2 and 3 alike. A two-state
+# toggle surviving BETWEEN dispatches is the only thing that produces this, and
+# it explains the hard 50% ceiling that every ordering knob runs into: none of
+# them is addressing the actual mechanism.
+#
+# AND THE 'TIMEOUT' IS THE FIRMWARE'S, NOT THE HOST'S. A failing dispatch
+# reports ERT_CMD_STATE_TIMEOUT after ~6 s no matter how long the host waits
+# (90 s was tried), while a passing one returns in 0.01 s. That is the NPU2 TDR
+# watchdog killing the context -- which is presumably also what resets the
+# toggle and lets the next dispatch through. Raising the host timeout is
+# therefore pointless, and any measurement here must be many repeats, because a
+# single run is close to a coin flip.
 PLE_FEED_ORDER = _os.environ.get("DECODE_PLE_FEED_ORDER", "gpu")
 # Give the UP core its own weight channel instead of a third destination on the
 # shared @pleW packet channel. The up core is the one that holds a long run of
@@ -1114,8 +1135,12 @@ PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
 # stream BEFORE it blocks on @gateOut, instead of after. Numerically wrong -- the
 # macs run against an uninitialised @gateOut buffer -- but every channel's volume
 # and destination is untouched, so the shim feed is bit-identical and only the
-# core's get ORDER changes. Tests whether the deadlock is that the up core holds
+# core's get ORDER changes. Tested whether the deadlock is that the up core holds
 # ~50 enqueued blocks it will not touch until the gate core finishes.
+# ANSWER: NO. At 20 repeats it is 10/20 at UNI_DEC=1 and 0/20 at UNI_DEC=2 --
+# indistinguishable from the default build. The earlier 0/5 -> 5/5 reading, which
+# this whole line of reasoning rested on, was small-sample noise. The up core
+# blocking on @gateOut ahead of its weight run is NOT the cause.
 PLE_UP_W_FIRST = PLE and int(_os.environ.get("DECODE_PLE_UP_W_FIRST", "0"))
 # Stage the up core's weight stream through an L2 FIFO instead of shim-direct.
 #
@@ -1591,7 +1616,24 @@ if PLE:
     # these constants.
     PLE_GATE_LOC = (3, 2)
     PLE_PROJ_LOC = (3, 3)
-    PLE_UP_LOC = (3, 4)
+    # The up core's column, because it decides which shim MM2S its weight feed
+    # gets. Column 3's shim has two MM2S for three @pleW destinations, so two
+    # must share, and the allocator pairs GATE(0) with UP(2) on MM2S 0 leaving
+    # PROJ(1) alone on MM2S 1 -- the worst of the three pairings. The up core
+    # blocks on @gateOut before touching its run, so its undeliverable blocks
+    # sit on the same port the gate core is fed from. Moving it to a column with
+    # a free shim gives it a port of its own. DECODE_PLE_UP_CHAN does NOT do
+    # this: it makes a second channel and the allocator re-pairs gate+up anyway.
+    #
+    # TESTED AND REFUTED. Column 5's shim is completely unused, and UP_COL=5 does
+    # move @pleW's up destination onto shim_noc_tile_5_0 MM2S 0 -- verified in
+    # aie.air.mlir -- so the port sharing really is gone. It made things WORSE:
+    # 0/20 dispatches against 10/20 for the default. Note it also lengthens the
+    # @gateOut route from the gate core across the attention column, so the two
+    # effects are confounded; either way the shared port is not the fault.
+    # Kept as a knob so the negative is not re-derived, not as a candidate.
+    PLE_UP_COL = int(_os.environ.get("DECODE_PLE_UP_COL", "3"))
+    PLE_UP_LOC = (PLE_UP_COL, 4 if PLE_UP_COL == 3 else 2)
     PLE_RELAY_PCOL = 3
     _ATTN_COLS_USED = {_l[0] for _l in ATTN_CU_LOC}
     for _nm, _loc in (
