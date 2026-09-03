@@ -2162,16 +2162,55 @@ if _RF_SPLIT:
 # CHAINS -- MM2S 0 and MM2S 1, one per port, which is what the bare split could
 # not do. The dispatch still times out.
 #
-# WHERE IT STOPS NOW, from the chain census: col 4 has THREE S2MM chains, the
-# same as before the demux. Both leaves land on the same tile, so AIR gave them
-# ONE S2MM chain -- and two fills on one chain alternate BDs, which is the
-# failure moved from the core to the memtile. Route 6's premise was explicitly
-# "a DIFFERENT S2MM chain (chains are per tile AND channel)", and that is the
-# part still unmet: leaf 1 needs its own S2MM channel on col 4 (free=[3,4,5]),
-# or a destination that is not the same tile as leaf 0.
+# THE MEMTILE IS NOW RIGHT, and it took two changes:
+#
+#   ONE SLAB FOR BOTH LEAVES. Leaf 1 had a slab of its own; the two arms' copies
+#   folded, but leaf 0's buffer and leaf 1's did not fold with each other, so the
+#   DRAIN became a three-BD chain walking buf144, buf144, buf143. That is the
+#   two-slab shape the mode already rules out, reached from the other side. Leaf
+#   1 now fills the arm's own `rb` (see _rmsrow_relay's leaf1 branch).
+#   A DMA CHANNEL OF ITS OWN, which needed a compiler fix: allocNewDmaChannel
+#   folds every endpoint of one channel decl on a tile onto one allocation,
+#   AFTER the caller has picked a channel, so it threw away both the
+#   index-distinct decision and the air.memtile_dma_channel_min steer. An
+#   indexed demux is not one flow. Narrowed; see
+#   mlir/test/Conversion/AIRToAIE/demux_leaf_keeps_own_channel.mlir.
+#
+# Col 4 now reads: MM2S 0 one count-free self-looping drain over buf143; S2MM 2
+# leaf 0's [11, 38] cycle (acquire 38 release 11, acquire 11 release 38); S2MM 3
+# leaf 1's single self-looping fill, acquire 1 release 1. check_memtile_chans.py
+# is clean. That is exactly the shape the mode asks for, and it STILL TIMES OUT.
+#
+# WHERE IT STOPS NOW, and this one is not a spelling problem. A put that names a
+# `dest` originates a packet, so air-annotate-packet-ids stores the 32-bit
+# routing header INTO THE PAYLOAD at the put's offsets[0] -- "the switchbox reads
+# the first word of what arrives, and the DMA sends the window starting at
+# offsets[0], so the header IS offsets[0]". In the built IR:
+#
+#     func.call @rms_row_aie(%stg, ...)
+#     vector.store %hdr, %stg[%c0] : memref<4096xbf16, 2>, vector<2xbf16>
+#     air.channel.put @xdemux[...] (%stg[0] [2560] [1]) dest(...)
+#
+# so the header overwrites x[0] and x[1] of every row, the switch strips it at
+# the destination, and the memtile receives 2558 elements per transfer while its
+# fill wants 8 x 2560. The fill never completes. THAT is the timeout, and it was
+# there from the first demux build -- the memtile faults above were real but
+# sat on top of it.
+#
+# @outA is the shape that works and shows the fix: its buffer reserves the
+# header (HDR = 2 at elem 14, payload at 16) and the put is `[14] [258] [1]`, so
+# nothing of the payload is spent. Doing the same here means the norm kernel
+# writing its row at an offset inside `stg` -- rms_row_aie hardcodes
+# `bf16 *it_y = y` -- and the put becoming `stg[14] [K + 2] [1]`. Element 16 is
+# the first 32-byte-aligned start after a 2-element header, which is why @outA
+# uses 14/16 and not 0/2. NOT YET BUILT.
 _RF_DEMUX = int(_os.environ.get("RMS_XNORM_DEMUX", "0")) if BATCH > 1 else 0
 if _RF_DEMUX:
     assert _RF_SPLIT, "RMS_XNORM_DEMUX carries RMS_SPLIT_DIRECT's split; set both"
+# The physical S2MM channel floor for leaf 1's fill on the relay memtile. Its
+# only job is to keep that fill off leaf 0's chain; 3 is the first free one on
+# col 4 (S2MM used=[0,1,2]) and the knob exists to re-aim it if the census moves.
+_RF_LEAF1_CH = int(_os.environ.get("RMS_DEMUX_LEAF1_CH", "3"))
 # The channel the rms core's mode-3 sweeps ride. Under the demux it is a
 # DIFFERENT NAME, not a re-shaped @xnorm: @xnorm has a dozen mode-0 call sites
 # that index it flat, and the core still ends up with exactly two channels
@@ -5879,7 +5918,7 @@ def build_module():
                     # times over @xnorm) in 512 chunks -> broadcast
                     # 256-blocks. RMS_REFEED*(2048/512) gets. (reproducer core_2_2 +
                     # mem_1_1 x_buffer 512.)
-                    def _rmsrow_relay(out, seq, rb, src=None):
+                    def _rmsrow_relay(out, seq, rb, src=None, leaf1=False):
                         """ph0/ph2 X relay: one fill of a row-major [BATCH][K]
                         slab from @xnorm per entry of `seq`, each re-broadcast
                         that entry's number of times onto `out` -- the same
@@ -5990,6 +6029,52 @@ def build_module():
                                 ),
                             )
                             refeed(_cnt, lambda: _xnorm_put(rb, K, chan=out))
+                        if leaf1:
+                            # THE DEMUX'S SECOND LEAF, into THIS ARM'S SLAB.
+                            #
+                            # It was a slab of its own until the first build
+                            # said otherwise: leaf 0's two arm-allocs folded to
+                            # one buffer and leaf 1's folded to another, and the
+                            # DRAIN then became a three-BD chain walking
+                            # buf144, buf144, buf143 instead of the one
+                            # count-free self-looping BD the mode requires --
+                            # the two-slab failure the mode already rules out
+                            # (see the "A SECOND SLAB DOES NOT FIX IT" note
+                            # above), arrived at from the other direction.
+                            # Filling `rb` puts every drain sweep on one
+                            # descriptor over one buffer, which is what folds.
+                            #
+                            # air.memtile_dma_channel_min: the fill must NOT
+                            # share leaf 0's S2MM chain, and this is the whole
+                            # reason the leaf exists. Leaf 0's chain is the
+                            # _RF_CYCLE, walked a whole number of times per arm;
+                            # an extra-wave arm walks it ZERO times and posts
+                            # only this fill, so on a shared chain its transfer
+                            # would land on leaf 0's next BD and take that BD's
+                            # count. Col 4's S2MM 3..5 are free (see
+                            # check_memtile_chans.py).
+                            _g1 = ChannelGet(
+                                src,
+                                rb,
+                                offsets=[idx(0)],
+                                sizes=[idx(BATCH * K)],
+                                strides=[idx(1)],
+                                indices=[idx(0), idx(1)],
+                            )
+                            _g1.operation.attributes["air.memtile_dma_channel_min"] = (
+                                IntegerAttr.get(T.i32(), _RF_LEAF1_CH)
+                            )
+                            # air.refeed_count = 1, SPELLED OUT. The drain below
+                            # is one put and not a loop, so air-annotate-refeed
+                            # writes no count here -- and a fill with no count of
+                            # its own falls back to the BUFFER's, which is leaf
+                            # 0's 38. The BD then releases 38 read credits for
+                            # one transfer and the drain runs 37 times too often.
+                            # The pass leaves a count that is already present.
+                            _g1.operation.attributes["air.refeed_count"] = (
+                                IntegerAttr.get(T.i32(), 1)
+                            )
+                            refeed(1, lambda: _xnorm_put(rb, K, chan=out))
 
                     def _feed_inX(src, total_chunks):
                         for _rc in for_(idx(0), idx(total_chunks), idx(1)):
@@ -7696,7 +7781,11 @@ def build_module():
                             _rb.operation.attributes["air.memtile_col"] = (
                                 IntegerAttr.get(T.i32(), RMSROW_COL)
                             )
-                            _rmsrow_relay(_XN1, _RF_PH0_DEC, _rb)
+                            # leaf1 rides at the END OF PH0, not after ph2: the
+                            # split takes one of ph0's re-sends, so the consumer
+                            # must still see 11 + 1 before ph1's o-proj X and
+                            # then 38 for ph2.
+                            _rmsrow_relay(_XN1, _RF_PH0_DEC, _rb, leaf1=bool(_RF_DEMUX))
                         refeed(
                             OPROJ_REFEED,
                             lambda: _xnorm_put(
@@ -7744,24 +7833,29 @@ def build_module():
                             emits no transfer.
                             """
                             if _RF_DEMUX:
-                                # THE DEMUX LEAF, and the difference from the
-                                # tapsX shape below is the whole point: ONE fill
-                                # on EVERY arm, with no zero-trip loop to
-                                # canonicalize away and no L3 allocation to fail.
-                                # `n` is ignored -- the count that varies per arm
-                                # is leaf 0's, not this one.
+                                # THE DEMUX LEAF, and it lives INSIDE the arm's
+                                # own relay call now (_rmsrow_relay(leaf1=True)),
+                                # filling that arm's slab rather than a slab of
+                                # its own. The first build proved why: two slabs
+                                # give a three-BD drain that walks
+                                # buf144, buf144, buf143, and the mode needs one
+                                # count-free self-looping BD over one buffer.
                                 #
-                                # Its own slab; air-to-aie's
-                                # unifyOnChipArmBuffers folds the arms' slabs
-                                # together, so leaf 0 and leaf 1 end up filling
-                                # the SAME buffer on col 4 and the drain stays
-                                # the one count-free self-looping BD.
-                                _eb = AllocOp(rmsrow_l2, [], [])
-                                _eb.operation.attributes["air.memtile_col"] = (
-                                    IntegerAttr.get(T.i32(), RMSROW_COL)
-                                )
-                                _rmsrow_relay(_XN1, [1], _eb, src=(_RMSROW_CH, 1))
-                                DeallocOp(_eb)
+                                # So the arms that HAVE a relay (decode, LM head)
+                                # need nothing here. Only the extra-wave arm,
+                                # which has no relay at all, still allocates --
+                                # a slab with ZERO leaf-0 fills and one leaf-1
+                                # fill, which the cross-arm unify then folds onto
+                                # the other arms' slab. `n` selects that: 0 on
+                                # the arms whose relay already carries the leaf,
+                                # 1 on the extra arm.
+                                if n:
+                                    _eb = AllocOp(rmsrow_l2, [], [])
+                                    _eb.operation.attributes["air.memtile_col"] = (
+                                        IntegerAttr.get(T.i32(), RMSROW_COL)
+                                    )
+                                    _rmsrow_relay(_XN1, [], _eb, leaf1=True)
+                                    DeallocOp(_eb)
                                 return
                             if RMS_MEMTILE_REFEED != 3 or not N_EXTRA:
                                 return
@@ -7793,7 +7887,9 @@ def build_module():
                                 _vb.operation.attributes["air.memtile_col"] = (
                                     IntegerAttr.get(T.i32(), RMSROW_COL)
                                 )
-                                _rmsrow_relay(_XN1, _RF_PH0_VOC, _vb)
+                                _rmsrow_relay(
+                                    _XN1, _RF_PH0_VOC, _vb, leaf1=bool(_RF_DEMUX)
+                                )
                                 DeallocOp(_vb)
                             _tapsx_fill(0)
                             yield_([])
