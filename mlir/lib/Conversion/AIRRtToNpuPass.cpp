@@ -270,6 +270,205 @@ static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
 
 namespace {
 
+// The core placed at (x, y) in this device, or null. AIRToAIE stamps each core
+// with `air.herd_name`, which is how the herd a tile belongs to is recovered
+// here without rebuilding a tile-to-herd map.
+static xilinx::AIE::CoreOp getCoreAt(xilinx::AIE::DeviceOp device, int x,
+                                     int y) {
+  xilinx::AIE::CoreOp found = nullptr;
+  device.walk([&](xilinx::AIE::CoreOp core) {
+    if (found)
+      return;
+    auto tile = core.getTileOp();
+    if (tile.getCol() == x && tile.getRow() == y)
+      found = core;
+  });
+  return found;
+}
+
+// True when AIRToAIE routed this herd slot through the scratchpad rather than
+// the RTP buffer. The declaration it emits at module scope is the contract
+// between the two passes; see the comment on isRuntimeHerdOperand in
+// AIRToAIEPass.cpp for why the decision is recorded rather than recomputed.
+static bool isScratchpadParameterSlot(ModuleOp module,
+                                      xilinx::AIE::CoreOp coreOp,
+                                      unsigned slot) {
+  if (!coreOp)
+    return false;
+  auto herdName = coreOp->getAttrOfType<StringAttr>("air.herd_name");
+  if (!herdName)
+    return false;
+  std::string name =
+      "__air_param_" + herdName.getValue().str() + "_" + std::to_string(slot);
+  return static_cast<bool>(
+      module.lookupSymbol<xilinx::AIEX::ScratchpadParameterOp>(name));
+}
+
+// A BD offset that traces back to the runtime sequence's own operand is
+// unknowable at compile time and belongs in the scratchpad. Anything else --
+// a constant, or an offset computed from constants -- stays on the normal
+// path, so this only fires where the static encoding was impossible anyway.
+// Returns the parameter's name, or null if the offset is not a block argument.
+//
+// The name is keyed on the argument number rather than on the transfer, so
+// that every BD driven by the same operand (a KV append writes one chunk per
+// group) shares one parameter and one state-table entry.
+// Does this value reach the runtime sequence's own argument? Pure predicate --
+// no declaration, no IR change -- used to decide which side of an add is the
+// per-dispatch one.
+static bool reachesSequenceArg(Value v) {
+  while (Operation *def = v.getDefiningOp()) {
+    if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                  arith::ExtSIOp, arith::BitcastOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    if (llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def)) {
+      if (reachesSequenceArg(def->getOperand(0)))
+        return true;
+      v = def->getOperand(1);
+      continue;
+    }
+    return false;
+  }
+  auto blockArg = llvm::dyn_cast<BlockArgument>(v);
+  return blockArg && llvm::isa<xilinx::AIE::RuntimeSequenceOp>(
+                         blockArg.getOwner()->getParentOp());
+}
+
+// Peel the offset's top-level additive chain into the part that varies per
+// dispatch and the part that does not. Every addend that does not reach the
+// sequence argument is static -- a loop-varying base, a constant, or both --
+// and stays on the BD as its ordinary offset, which `offset_parameter` is
+// added to rather than replacing ("update_from_scratchpad to add the runtime
+// offset to the BD address register", AIEDmaToNpu.cpp). Returns the remaining
+// per-dispatch term, or null when an add has runtime on both sides (no single
+// parameter can stand for it).
+//
+// Dropping a constant addend here instead of banking it is a silent
+// miscompile, not a missed optimisation: the KV append's V transfer is
+// `base + KV_HALF + f(L)` against the K transfer's `base + f(L)`, so losing
+// KV_HALF lands both on the same slot.
+static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
+                               Value &residual) {
+  SmallVector<Value> staticSides;
+  while (Operation *def = v.getDefiningOp()) {
+    // AIR wraps the offset in width adjustments on the way to the BD
+    // (index -> i64 -> i32); the addends sit underneath them. Narrowing
+    // distributes over the add for the ranges a BD offset can hold.
+    if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                  arith::ExtSIOp, arith::BitcastOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    auto add = llvm::dyn_cast<arith::AddIOp>(def);
+    if (!add)
+      break;
+    Value lhs = add.getLhs(), rhs = add.getRhs();
+    bool lhsRuntime = reachesSequenceArg(lhs);
+    if (lhsRuntime == reachesSequenceArg(rhs))
+      break;
+    staticSides.push_back(lhsRuntime ? rhs : lhs);
+    v = lhsRuntime ? lhs : rhs;
+  }
+  for (Value s : staticSides) {
+    if (residual && residual.getType() != s.getType())
+      return nullptr;
+    residual = residual ? arith::AddIOp::create(builder, loc, residual, s) : s;
+  }
+  return v;
+}
+
+// Reduce a per-dispatch term to `arg * scale + addend`, walking outside in.
+// Two BDs may share one parameter only if they need the same number written,
+// so these coefficients identify the parameter alongside the argument number.
+// Returns the sequence argument, or null if the term is not affine in one.
+static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
+                                         int64_t &addend) {
+  scale = 1;
+  addend = 0;
+  while (Operation *def = v.getDefiningOp()) {
+    if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                  arith::ExtSIOp, arith::BitcastOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    if (!llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def))
+      return nullptr;
+    Value lhs = def->getOperand(0), rhs = def->getOperand(1);
+    IntegerAttr c;
+    bool constOnRight = matchPattern(rhs, m_Constant(&c));
+    if (!constOnRight && !matchPattern(lhs, m_Constant(&c)))
+      return nullptr;
+    int64_t k = c.getInt();
+    Value inner = constOnRight ? lhs : rhs;
+    // f is what has been applied so far; compose the new innermost op into it.
+    if (llvm::isa<arith::MulIOp>(def)) {
+      scale *= k; // f(k*x) = scale*k*x + addend
+    } else if (llvm::isa<arith::AddIOp>(def)) {
+      addend += scale * k; // f(x+k)
+    } else if (constOnRight) {
+      addend -= scale * k; // f(x-k)
+    } else {
+      addend += scale * k; // f(k-x)
+      scale = -scale;
+    }
+    v = inner;
+  }
+  auto blockArg = llvm::dyn_cast<BlockArgument>(v);
+  if (!blockArg)
+    return nullptr;
+  // Only the runtime sequence's own argument is a per-dispatch value. A loop
+  // induction variable is also a block argument but varies per iteration, and
+  // the scratchpad holds one value per dispatch -- those offsets are folded
+  // by unrolling further down the pipeline instead.
+  if (!llvm::isa<xilinx::AIE::RuntimeSequenceOp>(
+          blockArg.getOwner()->getParentOp()))
+    return nullptr;
+  return blockArg;
+}
+
+// A BD offset that traces back to the runtime sequence's own operand is
+// unknowable at compile time and belongs in the scratchpad. Anything else --
+// a constant, or an offset computed from constants -- stays on the normal
+// path, so this only fires where the static encoding was impossible anyway.
+// Returns the parameter's name, or null if the offset is not separable.
+//
+// On success, `residual` is the part of the offset the parameter does *not*
+// cover, which the caller leaves on the BD.
+static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
+                                                 OpBuilder &builder,
+                                                 Value &residual) {
+  if (!module)
+    return nullptr;
+  Value dynamic = peelStaticAddends(offset, builder, offset.getLoc(), residual);
+  if (!dynamic)
+    return nullptr;
+  int64_t scale, addend;
+  BlockArgument blockArg = affineInSequenceArg(dynamic, scale, addend);
+  if (!blockArg)
+    return nullptr;
+  // The host writes the whole affine value, so the coefficients are part of
+  // the parameter's identity: BDs needing `(L-1)*256` and `L*256` are two
+  // parameters, not one shared entry that would be right for one of them.
+  std::string suffix;
+  if (scale != 1 || addend != 0) {
+    suffix = "_x" + std::to_string(scale);
+    suffix += (addend < 0 ? "_m" : "_p") +
+              std::to_string(addend < 0 ? -addend : addend);
+  }
+  auto name = builder.getStringAttr(
+      "__air_param_argoff_" + std::to_string(blockArg.getArgNumber()) + suffix);
+  if (!module.lookupSymbol(name)) {
+    OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    xilinx::AIEX::ScratchpadParameterOp::create(
+        builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
+        /*state_table_idx=*/nullptr, /*kind=*/nullptr);
+  }
+  return name;
+}
+
 // Helper function to check if a value is a memref on host memory (space 0)
 static bool isHostMemory(Value val) {
   if (auto memrefType = dyn_cast_if_present<BaseMemRefType>(val.getType()))
@@ -554,8 +753,17 @@ struct FoldConstIndexSwitchPattern
 struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   using OpConversionPattern<airrt::DmaMemcpyNdOp>::OpConversionPattern;
 
-  DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
+  // Only the static-TXN (full ELF) output cannot encode a runtime BD offset.
+  // Everywhere else the SSA offset is a legal BD word, and rerouting it to the
+  // scratchpad would silently change the host contract: an unwritten parameter
+  // reads as zero, so an existing design would keep running and transfer from
+  // the wrong address.
+  bool outputElf = false;
+
+  DmaToNpuPattern(MLIRContext *context, bool outputElf = false,
+                  PatternBenefit benefit = 1)
+      : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit),
+        outputElf(outputElf) {}
 
   LogicalResult
   matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
@@ -904,8 +1112,37 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                      : AIE::DMABDOp::create(rewriter, op.getLoc(), memref, 0,
                                             static_cast<int>(transferLen),
                                             dimsAttr));
-      bd.getOffsetMutable().assign(dynOffsetI32);
-      bd.removeStaticOffsetAttr();
+      // A runtime offset carried as an SSA operand becomes a BD word computed
+      // at dispatch, which only the C++ TXN target can encode -- a static TXN,
+      // and therefore the full-ELF output, cannot. When the offset is
+      // genuinely the sequence's own operand, hand it to the scratchpad
+      // instead: `offset_parameter` names a parameter the host writes per
+      // dispatch and firmware folds into the BD address, leaving the
+      // instruction stream constant. Same mechanism as a herd's runtime
+      // scalar, in its `addr` flavour.
+      Value offsetResidual;
+      StringAttr paramName = outputElf
+                                 ? declareBlockArgOffsetParameter(
+                                       op->getParentOfType<ModuleOp>(),
+                                       dynOffsetI32, rewriter, offsetResidual)
+                                 : nullptr;
+      if (paramName) {
+        bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(paramName));
+        // The base keeps its ordinary place on the BD; the parameter is added
+        // to it at dispatch.
+        if (offsetResidual) {
+          // The BD's offset operand is i32; the residual is whatever type the
+          // address arithmetic left it in (index, here).
+          if (!offsetResidual.getType().isInteger(32))
+            offsetResidual = arith::IndexCastOp::create(
+                rewriter, op.getLoc(), rewriter.getI32Type(), offsetResidual);
+          bd.getOffsetMutable().assign(offsetResidual);
+          bd.removeStaticOffsetAttr();
+        }
+      } else {
+        bd.getOffsetMutable().assign(dynOffsetI32);
+        bd.removeStaticOffsetAttr();
+      }
     } else if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
@@ -1024,6 +1261,41 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
     // and set_locks so the per-wave hoist groups this arm by its iteration.
     auto waveAttr = op->getAttr(air::attrs::LaunchWave);
 
+    // Any herd scalar that AIRToAIE routed through the scratchpad has to be
+    // in place before a core is let past its herd lock, so the sync goes ahead
+    // of the whole arm. One per sequence is enough -- it syncs the table, not
+    // an individual parameter -- and AIR's own herd lock is what orders the
+    // cores against it, which is why the pass's built-in preamble is off.
+    if (!module.getOps<AIEX::ScratchpadParameterOp>().empty()) {
+      if (auto seq = op->getParentOfType<AIE::RuntimeSequenceOp>()) {
+        // The marker is what --aie-lower-scratchpad-parameters expands into
+        // the real preamble, and it must be a *direct* child of the sequence
+        // (HasParent), while this pattern may be rewriting several regions
+        // deep. Walk out to the ancestor that does sit at sequence level and
+        // put the marker in front of it, which keeps it ahead of this herd's
+        // set_locks without hoisting it past unrelated work.
+        Operation *anchor = op;
+        while (anchor && anchor->getParentOp() != seq.getOperation())
+          anchor = anchor->getParentOp();
+        // Only a marker that is already a *direct* child counts as done:
+        // --aie-lower-scratchpad-parameters expands those and ignores any
+        // other, so treating a nested one as "already marked" would leave the
+        // sequence with no preamble at all.
+        bool alreadyMarked = false;
+        for (Operation &o : seq.getBody().front())
+          if (isa<AIEX::SyncScratchpadParametersFromHostOp>(o)) {
+            alreadyMarked = true;
+            break;
+          }
+        if (anchor && !alreadyMarked) {
+          OpBuilder::InsertionGuard g(rewriter);
+          rewriter.setInsertionPoint(anchor);
+          AIEX::SyncScratchpadParametersFromHostOp::create(rewriter,
+                                                           op.getLoc());
+        }
+      }
+    }
+
     // for each herd core, emit write_rtp ops for every herd operand
     // followed by a write32 to the herd lock, setting it to 1.
     for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
@@ -1034,17 +1306,29 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
 
         // Only generate RTP writes if the RTP buffer was actually created.
         bool rtpBufferExists = false;
+        // The device that actually owns this tile's RTP buffer. Without it
+        // there is no core to ask which slots AIRToAIE moved to the
+        // scratchpad, and every slot would get an RTP write -- including the
+        // runtime ones, which is exactly the non-constant write32 a static TXN
+        // cannot encode. So the fallback has to resolve the device too, not
+        // just answer whether the buffer exists somewhere.
+        AIE::DeviceOp owningDevice = device;
         if (device) {
           rtpBufferExists =
               static_cast<bool>(device.lookupSymbol<AIE::BufferOp>(name));
         } else {
           // Fallback for IR without segment_name: search all AIE::DeviceOp's.
           module.walk([&](AIE::DeviceOp d) {
-            if (!rtpBufferExists && d.lookupSymbol<AIE::BufferOp>(name))
+            if (!rtpBufferExists && d.lookupSymbol<AIE::BufferOp>(name)) {
               rtpBufferExists = true;
+              owningDevice = d;
+            }
           });
         }
 
+        xilinx::AIE::CoreOp coreOp =
+            owningDevice ? getCoreAt(owningDevice, phys_x, phys_y)
+                         : xilinx::AIE::CoreOp();
         if (rtpBufferExists) {
           unsigned rtp_slot = 0;
           for (int i = 0, e = op.getNumOperands(); i < e; i++) {
@@ -1078,6 +1362,19 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
                 vVal =
                     arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, oper);
               }
+            }
+            // AIRToAIE routes a herd's *runtime* scalars through the
+            // scratchpad instead of this buffer, so that the value never has
+            // to be encoded into a static instruction stream (see
+            // isRuntimeHerdOperand there). It signals that by declaring
+            // `__air_param_<herd>_<slot>` at module scope; the host writes
+            // that parameter per dispatch and the core reads it directly, so
+            // there is nothing to write here. The symbol is the contract
+            // between the two passes -- re-deciding "is this constant?" here
+            // would risk the two disagreeing after canonicalization.
+            if (isScratchpadParameterSlot(module, coreOp, rtp_slot)) {
+              rtp_slot++;
+              continue;
             }
             if (vVal) {
               auto rtpOp = AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(),
@@ -2597,10 +2894,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
 
     RewritePatternSet patterns(ctx);
-    patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
+    patterns.add<HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
                  ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
                  AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
+    patterns.add<DmaToNpuPattern>(ctx, clOutputElf);
     patterns.add<AIRRtWaitAllOpConversion>(ctx, clOutputElf);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
@@ -2725,8 +3023,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Hoist within every block instead.
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      // A sync marker is only honoured as a direct child of the sequence, so
+      // it may be reordered within the entry block but never moved or cloned
+      // into a nested one -- there the lowering would ignore it and the arm
+      // would run with whatever the parameter buffers last held.
+      Block *seqEntry = &seq.getBody().front();
       for (Block *blkPtr : blocks) {
         Block &blk = *blkPtr;
+        const bool syncsAllowed = blkPtr == seqEntry;
         // Snapshot the op order; the delimiters never move, and RTP/set_lock
         // ops only move within their own region, so region membership computed
         // from this snapshot stays valid across the moves below.
@@ -2757,12 +3061,21 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           Operation *anchor = nullptr;
           SmallVector<Operation *> rtps;
           SmallVector<Operation *> locks;
+          // The scratchpad sync has to lead its arm for the same reason the
+          // RTP writes do, and more strictly: it is what puts a herd's runtime
+          // scalar in place, and the set_locks below it are what let the cores
+          // read that scalar.
+          SmallVector<Operation *> syncs;
+          // A PDI reload rewrites tile memory, so the per-core parameter
+          // buffers the sync populated are gone and the arm needs its own.
+          bool afterLoadPdi = false;
         };
         SmallVector<ArmGroup> groups(1);
         std::optional<int64_t> curWave;
         for (Operation *o : ops) {
           if (isa<AIEX::NpuLoadPdiOp>(o)) {
             groups.emplace_back();
+            groups.back().afterLoadPdi = true;
             curWave.reset();
             continue;
           }
@@ -2774,14 +3087,33 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           ArmGroup &g = groups.back();
           if (isa<AIEX::NpuWriteRTPOp>(o))
             g.rtps.push_back(o);
+          else if (isa<AIEX::SyncScratchpadParametersFromHostOp>(o))
+            g.syncs.push_back(o);
           else if (isa<AIEX::SetLockOp>(o))
             g.locks.push_back(o);
           else if (!o->hasAttr(air::attrs::RuntimeHoist) && !g.anchor)
             g.anchor = o;
         }
+        // Each move inserts immediately before the anchor, so the order these
+        // run in is the order they end up in: sync, then RTP writes, then the
+        // releases that let the cores read both.
+        Operation *anySync = nullptr;
+        for (auto &g : groups)
+          if (!g.syncs.empty() && !anySync)
+            anySync = g.syncs.front();
         for (auto &g : groups) {
           if (!g.anchor)
             continue;
+          // An arm that reloads its PDI has lost the parameter buffers the
+          // earlier sync wrote, so give it its own.
+          if (syncsAllowed && anySync && g.syncs.empty() && g.afterLoadPdi &&
+              !g.locks.empty()) {
+            OpBuilder b(g.anchor);
+            g.syncs.push_back(b.clone(*anySync));
+          }
+          if (syncsAllowed)
+            for (auto *sy : g.syncs)
+              sy->moveBefore(g.anchor);
           for (auto *rtp : g.rtps)
             moveRtpBefore(rtp, g.anchor);
           for (auto *lk : g.locks)

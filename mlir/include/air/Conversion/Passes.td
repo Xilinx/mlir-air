@@ -198,6 +198,14 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
            /*default=*/"false",
            "Choose whether to lower data movement ops to aie.objectFifo, or "
            "directly to aie.locks.">,
+    Option<"clOutputElf", "output-elf", "bool",
+           /*default=*/"false",
+           "Target a static TXN binary (full ELF). A herd's runtime scalar "
+           "operands then go through mlir-aie scratchpad parameters rather "
+           "than a control-plane RTP write, which a static TXN cannot encode. "
+           "Off by default: the RTP path is correct everywhere else, and the "
+           "host contract differs -- an unwritten scratchpad parameter reads "
+           "as zero instead of failing.">,
     Option<"clGenerateShimDMA", "generate-shim-dma", "bool",
            /*default=*/"false",
            "Choose whether to schedule shim data movement via generating AIE "

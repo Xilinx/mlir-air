@@ -1241,6 +1241,10 @@ static LogicalResult runAieCompilation() {
        << (useLockRaceConditionFix ? "true" : "false");
     os << " use-lock-race-condition-fix-v2="
        << (useLockRaceConditionFixV2 ? "true" : "false");
+    // The full-ELF output is a static TXN, which cannot hold a runtime herd
+    // scalar; only there does AIRToAIE route one through a scratchpad
+    // parameter instead of the RTP control-plane write.
+    os << " output-elf=" << (outputFormat == OF_elf ? "true" : "false");
     if (stackSize.getNumOccurrences() > 0)
       os << " stack-size=" << stackSize.getValue();
     os << "}";
@@ -1390,6 +1394,12 @@ static LogicalResult runAieCompilation() {
       aieccCmd.push_back("--get-full-elf");
       aieccCmd.push_back("--expand-load-pdis");
       aieccCmd.push_back("--full-elf-name=" + elfName.getValue());
+      // The scratchpad-parameter lowering runs unconditionally in aiecc; this
+      // only asks it to also write the layout out. Without params.txt the host
+      // has no way to name a runtime parameter -- ParameterScratchpad indexes
+      // the state table by the names in that file -- so an ELF carrying a
+      // runtime herd scalar would be unusable.
+      aieccCmd.push_back("--get-scratchpad-parameters");
     } else if (outputFormat == OF_xclbin) {
       aieccCmd.push_back("--get-xclbin");
       aieccCmd.push_back("--xclbin-name=" + xclbinFile);
