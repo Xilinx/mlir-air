@@ -19,6 +19,13 @@
 # Position 0 with a fresh KV cache, so the dispatch appends this token's own K/V
 # and attends to itself. That keeps the test independent of KV seeding, which is
 # a separate mechanism with its own failure modes.
+#
+# --layers a,b runs a MULTI-LAYER build, which is what a KV-SHARED layer needs:
+# layers at or past FIRST_KV_SHARED carry no k/v of their own and attend the
+# cache of the last layer of their type below the boundary, so there is no
+# one-layer expression to score them against. `--layers 14,19` puts the owning
+# layer in slab 0 and the shared layer in slab 1, and DECODE_KV_SRC points
+# slab 1's readback at slab 0.
 import argparse
 import importlib.util
 import os
@@ -33,18 +40,20 @@ _DEC = _HERE / ".." / ".." / "fused_decode_ple"
 BUNDLE = "/home/strixminipc/rocm_fastflowlm/FastFlowLM/models/Gemma4-E2B-IT-NPU2"
 
 
-def _load_fd(uni_dec, attn_maxl):
+def _load_fd(uni_dec, attn_maxl, kv_src=None):
     """Import the builder with the env its module-level constants read."""
     os.environ.update(
         DECODE_MODEL="gemma4-e2b",
         VOCAB_CHUNK_I2="27",
         UNIFIED="1",
         LM_HEAD="0",
-        NLAYERS="1",
+        NLAYERS=str(uni_dec),
         DECODE_GOLDEN="1",
         DECODE_GOLDEN_L=str(attn_maxl),
         DECODE_UNI_DEC=str(uni_dec),
     )
+    if kv_src is not None:
+        os.environ["DECODE_KV_SRC"] = ",".join(str(s) for s in kv_src)
     sys.path.insert(0, str(_DEC))
     spec = importlib.util.spec_from_file_location(
         "fdp", str(_DEC / "fused_decode_ple.py")
@@ -65,8 +74,13 @@ def ple_embed(gw, qm, L, tok):
     )
 
 
-def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1):
-    """The reference layer, at T=1 and position 0.
+def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1, kv=None):
+    """The reference layer, at T=1 and position 0. Returns (out, (ke, v)).
+
+    `kv` is the (ke, v) a KV-SHARED layer attends instead of projecting its own.
+    Layers at or past FIRST_KV_SHARED have no k/v to project -- layer_weights()
+    deliberately omits the tensors so a wrong sharing map raises KeyError rather
+    than silently scoring unused weights -- so they must be given one.
 
     Mirrors check_vs_flm_reference.layer(); kept here rather than imported so
     the device is scored against the SAME expression the per-layer gate uses,
@@ -98,9 +112,12 @@ def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1):
     q = gw._rmsnorm((x1 @ w["q"].T).reshape(T, gw.N_Q_HEADS, dh), nm["q_norm"])
     cos, sin, _ = gw.rope_lut(0, L, rope_freqs=qm.rope_freqs())
     qe = np.stack([gw.apply_rope(q[t], cos, sin, dh) for t in range(T)])
-    k = gw._rmsnorm((x1 @ w["k"].T).reshape(T, gw.N_KV_HEADS, dh), nm["k_norm"])
-    v = gw._rmsnorm((x1 @ w["v"].T).reshape(T, gw.N_KV_HEADS, dh), None)
-    ke = np.stack([gw.apply_rope(k[t], cos, sin, dh) for t in range(T)])
+    if kv is None:
+        k = gw._rmsnorm((x1 @ w["k"].T).reshape(T, gw.N_KV_HEADS, dh), nm["k_norm"])
+        v = gw._rmsnorm((x1 @ w["v"].T).reshape(T, gw.N_KV_HEADS, dh), None)
+        ke = np.stack([gw.apply_rope(k[t], cos, sin, dh) for t in range(T)])
+    else:
+        ke, v = kv
 
     # The cache the device attends over: zeros, with this token at slot L-1.
     kh = np.zeros((attn_l, dh), np.float32)
@@ -118,10 +135,10 @@ def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1):
 
     if not ple:
         # DECODE_NO_PLE: the design stops at the post-FFN residual.
-        return o2.reshape(-1)
+        return o2.reshape(-1), (ke, v)
     gate = gw._gelu_tanh(o2 @ pw["inp_gate"].T) * pli
     o3 = o2 + gw._rmsnorm(gate @ pw["per_layer_projection"].T, nm["post_ple"])
-    return (o3 * nm["out_scale"]).reshape(-1)
+    return (o3 * nm["out_scale"]).reshape(-1), (ke, v)
 
 
 def cos_sim(a, b):
@@ -132,6 +149,13 @@ def cos_sim(a, b):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--layer", type=int, default=4)
+    ap.add_argument(
+        "--layers",
+        help="comma-separated model layers to build as consecutive slabs, e.g. "
+        "'14,19'. The LAST one is the layer being scored; the ones before it "
+        "run to put their K/V in the cache, which is the only way to exercise "
+        "a KV-shared layer (>= 15). Overrides --layer.",
+    )
     ap.add_argument("--bundle", default=BUNDLE)
     ap.add_argument("--cache", default="/tmp/g4_layer.npz")
     ap.add_argument("--xclbin", default=str(_DEC / "decode.xclbin"))
@@ -145,6 +169,16 @@ def main():
         default=8,
         help="dispatch attempts before giving up, for the known PLE liveness "
         "bug. Pass 1 to measure the hang rate instead of working around it.",
+    )
+    ap.add_argument(
+        "--prefix-dump",
+        help="a --dump .npz from an earlier run of a PREFIX of --layers. Its "
+        "device output becomes the hidden state the reference chain starts "
+        "from, so the score isolates the last layer instead of compounding "
+        "the whole chain's error. Without it a multi-layer run reports the "
+        "composition: layer 14 at 0.992663 feeding layer 19 measures 0.975, "
+        "of which 0.986 is layer 14's error AMPLIFIED by layer 19's 12288-wide "
+        "FFN and only 0.9916 is layer 19's own.",
     )
     ap.add_argument(
         "--dump",
@@ -165,33 +199,38 @@ def main():
 
     if a.no_ple:
         os.environ["DECODE_NO_PLE"] = "1"
-    fd = _load_fd(1, a.attn_maxl)
+    Ls = [int(t) for t in a.layers.split(",")] if a.layers else [a.layer]
+    L = Ls[-1]  # the layer under test; the others only seed its cache
+
+    # Which SLAB each slab attends. A layer that owns its cache reads its own;
+    # a shared one reads the slab holding kv_source_layer(). The source has to
+    # be present in this build, and earlier in it, or there is nothing to read.
+    kv_src = []
+    for i, Li in enumerate(Ls):
+        src = gw.kv_source_layer(Li)
+        if src not in Ls[: i + 1]:
+            raise SystemExit(
+                f"layer {Li} attends layer {src}'s KV cache, so {src} must be "
+                f"built before it: try --layers {src},{Li}"
+            )
+        kv_src.append(Ls.index(src))
+
+    fd = _load_fd(len(Ls), a.attn_maxl, kv_src=kv_src)
     qm = gw.Q4nxModel(a.bundle)
-    L = a.layer
-    print(
-        f"[validate] layer {L} "
-        f"({'sliding' if gw.is_sliding(L) else 'FULL'} dh={gw.head_dim(L)}, "
-        f"{'own kv' if gw.owns_kv(L) else 'shared kv'}) on a 1-layer build",
-        flush=True,
-    )
-    if not gw.owns_kv(L):
-        # Layers at or past first_kv_shared_layer_idx (35 - 20 = 15) carry no
-        # k/v projection at all -- they reuse the cache of the last non-shared
-        # layer of their own type -- so there is no single-layer expression to
-        # score them against, and cpu_layer just raises KeyError('k'). Checking
-        # them needs a two-layer build that fills the cache from the owning
-        # layer first.
-        raise SystemExit(
-            f"layer {L} shares its KV cache and has no k/v projection, so a "
-            f"one-layer build cannot exercise it. Pick a layer below "
-            f"{gw.NUM_LAYERS - 20}."
+    for i, Li in enumerate(Ls):
+        print(
+            f"[validate] slab {i} = layer {Li} "
+            f"({'sliding' if gw.is_sliding(Li) else 'FULL'} dh={gw.head_dim(Li)}, "
+            f"{'own kv' if gw.owns_kv(Li) else f'kv from slab {kv_src[i]}'})"
+            f"{'  <- SCORED' if i == len(Ls) - 1 else ''}",
+            flush=True,
         )
 
     if a.rebuild_cache or not os.path.exists(a.cache):
-        rq.build_requant_cache(a.bundle, fd, a.cache, layers=[L])
+        rq.build_requant_cache(a.bundle, fd, a.cache, layers=Ls)
     z = np.load(a.cache)
-    assert int(z["layers"][0]) == L, (
-        f"cache {a.cache} was packed for layer {int(z['layers'][0])}, not {L}; "
+    assert list(z["layers"]) == Ls, (
+        f"cache {a.cache} was packed for layers {list(z['layers'])}, not {Ls}; "
         f"pass --rebuild-cache"
     )
 
@@ -202,17 +241,46 @@ def main():
     x0 = qm.embed_rows("model.embed_tokens.weight", [tok])[0].astype(np.float32)
     x = x0.copy()
 
-    emb_L = ple_embed(gw, qm, L, tok)
-    want = cpu_layer(
-        gw,
-        qm,
-        L,
-        x[None, :],
-        x0[None, :],
-        emb_L,
-        ple=not a.no_ple,
-        attn_l=fd.ATTN_L,
-    )
+    # The device chains the layers in place -- slab i's output is written back to
+    # arg0 and read by slab i+1 -- so the reference chains too, and every slab
+    # keeps its K/V for whichever later slab shares it.
+    embs = [ple_embed(gw, qm, Li, tok) for Li in Ls]
+    caches = {}
+    h = x[None, :]
+
+    # A prefix dump swaps the reference's hidden state for the DEVICE's at the
+    # prefix boundary. The K/V caches are still the reference's: they are only
+    # read by a shared layer, they matched the device's to cos 0.999 when
+    # measured, and the part that did not match is the weightless v-norm's
+    # scale, which the post-attention rmsnorm cancels either way.
+    cut = 0
+    if a.prefix_dump:
+        pz = np.load(a.prefix_dump)
+        pre = list(pz["layers"]) if "layers" in pz else [int(pz["L"])]
+        if pre != Ls[: len(pre)] or len(pre) >= len(Ls):
+            raise SystemExit(
+                f"--prefix-dump covers layers {pre}, which is not a proper "
+                f"prefix of {Ls}"
+            )
+        cut = len(pre)
+        print(f"  reference chain starts from the device's layer {pre[-1]} output")
+
+    for i, Li in enumerate(Ls):
+        if i == cut and cut:
+            h = pz["got"].astype(np.float32)[None, :]
+        h, caches[i] = cpu_layer(
+            gw,
+            qm,
+            Li,
+            h,
+            x0[None, :],
+            embs[i],
+            ple=not a.no_ple,
+            attn_l=fd.ATTN_L,
+            kv=None if gw.owns_kv(Li) else caches[kv_src[i]],
+        )
+        h = h[None, :]
+    want = h.reshape(-1)
 
     import pyxrt as xrt
 
@@ -262,34 +330,41 @@ def main():
     w_bo.write(Wbuf, 0)
     w_bo.sync(TO)
 
-    # --- rms slab: [5 norms | rope_w | final_norm] ---
+    # --- rms slab: [per-slab 5 norms | per-slab rope_w | final_norm] ---
+    # The two regions are each UNI_DEC slabs deep and are indexed independently
+    # (_lb(RMS_LAYER) and _lut_off + _lb(ROPE_W_LEN)), so they are built as two
+    # separate runs rather than interleaved per layer.
     rms = np.concatenate(
         [
-            z[f"RMS_{n}"][0].view(bfloat16)
+            z[f"RMS_{n}"][i].view(bfloat16)
+            for i in range(len(Ls))
             for n in ("in", "post_attn", "pre_ffn", "post_ffn", "post_ple")
         ]
     )
-    cos, sin, dh = gw.rope_lut(0, L, rope_freqs=qm.rope_freqs())
-    lut = np.zeros(DH, np.float32)
-    lut[: dh // 2] = cos
-    lut[DH // 2 : DH // 2 + dh // 2] = sin
-    rope = np.concatenate(
-        [
+    rope = []
+    for i, Li in enumerate(Ls):
+        cos, sin, dh = gw.rope_lut(0, Li, rope_freqs=qm.rope_freqs())
+        lut = np.zeros(DH, np.float32)
+        lut[: dh // 2] = cos
+        lut[DH // 2 : DH // 2 + dh // 2] = sin
+        rope += [
             lut.astype(bfloat16),
-            z["QNORM"][0].view(bfloat16),
-            z["KNORM"][0].view(bfloat16),
+            z["QNORM"][i].view(bfloat16),
+            z["KNORM"][i].view(bfloat16),
         ]
+    rbuf = np.concatenate(
+        [rms, np.concatenate(rope), np.asarray(qm.globals()["final_norm"], bfloat16)]
     )
-    rbuf = np.concatenate([rms, rope, np.asarray(qm.globals()["final_norm"], bfloat16)])
     assert rbuf.size == n_rms, (rbuf.size, n_rms)
     r_bo.write(rbuf.view(np.int16), 0)
     r_bo.sync(TO)
 
-    # --- PLE slab, with this token's per-layer embedding patched in ---
+    # --- PLE slabs, with each layer's per-token embedding patched in ---
     if fd.PLE:
-        ple = z["PLE"].view(bfloat16).copy()
-        ple[fd.PLE_EMB_OFF : fd.PLE_NORMW_OFF] = np.asarray(emb_L, bfloat16)
-        pw_bo.write(ple.view(np.int16), 0)
+        ple = z["PLE"].view(bfloat16).copy().reshape(len(Ls), fd.PLE_LAYER)
+        for i in range(len(Ls)):
+            ple[i, fd.PLE_EMB_OFF : fd.PLE_NORMW_OFF] = np.asarray(embs[i], bfloat16)
+        pw_bo.write(ple.reshape(-1).view(np.int16), 0)
         pw_bo.sync(TO)
         px_bo.write(np.asarray(x0, bfloat16).view(np.int16), 0)
         px_bo.sync(TO)
@@ -342,7 +417,17 @@ def main():
         y_bo.sync(FROM)
         y_out = np.frombuffer(y_bo.map(), dtype=bfloat16, count=n_y).astype(np.float32)
         np.savez(
-            a.dump, got=got, want=want, x=x, x0=x0, emb_L=emb_L, L=L, kv=kv_out, y=y_out
+            a.dump,
+            got=got,
+            want=want,
+            x=x,
+            x0=x0,
+            emb_L=embs[-1],
+            embs=np.stack(embs),
+            L=L,
+            layers=np.asarray(Ls),
+            kv=kv_out,
+            y=y_out,
         )
         print(f"  dumped -> {a.dump}")
     c = cos_sim(got, want)
