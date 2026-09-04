@@ -1277,10 +1277,16 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         Operation *anchor = op;
         while (anchor && anchor->getParentOp() != seq.getOperation())
           anchor = anchor->getParentOp();
+        // Only a marker that is already a *direct* child counts as done:
+        // --aie-lower-scratchpad-parameters expands those and ignores any
+        // other, so treating a nested one as "already marked" would leave the
+        // sequence with no preamble at all.
         bool alreadyMarked = false;
-        seq.walk([&](AIEX::SyncScratchpadParametersFromHostOp) {
-          alreadyMarked = true;
-        });
+        for (Operation &o : seq.getBody().front())
+          if (isa<AIEX::SyncScratchpadParametersFromHostOp>(o)) {
+            alreadyMarked = true;
+            break;
+          }
         if (anchor && !alreadyMarked) {
           OpBuilder::InsertionGuard g(rewriter);
           rewriter.setInsertionPoint(anchor);
@@ -1300,19 +1306,29 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
 
         // Only generate RTP writes if the RTP buffer was actually created.
         bool rtpBufferExists = false;
+        // The device that actually owns this tile's RTP buffer. Without it
+        // there is no core to ask which slots AIRToAIE moved to the
+        // scratchpad, and every slot would get an RTP write -- including the
+        // runtime ones, which is exactly the non-constant write32 a static TXN
+        // cannot encode. So the fallback has to resolve the device too, not
+        // just answer whether the buffer exists somewhere.
+        AIE::DeviceOp owningDevice = device;
         if (device) {
           rtpBufferExists =
               static_cast<bool>(device.lookupSymbol<AIE::BufferOp>(name));
         } else {
           // Fallback for IR without segment_name: search all AIE::DeviceOp's.
           module.walk([&](AIE::DeviceOp d) {
-            if (!rtpBufferExists && d.lookupSymbol<AIE::BufferOp>(name))
+            if (!rtpBufferExists && d.lookupSymbol<AIE::BufferOp>(name)) {
               rtpBufferExists = true;
+              owningDevice = d;
+            }
           });
         }
 
         xilinx::AIE::CoreOp coreOp =
-            device ? getCoreAt(device, phys_x, phys_y) : xilinx::AIE::CoreOp();
+            owningDevice ? getCoreAt(owningDevice, phys_x, phys_y)
+                         : xilinx::AIE::CoreOp();
         if (rtpBufferExists) {
           unsigned rtp_slot = 0;
           for (int i = 0, e = op.getNumOperands(); i < e; i++) {
@@ -3007,8 +3023,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Hoist within every block instead.
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      // A sync marker is only honoured as a direct child of the sequence, so
+      // it may be reordered within the entry block but never moved or cloned
+      // into a nested one -- there the lowering would ignore it and the arm
+      // would run with whatever the parameter buffers last held.
+      Block *seqEntry = &seq.getBody().front();
       for (Block *blkPtr : blocks) {
         Block &blk = *blkPtr;
+        const bool syncsAllowed = blkPtr == seqEntry;
         // Snapshot the op order; the delimiters never move, and RTP/set_lock
         // ops only move within their own region, so region membership computed
         // from this snapshot stays valid across the moves below.
@@ -3084,13 +3106,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             continue;
           // An arm that reloads its PDI has lost the parameter buffers the
           // earlier sync wrote, so give it its own.
-          if (anySync && g.syncs.empty() && g.afterLoadPdi &&
+          if (syncsAllowed && anySync && g.syncs.empty() && g.afterLoadPdi &&
               !g.locks.empty()) {
             OpBuilder b(g.anchor);
             g.syncs.push_back(b.clone(*anySync));
           }
-          for (auto *sy : g.syncs)
-            sy->moveBefore(g.anchor);
+          if (syncsAllowed)
+            for (auto *sy : g.syncs)
+              sy->moveBefore(g.anchor);
           for (auto *rtp : g.rtps)
             moveRtpBefore(rtp, g.anchor);
           for (auto *lk : g.locks)

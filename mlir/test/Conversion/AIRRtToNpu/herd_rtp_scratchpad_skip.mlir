@@ -141,3 +141,102 @@ module {
     return
   }
 }
+
+// -----
+
+// No `segment_name`: the pass falls back to searching every device for the RTP
+// buffer, and has to resolve the owning device while it is there. Answering
+// only "does the buffer exist somewhere" leaves no core to ask which slots
+// AIRToAIE moved, so every slot gets a write -- including the runtime one,
+// which is the non-constant write32 a static TXN cannot encode.
+
+// (This path emits no herd-lock releases either -- that lookup is also keyed
+// on segment_name -- so the check is on the writes.)
+
+// CHECK-LABEL: aie.runtime_sequence @ctrl_no_segname
+// CHECK:         aiex.sync_scratchpad_parameters_from_host
+// CHECK-NOT:     aiex.npu.rtp_write
+module {
+  aiex.scratchpad_parameter @__air_param_herd_0_0 : i32
+  aie.device(npu2) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    aie.shim_dma_allocation @feedIn(%tile_0_0, MM2S, 0)
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {air.herd_name = "herd_0", link_with = "kernel.o"}
+  } {sym_name = "seg"}
+
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+
+  func.func @ctrl_no_segname(%arg0: memref<64xi32>, %L: i32) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %feed = arith.constant 4 : i32
+    %f0 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %h0 = airrt.herd_load "herd_0" (%L) : (i32) -> i64
+    airrt.wait_all %f0 {"air.launch_end"}
+    %p = airrt.segment_load "seg" : i64
+    return
+  }
+}
+
+// -----
+
+// The marker has to stay a DIRECT child of the sequence: that is what
+// --aie-lower-scratchpad-parameters expands, and it ignores any other, so a
+// marker that drifts into a loop body leaves the arm running on whatever the
+// parameter buffers last held. Nothing about that failure is loud.
+//
+// A herd armed inside a loop is where that can happen, because the emission
+// point is the herd_load. This pins the walk back out to sequence level, and
+// pins that one marker serves the whole loop rather than one per iteration.
+
+// CHECK-LABEL: aie.runtime_sequence @ctrl_looped
+// CHECK:         aiex.sync_scratchpad_parameters_from_host
+// CHECK:         scf.for
+// CHECK-NOT:       aiex.sync_scratchpad_parameters_from_host
+// CHECK:         }
+module {
+  aiex.scratchpad_parameter @__air_param_herd_0_0 : i32
+  aie.device(npu2) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<2xi32>
+    aie.shim_dma_allocation @feedIn(%tile_0_0, MM2S, 0)
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {air.herd_name = "herd_0", link_with = "kernel.o"}
+  } {sym_name = "seg"}
+
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+
+  func.func @ctrl_looped(%arg0: memref<64xi32>, %L: i32, %M: i32) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %feed = arith.constant 4 : i32
+    scf.for %i = %c0 to %c4 step %c1 {
+      %f0 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+      %h0 = airrt.herd_load "herd_0" (%L, %M) {segment_name = "seg"} : (i32, i32) -> i64
+      airrt.wait_all %f0 {"air.launch_end"}
+    }
+    %p = airrt.segment_load "seg" : i64
+    return
+  }
+}
