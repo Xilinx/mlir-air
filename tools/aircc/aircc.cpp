@@ -330,9 +330,9 @@ static cl::opt<bool>
 
 static cl::opt<unsigned> stackSize(
     "stack-size",
-    cl::desc("Stack size in bytes per AIE core (default: 1024). Increase when "
+    cl::desc("Stack size in bytes per AIE core (default: 2048). Increase when "
              "kernels have deep call chains (e.g., scalar fdiv)."),
-    cl::init(1024u), cl::cat(airCompilerOptions));
+    cl::init(2048u), cl::cat(airCompilerOptions));
 
 //===----------------------------------------------------------------------===//
 // Debug IR Support

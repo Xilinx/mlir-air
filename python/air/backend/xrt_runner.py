@@ -82,7 +82,7 @@ class XRTRunner:
         debug_ir: bool = False,
         bf16_emulation: bool = False,
         target_device: str = None,
-        stack_size: int = 1024,
+        stack_size: int = 2048,
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
         perf_flops: float = None,
@@ -114,7 +114,7 @@ class XRTRunner:
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
             target_device: specify target device explicitly ("npu1", "npu2", etc.). If None, will attempt auto-detection.
-            stack_size: stack size in bytes per AIE core (default: 1024). Increase when
+            stack_size: stack size in bytes per AIE core (default: 2048). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
             n_perf_iters: when > 0, time the kernel over this many iterations (after
                 n_warmup_iters warmup runs) and print the average Latency (us). Default

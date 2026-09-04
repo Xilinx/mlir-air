@@ -255,7 +255,7 @@ class XRTBackend(AirBackend):
         debug_ir: bool = False,
         emit_txn_cpp: bool = False,
         bf16_emulation: bool = False,
-        stack_size: int = 1024,
+        stack_size: int = 2048,
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
     ):
@@ -292,7 +292,7 @@ class XRTBackend(AirBackend):
                 frozen insts.bin cannot represent. The path lands on the returned
                 artifact's txn_header.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
-            stack_size: stack size in bytes per AIE core (default: 1024). Increase when
+            stack_size: stack size in bytes per AIE core (default: 2048). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
             n_perf_iters: when > 0, the loaded invoker times the kernel over this many
                 iterations (after n_warmup_iters warmup runs) and stores the average
@@ -574,7 +574,7 @@ class XRTBackend(AirBackend):
             if self.bf16_emulation:
                 aircc_options += ["--bf16-emulation"]
 
-            if self.stack_size != 1024:
+            if self.stack_size != 2048:
                 aircc_options += ["--stack-size", str(self.stack_size)]
 
             if self.verbose:
