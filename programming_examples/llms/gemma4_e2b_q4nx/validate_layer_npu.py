@@ -37,7 +37,10 @@ from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
 _DEC = _HERE / ".." / ".." / "fused_decode_ple"
-BUNDLE = "/home/strixminipc/rocm_fastflowlm/FastFlowLM/models/Gemma4-E2B-IT-NPU2"
+# The model.q4nx bundle: an HF repo id, a directory holding it, or the file
+# itself (gemma4_e2b_q4nx_weights.resolve_q4nx_model). Override with
+# --bundle or Q4NX_MODEL_SOURCE.
+BUNDLE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
 
 
 def _load_fd(uni_dec, attn_maxl, kv_src=None):

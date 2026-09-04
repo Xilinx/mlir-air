@@ -14,15 +14,19 @@
 # layer output is directly comparable to their layer_{L}.
 import argparse
 import json
+import os
 import struct
 from pathlib import Path
 
 import numpy as np
 import torch
 
-FLM = Path("/home/strixminipc/rocm_fastflowlm/FastFlowLM")
-MODEL_DIR = "/home/strixminipc/fastflowlm/models/gemma-4-E2B-it-fp"
-REF = FLM / "FLM_Xclbin/Gemma4/decoding/references/gemma4_e2b_ref.safetensors"
+# Both inputs are LOCAL development artifacts, not published: the full-precision
+# checkpoint FLM's own gen_gemma4_ref.py pins as MODEL_DIR, and FLM's golden
+# activations from an FLM source tree. This script only exists for bisecting
+# INSIDE a layer, so it is never part of a gate; override via the environment.
+MODEL_DIR = os.environ.get("GEMMA4_FP_CHECKPOINT", "")
+REF = os.environ.get("FLM_REFERENCE", "")
 
 
 def ref_input_ids(path):
@@ -41,6 +45,15 @@ def main():
     ap.add_argument("--layers", default="7,8,9")
     ap.add_argument("--out", default="sublayer_ref.npz")
     a = ap.parse_args()
+
+    if not MODEL_DIR or not REF:
+        raise SystemExit(
+            "Set GEMMA4_FP_CHECKPOINT (the full-precision checkpoint FLM's "
+            "gen_gemma4_ref.py pins as MODEL_DIR) and FLM_REFERENCE (their "
+            "golden activations). Both are local FLM development artifacts, "
+            "not published, which is why this script is a bisecting tool "
+            "rather than a gate."
+        )
     want = [int(x) for x in a.layers.split(",")]
 
     from transformers import AutoModelForCausalLM

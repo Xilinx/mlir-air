@@ -1,0 +1,27 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// GEMMA4-E2B Q4NX decode compile-only smoke test: builds the decode template
+// through the AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch and no
+// weight data (weights are runtime BOs), so this is the signal CI can always
+// give without the external Q4NX bundle. Pairs with run_npu2_verify.lit, which
+// is the on-device per-layer correctness gate and does need the weights.
+//
+// This example has no prefill engine, so there is no run_npu2_compile_prefill.lit
+// half to pair with, unlike gemma3_4b_q4nx.
+//
+// Built at the layer gate's ATTN_MAXL=16 rather than a production 2048: this
+// checks that the PLE herds, their packet feed and the shared-L1 residual lower
+// and link, which is size-independent.
+//
+// peano_ge22, not just peano: the repo's pinned llvm-aie (21.0.0) COMPILES this
+// model and then returns all-NaN from every layer. A test gated only on `peano`
+// would go green while building a design that cannot compute anything.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22
+//
+// RUN: mkdir -p test_npu2_compile
+// RUN: cd test_npu2_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PLE decode build complete

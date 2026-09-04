@@ -25,6 +25,7 @@
 # entirely -- reading them with the Codec B path yields garbage, so they have
 # their own reader below.
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -155,12 +156,36 @@ def _gelu_tanh(x):
     )
 
 
-class Q4nxModel:
-    """Reader for FLM's Gemma4-E2B model.q4nx (both codecs)."""
+# The model.q4nx bundle. An HF repo id by default, like every other q4nx
+# example, so nothing here depends on a path that exists on one machine.
+MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
 
-    def __init__(self, path):
-        p = Path(path)
-        self.path = p / "model.q4nx" if p.is_dir() else p
+
+def resolve_q4nx_model(model=None):
+    """Resolve `model` to a local model.q4nx path. `model` may be an HF repo id
+    (contains '/'), a directory containing model.q4nx, or a direct file path."""
+    model = model or MODEL_DEFAULT
+    if os.path.isfile(model):
+        return model
+    if os.path.isdir(model):
+        p = os.path.join(model, "model.q4nx")
+        if os.path.isfile(p):
+            return p
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(model, "model.q4nx")
+
+
+class Q4nxModel:
+    """Reader for FLM's Gemma4-E2B model.q4nx (both codecs).
+
+    `path` is anything resolve_q4nx_model accepts, and defaults to the HF repo
+    id -- so a caller that passes nothing downloads the bundle rather than
+    reading someone's home directory.
+    """
+
+    def __init__(self, path=None):
+        self.path = Path(resolve_q4nx_model(path))
         with open(self.path, "rb") as f:
             n = struct.unpack("<Q", f.read(8))[0]
             self._hdr = json.loads(f.read(n))

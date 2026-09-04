@@ -8,6 +8,7 @@
 # produced fluent, sometimes-correct text while the model was numerically broken.
 # The gate is check_vs_flm_reference.py (`make check`).
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gemma4_e2b_q4nx_weights as W  # noqa: E402
 
-BUNDLE = "/home/strixminipc/rocm_fastflowlm/FastFlowLM/models/Gemma4-E2B-IT-NPU2"
+BUNDLE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
 
 
 def _tok(bundle):
