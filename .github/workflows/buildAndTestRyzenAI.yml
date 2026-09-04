@@ -83,13 +83,12 @@ jobs:
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          # Temp pin: the LLVM 22 nightly (22.0.0.2026081201+046b11f9) miscompiles
-          # xrt/50_multi_launch_attention and xrt/48_triton_matmul_ver4_strix_4x4_bf16_output
-          # on NPU2 (NaN outputs). It also takes out every Qwen LLM example --
-          # llms/qwen25_{0_5b,1_5b,3b} (bf16) fail their top-k gate and
-          # llms/qwen25_3b_q4 (Q4_0) returns NaN logits -- so re-check those four
-          # alongside the two xrt tests before reverting. Revert once fixed upstream.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==21.0.0.2026080601+f4a72c27" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          # Keep in step with the llvm-aie that the pinned mlir-aie itself pins
+          # (its utils/peano-requirements.txt); a mismatch there is not tested
+          # upstream. The earlier 21.x pin worked around what turned out to be
+          # AIR's own core stack size, not a compiler bug -- see
+          # AIRToAIEPass.cpp's stack_size default.
+          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026090201+a36c62b9" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |

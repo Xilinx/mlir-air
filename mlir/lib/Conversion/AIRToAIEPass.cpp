@@ -295,8 +295,10 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto core = tile.getCoreOp();
       if (!core) {
         core = AIE::CoreOp::create(builder, hloc, tile);
-        if (options.stack_size != 1024)
-          core.setStackSize(options.stack_size);
+        // Emit the size unconditionally: the device default is smaller than
+        // the frames Peano now generates, so leaving it absent overflows the
+        // stack into this core's buffers.
+        core.setStackSize(options.stack_size);
         // Persist herd metadata as aie.core attributes so downstream code
         // doesn't need a tileToHerdMap to recover (RFC #1567 Stage C #3).
         // air.herd_local_id stores the per-cell (x, y) within the herd;

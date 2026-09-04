@@ -220,10 +220,10 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           "the memtile DMA. Mutually exclusive with use-lock-race-condition-fix. "
           "Requires upstream to preserve the shared L2 buffer (typically via "
           "`air.no_split` on the alloc).">,
-    Option<"clStackSize", "stack-size", "unsigned", /*default=*/"1024",
+    Option<"clStackSize", "stack-size", "unsigned", /*default=*/"2048",
           "Stack size in bytes to allocate per AIE core. Must be large enough "
           "to hold the full call chain stack depth including callee frames. "
-          "Default is 1024 bytes.">,
+          "Default is 2048 bytes.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
