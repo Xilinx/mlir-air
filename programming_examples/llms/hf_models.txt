@@ -93,3 +93,11 @@ NousResearch/Meta-Llama-3.1-8B
 # example quantizes this checkpoint to Q4_0 on load and `make verify` compares
 # against the same repo in bf16, exactly as the qwen25_7b_q4nx entry does.
 LiquidAI/LFM2-1.2B
+
+# Same Q4NX packaging of Gemma4-E2B (text). Used by llms/gemma4_e2b_q4nx, whose
+# gate is a per-layer numeric check against a numpy reference rather than a
+# top-k comparison against an HF bf16 checkpoint -- so this is listed ALONE, with
+# no reference pair. The bundle also ships tokenizer.json/config.json/
+# chat_template.jinja, so the CPU-reference targets need no second repo either.
+# Ungated, so CI needs no license grant.
+FastFlowLM/Gemma4-E2B-IT-NPU2
