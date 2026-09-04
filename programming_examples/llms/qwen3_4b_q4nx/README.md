@@ -303,21 +303,32 @@ see level 1.
 
 ### Build
 
+Three template families, and they are **not** interchangeable:
+`DECODE_HIDDEN_TAPS=1` widens the BO ABI, so a gate cannot bind a taps template
+and the loop cannot bind a `decode` one.
+
 ```bash
 source ~/air_env.sh
 cd programming_examples/fused_decode
 V="DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=50 UNI_LM=6 W_DUAL_CHAN=1 \
    DECODE_STACK=6080 DECODE_NO_LM_WAVES=0 PYTHON=python"
-OPT="RMS_MEMTILE_REFEED=3 PROJ_WS_NO_SINK=1 PROJ_PP_ONLY=w      Q4K_UNPACK_FMA=1 Q4K_UNPACK_UNROLL=8"
+OPT="RMS_MEMTILE_REFEED=3 PROJ_WS_NO_SINK=1 PROJ_PP_ONLY=w \
+     Q4K_UNPACK_FMA=1 Q4K_UNPACK_UNROLL=8"
 
-# (a) the LOOP's target pair -- taps ABI, two adjacent L for the driver's slope
+# (a) the LOOP's TARGET pair -- taps ABI, two adjacent L for the driver's slope.
+#     No wave table: the pre-pass rides the drafter now, which is what lets this
+#     one be a mode-3 build at all.
 for L in 512 511; do
   env -u DECODE_EXTRA_WAVES $V $OPT DECODE_HIDDEN_TAPS=1 DECODE_MASK_BIDIR=0 \
       ./build_template.sh 8 $L
-  mv -f taps_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50m3wf/
+  mv -f taps_b8_L$L.{xclbin,insts.bin,env} ../llms/qwen3_4b_q4nx/
 done
 
-# (b) the GATE's pair -- `decode` ABI, L161/L162
+# (b) the LOOP's DRAFTER, carrying the 45 pre-pass waves, plus the two extra
+#     instruction streams that dispatch them. One script, ~20 minutes.
+./_build_draft_waves.sh 512 511      # -> ../llms/qwen3_4b_q4nx/_draftw/
+
+# (c) the GATE's pair -- `decode` ABI, L161/L162
 for L in 161 162; do
   env -u DECODE_EXTRA_WAVES $V $OPT ./build_template.sh 8 $L
   mv -f decode_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50wf/
@@ -326,58 +337,76 @@ done
 ./build_template.sh 1 16      # ALWAYS: batch-1 kernels, after any batched build
 ```
 
-The two families are **not** interchangeable: `DECODE_HIDDEN_TAPS=1` widens the
-BO ABI, so the gate cannot bind a taps template and the loop cannot bind a
-`decode` one. `_build_fma.sh` in `fused_decode/` is both loops, already
-written; `_build_w.sh` and `_build_v50w.sh` build the pre-FMA control pair.
+`_build_fma.sh` builds (a) and (c) already; `_build_w.sh` and `_build_v50w.sh`
+build the pre-FMA control pair.
+
+`build_template.sh` writes a `.env` sidecar beside every template recording what
+it was built with. **Keep it with the artifact.** The host does not merely bind
+an xclbin — `DecodeInstsGen` regenerates the instruction stream per position
+from its own geometry, so a `VOCAB_CHUNK_I2=50 / UNI_LM=6` target driven by a
+host that assumed the default 30 returns wrong logits. It shows as acceptance
+collapsing to ~1.05 with `--exactness` at 0, which names nothing; the sidecar is
+what stops that being something you have to remember.
 
 ### Run
 
-```bash
-cd ../llms/qwen3_4b_q4nx
-env -u Q4NX_QWEN3_4B_DECODE_NPZ Q4NX_QWEN3_4B_DECODE_DIR=$PWD/_v50m3wf \
-    VOCAB_CHUNK_I2=50 UNI_LM=6 python dflash_acceptance_device.py \
-    --prompts prompts_gsm8k.json --n 6 --n-tokens 32 --prepass cpu
-```
-
-`--prepass cpu` runs the pre-pass in numpy off the same q4k bytes. It is the
-CONTROL. **Read the `target` row of the step breakdown, not the speedup** — the
-host pre-pass drifts by 10x with machine load while the target moves <1%.
-
-#### The shipping configuration: `--prepass draft`
-
-The pre-pass runs on device AND the target keeps `RMS_MEMTILE_REFEED=3`. The 45
-pre-pass waves ride the **drafter's** template, not the target's — they were
-always the drafter's weights, they read the target's taps out of an X slot the
-host writes either way, and their weights already have their own BO. Putting
-them on the target is what used to force it to mode 0, at a cost of 65 ms a step.
+Stage the three families and run. **No flags are needed** — `--prepass draft` is
+the default and the geometry comes off the sidecars.
 
 ```bash
 cd ../llms/qwen3_4b_q4nx
-# taps_b8_L511,512      <- _v50m3wf     (mode3 + FMA)
-# draft_b8_L511,512     <- _draftw      (the drafter carrying the 45-wave table)
-# _L511_{fc,ctxkv}.insts.bin <- _draftw (built against THAT drafter)
+cp -f _draftw/draft_b8_L51{1,2}.{xclbin,insts.bin,env} .   # drafter + wave table
+cp -f _draftw/_L511_{fc,ctxkv}.insts.bin .                 # its two wave streams
+
 python dflash_acceptance_device.py --prompts prompts_gsm8k.json \
-    --n 8 --n-tokens 32 --prepass draft --exactness \
-    --target-env VOCAB_CHUNK_I2=50 --target-env UNI_LM=6
+    --n 8 --n-tokens 32 --exactness
 ```
 
-`fused_decode/_build_draft_waves.sh` builds the drafter and its two extra
-instruction streams. Measured, 8 gsm8k prompts x 32 tokens, `--exactness` 8/8:
+| file | what it must be |
+|---|---|
+| `taps_b8_L511,512` | the mode-3 + FMA target from (a), **no** wave table |
+| `draft_b8_L511,512` | the drafter from (b), **carrying** the 45-wave table |
+| `_L511_{fc,ctxkv}.insts.bin` | built against **that** drafter, not the target |
 
-| | acc | step ms | target | pre-pass | draft | tok/s |
+### What the default configuration is, and why
+
+The pre-pass runs on device AND the target keeps `RMS_MEMTILE_REFEED=3`, because
+the 45 pre-pass waves ride the **drafter's** template rather than the target's.
+
+They were always the drafter's weights (`wave_specs` takes `fd_draft`), they
+read the target's taps out of an X slot the host writes either way, and
+`wave_specs` already gives them their own weight BO appended after the existing
+args. Putting them on the target is what used to force it to mode 0 — and mode 0
+costs the target 65 ms a step. A drafter built without `HIDDEN_TAPS` has
+`X_SLOTS=1`, so every slot the waves name is free there.
+
+Measured, 8 gsm8k prompts × 32 tokens, `--exactness` 8/8:
+
+| `--prepass` | acc | step ms | target | pre-pass | draft | tok/s |
 |---|---|---|---|---|---|---|
-| mode3 + CPU pre-pass | 3.923 | 220.7 | 104.01 | 74.75 | 41.90 | 17.78 |
-| folded + wave pre-pass | 3.896 | 218.0 | 169.38 | 9.28 | 39.33 | 17.87 |
-| **`--prepass draft`** | **4.000** | **160.5** | 104.30 | 17.10 | 39.06 | **24.92** |
+| `cpu` (control) | 3.923 | 220.7 | 104.01 | 74.75 | 41.90 | 17.78 |
+| `waves` (on the target) | 3.896 | 218.0 | 169.38 | 9.28 | 39.33 | 17.87 |
+| **`draft` (default)** | **4.000** | **160.5** | 104.30 | 17.10 | 39.06 | **24.92** |
 
-against a measured batch-1 baseline of 15.03 tok/s — **1.66x**.
+against a measured batch-1 baseline of 15.03 tok/s (66.6 ms/token) — **1.66×**,
+where the other two are 1.18× and 1.19×.
 
-**`--target-env` is not optional here.** The host does not merely bind the
-xclbin: `DecodeInstsGen` regenerates the instruction stream per position from
-its own geometry, so a `VOCAB_CHUNK_I2=50 / UNI_LM=6` target driven by a host
-that assumed the default 30 returns wrong logits. It shows as acceptance
-collapsing to ~1.05 with `--exactness` at 0, which names nothing.
+The cost of moving them is that `fc` no longer rides a dispatch whose X buffer
+already holds the taps; it takes its own stream with them uploaded, which is
+`th_from_taps` — the path block 0 has always used. `dflash_fc_wave_gate.py`
+prices that at 4.34 ms against 4.15.
+
+The other three modes are controls, each isolating something: `cpu` runs the
+pre-pass in numpy off the same q4k bytes, so a difference against a device mode
+is the wave arithmetic and nothing else; `waves` is the older arrangement;
+`hybrid` is superseded. **For any of them, read the `target` row of the step
+breakdown, not the speedup** — a host pre-pass drifts by 10× with machine load
+while the target moves <1%.
+
+The pre-pass reads 17.10 ms against the 7.06 its two dispatches take on device
+(`fc` 4.34 + `ctxkv` 2.72). The remaining ~10 ms is host-side — the tap upload
+and the numpy assembly of `target_hidden` and `context_kv` — and is the cheapest
+thing left to take.
 
 ### Verify — four levels, cheapest first
 
@@ -447,10 +476,11 @@ weight stream over only five layers — so the arithmetic the FMA saves was
 already hidden while the unroll's code growth is not. `_build_draft_fma.sh`
 reproduces that measurement; do not ship its output.
 
-Where a DFlash step goes now, measured: **target 104 ms (47%), pre-pass 75–87
-(34%), draft 41 (19%).** The target is within ~13 ms of its memory floor, so
-the remaining end-to-end levers are the pre-pass and `accepted` itself — not
-the projection.
+Where a DFlash step goes now, measured on the default configuration: **target
+104 ms (65%), pre-pass 17 (11%), draft 39 (24%)** — 160.5 ms and 24.92 tok/s.
+The target is within ~13 ms of its memory floor, so the remaining end-to-end
+levers are the pre-pass's ~10 ms of host work and `accepted` itself — not the
+projection.
 
 Level 3 was also run against the pre-FMA control for a like-for-like read, and
 the FMA build comes out **slightly better**: mean `corr` 0.9742 vs 0.9720, mean
@@ -563,8 +593,14 @@ on it at argmax 8/8.
 - `qwen3_4b_q4nx_inference.py` — the shipping driver (`FusedDecoder`). Do not
   modify it to run an experiment; subclass it, as `hidden_taps_device.py` does.
 - `dflash_loop.py` — the speculative loop. Needs the target and draft template
-  families at two adjacent L.
+  families at two adjacent L, and the drafter must carry the pre-pass wave
+  table (`--prepass draft`, the default; see §3b).
 - `dflash_acceptance_device.py` — the priced sweep.
+- `dflash_prepass_waves.py` — the pre-pass as waves of a decode template.
+  `WavePrepass` takes whichever decoder carries the table; `draft_decoder_args`
+  puts it on the drafter and `taps_decoder_args` on the target.
+- `fused_decode/_build_draft_waves.sh` — builds the wave-carrying drafter and
+  its two extra instruction streams.
 - `hidden_taps_verify.py` — per-layer hidden states vs an HF bf16 reference.
   The only correctness instrument here that needs no LM head, and it runs its
   two halves as subprocesses (torch and XRT in one process segfaults).
@@ -572,10 +608,12 @@ on it at argmax 8/8.
 - `fused_decode/dump_layer_output.py` — dump one batch-8 dispatch's layer
   output and diff two of them. The cheapest correctness instrument here and the
   one to reach for first; see §1.
+- `dflash_fc_wave_gate.py` — the pre-pass waves against a CPU reference, on
+  whichever template carries them. `--dir`/`--prefix`/`--insts`/`--env` point
+  it at one; it is what gated the drafter-hosted waves.
 - Everything else `dflash_*` is bring-up history kept because
-  `docs/DFlashFeasibility.md` cites it. `dflash_fc_wave_gate.py`,
-  `dflash_phase2_bf16_reference.py` and `dflash_phase2_sweep.py` are referenced
-  by nothing at all, including the doc.
+  `docs/DFlashFeasibility.md` cites it. `dflash_phase2_bf16_reference.py` and
+  `dflash_phase2_sweep.py` are referenced by nothing at all, including the doc.
 - `_`-prefixed files are scratch, and **untracked by convention, not by
   `.gitignore`** — nothing ignores them, so `git add -A` would sweep hundreds of
   them in. Add named files only.

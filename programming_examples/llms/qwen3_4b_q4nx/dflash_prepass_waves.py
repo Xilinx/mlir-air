@@ -460,11 +460,14 @@ def fc_slab_perm(fd_draft):
 def wave_specs(fd_draft):
     """The extra waves, and the compact extra-BO layout they read from.
 
-    THE EXTRA WEIGHTS GET THEIR OWN BO. They are the DRAFTER's, and the pre-pass
-    runs in the TARGET's program, so they cannot ride the target's weight cache.
-    A separate buffer is also the shape `W_SPLIT` already established
-    (fused_decode.py:1893-1904: extra weight buffers are appended AFTER the
-    existing args, so x/w/rms/y/kvc binding positions do not move).
+    THE EXTRA WEIGHTS GET THEIR OWN BO, and that is what makes the waves
+    portable. They are re-quantized against the drafter, so they can ride
+    neither model's weight cache, and a separate buffer is the shape `W_SPLIT`
+    already established (fused_decode.py:1893-1904: extra weight buffers are
+    appended AFTER the existing args, so x/w/rms/y/kvc binding positions do not
+    move). Because nothing about them is tied to the program they sit in, they
+    ride the DRAFTER's template today -- `draft_decoder_args` -- which is what
+    lets the target be a RMS_MEMTILE_REFEED=3 build.
 
     It is packed COMPACTLY -- fc's slab, then only the K/V window of each
     drafter layer -- so it is 36.9 MB rather than the drafter's whole ~300 MB.
@@ -494,9 +497,12 @@ def wave_specs(fd_draft):
     # else.
     #
     # PAST THE TARGET'S SLOTS, not the drafter's. These waves are built from the
-    # drafter's geometry but they run inside the TARGET's program, whose X
-    # buffer has one slot per target layer plus the input; the drafter's five
-    # layers would put target_hidden on top of target layer 5's output.
+    # drafter's geometry but the slot numbering has to clear the TARGET's X
+    # buffer, which has one slot per target layer plus the input; the drafter's
+    # five layers would put target_hidden on top of target layer 5's output.
+    # It stays the target's number now that the waves ride the DRAFTER's
+    # template as well: a drafter built without HIDDEN_TAPS has X_SLOTS=1, so
+    # every slot these waves name is free there, and one numbering serves both.
     th_slot = _target_x_slots()
 
     # fc is FIVE 2560x2560 waves, not one 2560x12800 one -- and that is forced
@@ -866,11 +872,18 @@ class WavePrepass:
     the pre-pass is worth anything: the third program cost 36.5 ms of ELF
     load/unload per block on top of its 82.0 ms of dispatch, at 0.46 GB/s.
 
+    WHOSE PROGRAM. `target` is whatever decoder carries the wave table -- every
+    thing this class touches (batch, K, x_bo, the artifact dir, base_L) is a
+    `FusedDecoder` property, not a target one. The loop's default puts the table
+    on the DRAFTER (`--prepass draft`), which is what lets the target be a
+    RMS_MEMTILE_REFEED=3 build; `--prepass waves` is the older arrangement, on
+    the target, and forces that target to mode 0.
+
     "THE SAME DEVICE PROGRAM" IS TRUE AT MODE 0 AND FALSE AT
     RMS_MEMTILE_REFEED=3, where lowering prunes the relay by range-analysing
     the scf.for bounds and a narrow range produces a DIFFERENT device. Measured
-    2026-09-02; `HybridPrepass` below exists for exactly that and states the
-    two routings. Read it before using this class on a mode-3 target.
+    2026-09-02. That is a constraint on the HOST program only, and the drafter
+    is mode 0, so it does not bind when the waves ride the drafter.
 
     MEASURED, one xclbin, qwen3-4b batch 8 at L=157, median of 7 [hw]:
 
@@ -886,16 +899,21 @@ class WavePrepass:
     more than a third of a speculative step.
 
     fc's marginal cost inside the verify pass (4.15) is HIGHER than its cost
-    alone (3.17), so riding the tail is not free -- it is chosen because the
+    alone (3.17), so riding the tail is not free -- it was chosen because the
     taps are already in the X buffer there, and uploading them for a standalone
-    fc dispatch costs the difference back.
+    fc dispatch costs the difference back. Which is exactly what the drafter
+    arrangement pays: on the drafter's own template the gate measures fc at 4.34
+    ms and the context K/V at 2.72, so 7.06 against 6.65 -- a millisecond, for a
+    target that keeps its relay and is 65 ms faster.
 
     THE ORDER IN A BLOCK IS FORCED, and it is why fc and the context K/V are
     two dispatches rather than one. th = hidden_norm(fc(taps)) and the context
     K/V is a projection OF th, so the two cannot share a dispatch: the sum and
     the norm between them are the host's. And taps for block N+1 come out of
-    block N's verify pass, which is what lets fc ride that pass's tail for free
-    while the context K/V takes a dispatch of its own before the draft.
+    block N's verify pass, which is what let fc ride that pass's tail for free
+    while the context K/V took a dispatch of its own before the draft. On the
+    drafter both take their own, and `th_from_taps` is the entry point for
+    both -- the path block 0 has always used, now used for every block.
     """
 
     def __init__(self, target, insts_dir=None, prefix=None, verbose=True):
@@ -1120,6 +1138,12 @@ def taps_decoder_args(npz=None, waves=None):
 
 class HybridPrepass:
     """WavePrepass for the steady state, CpuPrepass for the ALTERNATE STREAMS.
+
+    SUPERSEDED by `--prepass draft`, which gets a mode-3 target AND a device
+    pre-pass with no compromise at all -- by putting the waves on the drafter
+    instead of trying to make a mode-3 target carry them. Kept as a control: it
+    is the only mode that runs part of the pre-pass on a mode-3 TARGET, so it
+    still says what that costs.
 
     Exists because `UNI_WAVE_LO/HI` does not do what WavePrepass's docstring
     says it does once RMS_MEMTILE_REFEED=3 is on. The claim there -- "the same

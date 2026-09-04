@@ -157,9 +157,26 @@ if [ "${DECODE_DYNSEQ:-0}" = "1" ]; then
   grep -m5 "error:" "$LOG" || tail -5 "$LOG"
   exit 1
 fi
+# WHAT IT WAS BUILT WITH, beside it. The host does not merely bind an xclbin --
+# DecodeInstsGen REGENERATES the instruction stream per position from its own
+# geometry, so a template built at a non-default VOCAB_CHUNK_I2 / UNI_LM driven
+# by a host that assumed the defaults returns wrong logits. That shows as
+# acceptance collapsing with --exactness at 0, which names nothing; it cost
+# three device runs to bisect once. Recording the keys next to the artifact is
+# what lets the loop pick them up instead of the caller having to remember.
+_write_env_sidecar() {
+  : > "$1.env"
+  for k in VOCAB_CHUNK_I2 UNI_LM DECODE_MODEL DECODE_STACK W_DUAL_CHAN            DECODE_NO_LM_WAVES DECODE_HIDDEN_TAPS DECODE_MASK_BIDIR            RMS_MEMTILE_REFEED UNI_WAVE_LO UNI_WAVE_HI; do
+    v=$(eval "printf '%s' \"\${$k-}\"")
+    [ -n "$v" ] && echo "$k=$v" >> "$1.env"
+  done
+  return 0
+}
+
 if [ -f decode.xclbin ] && [ -f decode.insts.bin ]; then
   mv -f decode.xclbin "$OUT.xclbin"
   mv -f decode.insts.bin "$OUT.insts.bin"
+  _write_env_sidecar "$OUT"
   echo "    $OUT.xclbin + $OUT.insts.bin"
 else
   echo "    FAILED -- see $LOG"

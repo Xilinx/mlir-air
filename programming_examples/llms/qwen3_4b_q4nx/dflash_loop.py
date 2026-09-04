@@ -76,7 +76,41 @@ TAP_SLOTS = [lid + 1 for lid in TARGET_LAYER_IDS]  # [2, 10, 18, 26, 34]
 MASK_TOKEN_ID = 151669
 
 
-def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None, env=None):
+def _template_env(d, prefix, keys=("VOCAB_CHUNK_I2", "UNI_LM")):
+    """The geometry keys `prefix`'s templates were built with, off their sidecar.
+
+    Only the ones the HOST re-derives from: the rest of a build's environment is
+    the device's business and the loop sets what it needs explicitly. Silent when
+    there is no sidecar (a template built before build_template.sh wrote them),
+    and loud when two templates of one prefix disagree -- that pair cannot both
+    be right and the loop would bind whichever it scanned first.
+    """
+    out, seen = {}, {}
+    for f in sorted(Path(d).glob(f"{prefix}*.env")):
+        for line in f.read_text().splitlines():
+            k, _, v = line.partition("=")
+            if k not in keys:
+                continue
+            if seen.setdefault(k, (v, f.name))[0] != v:
+                raise RuntimeError(
+                    f"{f.name} says {k}={v} but {seen[k][1]} says "
+                    f"{k}={seen[k][0]}; the templates behind prefix "
+                    f"{prefix!r} are not one build"
+                )
+            out[k] = v
+    return out
+
+
+def _taps_decoder(
+    model,
+    max_L,
+    batch,
+    stack,
+    prefix="taps_b8_L",
+    waves=None,
+    env=None,
+    artifact_dir=None,
+):
     """The target, built with DECODE_HIDDEN_TAPS so a verify dispatch also
     returns every layer boundary.
 
@@ -134,6 +168,11 @@ def _taps_decoder(model, max_L, batch, stack, prefix="taps_b8_L", waves=None, en
     # nothing; measured 2026-09-03 staging the mode-3 target into the loop.
     # The drafter must NOT inherit these (its own build is the default), which
     # is why they go here and not in the process environment.
+    # READ OFF THE ARTIFACT, not from the caller. build_template.sh writes a
+    # `.env` sidecar next to every template it produces, so the host and the
+    # device cannot drift the way a remembered flag can. An explicit `env` still
+    # wins, for a template built before the sidecar existed.
+    _env.update(_template_env(artifact_dir or _HERE, prefix))
     _env.update(env or {})
     _extra_w = None
     if waves is not None:
@@ -187,7 +226,7 @@ class DFlashLoop:
         target_env=None,
         speculate=True,
         verbose=False,
-        prepass="waves",
+        prepass="draft",
     ):
         import gc
 
@@ -496,7 +535,13 @@ def main():
         "one and any difference from --spec is speculation's own.",
     )
     ap.add_argument(
-        "--prepass", choices=("waves", "cpu", "hybrid", "draft"), default="waves"
+        "--prepass",
+        choices=("draft", "waves", "cpu", "hybrid"),
+        default="draft",
+        help="where the pre-pass runs. draft (default) = 45 waves of the "
+        "DRAFTER's template, which leaves the target free to be a mode-3 "
+        "build; waves = the same on the TARGET, which forces it to mode 0; "
+        "cpu/hybrid are controls.",
     )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()

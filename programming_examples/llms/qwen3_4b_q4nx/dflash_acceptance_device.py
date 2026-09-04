@@ -65,17 +65,19 @@ def main():
     ap.add_argument("--target-prefix", default="taps_b8_L")
     ap.add_argument("--draft-prefix", default="draft_b8_L")
     ap.add_argument("--exactness", action="store_true")
-    # A CONTROL for the acceptance number, not a mode anyone should ship.
-    # "cpu" runs the pre-pass in numpy off the same q4k bytes the waves
-    # stream, so a difference between the two runs is the wave arithmetic and
-    # nothing else. See dflash_prepass_waves.CpuPrepass.
-    # "hybrid" keeps fc on the device (it rides the verify pass's tail) and
-    # takes only the two ALTERNATE STREAMS to numpy. That is what makes
-    # RMS_MEMTILE_REFEED=3 usable with the fold: a narrow UNI_WAVE range lowers
-    # to a different device under mode 3, so those streams' insts.bin address
-    # hardware the verify xclbin does not have. See HybridPrepass.
+    # "draft" IS THE SHIPPING MODE: the pre-pass waves ride the DRAFTER's
+    # template, so the target is free to be a RMS_MEMTILE_REFEED=3 build. The
+    # other three are controls, kept because each isolates something.
+    #   waves   the waves on the TARGET, which forces that target to mode 0.
+    #           What "draft" replaced; the comparison is in README section 3b.
+    #   cpu     the pre-pass in numpy off the same q4k bytes the waves stream,
+    #           so a difference between it and a device mode is the wave
+    #           arithmetic and nothing else. See CpuPrepass.
+    #   hybrid  fc on device riding the verify tail, the two alternate streams
+    #           in numpy. It existed to get a mode-3 target and a device fc in
+    #           one run; "draft" gets both without the compromise.
     ap.add_argument(
-        "--prepass", choices=("waves", "cpu", "hybrid", "draft"), default="waves"
+        "--prepass", choices=("draft", "waves", "cpu", "hybrid"), default="draft"
     )
     ap.add_argument("--out", default=None, help="write the raw per-block lengths")
     ap.add_argument("--spec-ms", type=float, default=STEP_MS_SPEC)
@@ -157,7 +159,9 @@ def main():
             # PER-COMPONENT, because the summed step hides the one number a
             # target-side optimization moves. RMS_MEMTILE_REFEED=3 acts on the
             # verify dispatch only; against a CPU pre-pass that dominates the
-            # step, a 20% target win is a 6% step win and reads as noise.
+            # step, a 20% target win is a 6% step win and reads as noise. It is
+            # also what showed the pre-pass is now 17.10 ms against the 7.06 its
+            # two dispatches take on device -- the rest is host-side.
             for _k, _v in _t.items():
                 t_parts[_k] = t_parts.get(_k, 0.0) + _v
         note = ""
