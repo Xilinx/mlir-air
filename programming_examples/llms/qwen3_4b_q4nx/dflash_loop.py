@@ -226,7 +226,7 @@ class DFlashLoop:
         target_env=None,
         speculate=True,
         verbose=False,
-        prepass="draft",
+        prepass="waves",
     ):
         import gc
 
@@ -536,12 +536,13 @@ def main():
     )
     ap.add_argument(
         "--prepass",
-        choices=("draft", "waves", "cpu", "hybrid"),
-        default="draft",
-        help="where the pre-pass runs. draft (default) = 45 waves of the "
-        "DRAFTER's template, which leaves the target free to be a mode-3 "
-        "build; waves = the same on the TARGET, which forces it to mode 0; "
-        "cpu/hybrid are controls.",
+        choices=("waves", "draft", "cpu", "hybrid"),
+        default="waves",
+        help="where the pre-pass runs. waves (default) = 45 waves of the "
+        "TARGET's template, which forces that target to mode 0; draft = the "
+        "same on the DRAFTER's, which frees the target to be a mode-3 build "
+        "and is 1.66x against 1.19x, but hangs the target's dispatch "
+        "intermittently (README 3b); cpu/hybrid are controls.",
     )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()

@@ -65,19 +65,21 @@ def main():
     ap.add_argument("--target-prefix", default="taps_b8_L")
     ap.add_argument("--draft-prefix", default="draft_b8_L")
     ap.add_argument("--exactness", action="store_true")
-    # "draft" IS THE SHIPPING MODE: the pre-pass waves ride the DRAFTER's
-    # template, so the target is free to be a RMS_MEMTILE_REFEED=3 build. The
-    # other three are controls, kept because each isolates something.
-    #   waves   the waves on the TARGET, which forces that target to mode 0.
-    #           What "draft" replaced; the comparison is in README section 3b.
+    #   waves   THE DEFAULT, and the only one proven to run a full sweep
+    #           reliably: the pre-pass waves ride the TARGET's template, which
+    #           forces that target to mode 0.
+    #   draft   the waves on the DRAFTER's template, which frees the target to
+    #           be a RMS_MEMTILE_REFEED=3 build -- 160.5 ms/step against 216.8
+    #           and 1.66x against 1.19x. NOT THE DEFAULT: it hangs the TARGET's
+    #           dispatch intermittently, 2 of 3 full 8-prompt sweeps. See
+    #           README section 3b; the numbers are real, the reliability is not.
     #   cpu     the pre-pass in numpy off the same q4k bytes the waves stream,
     #           so a difference between it and a device mode is the wave
     #           arithmetic and nothing else. See CpuPrepass.
     #   hybrid  fc on device riding the verify tail, the two alternate streams
-    #           in numpy. It existed to get a mode-3 target and a device fc in
-    #           one run; "draft" gets both without the compromise.
+    #           in numpy. A mode-3 target with a device fc, at a compromise.
     ap.add_argument(
-        "--prepass", choices=("draft", "waves", "cpu", "hybrid"), default="draft"
+        "--prepass", choices=("waves", "draft", "cpu", "hybrid"), default="waves"
     )
     ap.add_argument("--out", default=None, help="write the raw per-block lengths")
     ap.add_argument("--spec-ms", type=float, default=STEP_MS_SPEC)

@@ -315,20 +315,23 @@ V="DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=50 UNI_LM=6 W_DUAL_CHAN=1 \
 OPT="RMS_MEMTILE_REFEED=3 PROJ_WS_NO_SINK=1 PROJ_PP_ONLY=w \
      Q4K_UNPACK_FMA=1 Q4K_UNPACK_UNROLL=8"
 
-# (a) the LOOP's TARGET pair -- taps ABI, two adjacent L for the driver's slope.
-#     No wave table: the pre-pass rides the drafter now, which is what lets this
-#     one be a mode-3 build at all.
+# (a) THE DEFAULT loop pair -- taps ABI, folded, CARRYING the wave table, plus
+#     the target's own fc/ctxkv streams. `--prepass waves` binds these.
+./_build_loop_templates_folded.sh 512 511
+
+# (b) the MODE-3 target pair -- the same taps ABI with no wave table, which is
+#     what lets it be a mode-3 build. `--prepass draft` binds these.
 for L in 512 511; do
   env -u DECODE_EXTRA_WAVES $V $OPT DECODE_HIDDEN_TAPS=1 DECODE_MASK_BIDIR=0 \
       ./build_template.sh 8 $L
-  mv -f taps_b8_L$L.{xclbin,insts.bin,env} ../llms/qwen3_4b_q4nx/
+  mv -f taps_b8_L$L.{xclbin,insts.bin,env} ../llms/qwen3_4b_q4nx/_v50m3wf/
 done
 
-# (b) the LOOP's DRAFTER, carrying the 45 pre-pass waves, plus the two extra
-#     instruction streams that dispatch them. One script, ~20 minutes.
+# (c) the DRAFTER carrying the 45 pre-pass waves, plus the two extra instruction
+#     streams that dispatch them. Also `--prepass draft`. One script, ~20 min.
 ./_build_draft_waves.sh 512 511      # -> ../llms/qwen3_4b_q4nx/_draftw/
 
-# (c) the GATE's pair -- `decode` ABI, L161/L162
+# (d) the GATE's pair -- `decode` ABI, L161/L162
 for L in 161 162; do
   env -u DECODE_EXTRA_WAVES $V $OPT ./build_template.sh 8 $L
   mv -f decode_b8_L$L.{xclbin,insts.bin} ../llms/qwen3_4b_q4nx/_v50wf/
@@ -337,7 +340,7 @@ done
 ./build_template.sh 1 16      # ALWAYS: batch-1 kernels, after any batched build
 ```
 
-`_build_fma.sh` builds (a) and (c) already; `_build_w.sh` and `_build_v50w.sh`
+`_build_fma.sh` builds (b) and (d) already; `_build_w.sh` and `_build_v50w.sh`
 build the pre-FMA control pair.
 
 `build_template.sh` writes a `.env` sidecar beside every template recording what
@@ -350,25 +353,73 @@ what stops that being something you have to remember.
 
 ### Run
 
-Stage the three families and run. **No flags are needed** — `--prepass draft` is
-the default and the geometry comes off the sidecars.
+The default is `--prepass waves`: the folded target, the drafter **without** the
+wave table, and `_L511_{fc,ctxkv}.insts.bin` built against the TARGET. No flags
+are needed — the geometry comes off the `.env` sidecars.
 
 ```bash
 cd ../llms/qwen3_4b_q4nx
-cp -f _draftw/draft_b8_L51{1,2}.{xclbin,insts.bin,env} .   # drafter + wave table
-cp -f _draftw/_L511_{fc,ctxkv}.insts.bin .                 # its two wave streams
-
 python dflash_acceptance_device.py --prompts prompts_gsm8k.json \
     --n 8 --n-tokens 32 --exactness
 ```
 
-| file | what it must be |
-|---|---|
-| `taps_b8_L511,512` | the mode-3 + FMA target from (a), **no** wave table |
-| `draft_b8_L511,512` | the drafter from (b), **carrying** the 45-wave table |
-| `_L511_{fc,ctxkv}.insts.bin` | built against **that** drafter, not the target |
+The faster arrangement is `--prepass draft`, which needs the mode-3 target and
+the wave-carrying drafter staged instead. It is **not the default because it
+does not finish reliably** — the next section has both the numbers and the
+staging.
 
-### What the default configuration is, and why
+**The two stagings are not mixable.** A `_L511_fc.insts.bin` built against one
+template and dispatched against the other is a wrong answer, not an error.
+
+### The pre-pass modes, and which one to run
+
+`--prepass waves` is the **default** and the only one proven to run a full sweep
+reliably. `--prepass draft` is **35% faster and does not yet finish reliably** —
+read this whole section before using it.
+
+Measured `[hw]`, 8 gsm8k prompts × 32 tokens, `--exactness` 8/8 in every row
+that finished:
+
+| `--prepass` | acc | step ms | target | pre-pass | draft | tok/s | full sweeps completed |
+|---|---|---|---|---|---|---|---|
+| `waves` (default, on the target) | 3.896 | 216.8 / 223.4 | 169.4 | 8.8 | 38.9 | 17.9 / 17.4 | **3 of 3** |
+| `draft` (on the drafter) | 4.000 | 160.5 | 104.3 | 17.1 | 39.1 | **24.9** | **1 of 3** |
+| `cpu` (host numpy, control) | 3.923 | 220.7 | 104.0 | 74.8 | 41.9 | 17.8 | — |
+
+`waves` was run twice at 8 prompts and once at 3, all clean, with the step at
+216.8 and 223.4 ms — so read it as ~220 ± 3%. Baseline, re-measured on this
+machine, three runs of `qwen3_4b_q4nx_inference.py --n-tokens 32`:
+**15.04 / 15.09 / 15.09 tok/s (66.2–66.5 ms/token)**. So `waves` is **1.16–1.19×**
+and `draft` is **1.66×** — *when it finishes*.
+
+**Do not use the `SPEEDUP` line the acceptance script prints.** It divides by a
+hard-coded `STEP_MS_BASE = 56.9` ms/token that is not this machine's; the real
+baseline is 66.3.
+
+**`draft` hangs intermittently, and it is the TARGET's dispatch that hangs.**
+Two of three full 8-prompt sweeps died with
+`decode dispatch pos<N> state=ERT_CMD_STATE_TIMEOUT`, at pos131 of prompt 2 and
+pos65 of prompt 6 — no positional pattern, and the timeout is 60 s against a
+104 ms dispatch, so it is a hang and not a tight limit. Everything it produces
+before dying is correct: every completed prompt reproduces the non-speculative
+stream 32/32.
+
+Three controls locate it, and rule out the obvious suspects:
+
+| control | result |
+|---|---|
+| `waves` (config B), same sweep | 8/8, no timeout — so it is not the machine or the harness |
+| wave-carrying drafter, `--prepass cpu` (`DFLASH_DRAFT_WAVES=1`) | 8/8, no timeout — so it is **not the drafter binary**, its 6-BO ABI, or its 36.9 MB extra weight BO |
+| the pre-pass arithmetic itself | `dflash_fc_wave_gate.py` cos 0.9998 on all six projections; `WavePrepass` vs `CpuPrepass` cos 0.9998 on `target_hidden`, `k_ctx`, `v_ctx` |
+
+So the trigger is **dispatching the `fc`/`ctxkv` instruction streams on the
+drafter's hardware context, interleaved with the target's dispatches** — not the
+waves, not the binary, not the arithmetic. That is where to look next; the
+per-block order is now `ctxkv`(drafter), `draft`(drafter), verify(target),
+`fc`(drafter), where it used to be `ctxkv`(target), `draft`(drafter),
+verify+`fc`(target).
+
+### What `draft` is, and why it is worth fixing
 
 The pre-pass runs on device AND the target keeps `RMS_MEMTILE_REFEED=3`, because
 the 45 pre-pass waves ride the **drafter's** template rather than the target's.
@@ -376,37 +427,41 @@ the 45 pre-pass waves ride the **drafter's** template rather than the target's.
 They were always the drafter's weights (`wave_specs` takes `fd_draft`), they
 read the target's taps out of an X slot the host writes either way, and
 `wave_specs` already gives them their own weight BO appended after the existing
-args. Putting them on the target is what used to force it to mode 0 — and mode 0
-costs the target 65 ms a step. A drafter built without `HIDDEN_TAPS` has
-`X_SLOTS=1`, so every slot the waves name is free there.
-
-Measured, 8 gsm8k prompts × 32 tokens, `--exactness` 8/8:
-
-| `--prepass` | acc | step ms | target | pre-pass | draft | tok/s |
-|---|---|---|---|---|---|---|
-| `cpu` (control) | 3.923 | 220.7 | 104.01 | 74.75 | 41.90 | 17.78 |
-| `waves` (on the target) | 3.896 | 218.0 | 169.38 | 9.28 | 39.33 | 17.87 |
-| **`draft` (default)** | **4.000** | **160.5** | 104.30 | 17.10 | 39.06 | **24.92** |
-
-against a measured batch-1 baseline of 15.03 tok/s (66.6 ms/token) — **1.66×**,
-where the other two are 1.18× and 1.19×.
+args. Putting them on the target is what forces it to mode 0 — and mode 0 costs
+the target 65 ms a step. A drafter built without `HIDDEN_TAPS` has `X_SLOTS=1`,
+so every slot the waves name is free there.
 
 The cost of moving them is that `fc` no longer rides a dispatch whose X buffer
 already holds the taps; it takes its own stream with them uploaded, which is
 `th_from_taps` — the path block 0 has always used. `dflash_fc_wave_gate.py`
 prices that at 4.34 ms against 4.15.
 
-The other three modes are controls, each isolating something: `cpu` runs the
-pre-pass in numpy off the same q4k bytes, so a difference against a device mode
-is the wave arithmetic and nothing else; `waves` is the older arrangement;
-`hybrid` is superseded. **For any of them, read the `target` row of the step
-breakdown, not the speedup** — a host pre-pass drifts by 10× with machine load
-while the target moves <1%.
+To run it, stage the drafter build and pass the flag:
+
+```bash
+cp -f _draftw/draft_b8_L51{1,2}.{xclbin,insts.bin,env} .
+cp -f _draftw/_L511_{fc,ctxkv}.insts.bin .
+cp -f _v50m3wf/taps_b8_L51{1,2}.{xclbin,insts.bin,env} .   # the mode-3 target
+python dflash_acceptance_device.py --prompts prompts_gsm8k.json \
+    --n 8 --n-tokens 32 --exactness --prepass draft
+```
+
+`--prepass waves` needs the other staging: the folded target and the drafter
+**without** the wave table, with `_L511_{fc,ctxkv}.insts.bin` built against the
+TARGET. The two sets are not mixable — a `_L511_fc.insts.bin` built against one
+template dispatched against the other is a wrong answer, not an error.
+
+**Reading the timings.** The reported step is the sum of three timers, and the
+drafter's KV-cache write and the argmax over 8 × 151936 logits sit outside all
+three. `_wallclock_gate.py` measures tokens committed over wall clock instead:
+on the two prompts it completed it read 28.16 and 23.69 tok/s against a summed
+step implying 24.92, so the summed figure is sound to a few percent. **For any
+mode, read the `target` row of the breakdown, not the speedup** — a host
+pre-pass drifts by 10× with machine load while the target moves <1%.
 
 The pre-pass reads 17.10 ms against the 7.06 its two dispatches take on device
 (`fc` 4.34 + `ctxkv` 2.72). The remaining ~10 ms is host-side — the tap upload
-and the numpy assembly of `target_hidden` and `context_kv` — and is the cheapest
-thing left to take.
+and the numpy assembly of `target_hidden` and `context_kv`.
 
 ### Verify — four levels, cheapest first
 
