@@ -955,6 +955,20 @@ def _dynseq_knob(name, default):
 # block loop stays a compile-time ATTN_ROUNDS and the far blocks are skipped by
 # masking (DYNSEQ_TRIP off) -- which is what the shipping xclbin design already
 # does, and it keeps the shim's push count fixed and agreeing with the cores.
+# The overrides only narrow what DECODE_DYNSEQ turned on; they cannot turn it
+# on. DYNSEQ is what appends the context length as a trailing scalar operand,
+# so with it off there is no operand for these paths to read -- L_rt and
+# _seg_L are None and the first arithmetic on one raises deep inside codegen,
+# a long way from the environment variable that caused it. Fail here instead.
+if not DYNSEQ:
+    for _k in ("RB", "APPEND", "RTP", "MEM", "TRIP"):
+        if _dynseq_knob("DECODE_DYNSEQ_" + _k, False):
+            raise SystemExit(
+                f"DECODE_DYNSEQ_{_k}=1 needs DECODE_DYNSEQ=1: the context length "
+                "is only a runtime operand when DYNSEQ is on, and these knobs "
+                "select which parts of the sequence follow it."
+            )
+
 DYNSEQ_RB = _dynseq_knob("DECODE_DYNSEQ_RB", DYNSEQ_RB)
 DYNSEQ_APPEND = _dynseq_knob("DECODE_DYNSEQ_APPEND", DYNSEQ_APPEND)
 DYNSEQ_RTP = _dynseq_knob("DECODE_DYNSEQ_RTP", DYNSEQ_RTP)
@@ -3909,13 +3923,21 @@ def build_module():
                                     _reblock_dec()
 
                                 def _core_rounds(Lh):
-                                    """ceil(Lh/16) as a core-side loop bound.
+                                    """The core-side attention loop bound.
 
-                                    Lh is the RTP-L herd block-arg, so this is opaque to
-                                    folding and survives to core codegen as a real runtime
-                                    trip count -- the same count the shim's readback BD
-                                    pushes, which is what keeps the core off a channel get
-                                    that never arrives.
+                                    With DYNSEQ_TRIP this is ceil(Lh/16) built from the
+                                    RTP-L herd block-arg, so it is opaque to folding and
+                                    survives to core codegen as a real runtime trip count
+                                    -- the same count the shim's readback BD pushes, which
+                                    is what keeps the core off a channel get that never
+                                    arrives.
+
+                                    Without it the bound is the compile-time ATTN_ROUNDS
+                                    and the far blocks are skipped by masking instead. A
+                                    static TXN binary (--output-format=elf) has no
+                                    representation for a runtime trip count, so that is
+                                    the only form the full-ELF path can build; the shim's
+                                    push count is then fixed and agrees by construction.
                                     """
                                     if not DYNSEQ_TRIP:
                                         return idx(ATTN_ROUNDS)
@@ -5240,10 +5262,10 @@ def run():
         f"8 cascade pairs, NPH={NPH} dests={DEMUX}"
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
-    print(
-        f"[q4nx_decode] emitted {art.output_binary} + {art.insts} "
-        f"(kernel {art.kernel!r})"
-    )
+    # An ELF embeds its instruction stream, so no insts.bin is written and
+    # naming one here would send a reader looking for a file that is not there.
+    _insts = f" + {art.insts}" if out_fmt != "elf" else ""
+    print(f"[q4nx_decode] emitted {art.output_binary}{_insts} (kernel {art.kernel!r})")
     return 0
 
 
