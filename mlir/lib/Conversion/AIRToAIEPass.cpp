@@ -295,10 +295,6 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto core = tile.getCoreOp();
       if (!core) {
         core = AIE::CoreOp::create(builder, hloc, tile);
-        // Emit the size unconditionally: the device default is smaller than
-        // the frames Peano now generates, so leaving it absent overflows the
-        // stack into this core's buffers.
-        core.setStackSize(options.stack_size);
         // Persist herd metadata as aie.core attributes so downstream code
         // doesn't need a tileToHerdMap to recover (RFC #1567 Stage C #3).
         // air.herd_local_id stores the per-cell (x, y) within the herd;
@@ -315,6 +311,13 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }
+
+      // Size every core this pass touches, not just the ones it creates: the
+      // device default is smaller than the frames Peano now generates, so
+      // leaving it absent overflows the stack into this core's buffers. A
+      // size already on the core was chosen deliberately, so it wins.
+      if (!core.getStackSizeAttr())
+        core.setStackSize(options.stack_size);
 
       // Collect IDs from all parent hierarchy ops (Launch, Segment, etc.).
       // These values become compile-time constants and don't need RTP slots.
