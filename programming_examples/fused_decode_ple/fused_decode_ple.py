@@ -1459,6 +1459,19 @@ assert UNI_LM == N_VOCAB_CHUNKS, (
     f"UNI_LM={UNI_LM} must equal N_VOCAB_CHUNKS={N_VOCAB_CHUNKS} "
     f"(VOCAB_CHUNK_I2={VOCAB_I2}); their product covers the padded vocab"
 )
+# Which decode wave's KV slab each wave READS, for models whose later layers
+# share a lower layer's cache instead of projecting k/v. Only the readback moves;
+# the append stays on the wave's own slab, which nothing else reads. Empty (every
+# model's default) means "read your own" and emits byte-identical IR.
+KV_SRC = [int(t) for t in _os.environ.get("DECODE_KV_SRC", "").split(",") if t != ""]
+assert not KV_SRC or (
+    len(KV_SRC) == UNI_DEC and all(0 <= s <= i for i, s in enumerate(KV_SRC))
+), (
+    f"DECODE_KV_SRC must name one source slab per decode wave (UNI_DEC="
+    f"{UNI_DEC}), and a wave can only read a slab at or before its own: {KV_SRC}"
+)
+if KV_SRC == list(range(UNI_DEC)):
+    KV_SRC = []  # identity: keep the pre-existing offset expression verbatim
 UNI_WAVES = UNI_DEC + UNI_LM
 # ATTN_LAYERS indexes DECODE waves, and the unified sequence continues past them
 # into UNI_LM lm-head waves. A SHORT bisect build (DECODE_UNI_DEC below the
@@ -2717,7 +2730,22 @@ def build_module():
                         _wbase = arith.muli(arith.subi(a_iv, _goff), idx(W_LAYER))
                     _rbase = _lb(RMS_LAYER)  # rms weights slab for this layer
                     _pbase = _lb(PLE_LAYER) if PLE else None  # PLE slab
-                    _kbase = _lb(KV_LAYER)  # KV cache slab for this layer
+                    _kbase = _lb(KV_LAYER)  # KV cache slab this layer APPENDS to
+                    # ...and the one it READS. Same thing unless the layer shares
+                    # another's cache. Spelled as a select chain over the wave
+                    # index because airrt-to-npu's post-unroll fold set carries
+                    # cmpi/select/addi/subi/muli and nothing else -- an unfolded
+                    # switch here cannot parent aiex.dma_configure_task_for (the
+                    # same constraint the W_SPLIT group base is written around).
+                    _kbase_rd = _kbase
+                    if KV_SRC and a_iv is not None:
+                        _kbase_rd = idx(KV_SRC[-1] * KV_LAYER)
+                        for _w in range(UNI_DEC - 2, -1, -1):
+                            _kbase_rd = arith.select(
+                                arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_w)),
+                                idx(KV_SRC[_w] * KV_LAYER),
+                                _kbase_rd,
+                            )
                     _ybase = _lb(Y_LAYER)  # Y (host-drain) region for this layer
                     if UNIFIED:
                         _u1 = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
@@ -3268,7 +3296,7 @@ def build_module():
                                     )
                                     return
 
-                            def _emit_readback(_kbase=_kbase):
+                            def _emit_readback(_kbase=_kbase_rd):
                                 # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                                 # separate per-block puts). The whole per-CU cache
                                 # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
