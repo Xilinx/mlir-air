@@ -1199,6 +1199,19 @@ PLE_OUT_CHUNKS = int(_os.environ.get("DECODE_PLE_OUT_CHUNKS", "1"))
 # re-derived, not because it is a candidate.
 PLE_DRAIN_FIRST = PLE and int(_os.environ.get("DECODE_PLE_DRAIN_FIRST", "0"))
 PLE_W_ONESHOT = PLE and int(_os.environ.get("DECODE_PLE_W_ONESHOT", "0"))
+# DIAGNOSTIC (DECODE_PLE_W_ONLY=gate|proj|up|none): feed only that destination's
+# weight run, dropping the others at BOTH ends. Numerically wrong -- the unfed
+# cores mac against uninitialised buffers -- but every other structure is
+# untouched. Bisect rung 5 (no feed at all) is 40/40 and the full design is
+# 32/40, so the feed is the trigger; this splits that three-way lump.
+PLE_W_ONLY = _os.environ.get("DECODE_PLE_W_ONLY", "") if PLE else ""
+
+
+def _w_fed(dest_name):
+    """Comma-separated list, so destination COUNT can be swept, not just which."""
+    return (not PLE_W_ONLY) or dest_name in PLE_W_ONLY.split(",")
+
+
 PLI_D = MODEL.get("PLE_DIM", 0)  # 256; name matches the kernel header
 if PLE:
     # bf16 (non-q4) projection tiling, from models/gemma4-e2b.h. One weight
@@ -1645,7 +1658,34 @@ if PLE:
     # effects are confounded; either way the shared port is not the fault.
     # Kept as a knob so the negative is not re-derived, not as a candidate.
     PLE_UP_COL = int(_os.environ.get("DECODE_PLE_UP_COL", "3"))
-    PLE_UP_LOC = (PLE_UP_COL, 4 if PLE_UP_COL == 3 else 2)
+    # Row of the up core, and 5 rather than 4 is a FIX, not a preference.
+    #
+    # The vocab logits drain used to stall on about one dispatch in four, with
+    # the decode arm already finished -- X written back and KV appended -- and
+    # DECODE_NO_PLE=1 clean. DECODE_PLE_W_ONLY bisects it to the @pleW feed and
+    # then to one destination: feeding the gate alone is 40/40, gate+proj is
+    # 40/40, and all three together is 27/40. The up core is the only
+    # destination whose packets traverse the other two PLE tiles' switches on
+    # the way north, and moving it one row clear of them settles it:
+    #
+    #   up at (3,4)   ud=1 32/40    ud=2 11/12    ud=3 10/12
+    #   up at (3,5)   ud=1 80/80    ud=2 20/20    ud=3 20/20
+    #
+    # Numerically identical -- all six swept layers score the same cosine to
+    # six places either way -- so this buys liveness and costs nothing.
+    #
+    # It is a ROUTING effect, not a scheduling one. Everything about when the up
+    # core runs or how its feed is paced was measured and does not matter:
+    # DECODE_PLE_UP_W_FIRST (draining its weights before it blocks on @gateOut)
+    # is 27/40, DECODE_PLE_UP_CHAN (its own AIR channel) is 29/40,
+    # DECODE_PLE_W_ONESHOT (144 shim tasks down to 3) does not move it, and a
+    # -DPLE_STUB_MAC build that keeps every channel but makes the macs return
+    # immediately is 15/20. See also the note on UP_COL below: column 5 is 0/40
+    # and is a different fault again.
+    PLE_UP_ROW = int(
+        _os.environ.get("DECODE_PLE_UP_ROW", "5" if PLE_UP_COL == 3 else "2")
+    )
+    PLE_UP_LOC = (PLE_UP_COL, PLE_UP_ROW)
     PLE_RELAY_PCOL = 3
     _ATTN_COLS_USED = {_l[0] for _l in ATTN_CU_LOC}
     for _nm, _loc in (
@@ -2974,11 +3014,12 @@ def build_module():
                                         sizes=[idx(K)],
                                         strides=[idx(1)],
                                     )
-                                    _pw(
-                                        PLE_DEST_PROJ,
-                                        PLE_NBLK_DOWN,
-                                        PLE_NBLK_DOWN,
-                                    )
+                                    if _w_fed("proj"):
+                                        _pw(
+                                            PLE_DEST_PROJ,
+                                            PLE_NBLK_DOWN,
+                                            PLE_NBLK_DOWN,
+                                        )
                                     for _o in (PLE_EMB_OFF, PLE_NORMW_OFF):
                                         ChannelPut(
                                             "pleX",
@@ -3013,17 +3054,19 @@ def build_module():
                                     # dest 0 (gate): its own weights, then the
                                     # UP core's norm weight and scale, which this
                                     # core forwards in the @gateOut bundle.
-                                    _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
+                                    if _w_fed("gate"):
+                                        _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
 
                                 def _feed_up():
                                     # dest 2 (up): ONE uniform block size, and
                                     # nothing else. The norm weight and scale
                                     # ride the gate's stream now -- see there.
-                                    _pw(
-                                        PLE_DEST_UP,
-                                        2 * PLE_NBLK_DOWN,
-                                        PLE_NBLK_UP,
-                                    )
+                                    if _w_fed("up"):
+                                        _pw(
+                                            PLE_DEST_UP,
+                                            2 * PLE_NBLK_DOWN,
+                                            PLE_NBLK_UP,
+                                        )
                                     if not PLE_SHARED_RES:
                                         _pput(
                                             PLE_DEST_UP,
@@ -5339,9 +5382,12 @@ def build_module():
                                 CallOp(ple_zero, [acc])
                                 for _j in for_(idx(0), idx(K // PLE_K_BLK), idx(1)):
                                     wb = AllocOp(pleblk_l1, [], [])
-                                    ChannelGet(
-                                        "pleW", wb, indices=[idx(0), idx(w_dest)]
-                                    )
+                                    if _w_fed(
+                                        "gate" if w_dest == PLE_DEST_GATE else "proj"
+                                    ):
+                                        ChannelGet(
+                                            "pleW", wb, indices=[idx(0), idx(w_dest)]
+                                        )
                                     CallOp(
                                         ple_mac_down,
                                         [acc, wb, x, arith.index_cast(T.i32(), _j)],
@@ -5623,6 +5669,8 @@ def build_module():
                                     return
 
                                 def _upw(buf):
+                                    if not _w_fed("up"):
+                                        return
                                     """This core's weight stream.
 
                                     Its own channel under PLE_UP_CHAN, otherwise
