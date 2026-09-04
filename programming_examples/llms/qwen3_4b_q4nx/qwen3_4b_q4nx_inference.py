@@ -560,7 +560,7 @@ class FusedDecoder:
             ib.write(insts, 0)
             ib.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
             cache[key] = ib
-        st = self.kern(
+        _kargs = (
             3,
             cache[key],
             insts.size,
@@ -571,7 +571,20 @@ class FusedDecoder:
             self.kvc,
             *(self.w_bos[1:] if self._wsplit else ()),
             *((self.e_bo,) if self.e_bo is not None else ()),
-        ).wait(timeout)
+        )
+        # Same lost-submission recovery as `dispatch` -- see `_wait_dispatch`.
+        # Never observed on an alternate stream, but it is the same command path
+        # and the same driver, and losing one here kills a run just as dead.
+        _poll = int(os.environ.get("DFLASH_DISPATCH_POLL", "1"))
+        _retries = int(os.environ.get("DFLASH_DISPATCH_RETRY", "2"))
+        st = self._wait_dispatch(self.kern(*_kargs), timeout, _poll, "alternate stream")
+        for _i in range(_retries):
+            if str(st).endswith("COMPLETED"):
+                break
+            st = self._wait_dispatch(
+                self.kern(*_kargs), timeout, _poll, "alternate stream"
+            )
+            print(f"[retry] alternate stream attempt {_i + 1}: {st}", flush=True)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"alternate-stream dispatch state={st}")
         return st
@@ -636,6 +649,58 @@ class FusedDecoder:
             ]
         ).astype(self.bf16)
 
+    @staticmethod
+    def _wait_dispatch(run, timeout_ms, poll_ms, what):
+        """Wait for one dispatch, watching `run.state()` rather than blocking in `wait`.
+
+        A DECODE DISPATCH ON THIS MACHINE IS INTERMITTENTLY NEVER SUBMITTED.
+        Eleven of ~5600 batch-8 target dispatches -- 0.2%, and six of them in one
+        sweep -- did this, every one with the identical trajectory:
+
+            [('ERT_CMD_STATE_NEW', 0.0), ('ERT_CMD_STATE_TIMEOUT', 7.006)]
+
+        NEW at t=0 and NEW until the driver's own ~7 s command timeout fires. It
+        never reaches QUEUED, SUBMITTED or RUNNING, so it never touches the
+        device: the KV cache the dispatch would have appended to is untouched,
+        and re-issuing the identical command is exact rather than merely likely.
+        That is not an inference -- `--exactness` reproduces the non-speculative
+        stream 192/192 on every prompt that took a re-issue.
+
+        Two consequences shape this function:
+
+        - SPIN ON state(), DO NOT CHUNK wait(). `wait(250)` does not come back in
+          250 ms on a lost command; it blocks the driver's full ~7 s. So a
+          chunked wait can neither sample the trajectory nor detect the fault
+          sooner than one long wait, and `wait(60000)` costs a full minute per
+          fault. Spinning on the non-blocking `state()` costs nothing measurable
+          -- 103.97 ms per verify block against 103.06 without it.
+        - NEVER wait() ON A LOST COMMAND. `state()` already returned the driver's
+          verdict; calling `wait` after it re-pays the same 7 s.
+
+        pyxrt exposes no `abort`, so the lost command cannot be cancelled. It
+        does not need to be: the driver has already given up on it.
+        """
+        if not poll_ms:
+            return run.wait(timeout_ms)
+        import time as _time
+
+        t0 = _time.time()
+        traj, done = [], False
+        while (_time.time() - t0) * 1e3 < timeout_ms:
+            s = str(run.state()).rsplit(".", 1)[-1]
+            if not traj or traj[-1][0] != s:
+                traj.append((s, round(_time.time() - t0, 3)))
+            if s == "ERT_CMD_STATE_COMPLETED":
+                done = True
+                break
+            if s in ("ERT_CMD_STATE_TIMEOUT", "ERT_CMD_STATE_ERROR"):
+                break  # the driver has abandoned it; waiting cannot help
+            _time.sleep(0.001)
+        if done:
+            return run.wait(timeout_ms)  # returns at once; lets XRT finalize
+        print(f"[poll] {what} lost after {_time.time() - t0:.3f}s, {traj}", flush=True)
+        return run.state()
+
     def dispatch(self, tok, p):
         """One decode step at L=p+1: patch insts for L, write x0/rope, dispatch (36 layers +
         lm-head), return logits. Appends the new token's K/V at slot p on-device.
@@ -677,7 +742,7 @@ class FusedDecoder:
         self.r_bo.sync(TO, rope.size * 2, self._rope_base * 2)
         self.x_bo.write(x0.view(np.int16), 0)
         self.x_bo.sync(TO)
-        st = self.kern(
+        _kargs = (
             3,
             self.ib,
             insts_size,
@@ -689,7 +754,37 @@ class FusedDecoder:
             *(self.w_bos[1:] if self._wsplit else ()),
             *((self.e_bo,) if self.e_bo is not None else ()),
             *_dyn.dispatch_args(self.gen, L),
-        ).wait(60000)
+        )
+        # RE-ISSUE A DISPATCH THE DRIVER NEVER SUBMITTED. See `_wait_dispatch`
+        # for the measurement; the short version is that ~0.2% of batch-8
+        # dispatches sit in ERT_CMD_STATE_NEW until a ~7 s driver timeout, never
+        # reach the device, and complete on the first re-issue in ~2.1 s. Before
+        # this, one such dispatch killed the whole run with
+        # `decode dispatch pos<N> state=ERT_CMD_STATE_TIMEOUT`.
+        #
+        # The three env vars only turn parts of it OFF, for measuring it:
+        #   DFLASH_DISPATCH_POLL=0    block in wait() instead of spinning, which
+        #                             costs the driver's full timeout per fault
+        #   DFLASH_DISPATCH_RETRY=0   do not re-issue -- fail as it used to
+        #   DFLASH_DISPATCH_TIMEOUT   ms before a dispatch is called lost
+        _to = int(os.environ.get("DFLASH_DISPATCH_TIMEOUT", "60000"))
+        _poll = int(os.environ.get("DFLASH_DISPATCH_POLL", "1"))
+        _retries = int(os.environ.get("DFLASH_DISPATCH_RETRY", "2"))
+        st = self._wait_dispatch(self.kern(*_kargs), _to, _poll, f"pos{p}")
+        if _retries and not str(st).endswith("COMPLETED"):
+            import time as _time
+
+            for _i in range(_retries):
+                _t0 = _time.time()
+                _st2 = self._wait_dispatch(self.kern(*_kargs), _to, _poll, f"pos{p}")
+                print(
+                    f"[retry] pos{p} attempt {_i + 1}: {st} -> {_st2} in "
+                    f"{_time.time() - _t0:.3f}s",
+                    flush=True,
+                )
+                st = _st2
+                if str(st).endswith("COMPLETED"):
+                    break
         _voc_n = self.UNI_LM * self.VP * B
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)
         # Zero-copy view into the BO (the shared infra's readback idiom): bo.read()

@@ -65,21 +65,20 @@ def main():
     ap.add_argument("--target-prefix", default="taps_b8_L")
     ap.add_argument("--draft-prefix", default="draft_b8_L")
     ap.add_argument("--exactness", action="store_true")
-    #   waves   THE DEFAULT, and the only one proven to run a full sweep
-    #           reliably: the pre-pass waves ride the TARGET's template, which
-    #           forces that target to mode 0.
-    #   draft   the waves on the DRAFTER's template, which frees the target to
-    #           be a RMS_MEMTILE_REFEED=3 build -- 160.5 ms/step against 216.8
-    #           and 1.66x against 1.19x. NOT THE DEFAULT: it hangs the TARGET's
-    #           dispatch intermittently, 2 of 3 full 8-prompt sweeps. See
-    #           README section 3b; the numbers are real, the reliability is not.
+    #   draft   THE DEFAULT: the pre-pass waves ride the DRAFTER's template,
+    #           which frees the target to be a RMS_MEMTILE_REFEED=3 build --
+    #           155-164 ms/step against 218, and 1.62x against 1.19x.
+    #   waves   the waves on the TARGET's template, which forces that target to
+    #           mode 0. Slower, and the only arrangement that has never lost a
+    #           dispatch: see "The dispatch the driver never submits" in README
+    #           section 3b before reading anything into that.
     #   cpu     the pre-pass in numpy off the same q4k bytes the waves stream,
     #           so a difference between it and a device mode is the wave
     #           arithmetic and nothing else. See CpuPrepass.
     #   hybrid  fc on device riding the verify tail, the two alternate streams
     #           in numpy. A mode-3 target with a device fc, at a compromise.
     ap.add_argument(
-        "--prepass", choices=("waves", "draft", "cpu", "hybrid"), default="waves"
+        "--prepass", choices=("waves", "draft", "cpu", "hybrid"), default="draft"
     )
     ap.add_argument("--out", default=None, help="write the raw per-block lengths")
     ap.add_argument("--spec-ms", type=float, default=STEP_MS_SPEC)

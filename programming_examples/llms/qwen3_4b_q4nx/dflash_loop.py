@@ -226,7 +226,7 @@ class DFlashLoop:
         target_env=None,
         speculate=True,
         verbose=False,
-        prepass="waves",
+        prepass="draft",
     ):
         import gc
 
@@ -435,7 +435,29 @@ class DFlashLoop:
                     blk[j] = int(dl[j].argmax())
 
             t0 = time.time()
-            y = np.asarray(self.target.dispatch(blk, start), np.float32)
+            try:
+                y = np.asarray(self.target.dispatch(blk, start), np.float32)
+            except RuntimeError as e:
+                # Only reached if EVERY re-issue was lost too -- the ordinary
+                # lost submission is recovered inside `dispatch` (see
+                # `FusedDecoder._wait_dispatch`). That would be a different
+                # fault, so say which: the drafter's own alternate stream
+                # touches nothing but the drafter's X buffer, and whether it
+                # still runs separates a wedged device from a wedged target.
+                probe = "not run"
+                if speculate and self._prepass_mode == "draft":
+                    try:
+                        self.prepass._dispatch("ctxkv")
+                        probe = "drafter ALIVE"
+                    except Exception as pe:  # noqa: BLE001 -- reporting only
+                        probe = f"drafter DEAD too: {pe}"
+                print(
+                    f"[loop] target dispatch failed at pos {start}, block "
+                    f"{len(acc_lens)}, prepass={self._prepass_mode}: {e}\n"
+                    f"[loop] liveness probe: {probe}",
+                    flush=True,
+                )
+                raise
             t_target += time.time() - t0
             taps = self.target.last_taps  # [B, 5*K]
             if not acc_lens:
@@ -537,12 +559,11 @@ def main():
     ap.add_argument(
         "--prepass",
         choices=("waves", "draft", "cpu", "hybrid"),
-        default="waves",
-        help="where the pre-pass runs. waves (default) = 45 waves of the "
-        "TARGET's template, which forces that target to mode 0; draft = the "
-        "same on the DRAFTER's, which frees the target to be a mode-3 build "
-        "and is 1.66x against 1.19x, but hangs the target's dispatch "
-        "intermittently (README 3b); cpu/hybrid are controls.",
+        default="draft",
+        help="where the pre-pass runs. draft (default) = 45 waves of the "
+        "DRAFTER's template, which frees the target to be a mode-3 build and is "
+        "1.62x against 1.19x; waves = the same on the TARGET's, which forces "
+        "that target to mode 0 (README 3b); cpu/hybrid are controls.",
     )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
