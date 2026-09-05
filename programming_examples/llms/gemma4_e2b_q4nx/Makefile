@@ -96,6 +96,35 @@ compile-decode:
 	@$(MAKE) --no-print-directory -C $(DEC) compile-decode \
 	  LBUILD=$(LBUILD) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 
+## One dispatch is not a verdict on this hardware. A few percent of NPU2
+## dispatches hit the firmware TDR watchdog; the dispatch then COMPLETES but
+## returns an untrustworthy answer, so validate_layer_npu.py refuses to score it
+## and exits 2. That is "no signal, re-run" -- not "the layer is wrong" -- and
+## the taint is not cleared inside the process (a fresh hw_context does not help
+## either), so the retry has to be a NEW process. Seen once in a full nightly.
+##
+## THE EXIT CODES ARE LOAD-BEARING: 0 pass, 2 inconclusive -> re-score, 1 FAIL ->
+## stop at once. Retrying a 1 would mask a real numeric regression, which is the
+## entire thing this gate exists to catch. A layer still inconclusive after
+## SCORE_ATTEMPTS also fails: we got no signal, so we cannot claim it works.
+##
+## Reads its arguments from $$SCORE_ARGS rather than taking them as a $$(call)
+## parameter, because one call site passes `--layers 13,15` and $$(call) splits
+## its arguments on commas.
+SCORE_ATTEMPTS ?= 3
+define score_layer
+  n=0; while :; do \
+    n=$$((n+1)); \
+    $(PYTHON) validate_layer_npu.py $$SCORE_ARGS && break; rc=$$?; \
+    if [ $$rc -ne 2 ]; then exit $$rc; fi; \
+    if [ $$n -ge $(SCORE_ATTEMPTS) ]; then \
+      echo "FAIL: still INCONCLUSIVE after $(SCORE_ATTEMPTS) attempts; the NPU2 TDR did not clear, so this run scored nothing"; \
+      exit 1; \
+    fi; \
+    echo "  (inconclusive: an NPU2 TDR, not a numeric failure -- re-scoring in a fresh process, attempt $$((n+1)) of $(SCORE_ATTEMPTS))"; \
+  done
+endef
+
 ## Score the OWN-KV layers on device against the numpy reference, one per class.
 ##
 ## Rebuilds the template before each run. That is not defensive: validate_layer_npu.py
@@ -106,8 +135,9 @@ layer-gate:
 	@set -e; for L in $(GATE_LAYERS); do \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
 	    UNI_DEC=1 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
-	  cd $(srcdir) && $(PYTHON) validate_layer_npu.py --layer $$L \
-	    --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$L.npz; \
+	  cd $(srcdir); \
+	  SCORE_ARGS="--layer $$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$L.npz"; \
+	  $(score_layer); \
 	done
 
 ## Score the KV-SHARED layers (>=15). Each needs a TWO-layer build: the layer
@@ -120,14 +150,14 @@ layer-gate-shared:
 	  SRC=$${P%:*}; L=$${P#*:}; \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
 	    UNI_DEC=1 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
-	  cd $(srcdir) && $(PYTHON) validate_layer_npu.py --layer $$SRC \
-	    --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$SRC.npz \
-	    --dump /tmp/g4_d$$SRC.npz; \
+	  cd $(srcdir); \
+	  SCORE_ARGS="--layer $$SRC --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$SRC.npz --dump /tmp/g4_d$$SRC.npz"; \
+	  $(score_layer); \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
 	    UNI_DEC=2 KV_SRC=0,0 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
-	  cd $(srcdir) && $(PYTHON) validate_layer_npu.py --layers $$SRC,$$L \
-	    --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$${SRC}_$$L.npz \
-	    --prefix-dump /tmp/g4_d$$SRC.npz; \
+	  cd $(srcdir); \
+	  SCORE_ARGS="--layers $$SRC,$$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$${SRC}_$$L.npz --prefix-dump /tmp/g4_d$$SRC.npz"; \
+	  $(score_layer); \
 	done
 
 ## CPU-only per-layer gate against FLM's own golden activations. ~4 min, no NPU.
