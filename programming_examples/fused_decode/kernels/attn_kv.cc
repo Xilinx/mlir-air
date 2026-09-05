@@ -295,21 +295,28 @@ __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
 
 #elif ATTN_IMPL == ATTN_IMPL_1x4x1
 
+// The score block is Q_HEADS_PADDED_PER_CU heads x 16 keys, and the r=4 mmul
+// carries one head per row. This used to read only 32 scores and pad rows 2..3
+// with zeros, i.e. two heads, while attn_qk writes Q_HEADS_PER_GROUP of them --
+// so half the heads got a zero denominator and, in attn_fv, no y at all. Every
+// model that selects 1x4x1 has Q_HEADS_PADDED_PER_CU == 4, so that was always
+// half the work; it stayed invisible because nothing checked the two sides
+// against each other. The static_asserts below are that check.
+static_assert(Q_HEADS_PADDED_PER_CU == GQA_R,
+              "1x4x1 attention carries one q head per mmul row: the score "
+              "block's head count must equal GQA_R");
+
 void calculate_l(bf16 *__restrict pS, float *__restrict c,
                  float *__restrict l) {
   aie_round_nearest_even();
   using MMUL = aie::mmul<GQA_R, GQA_S, GQA_T, bf16, bf16, accfloat>;
-  bf16 *__restrict pS1 = pS;
+  constexpr unsigned SN = Q_HEADS_PADDED_PER_CU * 16;
+  static_assert(SN == 2 * MMUL::size_A, "score block must fill A twice");
 
-  aie::vector<bf16, 32> S_up = aie::load_v<32>(pS1);
-  pS1 += 32;
-
-  aie::vector<bf16, 16> S10 = aie::filter_even(S_up, 8);
-  aie::vector<bf16, 16> S11 = aie::filter_odd(S_up, 8);
-  aie::vector<bf16, 16> zeros = aie::zeros<bf16, 16>();
-
-  aie::vector<bf16, MMUL::size_A> S0 = aie::concat(S10, zeros);
-  aie::vector<bf16, MMUL::size_A> S1 = aie::concat(S11, zeros);
+  // [head][key16] -> even/odd 8-key blocks are A's two key halves, all heads.
+  aie::vector<bf16, SN> S_up = aie::load_v<SN>(pS);
+  aie::vector<bf16, MMUL::size_A> S0 = aie::filter_even(S_up, 8);
+  aie::vector<bf16, MMUL::size_A> S1 = aie::filter_odd(S_up, 8);
   aie::vector<bf16, MMUL::size_B> ones = aie::broadcast<bf16, MMUL::size_B>(1);
 
   aie::vector<bf16, MMUL::size_C> acc_C00 = aie::zeros<bf16, MMUL::size_C>();
@@ -319,16 +326,15 @@ void calculate_l(bf16 *__restrict pS, float *__restrict c,
   C00.mac(S0, ones);
   C00.mac(S1, ones);
 
+  // C is row-major r x t with every column of a row holding that row's sum;
+  // the three filters collapse it to one value per head.
   aie::vector<float, MMUL::size_C> sumf = C00.template to_vector<float>();
   auto sum03 = aie::filter_even(sumf, 4);
   auto sum02 = aie::filter_even(sum03, 2);
   auto sum01 = aie::filter_even(sum02, 1);
 
-  float sum0 = sum01[0];
-  float sum1 = sum01[1];
-
-  l[0] = l[0] * c[0] + sum0;
-  l[1] = l[1] * c[1] + sum1;
+  for (int h = 0; h < Q_HEADS_PADDED_PER_CU; h++)
+    l[h] = l[h] * c[h] + sum01[h];
 }
 
 typedef float y_acc_dtype;
@@ -340,26 +346,26 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
 
   y_acc_dtype *__restrict pY1 = pY;
-  bf16 *__restrict pS1 = pS;
 
-  aie::vector<bf16, 32> S_up = aie::load_v<32>(pS1);
-  pS1 += 32;
-
-  aie::vector<bf16, 16> S10 = aie::filter_even(S_up, 8);
-  aie::vector<bf16, 16> S11 = aie::filter_odd(S_up, 8);
-  aie::vector<bf16, 16> zeros_vec = aie::zeros<bf16, 16>();
-
-  aie::vector<bf16, MMUL::size_A> S0 = aie::concat(S10, zeros_vec);
-  aie::vector<bf16, MMUL::size_A> S1 = aie::concat(S11, zeros_vec);
+  // See calculate_l: one q head per mmul row, so A is filled from all
+  // Q_HEADS_PADDED_PER_CU heads, not two. y's per-dim-tile stride is therefore
+  // MMUL::size_C (= GQA_R*8 = 32), which is what the @attnO un-interleave
+  // assumes (sizes [Q_HEADS_PER_CU, DH/8, 8], strides [8, Q_HEADS_PER_CU*8,
+  // 1]). Writing it at 16 wrote only half of y and made the gather read
+  // dim-tile d as d/2 in the wrong head pair.
+  constexpr unsigned SN = Q_HEADS_PADDED_PER_CU * 16;
+  aie::vector<bf16, SN> S_up = aie::load_v<SN>(pS);
+  aie::vector<bf16, MMUL::size_A> S0 = aie::filter_even(S_up, 8);
+  aie::vector<bf16, MMUL::size_A> S1 = aie::filter_odd(S_up, 8);
 
   aie::vector<y_acc_dtype, 8> c0 = aie::broadcast<float, 8>(c[0]);
   aie::vector<y_acc_dtype, 8> c1 = aie::broadcast<float, 8>(c[1]);
   aie::vector<y_acc_dtype, 8> c2 = aie::broadcast<float, 8>(c[2]);
   aie::vector<y_acc_dtype, 8> c3 = aie::broadcast<float, 8>(c[3]);
-  aie::vector<y_acc_dtype, 32> CORRECT = aie::concat(c0, c1, c2, c3);
+  // Row-major C: lanes h*8..h*8+7 belong to head h, matching one c per head.
+  aie::vector<y_acc_dtype, MMUL::size_C> CORRECT = aie::concat(c0, c1, c2, c3);
 
   bf16 *__restrict pV1 = pV;
-  aie::vector<float, 16> zeros_float = aie::zeros<float, 16>();
 
   AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(2) for (unsigned j = 0; j < colQ;
                                                     j += 4) {
@@ -372,12 +378,10 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     aie::vector<bf16, MMUL::size_B> V01 = aie::load_v<MMUL::size_B>(pV02);
     pV02 += MMUL::size_B * colQ;
 
-    aie::vector<y_acc_dtype, 16> acc_y00 = aie::load_v<16>(pY1);
-    aie::vector<y_acc_dtype, 16> acc_y01 = aie::load_v<16>(pY1 + 16);
     aie::vector<y_acc_dtype, MMUL::size_C> acc_Y00 =
-        aie::concat(acc_y00, zeros_float);
+        aie::load_v<MMUL::size_C>(pY1);
     aie::vector<y_acc_dtype, MMUL::size_C> acc_Y01 =
-        aie::concat(acc_y01, zeros_float);
+        aie::load_v<MMUL::size_C>(pY1 + MMUL::size_C);
 
     aie::accum<accfloat, MMUL::size_C> ACC_Y00;
     aie::accum<accfloat, MMUL::size_C> ACC_Y01;
@@ -396,14 +400,11 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     Y00.mac(S1, V00);
     Y01.mac(S1, V01);
 
-    auto Y0 = aie::filter_even(Y00.template to_vector<y_acc_dtype>(), 16);
-    auto Y1 = aie::filter_even(Y01.template to_vector<y_acc_dtype>(), 16);
+    aie::store_v(pY1, Y00.template to_vector<y_acc_dtype>());
+    pY1 += MMUL::size_C;
 
-    aie::store_v(pY1, Y0);
-    pY1 += 16;
-
-    aie::store_v(pY1, Y1);
-    pY1 += 16;
+    aie::store_v(pY1, Y01.template to_vector<y_acc_dtype>());
+    pY1 += MMUL::size_C;
 
     bf16 *__restrict pV03 = pV1 + (j + 2) * MMUL::size_B;
     bf16 *__restrict pV04 = pV1 + (j + 3) * MMUL::size_B;
@@ -413,12 +414,10 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     aie::vector<bf16, MMUL::size_B> V03 = aie::load_v<MMUL::size_B>(pV04);
     pV04 += MMUL::size_B * colQ;
 
-    aie::vector<y_acc_dtype, 16> acc_y02 = aie::load_v<16>(pY1);
-    aie::vector<y_acc_dtype, 16> acc_y03 = aie::load_v<16>(pY1 + 16);
     aie::vector<y_acc_dtype, MMUL::size_C> acc_Y02 =
-        aie::concat(acc_y02, zeros_float);
+        aie::load_v<MMUL::size_C>(pY1);
     aie::vector<y_acc_dtype, MMUL::size_C> acc_Y03 =
-        aie::concat(acc_y03, zeros_float);
+        aie::load_v<MMUL::size_C>(pY1 + MMUL::size_C);
 
     aie::accum<accfloat, MMUL::size_C> ACC_Y02;
     aie::accum<accfloat, MMUL::size_C> ACC_Y03;
@@ -437,40 +436,41 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     Y02.mac(S1, V02);
     Y03.mac(S1, V03);
 
-    auto Y2 = aie::filter_even(Y02.template to_vector<y_acc_dtype>(), 16);
-    auto Y3 = aie::filter_even(Y03.template to_vector<y_acc_dtype>(), 16);
+    aie::store_v(pY1, Y02.template to_vector<y_acc_dtype>());
+    pY1 += MMUL::size_C;
 
-    aie::store_v(pY1, Y2);
-    pY1 += 16;
-
-    aie::store_v(pY1, Y3);
-    pY1 += 16;
+    aie::store_v(pY1, Y03.template to_vector<y_acc_dtype>());
+    pY1 += MMUL::size_C;
   }
 }
 
+// Divides every head by its own denominator, and converts y's PADDED head slots
+// to o's PACKED ones (same split as the 2x4x1 path). It previously used l[0]
+// and l[1] for all Q_HEADS_PADDED_PER_CU heads over a 16-lane tile, which is
+// the scale_div half of the two-head bug fixed above.
 template <unsigned N>
 void scale_div_aie(bf16 *a, bf16 *o, float *l) {
   aie_round_nearest_even();
 
-  constexpr int vec_factor = 16;
+  constexpr int vec_factor = Q_HEADS_PADDED_PER_CU * 8; // y dim-tile
+  constexpr int o_tile = Q_HEADS_PER_CU * 8;            // packed dim-tile in o
   const int F = N / vec_factor;
 
-  bf16 *pA1 = a;
-  bf16 *pO1 = o;
-  bf16 l00 = (bf16)getInvBf16(l[0]);
-  aie::vector<bf16, 8> L0 = aie::broadcast<bf16, 8>(l00);
-  bf16 l01 = (bf16)getInvBf16(l[1]);
-  aie::vector<bf16, 8> L1 = aie::broadcast<bf16, 8>(l01);
-
-  auto L = aie::concat(L0, L1);
-
-  for (int d = 0; d < N / vec_factor; d++) {
-    aie::vector<bf16, vec_factor> A0 = aie::load_v<vec_factor>(pA1);
-    aie::accum<accfloat, vec_factor> AL = aie::mul(A0, L);
-    aie::vector<bf16, vec_factor> AL_bf16 = AL.template to_vector<bf16>();
-    aie::store_v(pO1, AL_bf16);
-    pO1 += vec_factor;
-    pA1 += vec_factor;
+  bf16 invl[Q_HEADS_PADDED_PER_CU];
+  for (int h = 0; h < Q_HEADS_PADDED_PER_CU; h++)
+    invl[h] = (bf16)getInvBf16(l[h]);
+  for (int d = 0; d < F; d++) {
+    bf16 *pa = a + d * vec_factor;
+    bf16 *po = o + d * o_tile;
+    for (int g = 0; g < KV_HEADS_PER_CU; g++) {
+      for (int h = 0; h < Q_HEADS_PER_GROUP; h++) {
+        int grp = g * Q_HEADS_PER_GROUP_PADDED + h;
+        int op = g * Q_HEADS_PER_GROUP + h;
+        bf16 iv = invl[grp];
+        for (int k = 0; k < 8; k++)
+          po[op * 8 + k] = (bf16)((float)pa[grp * 8 + k] * (float)iv);
+      }
+    }
   }
 }
 

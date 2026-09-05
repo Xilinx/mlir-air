@@ -29,12 +29,14 @@
 #define QWEN2_5_7B 7
 #define LFM2_1_2B 8
 #define QWEN3_4B 9
+#define GEMMA4_E2B 10
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
 #endif
 
 #include "../models/gemma3-4b.h"
+#include "../models/gemma4-e2b.h"
 #include "../models/lfm2-1.2b.h"
 #include "../models/llama3.1-8b.h"
 #include "../models/llama3.2-1b.h"

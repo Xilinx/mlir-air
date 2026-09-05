@@ -1,0 +1,22 @@
+# Additional Python packages for the GEMMA4-E2B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, filelock, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+#
+# The nightly LLM benchmark installs every llms/*/requirements.txt before running
+# the lit suites, so anything imported by the drivers belongs here.
+
+# Download the model.q4nx weight bundle from the Hub (Q4NX_MODEL_SOURCE).
+huggingface_hub
+
+# Tokenizer for `make gen` / `make paris` and for detokenizing generated ids.
+# The FastFlowLM Q4NX repo ships tokenizer.json/tokenizer_config.json and
+# chat_template.jinja, so no separate google/gemma-4 checkpoint is needed.
+transformers
+
+# `make sublayer-ref` only: loads the full-precision checkpoint to capture
+# sub-layer ground truth. Nothing else here imports torch, and that target is a
+# local bisecting tool rather than a gate -- but the nightly installs this file
+# wholesale, so it is listed rather than left as an undeclared import.
+torch

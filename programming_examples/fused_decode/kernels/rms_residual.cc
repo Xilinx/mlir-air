@@ -146,6 +146,21 @@ void rms_norm_aie_hdr(bf16 *restrict y, bf16 *restrict x, bf16 *restrict w,
   rms_norm(y + 16, x, w);
 }
 
+#ifdef HAS_PER_LAYER_EMBEDDING
+// Hand the post-FFN residual to the neighbouring PLE gate core through SHARED
+// L1 -- FastFlowLM's own hop, where their gate core calls
+// gate_layer_embedding() straight on this core's buffer with no flow between
+// the two tiles.
+//
+// OPERAND ORDER IS LOAD-BEARING: AIR reads the LAST memref of an external call
+// as the written one, and that is the only thing that tells it this core is the
+// shared buffer's producer. `shared` must stay last.
+void ple_res_out(bf16 *restrict src, bf16 *restrict shared) {
+  for (int i = 0; i < MODEL_DIM; i += 16)
+    aie::store_v(shared + i, aie::load_v<16>(src + i));
+}
+#endif
+
 void residual_add_aie(bf16 *restrict y, bf16 *restrict x_buf,
                       bf16 *restrict x) {
   aie_round_nearest_even();
