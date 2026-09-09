@@ -42,6 +42,17 @@ export GEMMA4_FP_CHECKPOINT
 # ATTN_MAXL the decode template is built for. 16 is what the layer gate scores
 # at (one token at position 0 attending a 16-slot cache).
 LBUILD ?= 16
+# The slope reference of the pair `bench_decode.exe` needs: two same-ATTN_MAXL
+# builds one L apart give a per-word instruction slope, so any L can be
+# dispatched from one xclbin. Only `_compile_decode_build` produces the pair.
+LREF ?= $(shell expr $(LBUILD) - 1)
+
+# Decoder layers in the swept template. The gate builds ONE wave (or two, for a
+# KV-shared pair) because it scores a single layer; the sweep must build the
+# whole model, or it measures a 1/35-scale dispatch and reports a number ~35x
+# too good. The engine's Makefile defaults this to the gate's 1, so it has to be
+# passed explicitly here rather than left to the default.
+SWEEP_UNI_DEC ?= 35
 
 LAYERS ?= 35
 # Per-layer cosine floor for the CPU gate. NOT 0.99: layer 0 inherits the int8
@@ -62,7 +73,8 @@ GATE_LAYERS ?= 0 4 14
 GATE_PAIRS  ?= 13:15 14:19 14:34
 
 .DEFAULT_GOAL := help
-.PHONY: help compile-decode layer-gate layer-gate-shared check gen paris sublayer-ref clean
+.PHONY: help compile compile-decode _compile_decode_build verify layer-gate \
+        layer-gate-shared check gen paris sublayer-ref clean
 
 help:
 	@echo "============================================================"
@@ -70,7 +82,9 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "On device:"
+	@echo "  make compile            Build everything the device path needs (= compile-decode)"
 	@echo "  make compile-decode     Build the decode template (weight-free)"
+	@echo "  make verify             The full on-device gate (both halves below)"
 	@echo "  make layer-gate         Score own-KV layers ($(GATE_LAYERS)) vs the numpy reference"
 	@echo "  make layer-gate-shared  Score KV-SHARED layers ($(GATE_PAIRS)), two-layer builds"
 	@echo ""
@@ -95,6 +109,30 @@ help:
 compile-decode:
 	@$(MAKE) --no-print-directory -C $(DEC) compile-decode \
 	  LBUILD=$(LBUILD) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+
+## `compile` in the other q4nx examples is prefill ELFs + decode templates. This
+## one has no prefill engine, so it is decode alone -- an alias rather than an
+## absence, so a script that walks the examples by target name works here too.
+compile: compile-decode
+
+## The full-depth template PAIR the decode sweep dispatches, left in this
+## directory as decode_L<N>.{xclbin,insts.bin}. Named with a leading underscore
+## and shaped exactly like the other q4nx examples' because bench/sweep_decode.py
+## invokes it by that name and then looks for those files.
+##
+## Deliberately NOT idempotent, for the same reason the engine's compile-decode
+## is not: the sweep rebuilds at a new ATTN_MAXL for every context, and a
+## skipped rebuild benches the previous context's binary and reports its number
+## under the new context's label. sweep_decode.py also md5s the result and
+## rejects a repeat, which is the backstop for exactly this.
+_compile_decode_build:
+	@set -e; for L in $(LBUILD) $(LREF); do \
+	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
+	    UNI_DEC=$(SWEEP_UNI_DEC) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
+	  mv -f $(DEC)/decode.xclbin    $(srcdir)/decode_L$$L.xclbin; \
+	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$$L.insts.bin; \
+	done
+	@echo "Gemma4 decode templates built: decode_L$(LBUILD) + decode_L$(LREF) (UNI_DEC=$(SWEEP_UNI_DEC))."
 
 ## One dispatch is not a verdict on this hardware. A few percent of NPU2
 ## dispatches hit the firmware TDR watchdog; the dispatch then COMPLETES but
@@ -160,6 +198,12 @@ layer-gate-shared:
 	  $(score_layer); \
 	done
 
+## The on-device correctness gate, under the name the other q4nx examples use.
+## Theirs is a top-k token-set check over a generated sequence and needs a
+## prefill engine; this one scores the decoder layer itself, per class. Both
+## halves, because either alone leaves three of the six classes unscored.
+verify: layer-gate layer-gate-shared
+
 ## CPU-only per-layer gate against FLM's own golden activations. ~4 min, no NPU.
 ## Needs an FLM source tree (FLM_REFERENCE); `layer-gate` is the gate that does not.
 check:
@@ -191,5 +235,5 @@ sublayer-ref:
 clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
-	rm -f $(srcdir)/*.npz 2>/dev/null || true
+	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."
