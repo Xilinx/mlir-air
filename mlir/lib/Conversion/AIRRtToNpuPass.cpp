@@ -2315,13 +2315,43 @@ struct PeeledOffset {
   const void *shape;
 };
 
-// Split an affine result expression into its constant term and the rest.
-static std::pair<AffineExpr, int64_t> splitAffineConstant(AffineExpr expr) {
-  if (auto add = dyn_cast<AffineBinaryOpExpr>(expr))
-    if (add.getKind() == AffineExprKind::Add)
-      if (auto c = dyn_cast<AffineConstantExpr>(add.getRHS()))
-        return {add.getLHS(), c.getValue()};
-  return {expr, 0};
+// Split an affine result expression into its whole constant term and the rest.
+// The rest is null when the expression was entirely constant.
+//
+// Simplify first. AffineExpr's own construction already folds successive
+// constants and moves a constant to the RHS of an add, so `4 + s0 * 8` and
+// `s0 * 8 + 4 + 16` cannot reach here unsimplified -- but it does NOT
+// distribute a product, so `(s0 + 2) * 8` keeps its constant buried where a
+// top-level scan cannot see it. simplifyAffineExpr expands that to
+// `s0 * 8 + 16`, and the 16 then reaches the addend where it belongs. Without
+// this, two feeds at `(s0 + 2) * 8` and `(s0 + 4) * 8` -- a contiguous run --
+// land in different groups and do not coalesce.
+//
+// The loop that follows is defensive rather than load-bearing, for expressions
+// built outside that canonicalisation.
+static std::pair<AffineExpr, int64_t>
+splitAffineConstant(AffineExpr expr, unsigned numDims, unsigned numSymbols) {
+  expr = simplifyAffineExpr(expr, numDims, numSymbols);
+  int64_t constant = 0;
+  while (true) {
+    if (auto c = dyn_cast<AffineConstantExpr>(expr))
+      return {AffineExpr(), constant + c.getValue()};
+    auto add = dyn_cast<AffineBinaryOpExpr>(expr);
+    if (!add || add.getKind() != AffineExprKind::Add)
+      break;
+    if (auto c = dyn_cast<AffineConstantExpr>(add.getRHS())) {
+      constant += c.getValue();
+      expr = add.getLHS();
+      continue;
+    }
+    if (auto c = dyn_cast<AffineConstantExpr>(add.getLHS())) {
+      constant += c.getValue();
+      expr = add.getRHS();
+      continue;
+    }
+    break;
+  }
+  return {expr, constant};
 }
 
 static PeeledOffset peelOffset(Value v) {
@@ -2354,7 +2384,13 @@ static PeeledOffset peelOffset(Value v) {
     if (auto apply = dyn_cast_if_present<affine::AffineApplyOp>(def)) {
       AffineMap map = apply.getAffineMap();
       if (map.getNumResults() == 1 && apply.getMapOperands().size() == 1) {
-        auto [rest, constant] = splitAffineConstant(map.getResult(0));
+        auto [rest, constant] = splitAffineConstant(
+            map.getResult(0), map.getNumDims(), map.getNumSymbols());
+        // A map that simplified to a bare constant addresses a fixed offset,
+        // so it has no base at all -- the straight-line case, which groups
+        // with the other constant-offset feeds rather than against itself.
+        if (!rest)
+          return {nullptr, addend + constant, nullptr};
         return {apply.getMapOperands().front(), addend + constant,
                 rest.getAsOpaquePointer()};
       }
