@@ -365,6 +365,69 @@ jobs:
           echo "running suites: $SUITES"
           want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
+          # TEMPORARY diagnostic suite; remove before this PR merges. Dispatch
+          # with suites=probe, which matches none of the four real suites, so
+          # nothing else runs and the whole job is minutes rather than hours.
+          #
+          # The question: gemma4's decode sweep hangs on THIS runner at every
+          # context including the smallest, while the same commit sweeps clean on
+          # a development box and gemma4's own verify passes here. Size-invariant
+          # rules out memory; verify passing rules out the design and the g8/g9
+          # PLE binding. What verify does not cover is depth -- it builds 1-2
+          # decode waves, the sweep builds 35 -- or the bench harness, since
+          # verify dispatches through pyxrt and the sweep through bench_decode.
+          #
+          # So walk the depth with everything else held fixed. UNI_DEC=1 and 2 are
+          # the good control (verify's own depths, expected to pass); 35 is the
+          # bad one. A failure at 1 indicts the bench harness, a failure only at
+          # 35 indicts the depth, and the depth it first fails at is the number
+          # worth having. Each row also prints the artifact fingerprint, because
+          # if the insts.bin md5 at UNI_DEC=35 matches the development box's
+          # 48be5fa720fa/1179444 bytes then the two ran an identical binary and
+          # the difference is the machine, not the build.
+          if want probe; then
+            PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
+            PE=../programming_examples
+            G=$PE/llms/gemma4_e2b_q4nx
+            mkdir -p "$OLDPWD/perf_out"
+            # bench_decode.exe first: every model's `make clean` deletes it, and a
+            # missing binary reports as a device failure rather than as itself.
+            make -C $PE/fused_decode bench-decode-exe XILINX_XRT="$XILINX_XRT" >/dev/null 2>&1
+            {
+              echo "=== environment ==="
+              echo "amdxdna : $(modinfo amdxdna 2>/dev/null | sed -n 's/^version: *//p')"
+              echo "firmware: $(xrt-smi examine 2>/dev/null | sed -n 's/.*NPU Firmware Version *: *//p' | head -1)"
+              echo "xrt     : $(xrt-smi examine 2>/dev/null | sed -n 's/^ *Version *: *//p' | head -1)"
+              echo "peano   : $($PEANO_INSTALL_DIR/bin/llc --version 2>/dev/null | sed -n 's/.*LLVM version //p' | head -1)"
+              echo "pmode   : ${PMODE:-unknown}"
+              echo "dev box : insts 1179444 bytes md5 48be5fa720fa (UNI_DEC=35, L1024)"
+              for d in 1 2 8 35; do
+                echo ""
+                echo "=== UNI_DEC=$d, ctx=1024 ==="
+                # The fork's build dir, which sweep_decode does not clear (it
+                # clears fused_decode's): a stale one would silently rebuild the
+                # previous depth and make the whole ladder read as one result.
+                rm -rf $PE/fused_decode_ple/air_project
+                python $PE/llms/bench/sweep_decode.py \
+                  --model-name gemma4_probe_d$d --makefile $G/Makefile --template-dir $G \
+                  --bench-model gemma4-e2b --vocab-chunk-i2 27 --n-layers 35 \
+                  --contexts 1024 --iters 3 --warmup 1 \
+                  --builder-env SWEEP_UNI_DEC=$d --builder-env DECODE_UNI_DEC=$d \
+                  --peano-dir "$PEANO_INSTALL_DIR" --xrt-dir /opt/xilinx/xrt \
+                  --workdir "$OLDPWD/perf_out/probe_d$d" \
+                  --out "$OLDPWD/perf_out/probe_d$d.json" 2>&1 | tail -2
+                for f in $G/decode_L1024.insts.bin $G/decode_L1024.xclbin; do
+                  [ -f "$f" ] && echo "  $(basename $f): $(stat -c%s $f) bytes md5 $(md5sum $f | cut -c1-12)"
+                done
+                # bench_decode's own stdout/stderr, which is where the bound
+                # geometry and "dispatch did not complete: state=N" live. The
+                # state code is the branch point: a timeout means it hung, an
+                # abort means the command was rejected before it ran.
+                sed -n '1,30p' "$OLDPWD/perf_out/probe_d$d/L1024/bench.log" 2>/dev/null | sed 's/^/  | /'
+              done
+            } 2>&1 | tee "$OLDPWD/perf_out/gemma4_probe.txt"
+          fi
+
           if want verify; then
             # Correctness gate (strict): red if any model's verify fails.
             LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
