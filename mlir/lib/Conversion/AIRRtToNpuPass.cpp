@@ -2298,15 +2298,37 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
 // channel's transfers ahead of the sibling-channel round-major interleave; that
 // reorder is numerically equivalent to the fragmented feed (verified
 // output-identical on an exercising design).
-// Peel an offset into (base, constant addend): a rolled body's offsets are
-// `addi(loop-derived base, const)`, so two feeds are contiguous when they
-// share a base and their addends are. A constant offset has a null base,
+// Peel an offset into (base, constant addend, shape): a rolled body's offsets
+// are a loop-derived base plus a constant, so two feeds are contiguous when
+// they share a base and their addends are. A constant offset has a null base,
 // which is the straight-line case.
-static std::pair<Value, int64_t> peelOffset(Value v) {
+//
+// `shape` distinguishes two offsets that peel to the same base Value but scale
+// it differently. It is null for the arith spelling, where peeling only ever
+// strips additive constants, and carries the affine.apply's non-constant
+// sub-expression otherwise. Without it, `apply(s0 * 8 + 4)` and
+// `apply(s0 * 64 + 4)` would both report base s0 and addend 4, and be merged as
+// if they addressed the same run.
+struct PeeledOffset {
+  Value base;
+  int64_t addend;
+  const void *shape;
+};
+
+// Split an affine result expression into its constant term and the rest.
+static std::pair<AffineExpr, int64_t> splitAffineConstant(AffineExpr expr) {
+  if (auto add = dyn_cast<AffineBinaryOpExpr>(expr))
+    if (add.getKind() == AffineExprKind::Add)
+      if (auto c = dyn_cast<AffineConstantExpr>(add.getRHS()))
+        return {add.getLHS(), c.getValue()};
+  return {expr, 0};
+}
+
+static PeeledOffset peelOffset(Value v) {
   int64_t addend = 0;
   while (v) {
     if (auto c = getConstantIntValue(v))
-      return {nullptr, addend + *c};
+      return {nullptr, addend + *c, nullptr};
     Operation *def = v.getDefiningOp();
     if (auto cast = dyn_cast_if_present<arith::IndexCastOp>(def)) {
       v = cast.getIn();
@@ -2324,9 +2346,22 @@ static std::pair<Value, int64_t> peelOffset(Value v) {
         continue;
       }
     }
+    // The same address written as one affine.apply rather than an arith chain.
+    // A frontend that folds index arithmetic into a single map -- which AIR's
+    // own dependency analysis and DMA specialisation prefer -- otherwise loses
+    // shim coalescing entirely, silently: the feed still runs, in twice as many
+    // BDs.
+    if (auto apply = dyn_cast_if_present<affine::AffineApplyOp>(def)) {
+      AffineMap map = apply.getAffineMap();
+      if (map.getNumResults() == 1 && apply.getMapOperands().size() == 1) {
+        auto [rest, constant] = splitAffineConstant(map.getResult(0));
+        return {apply.getMapOperands().front(), addend + constant,
+                rest.getAsOpaquePointer()};
+      }
+    }
     break;
   }
-  return {v, addend};
+  return {v, addend, nullptr};
 }
 
 static void coalesceShimDmaOrder(ModuleOp module) {
@@ -2338,6 +2373,7 @@ static void coalesceShimDmaOrder(ModuleOp module) {
   // multi-dim wrap, or non-unit inner stride).
   struct Desc {
     Value base;
+    const void *shape;
     int64_t offset;
     int64_t len;
   };
@@ -2359,6 +2395,7 @@ static void coalesceShimDmaOrder(ModuleOp module) {
         (*strides)[3] != 1)
       return std::nullopt;
     Value base = nullptr;
+    const void *shape = nullptr;
     int64_t totalOffset = 0;
     for (auto [off, str] : llvm::zip_equal(d.getMixedOffsets(), *strides)) {
       if (auto c = getConstantIntValue(off)) {
@@ -2368,13 +2405,14 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       // One dynamic offset, on the unit-stride innermost dim.
       if (base || str != 1)
         return std::nullopt;
-      auto [b, addend] = peelOffset(cast<Value>(off));
-      if (!b)
+      auto peeled = peelOffset(cast<Value>(off));
+      if (!peeled.base)
         return std::nullopt;
-      base = b;
-      totalOffset += addend;
+      base = peeled.base;
+      shape = peeled.shape;
+      totalOffset += peeled.addend;
     }
-    return Desc{base, totalOffset, (*lengths)[3]};
+    return Desc{base, shape, totalOffset, (*lengths)[3]};
   };
 
   for (auto f : funcOps) {
@@ -2400,8 +2438,9 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     };
     // The base joins the key: feeds off different bases are never contiguous,
     // and for a rolled body the base is what distinguishes one wave's slice.
-    llvm::MapVector<std::tuple<int64_t, StringRef, void *, void *>,
-                    SmallVector<Entry>>
+    llvm::MapVector<
+        std::tuple<int64_t, StringRef, void *, void *, const void *>,
+        SmallVector<Entry>>
         groups;
     for (auto d : paced) {
       auto desc = describe(d);
@@ -2414,7 +2453,7 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
         wave = w.getInt();
       groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer(),
-              desc->base.getAsOpaquePointer()}]
+              desc->base.getAsOpaquePointer(), desc->shape}]
           .push_back({d, desc->offset, desc->len});
     }
 
