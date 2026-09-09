@@ -34,6 +34,12 @@ AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),
 # -O2). ple.cc is this fork's own kernel and follows the -O2 group.
 NONATTN_KERNELS := proj_qmm rms_residual glu rope   # object .o, -O2, from ../fused_decode
 ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merge-linked)
+# The attn optimisation level. -O1 because -O2 was found to deadlock -- but that
+# was on an older Peano, and at -O1 the software pipeliner does not run AT ALL
+# (zero remarks), so the attention loops are the one place in the design it never
+# reaches. Overridable so the constraint can be re-tested against a newer Peano:
+#   make compile-decode ATTN_OPT=O2
+ATTN_OPT ?= O1
 PLE_KERNELS     := ple                              # object .o, -O2, this dir's kernels/
 
 # Gemma4-E2B is the only model this fork exists for; the others build here only
@@ -118,7 +124,7 @@ kernels: preflight-peano
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> PLE kernels (Peano -O2): $(PLE_KERNELS)"
 	@for k in $(PLE_KERNELS); do echo "    $$k.cc (-O2)"; \
