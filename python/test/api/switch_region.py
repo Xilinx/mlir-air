@@ -64,8 +64,19 @@ def gated_launch():
                     # The gate key, evaluated once here and carried into the
                     # herd as i32 -- an index-typed one folds to constant 0.
                     arm = air.rtp(wave < UNI_DEC)
+                    # A second parameter: a per-dispatch trip count, which is
+                    # what an attention block loop over ceil(L/16) needs. Two
+                    # live parameters make the threading ambiguous, so the herd
+                    # has to name them -- and their order here is their operand
+                    # order.
+                    trips = air.rtp(wave + 1)
                     l1 = air.alloc([W], bf16, scope=seg.per_core())
-                    with air.herd([range(1), range(1)], name="h", at=(0, 2)) as h:
+                    with air.herd(
+                        [range(1), range(1)],
+                        name="h",
+                        at=(0, 2),
+                        params=[trips, arm],
+                    ) as h:
 
                         @h.body
                         def _(tx, ty):
@@ -76,6 +87,11 @@ def gated_launch():
                             # emitted above the loop it bounds.
                             for _k in air.sequential(ops.switch(tx, [1, 4])):
                                 l1[:] = l1[:] * 2.0
+                            # And one straight from an air.rtp parameter. The
+                            # bound coercion covers both, so neither needs an
+                            # explicit .as_index() at the call site.
+                            for _k in air.sequential(trips):
+                                l1[:] = l1[:] + 1.0
                             bk.put(l1)
 
             with ops.switch(wave < UNI_DEC):
@@ -112,7 +128,8 @@ def gated_launch():
 # IsolatedFromAbove, so it is an operand, not a reference.
 # CHECK: air.segment @s {{.*}}args(%{{.*}}=%{{.*}}) : index
 # air.rtp crosses into the herd as i32, and is read back with an index_cast.
-# CHECK: air.herd @h {{.*}}, i32
+# Two runtime parameters, in the order params= names them.
+# CHECK: air.herd @h {{.*}}, i32, i32
 # CHECK: %[[K:.*]] = arith.index_cast %{{.*}} : i32 to index
 # The identity affine.apply between the cast and the switch is the DSL's
 # convention for every index it builds, and canonicalises away.
@@ -125,6 +142,12 @@ def gated_launch():
 # CHECK: %[[N:.*]] = scf.index_switch %{{.*}} -> index
 # CHECK: %[[NB:.*]] = affine.apply {{.*}}[%[[N]]]
 # CHECK: scf.for %{{.*}} = %{{.*}} to %[[NB]]
+# An air.rtp parameter bounds a loop the same way, with no .as_index() at the
+# call site: air.sequential coerces whatever coerce_index accepts. Without that
+# the DSL refused the bound outright, and blamed a tile coordinate for it.
+# CHECK: %[[T:.*]] = arith.index_cast %{{.*}} : i32 to index
+# CHECK: %[[TB:.*]] = affine.apply {{.*}}[%[[T]]]
+# CHECK: scf.for %{{.*}} = %{{.*}} to %[[TB]]
 print(gated_launch())
 
 

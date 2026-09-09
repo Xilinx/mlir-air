@@ -80,13 +80,20 @@ def sequential(start, stop=None, step=None, name=None):
         step = 1
 
     from ._index import IndexExpr as _IndexExpr, coerce_index as _coerce
+    from ._trace import RuntimeParam
     from .ops import _Switch
 
-    # A bound picked at runtime by ops.switch is an index like any other; coerce
-    # it here so the dynamic path below sees an IndexExpr rather than refusing a
-    # type it has no opinion about.
+    # A bound decided at runtime -- picked by ops.switch, or read from an
+    # air.rtp parameter -- is an index like any other; coerce it here so the
+    # dynamic path below sees an IndexExpr rather than refusing a type it has no
+    # opinion about. Both, not just the switch: coerce_index handles the two
+    # together, and a bound is exactly where a runtime parameter turns up. A
+    # per-dispatch context length driving a herd's block loop is the case --
+    # fused_decode's attention cores loop ceil(L/16) times, with L an i32 RTP
+    # the instruction stream writes.
     start, stop, step = (
-        _coerce(v) if isinstance(v, _Switch) else v for v in (start, stop, step)
+        _coerce(v) if isinstance(v, (_Switch, RuntimeParam)) else v
+        for v in (start, stop, step)
     )
 
     # A bound may be an index expression -- a coordinate, or an enclosing loop's
@@ -312,9 +319,22 @@ def _parallel_grid(grid, name):
 
 def _as_bound(value, which, what="sequential"):
     if isinstance(value, bool) or not hasattr(value, "__index__"):
+        # Say what was rejected, not why it might have been built. This used to
+        # assert "a bound computed from a tile coordinate is not supported" for
+        # every type it turned away, which named a cause that is usually not the
+        # one -- and is not even a general truth any more: air.sequential does
+        # take a runtime bound, and only a *spatial* coordinate is refused, by
+        # the check that can actually tell.
+        extra = ""
+        if what == "parallel":
+            extra = (
+                " air.parallel's bounds are resolved at trace time even where "
+                "air.sequential's are not: its index is a channel bundle slot, "
+                "which air-to-aie unrolls spatially and cannot do for a count "
+                "it does not know."
+            )
         raise TypeError(
             f"air.{what}({which}=...) takes a Python integer (or an air.symbol), "
-            f"got {type(value).__name__} {value!r}. Loop bounds are resolved at "
-            "trace time; a bound computed from a tile coordinate is not supported."
+            f"got {type(value).__name__} {value!r}." + extra
         )
     return int(value)
