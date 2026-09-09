@@ -91,10 +91,24 @@ def _reset_declaration_order():
 class Channel:
     """A named channel; ``put`` and ``get`` move data through it."""
 
-    __slots__ = ("name", "size", "broadcast_shape", "channel_type", "_declared", "_seq")
+    __slots__ = (
+        "name",
+        "size",
+        "broadcast_shape",
+        "channel_type",
+        "attrs",
+        "_declared",
+        "_seq",
+    )
 
     def __init__(
-        self, name, size=None, broadcast_shape=None, channel_type=None, **unsupported
+        self,
+        name,
+        size=None,
+        broadcast_shape=None,
+        channel_type=None,
+        attrs=None,
+        **unsupported,
     ):
         if not isinstance(name, str) or not name:
             raise TypeError(
@@ -162,6 +176,12 @@ class Channel:
                 "-- a packet broadcast is a genuine one-to-many fan-out."
             )
         self.channel_type = channel_type
+        # Unit attributes on the air.channel symbol. air.shared_resident_ring is
+        # the one in use: it tells air-ping-pong-transform that two sibling get
+        # loops re-reading this stream are one resident ring, not two -- without
+        # it air-to-aie fuses them into a single interleaved ring of twice the
+        # depth, which covers the wrong blocks.
+        self.attrs = tuple(attrs or ())
         self._declared = False
         self._seq = _NEXT_SEQ[0]
         _NEXT_SEQ[0] += 1
@@ -232,7 +252,27 @@ class Channel:
             # is a next sibling to insert before.
             ip = InsertionPoint(ops[channels[-1][0] + 1])
         else:
-            ip = InsertionPoint.at_block_begin(trace.module.body)
+            # No channel emitted yet. Anchor after the private kernel
+            # declarations rather than at block begin: air.extern's lazy path
+            # prepends its decls, so block begin is right for it either way,
+            # but a decl emitted eagerly (air.extern(signature=...)) is already
+            # in place and a channel put above it would invert the order the
+            # hand-written builders emit -- kernels first, then channels.
+            last_decl = None
+            for op in ops:
+                if op.operation.name == "func.func" and (
+                    "sym_visibility" in op.operation.attributes
+                ):
+                    last_decl = op
+            if last_decl is None:
+                ip = InsertionPoint.at_block_begin(trace.module.body)
+            else:
+                nxt = ops.index(last_decl) + 1
+                ip = (
+                    InsertionPoint(ops[nxt])
+                    if nxt < len(ops)
+                    else InsertionPoint(trace.module.body)
+                )
         with ip:
             if self.channel_type is None:
                 ChannelOp(
@@ -259,6 +299,18 @@ class Channel:
                 op.operation.attributes["channel_type"] = StringAttr.get(
                     self.channel_type
                 )
+            if self.attrs:
+                from air.ir import UnitAttr
+
+                decl = list(trace.module.body.operations)
+                op = next(
+                    d
+                    for d in reversed(decl)
+                    if d.operation.name == "air.channel"
+                    and d.operation.attributes["sym_name"].value == self.name
+                )
+                for attr in self.attrs:
+                    op.operation.attributes[attr] = UnitAttr.get()
         _DECLARED_SEQ[self.name] = self._seq
         self._declared = True
 
@@ -319,7 +371,7 @@ class Channel:
             out.append(value)
         return out
 
-    def _emit(self, obj, indices, dependency, direction):
+    def _emit(self, obj, indices, dependency, direction, dest=None):
         from ._trace import current_herd, current_launch, current_segment
         from ._value import Tensor, TensorSlice
         from .ops import _check_dependency, _endpoint
@@ -388,6 +440,23 @@ class Channel:
             # value defined outside the region".
             endpoint = _endpoint(obj, f"channel.{direction}", "argument")
             offsets, sizes, strides = endpoint.pattern or ([], [], [])
+            extra = {}
+            if dest is not None:
+                from ._index import coerce_index
+
+                if self.channel_type != "npu_dma_packet":
+                    raise ValueError(
+                        f"air.channel {self.name!r}: dest= names a destination "
+                        "of a packet-switched channel, but this one is "
+                        + (
+                            f"channel_type={self.channel_type!r}"
+                            if self.channel_type
+                            else "the default circuit-switched stream"
+                        )
+                        + ". A circuit-switched put reaches its one consumer "
+                        "with no routing header, so there is nothing to select."
+                    )
+                extra["dest"] = coerce_index(dest).materialize()
             return op(
                 self.name,
                 endpoint.value,
@@ -395,6 +464,7 @@ class Channel:
                 sizes=sizes,
                 strides=strides,
                 indices=self._indices(indices, direction),
+                **extra,
             )
 
         if tensor is None:
@@ -438,10 +508,18 @@ class Channel:
 
     # -- public ------------------------------------------------------------
 
-    def put(self, obj, indices=None, dependency=None, **unsupported):
-        """Send a tensor, a buffer, or a region of either into the channel."""
+    def put(self, obj, indices=None, dependency=None, dest=None, **unsupported):
+        """Send a tensor, a buffer, or a region of either into the channel.
+
+        ``dest`` names which *destination* of a packet-switched channel this put
+        is for, as an ordinal -- the same index the receiving get sits at. It is
+        not a packet id: air-annotate-packet-ids allocates the ids and rewrites
+        these, so the wire number lives in one place instead of being written
+        here, written again on the channel, and hoped to agree. Only meaningful
+        on a channel_type="npu_dma_packet" channel with several consumers.
+        """
         _reject_unsupported(unsupported)
-        return self._emit(obj, indices, dependency, "put")
+        return self._emit(obj, indices, dependency, "put", dest=dest)
 
     def get(self, obj, indices=None, dependency=None, **unsupported):
         """Receive the channel's next chunk into a tensor, buffer, or region."""
@@ -500,12 +578,20 @@ def _reject_unsupported(kwargs):
         raise NotImplementedError(f"air.api does not implement {key}=: {what}")
 
 
-def channel(name, size=None, broadcast_shape=None, channel_type=None, **unsupported):
+def channel(
+    name,
+    size=None,
+    broadcast_shape=None,
+    channel_type=None,
+    attrs=None,
+    **unsupported,
+):
     """Declare a named channel; ``put`` into it and ``get`` out of it."""
     return Channel(
         name,
         size=size,
         broadcast_shape=broadcast_shape,
         channel_type=channel_type,
+        attrs=attrs,
         **unsupported,
     )

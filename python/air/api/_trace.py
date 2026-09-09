@@ -128,6 +128,11 @@ class Trace:
         # Peak declared L1 bytes across the trace, used to explain an
         # out-of-memory failure from the AIE placer in DSL terms.
         self.l1_peak = 0
+        # Runtime parameters (air.rtp): scalars computed once and carried into
+        # IsolatedFromAbove regions. Threaded into every herd, referenced or
+        # not, then dropped by prune_unused_operands -- the same policy as
+        # tensors and staged L2 buffers, and for the same reason.
+        self.rtps = []
 
 
 def set_active_trace(trace):
@@ -211,7 +216,7 @@ class LaunchState:
     at the plain `func` + `air.herd` shape its hand-written predecessors have.
     """
 
-    __slots__ = ("ctx", "opened", "coords", "leaves", "reentry")
+    __slots__ = ("ctx", "opened", "coords", "leaves", "reentry", "wave")
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -229,6 +234,85 @@ class LaunchState:
         # leaf's .value to its own block argument.
         self.coords = []
         self.leaves = []
+        # The dispatch index of a repeated launch: an scf.for around air.launch,
+        # its induction variable threaded in as the last launch operand. Not
+        # spatial -- every core of every segment sees the same wave -- which is
+        # what makes it usable as a loop bound and as an ops.switch key, where a
+        # tile coordinate is refused.
+        self.wave = None
+
+
+class RuntimeParam:
+    """A scalar computed once and carried into IsolatedFromAbove regions.
+
+    ``air.rtp(wave < n)`` evaluates the condition where it is written and hands
+    the result to every herd as an **i32** operand, to be read back inside with
+    ``ops.switch``. i32 rather than index is the whole point:
+    ``cloneL2AndL3MemcpysToDeviceOp`` pins INDEX-typed segment arguments to the
+    constant 0, so an index-typed parameter folds to one arm and every other
+    branch is erased -- in cores as much as in memtiles. An i32 operand is left
+    alone and survives as a real per-dispatch parameter.
+
+    Threaded into every herd whether referenced or not, then dropped by
+    ``prune_unused_operands``: the tracer cannot know what a body touches until
+    it has run it, which is the policy tensors and L2 buffers already follow.
+    """
+
+    __slots__ = ("value", "_name")
+
+    def __init__(self, value, name):
+        self.value = value
+        self._name = name
+
+    def rebind(self, value):
+        self.value = value
+
+    def __repr__(self):
+        return f"air.rtp({self._name})"
+
+    def as_index(self):
+        """Read the parameter back as an index, in the current region."""
+        from air.dialects import arith
+        from air.ir import IndexType
+
+        return IndexExpr.leaf(arith.index_cast(IndexType.get(), self.value), "rtp")
+
+
+def rtp(source):
+    """A runtime parameter: evaluate ``source`` here, read it inside a herd.
+
+        arm = air.rtp(wave < n_decode)     # once, at segment scope
+        with air.herd(...) as h:
+            @h.body
+            def _(tx, ty):
+                with ops.switch(arm):      # the i32 crosses the boundary
+                    ...
+
+    ``source`` is a comparison between index expressions, or an index. A
+    comparison becomes 1 or 0; an index is cast. Either way the value that
+    crosses a region boundary is i32 -- see :class:`RuntimeParam` for why that
+    is not incidental.
+    """
+    from air.dialects import arith
+    from air.ir import IntegerType
+    from ._cond import Condition, ValueCondition, _as_condition
+    from ._index import coerce_index, materialize_index
+
+    i32 = IntegerType.get_signless(32)
+    source = _as_condition(source)
+    if isinstance(source, (Condition, ValueCondition)):
+        one = arith.ConstantOp(i32, 1).result
+        zero = arith.ConstantOp(i32, 0).result
+        value = arith.select(source.materialize(), one, zero)
+    else:
+        index = materialize_index(coerce_index(source))
+        if isinstance(index, int):
+            value = arith.ConstantOp(i32, index).result
+        else:
+            value = arith.index_cast(i32, index)
+    param = RuntimeParam(value, repr(source))
+    active_trace().rtps.append(param)
+    return param
 
 
 def set_launch(state):
@@ -245,19 +329,49 @@ def current_launch():
     return _CURRENT_LAUNCH
 
 
-def open_launch_region(launch, tensors, counts, body):
+def open_launch_region(launch, tensors, counts, body, repeat=None, attrs=None):
     """Emit air.launch with ``counts`` as its sizes and run ``body`` inside.
 
     Block arguments are ids + sizes + operands, so the operands start after two
     entries per axis -- four for the 2-D launch that was the only kind when this
     was written, six for a 3-D one.
+
+    ``repeat`` is ``(lo, hi, step)``: an ``scf.for`` **around** air.launch, its
+    induction variable threaded in as the last launch operand. A launch is not
+    obliged to be the outermost op -- ``scf.for { air.launch }`` is ordinary AIR
+    and is how a per-wave dispatch is written, one device driven N times. That
+    is not a grid, which is spatial: every grid point carries its own segment,
+    multiplying segment symbols, locks and packet ids, and the 5-bit ``dma_bd``
+    Packet ID field caps that at about four launches. The DSL treated the launch
+    as the top level because nothing had needed otherwise, not because the
+    dialect says so.
     """
-    from air.dialects.air import launch as launch_region
-    from air.ir import InsertionPoint
-
     closed = []
+    operands = [t.value for t in tensors]
 
-    @launch_region(sizes=counts, operands=[t.value for t in tensors])
+    if repeat is None:
+        _emit_launch(launch, tensors, counts, body, operands, attrs, closed)
+    else:
+        from air.dialects import arith
+        from air.dialects.scf import for_ as scf_for, yield_
+
+        bounds = [arith.ConstantOp.create_index(v).result for v in repeat]
+        for _iv in scf_for(*bounds):
+            _emit_launch(launch, tensors, counts, body, operands + [_iv], attrs, closed)
+            yield_([])
+
+    if closed:
+        launch.reentry = closed[0]
+
+
+def _emit_launch(launch, tensors, counts, body, operands, attrs, closed):
+    """One air.launch, with ``operands`` bound into its region."""
+    from air.dialects.air import launch as launch_region
+    from air.ir import InsertionPoint, UnitAttr
+
+    attributes = {name: UnitAttr.get() for name in (attrs or ())}
+
+    @launch_region(sizes=counts, operands=operands, attributes=attributes)
     def launch_body(*largs):
         launch.opened = True
         launch.leaves = [
@@ -266,21 +380,21 @@ def open_launch_region(launch, tensors, counts, body):
         ]
         launch.coords = [IndexExpr({leaf: 1}, 0) for leaf in launch.leaves]
         first_operand = 2 * len(counts)
+        bound = largs[first_operand : first_operand + len(tensors)]
+        extra = largs[first_operand + len(tensors) :]
+        launch.wave = IndexExpr.leaf(extra[0], "w") if extra else None
         saved = [t.value for t in tensors]
-        for t, v in zip(tensors, largs[first_operand:]):
+        for t, v in zip(tensors, bound):
             t.value = v
         # Captured here, published only once this region closes: while it is
         # open the ordinary insertion point is already right, and the block has
         # no terminator to insert ahead of yet.
-        closed.append((InsertionPoint.current.block, list(largs[first_operand:])))
+        closed.append((InsertionPoint.current.block, list(bound)))
         try:
             body()
         finally:
             for t, v in zip(tensors, saved):
                 t.value = v
-
-    if closed:
-        launch.reentry = closed[0]
 
 
 def in_launch_body(emit):
@@ -1031,7 +1145,13 @@ class SegmentContext:
         # air.segment is IsolatedFromAbove, so a launch coordinate used in this
         # body cannot simply be referenced -- it is threaded in as an operand
         # ahead of the tensors, and rebound to the block argument inside.
-        outer_leaves = launch.leaves
+        # The launch's grid coordinates, and -- for a repeated launch -- its
+        # dispatch index, which is a leaf of the same kind and has to cross the
+        # IsolatedFromAbove boundary the same way. Without it, a body that gates
+        # on the wave would reference a value from outside the region.
+        outer_leaves = list(launch.leaves)
+        if launch.wave is not None:
+            outer_leaves += [leaf for leaf in launch.wave.leaves()]
         operands = [leaf.value for leaf in outer_leaves] + [t.value for t in tensors]
         sizes = list(self.grid) + [1] * (2 - len(self.grid)) if self.grid else []
 
@@ -1153,7 +1273,14 @@ class HerdContext:
     _what = "air.herd"
 
     def __init__(
-        self, iterable, name=None, shape=None, target=None, link_with=None, at=None
+        self,
+        iterable,
+        name=None,
+        shape=None,
+        target=None,
+        link_with=None,
+        at=None,
+        params=None,
     ):
         self.dims = parse_grid(iterable)
         if len(self.dims) > 2:
@@ -1162,6 +1289,7 @@ class HerdContext:
             )
         self.name = name or "herd_0"
         self.at = _parse_herd_anchor(at)
+        self.params = _parse_herd_params(params, self.name)
         self.target = resolve_target(target) if target else current_target()
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
@@ -1390,10 +1518,31 @@ class HerdContext:
         # nothing to do with each other.
         outer = list(current_launch().leaves)
         outer += list(enclosing.leaves) if enclosing is not None else []
+        # Runtime parameters, unlike tensors and L2 buffers, are NOT safe to
+        # thread wholesale. They are the one operand kind whose *order* is part
+        # of the herd's interface, and a design with several of them wants a
+        # different subset in each herd -- fused_decode's attention herd reads
+        # the context length and the layer-type arm, its rope herd only the arm.
+        # Passing every live one to every herd would put the wrong value in the
+        # wrong position. So: one live parameter threads implicitly (the common
+        # case, and unambiguous), and more than one has to be named.
+        if self.params is not None:
+            rtps = list(self.params)
+        elif len(trace.rtps) > 1:
+            raise RuntimeError(
+                f"air.herd {self.name!r}: {len(trace.rtps)} air.rtp parameters "
+                "are live, so which ones this herd reads -- and in what order "
+                "-- is ambiguous. Name them: "
+                "air.herd(..., params=[length, arm]). They become herd "
+                "operands in the order given."
+            )
+        else:
+            rtps = list(trace.rtps)
         operands = (
             [leaf.value for leaf in outer]
             + [t.value for t in tensors]
             + [b.value for b in staged]
+            + [r.value for r in rtps]
         )
         # air.herd is always 2-D. A 1-D grid is laid out along x -- [P, 1], the
         # orientation the hand-written eltwise_add kernel uses for its 8-core
@@ -1415,13 +1564,18 @@ class HerdContext:
             saved = [t.value for t in tensors]
             saved_staged = [b.value for b in staged]
             saved_outer = [leaf.value for leaf in outer]
+            saved_rtps = [r.value for r in rtps]
             n_outer = len(outer)
+            n_staged = len(staged)
             for leaf, v in zip(outer, inner[:n_outer]):
                 leaf.value = v
-            for t, v in zip(tensors, inner[n_outer : n_outer + len(tensors)]):
+            base = n_outer + len(tensors)
+            for t, v in zip(tensors, inner[n_outer:base]):
                 t.value = v
-            for b, v in zip(staged, inner[n_outer + len(tensors) :]):
+            for b, v in zip(staged, inner[base : base + n_staged]):
                 b.value = v
+            for r, v in zip(rtps, inner[base + n_staged :]):
+                r.rebind(v)
             previous, _CURRENT_HERD = _CURRENT_HERD, herd_self
 
             phys_coords = coords if two_d else coords[:1]
@@ -1468,6 +1622,8 @@ class HerdContext:
                     t.value = v
                 for b, v in zip(staged, saved_staged):
                     b.value = v
+                for r, v in zip(rtps, saved_rtps):
+                    r.rebind(v)
                 for leaf, v in zip(outer, saved_outer):
                     leaf.value = v
                 _CURRENT_HERD = previous
@@ -1539,6 +1695,30 @@ def run_strip_mined(run, repeats, range_, yield_):
 # ---------------------------------------------------------------------------
 
 
+def _parse_herd_params(params, name):
+    """Validate ``air.herd(params=[...])`` into a tuple of RuntimeParams, or None.
+
+    ``None`` means "thread whatever single parameter is live", which is what a
+    design with one of them wants and what every herd got before this existed.
+    An empty list is not the same thing: it says this herd reads none.
+    """
+    if params is None:
+        return None
+    if isinstance(params, RuntimeParam):
+        params = [params]
+    out = []
+    for p in params:
+        if not isinstance(p, RuntimeParam):
+            raise TypeError(
+                f"air.herd {name!r}: params= takes values from air.rtp(), got "
+                f"{p!r} ({type(p).__name__}). A herd operand that is a buffer "
+                "is passed by using it in the body; params= is only for the "
+                "scalars air.rtp builds."
+            )
+        out.append(p)
+    return tuple(out)
+
+
 def _parse_herd_anchor(at):
     """Validate ``air.herd(at=(col, row))`` into a pair of ints, or None.
 
@@ -1577,7 +1757,9 @@ def _parse_herd_anchor(at):
     return tuple(out)
 
 
-def herd(iterable, name=None, shape=None, target=None, link_with=None, at=None):
+def herd(
+    iterable, name=None, shape=None, target=None, link_with=None, at=None, params=None
+):
     """A herd of cores over ``iterable``, strip-mined onto the physical array.
 
     ``link_with=`` names the object file to stamp on the herd, for a lowering
@@ -1596,7 +1778,13 @@ def herd(iterable, name=None, shape=None, target=None, link_with=None, at=None):
     1x1 LA herds pinned along row 4, with LGU and LD on rows 2 and 3.
     """
     return HerdContext(
-        iterable, name=name, shape=shape, target=target, link_with=link_with, at=at
+        iterable,
+        name=name,
+        shape=shape,
+        target=target,
+        link_with=link_with,
+        at=at,
+        params=params,
     )
 
 
@@ -1612,10 +1800,18 @@ def _require_allocatable(dtype, what):
     )
 
 
-def tensor(shape, dtype, name=None):
-    """Declare a host-visible L3 array; becomes a kernel argument."""
+def tensor(shape, dtype, name=None, inout=False):
+    """Declare a host-visible L3 array; becomes a kernel argument.
+
+    ``inout=True`` marks a buffer the kernel both reads and writes in place. It
+    is exempt from the inputs-then-outputs ordering rule, which exists because
+    the XRT invocation passes inputs first and then outputs -- a distinction an
+    in-place buffer does not have. It also does not, on its own, satisfy the
+    requirement that a kernel write *some* output.
+    """
     _require_allocatable(dtype, "air.tensor")
     t = Tensor(shape, dtype, name=name or infer_name(f"t{len(PENDING_TENSORS)}"))
+    t.inout = inout
     PENDING_TENSORS.append(t)
     return t
 

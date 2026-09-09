@@ -79,7 +79,15 @@ def sequential(start, stop=None, step=None, name=None):
     if step is None:
         step = 1
 
-    from ._index import IndexExpr as _IndexExpr
+    from ._index import IndexExpr as _IndexExpr, coerce_index as _coerce
+    from .ops import _Switch
+
+    # A bound picked at runtime by ops.switch is an index like any other; coerce
+    # it here so the dynamic path below sees an IndexExpr rather than refusing a
+    # type it has no opinion about.
+    start, stop, step = (
+        _coerce(v) if isinstance(v, _Switch) else v for v in (start, stop, step)
+    )
 
     # A bound may be an index expression -- a coordinate, or an enclosing loop's
     # variable. scf.for takes SSA bounds, so nothing here has to fold: what it

@@ -219,6 +219,13 @@ ui32 = DType(
 
 _BY_NP = {d.np_dtype: d for d in (bf16, f16, f32, i8, i16, i32, ui8, ui16, ui32)}
 
+# Types a kernel scalar argument can have, for reading one back out of an
+# air.extern(signature=...) entry. Signed before unsigned: MLIR spells
+# signedness in the operation rather than the type, so i32 and ui32 have the
+# same mlir() and the first match wins -- the signed one, which is the only one
+# a scalar constant can be built as anyway.
+SCALAR_TYPES = (bf16, f16, f32, i8, i16, i32)
+
 
 def dtype_of(np_dtype):
     """Map a numpy dtype back onto the API's DType, for error messages.

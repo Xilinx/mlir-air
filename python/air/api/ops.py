@@ -37,7 +37,13 @@ plausible-looking placeholder: a DSL that accepts an op it cannot lower
 produces a kernel that runs and is silently wrong.
 """
 
-from ._cond import Branch, Condition, branch  # noqa: F401
+from ._cond import (
+    Branch,
+    Condition,
+    SwitchRegion,
+    branch,
+    switch_region,
+)  # noqa: F401,E501
 from ._value import Buffer, BufferExpr, BufferSlice, Tensor, TensorSlice, Token
 from .types import require_computable, require_signless
 
@@ -988,22 +994,33 @@ def reduce_max(x):
     return _reduce("reduce_max", "max", x)
 
 
-def switch(index, values):
+def switch(index, values=None):
     """Pick one of ``values`` by a runtime ``index``.
 
         addend = air.api.ops.switch(step, [1.0, 10.0])
         acc[:] = acc[:] + addend
 
-    An **expression**, not a statement: it yields the chosen value, the way a
-    Rust ``match`` or a C# switch expression does, and not the way C's statement
-    does. The N-way *statement* -- run one of N bodies for their effects -- is
-    nested ``ops.branch``, which is why this name is not taken by it.
+    With ``values`` it is an **expression**: it yields the chosen value, the way
+    a Rust ``match`` or a C# switch expression does, and not the way C's
+    statement does.
+
+    **Without them it is a region**, run unless the key is zero::
+
+        with air.api.ops.switch(wave < n_decode):
+            ops.load(staged, W[...])
+            ch.put(staged)
+
+    One op, two forms. The region form was originally routed to ``ops.branch``,
+    on the reasoning that an N-way statement is nested branches -- true of the
+    control flow, but it makes the emitted op an ``scf.if``, and a region that
+    has to be an ``scf.index_switch`` then has no spelling at all. Which op a
+    position needs is not something the DSL can infer, so the form that names
+    the op is the one that has to exist.
 
     Against its neighbours: ``ops.switch`` keys on an integer, ``ops.select``
     keys on a per-element mask, and ``ops.branch`` keys on a single condition
-    and runs statements. Both arms of a select are evaluated and one is kept;
-    here exactly one case runs, because it lowers to ``scf.index_switch`` in its
-    value-returning form.
+    and runs statements as an ``scf.if``. Both arms of a select are evaluated
+    and one is kept; here exactly one case runs.
 
     The index is a coordinate or a loop variable, and the values are compile-time
     scalars: the case bodies are constants, so there is nothing to evaluate in
@@ -1018,6 +1035,11 @@ def switch(index, values):
     from ._cond import Condition
     from ._index import coerce_index
     from ._value import Buffer, BufferExpr, BufferSlice
+
+    # No values: the region form. A Condition is legal here and only here --
+    # the expression form keys on an integer, and says so below.
+    if values is None:
+        return switch_region(index)
 
     # Name the neighbour rather than complaining about a type. The three are
     # told apart by what they key on, and handing one the other's key is the
@@ -1042,6 +1064,13 @@ def switch(index, values):
             "choose: use the value itself"
         )
     for v in values:
+        # A callable arm is built inside its own region, and is how a switch
+        # nests: fused_decode's per-phase parameters are a switch over the
+        # decode/lm-head arm whose decode side is itself a switch over the
+        # phase. Only the index form takes one -- an elementwise arm has to be
+        # a constant of the destination's element type.
+        if callable(v):
+            continue
         if not isinstance(v, (int, float)) or isinstance(v, bool):
             raise TypeError(
                 f"air.api.ops.switch takes compile-time scalars to pick from, "
@@ -1051,14 +1080,138 @@ def switch(index, values):
     return _Switch(coerce_index(index), list(values))
 
 
+def _dominates_here(expr):
+    """Is ``expr``'s already-emitted value usable at the current insertion point?
+
+    ``as_index`` memoises, because a switch used as a loop bound and again as an
+    offset inside that loop should be one ``scf.index_switch``, not two. But a
+    switch first read inside one arm of a branch and then inside a *sibling* arm
+    would reuse a value that does not dominate the second use, and the module
+    fails to verify with "operand #0 does not dominate this use" -- naming an
+    affine.apply, several hundred lines from the switch, in a message nothing
+    connects back to the DSL. Re-materialising there is correct and cheap: the
+    arms are constants, so the second switch is pure and identical.
+    """
+    from air.ir import InsertionPoint
+
+    leaves = [leaf for leaf in expr.leaves() if leaf.value is not None]
+    if not leaves:
+        return True
+    here = InsertionPoint.current.block
+    for leaf in leaves:
+        owner = leaf.value.owner
+        block = owner if hasattr(owner, "operations") else owner.parent
+        if block is None:
+            continue
+        seen, cursor = False, here
+        while cursor is not None:
+            if cursor == block:
+                seen = True
+                break
+            parent = cursor.owner  # the op the block belongs to
+            cursor = parent.parent.block if parent is not None else None
+        if not seen:
+            return False
+    return True
+
+
 class _Switch:
     """A pending ops.switch; the dtype comes from the buffer it is used with."""
 
-    __slots__ = ("index", "values")
+    __slots__ = ("index", "values", "_as_index")
 
     def __init__(self, index, values):
         self.index = index
         self.values = values
+        # Memoised, because a switch used as an index is emitted where it is
+        # written and read in several places after -- a loop bound and then the
+        # offsets inside that loop. Re-materialising would put a second,
+        # identical scf.index_switch in the block for every use.
+        self._as_index = None
+
+    # -- the index form -----------------------------------------------------
+
+    def as_index(self):
+        """This switch as an :class:`IndexExpr`, for a bound or an offset.
+
+        The other consumer of a switch is the elementwise emitter, which asks
+        for a *buffer element* type; this one is an ``index``, so it composes
+        with coordinates and loop variables and can be an ``air.sequential``
+        bound or a region offset. ``coerce_index`` calls this, so writing the
+        switch where an index is expected is enough -- ``as_index()`` is only
+        needed to do arithmetic on one.
+        """
+        from ._index import IndexExpr, coerce_index
+
+        if self._as_index is not None and _dominates_here(self._as_index):
+            return self._as_index
+        for v in self.values:
+            if callable(v):
+                continue
+            if isinstance(v, float) and not v.is_integer():
+                raise TypeError(
+                    f"air.api.ops.switch: {v} is not an integer, but this "
+                    "switch is being used as an index (a loop bound, or an "
+                    "offset into a buffer). Index arms have to be whole numbers"
+                )
+        values = [v if callable(v) else int(v) for v in self.values]
+
+        index = self.index.materialize()
+        if isinstance(index, int):
+            # Same rule as the elementwise form: a constant index needs no
+            # switch, and folding it leaves the IR the caller would have written.
+            picked = values[min(index, len(values) - 1)]
+            self._as_index = (
+                coerce_index(picked())
+                if callable(picked)
+                else IndexExpr.constant(picked)
+            )
+            return self._as_index
+
+        from air.ir import IndexType
+        from air.dialects import arith
+        from air.dialects.scf import index_switch, yield_
+
+        def _arm(v):
+            # A callable arm is built *inside* its own region, which is the
+            # point: fused_decode's phase parameters are a switch over the
+            # decode/lm-head arm whose decode side is itself a switch over the
+            # phase. Written as a value that would have to exist before the
+            # outer switch, it would be emitted in the enclosing block and both
+            # arms would compute it.
+            value = coerce_index(v()).materialize() if callable(v) else v
+            if isinstance(value, int):
+                value = arith.ConstantOp.create_index(value).result
+            return yield_([value])
+
+        result = index_switch(
+            [IndexType.get()],
+            index,
+            list(range(len(values) - 1)),
+            case_body_builder=lambda op, i, cv: _arm(values[i]),
+            default_body_builder=lambda op: _arm(values[-1]),
+        )
+        result = result[0] if isinstance(result, (list, tuple)) else result
+        self._as_index = IndexExpr.leaf(result, "switch")
+        return self._as_index
+
+    # Arithmetic means the index form: an element-typed switch is consumed by
+    # the elementwise emitter whole, and there is nothing to add to it there.
+    def __add__(self, other):
+        return self.as_index() + other
+
+    __radd__ = __add__
+
+    def __sub__(self, other):
+        return self.as_index() - other
+
+    def __rsub__(self, other):
+        return other - self.as_index()
+
+    def __mul__(self, other):
+        return self.as_index() * other
+
+    __rmul__ = __mul__
 
     def _typed(self, value, dtype):
         """``value`` in the destination's element type, or a refusal.
@@ -1089,6 +1242,13 @@ class _Switch:
         from air.dialects import arith
         from air.dialects.scf import index_switch, yield_
 
+        if any(callable(v) for v in self.values):
+            raise TypeError(
+                "air.api.ops.switch: a callable arm builds an *index* inside "
+                "its own region, so this switch can be a loop bound or an "
+                "offset, but not a value in an elementwise expression -- there "
+                f"it has to be a constant of the destination's type ({dtype})"
+            )
         values = [self._typed(v, dtype) for v in self.values]
 
         index = self.index.materialize()

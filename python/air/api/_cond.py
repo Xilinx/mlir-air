@@ -70,7 +70,7 @@ the region structure.
 # dealloc would not be dominated by its alloc. See air.alloc's guard.
 from ._loop import enter_region, exit_region
 
-__all__ = ["Condition", "Branch", "branch"]
+__all__ = ["Condition", "Branch", "branch", "SwitchRegion", "switch_region"]
 
 
 class Condition:
@@ -254,9 +254,10 @@ class _Region:
     it instead.
     """
 
-    def __init__(self, at, terminate, arm=None):
+    def __init__(self, at, terminate, arm=None, what="ops.branch"):
         self._at = at
         self._terminate = terminate
+        self._what = what
         # (branch, index) while this region is open, so air.alloc can tell a
         # buffer in the then arm from one in the else arm.
         self._arm = arm
@@ -284,7 +285,7 @@ class _Region:
         self.open = False
         if self._arm is not None:
             _ARM_PATH.pop()
-        exit_region(aborted=exc_type is not None, what="ops.branch")
+        exit_region(aborted=exc_type is not None, what=self._what)
         if self._terminate:
             yield_([])
         self._ip.__exit__(exc_type, exc, tb)
@@ -374,6 +375,142 @@ class Branch:
         return _Region(
             InsertionPoint(self._else_terminator), terminate=False, arm=(self, 1)
         )
+
+
+class SwitchRegion:
+    """``ops.switch``'s statement form: a region, run unless the key is zero.
+
+    ``ops.switch`` with values is an expression and picks a number;
+    ``ops.switch`` without them is this, and runs statements. One op, two
+    forms, rather than a second construct that looks like a third conditional.
+
+    The ``with`` body is the **default** region -- what runs unless the key is
+    zero -- and ``otherwise()`` fills the *existing* ``case 0``. That is one
+    case region plus a default, never two: an ``scf.index_switch`` with a
+    second case region breaks ``air-to-aie``'s L2 receiver allocation, which
+    then reports the failure on the far side of the flow as
+    ``'air.channel.put' op failed to get S2MM tile for L3 allocation`` -- on a
+    shim put that is itself fine. There is no way to ask for a second one, so
+    that stays unrepresentable rather than merely documented.
+    """
+
+    def __init__(self, key):
+        self._key = key
+        self._op = None
+        self._body = None
+        self._case_terminator = None
+        self._otherwise_taken = False
+
+    def _switch_operand(self):
+        """The index the switch keys on, as an index-typed Value.
+
+        A :class:`Condition` becomes ``select(pred, 1, 0)`` then an
+        ``index_cast``, rather than feeding the ``i1`` somewhere it does not
+        belong. That is not a detour: an i32 operand survives
+        ``cloneL2AndL3MemcpysToDeviceOp``, which pins INDEX-typed segment
+        arguments to constant 0 -- so a gate whose key were built as an index
+        inside a segment would fold to one arm and erase every other branch.
+        """
+        from air.dialects import arith
+        from ._index import materialize_index
+
+        if isinstance(self._key, (Condition, ValueCondition)):
+            one = arith.ConstantOp(_i32(), 1).result
+            zero = arith.ConstantOp(_i32(), 0).result
+            picked = arith.select(self._key.materialize(), one, zero)
+            return arith.index_cast(_index_type(), picked)
+        key = materialize_index(self._key)
+        if isinstance(key, int):
+            # A constant key needs no switch, but folding it here would silently
+            # drop the region for key 0 and inline it otherwise -- a structural
+            # change the caller cannot see. Emit the constant and let the switch
+            # stand; canonicalisation folds it with the whole design in view.
+            return arith.ConstantOp.create_index(key).result
+        return key
+
+    def __enter__(self):
+        from air.dialects.scf import IndexSwitchOp, yield_
+        from air.ir import InsertionPoint
+
+        if self._op is not None:
+            raise RuntimeError("ops.switch region entered twice")
+        self._op = IndexSwitchOp(results=[], arg=self._switch_operand(), cases=[0])
+        # Terminate case 0 now, whether or not otherwise() will claim it. It is
+        # the idle arm by default, and a block with no terminator turns a
+        # diagnosable error into a verifier crash somewhere unrelated.
+        with InsertionPoint(self._op.case_block(0)):
+            self._case_terminator = yield_([])
+        self._body = _Region(
+            self._op.default_block, terminate=True, arm=(self, 0), what="ops.switch"
+        )
+        self._body.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._body.__exit__(exc_type, exc, tb)
+
+    def otherwise(self):
+        """The ``case 0`` region, as a second ``with`` block.
+
+        Not a second case region -- ``case 0`` is built by ``__enter__`` either
+        way, and this fills it instead of leaving it idle.
+        """
+        from air.ir import InsertionPoint
+
+        if self._op is None:
+            raise RuntimeError(
+                "otherwise() on an ops.switch whose region was never opened; "
+                "the spelling is `with ops.switch(...) as arm:` followed by "
+                "`with arm.otherwise():`"
+            )
+        if self._body.open:
+            raise RuntimeError(
+                "otherwise() inside the body of an ops.switch region; close "
+                "the first `with` block before opening the second"
+            )
+        if self._otherwise_taken:
+            raise RuntimeError("this ops.switch region already has an otherwise()")
+        self._otherwise_taken = True
+        return _Region(
+            InsertionPoint(self._case_terminator),
+            terminate=False,
+            arm=(self, 1),
+            what="ops.switch",
+        )
+
+
+def _i32():
+    from air.ir import IntegerType
+
+    return IntegerType.get_signless(32)
+
+
+def _index_type():
+    from air.ir import IndexType
+
+    return IndexType.get()
+
+
+def switch_region(key):
+    """Build :class:`SwitchRegion`; ``ops.switch`` calls this when given no values.
+
+    ``key`` is what ``ops.branch`` takes -- a comparison between index
+    expressions -- or a bare index. A comparison reaches the switch as
+    ``select(pred, 1, 0)`` then an ``index_cast`` rather than as a raw ``i1``.
+    """
+    key = _as_condition(key)
+    if isinstance(key, (Condition, ValueCondition)):
+        return SwitchRegion(key)
+    from ._index import coerce_index
+
+    try:
+        return SwitchRegion(coerce_index(key))
+    except TypeError:
+        raise TypeError(
+            "ops.switch's region form takes a comparison between index "
+            f"expressions (`wave < n`) or an index, got {key!r} "
+            f"({type(key).__name__}). " + _why_not_a_branch(key)
+        ) from None
 
 
 def branch(condition):

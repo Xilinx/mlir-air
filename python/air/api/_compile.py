@@ -42,7 +42,7 @@ __all__ = ["LaunchContext", "CompiledKernel", "launch", "compile"]
 class LaunchContext:
     """A traced kernel: an interface, a body, and a compiler entry point."""
 
-    def __init__(self, grid=None, name="kernel", target=None):
+    def __init__(self, grid=None, name="kernel", target=None, repeat=None, attrs=None):
         # This launch's own iteration space -- air.launch's `sizes`. One point
         # is one replay of everything inside, so outer tiling belongs here:
         # a segment's L2 staging is refilled per point. air.segment and
@@ -54,6 +54,15 @@ class LaunchContext:
         self.dims = parse_grid(grid) if grid is not None else ()
         self.grid = tuple(d.count for d in self.dims)
         self.tile_sizes = tuple(d.step for d in self.dims)
+        # An scf.for around air.launch: this launch is *dispatched* `repeat`
+        # times, its index handed to the body after the grid coordinates. int n
+        # means range(n); a range carries its own start and step.
+        self.repeat = _parse_repeat(repeat)
+        # Unit attributes on air.launch. air.preserve_shim_dma_order is the one
+        # in use: it opts out of air-opt-shim-dma-bds' per-channel BD
+        # regrouping, which a design whose weight feeds are coupled by an X
+        # broadcast multicast needs, since round-major put order is load-bearing.
+        self.attrs = tuple(attrs or ())
         self.name = name
         self.target = target or DEFAULT_TARGET
         self.tensors = list(PENDING_TENSORS)
@@ -178,7 +187,7 @@ class LaunchContext:
         kernel that stages nothing at the plain `func` + `air.herd` shape its
         hand-written predecessor had.
         """
-        n_expected = len(self.dims)
+        n_expected = len(self.dims) + (1 if self.repeat is not None else 0)
         if _positional_arity(self._body) != n_expected:
             raise TypeError(
                 f"launch body takes {_positional_arity(self._body)} coordinate "
@@ -189,8 +198,14 @@ class LaunchContext:
                     if n_expected == 0
                     else ""
                 )
+                + (
+                    " plus the dispatch index of repeat="
+                    f"{self.repeat[0]}:{self.repeat[1]}:{self.repeat[2]}"
+                    if self.repeat is not None
+                    else ""
+                )
             )
-        if not self.dims:
+        if not self.dims and self.repeat is None:
             self._body()
             return
         # air.launch takes as many sizes as it is given, and a 1-D grid pads to
@@ -200,18 +215,23 @@ class LaunchContext:
         # launch rather than a loop around a 2-D one.
         counts = list(self.grid) + [1] * max(0, 2 - len(self.grid))
         open_launch_region(
-            state, self.tensors, counts, lambda: self._body(*state.coords)
+            state,
+            self.tensors,
+            counts,
+            lambda: self._body(*state.coords, *([state.wave] if state.wave else [])),
+            repeat=self.repeat,
+            attrs=self.attrs,
         )
 
     def _check_interface(self):
-        outputs = self.outputs
+        outputs = [t for t in self.outputs if not t.inout]
         if not outputs:
             raise RuntimeError(
                 "kernel writes no output; at least one air.api.ops.store(...) "
                 "into a tensor is required"
             )
         first_output = self.tensors.index(outputs[0])
-        if any(not t.is_output for t in self.tensors[first_output:]):
+        if any(not t.is_output and not t.inout for t in self.tensors[first_output:]):
             raise RuntimeError(
                 "output tensors must be declared after all input tensors; the "
                 "interface order is "
@@ -330,16 +350,51 @@ class CompiledKernel:
         self.backend.unload()
 
 
-def launch(grid=None, name="kernel", target=None):
+def launch(grid=None, name="kernel", target=None, repeat=None, attrs=None):
     """Open a launch; claims every tensor declared since the last launch.
 
     `grid` is the launch's own iteration space -- one point is one replay of
     everything inside, with a segment's L2 staging refilled each time, so outer
     tiling goes here. `air.segment` and `air.herd` each take their own.
 
+    `repeat` dispatches this launch that many times: an `scf.for` **around**
+    `air.launch`, with the dispatch index handed to the body after the grid
+    coordinates. It is not a grid. A grid is spatial, so every point carries its
+    own segment -- multiplying segment symbols, locks and packet ids, which the
+    5-bit `dma_bd` Packet ID field caps at about four launches. `repeat` is
+    temporal: one device, driven N times, which is how a per-wave decode
+    dispatch is written. Pass an int for `range(n)`, or a `range`.
+
+    `attrs` are unit attributes on `air.launch`.
+
     `target` names an NPU generation, or "auto"/None to use the installed one.
     """
-    return LaunchContext(grid=grid, name=name, target=target)
+    return LaunchContext(
+        grid=grid, name=name, target=target, repeat=repeat, attrs=attrs
+    )
+
+
+def _parse_repeat(repeat):
+    """Normalise `repeat` to (lo, hi, step), or None."""
+    if repeat is None:
+        return None
+    if isinstance(repeat, range):
+        lo, hi, step = repeat.start, repeat.stop, repeat.step
+    elif isinstance(repeat, int) and not isinstance(repeat, bool):
+        lo, hi, step = 0, repeat, 1
+    else:
+        raise TypeError(
+            f"air.launch(repeat=...) takes an int or a range, got {repeat!r} "
+            f"({type(repeat).__name__})"
+        )
+    if step <= 0:
+        raise ValueError(f"air.launch(repeat=...) needs a positive step, got {step}")
+    if hi <= lo:
+        raise ValueError(
+            f"air.launch(repeat=range({lo}, {hi})) dispatches nothing; a launch "
+            "that never runs is a kernel with no body"
+        )
+    return (lo, hi, step)
 
 
 def compile(launch_ctx, **kwargs):

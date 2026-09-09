@@ -374,6 +374,11 @@ class Tensor(_Reshapable):
         self.value = None
         # Set when this tensor is the destination of an ops.store().
         self.is_output = False
+        # Declared in-place: read *and* written, so it is neither an input nor
+        # an output but both, and the inputs-then-outputs ordering rule does not
+        # apply to it. A residual stream chained through the same L3 buffer
+        # every layer is the case -- see fused_decode's x.
+        self.inout = False
 
     def __getitem__(self, key):
         key = _normalize_key(key, len(self.shape), "tensor")

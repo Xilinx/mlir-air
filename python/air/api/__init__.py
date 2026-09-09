@@ -93,6 +93,23 @@ statements -- which is what a channel put or a DMA has to be. They are the two
 halves of if-conversion. Reaching for either with the other's condition raises
 and the message names the one you wanted; ``_cond.py`` has the full table.
 
+``ops.switch`` is ``scf.index_switch``, in two forms. **With values** it is an
+expression that picks a number, and it has two consumers: the elementwise
+emitter, which types its arms as *buffer elements*, and ``coerce_index``, which
+types them as ``index`` -- so a switch can be an ``air.sequential`` bound or a
+region offset as well as a scalar in an expression (``as_index()`` is only
+needed to do arithmetic on one). **Without values** it is a region, run unless
+the key is zero, taking the same conditions ``ops.branch`` does.
+
+The region form exists because the op a position needs is not always the op its
+control flow suggests. An N-way statement *is* nested branches, which is why it
+was first routed there -- but that makes the emitted op an ``scf.if``, and a
+region that has to be an ``scf.index_switch`` then cannot be written at all.
+The ``with`` body is the *default* region and ``otherwise()`` fills ``case 0``,
+which ``__enter__`` builds either way -- so a two-armed switch is one case
+region, and there is no spelling for a second. That is deliberate: a second
+case region breaks ``air-to-aie``'s L2 receiver allocation.
+
 ``ops.branch`` has to be a region rather than a Python ``if`` because the herd
 body is traced once for the whole herd: a comparison against a coordinate has no
 value at trace time, so ``bool()`` on one raises rather than picking a branch for
@@ -113,6 +130,8 @@ from ._compile import CompiledKernel, LaunchContext, compile, launch
 from ._extern import ExternKernel, extern
 from ._loop import parallel, sequential
 from ._trace import (
+    RuntimeParam,
+    rtp,
     HerdContext,
     Scope,
     SegmentContext,

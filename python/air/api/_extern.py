@@ -46,7 +46,15 @@ __all__ = ["ExternKernel", "extern"]
 class ExternKernel:
     """A private ``func.func`` in an object file, callable from a herd body."""
 
-    def __init__(self, name, link_with=None, scalars=()):
+    def __init__(
+        self,
+        name,
+        link_with=None,
+        scalars=(),
+        signature=None,
+        emit_c_interface=True,
+        link_with_mode=None,
+    ):
         if not isinstance(name, str) or not name:
             raise TypeError("air.extern(name) takes the kernel's C symbol name")
         if not link_with:
@@ -76,10 +84,60 @@ class ExternKernel:
         self.name = name
         self.link_with = link_with
         self.scalars = list(scalars)
+        self.signature = signature
+        # A kernel whose C entry point is called directly, not through MLIR's
+        # C-interface wrapper, carries no llvm.emit_c_interface. Every kernel
+        # reached this way so far wanted the wrapper, so it stays the default.
+        self.emit_c_interface = emit_c_interface
+        # link_with_mode = "merge" links the kernel's LLVM IR into the core
+        # module rather than linking an object beside it, which is what a .ll
+        # kernel needs.
+        self.link_with_mode = link_with_mode
         # The declaration, materialised at the first call from the call's own
-        # argument types, and reused after that.
+        # argument types, and reused after that -- unless `signature` was given,
+        # in which case it is emitted eagerly, below.
         self._decl = None
         self._arg_types = None
+        if signature is not None:
+            # A signature already states every argument type, scalars included,
+            # so restating them in scalars= would be a second source of truth
+            # for the same fact -- and the two disagreeing is a wrong constant
+            # in a kernel call, which nothing downstream can catch.
+            derived = [_scalar_dtype(t) for t in signature if not _is_memref_type(t)]
+            if scalars and [s.name for s in scalars] != [d.name for d in derived]:
+                raise TypeError(
+                    f"air.extern({name!r}) was given both signature= and "
+                    f"scalars=, and they disagree: the signature's scalar "
+                    f"arguments are {[d.name for d in derived]} but scalars= "
+                    f"says {[s.name for s in scalars]}. Give one or the other."
+                )
+            self.scalars = derived
+            self._declare_now(signature)
+
+    def _declare_now(self, signature):
+        """Emit the declaration at construction, in source order.
+
+        The lazy path inserts each declaration with ``at_block_begin``, so the
+        module lists them in *reverse* order of first call. That is settled IR
+        for every kernel already written this way, so it is left alone; a caller
+        that needs source order says so by giving the signature, which is also
+        the only way to know the argument types before the first call.
+        """
+        from air.ir import InsertionPoint, StringAttr, UnitAttr
+        from air.dialects.func import FuncOp
+
+        from ._trace import active_trace
+
+        types = [_declared_type(t) for t in signature]
+        trace = active_trace()
+        with _after_declarations(trace.module):
+            decl = FuncOp(self.name, (types, []), visibility="private")
+            decl.attributes["link_with"] = StringAttr.get(self.link_with)
+            if self.link_with_mode is not None:
+                decl.attributes["link_with_mode"] = StringAttr.get(self.link_with_mode)
+            if self.emit_c_interface:
+                decl.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+        self._decl, self._arg_types = decl, types
 
     def __repr__(self):
         return f"air.api.extern({self.name!r}, link_with={self.link_with!r})"
@@ -123,7 +181,12 @@ class ExternKernel:
             with InsertionPoint.at_block_begin(trace.module.body):
                 decl = FuncOp(self.name, (types, []), visibility="private")
                 decl.attributes["link_with"] = StringAttr.get(self.link_with)
-                decl.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+                if self.link_with_mode is not None:
+                    decl.attributes["link_with_mode"] = StringAttr.get(
+                        self.link_with_mode
+                    )
+                if self.emit_c_interface:
+                    decl.attributes["llvm.emit_c_interface"] = UnitAttr.get()
             self._decl, self._arg_types = decl, types
         elif [str(t) for t in types] != [str(t) for t in self._arg_types]:
             raise TypeError(
@@ -134,8 +197,15 @@ class ExternKernel:
                 "kernel, or make the buffer shapes agree."
             )
 
-        # aircc links one object per herd, so the attribute is a single string.
-        herd.require_object(self.link_with, self.name)
+        # aircc links one object per herd, so the attribute is a single string
+        # -- but only for an object that is *linked*. A kernel declared
+        # link_with_mode = "merge" has its LLVM IR merged into whichever core
+        # calls it, per core, straight from the declaration; the herd attribute
+        # plays no part. fused_decode's attention block herd is the case: eight
+        # cores in one herd, attn_qk.ll on the qk rows and attn_kv.ll on the kv
+        # rows, and no herd link_with at all.
+        if self.link_with_mode != "merge":
+            herd.require_object(self.link_with, self.name)
         return CallOp(self._decl, values)
 
 
@@ -323,6 +393,21 @@ def _core_slab(buffer):
 def _scalar_value(arg, dtype, name, pos, arith):
     """Materialise a non-buffer argument as ``dtype``."""
     from ._value import BufferExpr, BufferSlice
+    from ._trace import RuntimeParam
+
+    if isinstance(arg, RuntimeParam):
+        # Already an i32 in this region -- the herd operand air.rtp threaded in.
+        # Passing it on is the point: fused_decode's rope and rms kernels take
+        # the layer-type arm as their last argument, the same value ops.switch
+        # gates on.
+        from .types import i32
+
+        if dtype is not i32:
+            raise TypeError(
+                f"{name}: argument {pos} is an air.rtp parameter, which crosses "
+                f"a region boundary as i32, but the kernel declares it {dtype}"
+            )
+        return arg.value
 
     if isinstance(arg, (BufferExpr, BufferSlice)):
         # A value read out of a buffer. The counter tile the flash-attention
@@ -343,6 +428,23 @@ def _scalar_value(arg, dtype, name, pos, arith):
 
         require_signless(dtype, "an air.extern scalar argument")
         return emit_scalar_value(expr, dtype)
+
+    from ._cond import Condition, ValueCondition
+
+    if isinstance(arg, (Condition, ValueCondition)):
+        # A comparison as a 0/1 integer flag. Kernels take these: fused_decode's
+        # cached-reduction accumulator is told to *fill* rather than accumulate
+        # on the first row-block of a projection, and "first" is `v1 == 0`.
+        # arith.extui, not a select of two constants -- one op, and the same
+        # shape the hand-written builders emit.
+        from air.dialects import arith as _arith
+
+        if dtype.is_float:
+            raise TypeError(
+                f"{name}: argument {pos} is a comparison, which is a 0/1 flag, "
+                f"but was declared {dtype}"
+            )
+        return _arith.extui(dtype.mlir(), arg.materialize())
 
     if isinstance(arg, IndexExpr):
         # A loop induction variable or tile coordinate. It folds to a Python int
@@ -380,6 +482,84 @@ def _scalar_value(arg, dtype, name, pos, arith):
     return arith.ConstantOp(dtype.mlir(), int(arg)).result
 
 
-def extern(name, link_with=None, scalars=()):
-    """Declare a hand-written kernel from ``link_with``; call it in a herd."""
-    return ExternKernel(name, link_with=link_with, scalars=scalars)
+def extern(
+    name,
+    link_with=None,
+    scalars=(),
+    signature=None,
+    emit_c_interface=True,
+    link_with_mode=None,
+):
+    """Declare a hand-written kernel from ``link_with``; call it in a herd.
+
+    ``signature`` states the argument types up front -- MLIR types, or air.api
+    element types for scalars -- which emits the declaration here, in source
+    order, rather than at the first call in reverse order of it.
+    ``emit_c_interface=False`` drops ``llvm.emit_c_interface``, and
+    ``link_with_mode="merge"`` links the kernel's IR into the core module.
+    """
+    return ExternKernel(
+        name,
+        link_with=link_with,
+        scalars=scalars,
+        signature=signature,
+        emit_c_interface=emit_c_interface,
+        link_with_mode=link_with_mode,
+    )
+
+
+def _declared_type(t):
+    """An entry of ``signature=`` as an MLIR type."""
+    from .types import DType
+
+    return t.mlir() if isinstance(t, DType) else t
+
+
+def _is_memref_type(t):
+    from .types import DType
+
+    if isinstance(t, DType):
+        return False
+    from air.ir import MemRefType
+
+    return isinstance(t, MemRefType) or str(t).startswith("memref<")
+
+
+def _scalar_dtype(t):
+    """A scalar entry of ``signature=`` as one of this package's element types.
+
+    The declaration only needs the MLIR type, but the *call* needs the DType:
+    that is what turns a Python ``1`` at the call site into an ``i32`` constant
+    rather than a guess.
+    """
+    from .types import DType, SCALAR_TYPES
+
+    if isinstance(t, DType):
+        return t
+    for dtype in SCALAR_TYPES:
+        if str(dtype.mlir()) == str(t):
+            return dtype
+    raise TypeError(
+        f"air.extern(signature=...) has a scalar argument of type {t}, which "
+        f"air.api has no element type for. Declare it as one of "
+        f"{', '.join(d.name for d in SCALAR_TYPES)}."
+    )
+
+
+def _after_declarations(module):
+    """Insert point after the private declarations already in ``module``."""
+    from air.ir import InsertionPoint
+    from air.dialects.func import FuncOp
+
+    last = None
+    for op in module.body.operations:
+        if isinstance(op, FuncOp) or op.operation.name == "func.func":
+            if "sym_visibility" in op.operation.attributes:
+                last = op
+    if last is None:
+        return InsertionPoint.at_block_begin(module.body)
+    ops = list(module.body.operations)
+    nxt = ops.index(last) + 1
+    # Before whatever follows the last declaration, or at the end of the module
+    # if nothing does -- InsertionPoint(block) appends.
+    return InsertionPoint(ops[nxt]) if nxt < len(ops) else InsertionPoint(module.body)
