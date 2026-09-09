@@ -18,9 +18,29 @@ inside the loop end up stranded between the unrolled copies, and the kernel
 computes with stale operands. A reduction that reuses a buffer across trips --
 which is to say, every reduction -- has to reach the compiler as a loop.
 
-Bounds must be Python integers. A dynamic trip count would need the bound to be
-an SSA value, and nothing in the DSL produces one; accepting an ``IndexExpr``
-here would only defer the failure into the IR.
+This always emits ``scf.for`` -- there is one loop op here and no other. What
+varies is the *bound operand*. A bound whose value is known while tracing (a
+Python integer, an ``air.symbol``) becomes a constant operand, and the trip
+count can be checked here: that the step tiles the extent exactly, that the
+range does not run backwards. A bound that is only known at run time becomes an
+SSA operand instead, computed by the ops immediately above the loop, and those
+checks are skipped because there is nothing yet to check::
+
+    %2 = arith.index_cast %arg : i32 to index    # an air.rtp parameter
+    %3 = affine.apply #map()[%2]
+    scf.for %i = %c0 to %3 step %c1 { ... }
+
+Three things produce such a bound: an enclosing loop's induction variable, an
+``ops.switch`` (which emits an ``scf.index_switch`` yielding an index), and an
+``air.rtp`` parameter (an i32 the instruction stream writes per dispatch). All
+three arrive as an :class:`IndexExpr` and are told apart from a constant by
+``as_const()``.
+
+A bound built from a *tile coordinate* is refused, and that is not the same
+question. The herd body is traced once and stands for every core, so a
+coordinate-dependent trip count would give each core a different one, and
+anything with a channel operation in it would deadlock on the cores that run
+fewer trips. A loop variable is uniform across cores and is allowed.
 """
 
 from ._index import IndexExpr
