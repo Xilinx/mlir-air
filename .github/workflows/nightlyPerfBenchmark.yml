@@ -418,7 +418,7 @@ jobs:
               echo "peano   : $($PEANO_INSTALL_DIR/bin/llc --version 2>/dev/null | sed -n 's/.*LLVM version //p' | head -1)"
               echo "pmode   : ${PMODE:-unknown}"
               echo "dev box : insts 1179444 bytes md5 48be5fa720fa (UNI_DEC=35, L1024)"
-              for d in 3 4 5 6; do
+              for d in 4 5; do
                 echo ""
                 echo "=== UNI_DEC=$d, ctx=1024 ==="
                 # The fork's build dir, which sweep_decode does not clear (it
@@ -445,6 +445,27 @@ jobs:
                 # state code is the branch point: a timeout means it hung, an
                 # abort means the command was rejected before it ran.
                 sed -n '1,30p' "$OLDPWD/perf_out/probe_d$d/L1024/bench.log" 2>/dev/null | sed 's/^/  | /' || true
+                # REPEATS. Ladder 2 came back 3 pass / 4 FAIL / 5 pass / 6 FAIL
+                # from byte-deterministic builds (every md5 reproduces exactly on
+                # a dev box), which is not a threshold in anything -- so the
+                # question is no longer "at what depth" but "is this even
+                # deterministic". One sample per arm cannot tell a hard hang from
+                # a flaky one, so dispatch the SAME staged binary N times and
+                # count. Templates are already staged in the workdir by the run
+                # above, so this rebuilds nothing.
+                FLAGS=$(DECODE_UNI_DEC=$d python $PE/llms/bench/decode_geometry.py \
+                          --model gemma4-e2b --vocab-chunk-i2 27 --ctx 1024 --n-layers 35 2>/dev/null)
+                if [ -n "$FLAGS" ] && [ -d "$OLDPWD/perf_out/probe_d$d/L1024" ]; then
+                  ( cd "$OLDPWD/perf_out/probe_d$d/L1024"
+                    pass=0; fail=0; states=""
+                    for i in $(seq 1 10); do
+                      out=$($PE/fused_decode/bench_decode.exe --dir . --base-l 1024 \
+                              --ref-l 1023 --l 1024 --iters 3 --warmup 1 $FLAGS 2>&1) || true
+                      if echo "$out" | grep -q '\[bench\]'; then pass=$((pass+1));
+                      else fail=$((fail+1)); states="$states $(echo "$out" | sed -n 's/.*state=\([0-9]*\).*/\1/p' | head -1)"; fi
+                    done
+                    echo "  REPEATS d=$d: $pass pass / $fail fail of 10   fail states:${states:- none}" )
+                fi
               done
             } 2>&1 | tee "$OLDPWD/perf_out/gemma4_probe.txt" || true
           fi
