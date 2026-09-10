@@ -4,10 +4,13 @@
 // Replay one decode step through the FULL-ELF build, taking the context length
 // from the scratchpad instead of from a patched instruction stream.
 //
-// The ELF path needs a C++ host: writing the scratchpad goes through
-// xrt::run::get_ctrl_scratchpad_bo(), which is in XRT's C++ API but not in this
-// XRT's Python bindings. elfver_dump.py writes the BO contents and the xclbin's
-// logits; this replays them and dumps the ELF's logits for comparison.
+// elfver_dump.py writes the BO contents and the xclbin's logits; this replays
+// them and dumps the ELF's logits for comparison.
+//
+// elfver_run.py is the Python equivalent and is the one to prefer. This C++
+// version is for hosts whose XRT predates 2026-05-19 (XRT c14df528, xdna-driver
+// 1.7): writing the scratchpad goes through xrt::run::get_ctrl_scratchpad_bo(),
+// which was in the C++ API well before pyxrt exposed it.
 //
 //   elfver_run.exe --elf decode.elf --params params.txt --dir /tmp/elfver [--l
 //   L]

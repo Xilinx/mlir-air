@@ -2,10 +2,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Dump one decode step's BO contents and the xclbin's logits, for elfver_run.cpp
-# to replay through the full-ELF build. The ELF path needs a C++ host because
-# writing the scratchpad needs xrt::run::get_ctrl_scratchpad_bo(), which this
-# XRT's Python bindings do not expose.
+# Dump one decode step's BO contents and the xclbin's logits, for elfver_run.py
+# (or elfver_run.cpp) to replay through the full-ELF build.
 #
 #   DEC_P=<prefill positions> python3 elfver_dump.py <outdir>
 
