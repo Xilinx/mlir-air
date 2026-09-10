@@ -395,7 +395,7 @@ jobs:
           # the difference is the machine, not the build.
           if want probe; then
             PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
-            PE=../programming_examples
+            PE=$(cd ../programming_examples && pwd)   # absolute: the repeat loop cds away
             G=$PE/llms/gemma4_e2b_q4nx
             mkdir -p "$OLDPWD/perf_out"
             # The suites above run under lit, which injects the AIE tool env from
