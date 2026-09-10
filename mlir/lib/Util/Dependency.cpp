@@ -8,6 +8,7 @@
 
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Iterators.h"
@@ -1279,13 +1280,26 @@ bool isTripCountDivisibleByFactor(scf::ForOp forOp, uint64_t factor) {
   auto step = getConstantIntValue(forOp.getStep());
   if (!lb || *lb != 0 || !step || *step != 1)
     return false;
-  auto mul = forOp.getUpperBound().getDefiningOp<arith::MulIOp>();
-  if (!mul)
+  if (auto mul = forOp.getUpperBound().getDefiningOp<arith::MulIOp>()) {
+    for (Value operand : {mul.getLhs(), mul.getRhs()})
+      if (auto c = getConstantIntValue(operand))
+        if (*c != 0 && (*c % (int64_t)factor) == 0)
+          return true;
     return false;
-  for (Value operand : {mul.getLhs(), mul.getRhs()})
-    if (auto c = getConstantIntValue(operand))
-      if (*c != 0 && (*c % (int64_t)factor) == 0)
-        return true;
+  }
+  // The same bound written as one affine map rather than an arith chain. A
+  // frontend that folds index arithmetic into affine.apply -- which AIR's own
+  // dependency analysis and DMA specialisation prefer -- would otherwise lose
+  // this, and lose it silently: the loop still unrolls, with a dead runtime
+  // epilogue whose never-filled DMA BD ring slots corrupt the count-free ring
+  // locks. getLargestKnownDivisor answers exactly the question asked here.
+  if (auto apply =
+          forOp.getUpperBound().getDefiningOp<affine::AffineApplyOp>()) {
+    AffineMap map = apply.getAffineMap();
+    if (map.getNumResults() != 1)
+      return false;
+    return (map.getResult(0).getLargestKnownDivisor() % (int64_t)factor) == 0;
+  }
   return false;
 }
 

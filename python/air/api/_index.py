@@ -342,6 +342,15 @@ def coerce_index(value):
         raise TypeError("bool is not a valid index")
     if isinstance(value, int):
         return IndexExpr.constant(value)
+    # A switch chosen at runtime: an scf.index_switch yielding an index, which
+    # is a leaf like any other SSA index. Emitted once and memoised on the
+    # switch, so using one as a loop bound and again as an offset inside that
+    # loop is one op, not two.
+    from .ops import _Switch
+    from ._trace import RuntimeParam
+
+    if isinstance(value, (_Switch, RuntimeParam)):
+        return value.as_index()
     # Symbol and anything else exposing __index__ resolves to its current value.
     if hasattr(value, "__index__"):
         return IndexExpr.constant(int(value))

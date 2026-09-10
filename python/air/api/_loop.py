@@ -18,9 +18,29 @@ inside the loop end up stranded between the unrolled copies, and the kernel
 computes with stale operands. A reduction that reuses a buffer across trips --
 which is to say, every reduction -- has to reach the compiler as a loop.
 
-Bounds must be Python integers. A dynamic trip count would need the bound to be
-an SSA value, and nothing in the DSL produces one; accepting an ``IndexExpr``
-here would only defer the failure into the IR.
+This always emits ``scf.for`` -- there is one loop op here and no other. What
+varies is the *bound operand*. A bound whose value is known while tracing (a
+Python integer, an ``air.symbol``) becomes a constant operand, and the trip
+count can be checked here: that the step tiles the extent exactly, that the
+range does not run backwards. A bound that is only known at run time becomes an
+SSA operand instead, computed by the ops immediately above the loop, and those
+checks are skipped because there is nothing yet to check::
+
+    %2 = arith.index_cast %arg : i32 to index    # an air.rtp parameter
+    %3 = affine.apply #map()[%2]
+    scf.for %i = %c0 to %3 step %c1 { ... }
+
+Three things produce such a bound: an enclosing loop's induction variable, an
+``ops.switch`` (which emits an ``scf.index_switch`` yielding an index), and an
+``air.rtp`` parameter (an i32 the instruction stream writes per dispatch). All
+three arrive as an :class:`IndexExpr` and are told apart from a constant by
+``as_const()``.
+
+A bound built from a *tile coordinate* is refused, and that is not the same
+question. The herd body is traced once and stands for every core, so a
+coordinate-dependent trip count would give each core a different one, and
+anything with a channel operation in it would deadlock on the cores that run
+fewer trips. A loop variable is uniform across cores and is allowed.
 """
 
 from ._index import IndexExpr
@@ -79,7 +99,22 @@ def sequential(start, stop=None, step=None, name=None):
     if step is None:
         step = 1
 
-    from ._index import IndexExpr as _IndexExpr
+    from ._index import IndexExpr as _IndexExpr, coerce_index as _coerce
+    from ._trace import RuntimeParam
+    from .ops import _Switch
+
+    # A bound decided at runtime -- picked by ops.switch, or read from an
+    # air.rtp parameter -- is an index like any other; coerce it here so the
+    # dynamic path below sees an IndexExpr rather than refusing a type it has no
+    # opinion about. Both, not just the switch: coerce_index handles the two
+    # together, and a bound is exactly where a runtime parameter turns up. A
+    # per-dispatch context length driving a herd's block loop is the case --
+    # fused_decode's attention cores loop ceil(L/16) times, with L an i32 RTP
+    # the instruction stream writes.
+    start, stop, step = (
+        _coerce(v) if isinstance(v, (_Switch, RuntimeParam)) else v
+        for v in (start, stop, step)
+    )
 
     # A bound may be an index expression -- a coordinate, or an enclosing loop's
     # variable. scf.for takes SSA bounds, so nothing here has to fold: what it
@@ -304,9 +339,22 @@ def _parallel_grid(grid, name):
 
 def _as_bound(value, which, what="sequential"):
     if isinstance(value, bool) or not hasattr(value, "__index__"):
+        # Say what was rejected, not why it might have been built. This used to
+        # assert "a bound computed from a tile coordinate is not supported" for
+        # every type it turned away, which named a cause that is usually not the
+        # one -- and is not even a general truth any more: air.sequential does
+        # take a runtime bound, and only a *spatial* coordinate is refused, by
+        # the check that can actually tell.
+        extra = ""
+        if what == "parallel":
+            extra = (
+                " air.parallel's bounds are resolved at trace time even where "
+                "air.sequential's are not: its index is a channel bundle slot, "
+                "which air-to-aie unrolls spatially and cannot do for a count "
+                "it does not know."
+            )
         raise TypeError(
             f"air.{what}({which}=...) takes a Python integer (or an air.symbol), "
-            f"got {type(value).__name__} {value!r}. Loop bounds are resolved at "
-            "trace time; a bound computed from a tile coordinate is not supported."
+            f"got {type(value).__name__} {value!r}." + extra
         )
     return int(value)

@@ -335,3 +335,86 @@ module {
     return
   }
 }
+
+// -----
+
+// An offset spelled as ONE affine.apply rather than an arith chain still
+// coalesces. A frontend that folds index arithmetic into a single map -- which
+// AIR's own dependency analysis and DMA specialisation prefer -- otherwise
+// loses coalescing silently: the feed still runs, in twice the BDs. Two paced
+// feeds at `s0 * 4096` and `s0 * 4096 + 2048`, each len 2048, are one
+// contiguous run and merge into a single len-4096 BD at a dynamic offset.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.dma_bd(%arg0 : memref<16384xbf16> offset = %{{.*}} len = 4096 sizes = [4096] strides = [1])
+// CHECK-NOT: len = 2048
+
+// NOCOAL-LABEL: aie.device(npu2)
+// NOCOAL: aie.dma_bd(%arg0 : memref<16384xbf16> offset = %{{.*}} len = 2048 sizes = [2048] strides = [1])
+// NOCOAL: aie.dma_bd(%arg0 : memref<16384xbf16> offset = %{{.*}} len = 2048 sizes = [2048] strides = [1])
+
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<16384xbf16>, %wave: index) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2048_i64 = arith.constant 2048 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    %a0 = affine.apply affine_map<()[s0] -> (s0 * 4096)>()[%wave]
+    %o0 = arith.index_cast %a0 : index to i64
+    %a1 = affine.apply affine_map<()[s0] -> (s0 * 4096 + 2048)>()[%wave]
+    %o1 = arith.index_cast %a1 : index to i64
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o0], [%c1_i64, %c1_i64, %c1_i64, %c2048_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<16384xbf16>) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o1], [%c1_i64, %c1_i64, %c1_i64, %c2048_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<16384xbf16>) : !airrt.event
+    return
+  }
+}
+
+// -----
+
+// Two affine offsets that peel to the SAME base value but scale it differently
+// are NOT one run and must not merge. `s0 * 2048` and `s0 * 4096 + 2048` have
+// constant terms 0 and 2048, so on the addends alone they look contiguous --
+// they are only distinguished by the map's non-constant sub-expression, which
+// joins the group key. Neutering that key merges these into one len-4096 BD,
+// which is what this case guards.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.dma_bd(%arg0 : memref<16384xbf16> offset = %{{.*}} len = 2048 sizes = [2048] strides = [1])
+// CHECK: aie.dma_bd(%arg0 : memref<16384xbf16> offset = %{{.*}} len = 2048 sizes = [2048] strides = [1])
+// CHECK-NOT: len = 4096
+
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<16384xbf16>, %wave: index) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2048_i64 = arith.constant 2048 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    %a0 = affine.apply affine_map<()[s0] -> (s0 * 2048)>()[%wave]
+    %o0 = arith.index_cast %a0 : index to i64
+    %a1 = affine.apply affine_map<()[s0] -> (s0 * 4096 + 2048)>()[%wave]
+    %o1 = arith.index_cast %a1 : index to i64
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o0], [%c1_i64, %c1_i64, %c1_i64, %c2048_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<16384xbf16>) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o1], [%c1_i64, %c1_i64, %c1_i64, %c2048_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<16384xbf16>) : !airrt.event
+    return
+  }
+}
