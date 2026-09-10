@@ -41,6 +41,14 @@ on:
           run is ~7h, sweep alone well under an hour, prefill-sweep ~2.7h. A
           narrowed run does NOT publish (see below), because its perf.json is
           partial by construction.
+
+          Neither does a run on any ref other than main, whatever the suite list:
+          publishing is gated on the ref as well. A dispatch from a PR branch with
+          the default (all four) suites used to satisfy the gate and append to the
+          durable perf-history branch. That is how a gemma4_e2b_q4nx verify=fail
+          row from a PR branch reached the published page and then STUCK there --
+          the model did not exist on main, so no later nightly could ever produce
+          a row to supersede it.
         default: verify,profile,sweep,prefill-sweep
         type: string
 
@@ -586,7 +594,7 @@ jobs:
         # run cancelled mid-profile appended rows with null metrics but
         # verify_status "pass". A *failed* run must still publish -- its other
         # models' rows are good.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -671,7 +679,7 @@ jobs:
       # for `if:`. A cancelled full run is partial at an arbitrary point, so it
       # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.run_id }}
@@ -684,7 +692,7 @@ jobs:
 
       # Same payload, name the publisher ignores: still there to download.
       - name: Upload perf artifact (partial run)
-        if: ${{ cancelled() || !(github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
+        if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-partial-${{ github.run_id }}
@@ -707,7 +715,7 @@ jobs:
         # Full, non-cancelled runs only -- same reasoning as the history append.
         # Note this gate alone never protected the page: the artifact naming
         # above is what actually decides, because generateDocs runs on push too.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep') }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
