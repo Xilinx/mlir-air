@@ -5255,7 +5255,9 @@ def run():
         coalesce_shim_dma=bool(COALESCE),
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
         # per dispatch from the emitted header instead of read from insts.bin.
-        emit_txn_cpp=bool(DYNSEQ),
+        # Not on the ELF path: an ELF embeds its stream and takes the scalar from
+        # the scratchpad, so there is no per-dispatch stream to build.
+        emit_txn_cpp=bool(DYNSEQ) and out_fmt != "elf",
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "
