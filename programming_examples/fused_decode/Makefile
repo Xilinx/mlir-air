@@ -88,7 +88,7 @@ DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GO
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
-.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq preflight-peano preflight-llvm-link clean
+.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq compile-decode-elf preflight-peano preflight-llvm-link clean
 
 help:
 	@echo "============================================================"
@@ -96,6 +96,7 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "  make compile-decode   Build decode kernels + templates (decode_L2048 + L2047, ~15 min)"
+	@echo "  make compile-decode-elf  ONE full-ELF artifact for every L (runtime L via scratchpad)"
 	@echo "  make bench-decode     C++ per-token latency in FLM-comparable scope; LATENCY ONLY,"
 	@echo "                        never a correctness gate.  L=1933 ITERS=64 WARMUP=8"
 	@echo "  make clean            Remove kernels + templates"
@@ -215,6 +216,38 @@ compile-decode-dynseq: preflight-llvm-link
 	    rm -f npu_seq_*.mlir; \
 	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/decode_dyn_L$(LBUILD).log)"; exit 1; fi
 	@echo "Dynseq build complete: decode_dyn_L$(LBUILD).{xclbin,txn.h}. Run with DECODE_DYNSEQ=1."
+
+## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
+## The KV append offset and the attention mask threshold become mlir-aie
+## scratchpad parameters the host writes per dispatch, so there is no
+## instruction stream to patch -- and so no template pair, no L-slope
+## calibration, and no staircase windows.
+##
+## RB and MEM stay OFF deliberately. They make the KV readback's BD *length* and
+## the memtile dequeue count runtime values, and `aie.dma_bd` has
+## `offset_parameter` but no `len_parameter` -- a runtime length has no
+## scratchpad form. That costs nothing: the shipping xclbin already streams the
+## full ATTN_MAXL on readback regardless of L. TRIP stays off for the same
+## reason a static TXN cannot hold a runtime loop bound; the cores keep the
+## compile-time block count and skip masked blocks, exactly as today.
+compile-decode-elf: preflight-llvm-link
+	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 DECODE_DYNSEQ_TRIP=0 DECODE_DYNSEQ_RB=0 DECODE_DYNSEQ_MEM=0 \
+	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; \
+	  if [ -f decode.elf ] && [ -s params.txt ]; then \
+	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; \
+	    echo "$(LBUILD)" > decode_scratchpad.maxl; \
+	  else echo "decode ELF FAILED (see /tmp/decode_elf_L$(LBUILD).log)"; exit 1; fi
+	@echo "Full-ELF build complete: decode_scratchpad.elf + decode_scratchpad.params.txt"
+	@cat $(srcdir)/decode_scratchpad.params.txt
 
 ## Staircase templates: one pair per ATTN_MAXL window. Each token dispatches on the
 ## smallest window covering the current context, so a short context streams
