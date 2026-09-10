@@ -2427,6 +2427,13 @@ void dependencyCanonicalizer::parseDependencyEdgesInGraph(
 void dependencyCanonicalizer::connectOpToItsDepListImpls(
     Operation *op, Graph &g, dependencyContext dep_ctx) {
   SmallVector<Value, 1> dep_list;
+  // Only async tokens carry dependency edges. A loop may also carry ordinary
+  // data as an iter_arg (a runtime scalar, an accumulator), whose defining op
+  // is not a graph vertex and has no type name here.
+  auto pushIfToken = [&dep_list](Value v) {
+    if (isa<air::AsyncTokenType>(v.getType()))
+      dep_list.push_back(v);
+  };
   // air.asyncopinterface
   if (auto async_op =
           mlir::dyn_cast_if_present<xilinx::air::AsyncOpInterface>(op)) {
@@ -2437,32 +2444,32 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
   // scf.for
   else if (auto forop = dyn_cast_if_present<scf::ForOp>(op)) {
     for (auto iter_operand : forop.getInitArgs()) {
-      dep_list.push_back(iter_operand);
+      pushIfToken(iter_operand);
     }
   }
   // scf.parallel
   else if (auto parallelop = dyn_cast_if_present<scf::ParallelOp>(op)) {
     for (auto operand : parallelop->getOperands()) {
-      dep_list.push_back(operand);
+      pushIfToken(operand);
     }
   }
   // scf.yield
   else if (auto yieldop = dyn_cast_if_present<scf::YieldOp>(op)) {
     for (auto operand : yieldop->getOperands()) {
-      dep_list.push_back(operand);
+      pushIfToken(operand);
     }
   }
   // scf.reduce
   else if (auto reduceop = dyn_cast_if_present<scf::ReduceOp>(op)) {
     for (auto operand : reduceop->getOperands()) {
-      dep_list.push_back(operand);
+      pushIfToken(operand);
     }
   }
   // affine.yield
   else if (auto affineyieldop =
                dyn_cast_if_present<affine::AffineYieldOp>(op)) {
     for (auto operand : affineyieldop->getOperands()) {
-      dep_list.push_back(operand);
+      pushIfToken(operand);
     }
   }
   if (dep_list.size()) {
@@ -2487,6 +2494,19 @@ void dependencyCanonicalizer::connectOpToItsDepList(
         }
       }
     }
+  }
+}
+
+// Sources of a branch op's joint token: the defining op of each branch's
+// yielded token. A branch may also yield ordinary data, whose defining op is
+// not a graph vertex.
+static void pushTokenDefiningOps(Operation *terminator,
+                                 std::vector<Operation *> &output) {
+  for (auto operand : terminator->getOperands()) {
+    if (!isa<air::AsyncTokenType>(operand.getType()))
+      continue;
+    if (auto *defOp = operand.getDefiningOp())
+      output.push_back(defOp);
   }
 }
 
@@ -2547,9 +2567,7 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
         if (!block.mightHaveTerminator())
           continue;
         auto *terminator = block.getTerminator();
-        for (auto operand : terminator->getOperands())
-          if (auto op = operand.getDefiningOp())
-            output.push_back(op);
+        pushTokenDefiningOps(terminator, output);
       }
     }
     return output;
@@ -2561,30 +2579,18 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
         dyn_cast_if_present<affine::AffineIfOp>(dep_token.getDefiningOp());
     // The first then block
     auto then_terminator = aifop.getThenBlock()->getTerminator();
-    for (auto operand : then_terminator->getOperands()) {
-      if (auto op = operand.getDefiningOp()) {
-        output.push_back(op);
-      }
-    }
+    pushTokenDefiningOps(then_terminator, output);
     // Recursion
     affine::AffineIfOp current_aif = aifop;
     while (getAffineIfInBlock(current_aif.getElseBlock())) {
       auto child_aif_op = getAffineIfInBlock(current_aif.getElseBlock());
       auto child_aif_terminator = child_aif_op.getThenBlock()->getTerminator();
-      for (auto operand : child_aif_terminator->getOperands()) {
-        if (auto op = operand.getDefiningOp()) {
-          output.push_back(op);
-        }
-      }
+      pushTokenDefiningOps(child_aif_terminator, output);
       current_aif = child_aif_op;
     }
     // The last else block
     auto last_else_terminator = current_aif.getElseBlock()->getTerminator();
-    for (auto operand : last_else_terminator->getOperands()) {
-      if (auto op = operand.getDefiningOp()) {
-        output.push_back(op);
-      }
-    }
+    pushTokenDefiningOps(last_else_terminator, output);
     return output;
   }
   return output;
