@@ -4,11 +4,11 @@ FastFlowLM's 4-bit `model.q4nx` bundle for Gemma4-E2B, running on the NPU
 through the [`fused_decode_ple`](../../fused_decode_ple) engine.
 
 **This example is partial, and the target list says which half is which.** The
-decoder layer runs on the NPU, is gated there per layer, and is swept there for
-throughput. There is no prefill engine and no token-level generation on device
-yet, so the `run` / `ask` / `profile` targets the other `llms/` examples carry
-are deliberately absent rather than present and broken -- each of them times or
-generates through a prefill.
+decoder layer runs on the NPU and is gated there per layer. There is no prefill
+engine and no token-level generation on device yet, so the `run` / `ask` /
+`profile` targets the other `llms/` examples carry are deliberately absent
+rather than present and broken -- each of them times or generates through a
+prefill.
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # must be >= 22.0.0, see Reproducibility
@@ -21,8 +21,6 @@ make help                  # everything else
 
 `make verify` here scores the decoder layer per class against a numpy reference
 rather than running the siblings' top-k token-set check, which needs a prefill.
-Decode throughput vs context is published from `run_npu2_sweep.lit`, which is
-decode-only and synthetic and so needs neither weights nor a prefill.
 
 ## What makes this model need its own engine
 
@@ -103,12 +101,16 @@ lm_head, int8 group-32 with an f32 per-group scale for the two embedding tables
 ## Not here yet
 
 Prefill, token-level generation on device, a top-k verify against an HF bf16
-reference, and the TTFT/profile numbers on the [LLM benchmark
-page](https://xilinx.github.io/mlir-air/llms/). All of those need a prefill
-engine this example does not have. The decode throughput curve on that page
-does not: it is measured by `run_npu2_sweep.lit`, which sets a context by sizing
-the KV cache rather than by prefilling a prompt.
+reference, and everything on the [LLM benchmark
+page](https://xilinx.github.io/mlir-air/llms/) -- TTFT, profile, and the decode
+throughput curve.
 
-The sweep builds the full 35-wave decode, not the layer gate's single wave. On
-an 89 GB machine it reaches 64k context (2.06 tok/s); 128k needs an 18.8 GB KV
-buffer and is swept as an allowed failure.
+TTFT and profile need a prefill engine this example does not have. The decode
+sweep does not, and `_compile_decode_build` here builds exactly what it wants
+(the full 35-wave decode, not the layer gate's single wave) -- but the dispatch
+hangs nondeterministically on the benchmark runner: ERT_CMD_STATE_TIMEOUT on
+~40% of attempts at 4-5 waves, which compounds to near-certain failure at 35.
+The same binaries run clean on a development box, so a sweep lit cannot be
+landed until that is understood. Reproduce with:
+
+    make -C ../../fused_decode_ple compile-decode LBUILD=1024 UNI_DEC=35
