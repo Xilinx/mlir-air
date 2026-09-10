@@ -51,13 +51,22 @@ def _staircase_on():
     return os.environ.get("DECODE_STAIRCASE") == "1"
 
 
+_elf = None  # fused_decode/decode_elf.py, imported once fused_decode is on sys.path
+
+
+def _load_elf_mod():
+    global _elf
+    if _elf is None:
+        sys.path.insert(0, str(_DEC))
+        import decode_elf
+
+        _elf = decode_elf
+    return _elf
+
+
 def _elf_on():
-    """Full-ELF decode: ONE artifact for every L, with the KV append offset and the
-    attention mask threshold written to the mlir-aie scratchpad per dispatch instead
-    of patched into an instruction stream. Needs `make compile-decode-elf` in
-    fused_decode, and a pyxrt exposing run.get_ctrl_scratchpad_bo() (XRT >= the
-    2026-05-19 binding; xdna-driver 1.7 has it)."""
-    return os.environ.get("DECODE_ELF") == "1"
+    """Full-ELF decode: ONE artifact for every L (see fused_decode/decode_elf.py)."""
+    return _load_elf_mod().elf_on()
 
 
 def _load_stair():
@@ -319,15 +328,17 @@ class FusedDecoder:
             # default, because a driver guessing 2048 against an ELF built at
             # some other L mis-sizes the KV cache and the mask threshold alike.
             self.gen = None
-            self._elf_path = _DEC / "decode_scratchpad.elf"
-            self._elf_params = _DEC / "decode_scratchpad.params.txt"
-            _stamp = _DEC / "decode_scratchpad.maxl"
-            if not (self._elf_path.exists() and _stamp.exists()):
+            self._elf_dir = _DEC
+            self.ATTN_MAXL = (
+                int((_DEC / "decode_scratchpad.maxl").read_text().split()[0])
+                if (_DEC / "decode_scratchpad.maxl").exists()
+                else 0
+            )
+            if not self.ATTN_MAXL:
                 raise RuntimeError(
-                    f"DECODE_ELF=1 needs {self._elf_path.name} + {_stamp.name}; "
-                    "run `make compile-decode-elf` in programming_examples/fused_decode"
+                    "DECODE_ELF=1 needs decode_scratchpad.maxl in "
+                    f"{_DEC}; run `make compile-decode-elf`"
                 )
-            self.ATTN_MAXL = int(_stamp.read_text().split()[0])
             self.windows = [self.ATTN_MAXL]
         else:
             self.gen = _pick_decode_gen(_DEC, max_L)
@@ -417,12 +428,10 @@ class FusedDecoder:
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.cur_maxl = self.ATTN_MAXL
         if self.elf_mode:
-            from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
-                ParameterScratchpad,
+            self._elfdec = _load_elf_mod().ElfDecode(
+                self._elf_dir, self.dev, xrt, self.REGION_W
             )
-
-            self._ctx = xrt.hw_context(self.dev, xrt.elf(str(self._elf_path)))
-            self.kern = xrt.ext.kernel(self._ctx, "main:q4nx_decode")
+            self.kern = self._elfdec.kern
             # ext.bo: an ELF kernel has no instruction argument, so there are no
             # group ids to place these against.
             self.x_bo = xrt.ext.bo(self.dev, self.K * 2)
@@ -430,14 +439,7 @@ class FusedDecoder:
             self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
             self.kvc = xrt.ext.bo(self.dev, 16 * self.LREG * 2)
-            # The run is persistent: the scratchpad BO belongs to it, so rebuilding
-            # a run per token would rebuild the parameter buffer with it.
-            self.run = xrt.run(self.kern)
-            for _i, _b in enumerate(
-                (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc)
-            ):
-                self.run.set_arg(_i, _b)
-            self._params = ParameterScratchpad(self.run, str(self._elf_params))
+            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
         else:
             self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
             self.kern = self._kern[self.cur_maxl][1]
@@ -525,11 +527,6 @@ class FusedDecoder:
             # the attention mask threshold. Both are the WHOLE affine value the
             # BD/core wants, which is why the append writes (L-1)*REGION_W.
             insts_size = None
-            self._params.write(
-                "__air_param_argoff_5_x256_m256", np.int32((L - 1) * self.REGION_W)
-            )
-            self._params.write("__air_param_attn_blk_0", np.int32(L))
-            self._params.sync()
         else:
             if len(self.windows) > 1:
                 _w = self.gen.window_for_L(L)
@@ -584,10 +581,7 @@ class FusedDecoder:
             # The buffer args were bound once at construction; only L changes, and
             # the hardware acts on the scratchpad copies written above. This still
             # has to be set: XRT patches every declared argument.
-            self.run.set_arg(5, L)
-            self.run.start()
-            self.run.wait2()
-            st = self.run.state()
+            st = self._elfdec.dispatch(L, np)
         else:
             import decode_dynseq as _dyn
 
@@ -631,8 +625,7 @@ class FusedDecoder:
         "ib",
         "_st",
         "_ist",
-        "_params",
-        "run",
+        "_elfdec",
         "kvc",
         "y_bo",
         "r_bo",
@@ -640,7 +633,6 @@ class FusedDecoder:
         "x_bo",
         "kern",
         "_kern",
-        "_ctx",
         "dev",
     )
 
