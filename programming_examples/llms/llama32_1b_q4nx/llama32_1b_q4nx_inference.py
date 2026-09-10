@@ -304,6 +304,14 @@ class FusedDecoder:
         # kernel skips masked blocks and single-buffers the block loop, so it serves every L in
         # [1, 2048] via an RTP-L + append insts patch (the reference one-MAX_L design).
         self.elf_mode = _elf_on()
+        if self.elf_mode and staircase:
+            # One ELF already serves every L, so there is no window to pick. Taking
+            # the ELF and dropping the staircase silently would look like the
+            # staircase was measured when it never ran.
+            raise RuntimeError(
+                "DECODE_ELF=1 and DECODE_STAIRCASE=1 are mutually exclusive: the "
+                "ELF has no per-window templates to switch between."
+            )
         if self.elf_mode:
             # One ELF, no templates: nothing to calibrate a slope against and no
             # window to pick, so the generator and the staircase are both unused.
