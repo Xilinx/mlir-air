@@ -33,6 +33,15 @@ import sys
 from pathlib import Path
 
 FUSED_DECODE = Path(__file__).resolve().parents[2] / "fused_decode"
+FUSED_DECODE_PLE = Path(__file__).resolve().parents[2] / "fused_decode_ple"
+
+# Models whose device path is the per-layer-embedding fork of the builder rather
+# than fused_decode itself. Keyed on DECODE_MODEL so the sweep lit needs no extra
+# flag: which builder a model uses is a property of the model, not of the caller,
+# and importing the wrong one here does not fail -- the fork is byte-faithful to
+# its parent for every other model, so it would return sizes that are merely
+# missing the PLE pair.
+PLE_BUILDERS = {"gemma4-e2b": (FUSED_DECODE_PLE, "fused_decode_ple.py")}
 
 # bench_decode.cpp's built-in defaults, i.e. llama-3.2-1B at ATTN_MAXL=2048.
 # VOCAB_CHUNK_I2=18 and w_elems are that model's, from its lit/Makefile.
@@ -192,10 +201,14 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         # is not.
         os.environ.update(env_extra or {})
         # fused_decode.py imports its siblings (proj_qmm_pack, ...) by bare name.
-        if str(FUSED_DECODE) not in sys.path:
-            sys.path.insert(0, str(FUSED_DECODE))
+        # The PLE fork does too, and takes them from fused_decode, so both dirs
+        # are on the path with the fork's own first.
+        bdir, bfile = PLE_BUILDERS.get(model, (FUSED_DECODE, "fused_decode.py"))
+        for d in (FUSED_DECODE, bdir):
+            if str(d) not in sys.path:
+                sys.path.insert(0, str(d))
         spec = importlib.util.spec_from_file_location(
-            "_fused_decode_geom", FUSED_DECODE / "fused_decode.py"
+            "_fused_decode_geom", bdir / bfile
         )
         fd = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fd)
@@ -238,6 +251,17 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         decode_y=decode_y,
         voc_n=fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
         rms_lut_off=fd.UNI_DEC * fd.RMS_LAYER,
+        # The PLE pair, sized exactly as the layer gate sizes it
+        # (validate_layer_npu.py): the weight slab is PER WAVE, unlike w, because
+        # the host rewrites it per layer rather than letting the shim step
+        # through all of them. px is the token embedding, one hidden state wide.
+        # Absent entirely for a non-PLE model, so as_flags emits no flag and
+        # bench_decode.cpp's zero defaults stand.
+        **(
+            {"pw_elems": fd.UNI_DEC * fd.PLE_LAYER, "px_elems": fd.K}
+            if getattr(fd, "PLE", False)
+            else {}
+        ),
     )
 
 

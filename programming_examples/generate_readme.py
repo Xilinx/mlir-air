@@ -253,6 +253,13 @@ EXAMPLES = [
         "path": "fused_decode",
         "datatypes": "Q4NX weights / bf16 activations",
     },
+    # fused_decode_ple (the per-layer-embedding fork of the above, driven by
+    # llms/gemma4_e2b_q4nx) is deliberately NOT listed. The status columns are
+    # derived from .lit files in the example's own directory, and that engine
+    # holds none: a second lit there would build into the same directory as the
+    # model-level compile gate and race it under the unfiltered suite. A row
+    # would therefore report "no NPU2 coverage" for an engine that is in fact
+    # gated, which is worse than no row. Add one when it gets a test of its own.
     {
         "category": "Attention",
         "name": "Flash Attention (Dataflow)",
@@ -531,6 +538,7 @@ _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 # programming_examples/llms/hf_models.txt.
 LLM_HF_MODELS = {
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
+    "gemma4_e2b_q4nx": "FastFlowLM/Gemma4-E2B-IT-NPU2",
     "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
     # Q4_0-quantized on load from an upstream bf16 checkpoint (LiquidAI
     # publishes no pre-quantized bundle), so this points at the source repo

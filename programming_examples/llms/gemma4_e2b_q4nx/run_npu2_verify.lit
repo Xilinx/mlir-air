@@ -1,0 +1,56 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Gemma4-E2B Q4NX verify gate: PER-LAYER cosine on device against the numpy
+// reference, which is itself gated per layer against FastFlowLM's own golden
+// activations (`make check`).
+//
+// NOT the same gate as the other llms/ examples. Theirs is a top-k token-set
+// inclusion check over a generated sequence, which needs a prefill engine and a
+// token loop; this example has neither yet. What it does have is a decoder layer
+// that runs end to end on the NPU -- q4 projections, the 5-norm sandwich, both
+// attention types, the GLU, the per-layer-embedding branch -- so the gate feeds
+// a chosen hidden state through one dispatch and compares the layer output
+// element for element. One dispatch exercises the whole device path at once.
+//
+// COVERAGE IS BY CLASS, NOT BY SAMPLE. Gemma4 crosses two attention types with
+// two KV/FFN regimes, and a layer from one class says nothing about the others:
+//   layer  0  sliding, own kv,    6144 FFN
+//   layer  4  full,    own kv,    6144
+//   layer 14  full,    own kv,    6144   (the source of every shared full layer)
+//   layer 15  sliding, kv <- 13, 12288
+//   layer 19  full,    kv <- 14, 12288
+//   layer 34  full,    kv <- 14, 12288   (the last layer)
+// The shared half needs a TWO-layer build -- those layers carry no k/v
+// projection of their own -- which is what `make layer-gate-shared` drives.
+//
+// peano_ge22, not just peano: the repo's pinned llvm-aie (21.0.0) compiles this
+// model and then returns all-NaN from every layer, so this gate would fail on
+// the pin for a reason that has nothing to do with the design.
+//
+// Weights are the FastFlowLM model.q4nx bundle. No HF bf16 reference is needed
+// (the reference is numpy), so unlike the sibling verify gates this requires
+// only the one repo -- and no hf_token, since that repo is ungated.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hfweights_fastflowlm_gemma4_e2b_it_npu2
+//
+// RUN: mkdir -p test_npu2_verify
+// RUN: cd test_npu2_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile layer-gate PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=OWN
+// RUN: make -f %S/Makefile layer-gate-shared PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=SHARED
+//
+// A PASS line per layer, in order, not just "some layer passed": a gate that
+// only checked for one PASS would stay green if a later class stopped being
+// built at all.
+// OWN: PASS: layer 0
+// OWN: PASS: layer 4
+// OWN: PASS: layer 14
+//
+// Each shared layer is preceded by its KV source's own PASS, which is what
+// seeds the cache the shared layer reads.
+// SHARED: PASS: layer 13
+// SHARED: PASS: layer 15
+// SHARED: PASS: layer 14
+// SHARED: PASS: layer 19
+// SHARED: PASS: layer 34

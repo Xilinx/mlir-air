@@ -340,23 +340,31 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
       C00.mac(A0, B0);
       C01.mac(A0, B1);
     }
+    // C is r x keys with one q head per row, so C00/C01 (key halves 0-7 and
+    // 8-15) hold all GQA_R heads. interleave_zip by 8 gives .first = heads 0,1
+    // and .second = heads 2,3, each as [k0-7, k8-15] pairs. This used to drop
+    // .second on the floor, so heads 2 and 3 got no score at all -- their
+    // softmax denominator came out zero and attn_kv then produced nothing for
+    // them. Every 1x4x1 model has Q_HEADS_PADDED_PER_CU == 4, so that was half
+    // the heads on both sides of the score buffer.
+    static_assert(Q_HEADS_PADDED_PER_CU == 4,
+                  "1x4x1 _attn_qk emits four heads per CU from one 4-row mmul");
     auto mout0 = aie::interleave_zip(C00.template to_vector<bf16>(),
                                      C01.template to_vector<bf16>(), 8);
 
-    aie::vector<bf16, 16> mout2, mout3;
+    aie::vector<bf16, 16> heads[4];
+    heads[0] = aie::filter_even(mout0.first, 16);
+    heads[1] = aie::filter_odd(mout0.first, 16);
+    heads[2] = aie::filter_even(mout0.second, 16);
+    heads[3] = aie::filter_odd(mout0.second, 16);
 
-    mout2 = aie::filter_even(mout0.first, 16);
-    mout3 = aie::filter_odd(mout0.first, 16);
-
-    mout2 = aie::mul(mout2, (bf16)ATTN_SCALE).template to_vector<bf16>(0);
-    mout3 = aie::mul(mout3, (bf16)ATTN_SCALE).template to_vector<bf16>(0);
-
-    aie::vector<bf16, 16> vec = update(m, c, mout2, mask, is_first);
-    aie::store_v(pY1, vec);
-    pY1 += 16;
-    vec = update(m + 1, c + 1, mout3, mask, is_first);
-    aie::store_v(pY1, vec);
-    pY1 += 16;
+    AIE_LOOP_UNROLL_FULL
+    for (int h = 0; h < Q_HEADS_PADDED_PER_CU; h++) {
+      heads[h] =
+          aie::mul(heads[h], (bf16)ATTN_SCALE).template to_vector<bf16>(0);
+      aie::store_v(pY1, update(m + h, c + h, heads[h], mask, is_first));
+      pY1 += 16;
+    }
   }
 }
 

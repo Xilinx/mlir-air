@@ -294,6 +294,20 @@ try:
             os.path.join(config.aie_obj_root, "include")
         )
         config.substitutions.append(("%peano_flags", peano_flags))
+        # Peano MAJOR version, for tests whose model needs a newer one than the
+        # repo pin. This is not a build-capability gate: an older Peano compiles
+        # them fine and then miscompiles the result, so a test gated only on
+        # `peano` would go green on a design that returns all-NaN. Currently
+        # used by fused_decode_ple / gemma4_e2b_q4nx, which need >= 22.
+        _pv = re.search(r"LLVM version (\d+)", result.stdout.decode("utf-8"))
+        if _pv and int(_pv.group(1)) >= 22:
+            config.available_features.add("peano_ge22")
+            print(f"Peano is LLVM {_pv.group(1)} (>=22): peano_ge22 enabled.")
+        elif _pv:
+            print(
+                f"Peano is LLVM {_pv.group(1)} (<22); peano_ge22 disabled, so "
+                "tests needing a newer Peano will skip."
+            )
     else:
         print("Peano not detected at expected path:", config.peano_tools_dir)
 except Exception:

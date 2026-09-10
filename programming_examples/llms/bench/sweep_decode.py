@@ -60,6 +60,22 @@ def _md5(path):
     return hashlib.md5(path.read_bytes()).hexdigest()[:12]
 
 
+def _fail_context(out, pattern, before=1, after=2, limit=400):
+    """The matched failure line plus a little context, as one flat string.
+
+    A dispatch failure is rarely self-describing on the line that matches:
+    bench_decode prints the geometry it bound and XRT prints its own error
+    around it, and which of those is the interesting one is not known in
+    advance. Capped, because this ends up in a JSON record that gets published.
+    """
+    lines = out.splitlines()
+    hit = next((i for i, l in enumerate(lines) if pattern.search(l)), None)
+    if hit is None:
+        return "dispatch did not complete"
+    window = lines[max(0, hit - before) : hit + after + 1]
+    return " / ".join(l.strip() for l in window if l.strip())[:limit]
+
+
 def _run(cmd, cwd=None, timeout=5400, env=None):
     return subprocess.run(
         cmd,
@@ -300,8 +316,16 @@ def main():
                     rec["ms_per_token"] = float(m.group(1))
                     rec["decode_tokens_per_sec"] = float(m.group(2))
                 elif XRT_FAIL_RE.search(out):
+                    # Carry the matched line, not a fixed string. bench.log stays
+                    # in the lit working directory and never reaches the
+                    # artifact, so a constant detail means a failure that only
+                    # happens on the runner cannot be diagnosed from the
+                    # artifact at all -- which is exactly the case that matters,
+                    # since a failure reproducible locally needs no artifact.
+                    # Same treatment build_fail already gets.
                     rec.update(
-                        status="xrt_incomplete", detail="dispatch did not complete"
+                        status="xrt_incomplete",
+                        detail=_fail_context(out, XRT_FAIL_RE),
                     )
                 else:
                     hint = re.search(

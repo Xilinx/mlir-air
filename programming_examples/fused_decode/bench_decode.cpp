@@ -104,6 +104,16 @@ int main(int argc, char **argv) {
   const size_t VOC_N = argLong(argc, argv, "--voc-n", 7 * 18432);
   const size_t RMS_LUT_OFF = argLong(argc, argv, "--rms-lut-off", 65536);
 
+  // --pw-elems / --px-elems: the per-layer-embedding pair, which only the PLE
+  // fork of the builder emits (gemma4-e2b). Zero => no PLE, which is every
+  // other model, and then nothing below changes. Both or neither: a PLE build
+  // whose second buffer is missing binds the token embedding to nothing and
+  // still dispatches, so it is rejected here rather than benched.
+  const size_t PW_ELEMS = argLong(argc, argv, "--pw-elems", 0);
+  const size_t PX_ELEMS = argLong(argc, argv, "--px-elems", 0);
+  if ((PW_ELEMS == 0) != (PX_ELEMS == 0))
+    throw std::runtime_error("--pw-elems and --px-elems come as a pair");
+
   // --w-parts: per-buffer weight element counts for a DECODE_WGROUP build (a
   // shim BD's byte offset is a uint32, so one buffer only reaches 4 GiB and
   // qwen3-8b's 4.41 GiB of weights must be split). Empty => the single-buffer
@@ -165,6 +175,10 @@ int main(int argc, char **argv) {
             << warmup << ")\n"
             << "weights     " << W_ELEMS << " elems in " << wParts.size()
             << " buffer(s)\n";
+  if (PW_ELEMS)
+    std::cout << "ple         " << PW_ELEMS << " + " << PX_ELEMS
+              << " elems, groups " << (7 + wParts.size()) << "/"
+              << (8 + wParts.size()) << "\n";
 
   // ---- device / kernel ----
   auto device = xrt::device(0);
@@ -191,6 +205,18 @@ int main(int argc, char **argv) {
   auto bo_r = xrt::bo(device, RMS_SIZE * 2, HO, kernel.group_id(5));
   auto bo_y = xrt::bo(device, NY * 2, HO, kernel.group_id(6));
   auto bo_kv = xrt::bo(device, KV_ELEMS * 2, HO, kernel.group_id(7));
+  // The PLE pair binds AFTER the weight groups (fused_decode_ple.py's
+  // PLEW_ARG/PLEX0_ARG), so its group ids follow the last weight group's rather
+  // than being fixed at 8/9 -- on a split-weight model that would alias a
+  // weight buffer, which does not fail, it just feeds a layer from the wrong
+  // base. Only ever two entries; a vector so the empty case costs nothing.
+  const int pleGroup = 7 + static_cast<int>(bo_w.size());
+  std::vector<xrt::bo> bo_ple;
+  if (PW_ELEMS) {
+    bo_ple.emplace_back(device, PW_ELEMS * 2, HO, kernel.group_id(pleGroup));
+    bo_ple.emplace_back(device, PX_ELEMS * 2, HO,
+                        kernel.group_id(pleGroup + 1));
+  }
   auto bo_i = xrt::bo(device, insts.size() * 4, XCL_BO_FLAGS_CACHEABLE,
                       kernel.group_id(1));
 
@@ -208,6 +234,10 @@ int main(int argc, char **argv) {
   fill(bo_r, RMS_SIZE * 2, 0x3C00);
   fill(bo_kv, KV_ELEMS * 2, 0x3C00);
   fill(bo_x, K * 2, 0x3C00);
+  if (!bo_ple.empty()) {
+    fill(bo_ple[0], PW_ELEMS * 2, 0x3C00);
+    fill(bo_ple[1], PX_ELEMS * 2, 0x3C00);
+  }
   std::memcpy(bo_i.map<uint32_t *>(), insts.data(), insts.size() * 4);
   bo_i.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
@@ -254,6 +284,8 @@ int main(int argc, char **argv) {
     run.set_arg(a++, bo_kv);
     for (size_t i = 1; i < bo_w.size(); i++)
       run.set_arg(a++, bo_w[i]);
+    for (auto &b : bo_ple)
+      run.set_arg(a++, b);
     run.start();
     auto st = run.wait(60000);
     if (st != ERT_CMD_STATE_COMPLETED) {
