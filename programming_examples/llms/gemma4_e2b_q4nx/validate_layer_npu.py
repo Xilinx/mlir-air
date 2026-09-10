@@ -239,7 +239,6 @@ def main():
 
     # The hidden state fed to the layer, and the token embedding the PLE reads.
     # Both are arbitrary but must be the SAME on host and device.
-    rng = np.random.default_rng(0)
     tok = 651
     x0 = qm.embed_rows("model.embed_tokens.weight", [tok])[0].astype(np.float32)
     x = x0.copy()

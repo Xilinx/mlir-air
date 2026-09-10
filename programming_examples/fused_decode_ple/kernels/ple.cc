@@ -77,9 +77,12 @@ void rmsnorm(bf16 *y, bf16 *x, bf16 *w) {
 
   float x2 = sum * 0.5f;
   float r = sum;
-  uint32_t bits = *(uint32_t *)&r;
+  // __builtin_bit_cast, not a pointer cast: reading a float through a uint32_t*
+  // is a strict-aliasing violation, and this file is compiled -O2 where clang
+  // is entitled to act on that. Same bits, no UB, no call emitted.
+  uint32_t bits = __builtin_bit_cast(uint32_t, r);
   bits = 0x5f3759df - (bits >> 1);
-  r = *(float *)&bits;
+  r = __builtin_bit_cast(float, bits);
   r = r * (1.5f - (x2 * r * r));
   r = r * (1.5f - (x2 * r * r));
 

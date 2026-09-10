@@ -67,7 +67,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bundle", default=BUNDLE)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("paris", help="one forward; PASS iff top-1 is ' Paris'")
+    p = sub.add_parser("paris", help="one forward; PASS iff top-1 is 'Paris'")
     p.set_defaults(fn=cmd_paris)
     p = sub.add_parser("gen", help="greedy generation via the chat template")
     p.add_argument("--prompt", default="What is the capital of France?")
