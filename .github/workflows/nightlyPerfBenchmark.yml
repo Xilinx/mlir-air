@@ -390,6 +390,15 @@ jobs:
             PE=../programming_examples
             G=$PE/llms/gemma4_e2b_q4nx
             mkdir -p "$OLDPWD/perf_out"
+            # The suites above run under lit, which injects the AIE tool env from
+            # the CMake build. This probe shells out to make directly and gets
+            # none of it, so the kernel compile fails with "'aie_api/aie.hpp'
+            # file not found" -- a probe bug that reads exactly like a real build
+            # failure. Reproduce what lit exports.
+            export MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
+            export PATH="$MLIR_AIE_INSTALL_DIR/bin:$PWD/bin:$PATH"
+            export PYTHONPATH="$PWD/python:$MLIR_AIE_INSTALL_DIR/python:/opt/xilinx/xrt/python"
+            echo "aie-opt: $(command -v aie-opt || echo MISSING)"
             # bench_decode.exe first: every model's `make clean` deletes it, and a
             # missing binary reports as a device failure rather than as itself.
             make -C $PE/fused_decode bench-decode-exe XILINX_XRT="$XILINX_XRT" >/dev/null 2>&1
@@ -415,17 +424,21 @@ jobs:
                   --builder-env SWEEP_UNI_DEC=$d --builder-env DECODE_UNI_DEC=$d \
                   --peano-dir "$PEANO_INSTALL_DIR" --xrt-dir /opt/xilinx/xrt \
                   --workdir "$OLDPWD/perf_out/probe_d$d" \
-                  --out "$OLDPWD/perf_out/probe_d$d.json" 2>&1 | tail -2
+                  --out "$OLDPWD/perf_out/probe_d$d.json" 2>&1 | tail -2 || true
+                # `|| true` on every pipeline in this block: GitHub runs the step
+                # as `bash -e -o pipefail`, and sweep_decode exits non-zero on a
+                # failing context -- which is the case being probed. Without it
+                # the first row kills the step and the ladder never runs.
                 for f in $G/decode_L1024.insts.bin $G/decode_L1024.xclbin; do
-                  [ -f "$f" ] && echo "  $(basename $f): $(stat -c%s $f) bytes md5 $(md5sum $f | cut -c1-12)"
+                  [ -f "$f" ] && echo "  $(basename $f): $(stat -c%s $f) bytes md5 $(md5sum $f | cut -c1-12)" || true
                 done
                 # bench_decode's own stdout/stderr, which is where the bound
                 # geometry and "dispatch did not complete: state=N" live. The
                 # state code is the branch point: a timeout means it hung, an
                 # abort means the command was rejected before it ran.
-                sed -n '1,30p' "$OLDPWD/perf_out/probe_d$d/L1024/bench.log" 2>/dev/null | sed 's/^/  | /'
+                sed -n '1,30p' "$OLDPWD/perf_out/probe_d$d/L1024/bench.log" 2>/dev/null | sed 's/^/  | /' || true
               done
-            } 2>&1 | tee "$OLDPWD/perf_out/gemma4_probe.txt"
+            } 2>&1 | tee "$OLDPWD/perf_out/gemma4_probe.txt" || true
           fi
 
           if want verify; then
