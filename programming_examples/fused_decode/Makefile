@@ -88,7 +88,7 @@ DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GO
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
-.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq compile-decode-elf preflight-peano preflight-llvm-link clean
+.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq compile-decode-elf _compile_decode_elf_build preflight-peano preflight-llvm-link clean
 
 help:
 	@echo "============================================================"
@@ -230,7 +230,24 @@ compile-decode-dynseq: preflight-llvm-link
 ## full ATTN_MAXL on readback regardless of L. TRIP stays off for the same
 ## reason a static TXN cannot hold a runtime loop bound; the cores keep the
 ## compile-time block count and skip masked blocks, exactly as today.
-compile-decode-elf: preflight-llvm-link
+DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
+DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+
+## Idempotent like the xclbin target: skip when all three artifacts are present
+## AND were built with the current flags. The stamp is keyed on LBUILD too,
+## because that is what the ELF bakes in -- a warm artifact from another LBUILD
+## would be silently reused at the wrong ATTN_MAXL. `make clean` forces a rebuild.
+compile-decode-elf:
+	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
+	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
+	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	else \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_elf_build \
+	    && echo "$(DECODE_ELF_FLAGS)" > $(DECODE_ELF_STAMP); \
+	fi
+
+_compile_decode_elf_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
@@ -345,7 +362,7 @@ clean:
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
 	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) \
 	      $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
-	      $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt 2>/dev/null || true
+	      $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt $(DECODE_ELF_STAMP) 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."
 
 # The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so

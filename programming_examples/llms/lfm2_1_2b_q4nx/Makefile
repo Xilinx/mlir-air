@@ -306,7 +306,7 @@ clean:
 	       $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
 	       $(srcdir)/decode_L*.air.mlir $(DECODE_FLAGS_STAMP) \
 	       $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
-	       $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt 2>/dev/null || true
+	       $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt $(DECODE_ELF_STAMP) 2>/dev/null || true
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
 
@@ -318,8 +318,25 @@ clean:
 ## Mirrors _compile_decode_build: LFM2 builds its kernels into $(srcdir) (not
 ## the shared engine dir) and adds shortconv, whose SC_DIM/SC_WAVES must match
 ## the builder's CONV_WAVES.
-.PHONY: compile-decode-elf
+DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
+DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+
+## Idempotent like the xclbin target: skip when all three artifacts are present
+## AND were built with the current flags. The stamp is keyed on LBUILD too,
+## because that is what the ELF bakes in -- a warm artifact from another LBUILD
+## would be silently reused at the wrong ATTN_MAXL. `make clean` forces a rebuild.
+.PHONY: compile-decode-elf _compile_decode_elf_build
 compile-decode-elf:
+	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
+	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
+	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	else \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_elf_build \
+	    && echo "$(DECODE_ELF_FLAGS)" > $(DECODE_ELF_STAMP); \
+	fi
+
+_compile_decode_elf_build:
 	@# LAYERS= is the bisect knob: it appends DECODE_UNI_DEC to DECODE_ENV, so a
 	@# bisect build would overwrite the production ELF with a truncated one. The
 	@# xclbin path survives that because the driver re-checks the template's
