@@ -61,9 +61,14 @@ def parse_params(path):
 
 
 def elf_on():
-    """Opt into (or out of) the full-ELF decode. Env, so every entry point --
-    CLI, verify adapter, lit -- selects it the same way."""
-    return os.environ.get("DECODE_ELF", "0") == "1"
+    """The full ELF is the default decode path; DECODE_ELF=0 selects the xclbin.
+
+    Env, so every entry point -- CLI, verify adapter, lit -- selects it the same
+    way. The xclbin path stays in the tree because it is the only one that runs
+    on an XRT without the scratchpad binding (pre 2026-05-19), and because it is
+    the reference an ELF is checked against.
+    """
+    return os.environ.get("DECODE_ELF", "1") == "1"
 
 
 class ElfDecode:

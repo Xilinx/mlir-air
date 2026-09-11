@@ -345,3 +345,8 @@ clean:
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
 	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."
+
+# The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so
+# "build the decode" has to build it too. Stated as an extra prerequisite rather
+# than folded into the recipe, which stays the xclbin template build.
+compile-decode: compile-decode-elf

@@ -331,3 +331,8 @@ compile-decode-elf:
 	    tail -30 /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log; exit 1; fi
 	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
 	@cat $(srcdir)/decode_scratchpad.params.txt
+
+# The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so
+# "build the decode" has to build it too. Stated as an extra prerequisite rather
+# than folded into the recipe, which stays the xclbin template build.
+compile-decode: compile-decode-elf
