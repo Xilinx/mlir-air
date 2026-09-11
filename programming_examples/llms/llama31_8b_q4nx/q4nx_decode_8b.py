@@ -235,12 +235,9 @@ class FusedDecode8B:
         self.embed = np.asarray(embed, bfloat16).reshape(self.VOCAB_SIZE, self.K)
         final_norm = np.asarray(final_norm, bfloat16)
 
-        import decode_dynseq as _dyn
-        from decode_dynseq import pick_insts_gen
+        from decode_insts_gen import DecodeInstsGen
 
-        self._dyn = _dyn
-
-        self.gen = pick_insts_gen(str(templates), max_L=max_L)
+        self.gen = DecodeInstsGen(str(templates), max_L=max_L)
         self.windows = stair.resolve_windows(self.gen)
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
@@ -396,7 +393,6 @@ class FusedDecode8B:
             self.y_bo,
             self.kvc,
             *(self.w_bos[1:] if self._wsplit else ()),
-            *self._dyn.dispatch_args(self.gen, p + 1),
         ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
