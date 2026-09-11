@@ -977,6 +977,24 @@ DYNSEQ_MEM = _dynseq_knob("DECODE_DYNSEQ_MEM", DYNSEQ_MEM)
 # the existing coupling; set to 0 with DYNSEQ_RTP on to get a runtime L with a
 # static loop.
 DYNSEQ_TRIP = _dynseq_knob("DECODE_DYNSEQ_TRIP", DYNSEQ_RTP)
+
+# There is exactly ONE full-ELF configuration that works, so do not let the knobs
+# build another and fail obscurely much later:
+#   RTP + APPEND runtime (mask threshold, KV append slot -- both scratchpad-able),
+#   TRIP/RB/MEM compile-time.
+# RB and MEM need a runtime BD *length* and a runtime dequeue count, and TRIP a
+# runtime loop bound. None has a static-TXN form, so each fails inside aiecc --
+# blockwrite_values for the first two, "failed to fully unroll" for the third --
+# a long way from the knob that caused it. Refuse here instead.
+if _os.environ.get("DECODE_OUTPUT_FORMAT") == "elf":
+    for _k, _v in (("TRIP", DYNSEQ_TRIP), ("RB", DYNSEQ_RB), ("MEM", DYNSEQ_MEM)):
+        if _v:
+            raise SystemExit(
+                f"DECODE_DYNSEQ_{_k}=1 cannot build a full ELF: it needs a runtime "
+                "BD length / loop bound, which a static TXN binary has no form for. "
+                "The supported ELF build is DECODE_DYNSEQ=1 with TRIP/RB/MEM off "
+                "(see `make compile-decode-elf`)."
+            )
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
