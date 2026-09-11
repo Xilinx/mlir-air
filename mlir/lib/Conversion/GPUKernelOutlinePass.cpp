@@ -13,6 +13,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -333,7 +334,7 @@ struct ConvertGPUKernelOutlinePass
         FunctionType::get(launchOp.getContext(), kernelOperandTypes, {});
     auto outlinedFunc = gpu::GPUFuncOp::create(
         builder, loc, kernelFnName, type,
-        TypeRange(ValueRange(launchOp.getWorkgroupAttributions())),
+        TypeRange(ValueRange(launchOp.getWorkgroupAttributionBBArgs())),
         TypeRange(ValueRange(launchOp.getPrivateAttributions())));
     outlinedFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
                           builder.getUnitAttr());
@@ -359,8 +360,8 @@ struct ConvertGPUKernelOutlinePass
 
     // Map memory attributions from the LaunOp op to the GPUFuncOp attributions.
     for (const auto &[launchArg, funcArg] :
-         llvm::zip(launchOp.getWorkgroupAttributions(),
-                   outlinedFunc.getWorkgroupAttributions()))
+         llvm::zip(launchOp.getWorkgroupAttributionBBArgs(),
+                   outlinedFunc.getWorkgroupAttributionBBArgs()))
       map.map(launchArg, funcArg);
     for (const auto &[launchArg, funcArg] :
          llvm::zip(launchOp.getPrivateAttributions(),
@@ -425,7 +426,7 @@ struct ConvertGPUKernelOutlinePass
         launchOp.getBlockSizeOperandValues(),
         launchOp.getDynamicSharedMemorySize(), operands,
         asyncToken ? asyncToken.getType() : nullptr,
-        launchOp.getAsyncDependencies(), clusterSize);
+        launchOp.getAsyncDependencies(), /*asyncObject=*/nullptr, clusterSize);
     launchOp.replaceAllUsesWith(launchFunc);
     launchOp.erase();
   }
@@ -622,12 +623,22 @@ struct ConvertGPUKernelOutlinePass
     // Extract the operands (memrefs)
     Value destMemref = dmaMemcpyOp.getDstMemref(); // Destination memref
     Value srcMemref = dmaMemcpyOp.getSrcMemref();  // Source memref
-    SmallVector<Value, 4> src_offsets = dmaMemcpyOp.getSrcOffsets();
-    SmallVector<Value, 4> dst_offsets = dmaMemcpyOp.getDstOffsets();
-    SmallVector<Value, 4> src_sizes = dmaMemcpyOp.getSrcSizes();
-    SmallVector<Value, 4> dst_sizes = dmaMemcpyOp.getDstSizes();
-    SmallVector<Value, 4> src_strides = dmaMemcpyOp.getSrcStrides();
-    SmallVector<Value, 4> dst_strides = dmaMemcpyOp.getDstStrides();
+    // DmaMemcpyNdOp stores offsets/sizes/strides as mixed static/dynamic
+    // values; materialize each into an index Value (constant for static
+    // entries) so the loop-nest lowering below can consume them uniformly.
+    Location dmaLoc = dmaMemcpyOp.getLoc();
+    SmallVector<Value> src_offsets = getValueOrCreateConstantIndexOp(
+        builder, dmaLoc, dmaMemcpyOp.getMixedSrcOffsets());
+    SmallVector<Value> dst_offsets = getValueOrCreateConstantIndexOp(
+        builder, dmaLoc, dmaMemcpyOp.getMixedDstOffsets());
+    SmallVector<Value> src_sizes = getValueOrCreateConstantIndexOp(
+        builder, dmaLoc, dmaMemcpyOp.getMixedSrcSizes());
+    SmallVector<Value> dst_sizes = getValueOrCreateConstantIndexOp(
+        builder, dmaLoc, dmaMemcpyOp.getMixedDstSizes());
+    SmallVector<Value> src_strides = getValueOrCreateConstantIndexOp(
+        builder, dmaLoc, dmaMemcpyOp.getMixedSrcStrides());
+    SmallVector<Value> dst_strides = getValueOrCreateConstantIndexOp(
+        builder, dmaLoc, dmaMemcpyOp.getMixedDstStrides());
 
     // Create SCF loops to simulate the memory copy
     // We'll assume a 2D memory region and use sizes for both dimensions
