@@ -60,9 +60,3 @@ CLAUDE.md
 /docs/AIRTransformPasses.md
 /docs/AIRTransformOps.md
 /docs/build_info.json
-
-# Full-ELF decode artifacts (programming_examples, built by compile-decode-elf)
-decode_scratchpad.elf
-decode_scratchpad.params.txt
-decode_scratchpad.maxl
-params.txt
