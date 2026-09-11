@@ -271,9 +271,9 @@ def _pick_decode_gen(dec_dir, max_L=None):
     what the staircase approximates with a template per window, exactly and from a
     single build."""
     sys.path.insert(0, str(dec_dir))
-    from decode_dynseq import pick_insts_gen
+    from decode_insts_gen import DecodeInstsGen
 
-    return pick_insts_gen(dec_dir, max_L=max_L)
+    return DecodeInstsGen(str(dec_dir), max_L=max_L)
 
 
 class FusedDecoder:
@@ -658,7 +658,6 @@ class FusedDecoder:
         # A dynseq build's runtime sequence takes the context length as a trailing
         # scalar, so the kernel signature carries it. The value the hardware acts on
         # is already assembled into the stream above; this keeps the arity right.
-        import decode_dynseq as _dyn
 
         if self.elf_mode:
             st = self._elfdec.dispatch(L, np)
@@ -672,7 +671,6 @@ class FusedDecoder:
                 self.r_bo,
                 self.y_bo,
                 self.kvc,
-                *_dyn.dispatch_args(self.gen, L),
             ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()

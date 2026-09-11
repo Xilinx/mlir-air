@@ -49,7 +49,7 @@ AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),
 # 2048 matches the three Llama/Gemma Q4NX decodes. It costs 2.5 ms/token against
 # a 256 build (35.5 vs 33.0 ms/tok, same box and power mode, 16-token `make gen`,
 # byte-identical output), because the readback streams the padded ATTN_MAXL --
-# `make compile-decode-dynseq` removes exactly that.
+# `make` removes exactly that.
 LBUILD      ?= 2048
 LREF        := $(shell echo $$(($(LBUILD) - 1)))
 ATTN_L      ?= $(LBUILD)
@@ -132,7 +132,7 @@ RUNNER_ADAPTER := qwen25_3b_q4.verify_adapter
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
-.PHONY: help compile compile-decode compile-decode-dynseq _compile_decode_build run gen dump-kv bench \
+.PHONY: help compile compile-decode _compile_decode_build run gen dump-kv bench \
         weights verify verify-full verify-paris diagnosis profile profile-prefill clean
 
 help:
@@ -181,28 +181,6 @@ compile-decode:
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_STAMP); \
 	fi
 
-## Dynamic-runtime-sequence template: ONE build for every context length (see
-## fused_decode/Makefile compile-decode-dynseq). Run with DECODE_DYNSEQ=1.
-compile-decode-dynseq:
-	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
-	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
-	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) DECODE_DYNSEQ=1 \
-	  $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
-	  if [ -f $(DEC)/decode.xclbin ] && [ -f $(DEC)/decode.insts.bin ]; then \
-	    mv -f $(DEC)/decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
-	    mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_dyn_L$(LBUILD).insts.bin; \
-	    rm -f $(DEC)/npu_seq_*.mlir; \
-	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/qwen_decode_dyn_L$(LBUILD).log)"; \
-	    tail -30 /tmp/qwen_decode_dyn_L$(LBUILD).log; exit 1; fi
-	@echo "Qwen dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather

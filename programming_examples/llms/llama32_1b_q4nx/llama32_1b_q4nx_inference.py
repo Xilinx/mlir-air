@@ -280,9 +280,9 @@ def _pick_decode_gen(dec_dir, max_L=None):
     what the staircase approximates with a template per window, exactly and from a
     single build."""
     sys.path.insert(0, str(dec_dir))
-    from decode_dynseq import pick_insts_gen
+    from decode_insts_gen import DecodeInstsGen
 
-    return pick_insts_gen(dec_dir, max_L=max_L)
+    return DecodeInstsGen(str(dec_dir), max_L=max_L)
 
 
 class FusedDecoder:
@@ -583,7 +583,6 @@ class FusedDecoder:
             # has to be set: XRT patches every declared argument.
             st = self._elfdec.dispatch(L, np)
         else:
-            import decode_dynseq as _dyn
 
             st = self.kern(
                 3,
@@ -594,7 +593,6 @@ class FusedDecoder:
                 self.r_bo,
                 self.y_bo,
                 self.kvc,
-                *_dyn.dispatch_args(self.gen, L),
             ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()

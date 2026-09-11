@@ -108,7 +108,7 @@ RUNNER_ADAPTER := qwen25_7b_q4nx.verify_adapter
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
-.PHONY: help compile compile-prefill compile-decode compile-decode-dynseq compile-decode-windows _compile_decode_build prefill \
+.PHONY: help compile compile-prefill compile-decode compile-decode-windows _compile_decode_build prefill \
         run ask chat verify verify-full verify-paris diagnosis profile profile-prefill gen clean
 
 help:
@@ -177,28 +177,6 @@ compile-decode-windows:
 	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
 	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with DECODE_STAIRCASE=1."
 
-## Dynamic-runtime-sequence template: ONE build for every context length. The
-## context length becomes a runtime scalar, so a single xclbin plus the emitted
-## TXN builder serves any L and the readback moves only this token's context.
-## Run with DECODE_DYNSEQ=1. No pair: there is no slope to calibrate.
-compile-decode-dynseq:
-	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
-	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> qwen2.5-7b non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> qwen2.5-7b attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
-	@echo ">>> qwen2.5-7b dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/q7b_decode_dyn_L$(LBUILD).log 2>&1; \
-	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
-	    mv -f decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
-	    cp -f air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
-	    rm -f npu_seq_*.mlir; \
-	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/q7b_decode_dyn_L$(LBUILD).log)"; tail -30 /tmp/q7b_decode_dyn_L$(LBUILD).log; exit 1; fi
-	@echo "Qwen2.5-7B dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather
@@ -313,8 +291,6 @@ gen: run
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
 	rm -f $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.maxl $(DECODE_ELF_STAMP) 2>/dev/null || true
-	rm -f $(srcdir)/decode_dyn_L*.xclbin $(srcdir)/decode_dyn_L*.insts.bin \
-	      $(srcdir)/decode_dyn_L*.txn.h 2>/dev/null || true
 	rm -f $(DECODE_FLAGS_STAMP) $(DECODE_WINDOWS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true

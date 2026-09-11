@@ -120,16 +120,11 @@ def _elf_on():
     return _load_elf_mod().elf_on()
 
 
-_dyn = None  # set by _pick_decode_gen, which joins fused_decode/ to sys.path
-
-
 def _pick_decode_gen(dec_dir, max_L=None):
     sys.path.insert(0, str(_DEC))
-    global _dyn
-    import decode_dynseq as _dyn
-    from decode_dynseq import pick_insts_gen
+    from decode_insts_gen import DecodeInstsGen
 
-    return pick_insts_gen(str(dec_dir), max_L=max_L)
+    return DecodeInstsGen(str(dec_dir), max_L=max_L)
 
 
 class FusedDecoder:
@@ -449,7 +444,6 @@ class FusedDecoder:
                 self.y_bo,
                 self.kvc,
                 *(self.w_bos[1:] if self._wsplit else ()),
-                *_dyn.dispatch_args(self.gen, L),
             ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)

@@ -88,7 +88,7 @@ DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GO
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
-.PHONY: help compile-decode _compile_decode_build compile-decode-dynseq compile-decode-elf _compile_decode_elf_build preflight-peano preflight-llvm-link clean
+.PHONY: help compile-decode _compile_decode_build compile-decode-elf _compile_decode_elf_build preflight-peano preflight-llvm-link clean
 
 help:
 	@echo "============================================================"
@@ -195,27 +195,6 @@ preflight-llvm-link: preflight-peano
 	    echo "ERROR: llvm-link is LLVM $$VER; the inline-attn merge needs LLVM <23"; \
 	    echo "       (see README Reproducibility for how to fetch one)"; exit 1; fi
 
-## Dynamic-runtime-sequence template: ONE build, whatever the context length.
-## The context length becomes a runtime scalar, so a single xclbin plus the
-## compiler-emitted TXN builder (decode_dyn_L<M>.txn.h) serves every L -- the
-## readback moving this token's context rather than the padded ATTN_MAXL. Run
-## with DECODE_DYNSEQ=1. No template pair: there is no slope to calibrate.
-compile-decode-dynseq: preflight-llvm-link
-	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
-	@echo ">>> dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_dyn_L$(LBUILD).log 2>&1; \
-	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
-	    mv -f decode.xclbin decode_dyn_L$(LBUILD).xclbin; \
-	    cp -f air_project/npu.air.txn.h decode_dyn_L$(LBUILD).txn.h; \
-	    rm -f npu_seq_*.mlir; \
-	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/decode_dyn_L$(LBUILD).log)"; exit 1; fi
-	@echo "Dynseq build complete: decode_dyn_L$(LBUILD).{xclbin,txn.h}. Run with DECODE_DYNSEQ=1."
 
 ## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
 ## The KV append offset and the attention mask threshold become mlir-aie
