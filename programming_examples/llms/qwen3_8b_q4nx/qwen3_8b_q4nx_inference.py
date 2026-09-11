@@ -101,6 +101,24 @@ def _load_stair():
     return _stair
 
 
+_elf = None  # fused_decode/decode_elf.py, imported once fused_decode is on sys.path
+
+
+def _load_elf_mod():
+    global _elf
+    if _elf is None:
+        sys.path.insert(0, str(_DEC))
+        import decode_elf
+
+        _elf = decode_elf
+    return _elf
+
+
+def _elf_on():
+    """Full-ELF decode: ONE artifact for every L (see fused_decode/decode_elf.py)."""
+    return _load_elf_mod().elf_on()
+
+
 _dyn = None  # set by _pick_decode_gen, which joins fused_decode/ to sys.path
 
 
@@ -131,13 +149,32 @@ class FusedDecoder:
         self.xrt = xrt
         self.gw = gw
 
-        self.gen = _pick_decode_gen(_DECODE_DIR, max_L)
-        _load_stair()
-        # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
-        # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
-        # Off by default -- one window, identical to the single-template path.
-        self.windows = _stair.resolve_windows(self.gen, staircase)
-        self.ATTN_MAXL = max(self.windows)
+        self.elf_mode = _elf_on()
+        if self.elf_mode and staircase:
+            raise RuntimeError(
+                "DECODE_ELF=1 and DECODE_STAIRCASE=1 are mutually exclusive: "
+                "the ELF has no per-window templates to switch between."
+            )
+        if self.elf_mode:
+            # One ELF serves every L: no generator, no windows, and ATTN_MAXL
+            # comes from the build stamp rather than a guess.
+            self.gen = None
+            _load_stair()
+            _stamp = _DECODE_DIR / "decode_scratchpad.maxl"
+            if not _stamp.exists():
+                raise RuntimeError(
+                    f"DECODE_ELF=1 needs {_stamp}; run `make compile-decode-elf`"
+                )
+            self.ATTN_MAXL = int(_stamp.read_text().split()[0])
+            self.windows = [self.ATTN_MAXL]
+        else:
+            self.gen = _pick_decode_gen(_DECODE_DIR, max_L)
+            _load_stair()
+            # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
+            # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
+            # Off by default -- one window, identical to the single-template path.
+            self.windows = _stair.resolve_windows(self.gen, staircase)
+            self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
         # DECODE_MODEL / geometry env must be set BEFORE importing fused_decode.py (its
@@ -214,55 +251,93 @@ class FusedDecoder:
         # ONE xclbin + ONE self-contained BO set (weight BO uploaded once)
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-        self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
         self.cur_maxl = self.ATTN_MAXL
-        self.kern = self._kern[self.cur_maxl][1]
-        g = self.kern.group_id
-        HO = xrt.bo.host_only
-        self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
-        # DECODE_WGROUP: the engine splits the weights over ceil(UNI_DEC/G) layer
-        # buffers plus a dedicated lm-head buffer, because one BO can only be
-        # addressed over a 4 GiB span (the shim BD byte offset is a uint32). Group 0
-        # stays on the original arg (g(4)); the rest are appended after kvc, so every
-        # pre-existing binding position is unchanged.
-        # Taken from the engine, not the environment, so the host slicing cannot
-        # disagree with what the template was built for.
-        _G, self._wsplit, _ng = fd.W_GROUP, fd.W_SPLIT, fd.N_WGRP
-        if self._wsplit:
-            _WL = fd.W_LAYER
-            _parts = [
-                W[gi * _G * _WL : min((gi + 1) * _G, self.UNI_DEC) * _WL]
-                for gi in range(_ng)
-            ]
-            _parts.append(W[self.UNI_DEC * _WL :])  # lm-head slabs
-            assert sum(p.size for p in _parts) == W.size, "weight split lost data"
-            # group 0 -> g(4); groups 1.. and lm-head -> g(8), g(9), ...
-            self.w_bos = [
-                xrt.bo(self.dev, p.size * 2, HO, g(4 if i == 0 else 7 + i))
-                for i, p in enumerate(_parts)
-            ]
-            for bo, p in zip(self.w_bos, _parts):
-                bo.write(np.ascontiguousarray(p).view(np.int16), 0)
-                bo.sync(TO)
-            print(
-                f"[decode] weight split G={_G}: "
-                + ", ".join(f"{p.size*2/2**30:.2f}GiB" for p in _parts),
-                flush=True,
+        if self.elf_mode:
+            self._elfdec = _load_elf_mod().ElfDecode(
+                _DECODE_DIR, self.dev, xrt, self.REGION_W
             )
-            self.w_bo = self.w_bos[0]
+            self.kern = self._elfdec.kern
+            self.x_bo = xrt.ext.bo(self.dev, self.K * 2)
+            # Same >4 GiB weight split as the xclbin path: one BO is addressable
+            # only over a 4 GiB span. Group 0 stays on the weight argument and the
+            # rest are appended after kvc, so the binding positions match what the
+            # ELF was built for.
+            _G, self._wsplit, _ng = fd.W_GROUP, fd.W_SPLIT, fd.N_WGRP
+            if self._wsplit:
+                _WL = fd.W_LAYER
+                _parts = [
+                    W[gi * _G * _WL : min((gi + 1) * _G, self.UNI_DEC) * _WL]
+                    for gi in range(_ng)
+                ]
+                _parts.append(W[self.UNI_DEC * _WL :])  # lm-head slabs
+                assert sum(p.size for p in _parts) == W.size, "weight split lost data"
+                self.w_bos = [xrt.ext.bo(self.dev, p.size * 2) for p in _parts]
+                for _bo, _p in zip(self.w_bos, _parts):
+                    _bo.write(np.ascontiguousarray(_p).view(np.int16), 0)
+                    _bo.sync(TO)
+                self.w_bo = self.w_bos[0]
+            else:
+                self.w_bos = None
+                self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
+            self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
+            self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
+            self.kvc = xrt.ext.bo(self.dev, self.UNI_DEC * self.LREG * 2)
+            self._elfdec.bind(
+                (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc)
+                + tuple(self.w_bos[1:] if self._wsplit else ())
+            )
+            self._geom = _stair.KVGeometry(
+                self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
+            )
         else:
-            self.w_bos = None
-            self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
-        self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
-        self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-        self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
-        self._ist = _stair.make_insts_states(
-            self.gen, xrt, self.dev, g(1), self.windows
-        )
-        self._geom = _stair.KVGeometry(
-            self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
-        )
-        self._use_window(self.cur_maxl)
+            self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
+            self.kern = self._kern[self.cur_maxl][1]
+            g = self.kern.group_id
+            HO = xrt.bo.host_only
+            self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
+            # DECODE_WGROUP: the engine splits the weights over ceil(UNI_DEC/G) layer
+            # buffers plus a dedicated lm-head buffer, because one BO can only be
+            # addressed over a 4 GiB span (the shim BD byte offset is a uint32). Group 0
+            # stays on the original arg (g(4)); the rest are appended after kvc, so every
+            # pre-existing binding position is unchanged.
+            # Taken from the engine, not the environment, so the host slicing cannot
+            # disagree with what the template was built for.
+            _G, self._wsplit, _ng = fd.W_GROUP, fd.W_SPLIT, fd.N_WGRP
+            if self._wsplit:
+                _WL = fd.W_LAYER
+                _parts = [
+                    W[gi * _G * _WL : min((gi + 1) * _G, self.UNI_DEC) * _WL]
+                    for gi in range(_ng)
+                ]
+                _parts.append(W[self.UNI_DEC * _WL :])  # lm-head slabs
+                assert sum(p.size for p in _parts) == W.size, "weight split lost data"
+                # group 0 -> g(4); groups 1.. and lm-head -> g(8), g(9), ...
+                self.w_bos = [
+                    xrt.bo(self.dev, p.size * 2, HO, g(4 if i == 0 else 7 + i))
+                    for i, p in enumerate(_parts)
+                ]
+                for bo, p in zip(self.w_bos, _parts):
+                    bo.write(np.ascontiguousarray(p).view(np.int16), 0)
+                    bo.sync(TO)
+                print(
+                    f"[decode] weight split G={_G}: "
+                    + ", ".join(f"{p.size*2/2**30:.2f}GiB" for p in _parts),
+                    flush=True,
+                )
+                self.w_bo = self.w_bos[0]
+            else:
+                self.w_bos = None
+                self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
+            self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
+            self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
+            self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
+            self._ist = _stair.make_insts_states(
+                self.gen, xrt, self.dev, g(1), self.windows
+            )
+            self._geom = _stair.KVGeometry(
+                self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
+            )
+            self._use_window(self.cur_maxl)
         if not self._wsplit:
             self.w_bo.write(self.Wv16, 0)
             self.w_bo.sync(TO)
@@ -326,7 +401,11 @@ class FusedDecoder:
                 # `p` positions are live; this token's K/V is appended by the dispatch.
                 _stair.respace_kv(self.kvc, self._geom, self.cur_maxl, _w, p, xrt)
                 self._use_window(_w)
-        insts_size = _stair.patch_insts(self._st, L, xrt, TO)
+        if self.elf_mode:
+            # L reaches the device as scratchpad parameters instead.
+            insts_size = None
+        else:
+            insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         # KV uploaded once (seed), then device-resident (kernel appends in place).
         if getattr(self, "_kv_dirty", True):
             packed = np.ascontiguousarray(self.KV).reshape(-1)
@@ -353,18 +432,21 @@ class FusedDecoder:
         self.r_bo.sync(TO, rope.size * 2, self._rope_base * 2)
         self.x_bo.write(x0.view(np.int16), 0)
         self.x_bo.sync(TO)
-        st = self.kern(
-            3,
-            self.ib,
-            insts_size,
-            self.x_bo,
-            self.w_bo,
-            self.r_bo,
-            self.y_bo,
-            self.kvc,
-            *(self.w_bos[1:] if self._wsplit else ()),
-            *_dyn.dispatch_args(self.gen, L),
-        ).wait(60000)
+        if self.elf_mode:
+            st = self._elfdec.dispatch(L, np)
+        else:
+            st = self.kern(
+                3,
+                self.ib,
+                insts_size,
+                self.x_bo,
+                self.w_bo,
+                self.r_bo,
+                self.y_bo,
+                self.kvc,
+                *(self.w_bos[1:] if self._wsplit else ()),
+                *_dyn.dispatch_args(self.gen, L),
+            ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)
         # Zero-copy view into the BO (the shared infra's readback idiom): bo.read()

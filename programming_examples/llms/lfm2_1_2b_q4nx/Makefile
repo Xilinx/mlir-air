@@ -307,3 +307,36 @@ clean:
 	       $(srcdir)/decode_L*.air.mlir $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
+
+## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
+## The KV append offset and the attention mask threshold become mlir-aie
+## scratchpad parameters the host writes per dispatch, so there is no
+## instruction stream to patch. Select it at run time with DECODE_ELF=1.
+##
+## Mirrors _compile_decode_build: LFM2 builds its kernels into $(srcdir) (not
+## the shared engine dir) and adds shortconv, whose SC_DIM/SC_WAVES must match
+## the builder's CONV_WAVES.
+.PHONY: compile-decode-elf
+compile-decode-elf:
+	@echo ">>> non-attn decode kernels (Peano -O2, MODEL_TYPE=LFM2_1_2B): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	@echo "    shortconv.cc (-O2, SC_DIM=$(SC_DIM) SC_WAVES=$(SC_WAVES))"
+	@$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -DSC_DIM=$(SC_DIM) -DSC_WAVES=$(SC_WAVES) \
+	  -O2 -c $(DEC)/kernels/shortconv.cc -o $(srcdir)/shortconv.o || exit 1
+	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@cd $(srcdir) && $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 DECODE_DYNSEQ_TRIP=0 DECODE_DYNSEQ_RB=0 DECODE_DYNSEQ_MEM=0 \
+	  $(PYTHON) $(DECODE_DRIVER) >/tmp/lfm2_decode_elf_L$(LBUILD).log 2>&1; \
+	  if [ -f decode.elf ] && [ -s params.txt ]; then \
+	    mv -f decode.elf decode_scratchpad.elf; \
+	    cp -f params.txt decode_scratchpad.params.txt; \
+	    echo "$(LBUILD)" > decode_scratchpad.maxl; \
+	  else echo "decode ELF FAILED (see /tmp/lfm2_decode_elf_L$(LBUILD).log)"; \
+	    tail -30 /tmp/lfm2_decode_elf_L$(LBUILD).log; exit 1; fi
+	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
+	@cat $(srcdir)/decode_scratchpad.params.txt

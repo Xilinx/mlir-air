@@ -322,3 +322,36 @@ clean:
 	rm -rf $(srcdir)/build_peano $(srcdir)/build_chess $(srcdir)/__pycache__ \
 	       $(srcdir)/_q4nx_* 2>/dev/null || true
 	@echo "Qwen3-4B decode templates, build dirs and shared-dir kernels removed."
+
+## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
+## The KV append offset and the attention mask threshold become mlir-aie
+## scratchpad parameters the host writes per dispatch, so there is no
+## instruction stream to patch -- and so no template pair and no L-slope
+## calibration. Select it at run time with DECODE_ELF=1.
+##
+## RB/MEM/TRIP stay off: they would need a runtime BD *length* or loop bound,
+## and aie.dma_bd has offset_parameter but no len_parameter. That costs nothing
+## -- the xclbin already streams the full ATTN_MAXL on readback whatever L is.
+.PHONY: compile-decode-elf
+compile-decode-elf:
+	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@cd $(DEC) && $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 DECODE_DYNSEQ_TRIP=0 DECODE_DYNSEQ_RB=0 DECODE_DYNSEQ_MEM=0 \
+	  $(if $(PYTHON),$(PYTHON),python3) $(DECODE_DRIVER) >/tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log 2>&1; \
+	  if [ -f decode.elf ] && [ -s params.txt ]; then \
+	    mv -f decode.elf $(srcdir)/decode_scratchpad.elf; \
+	    cp -f params.txt $(srcdir)/decode_scratchpad.params.txt; \
+	    echo "$(LBUILD)" > $(srcdir)/decode_scratchpad.maxl; \
+	  else echo "decode ELF FAILED (see /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log)"; \
+	    tail -30 /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log; exit 1; fi
+	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
+	@cat $(srcdir)/decode_scratchpad.params.txt

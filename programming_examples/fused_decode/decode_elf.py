@@ -20,17 +20,44 @@
 # (XRT >= the 2026-05-19 binding; xdna-driver 1.7 carries it).
 
 import os
+import re
 from pathlib import Path
 
 # The runtime sequence's own name, hardcoded in fused_decode.py's builder, so it
 # is the same for every model. XRT resolves an ELF kernel as main:<name>.
 KERNEL_NAME = "main:q4nx_decode"
 
-# AIR names a BD-offset parameter after the sequence argument it is affine in,
-# with the coefficients in the suffix -- the host writes the WHOLE affine value.
-# `_x256_m256` is (L * 256) - 256, i.e. this token's slot at (L-1)*REGION_W.
-APPEND_PARAM = "__air_param_argoff_5_x256_m256"
-MASK_PARAM = "__air_param_attn_blk_0"
+
+def parse_params(path):
+    """Read params.txt into (append_name, scale, addend, mask_name, arg_index).
+
+    The names are NOT fixed across models. AIR names a BD-offset parameter after
+    the sequence argument it is affine in and puts the coefficients in the
+    suffix, so llama's REGION_W=256 gives `..._x256_m256` (L*256 - 256) while
+    gemma's 512 gives `..._x512_m512`. Hardcoding either writes the wrong KV
+    address for the other, silently. Classify by the kind column instead --
+    `addr` is the BD offset, `core` the herd RTP -- and take the arithmetic from
+    the suffix rather than assuming it.
+    """
+    lines = [ln.split() for ln in Path(path).read_text().split("\n") if ln.strip()]
+    entries = [ln for ln in lines[1:] if len(ln) >= 4]
+    addr = [ln[0] for ln in entries if ln[3] == "addr"]
+    core = [ln[0] for ln in entries if ln[3] == "core"]
+    if len(addr) != 1 or len(core) != 1:
+        raise RuntimeError(
+            f"{path}: expected exactly one 'addr' and one 'core' parameter, "
+            f"got addr={addr} core={core}"
+        )
+    m = re.search(r"_argoff_(\d+)_x(-?\d+)_([mp])(\d+)$", addr[0])
+    if not m:
+        raise RuntimeError(f"{path}: cannot read affine coefficients from {addr[0]}")
+    # AIR keys the name on the SEQUENCE ARGUMENT NUMBER, which is also the index
+    # the host must set L at -- and it is not the same for every model (llama is
+    # 5, qwen3-8b is 9). Take it from the name rather than assuming.
+    arg_index = int(m.group(1))
+    scale = int(m.group(2))
+    addend = int(m.group(4)) * (-1 if m.group(3) == "m" else 1)
+    return addr[0], scale, addend, core[0], arg_index
 
 
 def elf_on():
@@ -61,6 +88,21 @@ class ElfDecode:
         # against an ELF built at another L mis-sizes the KV cache and the mask
         # threshold together, and both failures look like bad numerics.
         self.attn_maxl = int(stamp.read_text().split()[0])
+        (
+            self.append_param,
+            self.append_scale,
+            self.append_addend,
+            self.mask_param,
+            self.scalar_arg,
+        ) = parse_params(self.params_path)
+        # The scale IS the model's REGION_W. If they disagree, the driver and the
+        # build were made from different geometries and every KV append would land
+        # in the wrong place -- which reads as bad numerics, not as a mismatch.
+        if self.append_scale != region_w:
+            raise RuntimeError(
+                f"{self.params_path.name} encodes scale {self.append_scale} but the "
+                f"driver's REGION_W is {region_w}; the ELF and the driver disagree."
+            )
         self.ctx = xrt.hw_context(dev, xrt.elf(str(self.elf_path)))
         self.kern = xrt.ext.kernel(self.ctx, KERNEL_NAME)
         self.run = None
@@ -81,12 +123,14 @@ class ElfDecode:
 
     def dispatch(self, L, np):
         """One token at context length L. Returns the XRT run state."""
-        self.params.write(APPEND_PARAM, np.int32((L - 1) * self.region_w))
-        self.params.write(MASK_PARAM, np.int32(L))
+        self.params.write(
+            self.append_param, np.int32(L * self.append_scale + self.append_addend)
+        )
+        self.params.write(self.mask_param, np.int32(L))
         self.params.sync()
         # Still required even though the hardware acts on the scratchpad copies:
         # XRT patches every declared argument, and the sequence declares L.
-        self.run.set_arg(5, L)
+        self.run.set_arg(self.scalar_arg, L)
         self.run.start()
         self.run.wait2()
         return self.run.state()
