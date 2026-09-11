@@ -922,7 +922,8 @@ def _set_attn_link(op, base):
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
-RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
+# Shim KV-readback outer block count: always ceil(ATTN_L/16).
+RB_ROUNDS = (ATTN_L + 15) // 16
 # DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
 # in. It becomes a launch operand that drives BOTH the shim readback's block count
 # and the attention herd's RTP-L, so the shim pushes exactly what the cores consume
@@ -943,7 +944,8 @@ DYNSEQ_RTP = DYNSEQ_APPEND = bool(DYNSEQ)
 DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
 
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
-COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
+# Cross-wave shim-feed coalescing: always on (the un-coalesced feed was an A/B).
+COALESCE = 1
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
 # under 8 KiB, so that geometry lowers it; every other model keeps 10240.
 STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
@@ -985,7 +987,7 @@ KV_APPEND = MULTIBLK
 # 20/20 over 29 dispatches. 4 is taken: it is inside the footprint the 4-CU
 # models already reserve for attention, where col 5 also carries the GLU tile.
 # Overridable so the sweep can be repeated.
-ATTN_PCOL = int(_os.environ.get("ATTN_PCOL", "4"))
+ATTN_PCOL = 4
 ATTN_CU_LOC = (
     [(ATTN_PCOL, 2, 3), (ATTN_PCOL, 4, 5)]
     if N_ATTN_CU == 2
@@ -1128,7 +1130,7 @@ PROJ_RC_CACHE = int(_os.environ.get("PROJ_RC_CACHE", "1"))
 # EVERY row-block, i.e. compute exactly what the uncached path computes. Correct
 # output here isolates a broken reuse assumption; wrong output isolates broken
 # plumbing. Costs the full recompute, so it is a diagnostic only.
-PROJ_RC_FILL_ALL = int(_os.environ.get("PROJ_RC_FILL_ALL", "0"))
+PROJ_RC_FILL_ALL = 0
 # One slot of COL_BLOCK/32 bf16 per col-block, sized for the WIDEST projection
 # (2*J2 col-blocks; llama-1B down-proj K=8192 -> 32 -> 256 bf16 = 512 B/core).
 # Same size as the reference's b_col_reduce_add[INTERMEDIATE_SIZE/GROUP_SIZE].
@@ -1186,8 +1188,8 @@ ATTN_WAVES = tuple(_k for _k in ATTN_LAYERS if _k < UNI_DEC)
 # waves the fused launch loop drives). Used to split the fused sequence into a
 # decode-part [0,UNI_DEC) and a vocab-part [UNI_DEC,UNI_WAVES) that share ONE CDO,
 # to test host-wait quiescence between decode and vocab on one xclbin.
-UNI_WAVE_LO = int(_os.environ.get("UNI_WAVE_LO", "0"))
-UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
+UNI_WAVE_LO = 0
+UNI_WAVE_HI = UNI_WAVES
 
 # Weight-buffer grouping: G decode layers per weight BO. A shim BD's byte offset
 # is a uint32 (aiex.npu.address_patch $arg_plus -> uint32_t in AIETargetNPU), so
@@ -2561,7 +2563,7 @@ def build_module():
                                     # exceeds the ring depth) and lowers it to a
                                     # fire-and-free MM2S feed. With NRB=1 that is exactly
                                     # the reference's 2*NGRP (=4) whole-region contiguous transfers.
-                                    _NRB = int(_os.environ.get("DECODE_KV_RB_NRB", "1"))
+                                    _NRB = 1
                                     _nb = RB_ROUNDS
                                     _cbk = (_nb + _NRB - 1) // _NRB  # blocks per chunk
                                     # KV_RB_1D: emit the readback as ONE 1-D descriptor instead of
@@ -2577,7 +2579,7 @@ def build_module():
                                     # LINEAR transfer -- see its seq col3/col4 BDs, "A linear
                                     # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
                                     # same order; only the descriptor shape differs.
-                                    _KV1D = int(_os.environ.get("KV_RB_1D", "0"))
+                                    _KV1D = 0
                                     if DYNSEQ and (_NRB != 1 or _KV1D):
                                         raise SystemExit(
                                             "DECODE_DYNSEQ needs the single whole-region "
