@@ -932,69 +932,16 @@ RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
 # calls per token (air.backend.txn_builder). Off by default: the staircase templates
 # remain the shipping path until this is measured across all four decoders.
 DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
-# The four bindings move together: the shim's push count, the memtile's dequeue
-# count and the cores' trip count must agree, and the append has to land on the
-# position the cores are about to read. Named separately only because each one
-# reads better at its use.
-DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+# What follows the context length, and what stays compile-time. Fixed, not
+# configurable: RB (the readback's block count) and MEM (the memtile dequeue)
+# would need a runtime BD length, and TRIP a runtime loop bound, and a static TXN
+# binary -- what --output-format=elf emits -- has no form for either. Only a
+# runtime VALUE is expressible, via a scratchpad parameter. So the mask threshold
+# (RTP) and the KV append slot (APPEND) follow L; the rest is baked, and the cores
+# skip the far blocks by masking exactly as the xclbin design does.
+DYNSEQ_RTP = DYNSEQ_APPEND = bool(DYNSEQ)
+DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
 
-
-def _dynseq_knob(name, default):
-    return bool(int(_os.environ.get(name, str(int(default)))))
-
-
-# Individually overridable, for the full-ELF path. A static TXN binary -- what
-# --output-format=elf emits -- is a flat list of literal words, so it can hold
-# a runtime *value* (via a scratchpad parameter) but not a runtime instruction
-# *stream*: a loop whose trip count is unknown at compile time, or a BD payload
-# computed at dispatch, has no representation in it. DYNSEQ as a single switch
-# turns on both kinds at once, which is why it cannot build an ELF.
-#
-# Splitting them allows the combination that can: the mask threshold L runtime
-# (DYNSEQ_RTP), so one build serves every context length, while the core's
-# block loop stays a compile-time ATTN_ROUNDS and the far blocks are skipped by
-# masking (DYNSEQ_TRIP off) -- which is what the shipping xclbin design already
-# does, and it keeps the shim's push count fixed and agreeing with the cores.
-# The overrides only narrow what DECODE_DYNSEQ turned on; they cannot turn it
-# on. DYNSEQ is what appends the context length as a trailing scalar operand,
-# so with it off there is no operand for these paths to read -- L_rt and
-# _seg_L are None and the first arithmetic on one raises deep inside codegen,
-# a long way from the environment variable that caused it. Fail here instead.
-if not DYNSEQ:
-    for _k in ("RB", "APPEND", "RTP", "MEM", "TRIP"):
-        if _dynseq_knob("DECODE_DYNSEQ_" + _k, False):
-            raise SystemExit(
-                f"DECODE_DYNSEQ_{_k}=1 needs DECODE_DYNSEQ=1: the context length "
-                "is only a runtime operand when DYNSEQ is on, and these knobs "
-                "select which parts of the sequence follow it."
-            )
-
-DYNSEQ_RB = _dynseq_knob("DECODE_DYNSEQ_RB", DYNSEQ_RB)
-DYNSEQ_APPEND = _dynseq_knob("DECODE_DYNSEQ_APPEND", DYNSEQ_APPEND)
-DYNSEQ_RTP = _dynseq_knob("DECODE_DYNSEQ_RTP", DYNSEQ_RTP)
-DYNSEQ_MEM = _dynseq_knob("DECODE_DYNSEQ_MEM", DYNSEQ_MEM)
-# The core's attention trip count. Defaults to following DYNSEQ_RTP, which is
-# the existing coupling; set to 0 with DYNSEQ_RTP on to get a runtime L with a
-# static loop.
-DYNSEQ_TRIP = _dynseq_knob("DECODE_DYNSEQ_TRIP", DYNSEQ_RTP)
-
-# There is exactly ONE full-ELF configuration that works, so do not let the knobs
-# build another and fail obscurely much later:
-#   RTP + APPEND runtime (mask threshold, KV append slot -- both scratchpad-able),
-#   TRIP/RB/MEM compile-time.
-# RB and MEM need a runtime BD *length* and a runtime dequeue count, and TRIP a
-# runtime loop bound. None has a static-TXN form, so each fails inside aiecc --
-# blockwrite_values for the first two, "failed to fully unroll" for the third --
-# a long way from the knob that caused it. Refuse here instead.
-if _os.environ.get("DECODE_OUTPUT_FORMAT") == "elf":
-    for _k, _v in (("TRIP", DYNSEQ_TRIP), ("RB", DYNSEQ_RB), ("MEM", DYNSEQ_MEM)):
-        if _v:
-            raise SystemExit(
-                f"DECODE_DYNSEQ_{_k}=1 cannot build a full ELF: it needs a runtime "
-                "BD length / loop bound, which a static TXN binary has no form for. "
-                "The supported ELF build is DECODE_DYNSEQ=1 with TRIP/RB/MEM off "
-                "(see `make compile-decode-elf`)."
-            )
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave

@@ -317,7 +317,7 @@ _compile_decode_elf_build:
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
 	@cd $(DEC) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
-	  DECODE_DYNSEQ=1 DECODE_DYNSEQ_TRIP=0 DECODE_DYNSEQ_RB=0 DECODE_DYNSEQ_MEM=0 \
+	  DECODE_DYNSEQ=1 \
 	  $(if $(PYTHON),$(PYTHON),python3) $(DECODE_DRIVER) >/tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log 2>&1; rc=$$?; \
 	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf $(srcdir)/decode_scratchpad.elf; \
