@@ -244,7 +244,7 @@ compile-decode-elf: preflight-llvm-link
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
 	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; \
-	    echo "$(LBUILD)" > decode_scratchpad.maxl; \
+	    echo $$(( (($(LBUILD)+15)/16)*16 )) > decode_scratchpad.maxl; \
 	  else echo "decode ELF FAILED (see /tmp/decode_elf_L$(LBUILD).log)"; exit 1; fi
 	@echo "Full-ELF build complete: decode_scratchpad.elf + decode_scratchpad.params.txt"
 	@cat $(srcdir)/decode_scratchpad.params.txt

@@ -349,7 +349,7 @@ compile-decode-elf:
 	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf $(srcdir)/decode_scratchpad.elf; \
 	    cp -f params.txt $(srcdir)/decode_scratchpad.params.txt; \
-	    echo "$(LBUILD)" > $(srcdir)/decode_scratchpad.maxl; \
+	    echo $$(( (($(LBUILD)+15)/16)*16 )) > $(srcdir)/decode_scratchpad.maxl; \
 	  else echo "decode ELF FAILED (see /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log)"; \
 	    tail -30 /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log; exit 1; fi
 	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"

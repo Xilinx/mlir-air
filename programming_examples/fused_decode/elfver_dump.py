@@ -22,6 +22,12 @@ _MODEL_DIR = Path(
     )
 )
 sys.path.insert(0, str(_MODEL_DIR))
+
+# ref.bin has to be the XCLBIN's logits: the ELF is what we are checking against
+# it. The ELF is the default decode path now, so select the xclbin explicitly --
+# otherwise the replay compares the ELF with itself and always "matches".
+os.environ["DECODE_ELF"] = "0"
+
 from llama32_1b_q4nx_inference import FusedDecoder  # noqa: E402
 
 TOK = 3681  # the token the Paris prompt lands on; any fixed id works
