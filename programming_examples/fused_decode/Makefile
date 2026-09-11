@@ -239,10 +239,10 @@ compile-decode-elf: preflight-llvm-link
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_DYNSEQ_TRIP=0 DECODE_DYNSEQ_RB=0 DECODE_DYNSEQ_MEM=0 \
-	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; \
-	  if [ -f decode.elf ] && [ -s params.txt ]; then \
+	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; \
 	    echo "$(LBUILD)" > decode_scratchpad.maxl; \
 	  else echo "decode ELF FAILED (see /tmp/decode_elf_L$(LBUILD).log)"; exit 1; fi
@@ -343,7 +343,9 @@ bench-decode: $(BENCH_EXE)
 clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
-	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) 2>/dev/null || true
+	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) \
+	      $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
+	      $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."
 
 # The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so

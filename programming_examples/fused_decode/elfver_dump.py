@@ -3,18 +3,25 @@
 # SPDX-License-Identifier: MIT
 #
 # Dump one decode step's BO contents and the xclbin's logits, for elfver_run.py
-# (or elfver_run.cpp) to replay through the full-ELF build.
+# to replay through the full-ELF build.
 #
 #   DEC_P=<prefill positions> python3 elfver_dump.py <outdir>
 
 import os
 import sys
+from pathlib import Path
+
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(
-    0, "/home/strixminipc/mlir-air/programming_examples/llms/llama32_1b_q4nx"
+# Resolved from this file, not hardcoded, so the utility runs from any checkout.
+_MODEL_DIR = Path(
+    os.environ.get(
+        "ELFVER_MODEL_DIR",
+        Path(__file__).resolve().parent.parent / "llms" / "llama32_1b_q4nx",
+    )
 )
+sys.path.insert(0, str(_MODEL_DIR))
 from llama32_1b_q4nx_inference import FusedDecoder  # noqa: E402
 
 TOK = 3681  # the token the Paris prompt lands on; any fixed id works

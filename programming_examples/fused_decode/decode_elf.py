@@ -27,6 +27,13 @@ from pathlib import Path
 # is the same for every model. XRT resolves an ELF kernel as main:<name>.
 KERNEL_NAME = "main:q4nx_decode"
 
+# Match the xclbin path's .wait(60000). Without a bound a wedged dispatch hangs
+# the host instead of surfacing as a non-COMPLETED state the caller already
+# raises on. Use wait(ms), not wait2's timeout overload: that one takes a
+# std::chrono::duration with no pybind caster registered, so it cannot be called
+# from Python at all (every argument type raises TypeError).
+DISPATCH_TIMEOUT_MS = 60000
+
 
 def parse_params(path):
     """Read params.txt into (append_name, scale, addend, mask_name, arg_index).
@@ -137,7 +144,7 @@ class ElfDecode:
         # XRT patches every declared argument, and the sequence declares L.
         self.run.set_arg(self.scalar_arg, L)
         self.run.start()
-        self.run.wait2()
+        self.run.wait(DISPATCH_TIMEOUT_MS)
         return self.run.state()
 
     def close(self):

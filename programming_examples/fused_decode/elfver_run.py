@@ -10,6 +10,8 @@
 #   python3 elfver_run.py --dir /tmp/elfver --elf decode.elf --l 1000
 
 import argparse
+from pathlib import Path
+
 import numpy as np
 import pyxrt as xrt
 from ml_dtypes import bfloat16

@@ -310,6 +310,7 @@ clean:
 	rm -rf $(srcdir)/_q4_cache_seq* $(srcdir)/__pycache__ 2>/dev/null || true
 	rm -f $(DECODE_STAMP) $(KV_NPZ) 2>/dev/null || true
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
+	rm -f $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.maxl 2>/dev/null || true
 	      $(srcdir)/decode_L*.flags 2>/dev/null || true
 	rm -f $(DEC)/decode.xclbin $(DEC)/decode.insts.bin 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
@@ -337,10 +338,10 @@ compile-decode-elf:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	@cd $(DEC) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_DYNSEQ_TRIP=0 DECODE_DYNSEQ_RB=0 DECODE_DYNSEQ_MEM=0 \
-	  $(if $(PYTHON),$(PYTHON),python3) $(DECODE_DRIVER) >/tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log 2>&1; \
-	  if [ -f decode.elf ] && [ -s params.txt ]; then \
+	  $(if $(PYTHON),$(PYTHON),python3) $(DECODE_DRIVER) >/tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf $(srcdir)/decode_scratchpad.elf; \
 	    cp -f params.txt $(srcdir)/decode_scratchpad.params.txt; \
 	    echo "$(LBUILD)" > $(srcdir)/decode_scratchpad.maxl; \
