@@ -128,7 +128,7 @@ class NpuRunner:
         )
         self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
         self.dec = FusedDecoder(model=Q4NX_MODEL_SOURCE)
-        self.attn_maxl = self.dec.gen.attn_maxl
+        self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
