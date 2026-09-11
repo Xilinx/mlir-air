@@ -83,7 +83,6 @@ class ElfDecode:
 
     def __init__(self, art_dir, dev, xrt, region_w):
         self.xrt = xrt
-        self.region_w = region_w
         art_dir = Path(art_dir)
         self.elf_path = art_dir / "decode_scratchpad.elf"
         self.params_path = art_dir / "decode_scratchpad.params.txt"
@@ -146,9 +145,3 @@ class ElfDecode:
         self.run.start()
         self.run.wait(DISPATCH_TIMEOUT_MS)
         return self.run.state()
-
-    def close(self):
-        self.params = None
-        self.run = None
-        self.kern = None
-        self.ctx = None
