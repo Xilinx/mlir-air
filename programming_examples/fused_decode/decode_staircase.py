@@ -40,18 +40,10 @@ class KVGeometry:
         return 2 * self.ngrp
 
 
-def resolve_windows(gen, staircase):
-    """Windows to hold open: the staircase up to the active one, or just the active one.
-
-    `gen.attn_maxl` is what `DecodeInstsGen.select(max_L)` already resolved to -- the
-    smallest calibrated window covering the caller's reach. Anything above it can never be
-    selected for L <= that reach, so opening it would only cost init time and an unused
-    hw_context. With `max_L=None` the active window is the largest and the full staircase
-    is kept.
-    """
-    if not staircase:
-        return [gen.attn_maxl]
-    return [m for m in gen.calibrated_windows() if m <= gen.attn_maxl]
+def resolve_windows(gen):
+    """The one window to hold open: what DecodeInstsGen.select(max_L) resolved to --
+    the smallest calibrated window covering the caller's reach."""
+    return [gen.attn_maxl]
 
 
 def open_windows(dev, xrt, gen, windows, kernel_match="MLIR_AIE"):
@@ -144,34 +136,3 @@ def patch_insts(state, L, xrt, to_dir):
         state["ib"].write(state["buf"][lo:hi], lo * 4)
         state["ib"].sync(to_dir, (hi - lo) * 4, lo * 4)
     return state["size"]
-
-
-def respace_kv(kvc, geom, old_maxl, new_maxl, live, xrt):
-    """Re-lay the `live` filled positions from one window's KV layout into another's.
-
-    Region stride is ATTN_MAXL*REGION_W, so changing window re-spaces the regions while
-    each region's live prefix is unchanged. Gathered to a compact temp first, so growing
-    and shrinking are both safe. Cost is proportional to `live`, and a crossing happens
-    exactly when `live` is small.
-
-    Reads back from the device: the kernel appends each token's K/V in place, so any host
-    mirror of the cache is stale after the first dispatch.
-    """
-    if old_maxl == new_maxl or live <= 0:
-        return
-    TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-    FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
-    R, NR = geom.region_w, geom.n_regions
-    kvc.sync(FROM)
-    src = np.frombuffer(kvc.map(), dtype=bfloat16, count=geom.n_layers * geom.lreg_max)
-    dst = np.zeros(geom.n_layers * geom.lreg_max, dtype=bfloat16)
-    n = live * R
-    for lay in range(geom.n_layers):
-        so = lay * geom.lreg(old_maxl)
-        do = lay * geom.lreg(new_maxl)
-        for r in range(NR):
-            dst[do + r * new_maxl * R : do + r * new_maxl * R + n] = src[
-                so + r * old_maxl * R : so + r * old_maxl * R + n
-            ]
-    kvc.write(dst.view(np.int16), 0)
-    kvc.sync(TO)

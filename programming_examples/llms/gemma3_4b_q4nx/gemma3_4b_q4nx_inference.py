@@ -129,7 +129,7 @@ class FusedDecoder:
     The weight + KV BOs are uploaded once; the kernel appends each new token's K/V in place.
     """
 
-    def __init__(self, model=MODEL_DEFAULT, max_L=None, staircase=False):
+    def __init__(self, model=MODEL_DEFAULT, max_L=None):
         import importlib.util
         import numpy as np
         from ml_dtypes import bfloat16
@@ -142,11 +142,6 @@ class FusedDecoder:
         self.gw = gw
 
         self.elf_mode = _elf_on()
-        if self.elf_mode and staircase:
-            raise RuntimeError(
-                "DECODE_ELF=1 and DECODE_STAIRCASE=1 are mutually exclusive: "
-                "the ELF has no per-window templates to switch between."
-            )
         if self.elf_mode:
             # One ELF serves every L: no generator, no windows, and ATTN_MAXL
             # comes from the build stamp rather than a guess.
@@ -162,10 +157,7 @@ class FusedDecoder:
         else:
             self.gen = _pick_decode_gen(_DECODE_DIR, max_L)
             _load_stair()
-            # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
-            # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
-            # Off by default -- one window, identical to the single-template path.
-            self.windows = _stair.resolve_windows(self.gen, staircase)
+            self.windows = _stair.resolve_windows(self.gen)
             self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
@@ -299,8 +291,6 @@ class FusedDecoder:
         """Place the numpy-prefill K/V (fk/fv: [UNI_DEC,P,DK_TOT_A]) into the device KV cache
         region-major, then prefetch to the device (before the timed decode loop)."""
         np = self.np
-        if len(self.windows) > 1:
-            self._use_window(self.gen.window_for_L(P + 1))
         RW, NG = self.REGION_W, self.NGRP
         RS = self.cur_maxl * RW
         self.KV[:] = 0
@@ -340,12 +330,6 @@ class FusedDecoder:
         FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
         L = p + 1
         # insts: write full stream once, then patch only the L-dependent [lo:hi] slice.
-        if len(self.windows) > 1:
-            _w = self.gen.window_for_L(L)
-            if _w != self.cur_maxl:
-                # `p` positions are live; this token's K/V is appended by the dispatch.
-                _stair.respace_kv(self.kvc, self._geom, self.cur_maxl, _w, p, xrt)
-                self._use_window(_w)
         if self.elf_mode:
             # L reaches the device as scratchpad parameters instead.
             insts_size = None
@@ -499,7 +483,6 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=F
     dec = FusedDecoder(
         model=model,
         max_L=P + n_tokens,
-        staircase=os.environ.get("DECODE_STAIRCASE") == "1",
     )
     n_eff = min(n_tokens, dec.ATTN_MAXL - P)
     if n_eff <= 0:

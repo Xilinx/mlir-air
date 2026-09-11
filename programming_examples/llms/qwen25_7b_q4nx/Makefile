@@ -108,7 +108,7 @@ RUNNER_ADAPTER := qwen25_7b_q4nx.verify_adapter
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
-.PHONY: help compile compile-prefill compile-decode compile-decode-windows _compile_decode_build prefill \
+.PHONY: help compile compile-prefill compile-decode _compile_decode_build prefill \
         run ask chat verify verify-full verify-paris diagnosis profile profile-prefill gen clean
 
 help:
@@ -162,20 +162,7 @@ compile-decode:
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
 	fi
 
-## Staircase templates: one pair per ATTN_MAXL window; each token dispatches on the
-## smallest one covering the context. Writes $(DECODE_WINDOWS_STAMP) so a stray pair is
-## rejected at load rather than silently changing which window is selected.
-WINDOWS ?= 64 128 256 512 1024 2048
-DECODE_WINDOWS_STAMP := $(srcdir)/.decode_windows
 
-compile-decode-windows:
-	@for W in $(WINDOWS); do \
-	  echo ">>> staircase window ATTN_MAXL=$$W"; \
-	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build LBUILD=$$W \
-	    || exit 1; \
-	done
-	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
-	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with DECODE_STAIRCASE=1."
 
 
 _compile_decode_build:
@@ -291,7 +278,7 @@ gen: run
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
 	rm -f $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.maxl $(DECODE_ELF_STAMP) 2>/dev/null || true
-	rm -f $(DECODE_FLAGS_STAMP) $(DECODE_WINDOWS_STAMP) 2>/dev/null || true
+	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	rm -rf $(srcdir)/build_peano $(srcdir)/build_chess $(srcdir)/__pycache__ \

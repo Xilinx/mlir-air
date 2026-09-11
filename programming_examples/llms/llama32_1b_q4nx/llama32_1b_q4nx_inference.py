@@ -45,12 +45,6 @@ _DEC = _PE / "fused_decode"  # standalone fused superkernel decode example
 _stair = None
 
 
-def _staircase_on():
-    """Multi-window decode (smallest ATTN_MAXL covering L). Env so every entry point --
-    CLI, verify adapter, lit -- opts in the same way."""
-    return os.environ.get("DECODE_STAIRCASE") == "1"
-
-
 _elf = None  # fused_decode/decode_elf.py, imported once fused_decode is on sys.path
 
 
@@ -276,9 +270,7 @@ def _pick_decode_gen(dec_dir, max_L=None):
 
     DECODE_DYNSEQ=1: a build that takes the context length as a runtime scalar, so
     the stream is assembled per token from the compiler-emitted TXN builder. The
-    readback then moves this token's context instead of the padded ATTN_MAXL --
-    what the staircase approximates with a template per window, exactly and from a
-    single build."""
+    readback then moves this token's context instead of the padded ATTN_MAXL --"""
     sys.path.insert(0, str(dec_dir))
     from decode_insts_gen import DecodeInstsGen
 
@@ -295,7 +287,7 @@ class FusedDecoder:
     xclbin, one BO set; the weight + KV BOs are uploaded once and the kernel appends each new
     token's K/V in place."""
 
-    def __init__(self, max_L=None, staircase=False):
+    def __init__(self, max_L=None):
         HF = (
             _ensure_paris_golden()
         )  # embed/norm from model.q4nx (single source) if not provided
@@ -313,17 +305,9 @@ class FusedDecoder:
         # kernel skips masked blocks and single-buffers the block loop, so it serves every L in
         # [1, 2048] via an RTP-L + append insts patch (the reference one-MAX_L design).
         self.elf_mode = _elf_on()
-        if self.elf_mode and staircase:
-            # One ELF already serves every L, so there is no window to pick. Taking
-            # the ELF and dropping the staircase silently would look like the
-            # staircase was measured when it never ran.
-            raise RuntimeError(
-                "DECODE_ELF=1 and DECODE_STAIRCASE=1 are mutually exclusive: the "
-                "ELF has no per-window templates to switch between."
-            )
         if self.elf_mode:
             # One ELF, no templates: nothing to calibrate a slope against and no
-            # window to pick, so the generator and the staircase are both unused.
+            # window to pick, so the generator is unused.
             # ATTN_MAXL comes from the stamp the build writes rather than a
             # default, because a driver guessing 2048 against an ELF built at
             # some other L mis-sizes the KV cache and the mask threshold alike.
@@ -342,10 +326,7 @@ class FusedDecoder:
             self.windows = [self.ATTN_MAXL]
         else:
             self.gen = _pick_decode_gen(_DEC, max_L)
-            # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
-            # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
-            # Off by default -- one window, identical to the single-template path.
-            self.windows = _stair.resolve_windows(self.gen, staircase)
+            self.windows = _stair.resolve_windows(self.gen)
             self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
@@ -476,8 +457,6 @@ class FusedDecoder:
         the loaded xclbin expects, then prefetch it to the device (before the timed decode loop).
         """
         np = self.np
-        if len(self.windows) > 1:
-            self._use_window(self.gen.window_for_L(P + 1))
         RW, NG = self.REGION_W, self.NGRP
         RS = self.cur_maxl * RW
         self.KV[:] = 0
@@ -528,12 +507,6 @@ class FusedDecoder:
             # BD/core wants, which is why the append writes (L-1)*REGION_W.
             insts_size = None
         else:
-            if len(self.windows) > 1:
-                _w = self.gen.window_for_L(L)
-                if _w != self.cur_maxl:
-                    # `p` positions are live; this token's K/V is appended by the dispatch.
-                    _stair.respace_kv(self.kvc, self._geom, self.cur_maxl, _w, p, xrt)
-                    self._use_window(_w)
             insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         _t_insts = _tk() - _a
         _a = _tk()
@@ -767,7 +740,7 @@ def generate(
 
     # ONE decode xclbin serves L in [1, ATTN_MAXL]; the decoder picks the template that covers
     # the requested reach (rt<M> for short, compile-time L<M> up to 2048). Cap at its ATTN_MAXL.
-    dec = FusedDecoder(P + n_tokens, staircase=_staircase_on())
+    dec = FusedDecoder(P + n_tokens)
     attn_maxl = dec.ATTN_MAXL
     n_eff = min(n_tokens, attn_maxl - P)
     if n_eff <= 0:
@@ -893,8 +866,8 @@ class Session:
             f"[session] prefill resident ({time.perf_counter() - t0:.2f}s); building decode...",
             flush=True,
         )
-        self.dec = FusedDecoder(
-            staircase=_staircase_on()
+        self.dec = (
+            FusedDecoder()
         )  # largest available decode context, resident (weights + xclbin)
         self.attn_maxl = self.dec.ATTN_MAXL
         # Warmup: one throwaway prefill so the FIRST user turn is warm (~1.07s) instead of the
@@ -906,13 +879,8 @@ class Session:
             [128000]
         )  # 1-token dummy, padded to seq_len -> warms the full path
         self.prefiller.clear_context()
-        _win = (
-            f", staircase windows={self.dec.windows}"
-            if len(self.dec.windows) > 1
-            else ""
-        )
         print(
-            f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}{_win}, "
+            f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}, "
             f"weights preloaded, warmup {time.perf_counter() - t_w:.2f}s).",
             flush=True,
         )
@@ -1070,11 +1038,6 @@ def interactive_chat(
                 sys.stdout.write(d)
                 sys.stdout.flush()
 
-        if len(sess.dec.windows) > 1:
-            print(
-                f"[chat] context {len(ids)} tok -> KV window {sess.dec.gen.window_for_L(len(ids) + 1)}",
-                flush=True,
-            )
         gen_ids = sess.run_turn(
             ids,
             temperature=temperature,

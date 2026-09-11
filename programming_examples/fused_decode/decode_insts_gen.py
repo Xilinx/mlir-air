@@ -82,8 +82,9 @@ class DecodeInstsGen:
         self._check_declared_windows(artifact_dir)
         self.select(max_L)
 
-    # Build stamp naming the ATTN_MAXL windows a directory is meant to hold, written by
-    # `make compile-decode-windows`.
+    # Legacy stamp naming the ATTN_MAXL windows a directory was built to hold. Nothing
+    # writes it any more, but a tree that still has one is checked against it: templates
+    # are discovered by scanning, so a stray pair changes which window select() picks.
     WINDOWS_STAMP = ".decode_windows"
 
     def _check_declared_windows(self, artifact_dir):
@@ -103,7 +104,7 @@ class DecodeInstsGen:
             raise RuntimeError(
                 f"decode templates in {artifact_dir} do not match {self.WINDOWS_STAMP}: "
                 f"declared ATTN_MAXL {want}, found calibrated {have}. Remove strays or "
-                f"re-run `make compile-decode-windows`."
+                f"rebuild with `make compile-decode`."
             )
 
     def select(self, max_L=None):
@@ -169,23 +170,8 @@ class DecodeInstsGen:
         """Calibrated ATTN_MAXL windows, ascending."""
         return sorted(m for m, t in self.templates.items() if t["slope"] is not None)
 
-    def window_for_L(self, L):
-        """Smallest calibrated window that can serve context length L.
-
-        The compiled KV readback streams ATTN_MAXL positions regardless of L, so the
-        smallest covering window is also the cheapest one to run at.
-        """
-        for m in self.calibrated_windows():
-            if m >= L:
-                return m
-        raise KeyError(f"no calibrated window covers L={L}")
-
     def xclbin_for_maxl(self, m):
         return self.templates[m]["xclbin"]
-
-    def windows_for_range(self, L_lo, L_hi):
-        """Set of ATTN_MAXL window templates needed to cover L in [L_lo, L_hi]."""
-        return sorted({attn_maxl_of(L) for L in range(L_lo, L_hi + 1)})
 
     def describe(self):
         lines = []

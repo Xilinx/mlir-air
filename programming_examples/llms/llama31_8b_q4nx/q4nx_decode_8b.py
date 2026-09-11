@@ -202,7 +202,6 @@ class FusedDecode8B:
         templates,
         model_type="LLAMA_3_1_8B",
         max_L=None,
-        staircase=False,
     ):
         import pyxrt as xrt
 
@@ -242,11 +241,7 @@ class FusedDecode8B:
         self._dyn = _dyn
 
         self.gen = pick_insts_gen(str(templates), max_L=max_L)
-        # Staircase: hold every calibrated ATTN_MAXL window and run on the smallest one
-        # covering the current L. The compiled KV readback streams ATTN_MAXL positions
-        # whatever L is, so a smaller window moves proportionally fewer DDR bytes/token.
-        # Off by default -- one window, byte-identical to the single-template path.
-        self.windows = stair.resolve_windows(self.gen, staircase)
+        self.windows = stair.resolve_windows(self.gen)
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
         self.rope_cos, self.rope_sin = llama3_rope(self.ATTN_MAXL, self.DH)
@@ -334,10 +329,6 @@ class FusedDecode8B:
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
 
-    def _respace_kv(self, old_maxl, new_maxl, live):
-        """Move the `live` filled positions into window `new_maxl`'s KV layout."""
-        stair.respace_kv(self.kvc, self._geom, old_maxl, new_maxl, live, self.xrt)
-
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
         KV = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
@@ -364,10 +355,6 @@ class FusedDecode8B:
             raise RuntimeError(
                 f"prefill ctx {ctx} exceeds decode ATTN_MAXL {self.ATTN_MAXL}"
             )
-        # Seed straight into the layout of the window the first decode step will use
-        # (L = ctx+1), so no re-space is needed on the very first dispatch.
-        if len(self.windows) > 1:
-            self._use_window(self.gen.window_for_L(ctx + 1))
         region_stride = self.cur_maxl * fd.REGION_W
         lreg = self._geom.lreg(self.cur_maxl)
         buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
@@ -389,12 +376,6 @@ class FusedDecode8B:
         """One decode step at context length L=p+1: patch insts for L, feed embed[tok] +
         the position-p rope LUT, run the fused decode, return the vocab logits."""
         L = p + 1
-        if len(self.windows) > 1:
-            w = self.gen.window_for_L(L)
-            if w != self.cur_maxl:
-                # `p` positions are live; this token's K/V is appended by the dispatch.
-                self._respace_kv(self.cur_maxl, w, p)
-                self._use_window(w)
         self.insts_size = stair.patch_insts(self._st, L, self.xrt, self.TO)
         x0 = np.asarray(self.embed[tok], bfloat16)
         h = self.DH // 2

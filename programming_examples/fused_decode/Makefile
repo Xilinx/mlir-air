@@ -218,22 +218,7 @@ _compile_decode_elf_build: preflight-llvm-link
 	@echo "Full-ELF build complete: decode_scratchpad.elf + decode_scratchpad.params.txt"
 	@cat $(srcdir)/decode_scratchpad.params.txt
 
-## Staircase templates: one pair per ATTN_MAXL window. Each token dispatches on the
-## smallest window covering the current context, so a short context streams
-## proportionally less KV. Writes $(DECODE_WINDOWS_STAMP) so the driver can reject a
-## directory whose templates do not match what was built.
-WINDOWS ?= 64 128 256 512 1024 2048
-DECODE_WINDOWS_STAMP := $(srcdir)/.decode_windows
 
-compile-decode-windows:
-	@for W in $(WINDOWS); do \
-	  echo ">>> staircase window ATTN_MAXL=$$W"; \
-	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build LBUILD=$$W \
-	    || exit 1; \
-	done
-	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
-	@echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP)
-	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with DECODE_STAIRCASE=1."
 
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
