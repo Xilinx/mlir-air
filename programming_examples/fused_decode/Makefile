@@ -27,25 +27,6 @@ AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),
 #   deadlock, so they must stay -O1.
 NONATTN_KERNELS := proj_qmm rms_residual glu rope   # object .o, -O2
 ATTN_LL_KERNELS := attn_qk attn_kv                  # inline .ll only, -O1 (merge-linked)
-# Overridable so the -O1 constraint above can be RE-TESTED against a newer Peano.
-# It matters: at -O1 the software pipeliner does not run at all, so the attention
-# loops -- the ones whose cost scales with KV length -- are the one part of the
-# design it never reaches.
-ATTN_OPT       ?= O1
-# Extra per-group kernel defines, for A/B diagnostics ONLY (empty in every normal
-# build, so the shipped path is byte-identical). They exist because the kernels'
-# cost is not separable from the outside: end-to-end latency cannot say how much
-# of a phase is compute vs waiting on its feed, and hardware tracing is not
-# available. Building a variant that keeps the dataflow but drops the math
-# answers it directly. Example -- attn_kv.cc/attn_qk.cc honour SKIP_ATTN_FV and
-# SKIP_CALC_L, which keep every lock handshake and DMA but remove the attention
-# math, and measured that attn_fv compute is 0.746 of the 1.137 ms/1k context
-# slope (the rest is feed):
-#     make compile-decode ATTN_EXTRA="-DSKIP_ATTN_FV -DSKIP_CALC_L"
-# Such builds produce WRONG results -- pair them with bench-decode (latency
-# only), never with make verify.
-ATTN_EXTRA     ?=
-NONATTN_EXTRA  ?=
 PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body -Wno-deprecated-declarations \
   -DNDEBUG -DMODEL_TYPE=LLAMA_3_2_1B -D__AIE_API_AIE_ADF_HPP__ \
@@ -53,14 +34,6 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 # DECODE_GOLDEN=1 enables the post-attention-RMS decode path (a boolean flag; no
 # weight files are read at build time -- the compile is weight-free).
-# W_DUAL_CHAN=1 feeds each proj column's weights on BOTH of its shim MM2S channels
-# (@inW0c{cx} takes the low half of the column's cascade rows, @inW1c{cx} the high
-# half) instead of ch0 only. It also changes the DDR cascade order, so any
-# consumer must pack its weights with the SAME flag -- the
-# llms/*_q4nx drivers read it from the environment and key their requant cache on
-# it. Inherited from the environment so a consumer can set it once for both the
-# build and the run.
-W_DUAL_CHAN    ?= 1
 # VOCAB_CHUNK_I2 / UNI_LM: overridable so the lm-head wave count can be varied at
 # CONSTANT work (UNI_LM*VOCAB_CHUNK_I2 must stay = VOCAB_FULL_ROWBLKS/32). Defaults
 # reproduce the shipped config exactly. fused_decode.py asserts the two agree.
@@ -77,7 +50,7 @@ VOCAB_CHUNK_I2 ?= 18
 # PROJ_RC_CACHE=0 restores the recompute-every-block kernel for A/B.
 PROJ_RC_CACHE  ?= 1
 DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-                  W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
+                  PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
                   $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
@@ -109,11 +82,11 @@ help:
 ## slope ref). ~15 min. Weight-free (runtime BOs), like the prefill compile.
 ##
 ## Idempotent: if both templates are already present AND were built with the
-## current W_DUAL_CHAN setting, skip (the ~15 min build only runs once). `make clean`
+## current build flags, skip (the ~15 min build only runs once). `make clean`
 ## forces a rebuild. Consumers that call this repeatedly (e.g. the llama32_1b_q4nx
 ## verify + profile lits) thus pay the cost at most once. The .decode_flags stamp
-## exists because W_DUAL_CHAN changes the DDR weight layout: a warm template built
-## with the other setting would silently be fed the wrong blocks.
+## exists because a flag change can alter the DDR weight layout: a warm template
+## built with another setting would silently be fed the wrong blocks.
 ##
 ## REPRODUCIBILITY (toolchain): the inline-attn merge path shells out to an EXTERNAL
 ## `llvm-link` (resolved from PATH), which must be PRE-LIFETIME-CHANGE, i.e. LLVM < 23.
@@ -124,7 +97,7 @@ help:
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
+DECODE_FLAGS       := PROJ_RC_CACHE=$(PROJ_RC_CACHE)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
@@ -229,10 +202,10 @@ compile-decode-elf:
 _compile_decode_elf_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
 	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
@@ -265,12 +238,12 @@ compile-decode-windows:
 _compile_decode_build: preflight-llvm-link
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@# attn_qk/attn_kv are built ONLY as inline .ll (merge-linked into the core; mlir-aie #3399).
 	@# They MUST be -O1 (a -O2 attn do-while deadlock); non-attn MUST be -O2 (rope -O1 miscompiles).
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> template decode_L2048 (+ L2047 slope ref) [region-major KV + fire-and-free readback + inline attn]"
 	@# The two same-ATTN_MAXL builds (L2048 + L2047) calibrate the L-slope so DecodeInstsGen can

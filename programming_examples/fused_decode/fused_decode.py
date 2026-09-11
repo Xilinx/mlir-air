@@ -804,13 +804,16 @@ GRP_PCOL = (
 # Requires the host weight array packed with pack_q4k_cascade(dual_chan=True).
 # Exported so the weight packers (llms/*_q4nx requant) key their cascade order and
 # their cache off the same flag as the build.
-W_DUAL_CHAN = int(_os.environ.get("W_DUAL_CHAN", "1"))
+# Dual-MM2S weight feed: fixed on. The single-channel layout packs the DDR
+# cascade differently, so it needs its own requant cache, and no shipped build
+# has used it.
+W_DUAL_CHAN = 1
 
 
 def _wname(ci, cx):
     """Weight channel name: the single @inW bundle when W_DUAL_CHAN is off, else
     the per-column, shim-col-pinned channel for shim channel ci of column cx."""
-    return f"inW{ci}c{cx}" if W_DUAL_CHAN else "inW"
+    return f"inW{ci}c{cx}"
 
 
 MAIN_PCOL = 2 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
@@ -831,7 +834,7 @@ RMS_PCOL = 2  # rms producer core column
 # col 2 would carry the shim feeds, both cores, AND a 16-way broadcast hub.
 # Overridable so the floorplan move can be A/B-tested independently of the
 # channel split (XMT_PCOL=1 with W_DUAL_CHAN=0 isolates the placement effect).
-XMT_PCOL = int(_os.environ.get("XMT_PCOL", MAIN_PCOL if W_DUAL_CHAN else RMS_PCOL))
+XMT_PCOL = MAIN_PCOL
 # Column of the glu-down memtile, the third producer converging on @xnorm (the
 # other two are the o-proj memtile on col 5 and the rms core itself). Distinct
 # from col 5 either way, so the convergence never merges o+down onto one MM2S
@@ -1518,9 +1521,7 @@ def build_module():
         # One fan get. W_DUAL_CHAN halves it: each shim channel feeds its own
         # ring covering half the column's cores (FLM's w_buffer[0:5120] /
         # w_buffer[5120:10240] split).
-        wfan_l2 = MemRefType.get(
-            [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
-        )
+        wfan_l2 = MemRefType.get([(NCY // 2) * BLOCK_BF16], bf16, memory_space=l2)
         grp_l2 = MemRefType.get([GRP_ROWS], bf16, memory_space=l2)
         main_l2 = MemRefType.get([MAIN_ROWS], bf16, memory_space=l2)
         relay_l2 = MemRefType.get(
@@ -1840,8 +1841,6 @@ def build_module():
             for _wc in range(NCX):
                 for _nm in (_wname(0, _wc), _wname(1, _wc)):
                     channel_decl(_nm, size=[1])
-        else:
-            channel_decl("inW", size=[NCX])
         _wL2 = channel_decl("wL2ToL1", size=[NCX, NCY])
         _wL2.operation.attributes["air.shared_resident_ring"] = UnitAttr.get()
         # Output: leads -> group MT -> main MT -> id-demux egress.
@@ -2060,14 +2059,14 @@ def build_module():
                     `_cx` is a Python int when W_DUAL_CHAN (per-column channels), and
                     the scf.parallel bundle IV otherwise.
                     """
-                    nch = 2 if W_DUAL_CHAN else 1
+                    nch = 2
                     cstep = wstep // nch  # this channel's per-step share
                     span = nsteps * cstep  # elements per channel
                     half = (nsteps // 2) * cstep  # step-aligned inner split
                     for ci in range(nch):
                         base = _cbase if ci == 0 else arith.addi(_cbase, idx(span))
                         ch = _wname(ci, _cx)
-                        ix = [idx(0)] if W_DUAL_CHAN else [_cx]
+                        ix = [idx(0)]
                         ChannelPut(
                             ch,
                             Wb,
@@ -2978,11 +2977,7 @@ def build_module():
                     # MM2S BD chain alternating between both channels' buffers, so the
                     # two shim channels are cross-coupled at every fan step. FLM has no
                     # such edge. Do not reintroduce it.
-                    _fan_groups = (
-                        [(0, 0, NCY // 2), (1, NCY // 2, NCY)]
-                        if W_DUAL_CHAN
-                        else [(0, 0, NCY)]
-                    )
+                    _fan_groups = [(0, 0, NCY // 2), (1, NCY // 2, NCY)]
                     for cx in range(NCX):
                         for _ci, _cy0, _cy1 in _fan_groups:
                             _wch = _wname(_ci, cx)
@@ -2994,7 +2989,7 @@ def build_module():
                                 ChannelGet(
                                     _wch,
                                     wf,
-                                    indices=[idx(0) if W_DUAL_CHAN else idx(cx)],
+                                    indices=[idx(0)],
                                 )
                                 for cy in range(_cy0, _cy1):
                                     # 1D fixed-offset read (reproducer w_buffer MM2S

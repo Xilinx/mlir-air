@@ -59,7 +59,7 @@ def _ensure_requant_cache(fd, model):
         return rc
     import qwen25_3b_q4_requant as rq
 
-    _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
+    _w2 = "_w2ch"  # the dual-MM2S cascade order; fixed in the builder
     rc = rc or os.path.join(_Q4NX_CACHE, f"requant_v{fd.VOCAB_I2}{_w2}.npz")
     if not os.path.exists(rc):
         rq.build_requant_cache(model, fd, rc)
