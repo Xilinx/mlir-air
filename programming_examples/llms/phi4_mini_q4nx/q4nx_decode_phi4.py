@@ -181,7 +181,6 @@ class FusedDecodePhi4:
         templates,
         model_type="PHI4_4B",
         max_L=None,
-        staircase=False,
     ):
         import pyxrt as xrt
 
@@ -211,17 +210,10 @@ class FusedDecodePhi4:
         self.embed = np.asarray(embed, np.float32).reshape(self.VOCAB_SIZE, self.K)
         final_norm = np.asarray(final_norm, bfloat16)
 
-        import decode_dynseq as _dyn
-        from decode_dynseq import pick_insts_gen
+        from decode_insts_gen import DecodeInstsGen
 
-        self._dyn = _dyn
-
-        self.gen = pick_insts_gen(str(templates), max_L=max_L)
-        # Staircase: hold every calibrated ATTN_MAXL window and run on the smallest one
-        # covering the current L. The compiled KV readback streams ATTN_MAXL positions
-        # whatever L is, so a smaller window moves proportionally fewer DDR bytes/token.
-        # Off by default -- one window, byte-identical to the single-template path.
-        self.windows = stair.resolve_windows(self.gen, staircase)
+        self.gen = DecodeInstsGen(str(templates), max_L=max_L)
+        self.windows = stair.resolve_windows(self.gen)
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
         self.ROPE_W = fd.ROPE_W_LEN  # 96: partial rotary, not DH
@@ -283,10 +275,6 @@ class FusedDecodePhi4:
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
 
-    def _respace_kv(self, old_maxl, new_maxl, live):
-        """Move the `live` filled positions into window `new_maxl`'s KV layout."""
-        stair.respace_kv(self.kvc, self._geom, old_maxl, new_maxl, live, self.xrt)
-
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
         KV = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
@@ -313,10 +301,6 @@ class FusedDecodePhi4:
             raise RuntimeError(
                 f"prefill ctx {ctx} exceeds decode ATTN_MAXL {self.ATTN_MAXL}"
             )
-        # Seed straight into the layout of the window the first decode step will use
-        # (L = ctx+1), so no re-space is needed on the very first dispatch.
-        if len(self.windows) > 1:
-            self._use_window(self.gen.window_for_L(ctx + 1))
         region_stride = self.cur_maxl * fd.REGION_W
         lreg = self._geom.lreg(self.cur_maxl)
         buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
@@ -338,12 +322,6 @@ class FusedDecodePhi4:
         """One decode step at context length L=p+1: patch insts for L, feed embed[tok] +
         the position-p rope LUT, run the fused decode, return the vocab logits."""
         L = p + 1
-        if len(self.windows) > 1:
-            w = self.gen.window_for_L(L)
-            if w != self.cur_maxl:
-                # `p` positions are live; this token's K/V is appended by the dispatch.
-                self._respace_kv(self.cur_maxl, w, p)
-                self._use_window(w)
         self.insts_size = stair.patch_insts(self._st, L, self.xrt, self.TO)
         x0 = np.asarray(self.embed[tok], bfloat16)
         h = self.ROPE_W // 2
@@ -363,7 +341,6 @@ class FusedDecodePhi4:
             self.r_bo,
             self.y_bo,
             self.kvc,
-            *self._dyn.dispatch_args(self.gen, p + 1),
         ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")

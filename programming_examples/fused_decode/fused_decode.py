@@ -922,7 +922,8 @@ def _set_attn_link(op, base):
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
-RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
+# Shim KV-readback outer block count: always ceil(ATTN_L/16).
+RB_ROUNDS = (ATTN_L + 15) // 16
 # DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
 # in. It becomes a launch operand that drives BOTH the shim readback's block count
 # and the attention herd's RTP-L, so the shim pushes exactly what the cores consume
@@ -932,53 +933,19 @@ RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
 # calls per token (air.backend.txn_builder). Off by default: the staircase templates
 # remain the shipping path until this is measured across all four decoders.
 DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
-# The four bindings move together: the shim's push count, the memtile's dequeue
-# count and the cores' trip count must agree, and the append has to land on the
-# position the cores are about to read. Named separately only because each one
-# reads better at its use.
-DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+# What follows the context length, and what stays compile-time. Fixed, not
+# configurable: RB (the readback's block count) and MEM (the memtile dequeue)
+# would need a runtime BD length, and TRIP a runtime loop bound, and a static TXN
+# binary -- what --output-format=elf emits -- has no form for either. Only a
+# runtime VALUE is expressible, via a scratchpad parameter. So the mask threshold
+# (RTP) and the KV append slot (APPEND) follow L; the rest is baked, and the cores
+# skip the far blocks by masking exactly as the xclbin design does.
+DYNSEQ_RTP = DYNSEQ_APPEND = bool(DYNSEQ)
+DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
 
-
-def _dynseq_knob(name, default):
-    return bool(int(_os.environ.get(name, str(int(default)))))
-
-
-# Individually overridable, for the full-ELF path. A static TXN binary -- what
-# --output-format=elf emits -- is a flat list of literal words, so it can hold
-# a runtime *value* (via a scratchpad parameter) but not a runtime instruction
-# *stream*: a loop whose trip count is unknown at compile time, or a BD payload
-# computed at dispatch, has no representation in it. DYNSEQ as a single switch
-# turns on both kinds at once, which is why it cannot build an ELF.
-#
-# Splitting them allows the combination that can: the mask threshold L runtime
-# (DYNSEQ_RTP), so one build serves every context length, while the core's
-# block loop stays a compile-time ATTN_ROUNDS and the far blocks are skipped by
-# masking (DYNSEQ_TRIP off) -- which is what the shipping xclbin design already
-# does, and it keeps the shim's push count fixed and agreeing with the cores.
-# The overrides only narrow what DECODE_DYNSEQ turned on; they cannot turn it
-# on. DYNSEQ is what appends the context length as a trailing scalar operand,
-# so with it off there is no operand for these paths to read -- L_rt and
-# _seg_L are None and the first arithmetic on one raises deep inside codegen,
-# a long way from the environment variable that caused it. Fail here instead.
-if not DYNSEQ:
-    for _k in ("RB", "APPEND", "RTP", "MEM", "TRIP"):
-        if _dynseq_knob("DECODE_DYNSEQ_" + _k, False):
-            raise SystemExit(
-                f"DECODE_DYNSEQ_{_k}=1 needs DECODE_DYNSEQ=1: the context length "
-                "is only a runtime operand when DYNSEQ is on, and these knobs "
-                "select which parts of the sequence follow it."
-            )
-
-DYNSEQ_RB = _dynseq_knob("DECODE_DYNSEQ_RB", DYNSEQ_RB)
-DYNSEQ_APPEND = _dynseq_knob("DECODE_DYNSEQ_APPEND", DYNSEQ_APPEND)
-DYNSEQ_RTP = _dynseq_knob("DECODE_DYNSEQ_RTP", DYNSEQ_RTP)
-DYNSEQ_MEM = _dynseq_knob("DECODE_DYNSEQ_MEM", DYNSEQ_MEM)
-# The core's attention trip count. Defaults to following DYNSEQ_RTP, which is
-# the existing coupling; set to 0 with DYNSEQ_RTP on to get a runtime L with a
-# static loop.
-DYNSEQ_TRIP = _dynseq_knob("DECODE_DYNSEQ_TRIP", DYNSEQ_RTP)
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
-COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
+# Cross-wave shim-feed coalescing: always on (the un-coalesced feed was an A/B).
+COALESCE = 1
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
 # under 8 KiB, so that geometry lowers it; every other model keeps 10240.
 STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
@@ -1020,7 +987,7 @@ KV_APPEND = MULTIBLK
 # 20/20 over 29 dispatches. 4 is taken: it is inside the footprint the 4-CU
 # models already reserve for attention, where col 5 also carries the GLU tile.
 # Overridable so the sweep can be repeated.
-ATTN_PCOL = int(_os.environ.get("ATTN_PCOL", "4"))
+ATTN_PCOL = 4
 ATTN_CU_LOC = (
     [(ATTN_PCOL, 2, 3), (ATTN_PCOL, 4, 5)]
     if N_ATTN_CU == 2
@@ -1163,7 +1130,7 @@ PROJ_RC_CACHE = int(_os.environ.get("PROJ_RC_CACHE", "1"))
 # EVERY row-block, i.e. compute exactly what the uncached path computes. Correct
 # output here isolates a broken reuse assumption; wrong output isolates broken
 # plumbing. Costs the full recompute, so it is a diagnostic only.
-PROJ_RC_FILL_ALL = int(_os.environ.get("PROJ_RC_FILL_ALL", "0"))
+PROJ_RC_FILL_ALL = 0
 # One slot of COL_BLOCK/32 bf16 per col-block, sized for the WIDEST projection
 # (2*J2 col-blocks; llama-1B down-proj K=8192 -> 32 -> 256 bf16 = 512 B/core).
 # Same size as the reference's b_col_reduce_add[INTERMEDIATE_SIZE/GROUP_SIZE].
@@ -1221,8 +1188,8 @@ ATTN_WAVES = tuple(_k for _k in ATTN_LAYERS if _k < UNI_DEC)
 # waves the fused launch loop drives). Used to split the fused sequence into a
 # decode-part [0,UNI_DEC) and a vocab-part [UNI_DEC,UNI_WAVES) that share ONE CDO,
 # to test host-wait quiescence between decode and vocab on one xclbin.
-UNI_WAVE_LO = int(_os.environ.get("UNI_WAVE_LO", "0"))
-UNI_WAVE_HI = int(_os.environ.get("UNI_WAVE_HI", str(UNI_WAVES)))
+UNI_WAVE_LO = 0
+UNI_WAVE_HI = UNI_WAVES
 
 # Weight-buffer grouping: G decode layers per weight BO. A shim BD's byte offset
 # is a uint32 (aiex.npu.address_patch $arg_plus -> uint32_t in AIETargetNPU), so
@@ -1437,7 +1404,7 @@ def build_module():
         rms_l3 = MemRefType.get(
             [
                 UNI_DEC * RMS_LAYER
-                + ((UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN if MULTIBLK else 0)
+                + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN
                 + K  # dedicated final-norm slot for real lm_head (vocab)
             ],
             bf16,
@@ -1971,14 +1938,11 @@ def build_module():
         # DDR argument positions -- and every host binding built around them --
         # are unchanged.
         _fn_args = (
-            [x_l3, w_l3, rms_l3, y_l3]
-            + ([kvc_l3] if MULTIBLK else [])
-            + _w_extra
-            + ([i32] if DYNSEQ else [])
+            [x_l3, w_l3, rms_l3, y_l3] + [kvc_l3] + _w_extra + ([i32] if DYNSEQ else [])
         )
         # arg index of each weight group's buffer: group 0 is the original arg1;
         # groups 1.. and the lm-head follow the base args. Index into _la is +4.
-        _w_base_n = 4 + (1 if MULTIBLK else 0)
+        _w_base_n = 5
         WARG = [1] + [_w_base_n + i for i in range(len(_w_extra))]
 
         @FuncOp.from_py_func(*_fn_args)
@@ -1999,7 +1963,7 @@ def build_module():
                 # None => the caller is on the statically-known lm-head buffer; a
                 # Value => a runtime group index into _WBUFS[0:N_WGRP].
                 _wsel = [None]
-                KVC = _la[8] if MULTIBLK else None
+                KVC = _la[8]
                 # The dispatch-time context length (DYNSEQ). Last operand before
                 # the multi-layer induction variable.
                 L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
@@ -2426,7 +2390,7 @@ def build_module():
                             # index a per-wave slab (UNI_DEC contiguous rope_w slabs, offset
                             # _lut_off + a_iv*ROPE_W_LEN). UNIFIED sizes arg2 for UNI_DEC decode
                             # waves (module-gen forces NLAYERS=1, which would misplace it).
-                            _lut_off = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                            _lut_off = UNI_DEC * RMS_LAYER
                             _rope_off = (
                                 _lo(_lb(ROPE_W_LEN), _lut_off)
                                 if (ROPE_W_PER_LAYER and MULTIBLK)
@@ -2599,7 +2563,7 @@ def build_module():
                                     # exceeds the ring depth) and lowers it to a
                                     # fire-and-free MM2S feed. With NRB=1 that is exactly
                                     # the reference's 2*NGRP (=4) whole-region contiguous transfers.
-                                    _NRB = int(_os.environ.get("DECODE_KV_RB_NRB", "1"))
+                                    _NRB = 1
                                     _nb = RB_ROUNDS
                                     _cbk = (_nb + _NRB - 1) // _NRB  # blocks per chunk
                                     # KV_RB_1D: emit the readback as ONE 1-D descriptor instead of
@@ -2615,7 +2579,7 @@ def build_module():
                                     # LINEAR transfer -- see its seq col3/col4 BDs, "A linear
                                     # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
                                     # same order; only the descriptor shape differs.
-                                    _KV1D = int(_os.environ.get("KV_RB_1D", "0"))
+                                    _KV1D = 0
                                     if DYNSEQ and (_NRB != 1 or _KV1D):
                                         raise SystemExit(
                                             "DECODE_DYNSEQ needs the single whole-region "
@@ -2728,7 +2692,7 @@ def build_module():
                                 # deadlocks the whole design. Measured: the hybrid
                                 # machinery passes with one mixer phase and hangs
                                 # with two, everything else held fixed.
-                                if MULTIBLK and p == KV_PHASE and ATTN_SUBSYS:
+                                if p == KV_PHASE and ATTN_SUBSYS:
 
                                     def _kv_traffic():
                                         _emit_append()
@@ -3253,28 +3217,6 @@ def build_module():
                                     sizes=[idx(DK_TOT_A)],
                                     strides=[idx(1)],
                                 )
-                        else:
-                            # per COLUMN GROUP: that group's CUs' k then v on its
-                            # own packet channel (no cross-col FIFO interleave).
-                            for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
-                                for c in cus:
-                                    ChannelPut(
-                                        "toAttnKV",
-                                        a_k,
-                                        indices=[idx(gi)],
-                                        offsets=[idx(c * KVPC_DH)],
-                                        sizes=[idx(KVPC_DH)],
-                                        strides=[idx(1)],
-                                    )
-                                for c in cus:
-                                    ChannelPut(
-                                        "toAttnKV",
-                                        a_v,
-                                        indices=[idx(gi)],
-                                        offsets=[idx(c * KVPC_DH)],
-                                        sizes=[idx(KVPC_DH)],
-                                        strides=[idx(1)],
-                                    )
                         if _own_qkv:
                             DeallocOp(a_qkv)
                         DeallocOp(a_lut)
@@ -5253,9 +5195,6 @@ def run():
         stack_size=STACK_SIZE,
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=bool(COALESCE),
-        # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
-        # per dispatch from the emitted header instead of read from insts.bin.
-        emit_txn_cpp=bool(DYNSEQ),
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "

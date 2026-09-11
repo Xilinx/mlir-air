@@ -26,3 +26,10 @@ air.insts.bin
 
 # Weight caches produced at runtime (quantized from the HF checkpoint; see README.md).
 *.npz
+
+# Full-ELF decode artifacts + build-flag stamp (make compile-decode-elf).
+decode_scratchpad.elf
+decode_scratchpad.params.txt
+decode_scratchpad.maxl
+params.txt
+.decode_elf_flags

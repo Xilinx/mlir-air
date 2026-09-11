@@ -108,7 +108,7 @@ CTX ?= 2048
 # parses fine and is ~4x too slow. bench/sweep_prefill.py guards against it too.
 export Q4NX_SEQ_LEN := $(CTX)
 
-.PHONY: help compile compile-decode compile-decode-dynseq compile-decode-windows _compile_decode_build run profile chat verify \
+.PHONY: help compile compile-decode _compile_decode_build run profile chat verify \
         verify-full ask gen verify-paris diagnosis profile-prefill clean
 
 help:
@@ -119,7 +119,7 @@ help:
 	@echo "Quick start:"
 	@echo "  make compile          Compile prefill ELFs (~4 min, one-time; no weights)"
 	@echo "  make compile-decode   Decode templates, built into this dir (~15 min, no weights)"
-	@echo "  make compile-decode-windows  Staircase: one template pair per ATTN_MAXL ($(WINDOWS)); ~1.11x decode"
+	@echo "  make  Staircase: one template pair per ATTN_MAXL ($(WINDOWS)); ~1.11x decode"
 	@echo "  make run              Run inference ($(N_TOKENS) tokens)"
 	@echo "  make chat             Interactive chat REPL (streaming output)"
 	@echo "  make profile          Run with profiling breakdown"
@@ -167,46 +167,8 @@ compile-decode:
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP); \
 	fi
 
-## Staircase templates: one pair per ATTN_MAXL window. The compiled KV readback streams
-## ATTN_MAXL positions whatever the real context length is, so running each token on the
-## smallest covering window moves proportionally less DDR per token (measured 1.11x over
-## 300 tokens, token stream bit-identical). Run the driver with --staircase to use them.
-## Writes $(DECODE_WINDOWS_STAMP) so the driver can reject a directory whose templates do
-## not match what was built -- template discovery is a directory scan, and a stray pair
-## silently changes which window is selected.
-WINDOWS ?= 64 128 256 512 1024 2048
-DECODE_WINDOWS_STAMP := $(srcdir)/.decode_windows
 
-compile-decode-windows:
-	@for W in $(WINDOWS); do \
-	  echo ">>> staircase window ATTN_MAXL=$$W"; \
-	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build LBUILD=$$W \
-	    || exit 1; \
-	done
-	@echo "$(WINDOWS)" > $(DECODE_WINDOWS_STAMP)
-	@echo "$(DECODE_FLAGS)" > $(DECODE_FLAGS_STAMP)
-	@echo "Staircase templates built (ATTN_MAXL: $(WINDOWS)). Run with --staircase."
 
-## Dynamic-runtime-sequence template: ONE build for every context length (see
-## fused_decode/Makefile compile-decode-dynseq). Run with DECODE_DYNSEQ=1.
-compile-decode-dynseq:
-	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
-	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> 8B non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> 8B attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
-	@echo ">>> 8B dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_GOLDEN_L=$(LBUILD) python3 $(DECODE_DRIVER) >/tmp/llama8b_decode_dyn_L$(LBUILD).log 2>&1; \
-	  if [ -f decode.xclbin ] && [ -f air_project/npu.air.txn.h ]; then \
-	    mv -f decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
-	    cp -f air_project/npu.air.txn.h $(srcdir)/decode_dyn_L$(LBUILD).txn.h; \
-	    rm -f npu_seq_*.mlir; \
-	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/llama8b_decode_dyn_L$(LBUILD).log)"; tail -30 /tmp/llama8b_decode_dyn_L$(LBUILD).log; exit 1; fi
-	@echo "8B dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it:
@@ -303,7 +265,7 @@ gen:
 ## the lit tests run `clean` before every gate. Delete it by hand to force a re-pack.
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
-	rm -f $(DECODE_FLAGS_STAMP) $(DECODE_WINDOWS_STAMP) 2>/dev/null || true
+	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	rm -rf $(BUILD_DIR) $(srcdir)/__pycache__ $(srcdir)/_q4nx_cache_seq* 2>/dev/null || true

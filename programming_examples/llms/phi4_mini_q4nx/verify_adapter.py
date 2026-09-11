@@ -88,12 +88,9 @@ class FusedDecodeRunner:
     name = "npu-q4nx-phi4-fused-decode"
 
     def __init__(self, model_source, templates, max_seq):
-        # DECODE_STAIRCASE=1 gates the multi-window (per-token smallest ATTN_MAXL) path;
-        # needs a directory built by `make compile-decode-windows`.
         self._dec = FusedDecodePhi4(
             model_source,
             templates,
-            staircase=os.environ.get("DECODE_STAIRCASE") == "1",
         )
         if max_seq > self._dec.ATTN_MAXL:
             raise RuntimeError(

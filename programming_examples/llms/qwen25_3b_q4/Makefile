@@ -49,7 +49,7 @@ AIEOPT_DIR ?= $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INSTALL_DIR)),
 # 2048 matches the three Llama/Gemma Q4NX decodes. It costs 2.5 ms/token against
 # a 256 build (35.5 vs 33.0 ms/tok, same box and power mode, 16-token `make gen`,
 # byte-identical output), because the readback streams the padded ATTN_MAXL --
-# `make compile-decode-dynseq` removes exactly that.
+# `make` removes exactly that.
 LBUILD      ?= 2048
 LREF        := $(shell echo $$(($(LBUILD) - 1)))
 ATTN_L      ?= $(LBUILD)
@@ -132,7 +132,7 @@ RUNNER_ADAPTER := qwen25_3b_q4.verify_adapter
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
-.PHONY: help compile compile-decode compile-decode-dynseq _compile_decode_build run gen dump-kv bench \
+.PHONY: help compile compile-decode _compile_decode_build run gen dump-kv bench \
         weights verify verify-full verify-paris diagnosis profile profile-prefill clean
 
 help:
@@ -181,28 +181,6 @@ compile-decode:
 	    && echo "$(DECODE_FLAGS)" > $(DECODE_STAMP); \
 	fi
 
-## Dynamic-runtime-sequence template: ONE build for every context length (see
-## fused_decode/Makefile compile-decode-dynseq). Run with DECODE_DYNSEQ=1.
-compile-decode-dynseq:
-	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
-	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
-	@echo ">>> qwen dynseq template decode_dyn_L$(LBUILD)"
-	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) DECODE_DYNSEQ=1 \
-	  $(PYTHON) $(DECODE_DRIVER) >/tmp/qwen_decode_dyn_L$(LBUILD).log 2>&1; \
-	  if [ -f $(DEC)/decode.xclbin ] && [ -f $(DEC)/decode.insts.bin ]; then \
-	    mv -f $(DEC)/decode.xclbin $(srcdir)/decode_dyn_L$(LBUILD).xclbin; \
-	    mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_dyn_L$(LBUILD).insts.bin; \
-	    rm -f $(DEC)/npu_seq_*.mlir; \
-	  else echo "decode_dyn_L$(LBUILD) FAILED (see /tmp/qwen_decode_dyn_L$(LBUILD).log)"; \
-	    tail -30 /tmp/qwen_decode_dyn_L$(LBUILD).log; exit 1; fi
-	@echo "Qwen dynseq build complete: decode_dyn_L$(LBUILD). Run with DECODE_DYNSEQ=1."
 
 _compile_decode_build:
 	@# Delegate the llvm-link version preflight to the engine that owns it rather
@@ -311,7 +289,64 @@ clean:
 	rm -f $(DECODE_STAMP) $(KV_NPZ) 2>/dev/null || true
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
 	      $(srcdir)/decode_L*.flags 2>/dev/null || true
+	rm -f $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
+	      $(srcdir)/decode_scratchpad.maxl $(DECODE_ELF_STAMP) 2>/dev/null || true
 	rm -f $(DEC)/decode.xclbin $(DEC)/decode.insts.bin 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
 	@echo "Qwen caches, decode artifacts and shared-dir kernels removed."
+
+## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
+## The KV append offset and the attention mask threshold become mlir-aie
+## scratchpad parameters the host writes per dispatch, so there is no
+## instruction stream to patch -- and so no template pair and no L-slope
+## calibration. Select it at run time with DECODE_ELF=1.
+##
+## RB/MEM/TRIP stay off: they would need a runtime BD *length* or loop bound,
+## and aie.dma_bd has offset_parameter but no len_parameter. That costs nothing
+## -- the xclbin already streams the full ATTN_MAXL on readback whatever L is.
+DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
+DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+
+## Idempotent like the xclbin target: skip when all three artifacts are present
+## AND were built with the current flags. The stamp is keyed on LBUILD too,
+## because that is what the ELF bakes in -- a warm artifact from another LBUILD
+## would be silently reused at the wrong ATTN_MAXL. `make clean` forces a rebuild.
+.PHONY: compile-decode-elf _compile_decode_elf_build
+compile-decode-elf:
+	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
+	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
+	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	else \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_elf_build \
+	    && echo "$(DECODE_ELF_FLAGS)" > $(DECODE_ELF_STAMP); \
+	fi
+
+_compile_decode_elf_build:
+	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@cd $(DEC) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 \
+	  $(if $(PYTHON),$(PYTHON),python3) $(DECODE_DRIVER) >/tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
+	    mv -f decode.elf $(srcdir)/decode_scratchpad.elf; \
+	    cp -f params.txt $(srcdir)/decode_scratchpad.params.txt; \
+	    echo $$(( (($(LBUILD)+15)/16)*16 )) > $(srcdir)/decode_scratchpad.maxl; \
+	  else echo "decode ELF FAILED (see /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log)"; \
+	    tail -30 /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log; exit 1; fi
+	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
+	@cat $(srcdir)/decode_scratchpad.params.txt
+
+# The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so
+# "build the decode" has to build it too. Stated as an extra prerequisite rather
+# than folded into the recipe, which stays the xclbin template build.
+compile-decode: compile-decode-elf

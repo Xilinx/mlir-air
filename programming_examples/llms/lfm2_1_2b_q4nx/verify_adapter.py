@@ -78,10 +78,6 @@ def build_runner(
     return NpuRunner(max_seq=max_seq, tokenizer=tokenizer, lite_mode=lite_mode)
 
 
-def _stair_on():
-    return os.environ.get("DECODE_STAIRCASE") == "1"
-
-
 class NpuRunner:
     """Adapter over the LFM2 Q4_0 prefill + one-xclbin hybrid decode."""
 
@@ -99,7 +95,7 @@ class NpuRunner:
         self.prefiller.compile()
         self.prefiller.load_weights(model=MODEL_SOURCE)
         self.cfg = self.prefiller.config
-        self.dec = FusedDecoder(staircase=_stair_on())
+        self.dec = FusedDecoder()
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
 

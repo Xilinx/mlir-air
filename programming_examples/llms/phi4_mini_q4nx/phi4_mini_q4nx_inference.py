@@ -177,7 +177,6 @@ def build_decoder(args) -> FusedDecodePhi4:
         args.model_source,
         args.templates,
         model_type=MODEL_TYPE,
-        staircase=args.staircase,
     )
 
 
@@ -228,12 +227,6 @@ if __name__ == "__main__":
         type=str,
         default=TEMPLATES_DEFAULT,
         help="directory holding decode_L<N>.{xclbin,insts.bin} builds",
-    )
-    parser.add_argument(
-        "--staircase",
-        action="store_true",
-        help="run each token on the smallest calibrated ATTN_MAXL window covering the "
-        "current context, instead of always the largest (needs multi-window templates)",
     )
     parser.add_argument(
         "--no-prefill",

@@ -304,6 +304,72 @@ clean:
 	rm -rf $(srcdir)/$(BUILD_DIR) $(srcdir)/air_project $(srcdir)/__pycache__ \
 	       $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/air.mlir \
 	       $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
-	       $(srcdir)/decode_L*.air.mlir $(DECODE_FLAGS_STAMP) 2>/dev/null || true
+	       $(srcdir)/decode_L*.air.mlir $(DECODE_FLAGS_STAMP) \
+	       $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
+	       $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt $(DECODE_ELF_STAMP) 2>/dev/null || true
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
+
+## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
+## The KV append offset and the attention mask threshold become mlir-aie
+## scratchpad parameters the host writes per dispatch, so there is no
+## instruction stream to patch. Select it at run time with DECODE_ELF=1.
+##
+## Mirrors _compile_decode_build: LFM2 builds its kernels into $(srcdir) (not
+## the shared engine dir) and adds shortconv, whose SC_DIM/SC_WAVES must match
+## the builder's CONV_WAVES.
+DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
+DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+
+## Idempotent like the xclbin target: skip when all three artifacts are present
+## AND were built with the current flags. The stamp is keyed on LBUILD too,
+## because that is what the ELF bakes in -- a warm artifact from another LBUILD
+## would be silently reused at the wrong ATTN_MAXL. `make clean` forces a rebuild.
+.PHONY: compile-decode-elf _compile_decode_elf_build
+compile-decode-elf:
+	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
+	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
+	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	else \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_elf_build \
+	    && echo "$(DECODE_ELF_FLAGS)" > $(DECODE_ELF_STAMP); \
+	fi
+
+_compile_decode_elf_build:
+	@# LAYERS= is the bisect knob: it appends DECODE_UNI_DEC to DECODE_ENV, so a
+	@# bisect build would overwrite the production ELF with a truncated one. The
+	@# xclbin path survives that because the driver re-checks the template's
+	@# weight signature; the ELF path has no such check, so refuse instead.
+	@if [ -n "$(LAYERS)" ]; then \
+	  echo "compile-decode-elf refuses LAYERS=$(LAYERS): a bisect build would"; \
+	  echo "overwrite decode_scratchpad.elf with a $(LAYERS)-layer artifact that"; \
+	  echo "the ELF path cannot detect. Bisect with the xclbin templates instead."; \
+	  exit 1; fi
+	@echo ">>> non-attn decode kernels (Peano -O2, MODEL_TYPE=LFM2_1_2B): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	@echo "    shortconv.cc (-O2, SC_DIM=$(SC_DIM) SC_WAVES=$(SC_WAVES))"
+	@$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -DSC_DIM=$(SC_DIM) -DSC_WAVES=$(SC_WAVES) \
+	  -O2 -c $(DEC)/kernels/shortconv.cc -o $(srcdir)/shortconv.o || exit 1
+	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 \
+	  $(PYTHON) $(DECODE_DRIVER) >/tmp/lfm2_decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
+	    mv -f decode.elf decode_scratchpad.elf; \
+	    cp -f params.txt decode_scratchpad.params.txt; \
+	    echo $$(( (($(LBUILD)+15)/16)*16 )) > decode_scratchpad.maxl; \
+	  else echo "decode ELF FAILED (see /tmp/lfm2_decode_elf_L$(LBUILD).log)"; \
+	    tail -30 /tmp/lfm2_decode_elf_L$(LBUILD).log; exit 1; fi
+	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
+	@cat $(srcdir)/decode_scratchpad.params.txt
+
+# The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so
+# "build the decode" has to build it too. Stated as an extra prerequisite rather
+# than folded into the recipe, which stays the xclbin template build.
+compile-decode: compile-decode-elf

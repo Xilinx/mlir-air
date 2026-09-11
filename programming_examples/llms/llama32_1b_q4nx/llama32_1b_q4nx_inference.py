@@ -45,10 +45,22 @@ _DEC = _PE / "fused_decode"  # standalone fused superkernel decode example
 _stair = None
 
 
-def _staircase_on():
-    """Multi-window decode (smallest ATTN_MAXL covering L). Env so every entry point --
-    CLI, verify adapter, lit -- opts in the same way."""
-    return os.environ.get("DECODE_STAIRCASE") == "1"
+_elf = None  # fused_decode/decode_elf.py, imported once fused_decode is on sys.path
+
+
+def _load_elf_mod():
+    global _elf
+    if _elf is None:
+        sys.path.insert(0, str(_DEC))
+        import decode_elf
+
+        _elf = decode_elf
+    return _elf
+
+
+def _elf_on():
+    """Full-ELF decode: ONE artifact for every L (see fused_decode/decode_elf.py)."""
+    return _load_elf_mod().elf_on()
 
 
 def _load_stair():
@@ -258,13 +270,11 @@ def _pick_decode_gen(dec_dir, max_L=None):
 
     DECODE_DYNSEQ=1: a build that takes the context length as a runtime scalar, so
     the stream is assembled per token from the compiler-emitted TXN builder. The
-    readback then moves this token's context instead of the padded ATTN_MAXL --
-    what the staircase approximates with a template per window, exactly and from a
-    single build."""
+    readback then moves this token's context instead of the padded ATTN_MAXL --"""
     sys.path.insert(0, str(dec_dir))
-    from decode_dynseq import pick_insts_gen
+    from decode_insts_gen import DecodeInstsGen
 
-    return pick_insts_gen(dec_dir, max_L=max_L)
+    return DecodeInstsGen(str(dec_dir), max_L=max_L)
 
 
 class FusedDecoder:
@@ -277,7 +287,7 @@ class FusedDecoder:
     xclbin, one BO set; the weight + KV BOs are uploaded once and the kernel appends each new
     token's K/V in place."""
 
-    def __init__(self, max_L=None, staircase=False):
+    def __init__(self, max_L=None):
         HF = (
             _ensure_paris_golden()
         )  # embed/norm from model.q4nx (single source) if not provided
@@ -294,12 +304,30 @@ class FusedDecoder:
         # Decode generator: DecodeInstsGen (decode_L<M>) -- ONE compile-time MAX_L=2048 build; the
         # kernel skips masked blocks and single-buffers the block loop, so it serves every L in
         # [1, 2048] via an RTP-L + append insts patch (the reference one-MAX_L design).
-        self.gen = _pick_decode_gen(_DEC, max_L)
-        # Staircase: hold every calibrated ATTN_MAXL window and dispatch each token on the
-        # smallest one covering L (the readback streams ATTN_MAXL positions regardless).
-        # Off by default -- one window, identical to the single-template path.
-        self.windows = _stair.resolve_windows(self.gen, staircase)
-        self.ATTN_MAXL = max(self.windows)
+        self.elf_mode = _elf_on()
+        if self.elf_mode:
+            # One ELF, no templates: nothing to calibrate a slope against and no
+            # window to pick, so the generator is unused.
+            # ATTN_MAXL comes from the stamp the build writes rather than a
+            # default, because a driver guessing 2048 against an ELF built at
+            # some other L mis-sizes the KV cache and the mask threshold alike.
+            self.gen = None
+            self._elf_dir = _DEC
+            self.ATTN_MAXL = (
+                int((_DEC / "decode_scratchpad.maxl").read_text().split()[0])
+                if (_DEC / "decode_scratchpad.maxl").exists()
+                else 0
+            )
+            if not self.ATTN_MAXL:
+                raise RuntimeError(
+                    "DECODE_ELF=1 needs decode_scratchpad.maxl in "
+                    f"{_DEC}; run `make compile-decode-elf`"
+                )
+            self.windows = [self.ATTN_MAXL]
+        else:
+            self.gen = _pick_decode_gen(_DEC, max_L)
+            self.windows = _stair.resolve_windows(self.gen)
+            self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
         # decode-module constants at DECODE_GOLDEN_L=ATTN_MAXL -- the LREG/ny geometry must
@@ -345,10 +373,16 @@ class FusedDecoder:
         self.ny = self.decode_y + self.UNI_LM * self.VP
         self._RMS_SIZE = 16 * RMS_LAYER + 64 + self.K
         self.LREG = self.ATTN_MAXL * self.KVSZ_TOK
-        _kind = type(self.gen).__name__
-        _mech = "compile-time 128-block loop, masked-block skip (RTP-L + append patch)"
+        if self.elf_mode:
+            _art, _kind = "ONE ELF", "scratchpad"
+            _mech = "compile-time 128-block loop, masked-block skip (L via scratchpad)"
+        else:
+            _art, _kind = "ONE xclbin", type(self.gen).__name__
+            _mech = (
+                "compile-time 128-block loop, masked-block skip (RTP-L + append patch)"
+            )
         print(
-            f"[decode] ONE xclbin ({_kind}): ATTN_MAXL={self.ATTN_MAXL}, serves "
+            f"[decode] {_art} ({_kind}): ATTN_MAXL={self.ATTN_MAXL}, serves "
             f"L in [1,{self.maxL}] -- {_mech}",
             flush=True,
         )
@@ -370,26 +404,41 @@ class FusedDecoder:
             [np.concatenate([RMS_in[k], RMS_post[k]]) for k in range(16)]
         )
 
-        # ONE xclbin + ONE self-contained BO set (weight BO uploaded once)
+        # ONE artifact + ONE self-contained BO set (weight BO uploaded once)
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-        self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
         self.cur_maxl = self.ATTN_MAXL
-        self.kern = self._kern[self.cur_maxl][1]
-        g = self.kern.group_id
-        HO = xrt.bo.host_only
-        self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
-        self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
-        self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
-        self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-        self.kvc = xrt.bo(self.dev, 16 * self.LREG * 2, HO, g(7))
-        self._ist = _stair.make_insts_states(
-            self.gen, xrt, self.dev, g(1), self.windows
-        )
+        if self.elf_mode:
+            self._elfdec = _load_elf_mod().ElfDecode(
+                self._elf_dir, self.dev, xrt, self.REGION_W
+            )
+            self.kern = self._elfdec.kern
+            # ext.bo: an ELF kernel has no instruction argument, so there are no
+            # group ids to place these against.
+            self.x_bo = xrt.ext.bo(self.dev, self.K * 2)
+            self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
+            self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
+            self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
+            self.kvc = xrt.ext.bo(self.dev, 16 * self.LREG * 2)
+            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
+        else:
+            self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
+            self.kern = self._kern[self.cur_maxl][1]
+            g = self.kern.group_id
+            HO = xrt.bo.host_only
+            self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
+            self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
+            self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
+            self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
+            self.kvc = xrt.bo(self.dev, 16 * self.LREG * 2, HO, g(7))
+            self._ist = _stair.make_insts_states(
+                self.gen, xrt, self.dev, g(1), self.windows
+            )
+            self._use_window(self.cur_maxl)
+        # Pure geometry (no XRT, no templates): seed_kv needs it in both modes.
         self._geom = _stair.KVGeometry(
             16, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
         )
-        self._use_window(self.cur_maxl)
         self.w_bo.write(self.Wv16, 0)
         self.w_bo.sync(TO)
         # Per-layer KV cache, flat [LREG], laid out region-major (the reference quadrants):
@@ -408,8 +457,6 @@ class FusedDecoder:
         the loaded xclbin expects, then prefetch it to the device (before the timed decode loop).
         """
         np = self.np
-        if len(self.windows) > 1:
-            self._use_window(self.gen.window_for_L(P + 1))
         RW, NG = self.REGION_W, self.NGRP
         RS = self.cur_maxl * RW
         self.KV[:] = 0
@@ -453,13 +500,14 @@ class FusedDecoder:
         # (RTP-L + append/readback offsets, located by diffing two builds). Write the full
         # 780KB stream ONCE, then each token overwrite only the changed [lo:hi] range and
         # sync just that slice -- avoids re-writing/re-syncing the whole cacheable BO.
-        if len(self.windows) > 1:
-            _w = self.gen.window_for_L(L)
-            if _w != self.cur_maxl:
-                # `p` positions are live; this token's K/V is appended by the dispatch.
-                _stair.respace_kv(self.kvc, self._geom, self.cur_maxl, _w, p, xrt)
-                self._use_window(_w)
-        insts_size = _stair.patch_insts(self._st, L, xrt, TO)
+        if self.elf_mode:
+            # No instruction stream to patch: L reaches the device as the two
+            # scratchpad parameters AIR declared -- the KV append slot address and
+            # the attention mask threshold. Both are the WHOLE affine value the
+            # BD/core wants, which is why the append writes (L-1)*REGION_W.
+            insts_size = None
+        else:
+            insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         _t_insts = _tk() - _a
         _a = _tk()
         # KV cache is uploaded ONCE (seeded prefill positions) then left device-resident:
@@ -502,19 +550,23 @@ class FusedDecoder:
         # A dynseq build's runtime sequence takes the context length as a trailing
         # scalar, so the kernel signature carries it. The value the hardware acts on
         # is already assembled into the stream above; this keeps the arity right.
-        import decode_dynseq as _dyn
+        if self.elf_mode:
+            # The buffer args were bound once at construction; only L changes, and
+            # the hardware acts on the scratchpad copies written above. This still
+            # has to be set: XRT patches every declared argument.
+            st = self._elfdec.dispatch(L, np)
+        else:
 
-        st = self.kern(
-            3,
-            self.ib,
-            insts_size,
-            self.x_bo,
-            self.w_bo,
-            self.r_bo,
-            self.y_bo,
-            self.kvc,
-            *_dyn.dispatch_args(self.gen, L),
-        ).wait(60000)
+            st = self.kern(
+                3,
+                self.ib,
+                insts_size,
+                self.x_bo,
+                self.w_bo,
+                self.r_bo,
+                self.y_bo,
+                self.kvc,
+            ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()
         # only the vocab logits (UNI_LM*VP at decode_y) are needed -- sync+read+convert just
@@ -544,6 +596,7 @@ class FusedDecoder:
         "ib",
         "_st",
         "_ist",
+        "_elfdec",
         "kvc",
         "y_bo",
         "r_bo",
@@ -687,7 +740,7 @@ def generate(
 
     # ONE decode xclbin serves L in [1, ATTN_MAXL]; the decoder picks the template that covers
     # the requested reach (rt<M> for short, compile-time L<M> up to 2048). Cap at its ATTN_MAXL.
-    dec = FusedDecoder(P + n_tokens, staircase=_staircase_on())
+    dec = FusedDecoder(P + n_tokens)
     attn_maxl = dec.ATTN_MAXL
     n_eff = min(n_tokens, attn_maxl - P)
     if n_eff <= 0:
@@ -813,8 +866,8 @@ class Session:
             f"[session] prefill resident ({time.perf_counter() - t0:.2f}s); building decode...",
             flush=True,
         )
-        self.dec = FusedDecoder(
-            staircase=_staircase_on()
+        self.dec = (
+            FusedDecoder()
         )  # largest available decode context, resident (weights + xclbin)
         self.attn_maxl = self.dec.ATTN_MAXL
         # Warmup: one throwaway prefill so the FIRST user turn is warm (~1.07s) instead of the
@@ -826,13 +879,8 @@ class Session:
             [128000]
         )  # 1-token dummy, padded to seq_len -> warms the full path
         self.prefiller.clear_context()
-        _win = (
-            f", staircase windows={self.dec.windows}"
-            if len(self.dec.windows) > 1
-            else ""
-        )
         print(
-            f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}{_win}, "
+            f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}, "
             f"weights preloaded, warmup {time.perf_counter() - t_w:.2f}s).",
             flush=True,
         )
@@ -990,11 +1038,6 @@ def interactive_chat(
                 sys.stdout.write(d)
                 sys.stdout.flush()
 
-        if len(sess.dec.windows) > 1:
-            print(
-                f"[chat] context {len(ids)} tok -> KV window {sess.dec.gen.window_for_L(len(ids) + 1)}",
-                flush=True,
-            )
         gen_ids = sess.run_turn(
             ids,
             temperature=temperature,

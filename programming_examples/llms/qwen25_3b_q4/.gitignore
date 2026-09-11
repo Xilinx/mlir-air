@@ -16,3 +16,10 @@ build_*/
 # model's templates.
 decode_L*.insts.bin
 decode_L*.flags
+
+# Full-ELF decode artifacts + build-flag stamp (make compile-decode-elf).
+decode_scratchpad.elf
+decode_scratchpad.params.txt
+decode_scratchpad.maxl
+params.txt
+.decode_elf_flags

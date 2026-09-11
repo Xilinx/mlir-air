@@ -22,3 +22,17 @@ decode_qwen.flags
 
 # Staircase window manifest (which ATTN_MAXL pairs this dir holds).
 .decode_windows
+
+# Full-ELF decode artifacts + build-flag stamp (make compile-decode-elf).
+decode_scratchpad.elf
+decode_scratchpad.params.txt
+decode_scratchpad.maxl
+params.txt
+.decode_elf_flags
+
+# Compiler-emitted TXN builder + runtime-sequence dumps (compile-decode-dynseq,
+# --debug-ir). Reproducible outputs; they were never ignored, so the working dir
+# filled with them.
+*.txn.h
+npu_seq_*.mlir
+ir_dump/

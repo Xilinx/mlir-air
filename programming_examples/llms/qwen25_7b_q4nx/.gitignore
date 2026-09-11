@@ -35,3 +35,10 @@ diag_cache/
 
 # Staircase window manifest (which ATTN_MAXL pairs this dir holds).
 .decode_windows
+
+# Full-ELF decode artifacts + build-flag stamp (make compile-decode-elf).
+decode_scratchpad.elf
+decode_scratchpad.params.txt
+decode_scratchpad.maxl
+params.txt
+.decode_elf_flags

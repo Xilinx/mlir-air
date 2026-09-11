@@ -12,14 +12,25 @@ The whole transformer decode step for one token is built as a single AIR module
 RMSNorm + residual, RoPE, SwiGLU (`glu`), and GQA attention (`attn_qk` / `attn_kv`),
 followed by the LM-head vocab projection — all in one xclbin dispatch.
 
-**One template serves every context length.** The xclbin is built once at
-`ATTN_MAXL=2048`. The attention block loop runs a compile-time 128-block schedule and
-**skips fully-masked far blocks**, so a single build is correct for every `L` in
-`[1, 2048]`. The per-token, `L`-dependent instruction words (RTP-L bound + KV-append
-offset) are patched on the **host** by `decode_insts_gen.py` (`DecodeInstsGen`) — no
-per-length recompile, no per-window xclbin. Two same-`ATTN_MAXL` builds
-(`decode_L2048` + `decode_L2047`) calibrate the L-slope so the generator can synthesize
-the instruction stream for any `L`, byte-identical to a native per-L build.
+**One artifact serves every context length.** The attention block loop runs a
+compile-time 128-block schedule and **skips fully-masked far blocks**, so a single build
+is correct for every `L` in `[1, ATTN_MAXL]`. There are two ways to get `L` to the
+device, and both are built by `make compile-decode`:
+
+- **Full ELF (default).** `make compile-decode-elf` emits
+  `decode_scratchpad.{elf,params.txt,maxl}`. An ELF carries its instruction stream in
+  `.ctrltext`, so there is nothing to patch per token: the KV-append offset and the
+  attention mask threshold are **mlir-aie scratchpad parameters** the host writes each
+  dispatch (`decode_elf.py`). No template pair, no L-slope calibration, no staircase
+  windows. Requires a pyxrt exposing `run.get_ctrl_scratchpad_bo()` — XRT ≥ 2026-05-19,
+  i.e. the `xrt` submodule of xdna-driver 1.7.
+- **xclbin (`DECODE_ELF=0`).** The per-token, `L`-dependent instruction words (RTP-L
+  bound + KV-append offset) are patched on the **host** by `decode_insts_gen.py`
+  (`DecodeInstsGen`). Two same-`ATTN_MAXL` builds (`decode_L2048` + `decode_L2047`)
+  calibrate the L-slope so the generator can synthesize the instruction stream for any
+  `L`, byte-identical to a native per-L build. This path is the reference the ELF is
+  checked against, and the only one that works on an XRT without the scratchpad
+  binding.
 
 ## Files
 
