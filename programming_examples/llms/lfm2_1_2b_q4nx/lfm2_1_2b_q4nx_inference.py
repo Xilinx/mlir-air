@@ -148,7 +148,7 @@ def _ensure_requant_cache(fd):
 
     src = os.environ.get("LFM2_MODEL_SOURCE") or "LiquidAI/LFM2-1.2B"
     if not rc:
-        _w2 = "_w2ch"  # the dual-MM2S cascade order; fixed in the builder
+        _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
         _v = f"_v{getattr(fd, 'VOCAB_I2', 0)}"
         _tag = re.sub(r"[^A-Za-z0-9]+", "_", src).strip("_")
         rc = os.path.join(_LFM2_CACHE, f"requant_{_tag}{_w2}{_v}.npz")

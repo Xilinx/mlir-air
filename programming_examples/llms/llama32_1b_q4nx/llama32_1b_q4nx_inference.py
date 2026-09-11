@@ -166,7 +166,7 @@ def _ensure_requant_cache(fd):
         # into [low-row half | high-row half]), so it needs its own cache entry --
         # a warm single-channel cache would feed the wrong blocks. Key on the flag
         # too so both layouts can coexist.
-        _w2 = "_w2ch"  # the dual-MM2S cascade order; fixed in the builder
+        _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
         # The lm-head weights are packed PER VOCAB CHUNK (UNI_LM chunks of
         # VOCAB_SIZE_PADDED rows), so VOCAB_CHUNK_I2/UNI_LM change the vocab layout
         # exactly the way W_DUAL_CHAN changes the decode layout. Key on it too: the

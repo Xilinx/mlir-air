@@ -48,9 +48,13 @@ VOCAB_CHUNK_I2 ?= 18
 # 15.87 -> 15.30 ms; slope unchanged at 1.14 ms/1k). Only engages on the
 # PAIR_ROWS=2 proj path (llama); the PAIR_ROWS=1 gemma path is untouched.
 # PROJ_RC_CACHE=0 restores the recompute-every-block kernel for A/B.
+# Dual-MM2S weight feed. Per model: qwen2.5-3b builds with 0. It changes the DDR
+# cascade order, so a consumer must pack its weights with the same setting -- the
+# llms/*_q4nx drivers read it and key their requant cache on it.
+W_DUAL_CHAN    ?= 1
 PROJ_RC_CACHE  ?= 1
 DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-                  PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
+                  W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
                   $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
@@ -97,7 +101,7 @@ help:
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := PROJ_RC_CACHE=$(PROJ_RC_CACHE)
+DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \

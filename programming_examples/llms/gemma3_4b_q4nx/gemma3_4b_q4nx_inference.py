@@ -71,7 +71,7 @@ def _ensure_requant_cache(fd, model):
     # cascade pair into [low-row half | high-row half]), so it gets its own cache
     # entry -- a warm single-channel cache would feed the dual-channel xclbin the
     # wrong blocks.
-    _w2 = "_w2ch"  # the dual-MM2S cascade order; fixed in the builder
+    _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
     rc = rc or os.path.join(_Q4NX_CACHE, f"requant{_w2}.npz")
     if not os.path.exists(rc):
         rq.build_requant_cache(model, fd, rc)
