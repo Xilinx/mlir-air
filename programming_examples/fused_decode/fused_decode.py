@@ -1402,7 +1402,7 @@ def build_module():
         rms_l3 = MemRefType.get(
             [
                 UNI_DEC * RMS_LAYER
-                + ((UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN if MULTIBLK else 0)
+                + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN
                 + K  # dedicated final-norm slot for real lm_head (vocab)
             ],
             bf16,
@@ -1936,14 +1936,11 @@ def build_module():
         # DDR argument positions -- and every host binding built around them --
         # are unchanged.
         _fn_args = (
-            [x_l3, w_l3, rms_l3, y_l3]
-            + ([kvc_l3] if MULTIBLK else [])
-            + _w_extra
-            + ([i32] if DYNSEQ else [])
+            [x_l3, w_l3, rms_l3, y_l3] + [kvc_l3] + _w_extra + ([i32] if DYNSEQ else [])
         )
         # arg index of each weight group's buffer: group 0 is the original arg1;
         # groups 1.. and the lm-head follow the base args. Index into _la is +4.
-        _w_base_n = 4 + (1 if MULTIBLK else 0)
+        _w_base_n = 5
         WARG = [1] + [_w_base_n + i for i in range(len(_w_extra))]
 
         @FuncOp.from_py_func(*_fn_args)
@@ -1964,7 +1961,7 @@ def build_module():
                 # None => the caller is on the statically-known lm-head buffer; a
                 # Value => a runtime group index into _WBUFS[0:N_WGRP].
                 _wsel = [None]
-                KVC = _la[8] if MULTIBLK else None
+                KVC = _la[8]
                 # The dispatch-time context length (DYNSEQ). Last operand before
                 # the multi-layer induction variable.
                 L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
@@ -2391,7 +2388,7 @@ def build_module():
                             # index a per-wave slab (UNI_DEC contiguous rope_w slabs, offset
                             # _lut_off + a_iv*ROPE_W_LEN). UNIFIED sizes arg2 for UNI_DEC decode
                             # waves (module-gen forces NLAYERS=1, which would misplace it).
-                            _lut_off = (UNI_DEC * RMS_LAYER) if MULTIBLK else 0
+                            _lut_off = UNI_DEC * RMS_LAYER
                             _rope_off = (
                                 _lo(_lb(ROPE_W_LEN), _lut_off)
                                 if (ROPE_W_PER_LAYER and MULTIBLK)
@@ -2693,7 +2690,7 @@ def build_module():
                                 # deadlocks the whole design. Measured: the hybrid
                                 # machinery passes with one mixer phase and hangs
                                 # with two, everything else held fixed.
-                                if MULTIBLK and p == KV_PHASE and ATTN_SUBSYS:
+                                if p == KV_PHASE and ATTN_SUBSYS:
 
                                     def _kv_traffic():
                                         _emit_append()
@@ -3218,28 +3215,6 @@ def build_module():
                                     sizes=[idx(DK_TOT_A)],
                                     strides=[idx(1)],
                                 )
-                        else:
-                            # per COLUMN GROUP: that group's CUs' k then v on its
-                            # own packet channel (no cross-col FIFO interleave).
-                            for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
-                                for c in cus:
-                                    ChannelPut(
-                                        "toAttnKV",
-                                        a_k,
-                                        indices=[idx(gi)],
-                                        offsets=[idx(c * KVPC_DH)],
-                                        sizes=[idx(KVPC_DH)],
-                                        strides=[idx(1)],
-                                    )
-                                for c in cus:
-                                    ChannelPut(
-                                        "toAttnKV",
-                                        a_v,
-                                        indices=[idx(gi)],
-                                        offsets=[idx(c * KVPC_DH)],
-                                        sizes=[idx(KVPC_DH)],
-                                        strides=[idx(1)],
-                                    )
                         if _own_qkv:
                             DeallocOp(a_qkv)
                         DeallocOp(a_lut)
