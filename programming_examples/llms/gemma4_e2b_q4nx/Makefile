@@ -3,11 +3,13 @@
 #
 # Gemma4-E2B (text) Q4NX on NPU2 (MLIR-AIR).
 #
-# THIS EXAMPLE IS PARTIAL, and the target list says which half is which. The
-# decoder layer runs on the NPU and is gated there per layer (`make layer-gate`,
-# `make compile-decode`); there is no prefill engine and no token-level chatbot
-# yet, so the `run` / `ask` / `verify` / `profile` targets the other llms/
-# examples carry are deliberately absent rather than present and broken.
+# THIS EXAMPLE IS PARTIAL, and the target list says which half is which.
+# Prefill runs end to end on the NPU and is gated against the CPU reference
+# (`make compile-prefill`, `make prefill-paris`). The decoder layer runs on the
+# NPU too but is gated per LAYER (`make layer-gate`) rather than per token:
+# there is no token-level chatbot driver yet, so the `run` / `ask` / `verify` /
+# `profile` targets the other llms/ examples carry are deliberately absent
+# rather than present and broken.
 #
 # The device path is the fused_decode_ple engine (../../fused_decode_ple), a
 # fork of fused_decode carrying the per-layer-embedding branch this model needs.
@@ -17,13 +19,22 @@
 # Python deps beyond the mlir-air base environment: see requirements.txt.
 #
 # Quick start:
-#   make compile-decode   Build the decode template (weight-free)
+#   make compile          Build the prefill ELFs + the decode template
+#   make prefill-paris    Prefill on device, gated vs the CPU reference
 #   make layer-gate       Score each layer class on device against numpy
 #   make check            CPU-only gate vs FLM's goldens (needs an FLM tree)
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 DEC    := $(srcdir)/../../fused_decode_ple
+PREFILL_DRIVER := $(srcdir)/gemma4_e2b_q4nx_prefill.py
+BUILD_DIR := build_peano
+
+# Padded prefill length. Every prefill ELF is built FOR this length, so changing
+# it is a rebuild, not a runtime knob -- which is the axis run_npu2_prefill_sweep
+# walks.
+CTX ?= 2048
+export Q4NX_SEQ_LEN := $(CTX)
 
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Read by the
 # drivers as Q4NX_MODEL_SOURCE, exactly as in the other q4nx examples.
@@ -61,6 +72,8 @@ LAYERS ?= 35
 # the per-layer embedding bug put layer 8 at 0.79, and a doubled embedding scale
 # put layer 2 at 0.32.
 TOL    ?= 0.98
+# Logit-cosine floor for the on-device prefill gate (`make prefill-paris`).
+PREFILL_TOL ?= 0.99
 PROMPT ?= What is the capital of France?
 N_GEN  ?= 12
 
@@ -73,17 +86,21 @@ GATE_LAYERS ?= 0 4 14
 GATE_PAIRS  ?= 13:15 14:19 14:34
 
 .DEFAULT_GOAL := help
-.PHONY: help compile compile-decode _compile_decode_build verify layer-gate \
+.PHONY: help compile compile-decode _compile_decode_build compile-prefill \
+        prefill-paris profile-prefill verify layer-gate \
         layer-gate-shared check gen paris sublayer-ref clean
 
 help:
 	@echo "============================================================"
-	@echo " GEMMA4-E2B Q4NX on NPU2 (MLIR-AIR) -- decoder layer only"
+	@echo " GEMMA4-E2B Q4NX on NPU2 (MLIR-AIR) -- prefill + decoder layer"
 	@echo "============================================================"
 	@echo ""
 	@echo "On device:"
-	@echo "  make compile            Build everything the device path needs (= compile-decode)"
+	@echo "  make compile            Build everything the device path needs (prefill + decode)"
 	@echo "  make compile-decode     Build the decode template (weight-free)"
+	@echo "  make compile-prefill    Build the prefill ELFs (weight-free)"
+	@echo "  make prefill-paris      Prefill on NPU; gate the logits vs the CPU reference"
+	@echo "  make profile-prefill    Warm prefill TTFT at CTX"
 	@echo "  make verify             The full on-device gate (both halves below)"
 	@echo "  make layer-gate         Score own-KV layers ($(GATE_LAYERS)) vs the numpy reference"
 	@echo "  make layer-gate-shared  Score KV-SHARED layers ($(GATE_PAIRS)), two-layer builds"
@@ -100,8 +117,10 @@ help:
 	@echo "  MODEL_SOURCE=<repo|dir> model.q4nx source (default $(MODEL_SOURCE))"
 	@echo "  LBUILD=$(LBUILD)                ATTN_MAXL the decode template is built for"
 	@echo "  TOL=$(TOL) LAYERS=$(LAYERS)      CPU gate floor / layer count"
+	@echo "  CTX=$(CTX)               Padded prefill length (rebuilds the prefill ELFs)"
 	@echo ""
-	@echo "NOT here yet: prefill, token-level generation on device, top-k verify."
+	@echo "NOT here yet: token-level generation on device, and the top-k verify"
+	@echo "that needs it. Prefill runs on device; decode is gated per layer."
 
 ## Build the decode template this example dispatches. Weight-free (weights are
 ## runtime BOs), so no bundle is downloaded. Delegated to the engine that owns
@@ -110,10 +129,29 @@ compile-decode:
 	@$(MAKE) --no-print-directory -C $(DEC) compile-decode \
 	  LBUILD=$(LBUILD) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 
-## `compile` in the other q4nx examples is prefill ELFs + decode templates. This
-## one has no prefill engine, so it is decode alone -- an alias rather than an
-## absence, so a script that walks the examples by target name works here too.
-compile: compile-decode
+## The 22 prefill ELFs, built for CTX rows. Weight-free (weights are runtime
+## BOs), so no bundle is downloaded and CI can run this without HF credentials.
+compile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --compile-only
+
+## Prefill ELFs + decode templates, the same meaning `compile` has in the other
+## q4nx examples.
+compile: compile-decode compile-prefill
+
+## Prefill-only correctness gate. Runs the prompt through the NPU prefill and
+## scores the WHOLE logit vector against the CPU reference, not just the argmax:
+## on this model a doubled embedding scale and a per-layer-embedding read from
+## the wrong tensor both still predicted ' Paris'.
+prefill-paris:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --gate --tol $(PREFILL_TOL)
+
+## Warm prefill TTFT at CTX. Prints the TTFT / [bench] lines bench/sweep_prefill.py
+## parses; latency only, never a correctness gate.
+profile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) $(PYTHON) $(PREFILL_DRIVER)
 
 ## The full-depth template PAIR the decode sweep dispatches, left in this
 ## directory as decode_L<N>.{xclbin,insts.bin}. Named with a leading underscore
@@ -236,4 +274,5 @@ clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
 	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
+	rm -rf $(srcdir)/_q4nx_cache_seq* $(srcdir)/build_peano 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."
