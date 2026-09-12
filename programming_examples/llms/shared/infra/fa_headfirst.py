@@ -52,6 +52,12 @@ _FA_TILING = {
     # the V get's second buffer are each dv_tile*lkp*2B, so three of them plus
     # the 16 KB of resident Q tiles does not fit. 128 is the largest that does.
     256: (32, 256, 8, 1, 128),
+    # Gemma4's full-attention layers. lkp stays 32 (the resident Q tile is
+    # head_dim * lkp * 2B = 32 KB here, double the head_dim=256 row), so dv_tile
+    # halves to 64 to keep the three dv_tile*lkp companions at 4 KB each:
+    # 32 + 3*4 + 2 = 46 KB. num_q_tiles must stay 8 -- physical columns are
+    # num_heads_per_unroll * num_q_tiles and NPU2 has 8.
+    512: (32, 256, 8, 1, 64),
 }
 
 

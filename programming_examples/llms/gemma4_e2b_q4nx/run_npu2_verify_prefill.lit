@@ -1,0 +1,36 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// GEMMA4-E2B Q4NX prefill correctness gate: run the prompt through the NPU
+// prefill and score the result against the CPU reference this example already
+// ships (gemma4_e2b_q4nx_weights.forward_prompt, itself gated per layer against
+// FastFlowLM's golden activations by `make check`).
+//
+// THE ARGMAX ALONE IS NOT THE GATE, and that is the lesson this model taught
+// twice: a doubled embedding scale and a per-layer-embedding input read from the
+// wrong tensor BOTH still predicted ' Paris' here while the model was
+// numerically broken. So the gate is the cosine of the whole 262144-wide logit
+// vector against the reference, with the argmax match as a second, weaker
+// condition -- run_reference.py says the same thing about its own smoke test.
+//
+// The companion to run_npu2_verify.lit: that one scores the DECODE path per
+// layer, this one scores the PREFILL path end to end. Neither subsumes the
+// other -- they are different engines over the same weights.
+//
+// Weights are the FastFlowLM model.q4nx bundle; no HF bf16 reference and so no
+// hf_token, since that repo is ungated.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hfweights_fastflowlm_gemma4_e2b_it_npu2
+//
+// RUN: mkdir -p test_npu2_verify_prefill
+// RUN: cd test_npu2_verify_prefill
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile prefill-paris PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// CHECK: *** PARIS ***
+// A parsed cosine, not just the verdict line: if the reference comparison ever
+// stopped running, GATE PASS would still print off the argmax alone and the
+// real gate would have silently disappeared.
+// CHECK: logit cosine vs CPU reference = 0.{{[0-9]+}}
+// CHECK: GATE PASS

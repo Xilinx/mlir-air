@@ -3,17 +3,19 @@
 FastFlowLM's 4-bit `model.q4nx` bundle for Gemma4-E2B, running on the NPU
 through the [`fused_decode_ple`](../../fused_decode_ple) engine.
 
-**This example is partial, and the target list says which half is which.** The
-decoder layer runs on the NPU and is gated there per layer. There is no prefill
-engine and no token-level generation on device yet, so the `run` / `ask` /
-`profile` targets the other `llms/` examples carry are deliberately absent
-rather than present and broken -- each of them times or generates through a
-prefill.
+**This example is partial, and the target list says which half is which.**
+Prefill runs end to end on the NPU and is gated against the CPU reference. The
+decoder layer runs on the NPU too, but is gated per LAYER rather than per token:
+there is no token-level generation driver yet, so the `run` / `ask` / `profile`
+targets the other `llms/` examples carry are deliberately absent rather than
+present and broken -- each of them generates through a decode loop.
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # must be >= 22.0.0, see Reproducibility
-make compile               # build the decode template (weight-free)
-make verify                # the on-device gate: every layer class
+make compile               # build the prefill ELFs + the decode template
+make compile-prefill       # just the 22 prefill ELFs (weight-free)
+make prefill-paris         # prefill on device, gated vs the CPU reference
+make verify                # the on-device decode gate: every layer class
 make layer-gate            # just the own-KV classes
 make layer-gate-shared     # just the KV-shared classes
 make help                  # everything else
@@ -98,15 +100,41 @@ The bundle carries **two** codecs — Codec B (I8, packed) for the projections a
 lm_head, int8 group-32 with an f32 per-group scale for the two embedding tables
 — and `model.per_layer_token_embd.weight` is already pre-scaled by `sqrt(256)`.
 
+## Prefill
+
+`gemma4_e2b_q4nx_prefill.py` builds 22 ELFs and runs the whole prompt on the
+NPU: RMSNorm, Q/K/V, per-head QK-norm, the weightless value-norm, RoPE, MQA
+flash attention, the GELU-tanh GLU, the per-layer-embedding branch and the LM
+head. `make prefill-paris` scores the full 262144-wide logit vector against
+`gemma4_e2b_q4nx_weights.forward_prompt`; measured **cosine 0.998582**, argmax
+9079 `' Paris'`.
+
+Twenty-two rather than Gemma3-4B's eight, because the per-layer class map
+reaches the ELF shapes: every attention-shaped ELF is built at head_dim 256 and
+512, every FFN-shaped one at 6144 and 12288, plus the three PLE stages.
+
+Two device constraints are worth knowing before changing the tiling:
+
+- **One GEMM per ELF.** Two GEMM slices stitched into one ELF returned partial
+  NaN nondeterministically -- the same binary and inputs, clean on 2 of 4
+  repeats. Q, K and V therefore each get their own ELF rather than sharing the
+  siblings' fused `rms_qkv_qknorm_rope`.
+- **Narrow GEMMs take fewer herd columns, not a smaller tile.** At N=256 the
+  4-column/64-wide shape was nondeterministic the same way; 2 columns x 128 is
+  stable over repeats and more accurate. See `gemm_herd_n`.
+
+The 28 sliding layers and the 7 full layers differ in head_dim (256 / 512), and
+512 is a head dim no other model here builds -- `shared/infra/fa_headfirst`
+gained a `_FA_TILING[512]` entry for it, verified on device at cos 0.999700
+against a float64 SDPA reference.
+
 ## Not here yet
 
-Prefill, token-level generation on device, a top-k verify against an HF bf16
-reference, and everything on the [LLM benchmark
-page](https://xilinx.github.io/mlir-air/llms/) -- TTFT, profile, and the decode
-throughput curve.
+Token-level generation on device, a top-k verify against an HF bf16 reference,
+and the decode throughput curve on the [LLM benchmark
+page](https://xilinx.github.io/mlir-air/llms/).
 
-TTFT and profile need a prefill engine this example does not have. The decode
-sweep does not, and `_compile_decode_build` here builds exactly what it wants
+The decode sweep needs no prefill, and `_compile_decode_build` here builds exactly what it wants
 (the full 35-wave decode, not the layer gate's single wave) -- but the dispatch
 hangs nondeterministically on the benchmark runner: ERT_CMD_STATE_TIMEOUT on
 ~40% of attempts at 4-5 waves, which compounds to near-certain failure at 35.
