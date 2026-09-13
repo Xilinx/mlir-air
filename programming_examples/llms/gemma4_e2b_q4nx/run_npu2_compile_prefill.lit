@@ -6,8 +6,7 @@
 // weight data (weights are runtime BOs), so this is the signal CI can always
 // give without the external Q4NX bundle. Pairs with run_npu2_compile.lit (the
 // decode half) and run_npu2_verify_prefill.lit (the on-device gate, which does
-// need the weights). There is no prefill sweep yet: only the 2048-row build has
-// been run, and a sweep would rebuild at lengths nothing has validated.
+// need the weights) and run_npu2_prefill_sweep.lit (TTFT vs length).
 //
 // TWENTY-TWO, not Gemma3-4B's eight, and that count is the model: Gemma4 crosses
 // two attention classes with two FFN widths, so every attention-shaped ELF is
