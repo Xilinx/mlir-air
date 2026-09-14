@@ -7,20 +7,28 @@
 // bundle pre-seeded into the runner's HF cache.
 //
 // TTFT ONLY, and that is the difference from the sibling profile tests. Theirs
-// measures TTFT *and* decode tok/s over N generated tokens; the decode half
-// needs a token-level driver this example does not have yet, so extract_perf.py
+// measures TTFT *and* decode tok/s over N generated tokens, so extract_perf.py
 // records decode_tokens_per_sec as null here.
 //
-// This test exists in that reduced form ON PURPOSE. The nightly derives its
-// per-model row from <model>.perf.json, and for a model that ran verify but
-// produced no perf.json it synthesizes an all-null row whose documented meaning
-// is "this model's profile compile/run failed". Gemma4's prefill does not fail
-// -- so without this test the dashboard would report a working engine as a
-// broken one. A real TTFT and a null tok/s says what is actually true.
+// NOT because the driver is missing -- gemma4_e2b_q4nx_inference.py exists and
+// `make profile` measures both halves, which is why this test deliberately runs
+// `profile-prefill` instead. It is #1984: the full-depth 35-wave decode dispatch
+// hangs on THIS RUNNER (amdxdna 2.21.0) while being clean on a development box
+// (2.23.0), the same defect that puts every point of run_npu2_sweep.lit in
+// --expect-fail. Measuring decode here would redden a nightly for a defect that
+// is not in this model's code. WHEN #1984 IS FIXED, point the RUN line back at
+// `profile`, pass --n-tokens 64 to extract_perf.py, and add a CHECK on a parsed
+// decode_tokens_per_sec.
 //
-// Builds compile-prefill, not compile: the decode template is not needed for a
-// TTFT measurement, and building it would pull in the 35-wave dispatch that
-// hangs on this runner (#1984, see run_npu2_sweep.lit).
+// The nightly derives its per-model row from <model>.perf.json, and for a model
+// that ran verify but produced no perf.json it synthesizes an all-null row whose
+// documented meaning is "this model's profile compile/run failed". Gemma4's
+// prefill does not fail -- so without this test the dashboard would report a
+// working engine as a broken one. A real TTFT and a null tok/s says what is
+// actually true.
+//
+// Builds compile-prefill, not compile: no decode template is needed for a TTFT
+// measurement, and building one would pull in that 35-wave dispatch.
 //
 // Perf is best-effort; this test gates only that profiling ran end to end.
 //
@@ -30,7 +38,7 @@
 // RUN: cd test_npu2_profile
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | tee profile.txt
+// RUN: make -f %S/Makefile profile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | tee profile.txt
 // RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model gemma4_e2b_q4nx --n-tokens 0 > gemma4_e2b_q4nx.perf.json
 // RUN: FileCheck %s < gemma4_e2b_q4nx.perf.json
 // CHECK: "model": "gemma4_e2b_q4nx"

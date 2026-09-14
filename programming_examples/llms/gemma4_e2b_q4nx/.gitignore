@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 _q4nx_*/
 .wcache/
+.decode_wcache/
 kernel_cache/
 air_project/
 
