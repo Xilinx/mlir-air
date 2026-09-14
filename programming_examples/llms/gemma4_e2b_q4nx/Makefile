@@ -324,6 +324,19 @@ verify: layer-gate layer-gate-shared
 ## NOT wired into `verify`, and that is deliberate: `verify` is the target CI
 ## runs, the layer gate needs no second checkpoint, and this one downloads a bf16
 ## Gemma4-E2B. Two gates over different things, neither subsuming the other.
+##
+## KNOWN FAIL on this model, and NOT a decode defect. verify_runner tokenizes
+## with `tok.encode(prompt)`, and the Gemma4 tokenizer adds no <bos> -- which is
+## why every other entry point here prepends 2 by hand. Without it this model is
+## out of distribution and its logits go near-flat: the NPU's top-5 at the first
+## divergence was [4092, 4094, 4095, 4096, 4098], a run of consecutive ids.
+##
+## The evidence that it is the MODEL and not the device: on the same prompt the
+## CPU oracle for this bundle -- gemma4_e2b_q4nx_weights.forward_prompt, no NPU
+## involved -- emits [786, 786, 786, 786]. A degenerate q4nx model cannot match
+## bf16 top-5 no matter what runs it. Triage any failure here by re-running the
+## same ids through forward_prompt BEFORE suspecting the decode; `make run`
+## matches that oracle token for token on an in-distribution prompt.
 verify-topk:
 	cd $(srcdir)/.. && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)

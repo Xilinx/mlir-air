@@ -30,7 +30,8 @@ not fail; it dispatches a 1/35-scale model.
 rather than the siblings' top-k token-set check. That check is available as
 `make verify-topk` / `make verify-full`, but it is not what `verify` runs: the
 layer gate needs no second checkpoint, and the top-k one downloads a bf16
-Gemma4-E2B. Two gates over different things, neither subsuming the other.
+Gemma4-E2B. Two gates over different things, neither subsuming the other. See
+[The top-k gate](#the-top-k-gate) for why `verify-topk` currently fails.
 
 ## What makes this model need its own engine
 
@@ -168,6 +169,30 @@ Measured here end to end (`make profile`, 64 tokens from a 6-token prompt):
 TTFT **4.505 s**, decode **19.72 tok/s**. That sits just above the synthetic
 sweep's 18.21 tok/s at 1k context, which is what a 70-slot cache against a
 1024-slot one should look like.
+
+## The top-k gate
+
+`verify_adapter.py` wires this example into the shared `verify/` subsystem, and
+`make diagnosis` passes through it. **`make verify-topk` does not, and the cause
+is the prompt, not the device.**
+
+`verify_runner` tokenizes with `tok.encode(prompt)`, and the Gemma4 tokenizer
+adds no `<bos>` -- which is exactly why every other entry point here (the prefill
+driver, `run_reference.py`, the inference driver) prepends `2` by hand. Without
+it the model is out of distribution and its logits go near-flat. At the first
+divergence the NPU's top-5 was `[4092, 4094, 4095, 4096, 4098]`: a run of
+consecutive ids, which is what a flat logit vector looks like.
+
+The evidence that this is the **model** and not the implementation: on that same
+prompt the CPU oracle for this bundle -- `forward_prompt`, no NPU involved --
+emits `[786, 786, 786, 786]`. A degenerate q4nx model cannot match bf16 top-5 no
+matter what runs it. Re-tokenized with `<bos>`, the NPU generates `'?\n\nA GPU ('`
+and the oracle `' is a ...'`: both fluent, differing at a near-tie the prefill's
+0.998582 logit cosine easily flips.
+
+So: triage any failure here by re-running the same ids through `forward_prompt`
+before suspecting the decode. `make run` is the gate that matches that oracle
+token for token.
 
 ## Benchmarks
 
