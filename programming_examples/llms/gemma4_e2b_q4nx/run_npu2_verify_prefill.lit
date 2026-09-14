@@ -26,7 +26,7 @@
 // RUN: cd test_npu2_verify_prefill
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: make -f %S/Makefile prefill-paris PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 //
 // CHECK: *** PARIS ***
 // A parsed cosine, not just the verdict line: if the reference comparison ever

@@ -23,12 +23,10 @@
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 //
-// Both attention classes by name, not just "it compiled": head_dim=512 is the
-// one shape no other model here builds, and a regression that dropped the full
-// layers back to 256 would otherwise leave this test green.
-// The DIMENSION, not just the kernel name: the log prints the head dim next to
-// each, so matching the bare name would stay green if the full-attention class
-// were rebuilt at 256.
+// Both attention classes WITH THEIR DIMENSIONS, not just "it compiled" and not
+// just the kernel names: head_dim=512 is the one shape no other model here
+// builds, the log prints the head dim next to each kernel, and matching the
+// bare name would stay green if the full-attention class were rebuilt at 256.
 // CHECK: rms_q_swa {{.*}}dh=256
 // CHECK: rms_q_full {{.*}}dh=512
 // CHECK: flash_attn_swa {{.*}}head_dim=256

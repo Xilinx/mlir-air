@@ -14,7 +14,8 @@ present and broken -- each of them generates through a decode loop.
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # must be >= 22.0.0, see Reproducibility
 make compile               # build the prefill ELFs + the decode template
 make compile-prefill       # just the 22 prefill ELFs (weight-free)
-make prefill-paris         # prefill on device, gated vs the CPU reference
+make prefill               # prefill on device, gated vs the CPU reference
+make profile               # TTFT into the nightly's perf.json row
 make verify                # the on-device decode gate: every layer class
 make layer-gate            # just the own-KV classes
 make layer-gate-shared     # just the KV-shared classes
@@ -105,7 +106,7 @@ lm_head, int8 group-32 with an f32 per-group scale for the two embedding tables
 `gemma4_e2b_q4nx_prefill.py` builds 22 ELFs and runs the whole prompt on the
 NPU: RMSNorm, Q/K/V, per-head QK-norm, the weightless value-norm, RoPE, MQA
 flash attention, the GELU-tanh GLU, the per-layer-embedding branch and the LM
-head. `make prefill-paris` scores the full 262144-wide logit vector against
+head. `make prefill` scores the full 262144-wide logit vector against
 `gemma4_e2b_q4nx_weights.forward_prompt`; measured **cosine 0.998582**, argmax
 9079 `' Paris'`.
 
@@ -146,8 +147,20 @@ can produce them, and does not redden a nightly on one that cannot.
 
 ## Not here yet
 
-Token-level generation on device, and the top-k verify against an HF bf16
-reference that needs it.
+One missing piece, and everything below follows from it: a TOKEN-LEVEL DECODE
+DRIVER (`gemma4_e2b_q4nx_inference.py`). The decoder layer runs on the NPU and
+is gated per layer, but nothing drives it token by token yet, so relative to the
+other q4nx examples this one still lacks:
+
+| | why |
+|---|---|
+| `make run` / `ask` / `chat` | generate from a prompt |
+| `verify_adapter.py`, `make verify-full` / `verify-paris` / `diagnosis` | the shared top-k verify subsystem drives prefill + `decode_step()` |
+| decode tok/s in `make profile` | the scalar's second half |
+
+`make verify` here therefore means something different from its siblings: a
+per-layer cosine over every layer class, not a top-k token-set check over a
+generated sequence. `make profile` publishes a real TTFT with a null tok/s.
 
 ## The decode dispatch hang (#1984)
 

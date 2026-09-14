@@ -5,11 +5,12 @@
 #
 # THIS EXAMPLE IS PARTIAL, and the target list says which half is which.
 # Prefill runs end to end on the NPU and is gated against the CPU reference
-# (`make compile-prefill`, `make prefill-paris`). The decoder layer runs on the
+# (`make compile-prefill`, `make prefill`). The decoder layer runs on the
 # NPU too but is gated per LAYER (`make layer-gate`) rather than per token:
-# there is no token-level chatbot driver yet, so the `run` / `ask` / `profile`
-# targets the other llms/ examples carry are deliberately absent rather than
-# present and broken.
+# there is no token-level chatbot driver yet, so the `run` / `ask` / `chat` /
+# `verify-full` / `diagnosis` targets the other llms/ examples carry are
+# deliberately absent rather than present and broken. `profile` IS here, but it
+# reports TTFT only -- the decode half of that scalar needs the same driver.
 #
 # The device path is the fused_decode_ple engine (../../fused_decode_ple), a
 # fork of fused_decode carrying the per-layer-embedding branch this model needs.
@@ -20,7 +21,7 @@
 #
 # Quick start:
 #   make compile          Build the prefill ELFs + the decode template
-#   make prefill-paris    Prefill on device, gated vs the CPU reference
+#   make prefill          Prefill on device, gated vs the CPU reference
 #   make layer-gate       Score each layer class on device against numpy
 #   make check            CPU-only gate vs FLM's goldens (needs an FLM tree)
 
@@ -77,7 +78,7 @@ LAYERS ?= 35
 # the per-layer embedding bug put layer 8 at 0.79, and a doubled embedding scale
 # put layer 2 at 0.32.
 TOL    ?= 0.98
-# Logit-cosine floor for the on-device prefill gate (`make prefill-paris`).
+# Logit-cosine floor for the on-device prefill gate (`make prefill`).
 PREFILL_TOL ?= 0.99
 PROMPT ?= What is the capital of France?
 N_GEN  ?= 12
@@ -92,7 +93,7 @@ GATE_PAIRS  ?= 13:15 14:19 14:34
 
 .DEFAULT_GOAL := help
 .PHONY: help compile compile-decode _compile_decode_build compile-prefill \
-        prefill-paris profile-prefill verify layer-gate \
+        prefill profile profile-prefill verify layer-gate \
         layer-gate-shared check gen paris sublayer-ref clean
 
 help:
@@ -104,8 +105,9 @@ help:
 	@echo "  make compile            Build everything the device path needs (prefill + decode)"
 	@echo "  make compile-decode     Build the decode template (weight-free)"
 	@echo "  make compile-prefill    Build the prefill ELFs (weight-free)"
-	@echo "  make prefill-paris      Prefill on NPU; gate the logits vs the CPU reference"
-	@echo "  make profile-prefill    Warm prefill TTFT at CTX"
+	@echo "  make prefill            Prefill on NPU; gate the logits vs the CPU reference"
+	@echo "  make profile            TTFT at CTX (the perf.json row; decode tok/s pending)"
+	@echo "  make profile-prefill    Same measurement, under the name the sweep drives"
 	@echo "  make verify             The full on-device gate (both halves below)"
 	@echo "  make layer-gate         Score own-KV layers ($(GATE_LAYERS)) vs the numpy reference"
 	@echo "  make layer-gate-shared  Score KV-SHARED layers ($(GATE_PAIRS)), two-layer builds"
@@ -148,12 +150,21 @@ compile: compile-decode compile-prefill
 ## scores the WHOLE logit vector against the CPU reference, not just the argmax:
 ## on this model a doubled embedding scale and a per-layer-embedding read from
 ## the wrong tensor both still predicted ' Paris'.
-prefill-paris:
+prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --gate --tol $(PREFILL_TOL)
 
+## The perf.json row the nightly LLM benchmark collects, under the name every
+## other q4nx example uses. TTFT ONLY: the scalar the siblings publish is
+## TTFT + decode tok/s, and the decode half needs a token-level driver this
+## example does not have yet, so extract_perf.py records tok/s as null. That is
+## still strictly better than having no profile lit at all -- without one the
+## nightly synthesizes an all-null row whose documented meaning is "this model's
+## profile failed", which is not what is happening here.
+profile: profile-prefill
+
 ## Warm prefill TTFT at CTX. Prints the TTFT / [bench] lines bench/sweep_prefill.py
-## parses; latency only, never a correctness gate.
+## and bench/extract_perf.py parse; latency only, never a correctness gate.
 profile-prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) $(PYTHON) $(PREFILL_DRIVER)
