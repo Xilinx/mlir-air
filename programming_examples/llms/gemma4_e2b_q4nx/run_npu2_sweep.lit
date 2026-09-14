@@ -28,11 +28,17 @@
 // numbers on any host that can produce them, without reddening a nightly for a
 // defect that is not in this model's code.
 //
-// The cost is the guard the sibling sweeps carry: there is no CHECK on a parsed
-// tok/s here, so a regression that emptied the curve would not be caught by
-// this test. WHEN #1984 IS FIXED, drop --expect-fail and add back a CHECK-NEXT
-// on decode_tokens_per_sec; do not leave it in this shape once the dispatch is
-// reliable.
+// --expect-fail forgives ONLY a dispatch that reached the device and did not
+// complete (sweep_decode.EXPECTABLE). A build, staging or stale-template failure
+// at one of these contexts is still hard, so this test does not turn a broken
+// 35-wave template build green -- which a blanket exemption would have done, and
+// which is indistinguishable from #1984 in the published artifact.
+//
+// The cost that remains is the guard the sibling sweeps carry: there is no CHECK
+// on a parsed tok/s here, so a regression that emptied the curve without failing
+// a build would not be caught by this test. WHEN #1984 IS FIXED, drop
+// --expect-fail and add back a CHECK-NEXT on decode_tokens_per_sec; do not leave
+// it in this shape once the dispatch is reliable.
 //
 // REQUIRES: ryzen_ai_npu2, peano, peano_ge22, llvm_link_pre23
 //

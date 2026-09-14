@@ -140,8 +140,17 @@ kernels: preflight-peano
 ## expensive mistake available in this example: the layer gate does not build,
 ## it dispatches whatever template is on disk, so a skipped rebuild scores the
 ## wrong design and reads as a numerics regression.
+## The outputs are REMOVED BEFORE the driver runs, and that is the whole
+## protection: the success test below is file existence, so a generator that
+## fails while last build's decode.xclbin is still on disk would report
+## "build complete", exit 0, and hand the consumer a stale template -- the exact
+## mistake the paragraph above calls the most expensive one available here.
+## Testing existence rather than the exit status is deliberate (the driver can
+## exit non-zero after writing good artifacts), so the staleness has to be
+## removed instead.
 compile-decode: kernels
 	@echo ">>> decode template (ATTN_MAXL=$(LBUILD), UNI_DEC=$(UNI_DEC)$(if $(KV_SRC), KV_SRC=$(KV_SRC),))"
+	@rm -f $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin
 	@cd $(srcdir) && $(DECODE_ENV) $(PYTHON) $(DECODE_DRIVER) >/tmp/ple_decode_L$(LBUILD).log 2>&1; \
 	  if [ -f $(srcdir)/decode.xclbin ] && [ -f $(srcdir)/decode.insts.bin ]; then \
 	    echo "PLE decode build complete: decode.xclbin + decode.insts.bin"; \

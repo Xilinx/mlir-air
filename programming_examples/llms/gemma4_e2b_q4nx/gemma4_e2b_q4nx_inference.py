@@ -102,11 +102,19 @@ def _load_builder(uni_dec, attn_maxl, kv_src):
     return vln._load_fd(uni_dec, attn_maxl, kv_src=kv_src)
 
 
-def _wcache_path(uni_dec):
-    return _WCACHE_DIR / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}.npz"
+def _wcache_path(uni_dec, fingerprint):
+    """Cache path, keyed on the geometry AND the bundle it was packed from.
+
+    The fingerprint is load-bearing, not decoration: without it, pointing
+    Q4NX_MODEL_SOURCE at a different bundle -- or FLM re-exporting one at the
+    same source -- silently reuses the old packed weights. Nothing downstream
+    catches that; the layer-count and LM-head checks below still pass and the
+    dispatch completes, running a different model than the caller asked for.
+    """
+    return _WCACHE_DIR / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_{fingerprint}.npz"
 
 
-def _ensure_wcache(model, fd, uni_dec, verbose=True):
+def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
     """Return the packed decode weight cache, building it once if absent.
 
     pack_vocab=True is what separates this from the layer gate's cache: the gate
@@ -116,7 +124,7 @@ def _ensure_wcache(model, fd, uni_dec, verbose=True):
     import gemma4_e2b_q4nx_requant as rq
     import numpy as np
 
-    path = _wcache_path(uni_dec)
+    path = _wcache_path(uni_dec, qm.fingerprint())
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         if verbose:
@@ -211,7 +219,7 @@ class FusedDecoder:
         self.rope_freqs = self.qm.rope_freqs()
         self.final_norm = np.asarray(self.qm.globals()["final_norm"], bfloat16)
 
-        z = _ensure_wcache(model, fd, self.UNI, verbose)
+        z = _ensure_wcache(model, fd, self.UNI, self.qm, verbose)
         W = z["W"]
         if W.size != self.n_w:
             raise RuntimeError(
