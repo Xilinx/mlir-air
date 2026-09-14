@@ -354,6 +354,14 @@ def coerce_index(value):
     # Symbol and anything else exposing __index__ resolves to its current value.
     if hasattr(value, "__index__"):
         return IndexExpr.constant(int(value))
+    # An SSA value of index type: already the thing this builds, so take it as a
+    # leaf rather than refusing it. IndexExpr.leaf is exactly "an opaque index I
+    # cannot see inside", which is what one is -- arithmetic on it still goes
+    # through the affine form. A body still written against the raw bindings
+    # arrives here; fused_decode's per-layer DDR offsets are hand-built
+    # arith.muli on the launch's induction variable.
+    if str(getattr(value, "type", "")) == "index":
+        return IndexExpr.leaf(value, "v")
     raise TypeError(f"cannot use {value!r} ({type(value).__name__}) as an index")
 
 

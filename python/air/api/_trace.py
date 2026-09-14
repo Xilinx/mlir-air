@@ -299,6 +299,14 @@ def rtp(source):
     from ._index import coerce_index, materialize_index
 
     i32 = IntegerType.get_signless(32)
+    # Already an i32 SSA value: that IS the thing this builds, so take it as
+    # given rather than rebuilding it. A body still written against the raw
+    # bindings arrives here -- fused_decode's hybrid layer-type arm is an
+    # arith.select over the wave index, computed before air.rtp sees it.
+    if hasattr(source, "type") and str(getattr(source, "type", "")) == "i32":
+        param = RuntimeParam(source, "i32")
+        active_trace().rtps.append(param)
+        return param
     source = _as_condition(source)
     if isinstance(source, (Condition, ValueCondition)):
         one = arith.ConstantOp(i32, 1).result
@@ -993,7 +1001,17 @@ class SegmentContext:
 
     _what = "air.segment"
 
-    def __init__(self, grid=None, name=None):
+    def __init__(self, grid=None, name=None, params=None):
+        # Runtime parameters this segment takes as operands, the same concept
+        # air.herd(params=...) names and for the same reason: their order is
+        # part of the region's interface, so it is stated rather than inferred
+        # from which ones happen to be live. A segment reads one when the value
+        # has to be computed at LAUNCH scope and survive into the segment --
+        # fused_decode's hybrid layer-type arm is the case, because deriving it
+        # inside the segment instead lets cloneL2AndL3MemcpysToDeviceOp fold it
+        # to the wave-0 arm. Left off, a segment takes the launch's coordinates
+        # and the tensors, as before.
+        self.params = list(params) if params is not None else None
         # A grid here is this segment's *own* iteration space -- air.segment's
         # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
         # air.segment and air.herd each carry one and they are not the same
@@ -1152,7 +1170,12 @@ class SegmentContext:
         outer_leaves = list(launch.leaves)
         if launch.wave is not None:
             outer_leaves += [leaf for leaf in launch.wave.leaves()]
-        operands = [leaf.value for leaf in outer_leaves] + [t.value for t in tensors]
+        rtps = list(self.params) if self.params is not None else []
+        operands = (
+            [leaf.value for leaf in outer_leaves]
+            + [r.value for r in rtps]
+            + [t.value for t in tensors]
+        )
         sizes = list(self.grid) + [1] * (2 - len(self.grid)) if self.grid else []
 
         @segment_region(name=self.name, operands=operands, sizes=sizes)
@@ -1176,8 +1199,16 @@ class SegmentContext:
             saved_outer = [leaf.value for leaf in outer_leaves]
             for leaf, v in zip(outer_leaves, bound[: len(outer_leaves)]):
                 leaf.value = v
+            # Rebound in the order the operands were built: outer leaves, then
+            # the named runtime parameters, then the tensors. A parameter read
+            # inside has to name the block argument, not the launch-scope value
+            # it was computed from -- air.segment is IsolatedFromAbove.
+            base = len(outer_leaves)
+            saved_rtps = [r.value for r in rtps]
+            for r, v in zip(rtps, bound[base : base + len(rtps)]):
+                r.rebind(v)
             saved = [t.value for t in tensors]
-            for t, v in zip(tensors, bound[len(outer_leaves) :]):
+            for t, v in zip(tensors, bound[base + len(rtps) :]):
                 t.value = v
             previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
             segment_self._entry_block = args[0].owner
@@ -1188,6 +1219,8 @@ class SegmentContext:
                 segment_self._buffers.clear()
                 for t, v in zip(tensors, saved):
                     t.value = v
+                for r, v in zip(rtps, saved_rtps):
+                    r.rebind(v)
                 for leaf, v in zip(outer_leaves, saved_outer):
                     leaf.value = v
                 _CURRENT_SEGMENT = previous
@@ -1198,9 +1231,13 @@ class SegmentContext:
         prune_unused_operands(segment_body)
 
 
-def segment(grid=None, name=None):
-    """A device segment with L2 scope; nest herds inside its body."""
-    return SegmentContext(grid=grid, name=name)
+def segment(grid=None, name=None, params=None):
+    """A device segment with L2 scope; nest herds inside its body.
+
+    ``params=`` names air.rtp values this segment takes as operands, in order,
+    exactly as ``air.herd(params=...)`` does.
+    """
+    return SegmentContext(grid=grid, name=name, params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -1976,11 +2013,19 @@ def alloc(
     else:
         # A segment holds L2 memtile buffers and herd-shared L1 buffers at once,
         # so each budget only counts its own space.
+        #
+        # Already released buffers are not live, so they are not counted. The
+        # tracer's own inferred releases are placed after the body has run and
+        # cannot be known here, so this only sees the ones air.dealloc named --
+        # which is exactly when a body has something to say about reuse.
+        # fused_decode's rms core is the case: it allocates eight K-element
+        # tiles but frees each as it finishes, so the peak is half the sum, and
+        # charging the sum rejects llama-3.1-8b at 68 KB against a 64 KB tile.
         live = _peak_bytes(
             [
                 (getattr(b, "arm_path", ()), _buffer_bytes(b))
                 for b in holder._buffers
-                if b.space == space
+                if b.space == space and b.released is None
             ]
             + [(arm_path, nbytes)]
         )
@@ -2000,7 +2045,9 @@ def alloc(
                         continue
                     kind = getattr(b.scope, "kind", None)
                     if kind == "shared":
-                        live += _buffer_bytes(b, nlead)
+                        # Same two models as _charge_shared_l1: a declared slab
+                        # is charged per core, an inferred one whole.
+                        live += _buffer_bytes(b, nlead if len(b.shape) > nlead else 0)
                     elif kind == "per_core":
                         live += _buffer_bytes(b)
         if space == "L1":
@@ -2101,23 +2148,41 @@ def _charge_shared_l1(segment, nlead, herd_name):
     per_core = kinds.get("per_core", [])
     if not shared and not per_core:
         return
-    for b in shared:
-        if len(b.shape) <= nlead:
-            raise ValueError(
-                f"air.alloc({list(b.shape)}, {b.dtype}) is herd-shared and the "
-                f"herd {herd_name!r} is {nlead}-D, so its first {nlead} "
-                "dimension(s) are the cores -- leaving nothing for the tile "
-                "itself. Give it one leading dimension per herd axis and at "
-                "least one more."
-            )
-    live = sum(_buffer_bytes(b, nlead) for b in shared) + sum(
+
+    # Two sharing models, and the RANK says which.
+    #
+    # At least one dimension per herd axis is the declared form: the leading
+    # dimensions are the cores and what remains is the slab each one owns, so
+    # the slab is what it is charged. Exactly nlead is that form with nothing
+    # left for the tile, which is a mistake and still raises below.
+    #
+    # Fewer than nlead cannot be the declared form at all, so it is the other
+    # model: a flat buffer whose sharing topology the compiler infers.
+    # fused_decode's proj pairs are the case -- each of its eight y tiles is
+    # shared across two vertically adjacent cores, which air-to-aie derives
+    # from the cross-core RAW and which is not any slab of the 2x4 herd. There
+    # is then no slab to charge, so the whole buffer is counted against every
+    # core: conservative, and it can only reject a design the declared form
+    # would have accepted, never admit an overflow.
+    def _shared_lead(b):
+        return nlead if len(b.shape) > nlead else 0
+
+    # There is deliberately no error for a shape that leaves no per-core tile.
+    # It cannot be decided here: this charges EVERY shared buffer in the segment
+    # against whichever herd is being emitted, and a segment may hold herds of
+    # different rank -- fused_decode's are 1-D and 2-D at once -- so the same
+    # buffer is rank-equal to one herd and rank-short of another. Sizing stays
+    # the check that matters, and it is sound either way because the inferred
+    # reading is the conservative one.
+
+    live = sum(_buffer_bytes(b, _shared_lead(b)) for b in shared) + sum(
         _buffer_bytes(b) for b in per_core
     )
     if live > L1_BYTES:
         detail = ", ".join(
-            f"{list(b.shape)} {b.dtype} ({_buffer_bytes(b, lead) / 1024:.1f} KB "
-            "per core)"
-            for group, lead in ((shared, nlead), (per_core, 0))
+            f"{list(b.shape)} {b.dtype} "
+            f"({_buffer_bytes(b, lead(b)) / 1024:.1f} KB per core)"
+            for group, lead in ((shared, _shared_lead), (per_core, lambda _b: 0))
             for b in group
         )
         raise ValueError(

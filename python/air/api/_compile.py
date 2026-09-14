@@ -130,8 +130,22 @@ class LaunchContext:
         with Context(), Location.unknown():
             module = Module.create()
             with InsertionPoint(module.body):
+                # A rank-0 tensor is a *scalar* kernel argument, so it takes the
+                # bare element type rather than memref<i32>. The two are not
+                # interchangeable at the host boundary: a memref is bound as a
+                # buffer object, an i32 is passed immediately. air.tensor is
+                # already "the value that becomes a func.func argument", and
+                # numpy spells a scalar as the shape-() case of the same thing,
+                # so this completes that concept rather than adding one.
+                # fused_decode's DYNSEQ build is the case -- the context length
+                # arrives as a trailing i32 and every per-token dispatch sets it.
                 arg_types = [
-                    MemRefType.get(list(t.shape), t.dtype.mlir()) for t in self.tensors
+                    (
+                        t.dtype.mlir()
+                        if not t.shape
+                        else MemRefType.get(list(t.shape), t.dtype.mlir())
+                    )
+                    for t in self.tensors
                 ]
 
                 @FuncOp.from_py_func(*arg_types, name=self.name)
@@ -154,7 +168,6 @@ class LaunchContext:
                             t.value = None
 
         self._module = module
-        self._check_interface()
         self._verify(module)
         return module
 
@@ -224,6 +237,27 @@ class LaunchContext:
         )
 
     def _check_interface(self):
+        """Check what ``CompiledKernel.__call__`` assumes about the interface.
+
+        Checked at ``compile()`` rather than ``build()`` because that is where
+        the assumption enters. Both halves below read ``self.outputs``, and
+        ``inputs``/``outputs`` are read in exactly one other place --
+        ``__call__``, which marshals positionally as ``fn(*args, *outputs)`` and
+        allocates the result arrays itself. So "declares an output" is really
+        "``__call__`` has something to return", and "inputs before outputs" is
+        really "that positional split is the one XRT is given".
+
+        A design that takes the module from ``mlir()``/``build()`` and drives
+        XRT with its own host bindings has neither question. Its outputs are
+        whatever those bindings read back -- ``is_output`` is inferred from
+        ``ops.store``/``Channel.get``, which a body still written against the
+        raw bindings never reaches -- and its argument order is fixed by an ABI
+        they already implement. fused_decode's is x, w, rms, y, kv, then the
+        split weight groups and the DYNSEQ length, which puts inputs after
+        outputs and is not free to be rearranged. Running either check at
+        build() was refusing to *emit* IR over a convention only air.api's own
+        invocation path needs.
+        """
         outputs = [t for t in self.outputs if not t.inout]
         if not outputs:
             raise RuntimeError(
@@ -247,6 +281,7 @@ class LaunchContext:
     def compile(self, target=None, verbose=False, output_format="xclbin", **kwargs):
         """Compile through the XRT backend, returning a callable kernel."""
         module = self.build(target=target)
+        self._check_interface()
 
         from air.backend.xrt import XRTBackend
 

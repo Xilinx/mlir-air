@@ -194,6 +194,23 @@ class Channel:
 
     # -- emission ----------------------------------------------------------
 
+    def declare(self):
+        """Emit the ``air.channel`` symbol now, rather than on first use.
+
+        Deferring is right when ``put``/``get`` are the only users: an unused
+        channel then costs nothing. It is wrong when the endpoints are emitted
+        by something the DSL cannot see -- a design mid-conversion whose region
+        bodies still call the raw ``air.channel.put``, which names the symbol by
+        string and so never reaches ``put``/``get`` here. Without this such a
+        channel is silently never declared and the module fails to verify.
+
+        Placement is unchanged: construction order, as documented on
+        ``_declare``. This is the counterpart of ``air.extern(signature=...)``,
+        which declares eagerly for the same reason.
+        """
+        self._declare()
+        return self
+
     def _declare(self):
         """Materialise the ``air.channel`` symbol at module scope, once.
 

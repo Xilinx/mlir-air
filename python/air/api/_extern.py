@@ -142,6 +142,24 @@ class ExternKernel:
     def __repr__(self):
         return f"air.api.extern({self.name!r}, link_with={self.link_with!r})"
 
+    @property
+    def decl(self):
+        """The private ``func.func`` this kernel declares, for a raw ``CallOp``.
+
+        Calling the kernel is what ``__call__`` is for, and it is the spelling
+        to use. This exists for a design mid-conversion: a body still written
+        against the raw bindings emits its own ``func.call``, and needs the
+        declaration the DSL now owns. Only available once declared, which
+        ``signature=`` does at construction.
+        """
+        if self._decl is None:
+            raise RuntimeError(
+                f"{self.name} has no declaration yet: air.extern declares lazily "
+                "on the first call, so .decl is only available when the kernel "
+                "was given a signature= at construction"
+            )
+        return self._decl
+
     def __call__(self, *args):
         from air.ir import InsertionPoint, StringAttr, UnitAttr
         from air.dialects import arith

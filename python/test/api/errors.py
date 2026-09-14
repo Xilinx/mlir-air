@@ -35,8 +35,12 @@ def expect(exc_types, label):
     return decorator
 
 
-def _trace(body, tensors=3, shape=(2, 2), grid=(128, 128, 64)):
-    """Build a launch whose herd body is ``body(h, tx, ty, tensors...)``."""
+def _trace(body, tensors=3, shape=(2, 2), grid=(128, 128, 64), compile=False):
+    """Build a launch whose herd body is ``body(h, tx, ty, tensors...)``.
+
+    ``compile=True`` goes on to launch.compile(), for the checks that guard
+    CompiledKernel.__call__ rather than emission.
+    """
     M, N, tile = grid
     ts = [air.tensor([M, N], bf16) for _ in range(tensors)]
 
@@ -52,7 +56,7 @@ def _trace(body, tensors=3, shape=(2, 2), grid=(128, 128, 64)):
                 def _(tx, ty):
                     body(h, tx, ty, *ts)
 
-    return launch.mlir()
+    return launch.compile() if compile else launch.mlir()
 
 
 # CHECK-LABEL: TEST: shape_mismatch
@@ -139,6 +143,9 @@ def _():
     launch.mlir()
 
 
+# Raised by compile() for the same reason output_before_input is: `outputs` is
+# read by CompiledKernel.__call__, so "declares an output" is "__call__ has
+# something to return". A design that drives XRT itself does not ask it.
 # CHECK-LABEL: TEST: no_output
 # CHECK: RuntimeError: kernel writes no output
 @expect(RuntimeError, "no_output")
@@ -147,9 +154,15 @@ def _():
         a = air.alloc([64, 64], bf16, scope=h.private())
         air.ops.load(a, A[0:64, 0:64])
 
-    _trace(body)
+    _trace(body, compile=True)
 
 
+# Raised by compile(), not by mlir(): the ordering is what
+# CompiledKernel.__call__ assumes when it marshals `fn(*args, *outputs)`, so it
+# is checked on the path that produces one. A design that takes the module from
+# mlir() and drives XRT with its own host bindings has its own ABI and is not
+# held to this. compile() checks before it touches the backend, so this still
+# raises without a device.
 # CHECK-LABEL: TEST: output_before_input
 # CHECK: RuntimeError: output tensors must be declared after all input tensors
 @expect(RuntimeError, "output_before_input")
@@ -170,7 +183,7 @@ def _():
                     air.ops.load(a, IN[0:64, 0:64])
                     air.ops.store(a, OUT[0:64, 0:64])
 
-    launch.mlir()
+    launch.compile()
 
 
 # CHECK-LABEL: TEST: alloc_without_scope
@@ -1055,16 +1068,23 @@ def _():
     _staged(body)
 
 
-# CHECK-LABEL: TEST: shared_alloc_leaves_room_for_a_tile
-# A shared buffer's leading dimensions are the cores, one per herd axis. The
-# check waits for a herd because nothing at segment scope knows how many that
-# is -- and here the 2-D herd would claim both of a rank-2 buffer's axes,
-# leaving each core a slab of nothing.
-# CHECK: ValueError: air.alloc([4, 4], air.api.bf16) is herd-shared and the herd
-@expect(ValueError, "shared_alloc_leaves_room_for_a_tile")
+# CHECK-LABEL: TEST: shared_alloc_is_sized_against_l1
+# A shared buffer's leading dimensions are the cores, one per herd axis, and
+# what remains is the slab each core owns -- so the charge waits for a herd,
+# since nothing at segment scope knows how many axes that is. A buffer with
+# FEWER dimensions than the herd has axes is not that form at all: its sharing
+# is whatever air-to-aie infers from the cross-core dependence (fused_decode's
+# proj pairs), and it is charged whole, which is the conservative reading.
+#
+# There is deliberately no error for a shape that leaves no per-core tile: this
+# charges every shared buffer in the segment against whichever herd is being
+# emitted, and a segment may hold herds of different rank, so the same buffer is
+# rank-equal to one and rank-short of another. Sizing is the check that matters.
+# CHECK: ValueError: L1 budget exceeded: the buffers shared across herd 'h'
+@expect(ValueError, "shared_alloc_is_sized_against_l1")
 def _():
     def body(seg, A, C):
-        air.alloc([4, 4], bf16, scope=seg.shared())
+        air.alloc([2, 2, 40000], bf16, scope=seg.shared())
         with air.herd([range(2), range(2)], name="h") as h:
 
             @h.body
