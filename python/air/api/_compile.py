@@ -258,6 +258,21 @@ class LaunchContext:
         build() was refusing to *emit* IR over a convention only air.api's own
         invocation path needs.
         """
+        # A rank-0 tensor is a bare scalar kernel argument, which this path
+        # cannot marshal: __call__ hands every tensor to XRTBackend.load, which
+        # allocates a BO for it and passes the BO, not an integer. Emitting one
+        # is fine -- fused_decode's DYNSEQ context length is exactly that, and
+        # it takes the module from mlir() and binds its own arguments -- so the
+        # restriction belongs here, with the rest of what __call__ assumes,
+        # rather than at the declaration.
+        scalars = [t for t in self.tensors if not t.shape]
+        if scalars:
+            raise RuntimeError(
+                f"kernel argument(s) {', '.join(t.name for t in scalars)} are "
+                "rank-0, i.e. scalars, and CompiledKernel.__call__ marshals "
+                "every argument as a buffer. Take the module from mlir() and "
+                "bind the arguments yourself, or give the value a shape."
+            )
         outputs = [t for t in self.outputs if not t.inout]
         if not outputs:
             raise RuntimeError(

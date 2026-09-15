@@ -1011,7 +1011,7 @@ class SegmentContext:
         # inside the segment instead lets cloneL2AndL3MemcpysToDeviceOp fold it
         # to the wave-0 arm. Left off, a segment takes the launch's coordinates
         # and the tensors, as before.
-        self.params = list(params) if params is not None else None
+        self.params = _parse_herd_params(params, name or "seg")
         # A grid here is this segment's *own* iteration space -- air.segment's
         # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
         # air.segment and air.herd each carry one and they are not the same
@@ -1170,7 +1170,7 @@ class SegmentContext:
         outer_leaves = list(launch.leaves)
         if launch.wave is not None:
             outer_leaves += [leaf for leaf in launch.wave.leaves()]
-        rtps = list(self.params) if self.params is not None else []
+        rtps = list(self.params or ())
         operands = (
             [leaf.value for leaf in outer_leaves]
             + [r.value for r in rtps]
@@ -2073,7 +2073,7 @@ def alloc(
                 # A shared buffer is charged by the slab this core owns; a
                 # per_core buffer by the whole of it, since every core has one.
                 for b in enclosing._buffers:
-                    if b.space != "L1":
+                    if b.space != "L1" or b.released is not None:
                         continue
                     kind = getattr(b.scope, "kind", None)
                     if kind == "shared":
@@ -2174,7 +2174,8 @@ def _charge_shared_l1(segment, nlead, herd_name):
     kinds = {}
     for b in segment._buffers:
         kind = getattr(b.scope, "kind", None)
-        if b.space == "L1" and kind in ("shared", "per_core"):
+        # A released buffer is not live, here as in alloc().
+        if b.space == "L1" and kind in ("shared", "per_core") and b.released is None:
             kinds.setdefault(kind, []).append(b)
     shared = kinds.get("shared", [])
     per_core = kinds.get("per_core", [])

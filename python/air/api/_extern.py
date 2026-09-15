@@ -154,9 +154,10 @@ class ExternKernel:
         """
         if self._decl is None:
             raise RuntimeError(
-                f"{self.name} has no declaration yet: air.extern declares lazily "
-                "on the first call, so .decl is only available when the kernel "
-                "was given a signature= at construction"
+                f"{self.name} has not been declared yet: air.extern declares "
+                "lazily, from the argument types of the first call. Call the "
+                "kernel once before reading .decl, or give it signature= at "
+                "construction to declare it there and then."
             )
         return self._decl
 
@@ -493,6 +494,15 @@ def _scalar_value(arg, dtype, name, pos, arith):
             return arith.index_cast(dtype.mlir(), value)
         arg = value
 
+    # An SSA value already of the declared type: pass it through. This is the
+    # air.rtp case above reached by its value rather than by the parameter
+    # object -- a body that also does its own arith on the scalar holds the
+    # Value, not the RuntimeParam, and rebuilding a constant from it is not
+    # possible anyway. Ahead of the float branch, which rejects anything that
+    # is not a Python number and would otherwise turn away an f32 Value.
+    if str(getattr(arg, "type", "")) == str(dtype.mlir()):
+        return arg
+
     if dtype.is_float:
         if not isinstance(arg, (int, float)):
             raise TypeError(
@@ -500,14 +510,6 @@ def _scalar_value(arg, dtype, name, pos, arith):
                 f"{type(arg).__name__}"
             )
         return arith.ConstantOp(dtype.mlir(), float(arg)).result
-
-    # An SSA value already of the declared type: pass it through. This is the
-    # air.rtp case above reached by its value rather than by the parameter
-    # object -- a body that also does its own arith on the scalar holds the
-    # Value, not the RuntimeParam, and rebuilding a constant from it is not
-    # possible anyway.
-    if str(getattr(arg, "type", "")) == str(dtype.mlir()):
-        return arg
 
     if isinstance(arg, float) and not float(arg).is_integer():
         raise ValueError(

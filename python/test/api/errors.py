@@ -2306,3 +2306,37 @@ def _():
         out[:] = ops.argmax(a[:])
 
     _trace(body)
+
+
+# A rank-0 air.tensor is a bare scalar kernel argument. Emitting one is fine --
+# fused_decode's DYNSEQ context length is exactly that -- but __call__ marshals
+# every argument as a buffer, so it is compile() that has to turn it away.
+# CHECK-LABEL: TEST: scalar_argument_is_not_callable
+# CHECK: RuntimeError: kernel argument(s) {{.*}} are rank-0
+@expect(RuntimeError, "scalar_argument_is_not_callable")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        air.ops.load(a, A[0:64, 0:64])
+        air.ops.store(a, C[0:64, 0:64])
+
+    air.tensor([], i32, name="seqlen")
+    _trace(body, compile=True)
+
+
+# A raw SSA index is taken as an opaque leaf, which is right for one a body
+# computed with the raw bindings -- but a tile coordinate handed over raw must
+# still be refused, or a loop with a channel op in it deadlocks on the cores
+# that run fewer trips. Identity against the bound coordinates is what says so.
+# CHECK-LABEL: TEST: raw_coordinate_is_still_spatial
+# CHECK: TypeError: air.sequential(stop=...) {{.*}} built from a tile coordinate
+@expect(TypeError, "raw_coordinate_is_still_spatial")
+def _():
+    def body(h, tx, ty, A, B, C):
+        a = air.alloc([64, 64], bf16, scope=h.private())
+        # The raw value behind the coordinate, as a converted body would hold it.
+        raw = list(tx.leaves())[0].value
+        for _ in air.sequential(raw):
+            air.ops.load(a, A[0:64, 0:64])
+
+    _trace(body)

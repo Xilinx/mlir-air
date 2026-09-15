@@ -372,8 +372,34 @@ def coerce_index(value):
                 return IndexExpr.constant(int(op.attributes["value"]))
             except (KeyError, ValueError, TypeError):
                 pass
-        return IndexExpr.leaf(value, "v")
+        return IndexExpr.leaf(value, "v", spatial=_is_spatial_value(value))
     raise TypeError(f"cannot use {value!r} ({type(value).__name__}) as an index")
+
+
+def _is_spatial_value(value):
+    """Whether this SSA index IS a live tile coordinate.
+
+    Provenance matters because air.sequential refuses a bound built from one: a
+    coordinate differs between cores, so the trip count would too, and a loop
+    with a channel operation in it deadlocks on the cores that run fewer trips.
+    An IndexExpr carries that on its leaf; a raw value arrives with nothing, and
+    wrapping it as non-spatial would walk a converted body's raw `tx` straight
+    past the check.
+
+    Identity against the coordinates currently bound is what can be answered
+    here, and it covers the case that matters -- a coordinate passed as the
+    bound itself. A bound computed from one with raw arith is not detectable and
+    is not claimed to be; air.sequential sees through that only when the
+    arithmetic went through IndexExpr.
+    """
+    from ._trace import current_herd, current_segment
+
+    for ctx in (current_herd(required=False), current_segment(required=False)):
+        for expr in getattr(ctx, "_coords", ()) or ():
+            for leaf in expr.leaves():
+                if leaf.value is value:
+                    return True
+    return False
 
 
 def materialize_index(value):
