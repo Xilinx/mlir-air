@@ -4045,6 +4045,67 @@ static void removeDeadGlobalOps(AIE::DeviceOp device) {
 // for keep_pkt_header / air.src_writes_pkt_header channels (the kernel writes
 // the whole header).
 
+// The memref an op reads or writes by addressing it directly, if it is that
+// kind of op. Mirrors the set air::HerdOp::verify checks: the low-level
+// accesses, not the higher-level ops that are lowered into them later.
+static Value getDirectlyAccessedMemref(Operation *op) {
+  return llvm::TypeSwitch<Operation *, Value>(op)
+      .Case<memref::LoadOp>([](auto op) { return op.getMemRef(); })
+      .Case<memref::StoreOp>([](auto op) { return op.getMemRef(); })
+      .Case<affine::AffineLoadOp>([](auto op) { return op.getMemRef(); })
+      .Case<affine::AffineStoreOp>([](auto op) { return op.getMemRef(); })
+      .Case<vector::TransferReadOp>([](auto op) -> Value {
+        return dyn_cast<MemRefType>(op.getBase().getType()) ? op.getBase()
+                                                            : Value();
+      })
+      .Case<vector::TransferWriteOp>([](auto op) -> Value {
+        return dyn_cast<MemRefType>(op.getBase().getType()) ? op.getBase()
+                                                            : Value();
+      })
+      .Case<vector::LoadOp>([](auto op) { return op.getBase(); })
+      .Case<vector::StoreOp>([](auto op) { return op.getBase(); })
+      .Default([](Operation *) { return Value(); });
+}
+
+// Diagnose a direct memory access sitting in an air.segment body outside any
+// air.herd. On this target nothing there can execute it: a segment describes
+// data movement between L3, L2 and the herds it contains, and an AIE core --
+// that is, a herd body -- is the only thing that runs loads and stores.
+//
+// This belongs here rather than in air::SegmentOp::verify because it is a
+// property of lowering to AIE, not of the dialect. A segment means something
+// else on the GPU path, where it is the workgroup body and its threads address
+// memory directly; test/gpu/4k_4k_mul/air_sync.mlir zeroes an accumulator in
+// exactly that position, and is valid.
+//
+// Without this the op is silently mislowered instead of rejected. A linalg op
+// on an L2 buffer passes the verifier, becomes a scalar store nest at
+// convert-linalg-to-loops, and arrives here, where it is emitted outside any
+// aie.core with no DMA behind it and the pass exits 0. In a larger design it
+// surfaces further on as a dominance error naming an operand, which points
+// nowhere near the cause.
+static LogicalResult diagnoseComputeOutsideHerd(ModuleOp module) {
+  WalkResult result = module.walk([&](air::SegmentOp segment) -> WalkResult {
+    WalkResult inner =
+        segment.getBody().walk([&](Operation *op) -> WalkResult {
+          if (!getDirectlyAccessedMemref(op))
+            return WalkResult::advance();
+          if (op->getParentOfType<air::HerdOp>())
+            return WalkResult::advance();
+          op->emitOpError()
+              << "is inside 'air.segment' but outside any 'air.herd', so no "
+                 "AIE core will execute it; only a herd body can access "
+                 "memory directly. Move it into a herd, or use "
+                 "air.dma_memcpy_nd if the intent was to move data.";
+          return WalkResult::interrupt();
+        });
+    return inner.wasInterrupted() ? WalkResult::interrupt()
+                                  : WalkResult::advance();
+  });
+
+  return failure(result.wasInterrupted());
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -8065,6 +8126,14 @@ public:
     }
 
     auto module = getOperation();
+
+    // Before anything is emitted: an op no AIE core can run would otherwise
+    // be lowered into IR that looks fine and cannot execute.
+    if (failed(diagnoseComputeOutsideHerd(module))) {
+      signalPassFailure();
+      return;
+    }
+
     OpBuilder builder(module);
     builder.setInsertionPointToStart(module.getBody());
 
