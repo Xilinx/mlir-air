@@ -361,6 +361,17 @@ def coerce_index(value):
     # arrives here; fused_decode's per-layer DDR offsets are hand-built
     # arith.muli on the launch's induction variable.
     if str(getattr(value, "type", "")) == "index":
+        # Unless it is a constant, which is not opaque at all. Reading it back
+        # matters: a loop bound that arrives as an already-emitted
+        # arith.constant would otherwise become a *dynamic* bound, losing the
+        # static trip count and every check that depends on knowing it.
+        owner = getattr(value, "owner", None)
+        op = getattr(owner, "operation", owner)
+        if op is not None and getattr(op, "name", None) == "arith.constant":
+            try:
+                return IndexExpr.constant(int(op.attributes["value"]))
+            except (KeyError, ValueError, TypeError):
+                pass
         return IndexExpr.leaf(value, "v")
     raise TypeError(f"cannot use {value!r} ({type(value).__name__}) as an index")
 

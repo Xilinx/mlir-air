@@ -3660,66 +3660,62 @@ def build_module():
                                     if c != _cus[0]:
                                         return
                                     _gw = len(_cus) * KVPC_DH
-                                    for _blk in for_(idx(0), _seg_rounds(), idx(1)):
-                                        _kbuf = AllocOp(kvblk_l2, [], [])
-                                        _kbuf.operation.attributes[
-                                            "air.memtile_col"
-                                        ] = IntegerAttr.get(T.i32(), col)
-                                        _vbuf = AllocOp(kvblk_l2, [], [])
-                                        _vbuf.operation.attributes[
-                                            "air.memtile_col"
-                                        ] = IntegerAttr.get(T.i32(), col)
-                                        ChannelGet("inKV_K", _kbuf, indices=[idx(_gi)])
-                                        ChannelGet("inKV_V", _vbuf, indices=[idx(_gi)])
+                                    for _blk in air_api.sequential(_seg_rounds()):
+                                        _kbuf = air_api.alloc(
+                                            [2 * 16 * KVPC_DH],
+                                            api_types.bf16,
+                                            scope=_seg.private(),
+                                            column=col,
+                                        )
+                                        _vbuf = air_api.alloc(
+                                            [2 * 16 * KVPC_DH],
+                                            api_types.bf16,
+                                            scope=_seg.private(),
+                                            column=col,
+                                        )
+                                        _CH["inKV_K"].get(_kbuf, indices=[_gi])
+                                        _CH["inKV_V"].get(_vbuf, indices=[_gi])
                                         for _lc, _cc in enumerate(_cus):
-                                            ChannelPut(
-                                                "toK",
-                                                _kbuf,
-                                                indices=[idx(_cc)],
-                                                offsets=[
-                                                    idx(0),
-                                                    idx(0),
-                                                    idx(_lc * KVPC_DH),
-                                                ],
-                                                sizes=[
-                                                    idx(KVPC_DH // 8),
-                                                    idx(16),
-                                                    idx(8),
-                                                ],
-                                                strides=[idx(8), idx(_gw), idx(1)],
+                                            # This CU's dh columns out of the
+                                            # group's [16 pos, _gw] block, then
+                                            # the dh axis split 8-wide and moved
+                                            # outside pos -- the kernel's
+                                            # [dc, key, de] operand order. All
+                                            # view, no copy.
+                                            _o = _lc * KVPC_DH
+                                            _CH["toK"].put(
+                                                _kbuf.reshape(16, _gw)[
+                                                    :, _o : _o + KVPC_DH
+                                                ]
+                                                .reshape(16, KVPC_DH // 8, 8)
+                                                .transpose(1, 0, 2),
+                                                indices=[_cc],
                                             )
-                                            ChannelPut(
-                                                "toV",
-                                                _vbuf,
-                                                indices=[idx(_cc)],
-                                                offsets=[
-                                                    idx(0),
-                                                    idx(0),
-                                                    idx(0),
-                                                    idx(_lc * KVPC_DH),
-                                                ],
-                                                sizes=[
-                                                    idx(2),
-                                                    idx(KVPC_DH // 8),
-                                                    idx(8),
-                                                    idx(8),
-                                                ],
-                                                strides=[
-                                                    idx(_gw * 8),
-                                                    idx(8),
-                                                    idx(_gw),
-                                                    idx(1),
-                                                ],
+                                            # V carries two 16-position halves,
+                                            # so the same walk with the halves
+                                            # as an outer axis.
+                                            _CH["toV"].put(
+                                                _vbuf.reshape(2, 8, _gw)[
+                                                    :, :, _o : _o + KVPC_DH
+                                                ]
+                                                .reshape(2, 8, KVPC_DH // 8, 8)
+                                                .transpose(0, 2, 1, 3),
+                                                indices=[_cc],
                                             )
-                                        DeallocOp(_kbuf)
-                                        DeallocOp(_vbuf)
-                                        yield_([])
+                                        air_api.dealloc(_kbuf)
+                                        air_api.dealloc(_vbuf)
                                     return
                                 # ROLLED (was Python for blk in range(ATTN_ROUNDS)): AIR for_
                                 # -> count-free 2-buffer ring on the memtile (mirror the
                                 # weight-fan) so large ATTN_L stays under the 16-BD limit.
                                 # Fresh kvb per iter (no_split, memtile_col) = the share-ring
                                 # pattern AIR lowers to next_bd rotation, not a repeat_count BD.
+                                # KV_SPLIT and KV_REGION are both fixed True, so this
+                                # rolled fallback is unreachable in every shipped
+                                # config. Left on the raw bindings: the gate cannot
+                                # exercise it, and an unverifiable rewrite of a
+                                # strided descriptor is exactly the change that looks
+                                # right and is not.
                                 for _blk in for_(idx(0), _seg_rounds(), idx(1)):
                                     kvb = AllocOp(kvblk_l2, [], [])
                                     kvb.operation.attributes["air.memtile_col"] = (
