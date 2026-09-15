@@ -11,10 +11,10 @@
 // And all the way down. The scope on these atomics is the whole point -- it is
 // what keeps the coordination on the die instead of crossing the fabric -- so
 // check the instructions it becomes, not just the MLIR attribute.
-// RUN: air-opt %s -air-to-rocdl -air-gpu-outlining \
+// RUN: %if amdgpu-isa %{ air-opt %s -air-to-rocdl -air-gpu-outlining \
 // RUN:   | air-opt --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts))' \
 // RUN:   | mlir-opt --pass-pipeline='builtin.module(gpu-module-to-binary{format=isa})' \
-// RUN:   | FileCheck %s --check-prefix=ISA
+// RUN:   | FileCheck %s --check-prefix=ISA %}
 //
 // The die is read from the hardware register, as in air_chiplet_id.mlir.
 // ISA-DAG: s_getreg_b32 {{s[0-9]+}}, hwreg(HW_REG_XCC_ID, 0, 16)

@@ -7,10 +7,10 @@
 
 // REQUIRES: gpu
 // RUN: air-opt %s -air-to-rocdl | FileCheck %s
-// RUN: air-opt %s -air-to-rocdl -air-gpu-outlining \
+// RUN: %if amdgpu-isa %{ air-opt %s -air-to-rocdl -air-gpu-outlining \
 // RUN:   | air-opt --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts))' \
 // RUN:   | mlir-opt --pass-pipeline='builtin.module(gpu-module-to-binary{format=isa})' \
-// RUN:   | FileCheck %s --check-prefix=ISA
+// RUN:   | FileCheck %s --check-prefix=ISA %}
 
 // Streaming data -- read once, never reused -- should not evict what the die's
 // L2 is holding for everyone else. On AMDGPU that is the `nt` bit, and the

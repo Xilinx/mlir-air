@@ -10,10 +10,10 @@
 //
 // And all the way down: the point of the op is the instruction it becomes, so
 // compile the outlined kernel to gfx942 and look for it in the ISA.
-// RUN: air-opt %s -air-to-rocdl -air-gpu-outlining \
+// RUN: %if amdgpu-isa %{ air-opt %s -air-to-rocdl -air-gpu-outlining \
 // RUN:   | air-opt --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts))' \
 // RUN:   | mlir-opt --pass-pipeline='builtin.module(gpu-module-to-binary{format=isa})' \
-// RUN:   | FileCheck %s --check-prefix=ISA
+// RUN:   | FileCheck %s --check-prefix=ISA %}
 //
 // ISA: s_getreg_b32 {{s[0-9]+}}, hwreg(HW_REG_XCC_ID, 0, 16)
 

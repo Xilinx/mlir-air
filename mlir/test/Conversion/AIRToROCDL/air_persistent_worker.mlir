@@ -7,10 +7,10 @@
 
 // REQUIRES: gpu
 // RUN: air-opt %s -air-to-rocdl | FileCheck %s
-// RUN: air-opt %s -air-to-rocdl -air-gpu-outlining \
+// RUN: %if amdgpu-isa %{ air-opt %s -air-to-rocdl -air-gpu-outlining \
 // RUN:   | air-opt --pass-pipeline='builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-scf-to-cf,convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts))' \
 // RUN:   | mlir-opt --pass-pipeline='builtin.module(gpu-module-to-binary{format=isa})' \
-// RUN:   | FileCheck %s --check-prefix=ISA
+// RUN:   | FileCheck %s --check-prefix=ISA %}
 
 // The shape a Fleet-style megakernel has, written in AIR: one launch sized to
 // the dies, one segment per workgroup that stays resident, and the work loop
