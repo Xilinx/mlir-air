@@ -3869,38 +3869,6 @@ def build_module():
                                 a_o = air_api.alloc(
                                     [DQ_PADDED_PER_CU], api_types.bf16, scope=_ac
                                 )
-                                # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
-                                # block-arg (opaque region arg -> not const-folded -> stays a
-                                # runtime scf.for bound; the AIE core loops per the RTP-L the
-                                # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
-                                # unrollSCFFors only unrolls all-constant loops, so this
-                                # survives to core codegen as a real runtime loop.
-                                _nblk_qk = _core_rounds(Lh)
-                                for _blk in air_api.sequential(_nblk_qk):
-                                    # REQUIRED single-buffer: ping-pong would unroll-by-2 +
-                                    # 1-remainder over a 3-buffer toK ring whose remainder reads
-                                    # the wrong buffer vs the DMA rotation -> misaligned KV ->
-                                    # garbage chat. Single-buffer is aligned.
-                                    a_k = air_api.alloc(
-                                        [16 * KVPC_DH], api_types.bf16, scope=_ac
-                                    )
-                                    _CH["toK"].get(a_k, indices=[_c])
-                                    blk_c = arith.index_cast(i32, _blk.materialize())
-                                    attn_qk_blk(a_q, a_k, a_m, a_cc, sh, blk_c, Lh)
-                                    air_api.dealloc(a_k)
-                                air_api.dealloc(a_q)
-                                air_api.dealloc(a_m)
-                                air_api.dealloc(a_cc)
-
-                            def _kv_body(sh, Lh, _c, _arm=None):
-                                _ac = _attn_h.private()
-                                a_y = air_api.alloc(
-                                    [DQ_PADDED_PER_CU], api_types.f32, scope=_ac
-                                )
-                                a_l = air_api.alloc([16], api_types.f32, scope=_ac)
-                                a_o = air_api.alloc(
-                                    [DQ_PADDED_PER_CU], api_types.bf16, scope=_ac
-                                )
                                 # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                 # loops per RTP-L; matched by the shim readback push count.
                                 _nblk_kv = _core_rounds(Lh)
