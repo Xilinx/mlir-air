@@ -299,6 +299,14 @@ def rtp(source):
     from ._index import coerce_index, materialize_index
 
     i32 = IntegerType.get_signless(32)
+    # Already an i32 SSA value: that IS the thing this builds, so take it as
+    # given rather than rebuilding it. A body still written against the raw
+    # bindings arrives here -- fused_decode's hybrid layer-type arm is an
+    # arith.select over the wave index, computed before air.rtp sees it.
+    if hasattr(source, "type") and str(getattr(source, "type", "")) == "i32":
+        param = RuntimeParam(source, "i32")
+        active_trace().rtps.append(param)
+        return param
     source = _as_condition(source)
     if isinstance(source, (Condition, ValueCondition)):
         one = arith.ConstantOp(i32, 1).result
@@ -993,7 +1001,17 @@ class SegmentContext:
 
     _what = "air.segment"
 
-    def __init__(self, grid=None, name=None):
+    def __init__(self, grid=None, name=None, params=None):
+        # Runtime parameters this segment takes as operands, the same concept
+        # air.herd(params=...) names and for the same reason: their order is
+        # part of the region's interface, so it is stated rather than inferred
+        # from which ones happen to be live. A segment reads one when the value
+        # has to be computed at LAUNCH scope and survive into the segment --
+        # fused_decode's hybrid layer-type arm is the case, because deriving it
+        # inside the segment instead lets cloneL2AndL3MemcpysToDeviceOp fold it
+        # to the wave-0 arm. Left off, a segment takes the launch's coordinates
+        # and the tensors, as before.
+        self.params = _parse_herd_params(params, name or "seg", "air.segment")
         # A grid here is this segment's *own* iteration space -- air.segment's
         # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
         # air.segment and air.herd each carry one and they are not the same
@@ -1152,7 +1170,12 @@ class SegmentContext:
         outer_leaves = list(launch.leaves)
         if launch.wave is not None:
             outer_leaves += [leaf for leaf in launch.wave.leaves()]
-        operands = [leaf.value for leaf in outer_leaves] + [t.value for t in tensors]
+        rtps = list(self.params or ())
+        operands = (
+            [leaf.value for leaf in outer_leaves]
+            + [r.value for r in rtps]
+            + [t.value for t in tensors]
+        )
         sizes = list(self.grid) + [1] * (2 - len(self.grid)) if self.grid else []
 
         @segment_region(name=self.name, operands=operands, sizes=sizes)
@@ -1176,8 +1199,16 @@ class SegmentContext:
             saved_outer = [leaf.value for leaf in outer_leaves]
             for leaf, v in zip(outer_leaves, bound[: len(outer_leaves)]):
                 leaf.value = v
+            # Rebound in the order the operands were built: outer leaves, then
+            # the named runtime parameters, then the tensors. A parameter read
+            # inside has to name the block argument, not the launch-scope value
+            # it was computed from -- air.segment is IsolatedFromAbove.
+            base = len(outer_leaves)
+            saved_rtps = [r.value for r in rtps]
+            for r, v in zip(rtps, bound[base : base + len(rtps)]):
+                r.rebind(v)
             saved = [t.value for t in tensors]
-            for t, v in zip(tensors, bound[len(outer_leaves) :]):
+            for t, v in zip(tensors, bound[base + len(rtps) :]):
                 t.value = v
             previous, _CURRENT_SEGMENT = _CURRENT_SEGMENT, segment_self
             segment_self._entry_block = args[0].owner
@@ -1188,6 +1219,8 @@ class SegmentContext:
                 segment_self._buffers.clear()
                 for t, v in zip(tensors, saved):
                     t.value = v
+                for r, v in zip(rtps, saved_rtps):
+                    r.rebind(v)
                 for leaf, v in zip(outer_leaves, saved_outer):
                     leaf.value = v
                 _CURRENT_SEGMENT = previous
@@ -1198,9 +1231,13 @@ class SegmentContext:
         prune_unused_operands(segment_body)
 
 
-def segment(grid=None, name=None):
-    """A device segment with L2 scope; nest herds inside its body."""
-    return SegmentContext(grid=grid, name=name)
+def segment(grid=None, name=None, params=None):
+    """A device segment with L2 scope; nest herds inside its body.
+
+    ``params=`` names air.rtp values this segment takes as operands, in order,
+    exactly as ``air.herd(params=...)`` does.
+    """
+    return SegmentContext(grid=grid, name=name, params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -1327,20 +1364,24 @@ class HerdContext:
         writes a func.call, so air.extern -- which exists to emit one -- cannot
         express it, but link_with is needed all the same.
 
-        aircc links one object per herd -- link_with is a single string -- so a
-        body that reaches into two of them cannot be built.
+        Several are allowed. A core's link set is exactly that -- a set:
+        aie-assign-core-link-files walks the call edges out of each core to the
+        func.func declarations carrying link_with and collects a de-duplicated
+        list into the core's link_files / link_merge_files. The per-declaration
+        attribute is what drives it, and air.extern puts one on every kernel it
+        declares. The single string on the herd is the *deprecated* core-level
+        spelling, which that pass now merely migrates into the same set, so
+        stamping it is only how a link_with= declaration with no call of its own
+        reaches the core.
+
+        This used to refuse the second object, on the reading that a herd links
+        one file because the attribute holds one name. fused_decode's hybrid is
+        the counter-example: its conv herd stages a ShortConv layer and runs
+        rope on the same tile, which is two objects by construction.
         """
-        if self._objects and obj not in self._objects:
-            other, other_kernel = next(iter(self._objects.items()))
-            raise ValueError(
-                f"herd '{self.name}' {_needs(obj, kernel)} and "
-                f"{_needs(other, other_kernel)}, but a herd links against a "
-                "single object file. Compile both kernels into one object, or "
-                "put them in separate herds."
-            )
         # An air.extern call names the symbol it wants; keep that over a bare
-        # link_with= declaration of the same file, since it makes a later conflict
-        # report the more specific of the two.
+        # link_with= declaration of the same file, since it is the more specific
+        # of the two in a diagnostic.
         if kernel is not None or obj not in self._objects:
             self._objects[obj] = kernel
 
@@ -1628,13 +1669,41 @@ class HerdContext:
                     leaf.value = v
                 _CURRENT_HERD = previous
 
-        # aircc compiles the object named here alongside the herd's cores.
-        if herd_self._objects:
+        # The deprecated core-level attribute, which holds ONE name.
+        # aie-assign-core-link-files builds each core's link set from the
+        # per-declaration link_with that air.extern already stamps, and merely
+        # migrates this one into the same set -- so it is redundant when every
+        # kernel is reached by a call, and cannot express two objects at all.
+        # Stamped when there is exactly one, because that is what the
+        # hand-written herds emit and matching them keeps the IR identical.
+        #
+        # With several, only a *declared* one -- an object named by
+        # link_with= whose call the DSL never emits, so no func.func carries it
+        # and this attribute is its only route to the core (ops.exp on bf16 is
+        # the case: it becomes math.exp, and the AIE lowering turns that into a
+        # call to getExpBf16 several passes later). Objects reached by an
+        # air.extern call need nothing here; their declarations carry
+        # link_with and aie-assign-core-link-files traces the call edge.
+        # fused_decode's hybrid conv herd is that shape and stamps nothing.
+        _declared = [o for o, kern in herd_self._objects.items() if kern is None]
+        if len(herd_self._objects) == 1:
+            _stamp = next(iter(herd_self._objects))
+        elif len(_declared) == 1:
+            _stamp = _declared[0]
+        elif _declared:
+            raise ValueError(
+                f"herd '{herd_self.name}' declares link_with for "
+                f"{', '.join(sorted(_declared))}. A declared object reaches the "
+                "core only through the core-level attribute, which holds one "
+                "name; a kernel called through air.extern carries its own and "
+                "does not need it."
+            )
+        else:
+            _stamp = None
+        if _stamp is not None:
             from air.ir import StringAttr
 
-            herd_body.attributes["link_with"] = StringAttr.get(
-                next(iter(herd_self._objects))
-            )
+            herd_body.attributes["link_with"] = StringAttr.get(_stamp)
 
         # at=(col, row) pins the herd's origin, as air-place-herds reads it.
         if herd_self.at is not None:
@@ -1695,8 +1764,11 @@ def run_strip_mined(run, repeats, range_, yield_):
 # ---------------------------------------------------------------------------
 
 
-def _parse_herd_params(params, name):
-    """Validate ``air.herd(params=[...])`` into a tuple of RuntimeParams, or None.
+def _parse_herd_params(params, name, what="air.herd"):
+    """Validate ``params=[...]`` into a tuple of RuntimeParams, or None.
+
+    Shared by air.herd and air.segment; ``what`` names the one that is being
+    built, so a bad element is reported against the construct the caller wrote.
 
     ``None`` means "thread whatever single parameter is live", which is what a
     design with one of them wants and what every herd got before this existed.
@@ -1710,9 +1782,9 @@ def _parse_herd_params(params, name):
     for p in params:
         if not isinstance(p, RuntimeParam):
             raise TypeError(
-                f"air.herd {name!r}: params= takes values from air.rtp(), got "
-                f"{p!r} ({type(p).__name__}). A herd operand that is a buffer "
-                "is passed by using it in the body; params= is only for the "
+                f"{what} {name!r}: params= takes values from air.rtp(), got "
+                f"{p!r} ({type(p).__name__}). An operand that is a buffer is "
+                "passed by using it in the body; params= is only for the "
                 "scalars air.rtp builds."
             )
         out.append(p)
@@ -1976,11 +2048,19 @@ def alloc(
     else:
         # A segment holds L2 memtile buffers and herd-shared L1 buffers at once,
         # so each budget only counts its own space.
+        #
+        # Already released buffers are not live, so they are not counted. The
+        # tracer's own inferred releases are placed after the body has run and
+        # cannot be known here, so this only sees the ones air.dealloc named --
+        # which is exactly when a body has something to say about reuse.
+        # fused_decode's rms core is the case: it allocates eight K-element
+        # tiles but frees each as it finishes, so the peak is half the sum, and
+        # charging the sum rejects llama-3.1-8b at 68 KB against a 64 KB tile.
         live = _peak_bytes(
             [
                 (getattr(b, "arm_path", ()), _buffer_bytes(b))
                 for b in holder._buffers
-                if b.space == space
+                if b.space == space and b.released is None
             ]
             + [(arm_path, nbytes)]
         )
@@ -1996,11 +2076,13 @@ def alloc(
                 # A shared buffer is charged by the slab this core owns; a
                 # per_core buffer by the whole of it, since every core has one.
                 for b in enclosing._buffers:
-                    if b.space != "L1":
+                    if b.space != "L1" or b.released is not None:
                         continue
                     kind = getattr(b.scope, "kind", None)
                     if kind == "shared":
-                        live += _buffer_bytes(b, nlead)
+                        # Same two models as _charge_shared_l1: a declared slab
+                        # is charged per core, an inferred one whole.
+                        live += _buffer_bytes(b, nlead if len(b.shape) > nlead else 0)
                     elif kind == "per_core":
                         live += _buffer_bytes(b)
         if space == "L1":
@@ -2095,29 +2177,48 @@ def _charge_shared_l1(segment, nlead, herd_name):
     kinds = {}
     for b in segment._buffers:
         kind = getattr(b.scope, "kind", None)
-        if b.space == "L1" and kind in ("shared", "per_core"):
+        # A released buffer is not live, here as in alloc().
+        if b.space == "L1" and kind in ("shared", "per_core") and b.released is None:
             kinds.setdefault(kind, []).append(b)
     shared = kinds.get("shared", [])
     per_core = kinds.get("per_core", [])
     if not shared and not per_core:
         return
-    for b in shared:
-        if len(b.shape) <= nlead:
-            raise ValueError(
-                f"air.alloc({list(b.shape)}, {b.dtype}) is herd-shared and the "
-                f"herd {herd_name!r} is {nlead}-D, so its first {nlead} "
-                "dimension(s) are the cores -- leaving nothing for the tile "
-                "itself. Give it one leading dimension per herd axis and at "
-                "least one more."
-            )
-    live = sum(_buffer_bytes(b, nlead) for b in shared) + sum(
+
+    # Two sharing models, and the RANK says which.
+    #
+    # At least one dimension per herd axis is the declared form: the leading
+    # dimensions are the cores and what remains is the slab each one owns, so
+    # the slab is what it is charged. Exactly nlead is that form with nothing
+    # left for the tile, which is a mistake and still raises below.
+    #
+    # Fewer than nlead cannot be the declared form at all, so it is the other
+    # model: a flat buffer whose sharing topology the compiler infers.
+    # fused_decode's proj pairs are the case -- each of its eight y tiles is
+    # shared across two vertically adjacent cores, which air-to-aie derives
+    # from the cross-core RAW and which is not any slab of the 2x4 herd. There
+    # is then no slab to charge, so the whole buffer is counted against every
+    # core: conservative, and it can only reject a design the declared form
+    # would have accepted, never admit an overflow.
+    def _shared_lead(b):
+        return nlead if len(b.shape) > nlead else 0
+
+    # There is deliberately no error for a shape that leaves no per-core tile.
+    # It cannot be decided here: this charges EVERY shared buffer in the segment
+    # against whichever herd is being emitted, and a segment may hold herds of
+    # different rank -- fused_decode's are 1-D and 2-D at once -- so the same
+    # buffer is rank-equal to one herd and rank-short of another. Sizing stays
+    # the check that matters, and it is sound either way because the inferred
+    # reading is the conservative one.
+
+    live = sum(_buffer_bytes(b, _shared_lead(b)) for b in shared) + sum(
         _buffer_bytes(b) for b in per_core
     )
     if live > L1_BYTES:
         detail = ", ".join(
-            f"{list(b.shape)} {b.dtype} ({_buffer_bytes(b, lead) / 1024:.1f} KB "
-            "per core)"
-            for group, lead in ((shared, nlead), (per_core, 0))
+            f"{list(b.shape)} {b.dtype} "
+            f"({_buffer_bytes(b, lead(b)) / 1024:.1f} KB per core)"
+            for group, lead in ((shared, _shared_lead), (per_core, lambda _b: 0))
             for b in group
         )
         raise ValueError(

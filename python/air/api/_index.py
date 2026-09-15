@@ -354,7 +354,68 @@ def coerce_index(value):
     # Symbol and anything else exposing __index__ resolves to its current value.
     if hasattr(value, "__index__"):
         return IndexExpr.constant(int(value))
+    # An SSA value of index type: already the thing this builds, so take it as a
+    # leaf rather than refusing it. IndexExpr.leaf is exactly "an opaque index I
+    # cannot see inside", which is what one is -- arithmetic on it still goes
+    # through the affine form. A body still written against the raw bindings
+    # arrives here; fused_decode's per-layer DDR offsets are hand-built
+    # arith.muli on the launch's induction variable.
+    if str(getattr(value, "type", "")) == "index":
+        # Unless it is a constant, which is not opaque at all. Reading it back
+        # matters: a loop bound that arrives as an already-emitted
+        # arith.constant would otherwise become a *dynamic* bound, losing the
+        # static trip count and every check that depends on knowing it.
+        owner = getattr(value, "owner", None)
+        op = getattr(owner, "operation", owner)
+        if op is not None and getattr(op, "name", None) == "arith.constant":
+            try:
+                return IndexExpr.constant(int(op.attributes["value"]))
+            except (KeyError, ValueError, TypeError):
+                pass
+        return IndexExpr.leaf(value, "v", spatial=_is_spatial_value(value))
     raise TypeError(f"cannot use {value!r} ({type(value).__name__}) as an index")
+
+
+def _is_spatial_value(value):
+    """Whether this SSA index IS a live tile coordinate.
+
+    Provenance matters because air.sequential refuses a bound built from one: a
+    coordinate differs between cores, so the trip count would too, and a loop
+    with a channel operation in it deadlocks on the cores that run fewer trips.
+    An IndexExpr carries that on its leaf; a raw value arrives with nothing, and
+    wrapping it as non-spatial would walk a converted body's raw `tx` straight
+    past the check.
+
+    Identity against the coordinates currently bound is what can be answered
+    here, and it covers the case that matters -- a coordinate passed as the
+    bound itself. A bound computed from one with raw arith is not detectable and
+    is not claimed to be; air.sequential sees through that only when the
+    arithmetic went through IndexExpr.
+
+    All three levels count, and they are not reached the same way: a herd keeps
+    its core position in ``_coords``, while a segment and a launch expose theirs
+    as ``leaves``. The launch's *wave* is deliberately not among them -- a
+    dispatch index is the same on every core, which is why a herd may loop on
+    it.
+    """
+    from ._trace import current_herd, current_launch, current_segment
+
+    herd = current_herd(required=False)
+    segment = current_segment(required=False)
+    try:
+        launch = current_launch()
+    except RuntimeError:
+        launch = None
+
+    for expr in getattr(herd, "_coords", ()) or ():
+        for leaf in expr.leaves():
+            if leaf.value is value:
+                return True
+    for ctx in (segment, launch):
+        for leaf in getattr(ctx, "leaves", ()) or ():
+            if leaf.value is value:
+                return True
+    return False
 
 
 def materialize_index(value):

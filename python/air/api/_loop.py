@@ -111,10 +111,14 @@ def sequential(start, stop=None, step=None, name=None):
     # per-dispatch context length driving a herd's block loop is the case --
     # fused_decode's attention cores loop ceil(L/16) times, with L an i32 RTP
     # the instruction stream writes.
-    start, stop, step = (
-        _coerce(v) if isinstance(v, (_Switch, RuntimeParam)) else v
-        for v in (start, stop, step)
-    )
+    # A raw SSA index joins them: coerce_index takes one as a leaf, and a bound
+    # a body computed with the raw bindings is exactly where one turns up.
+    def _runtime(v):
+        return isinstance(v, (_Switch, RuntimeParam)) or (
+            str(getattr(v, "type", "")) == "index"
+        )
+
+    start, stop, step = (_coerce(v) if _runtime(v) else v for v in (start, stop, step))
 
     # A bound may be an index expression -- a coordinate, or an enclosing loop's
     # variable. scf.for takes SSA bounds, so nothing here has to fold: what it

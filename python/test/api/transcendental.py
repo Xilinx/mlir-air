@@ -167,19 +167,25 @@ def object_agrees_with_extern():
     print(build(65536, 1024, body, herd_shape=(4,), link_with="kernels.o").mlir())
 
 
-# CHECK-LABEL: TEST: object_conflicts_with_extern
-# Two object files, one link_with slot. The message names both claims, and
-# distinguishes the one that came from a call from the one that was declared.
-# CHECK: herd 'herd_0' calls scale from 'kernels.o' and declares link_with='extern_func.o'
+# CHECK-LABEL: TEST: two_objects_on_one_core
+# A core's link set is a set: aie-assign-core-link-files walks the call edges
+# out of each core and collects the link_with of every declaration it reaches.
+# So calling scale from kernels.o and needing extern_func.o for ops.exp is two
+# artifacts on one core, not a conflict.
+#
+# They reach it by different routes, and only one needs the core-level
+# attribute. scale is called, so its own declaration carries kernels.o and the
+# pass traces it. extern_func.o was declared by link_with= for a call the DSL
+# never emits -- ops.exp becomes math.exp, and the AIE lowering turns that into
+# getExpBf16 several passes later -- so nothing would carry it otherwise.
+# CHECK: func.func private @scale{{.*}}link_with = "kernels.o"
+# CHECK: air.herd{{.*}}link_with = "extern_func.o"
 @run
-def object_conflicts_with_extern():
+def two_objects_on_one_core():
     scale = air.extern("scale", link_with="kernels.o", scalars=[i32])
 
     def body(buf):
         scale(2, buf)
         return air.ops.exp(buf[:])
 
-    try:
-        build(65536, 1024, body, herd_shape=(4,), link_with="extern_func.o").mlir()
-    except ValueError as e:
-        print(e)
+    print(build(65536, 1024, body, herd_shape=(4,), link_with="extern_func.o").mlir())

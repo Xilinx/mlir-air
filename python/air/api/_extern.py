@@ -142,6 +142,25 @@ class ExternKernel:
     def __repr__(self):
         return f"air.api.extern({self.name!r}, link_with={self.link_with!r})"
 
+    @property
+    def decl(self):
+        """The private ``func.func`` this kernel declares, for a raw ``CallOp``.
+
+        Calling the kernel is what ``__call__`` is for, and it is the spelling
+        to use. This exists for a design mid-conversion: a body still written
+        against the raw bindings emits its own ``func.call``, and needs the
+        declaration the DSL now owns. Only available once declared, which
+        ``signature=`` does at construction.
+        """
+        if self._decl is None:
+            raise RuntimeError(
+                f"{self.name} has not been declared yet: air.extern declares "
+                "lazily, from the argument types of the first call. Call the "
+                "kernel once before reading .decl, or give it signature= at "
+                "construction to declare it there and then."
+            )
+        return self._decl
+
     def __call__(self, *args):
         from air.ir import InsertionPoint, StringAttr, UnitAttr
         from air.dialects import arith
@@ -371,19 +390,33 @@ def _as_int(offset):
 def _core_slab(buffer):
     """The value to pass for ``buffer``: its whole memref, or this core's slab.
 
-    A ``<segment>.shared()`` buffer is one allocation spanning every core, with
-    a leading dimension per herd axis, and a core may only touch its own slab.
-    That is not a choice the caller gets to make -- there is exactly one slab a
-    given core is allowed to write -- so the DSL narrows the argument itself
-    rather than asking for coordinates it could only re-check. ``ops.fill`` and
-    ``ops.dot`` already do this through the same helper, and a kernel reached by
-    ``air.extern`` is the third way to write an accumulator: the two bfp16
-    matmuls zero it, accumulate into it and narrow it, all through hand-written
-    kernels, and each call passed a ``memref.subview`` written out by hand.
+    "Shared" says more than one core sees the buffer. It does NOT say the cores
+    partition it, and the shape is what tells the two apart -- the same
+    distinction ``_charge_shared_l1`` makes when it decides what to charge.
 
-    Any other buffer is passed whole, which is every existing caller.
+    With a leading dimension per herd axis the buffer is partitioned: each core
+    owns one slab and may only touch that one, which is not a choice the caller
+    gets to make, so the DSL narrows the argument itself rather than asking for
+    coordinates it could only re-check. ``ops.fill`` and ``ops.dot`` narrow
+    through the same helper, and a kernel reached by ``air.extern`` is the third
+    way to write an accumulator: the two bfp16 matmuls zero it, accumulate into
+    it and narrow it, all through hand-written kernels.
+
+    With fewer dimensions than the herd has axes there is no partition and
+    nothing to narrow to -- the cores genuinely alias the whole buffer, which is
+    the point of it. fused_decode's proj pairs are the case: two vertically
+    adjacent cores write y0/y1 of one flat tile and the lead reads both, a
+    hand-off air-to-aie derives from the cross-core RAW. Narrowing there does
+    not merely lose information, it has no meaning: there is no slab, and
+    ``accumulator_subview`` rejects the rank outright.
+
+    Any other buffer is passed whole.
     """
     if getattr(buffer.scope, "kind", None) != "shared":
+        return buffer.value
+    from ._trace import current_herd
+
+    if len(buffer.shape) <= len(current_herd()._coords):
         return buffer.value
     from .ops import accumulator_subview
 
@@ -460,6 +493,15 @@ def _scalar_value(arg, dtype, name, pos, arith):
                 )
             return arith.index_cast(dtype.mlir(), value)
         arg = value
+
+    # An SSA value already of the declared type: pass it through. This is the
+    # air.rtp case above reached by its value rather than by the parameter
+    # object -- a body that also does its own arith on the scalar holds the
+    # Value, not the RuntimeParam, and rebuilding a constant from it is not
+    # possible anyway. Ahead of the float branch, which rejects anything that
+    # is not a Python number and would otherwise turn away an f32 Value.
+    if str(getattr(arg, "type", "")) == str(dtype.mlir()):
+        return arg
 
     if dtype.is_float:
         if not isinstance(arg, (int, float)):

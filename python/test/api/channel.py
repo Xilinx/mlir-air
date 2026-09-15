@@ -422,3 +422,30 @@ def a_parallel_loop_indexes_a_channel_bundle():
                     air.ops.store(staged, Out)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: channel_reused_across_two_builds
+# A Channel built once at import scope and used by two launches is one Python
+# object and two modules. The declaration is tracked per MODULE for that reason:
+# a bool would emit the symbol into the first and leave every put/get in the
+# second naming a symbol its module does not define.
+# CHECK: build 0: air.channel @reused [1]
+# CHECK: build 1: air.channel @reused [1]
+@run
+def channel_reused_across_two_builds():
+    shared = air.channel("reused", size=[1])
+
+    for n in range(2):
+        A = air.tensor([64], i32)
+        B = air.tensor([64], i32)
+        with air.launch(name=f"k{n}") as launch:
+
+            @launch.body
+            def _():
+                shared.put(A[:])
+                shared.get(B[:])
+
+        decl = [
+            l.strip() for l in launch.mlir().splitlines() if "air.channel @reused" in l
+        ]
+        print(f"build {n}: {decl[0] if decl else 'MISSING'}")
