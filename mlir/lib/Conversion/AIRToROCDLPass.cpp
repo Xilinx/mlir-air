@@ -471,16 +471,31 @@ struct ConvertAIRToROCDLPass
         Block &launchBlock = launchOp.getRegion().front();
         unsigned numLaunchKernelArgs = launchOp.getNumKernelOperands();
         // Block args layout: [tile_ids..., size_ids..., kernel_args...].
-        // Tile ids and sizes are not used by the moved body in the
-        // patterns we lower today (compute uses gpu.thread_id directly
-        // after deleteAirHerd remap). Kernel-arg block args sit at the
-        // tail of the block-arg list.
+        // Kernel-arg block args sit at the tail of the block-arg list.
         unsigned numNonKernelArgs =
             launchBlock.getNumArguments() - numLaunchKernelArgs;
         for (unsigned i = 0; i < numLaunchKernelArgs; ++i) {
           Value outerVal = launchOp.getKernelOperand(i);
           launchBlock.getArgument(numNonKernelArgs + i)
               .replaceAllUsesWith(outerVal);
+        }
+
+        // The launch's own tile ids and sizes are the grid coordinate, so they
+        // become the gpu.launch block-id and grid-dim arguments. A body that
+        // never reads them does not need this, which is why it went unnoticed;
+        // but a segment can be handed a launch tile id as a kernel operand, and
+        // then the id has a real use that has to go somewhere. Left alone it
+        // dangles into the erased launch block and destroys a value that still
+        // has uses.
+        gpu::KernelDim3 gridId = gpuLaunchOp.getBlockIds();
+        gpu::KernelDim3 gridSize = gpuLaunchOp.getGridSize();
+        Value gridIdVals[3] = {gridId.x, gridId.y, gridId.z};
+        Value gridSizeVals[3] = {gridSize.x, gridSize.y, gridSize.z};
+        unsigned launchDims = launchOp.getNumDims();
+        for (unsigned i = 0; i < launchDims && i < 3; ++i) {
+          launchBlock.getArgument(i).replaceAllUsesWith(gridIdVals[i]);
+          launchBlock.getArgument(launchDims + i)
+              .replaceAllUsesWith(gridSizeVals[i]);
         }
 
         mlir::Block &gpuBlock = gpuLaunchOp.getBody().front();
