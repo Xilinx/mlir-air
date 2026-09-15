@@ -21,9 +21,9 @@
 # The design is the static the reference-faithful LOOPCLOSE full decode (proj->attn->o-proj
 # closed loop, separate post-attn rmsnorm); it is NOT parametrized. Remaining inputs:
 #     DECODE_GOLDEN   (env)   dir of real Llama-3.2-1B golden dumps -> real weights/input/rms/rope
-#     DECODE_GOLDEN_L (env)   KV context length (sets ATTN_L); MULTIBLK = ATTN_L>1
-#   MULTIBLK (L>1) appends this token's roped K/V into the DDR cache on-chip
-#   (KV_APPEND, = the reference _receive_kv_cache) then reads the whole cache back for attention.
+#     DECODE_GOLDEN_L (env)   KV context length (sets ATTN_L)
+#   Each wave appends this token's roped K/V into the DDR cache on-chip
+#   (= the reference _receive_kv_cache) then reads the whole cache back for attention.
 #     the reference chaining ABI: layer output (res2) is written IN-PLACE to arg0 (hidden BO)
 #   ABI (5 BOs, opcode 3): arg0=x/hidden (IN, and OUT in-place), arg1=proj_w(DDR),
 #     arg2=rms_w(+rope LUT), arg3=(free; the reference rope_rms slot), arg4=kv_cache(DDR).
@@ -895,20 +895,14 @@ POST_RMS = bool(DECODE_GOLDEN)
 # 1 when POST_RMS is off (debug configs), keeping RMS_LAYER byte-identical.
 N_NORMS = MODEL["N_NORMS"] if POST_RMS else 1
 ATTN_ROUNDS = (ATTN_L + 15) // 16
-MULTIBLK = True  # fixed config: decode is always multi-block; the L=1 single-token path
-# (attn_qk_p1/attn_kv_p1) was removed. ATTN_L (=DECODE_GOLDEN_L) stays a real parameter
+# Decode is always multi-block; the L=1 single-token path (attn_qk_p1 /
+# attn_kv_p1) was removed. ATTN_L (=DECODE_GOLDEN_L) stays a real parameter
 # (context length: 2048/2047 chatbot, 32 for the run_paris_gen gate).
-# DECODE_ATTN_LL=1: link the attn_qk/attn_kv kernels as LLVM IR (.ll) instead of .o,
-# so they can be llvm-linked+inlined INTO the core (kernels built alwaysinline via
-# -DDECODE_INLINE_ATTN). This uses upstream mlir-aie's func-level inline-kernel API:
-# the kernel func.func declaration carries link_with = "<name>.ll" together with
-# link_with_mode = "merge", which aiecc's aie-assign-core-link-files pass routes
-# into the core's link_merge_files -> llvm-link merges the alwaysinline body into
-# the core module before opt/llc (no surviving func.call, no object link).
-# air-to-aie copies the decl's discardable attrs onto the lowered AIE func.func,
-# so setting link_with_mode here is all that is needed. Default .o = object-linked.
-_ATTN_EXT = ".ll"  # fixed config: inline-attn merge-mode (.ll) is the only decode path
-_ATTN_MERGE = _ATTN_EXT == ".ll"  # emit link_with_mode="merge" for the inline path
+# The attn kernels link as LLVM IR, not as objects: built alwaysinline
+# (-DDECODE_INLINE_ATTN), a declaration carrying link_with = "<name>.ll" and
+# link_with_mode = "merge" routes through aiecc's aie-assign-core-link-files into
+# the core's link_merge_files, so llvm-link merges the body into the core module
+# before opt/llc -- no surviving func.call and no object link.
 
 
 # The attention block loop is a compile-time ATTN_ROUNDS (=ceil(ATTN_MAXL/16)) loop; the kernel
@@ -945,15 +939,13 @@ COALESCE = 1
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
 # under 8 KiB, so that geometry lowers it; every other model keeps 10240.
 STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
-# DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
-# separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
-# the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
-# (shared per-CU [K|V] buffer, byte-identical baseline). Fixes the ~4.9->~2.5 us/block
-# attention slope: our shared buffer serializes K/V drains + adds a backward qk<-kv edge
-# that breaks the pipeline; the reference's independent K/V rings couple the cores only by score.
-# Packs 2 CUs per group buffer (16x256) so it fits the same 4 KV shim channels.
-KV_SPLIT = True  # fixed config: decoupled K/V memtile rings
-# DDR KV-cache shapes (the reference full-faithful append+readback) for MULTIBLK. Per CU = 2 kv
+# The attention K and V memtile rings are decoupled (the reference mem_3_1:
+# separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K /
+# inKV_V), so the qk core's K supply is not lock-chained to the kv core's V
+# drain. Worth ~4.9 -> ~2.5 us/block: a shared per-CU [K|V] buffer serialises
+# the drains and adds a backward qk<-kv edge that breaks the pipeline. Packs 2
+# CUs per group buffer (16x256) to fit the same 4 KV shim channels.
+# DDR KV-cache shapes (the reference full-faithful append+readback). Per CU = 2 kv
 # heads x DH=64 = 128 (one K or V region). All-CU region width DK_TOT_A; per-token
 # K++V = KVSZ_TOK; cache padded to ATTN_MAXL = ATTN_ROUNDS*16 positions.
 KV_PER_CU = MODEL["KV_PER_CU"]
@@ -968,8 +960,7 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # then the whole cache is read back for the block-loop attention (the reference _move_kv_cache).
 # The append->readback RAW on the shared cache is ordered in the runtime sequence by
 # air-annotate-append-barrier, which derives it from the shared L3 memref (= the
-# reference's dma_wait). Only for MULTIBLK (L>1); L=1 uses the trivial on-chip-KV path.
-KV_APPEND = MULTIBLK
+# reference's dma_wait).
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
 # IN-PLACE into arg0 (the hidden_states BO), so layer N's output == layer N+1's input
 # in the same buffer -- matching the reference's decoding_layer (output S2MM back to x_arg_id,
@@ -1008,9 +999,9 @@ for _c, _loc in enumerate(ATTN_CU_LOC):
     else:
         ATTN_COL_GROUPS.append((_loc[0], [_c]))
 ATTN_CU_GROUP = {c: gi for gi, (_, cus) in enumerate(ATTN_COL_GROUPS) for c in cus}
-# DECODE_KV_REGION=1 (requires KV_SPLIT): store the DDR KV cache REGION-MAJOR
-# (quadrant layout, = the reference _receive_kv_cache / _move_kv_cache) instead of per-token
-# interleaved [tok][K|V]. Regions per layer, each ATTN_MAXL*REGION_W contiguous:
+# The DDR KV cache is REGION-MAJOR (quadrant layout, = the reference
+# _receive_kv_cache / _move_kv_cache) rather than per-token interleaved
+# [tok][K|V]. Regions per layer, each ATTN_MAXL*REGION_W contiguous:
 #   [ K_grp0 | K_grp1 | ... | V_grp0 | V_grp1 | ... ]  (== the reference K03,K47,V03,V47).
 # Per-token per-group width REGION_W = len(cus)*KVPC_DH (=256 for 2-CU groups).
 # WHY: the interleaved layout makes a K-only (or V-only) readback STRIDED-WITH-HOLES
@@ -1019,7 +1010,6 @@ ATTN_CU_GROUP = {c: gi for gi, (_, cus) in enumerate(ATTN_COL_GROUPS) for c in c
 # readback collapses to 4 contiguous coalesced BDs streamed concurrently on the 2
 # inKV_K/inKV_V channels -- exactly the reference's 4 npu_dma_memcpy_nd. The append instead
 # scatters this token's K/V into the group regions (constant few strided writes/token).
-KV_REGION = True  # fixed config: region-major DDR KV quadrants + fire-and-free readback (50 tok/s)
 NGRP = len(ATTN_COL_GROUPS)
 # Uniform group width (all groups same #CUs in the reference 4-CU/2-group layout).
 REGION_W = len(ATTN_COL_GROUPS[0][1]) * KVPC_DH  # 256
@@ -1142,12 +1132,10 @@ VOCAB_PER_COL = VOCAB_I2 * PAIR_ROWS * NCY * NBJ  # blocks/col per chunk
 LM_HEAD = int(_os.environ.get("LM_HEAD", "0"))
 
 
-# ===== UNIFIED single-launch decode+lm_head (one PDI, no multi-launch) =====
-# UNIFIED=1: ONE air.launch in for_(0, UNI_DEC+UNI_LM); per-wave arm =
-# (iv<UNI_DEC)?1:0 drives the herds' on-core index_switch AND a launch-scope
-# index_switch selecting decode vs vocab host feeds. Concatenated args for the
-# first folding test (separate ELF args come after folding is proven).
-UNIFIED = 1  # fixed config: single-launch unified decode + lm_head
+# ===== Single-launch decode + lm_head (one PDI, no multi-launch) =====
+# ONE air.launch in for_(0, UNI_DEC+UNI_LM); per-wave arm = (iv<UNI_DEC)?1:0
+# drives the herds' on-core index_switch AND a launch-scope index_switch
+# selecting decode vs vocab host feeds.
 # Decode waves in the unified sequence. Overridable so a build can be shortened
 # to N layers for a numerics BISECT -- the weight buffer is
 # [UNI_DEC layer slabs | UNI_LM vocab waves], so a short build is a prefix of the
@@ -1201,7 +1189,6 @@ W_SPLIT = 0 < W_GROUP < UNI_DEC
 N_WGRP = ((UNI_DEC + W_GROUP - 1) // W_GROUP) if W_SPLIT else 1
 # The split keys off the wave induction variable, which only exists in the fused
 # single-launch form.
-assert not W_SPLIT or UNIFIED, "DECODE_WGROUP needs the unified wave loop"
 
 ROUNDS_PER_PH = [I2P[p] * PAIR_ROWS for p in range(NPH)]  # y0,y1 per v1 -> 2*I2
 N_ROUNDS = sum(ROUNDS_PER_PH)  # total egress rounds (phase0 6 + phase1 4 = 10)
@@ -1383,7 +1370,7 @@ def build_module():
     if W_SPLIT:
         _w_len = _wgrp_len[0]
     w_t = air_api.tensor([_w_len], api_types.bf16, name="w")
-    # rms weight (K). MULTIBLK appends the rope region AFTER all UNI_DEC rms slabs so
+    # rms weight (K). The rope region sits AFTER all UNI_DEC rms slabs so
     # the score-path test gets a KNOWN q (q_roped = proj_q) WITHOUT corrupting
     # rms_w[0:K] (which proj_q depends on). Llama: ONE shared per-position LUT
     # (ROPE_W_LEN=64). Per-layer models (ROPE_W_PER_LAYER): UNI_DEC rope_w slabs
@@ -1402,7 +1389,7 @@ def build_module():
     _y_elems = (HOST_ROUNDS + LAYER_RNDS) * PAYLOAD + UNI_LM * VOCAB_SIZE_PADDED
     # host-drain (QKV) rounds + LAYER_RNDS rms layer-out (down) rounds
     y_t = air_api.tensor([_y_elems], api_types.bf16, name="y")
-    # MULTIBLK: DDR KV cache (the reference full-faithful append+readback). Layout
+    # DDR KV cache (the reference full-faithful append+readback). Layout
     # [ATTN_MAXL][K: DK_TOT_A | V: DK_TOT_A]; rope appends this token at
     # APPEND_OFF, then the whole cache is streamed back per CU (_d2wip shapes).
     # NLAYERS per-layer caches concatenated (offset iv*KV_LAYER).
@@ -1416,9 +1403,8 @@ def build_module():
         name="kvc",
         inout=True,
     )
-    # MULTIBLK adds a 5th DDR arg (kv_cache) so the reference's append+readback (and
-    # the reference's _gen_sequence) can drive it; the L=1 ABI (4 args) is unchanged
-    # when MULTIBLK is off, preserving the bring-up/PASS interface.
+    # A 5th DDR arg (kv_cache) is what the reference's append+readback and its
+    # _gen_sequence drive.
     # DYNSEQ appends the context length as a trailing scalar. Kept last so the
     # DDR argument positions -- and every host binding built around them -- are
     # unchanged. A rank-0 air.tensor is that scalar: it becomes a bare `i32`
@@ -1538,7 +1524,7 @@ def build_module():
         # o gather memtile (reference mem_5_1 o_buffer): 4 CUs' o (512 each) gathered
         # into 2048, then ONE egress (-> host now; -> mem_1_1 o-proj X in the loop close).
         omt_l2 = MemRefType.get([DQ], bf16, memory_space=l2)
-        # MULTIBLK per-block KV staging memtile (attn_iso ring, PASS L=16..128): one
+        # Per-block KV staging memtile (attn_iso ring, PASS L=16..128): one
         # block [K block 2048 | V block 2048] = 4096; a fresh alloc per block gives a
         # count-free ping-pong ring (1 fill : 1 read), unlike a whole-cache buffer
         # multi-read (1 fill : N read = lock deadlock).
@@ -1588,8 +1574,8 @@ def build_module():
             )
 
         def _attn_kernel(name, sig, base):
-            """An attention kernel, on whichever of the .o / .ll paths is built."""
-            return _kernel(name, sig, base + _ATTN_EXT, merge=_ATTN_MERGE)
+            """An attention kernel, merge-linked from LLVM IR into the core."""
+            return _kernel(name, sig, base + ".ll", merge=True)
 
         zero = _kernel("proj_qmm_zero", [yacc_l1, i32], "proj_qmm.o")
         acc256 = _kernel("proj_qmm_acc256", [xblk_l1, wblk_l1, yacc_l1], "proj_qmm.o")
@@ -1776,34 +1762,29 @@ def build_module():
         )
         _chan("toK", size=[N_ATTN_CU])
         _chan("toV", size=[N_ATTN_CU])
-        if MULTIBLK:
-            # the reference full-faithful KV cache (DDR): rope appends this token's roped
-            # K/V into the cache (appendK/appendV -> KVC at APPEND_OFF); the whole
-            # cache is streamed back per CU (inKV) into a readback memtile that
-            # re-blocks into per-block toK/toV.
-            if KV_APPEND:
-                # the reference-faithful: rope K/V -> shim S2MM -> DDR, mirroring
-                # reference pkt14/15. PACKET (not circuit) so the append can leave
-                # rope on its 2nd MM2S and fan to distinct cols. TWO channel DECLS
-                # so the allocator can place them independently -- one decl's
-                # sub-channels are treated as a single logical transfer and may
-                # share a shim channel, which is the opposite of what is wanted
-                # here. The columns are no longer pinned: the allocator spreads
-                # independent packet readbacks over distinct shim tiles, keeping
-                # the append off rope's own col2 (whose congestion deadlocks the
-                # front-end) without air.shim_col.
-                _chan("appendK", size=[1], channel_type="npu_dma_packet")
-                # Only appendK names a channel. It is what holds the pair on
-                # rope's second MM2S, clear of the circuit ropeQ; appendV joins
-                # it there on its own.
-                _chan("appendV", size=[1], channel_type="npu_dma_packet")
-            if KV_SPLIT:
-                # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
-                # col group of 2 CUs), so their memtile S2MM fills are independent.
-                _chan("inKV_K", size=[len(ATTN_COL_GROUPS)])
-                _chan("inKV_V", size=[len(ATTN_COL_GROUPS)])
-            else:
-                _chan("inKV", size=[N_ATTN_CU])
+        # the reference full-faithful KV cache (DDR): rope appends this token's roped
+        # K/V into the cache (appendK/appendV -> KVC at APPEND_OFF); the whole
+        # cache is streamed back per CU (inKV) into a readback memtile that
+        # re-blocks into per-block toK/toV.
+        # the reference-faithful: rope K/V -> shim S2MM -> DDR, mirroring
+        # reference pkt14/15. PACKET (not circuit) so the append can leave
+        # rope on its 2nd MM2S and fan to distinct cols. TWO channel DECLS
+        # so the allocator can place them independently -- one decl's
+        # sub-channels are treated as a single logical transfer and may
+        # share a shim channel, which is the opposite of what is wanted
+        # here. The columns are no longer pinned: the allocator spreads
+        # independent packet readbacks over distinct shim tiles, keeping
+        # the append off rope's own col2 (whose congestion deadlocks the
+        # front-end) without air.shim_col.
+        _chan("appendK", size=[1], channel_type="npu_dma_packet")
+        # Only appendK names a channel. It is what holds the pair on
+        # rope's second MM2S, clear of the circuit ropeQ; appendV joins
+        # it there on its own.
+        _chan("appendV", size=[1], channel_type="npu_dma_packet")
+        # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
+        # col group of 2 CUs), so their memtile S2MM fills are independent.
+        _chan("inKV_K", size=[len(ATTN_COL_GROUPS)])
+        _chan("inKV_V", size=[len(ATTN_COL_GROUPS)])
         _chan("attnO", size=[N_ATTN_CU])
         if MIX_TO_CU:
             # ShortConv mixer -> all four CU kv cores, one BROADCAST put of the
@@ -2221,536 +2202,520 @@ def build_module():
                 _rbase = _lbx(RMS_LAYER)  # rms weights slab for this layer
                 _kbase = _lb(KV_LAYER)  # KV cache slab for this layer
                 _ybase = _lbx(Y_LAYER)  # Y (host-drain) region for this layer
-                if UNIFIED:
-                    _u1 = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
-                    _u0 = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
-                    if a_iv is None:
-                        _uarm = _u1
-                    else:
-                        _ucmp = arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC))
-                        _uarm = _arm_of_wave(a_iv, arith.select(_ucmp, _u1, _u0))
-                    _uarm_i = arith.index_cast(idx_t, _uarm)
+                _u1 = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
+                _u0 = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
+                if a_iv is None:
+                    _uarm = _u1
+                else:
+                    _ucmp = arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC))
+                    _uarm = _arm_of_wave(a_iv, arith.select(_ucmp, _u1, _u0))
+                _uarm_i = arith.index_cast(idx_t, _uarm)
 
-                    def _mix_gate(
-                        attn_body,
-                        conv_body,
-                        attn_always=False,
-                        conv_always=False,
-                        conv_skip=False,
+                def _mix_gate(
+                    attn_body,
+                    conv_body,
+                    attn_always=False,
+                    conv_always=False,
+                    conv_skip=False,
+                ):
+                    """Per-layer-type feeds, inside the decode arm.
+
+                    A hybrid feeds different things for the two layer
+                    types: the rope LUT + the KV append/readback for an
+                    attention layer, the depthwise taps + the carried
+                    ShortConv state for a conv layer. Everything else --
+                    weights, both norms, X, the egress drain -- is
+                    identical, which is what the uniform phase schedule
+                    buys, so only these blocks are switched.
+
+                    Arm 0 cannot reach here (this is the decode arm), so
+                    the switch is case-2 / default. A non-hybrid build
+                    has one layer type and emits it directly, leaving
+                    its IR untouched.
+                    """
+                    # *_always: that side's consumer runs on every decode
+                    # wave -- a memtile, or a core that has to run every
+                    # wave to drain one -- so the feed cannot be armed.
+                    for _always, _body, _kind in (
+                        (attn_always, attn_body, 2),
+                        (conv_always, conv_body, 1),
                     ):
-                        """Per-layer-type feeds, inside the decode arm.
-
-                        A hybrid feeds different things for the two layer
-                        types: the rope LUT + the KV append/readback for an
-                        attention layer, the depthwise taps + the carried
-                        ShortConv state for a conv layer. Everything else --
-                        weights, both norms, X, the egress drain -- is
-                        identical, which is what the uniform phase schedule
-                        buys, so only these blocks are switched.
-
-                        Arm 0 cannot reach here (this is the decode arm), so
-                        the switch is case-2 / default. A non-hybrid build
-                        has one layer type and emits it directly, leaving
-                        its IR untouched.
-                        """
-                        # *_always: that side's consumer runs on every decode
-                        # wave -- a memtile, or a core that has to run every
-                        # wave to drain one -- so the feed cannot be armed.
-                        for _always, _body, _kind in (
-                            (attn_always, attn_body, 2),
-                            (conv_always, conv_body, 1),
-                        ):
-                            if conv_skip and _kind == 1:
-                                continue
-                            if HYBRID_MIXER and _always:
-                                _body()
-                            else:
-                                _arm_only(_uarm_i, {_kind}, _body, in_dec=True)
-
-                    def _uni_voc():
-                        _wsel[0] = None  # lm-head buffer, statically known
-                        # W_SPLIT gives the lm-head its own buffer, so its slabs
-                        # start at 0 instead of after all UNI_DEC layer slabs.
-                        # The non-split expression is kept verbatim (constants
-                        # materialize in the same order) so the IR stays
-                        # byte-identical when the knob is off.
-                        if W_SPLIT:
-                            _vwb = arith.muli(
-                                arith.subi(a_iv, idx(UNI_DEC)),
-                                idx(VOCAB_W_BLOCKS * BLOCK_BF16),
-                            )
+                        if conv_skip and _kind == 1:
+                            continue
+                        if HYBRID_MIXER and _always:
+                            _body()
                         else:
-                            _vwb = arith.addi(
-                                idx(UNI_DEC * W_LAYER),
-                                arith.muli(
-                                    arith.subi(a_iv, idx(UNI_DEC)),
-                                    idx(VOCAB_W_BLOCKS * BLOCK_BF16),
-                                ),
-                            )
-                        _vyb = arith.addi(
-                            idx((HOST_ROUNDS + LAYER_RNDS) * PAYLOAD),
+                            _arm_only(_uarm_i, {_kind}, _body, in_dec=True)
+
+                def _uni_voc():
+                    _wsel[0] = None  # lm-head buffer, statically known
+                    # W_SPLIT gives the lm-head its own buffer, so its slabs
+                    # start at 0 instead of after all UNI_DEC layer slabs.
+                    # The non-split expression is kept verbatim (constants
+                    # materialize in the same order) so the IR stays
+                    # byte-identical when the knob is off.
+                    if W_SPLIT:
+                        _vwb = arith.muli(
+                            arith.subi(a_iv, idx(UNI_DEC)),
+                            idx(VOCAB_W_BLOCKS * BLOCK_BF16),
+                        )
+                    else:
+                        _vwb = arith.addi(
+                            idx(UNI_DEC * W_LAYER),
                             arith.muli(
                                 arith.subi(a_iv, idx(UNI_DEC)),
-                                idx(VOCAB_SIZE_PADDED),
+                                idx(VOCAB_W_BLOCKS * BLOCK_BF16),
                             ),
                         )
-                        # ===== LM head (IS_ATTN=0), the reference gen_lm_head_seq analog =====
-                        # Same device, RTP arm=0: the proj cores run ONE vocab phase
-                        # (VOCAB_I2 row-pairs x NBJ col-blocks, id4 -> RMS_DEST) and the
-                        # rms core does final rmsnorm(x) then forwards VOCAB_RNDS logit
-                        # rounds out via layerOut. Feed: x + final rms weight + vocab
-                        # weights; drain VOCAB_SIZE_PADDED logits into Y. No attn/rope/
-                        # glu/KV feeds (those herds are parked -- RTP-unarmed -- so they
-                        # need no input; feeding them would only back-pressure).
-                        _CH["rmsX"].put(x_t[0:K])
-                        # real-lm-head final norm (model.norm.weight): a DEDICATED slot
-                        # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
-                        # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
-                        # (mirrors decoding_layer's separate final_rms_weight).
-                        # final norm sits AFTER the rope region: llama has ONE shared
-                        # rope LUT (ROPE_W_LEN), per-layer models have UNI_DEC slabs.
-                        _final_norm_off = (
-                            UNI_DEC * RMS_LAYER
-                            + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN
+                    _vyb = arith.addi(
+                        idx((HOST_ROUNDS + LAYER_RNDS) * PAYLOAD),
+                        arith.muli(
+                            arith.subi(a_iv, idx(UNI_DEC)),
+                            idx(VOCAB_SIZE_PADDED),
+                        ),
+                    )
+                    # ===== LM head (IS_ATTN=0), the reference gen_lm_head_seq analog =====
+                    # Same device, RTP arm=0: the proj cores run ONE vocab phase
+                    # (VOCAB_I2 row-pairs x NBJ col-blocks, id4 -> RMS_DEST) and the
+                    # rms core does final rmsnorm(x) then forwards VOCAB_RNDS logit
+                    # rounds out via layerOut. Feed: x + final rms weight + vocab
+                    # weights; drain VOCAB_SIZE_PADDED logits into Y. No attn/rope/
+                    # glu/KV feeds (those herds are parked -- RTP-unarmed -- so they
+                    # need no input; feeding them would only back-pressure).
+                    _CH["rmsX"].put(x_t[0:K])
+                    # real-lm-head final norm (model.norm.weight): a DEDICATED slot
+                    # after the [in|post]*UNI_DEC rms slabs + 64-wide rope LUT, so the
+                    # vocab rmsnorm uses the true final norm -- NOT layer-0's in_LN
+                    # (mirrors decoding_layer's separate final_rms_weight).
+                    # final norm sits AFTER the rope region: llama has ONE shared
+                    # rope LUT (ROPE_W_LEN), per-layer models have UNI_DEC slabs.
+                    _final_norm_off = (
+                        UNI_DEC * RMS_LAYER
+                        + (UNI_DEC if ROPE_W_PER_LAYER else 1) * ROPE_W_LEN
+                    )
+                    if N_NORMS >= 4:
+                        # Gemma: rmsW/rmsW2 are 2K (two norms packed). Put final_norm
+                        # in rmsW's HI half (lm_head reads it via rms_norm_hi_aie); the
+                        # LO half is the last rope-region K -- a harmless in-bounds
+                        # dummy ([_final_norm_off-K .. +2K] is the BO's last 2K). rmsW2
+                        # is a 2K dummy. Keeps the shared packet group hole-free.
+                        _CH["rmsW"].put(
+                            rms_t[_final_norm_off - K : _final_norm_off + K]
                         )
-                        if N_NORMS >= 4:
-                            # Gemma: rmsW/rmsW2 are 2K (two norms packed). Put final_norm
-                            # in rmsW's HI half (lm_head reads it via rms_norm_hi_aie); the
-                            # LO half is the last rope-region K -- a harmless in-bounds
-                            # dummy ([_final_norm_off-K .. +2K] is the BO's last 2K). rmsW2
-                            # is a 2K dummy. Keeps the shared packet group hole-free.
-                            _CH["rmsW"].put(
-                                rms_t[_final_norm_off - K : _final_norm_off + K]
-                            )
-                            _CH["rmsW2"].put(rms_t[0 : 2 * K])
-                        else:
-                            _CH["rmsW"].put(
-                                rms_t[_final_norm_off : _final_norm_off + K]
-                            )
-                            if POST_RMS:
-                                # DUMMY post-LN weight: rmsW2 is decode-only but packet-
-                                # muxes onto the same shim MM2S as the vocab-active rmsX
-                                # (rms tile has only 2 S2MM). Feeding + consuming a dummy
-                                # in vocab keeps that packet group hole-free so the vocab
-                                # tail doesn't stall (consumed by _rms_lm_head dummy get).
-                                _CH["rmsW2"].put(rms_t[0:K])
-                        # vocab weight feed: round-major, NCY-fanned. Python-unrolled
-                        # (NOT an AIR for_ -- a launch-scope for_ DEADLOCKS the shim
-                        # sequence). inW puts are issue_token=false so the shim reuses BD
-                        # IDs -> many puts fit (decode feeds ~464/col fine). With the 9->1
-                        # collapse (UNI_LM=1, VOCAB_CHUNK_I2=126) this is 2016 puts/col;
-                        # the shim BD-reuse absorbs them (the wave itself is now enabled by
-                        # the value-1 xnorm re-broadcast in _rms_lm_head -- see there).
-                        # Spatial fan over the NCX vocab-weight columns: bundle index
-                        # @inW[cx] is an scf.parallel IV (canonical form). Each column
-                        # is one contiguous DDR block fed as two halves so the shim-dma
-                        # coalescer merges+tags them (see the decode feed).
-                        assert VOCAB_PER_COL % NCY == 0
-                        _colspan = VOCAB_PER_COL * blk
-                        _feed_wcols(_vwb, _colspan, VOCAB_PER_COL // NCY)
-                        # ATTENTION FULLY GATED OFF in vocab (gate-off 2026-07-15b):
-                        # the 8 attn cores' bodies index_switch to an empty idle case
-                        # in vocab, and every launch-scope attn channel (ropeLUT,
-                        # appendK/appendV, inKV, toAttnQ/toK/toV, attnO->xnorm) is
-                        # emitted ONLY in the decode branch. So NOTHING attn is fed or
-                        # drained in vocab -- no dummy pairing needed, and the 4-slot
-                        # count-free KV memtile ring is never touched (was the 3-vocab
-                        # hang). _xc_voc already excludes OPROJ_REFEED, so the xnorm
-                        # convergence stays balanced with omtb producing no o-proj here.
-                        # drain logits (natural order): rms LM branch
-                        # forwards VOCAB_RNDS x PAYLOAD via layerOut; ONE 2D-strided get.
-                        ChannelGet(
-                            "layerOut",
-                            Y,
-                            indices=[idx(0)],
-                            offsets=[_vyb],
-                            sizes=[VOCAB_RNDS, PAYLOAD],
-                            strides=[PAYLOAD, 1],
+                        _CH["rmsW2"].put(rms_t[0 : 2 * K])
+                    else:
+                        _CH["rmsW"].put(rms_t[_final_norm_off : _final_norm_off + K])
+                        if POST_RMS:
+                            # DUMMY post-LN weight: rmsW2 is decode-only but packet-
+                            # muxes onto the same shim MM2S as the vocab-active rmsX
+                            # (rms tile has only 2 S2MM). Feeding + consuming a dummy
+                            # in vocab keeps that packet group hole-free so the vocab
+                            # tail doesn't stall (consumed by _rms_lm_head dummy get).
+                            _CH["rmsW2"].put(rms_t[0:K])
+                    # vocab weight feed: round-major, NCY-fanned. Python-unrolled
+                    # (NOT an AIR for_ -- a launch-scope for_ DEADLOCKS the shim
+                    # sequence). inW puts are issue_token=false so the shim reuses BD
+                    # IDs -> many puts fit (decode feeds ~464/col fine). With the 9->1
+                    # collapse (UNI_LM=1, VOCAB_CHUNK_I2=126) this is 2016 puts/col;
+                    # the shim BD-reuse absorbs them (the wave itself is now enabled by
+                    # the value-1 xnorm re-broadcast in _rms_lm_head -- see there).
+                    # Spatial fan over the NCX vocab-weight columns: bundle index
+                    # @inW[cx] is an scf.parallel IV (canonical form). Each column
+                    # is one contiguous DDR block fed as two halves so the shim-dma
+                    # coalescer merges+tags them (see the decode feed).
+                    assert VOCAB_PER_COL % NCY == 0
+                    _colspan = VOCAB_PER_COL * blk
+                    _feed_wcols(_vwb, _colspan, VOCAB_PER_COL // NCY)
+                    # ATTENTION FULLY GATED OFF in vocab (gate-off 2026-07-15b):
+                    # the 8 attn cores' bodies index_switch to an empty idle case
+                    # in vocab, and every launch-scope attn channel (ropeLUT,
+                    # appendK/appendV, inKV, toAttnQ/toK/toV, attnO->xnorm) is
+                    # emitted ONLY in the decode branch. So NOTHING attn is fed or
+                    # drained in vocab -- no dummy pairing needed, and the 4-slot
+                    # count-free KV memtile ring is never touched (was the 3-vocab
+                    # hang). _xc_voc already excludes OPROJ_REFEED, so the xnorm
+                    # convergence stays balanced with omtb producing no o-proj here.
+                    # drain logits (natural order): rms LM branch
+                    # forwards VOCAB_RNDS x PAYLOAD via layerOut; ONE 2D-strided get.
+                    ChannelGet(
+                        "layerOut",
+                        Y,
+                        indices=[idx(0)],
+                        offsets=[_vyb],
+                        sizes=[VOCAB_RNDS, PAYLOAD],
+                        strides=[PAYLOAD, 1],
+                    )
+                    yield_([])
+
+                def _uni_dec():
+                    _wsel[0] = _wgi  # runtime group index (None if unsplit)
+                    # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
+                    # on-chip rms normalizes + re-feeds X (see refeed()). X is
+                    # in-place (offset 0 every layer -- the chained hidden state).
+                    _CH["rmsX"].put(x_t[0:K])
+                    if N_NORMS >= 4:
+                        # Gemma: pack two norms per 2K channel -- rmsW =
+                        # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
+                        # post_ffn] (slab 2K..4K). Keeps the rms tile at <=4 packet
+                        # ids per S2MM port; the lo/hi kernels slice each half.
+                        _CH["rmsW"].put(rms_t[_rbase : _rbase + 2 * K])
+                        _CH["rmsW2"].put(rms_t[_rbase + 2 * K : _rbase + 4 * K])
+                    else:
+                        _CH["rmsW"].put(rms_t[_rbase : _rbase + K])
+                        if POST_RMS:
+                            # post_attention_layernorm weight on its own channel.
+                            _CH["rmsW2"].put(rms_t[_rbase + K : _rbase + 2 * K])
+                    # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
+                    # ONE per-position LUT SHARED across layers (single theta) at a
+                    # layer-independent offset. ROPE_W_PER_LAYER (gemma/qwen3
+                    # qk-norm, qwen2.5 q/k/v bias): rope_w DIFFERS PER LAYER, so
+                    # index a per-wave slab (UNI_DEC contiguous rope_w slabs, offset
+                    # _lut_off + a_iv*ROPE_W_LEN). arg2 is sized for UNI_DEC decode
+                    # waves (module-gen forces NLAYERS=1, which would misplace it).
+                    _lut_off = UNI_DEC * RMS_LAYER
+                    _rope_off = (
+                        _lbx(ROPE_W_LEN) + _lut_off if ROPE_W_PER_LAYER else _lut_off
+                    )
+
+                    # Both layer types read their mixer weights from the
+                    # SAME per-layer rope_w slab, each taking its own prefix:
+                    # tap-major [w0|w1|w2] for conv, cos/sin + qk-norm for
+                    # attention. The slab is sized for the larger.
+                    # attn_always: rope runs on every decode wave in a
+                    # hybrid (its q-broadcast memtile is wave-invariant),
+                    # so its LUT has to arrive on every decode wave too.
+                    # On a ShortConv wave it reads the taps as a cos/sin
+                    # table and the result is discarded.
+
+                    # A HYBRID defers the whole mixer feed block into the
+                    # phase loop, to the LAST mixer phase -- same reason
+                    # KV_PHASE exists (see its use site). @convStOut is a
+                    # shim GET on the ShortConv core's output, and that
+                    # core cannot run until every mixer phase has landed;
+                    # issuing it here, before the phase loop that feeds
+                    # those phases' weights, deadlocks exactly as the KV
+                    # append did. Every other model emits it right here,
+                    # unchanged.
+                    def _emit_mixer_feeds():
+                        _mix_gate(
+                            lambda: _CH["ropeLUT"].put(
+                                rms_t[_rope_off : _rope_off + ROPE_LUT_LEN]
+                            ),
+                            lambda: _CH["convW"].put(
+                                rms_t[_rope_off : _rope_off + CONV_W_LEN]
+                            ),
+                            # Rope AND the mixer both run on every decode
+                            # wave, so both LUTs have to arrive on every
+                            # decode wave. They read the same per-layer
+                            # rope_w slab from either end, so this is two
+                            # puts of one DDR region, not extra traffic.
+                            attn_always=HYBRID_MIXER,
+                            conv_always=HYBRID_MIXER,
                         )
-                        yield_([])
+                        if CONV_MIXER:
+                            # Conv state lives in arg4 alongside the KV cache
+                            # (a conv layer has no KV, an attention layer no
+                            # state): [BX[t-2] | BX[t-1]] per layer. Read it
+                            # out, and write the kernel's shifted state back
+                            # over the SAME slot -- the RAW on this DDR region
+                            # gives air-annotate-append-barrier the read->write
+                            # order, exactly as it does for the KV cache.
+                            _cst = _lbx(CONV_ST_LAYER) + CONV_ST_BASE
 
-                    def _uni_dec():
-                        _wsel[0] = _wgi  # runtime group index (None if unsplit)
-                        # raw X (@xy) + rms weight (@rmsin) to the rms producer core; the
-                        # on-chip rms normalizes + re-feeds X (see refeed()). X is
-                        # in-place (offset 0 every layer -- the chained hidden state).
-                        _CH["rmsX"].put(x_t[0:K])
-                        if N_NORMS >= 4:
-                            # Gemma: pack two norms per 2K channel -- rmsW =
-                            # [input | post_attn] (slab 0..2K), rmsW2 = [pre_ffn |
-                            # post_ffn] (slab 2K..4K). Keeps the rms tile at <=4 packet
-                            # ids per S2MM port; the lo/hi kernels slice each half.
-                            _CH["rmsW"].put(rms_t[_rbase : _rbase + 2 * K])
-                            _CH["rmsW2"].put(rms_t[_rbase + 2 * K : _rbase + 4 * K])
-                        else:
-                            _CH["rmsW"].put(rms_t[_rbase : _rbase + K])
-                            if POST_RMS:
-                                # post_attention_layernorm weight on its own channel.
-                                _CH["rmsW2"].put(rms_t[_rbase + K : _rbase + 2 * K])
-                        # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
-                        # ONE per-position LUT SHARED across layers (single theta) at a
-                        # layer-independent offset. ROPE_W_PER_LAYER (gemma/qwen3
-                        # qk-norm, qwen2.5 q/k/v bias): rope_w DIFFERS PER LAYER, so
-                        # index a per-wave slab (UNI_DEC contiguous rope_w slabs, offset
-                        # _lut_off + a_iv*ROPE_W_LEN). UNIFIED sizes arg2 for UNI_DEC decode
-                        # waves (module-gen forces NLAYERS=1, which would misplace it).
-                        _lut_off = UNI_DEC * RMS_LAYER
-                        _rope_off = (
-                            _lbx(ROPE_W_LEN) + _lut_off
-                            if (ROPE_W_PER_LAYER and MULTIBLK)
-                            else _lut_off
-                        )
+                            def _conv_state():
+                                _slot = kvc_t[_cst : _cst + CONV_ST_LAYER]
+                                _CH["convStIn"].put(_slot)
+                                _CH["convStOut"].get(_slot)
 
-                        # Both layer types read their mixer weights from the
-                        # SAME per-layer rope_w slab, each taking its own prefix:
-                        # tap-major [w0|w1|w2] for conv, cos/sin + qk-norm for
-                        # attention. The slab is sized for the larger.
-                        # attn_always: rope runs on every decode wave in a
-                        # hybrid (its q-broadcast memtile is wave-invariant),
-                        # so its LUT has to arrive on every decode wave too.
-                        # On a ShortConv wave it reads the taps as a cos/sin
-                        # table and the result is discarded.
-
-                        # A HYBRID defers the whole mixer feed block into the
-                        # phase loop, to the LAST mixer phase -- same reason
-                        # KV_PHASE exists (see its use site). @convStOut is a
-                        # shim GET on the ShortConv core's output, and that
-                        # core cannot run until every mixer phase has landed;
-                        # issuing it here, before the phase loop that feeds
-                        # those phases' weights, deadlocks exactly as the KV
-                        # append did. Every other model emits it right here,
-                        # unchanged.
-                        def _emit_mixer_feeds():
+                            # The mixer core runs unarmed, so its state
+                            # read-back and write-back are issued on every
+                            # decode wave. An attention layer reads and
+                            # rewrites its own (unused) state slot with a
+                            # value its kernel computed from garbage and
+                            # nothing downstream ever reads.
                             _mix_gate(
-                                lambda: _CH["ropeLUT"].put(
-                                    rms_t[_rope_off : _rope_off + ROPE_LUT_LEN]
-                                ),
-                                lambda: _CH["convW"].put(
-                                    rms_t[_rope_off : _rope_off + CONV_W_LEN]
-                                ),
-                                # Rope AND the mixer both run on every decode
-                                # wave, so both LUTs have to arrive on every
-                                # decode wave. They read the same per-layer
-                                # rope_w slab from either end, so this is two
-                                # puts of one DDR region, not extra traffic.
-                                attn_always=HYBRID_MIXER,
+                                lambda: None,
+                                _conv_state,
                                 conv_always=HYBRID_MIXER,
                             )
-                            if CONV_MIXER:
-                                # Conv state lives in arg4 alongside the KV cache
-                                # (a conv layer has no KV, an attention layer no
-                                # state): [BX[t-2] | BX[t-1]] per layer. Read it
-                                # out, and write the kernel's shifted state back
-                                # over the SAME slot -- the RAW on this DDR region
-                                # gives air-annotate-append-barrier the read->write
-                                # order, exactly as it does for the KV cache.
-                                _cst = _lbx(CONV_ST_LAYER) + CONV_ST_BASE
 
-                                def _conv_state():
-                                    _slot = kvc_t[_cst : _cst + CONV_ST_LAYER]
-                                    _CH["convStIn"].put(_slot)
-                                    _CH["convStOut"].get(_slot)
+                    if not HYBRID_MIXER:
+                        _emit_mixer_feeds()
 
-                                # The mixer core runs unarmed, so its state
-                                # read-back and write-back are issued on every
-                                # decode wave. An attention layer reads and
-                                # rewrites its own (unused) state slot with a
-                                # value its kernel computed from garbage and
-                                # nothing downstream ever reads.
-                                _mix_gate(
-                                    lambda: None,
-                                    _conv_state,
-                                    conv_always=HYBRID_MIXER,
-                                )
-
-                        if not HYBRID_MIXER:
-                            _emit_mixer_feeds()
-
-                        # weights: per col, streamed in NCY-block (10240) steps matched
-                        # with the memtile weight-fan gets (AIR does not auto-split a big
-                        # put into many gets -> size must match or the fan deadlocks).
-                        # round-major (fill-step OUTER, column INNER): the cores consume
-                        # fill-step i of ALL columns together (X-broadcast lockstep), so
-                        # the runtime must issue all columns' fill-i before fill-(i+1).
-                        # Phases are concatenated in the host W array; each phase's slab is
-                        # fed in its own round-major sweep, so the per-col inW FIFO carries
-                        # the cores' total consume order.
-                        # the reference full-faithful KV cache (DDR): (1) APPEND this token's roped
-                        # K/V into the cache at APPEND_OFF (device S2MM via appendK/appendV);
-                        # (2) READ BACK the whole cache per CU (inKV, strided) for the flash
-                        # block loop. = the reference _receive + _move.
-                        def _emit_append(_kbase=_kbase):
-                            # K and V each drain to a shim S2MM; the allocator
-                            # picks distinct shim tiles for the two decls.
-                            # air-annotate-append-barrier derives the
-                            # append->readback ordering from the RAW on the shared DDR
-                            # cache: these gets write it, the readback below reads it.
-                            if KV_REGION:
-                                # Region-major append (= the reference _receive_kv_cache):
-                                # scatter this token's K (resp V) into the NGRP group
-                                # regions. Channel delivers [g0 K|g1 K|...] (REGION_W
-                                # each, CU-order); the nd write places group gi at its
-                                # region slot (ATTN_L-1)*REGION_W. outer dim=NGRP at
-                                # REGION_STRIDE, inner REGION_W contiguous.
-                                _apkG = ChannelGet(
-                                    "appendK",
-                                    KVC,
-                                    indices=[idx(0)],
-                                    offsets=[_loi_slot(_kbase, 0)],
-                                    sizes=[idx(NGRP), idx(REGION_W)],
-                                    strides=[idx(REGION_STRIDE), idx(1)],
-                                )
-                                _apvG = ChannelGet(
-                                    "appendV",
-                                    KVC,
-                                    indices=[idx(0)],
-                                    offsets=[_loi_slot(_kbase, _vreg_off(0))],
-                                    sizes=[idx(NGRP), idx(REGION_W)],
-                                    strides=[idx(REGION_STRIDE), idx(1)],
-                                )
-                                return
-
-                        def _emit_readback(_kbase=_kbase):
-                            # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
-                            # separate per-block puts). The whole per-CU cache
-                            # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
-                            # BD; the memtile consumer (_reblock_dec) still dequeues it
-                            # block-by-block (FIFO stream). Mirrors the reference's few-large-strided
-                            # transfers -> cuts inKV shim issues 4*ATTN_ROUNDS*16 -> 4*16 at
-                            # L=2048 (the measured 2K bottleneck). Env DECODE_KV_NDDMA=0 falls
-                            # back to the rolled per-block ring.
-                            if KV_SPLIT and KV_REGION:
-                                # REGION-MAJOR readback (= the reference _move_kv_cache): each
-                                # group's K (resp V) region is CONTIGUOUS in DDR. Split
-                                # each region into NRB contiguous chunks and interleave
-                                # K_gi,V_gi per chunk on the 2 independent inKV_K/inKV_V
-                                # channels. WHY NRB>=dep+1 (default 4): the fused N-wave
-                                # launch paces each preserve_shim_dma_order channel
-                                # PER WAVE at depth 2 (synthesizeDoubleBufferedAwaits);
-                                # with 1 task/channel/wave it FENCES (start;await inline)
-                                # -> serializes K before V -> the qk->score->kv pipeline
-                                # (K's 128-block BD can't drain a depth-2 ring while V
-                                # hasn't started) DEADLOCKS at large L. With >depth
-                                # chunks/channel it BATCHES (2 in flight) so K and V
-                                # stream concurrently -> pipeline flows. Chunks stay
-                                # separate BDs (per-channel folding is off under the
-                                # preserve launch) yet each is CONTIGUOUS (coalescible
-                                # shim burst) -> ~NRB*2*NGRP tasks/layer (e.g. 16) vs the
-                                # interleaved layout's ~1 task/token (~4100 @L2k). The
-                                # memtile (_reblock_dec) dequeues per block (16*REGION_W).
-                                # the reference fires its 4 KV readback memcpy fire-and-free (no
-                                # per-task await); K/V on independent channels stream
-                                # concurrently, backpressured only by the memtile ring
-                                # locks. The readback reaches no broadcast-consuming
-                                # herd, so the compiler keeps it OUT of the
-                                # preserve-launch's depth-2 pacing (whose await-on-drain
-                                # would serialize K before V and deadlock once a BD
-                                # exceeds the ring depth) and lowers it to a
-                                # fire-and-free MM2S feed. With NRB=1 that is exactly
-                                # the reference's 2*NGRP (=4) whole-region contiguous transfers.
-                                _NRB = 1
-                                _nb = RB_ROUNDS
-                                _cbk = (_nb + _NRB - 1) // _NRB  # blocks per chunk
-                                # KV_RB_1D: emit the readback as ONE 1-D descriptor instead of
-                                # the 3-D [cb,16,REGION_W]/[16*REGION_W,REGION_W,1]. Those
-                                # strides are exactly the products of the inner sizes, so the
-                                # region is already perfectly contiguous (max offset
-                                # cb*16*REGION_W-1, no gaps) -- the 3-D form describes a plain
-                                # linear run. It is NOT free, though: the shim DMA then has to
-                                # sequence cb*16 (=2048 @L2k) inner runs of REGION_W*2 (=512) B
-                                # per BD instead of one, and only a contiguous 1-D BD gets the
-                                # wide buffer_length register (same reason the weight feed is
-                                # kept 1-D). FLM issues this identical region as a single
-                                # LINEAR transfer -- see its seq col3/col4 BDs, "A linear
-                                # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
-                                # same order; only the descriptor shape differs.
-                                _KV1D = 0
-                                if DYNSEQ and (_NRB != 1 or _KV1D):
-                                    raise SystemExit(
-                                        "DECODE_DYNSEQ needs the single whole-region "
-                                        "readback (DECODE_KV_RB_NRB=1, KV_RB_1D=0): "
-                                        "chunking splits a runtime count across "
-                                        "compile-time BDs, and the 1-D form folds it "
-                                        "into a length the shim cannot recompute."
-                                    )
-                                _ci = 0
-                                while _ci < _nb:
-                                    _cb = min(_cbk, _nb - _ci)
-                                    _coff = _ci * 16 * REGION_W
-                                    # DYNSEQ: the outer block count is the runtime
-                                    # ceil(L/16), so the BD moves this token's context
-                                    # rather than the padded ATTN_MAXL. Called at each
-                                    # use, not hoisted, so the static path's constant
-                                    # emission order -- and thus its IR -- is unchanged.
-                                    _cbv = (
-                                        _rt_blocks if DYNSEQ_RB else (lambda: idx(_cb))
-                                    )
-                                    # Contiguous either way; _KV1D just states it as 1-D.
-                                    # Spelled inline (not hoisted) so the default path's
-                                    # constant emission order -- and thus the emitted IR --
-                                    # is byte-identical to before this flag existed.
-                                    for gi in range(NGRP):
-                                        ChannelPut(
-                                            "inKV_K",
-                                            KVC,
-                                            indices=[idx(gi)],
-                                            offsets=[
-                                                _loi(_kbase, _kreg_off(gi) + _coff)
-                                            ],
-                                            sizes=(
-                                                [idx(_cb * 16 * REGION_W)]
-                                                if _KV1D
-                                                else [
-                                                    _cbv(),
-                                                    idx(16),
-                                                    idx(REGION_W),
-                                                ]
-                                            ),
-                                            strides=(
-                                                [idx(1)]
-                                                if _KV1D
-                                                else [
-                                                    idx(16 * REGION_W),
-                                                    idx(REGION_W),
-                                                    idx(1),
-                                                ]
-                                            ),
-                                        )
-                                        ChannelPut(
-                                            "inKV_V",
-                                            KVC,
-                                            indices=[idx(gi)],
-                                            offsets=[
-                                                _loi(_kbase, _vreg_off(gi) + _coff)
-                                            ],
-                                            sizes=(
-                                                [idx(_cb * 16 * REGION_W)]
-                                                if _KV1D
-                                                else [
-                                                    _cbv(),
-                                                    idx(16),
-                                                    idx(REGION_W),
-                                                ]
-                                            ),
-                                            strides=(
-                                                [idx(1)]
-                                                if _KV1D
-                                                else [
-                                                    idx(16 * REGION_W),
-                                                    idx(REGION_W),
-                                                    idx(1),
-                                                ]
-                                            ),
-                                        )
-                                    _ci += _cb
-                                return
-
-                        # the reference cadence (MULTIBLK): interleave append+readback at the QKV|o
-                        # weight boundary -- append after QKV weights (rope has produced
-                        # K/V), barrier, readback, THEN o/up/down weights.
-                        woff = 0
-                        for p in range(NPH):
-                            per_col = PER_COL_PH[p]
-                            assert per_col % NCY == 0
-                            _colspan = per_col * blk
-                            # Spatial fan over the NCX proj columns: the bundle index
-                            # @inW[cx] must be an scf.parallel IV (canonical form; a
-                            # temporal scf.for over a bundle index is a verifier error).
-                            # Each column is one contiguous DDR block; _feed_wcol
-                            # emits it as TWO halves per shim channel so the
-                            # coalescer merges+tags them (air.coalesced_shim_feed =
-                            # the cross-channel phase barrier) -- a single put would
-                            # skip coalescing and lose that barrier.
-                            # air-to-aie spatially unrolls this to the per-column feeds.
-                            _wcol0 = _lo(_wbase, woff)  # _wbase + woff (col 0 base)
-                            _feed_wcols(_wcol0, _colspan, per_col // NCY)
-                            woff += NCX * per_col * blk
-                            # LAST mixer phase, not the first. The shim is a
-                            # sequential instruction stream: the append blocks
-                            # on rope's K/V, and rope cannot run until the
-                            # stage tile has landed every mixer phase, whose
-                            # weight feeds come LATER in that same stream. With
-                            # one mixer phase (every attention-only model) the
-                            # two coincide and it cannot be hit; with two it
-                            # deadlocks the whole design. Measured: the hybrid
-                            # machinery passes with one mixer phase and hangs
-                            # with two, everything else held fixed.
-                            if p == KV_PHASE and ATTN_SUBSYS:
-
-                                def _kv_traffic():
-                                    _emit_append()
-                                    _emit_readback()
-
-                                # Attention waves only. The KV memtile behind
-                                # this cannot be armed (segment scope), but it
-                                # does not need to be: with no traffic issued
-                                # it simply waits, and so do the CUs. Nothing
-                                # else is waiting on either of them -- which is
-                                # how the reference behaves, and is why nothing
-                                # here has to be made wave-invariant.
-                                # In a hybrid the CUs run their block loop on
-                                # a ShortConv wave too, so the cache read-back
-                                # that loop consumes is issued on every decode
-                                # wave. The append is part of the same ordered
-                                # block; a conv layer appends rope's garbage
-                                # K/V into its own (never-read) cache slot.
-                                _mix_gate(
-                                    _kv_traffic,
-                                    lambda: None,
-                                    attn_always=HYBRID_MIXER,
-                                )
-                            if HYBRID_MIXER and p == KV_PHASE:
-                                # Deferred to here from before the phase loop
-                                # (see _emit_mixer_feeds), and deliberately
-                                # AFTER the KV traffic above.
-                                #
-                                # @convStOut is a shim GET on the ShortConv
-                                # core, and that core blocks first on its four
-                                # @mixToCU puts -- which the CUs only take once
-                                # they are out of their block loop, which needs
-                                # the cache readback. Issue the readback first
-                                # and the chain runs; issue it second and the
-                                # shim waits on a core that is waiting on the
-                                # shim.
-                                _emit_mixer_feeds()
-                        # per-dest host drain: dest p drains ROUNDS_PER_DEST[p] rounds into
-                        # this layer's Y region (diagnostic per-layer QKV observation).
-                        roff = 0
-                        for p in HOST_DRAIN:
-                            if p in MIXER_DESTS:
-                                # loop close: the mixer dests (QKV->rope->flash
-                                # attention, or in_proj->ShortConv) are consumed
-                                # on-chip as the o-proj X, not drained to host.
-                                pass
-                            else:
-                                for rr in range(ROUNDS_PER_DEST[p]):
-                                    _yo = _ybase + (roff + rr) * PAYLOAD
-                                    _CH["toShim"].get(
-                                        y_t[_yo : _yo + PAYLOAD], indices=[p]
-                                    )
-                            roff += ROUNDS_PER_DEST[p]
-                        # #4: drain the rms layer output (residual2 = h + down). the reference
-                        # chaining ABI: write res2 (the new hidden states) IN-PLACE into
-                        # arg0 (X) at offset 0, so it feeds the NEXT layer from the same BO.
-                        # The next layer's rmsX read (above) is program-ordered after this
-                        # write (air.preserve_shim_dma_order) -> layer chaining.
-                        _out_bo = x_t
-                        _out_base = 0
-                        # BD-COMPACTION: single full-size drain (matches the rms single
-                        # layerOut put) instead of LAYER_RNDS per-round gets.
-                        _CH["layerOut"].get(
-                            _out_bo[_out_base : _out_base + LAYER_RNDS * PAYLOAD],
-                            indices=[0],
+                    # weights: per col, streamed in NCY-block (10240) steps matched
+                    # with the memtile weight-fan gets (AIR does not auto-split a big
+                    # put into many gets -> size must match or the fan deadlocks).
+                    # round-major (fill-step OUTER, column INNER): the cores consume
+                    # fill-step i of ALL columns together (X-broadcast lockstep), so
+                    # the runtime must issue all columns' fill-i before fill-(i+1).
+                    # Phases are concatenated in the host W array; each phase's slab is
+                    # fed in its own round-major sweep, so the per-col inW FIFO carries
+                    # the cores' total consume order.
+                    # the reference full-faithful KV cache (DDR): (1) APPEND this token's roped
+                    # K/V into the cache at APPEND_OFF (device S2MM via appendK/appendV);
+                    # (2) READ BACK the whole cache per CU (inKV, strided) for the flash
+                    # block loop. = the reference _receive + _move.
+                    def _emit_append(_kbase=_kbase):
+                        # K and V each drain to a shim S2MM; the allocator
+                        # picks distinct shim tiles for the two decls.
+                        # air-annotate-append-barrier derives the
+                        # append->readback ordering from the RAW on the shared DDR
+                        # cache: these gets write it, the readback below reads it.
+                        # Region-major append (= the reference _receive_kv_cache):
+                        # scatter this token's K (resp V) into the NGRP group
+                        # regions. Channel delivers [g0 K|g1 K|...] (REGION_W
+                        # each, CU-order); the nd write places group gi at its
+                        # region slot (ATTN_L-1)*REGION_W. outer dim=NGRP at
+                        # REGION_STRIDE, inner REGION_W contiguous.
+                        _apkG = ChannelGet(
+                            "appendK",
+                            KVC,
+                            indices=[idx(0)],
+                            offsets=[_loi_slot(_kbase, 0)],
+                            sizes=[idx(NGRP), idx(REGION_W)],
+                            strides=[idx(REGION_STRIDE), idx(1)],
                         )
-                        yield_([])
+                        _apvG = ChannelGet(
+                            "appendV",
+                            KVC,
+                            indices=[idx(0)],
+                            offsets=[_loi_slot(_kbase, _vreg_off(0))],
+                            sizes=[idx(NGRP), idx(REGION_W)],
+                            strides=[idx(REGION_STRIDE), idx(1)],
+                        )
 
-                    index_switch(
-                        [],
-                        _uarm_i,
-                        [0],
-                        case_body_builder=lambda op, i, cv: _uni_voc(),
-                        default_body_builder=lambda op: _uni_dec(),
+                    def _emit_readback(_kbase=_kbase):
+                        # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
+                        # separate per-block puts). The whole per-CU cache
+                        # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
+                        # BD; the memtile consumer (_reblock_dec) still dequeues it
+                        # block-by-block (FIFO stream). Mirrors the reference's few-large-strided
+                        # transfers -> cuts inKV shim issues 4*ATTN_ROUNDS*16 -> 4*16 at
+                        # L=2048 (the measured 2K bottleneck). Env DECODE_KV_NDDMA=0 falls
+                        # back to the rolled per-block ring.
+                        # REGION-MAJOR readback (= the reference _move_kv_cache): each
+                        # group's K (resp V) region is CONTIGUOUS in DDR. Split
+                        # each region into NRB contiguous chunks and interleave
+                        # K_gi,V_gi per chunk on the 2 independent inKV_K/inKV_V
+                        # channels. WHY NRB>=dep+1 (default 4): the fused N-wave
+                        # launch paces each preserve_shim_dma_order channel
+                        # PER WAVE at depth 2 (synthesizeDoubleBufferedAwaits);
+                        # with 1 task/channel/wave it FENCES (start;await inline)
+                        # -> serializes K before V -> the qk->score->kv pipeline
+                        # (K's 128-block BD can't drain a depth-2 ring while V
+                        # hasn't started) DEADLOCKS at large L. With >depth
+                        # chunks/channel it BATCHES (2 in flight) so K and V
+                        # stream concurrently -> pipeline flows. Chunks stay
+                        # separate BDs (per-channel folding is off under the
+                        # preserve launch) yet each is CONTIGUOUS (coalescible
+                        # shim burst) -> ~NRB*2*NGRP tasks/layer (e.g. 16) vs the
+                        # interleaved layout's ~1 task/token (~4100 @L2k). The
+                        # memtile (_reblock_dec) dequeues per block (16*REGION_W).
+                        # the reference fires its 4 KV readback memcpy fire-and-free (no
+                        # per-task await); K/V on independent channels stream
+                        # concurrently, backpressured only by the memtile ring
+                        # locks. The readback reaches no broadcast-consuming
+                        # herd, so the compiler keeps it OUT of the
+                        # preserve-launch's depth-2 pacing (whose await-on-drain
+                        # would serialize K before V and deadlock once a BD
+                        # exceeds the ring depth) and lowers it to a
+                        # fire-and-free MM2S feed. With NRB=1 that is exactly
+                        # the reference's 2*NGRP (=4) whole-region contiguous transfers.
+                        _NRB = 1
+                        _nb = RB_ROUNDS
+                        _cbk = (_nb + _NRB - 1) // _NRB  # blocks per chunk
+                        # KV_RB_1D: emit the readback as ONE 1-D descriptor instead of
+                        # the 3-D [cb,16,REGION_W]/[16*REGION_W,REGION_W,1]. Those
+                        # strides are exactly the products of the inner sizes, so the
+                        # region is already perfectly contiguous (max offset
+                        # cb*16*REGION_W-1, no gaps) -- the 3-D form describes a plain
+                        # linear run. It is NOT free, though: the shim DMA then has to
+                        # sequence cb*16 (=2048 @L2k) inner runs of REGION_W*2 (=512) B
+                        # per BD instead of one, and only a contiguous 1-D BD gets the
+                        # wide buffer_length register (same reason the weight feed is
+                        # kept 1-D). FLM issues this identical region as a single
+                        # LINEAR transfer -- see its seq col3/col4 BDs, "A linear
+                        # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
+                        # same order; only the descriptor shape differs.
+                        _KV1D = 0
+                        if DYNSEQ and (_NRB != 1 or _KV1D):
+                            raise SystemExit(
+                                "DECODE_DYNSEQ needs the single whole-region "
+                                "readback (DECODE_KV_RB_NRB=1, KV_RB_1D=0): "
+                                "chunking splits a runtime count across "
+                                "compile-time BDs, and the 1-D form folds it "
+                                "into a length the shim cannot recompute."
+                            )
+                        _ci = 0
+                        while _ci < _nb:
+                            _cb = min(_cbk, _nb - _ci)
+                            _coff = _ci * 16 * REGION_W
+                            # DYNSEQ: the outer block count is the runtime
+                            # ceil(L/16), so the BD moves this token's context
+                            # rather than the padded ATTN_MAXL. Called at each
+                            # use, not hoisted, so the static path's constant
+                            # emission order -- and thus its IR -- is unchanged.
+                            _cbv = _rt_blocks if DYNSEQ_RB else (lambda: idx(_cb))
+                            # Contiguous either way; _KV1D just states it as 1-D.
+                            # Spelled inline (not hoisted) so the default path's
+                            # constant emission order -- and thus the emitted IR --
+                            # is byte-identical to before this flag existed.
+                            for gi in range(NGRP):
+                                ChannelPut(
+                                    "inKV_K",
+                                    KVC,
+                                    indices=[idx(gi)],
+                                    offsets=[_loi(_kbase, _kreg_off(gi) + _coff)],
+                                    sizes=(
+                                        [idx(_cb * 16 * REGION_W)]
+                                        if _KV1D
+                                        else [
+                                            _cbv(),
+                                            idx(16),
+                                            idx(REGION_W),
+                                        ]
+                                    ),
+                                    strides=(
+                                        [idx(1)]
+                                        if _KV1D
+                                        else [
+                                            idx(16 * REGION_W),
+                                            idx(REGION_W),
+                                            idx(1),
+                                        ]
+                                    ),
+                                )
+                                ChannelPut(
+                                    "inKV_V",
+                                    KVC,
+                                    indices=[idx(gi)],
+                                    offsets=[_loi(_kbase, _vreg_off(gi) + _coff)],
+                                    sizes=(
+                                        [idx(_cb * 16 * REGION_W)]
+                                        if _KV1D
+                                        else [
+                                            _cbv(),
+                                            idx(16),
+                                            idx(REGION_W),
+                                        ]
+                                    ),
+                                    strides=(
+                                        [idx(1)]
+                                        if _KV1D
+                                        else [
+                                            idx(16 * REGION_W),
+                                            idx(REGION_W),
+                                            idx(1),
+                                        ]
+                                    ),
+                                )
+                            _ci += _cb
+                        return
+
+                    # the reference cadence: interleave append+readback at the QKV|o
+                    # weight boundary -- append after QKV weights (rope has produced
+                    # K/V), barrier, readback, THEN o/up/down weights.
+                    woff = 0
+                    for p in range(NPH):
+                        per_col = PER_COL_PH[p]
+                        assert per_col % NCY == 0
+                        _colspan = per_col * blk
+                        # Spatial fan over the NCX proj columns: the bundle index
+                        # @inW[cx] must be an scf.parallel IV (canonical form; a
+                        # temporal scf.for over a bundle index is a verifier error).
+                        # Each column is one contiguous DDR block; _feed_wcol
+                        # emits it as TWO halves per shim channel so the
+                        # coalescer merges+tags them (air.coalesced_shim_feed =
+                        # the cross-channel phase barrier) -- a single put would
+                        # skip coalescing and lose that barrier.
+                        # air-to-aie spatially unrolls this to the per-column feeds.
+                        _wcol0 = _lo(_wbase, woff)  # _wbase + woff (col 0 base)
+                        _feed_wcols(_wcol0, _colspan, per_col // NCY)
+                        woff += NCX * per_col * blk
+                        # LAST mixer phase, not the first. The shim is a
+                        # sequential instruction stream: the append blocks
+                        # on rope's K/V, and rope cannot run until the
+                        # stage tile has landed every mixer phase, whose
+                        # weight feeds come LATER in that same stream. With
+                        # one mixer phase (every attention-only model) the
+                        # two coincide and it cannot be hit; with two it
+                        # deadlocks the whole design. Measured: the hybrid
+                        # machinery passes with one mixer phase and hangs
+                        # with two, everything else held fixed.
+                        if p == KV_PHASE and ATTN_SUBSYS:
+
+                            def _kv_traffic():
+                                _emit_append()
+                                _emit_readback()
+
+                            # Attention waves only. The KV memtile behind
+                            # this cannot be armed (segment scope), but it
+                            # does not need to be: with no traffic issued
+                            # it simply waits, and so do the CUs. Nothing
+                            # else is waiting on either of them -- which is
+                            # how the reference behaves, and is why nothing
+                            # here has to be made wave-invariant.
+                            # In a hybrid the CUs run their block loop on
+                            # a ShortConv wave too, so the cache read-back
+                            # that loop consumes is issued on every decode
+                            # wave. The append is part of the same ordered
+                            # block; a conv layer appends rope's garbage
+                            # K/V into its own (never-read) cache slot.
+                            _mix_gate(
+                                _kv_traffic,
+                                lambda: None,
+                                attn_always=HYBRID_MIXER,
+                            )
+                        if HYBRID_MIXER and p == KV_PHASE:
+                            # Deferred to here from before the phase loop
+                            # (see _emit_mixer_feeds), and deliberately
+                            # AFTER the KV traffic above.
+                            #
+                            # @convStOut is a shim GET on the ShortConv
+                            # core, and that core blocks first on its four
+                            # @mixToCU puts -- which the CUs only take once
+                            # they are out of their block loop, which needs
+                            # the cache readback. Issue the readback first
+                            # and the chain runs; issue it second and the
+                            # shim waits on a core that is waiting on the
+                            # shim.
+                            _emit_mixer_feeds()
+                    # per-dest host drain: dest p drains ROUNDS_PER_DEST[p] rounds into
+                    # this layer's Y region (diagnostic per-layer QKV observation).
+                    roff = 0
+                    for p in HOST_DRAIN:
+                        if p in MIXER_DESTS:
+                            # loop close: the mixer dests (QKV->rope->flash
+                            # attention, or in_proj->ShortConv) are consumed
+                            # on-chip as the o-proj X, not drained to host.
+                            pass
+                        else:
+                            for rr in range(ROUNDS_PER_DEST[p]):
+                                _yo = _ybase + (roff + rr) * PAYLOAD
+                                _CH["toShim"].get(y_t[_yo : _yo + PAYLOAD], indices=[p])
+                        roff += ROUNDS_PER_DEST[p]
+                    # #4: drain the rms layer output (residual2 = h + down). the reference
+                    # chaining ABI: write res2 (the new hidden states) IN-PLACE into
+                    # arg0 (X) at offset 0, so it feeds the NEXT layer from the same BO.
+                    # The next layer's rmsX read (above) is program-ordered after this
+                    # write (air.preserve_shim_dma_order) -> layer chaining.
+                    _out_bo = x_t
+                    _out_base = 0
+                    # BD-COMPACTION: single full-size drain (matches the rms single
+                    # layerOut put) instead of LAYER_RNDS per-round gets.
+                    _CH["layerOut"].get(
+                        _out_bo[_out_base : _out_base + LAYER_RNDS * PAYLOAD],
+                        indices=[0],
                     )
+                    yield_([])
+
+                index_switch(
+                    [],
+                    _uarm_i,
+                    [0],
+                    case_body_builder=lambda op, i, cv: _uni_voc(),
+                    default_body_builder=lambda op: _uni_dec(),
+                )
             # (No GLU host drain: the GLU output is consumed on-chip by the down
             # phase. The down output egresses via the rms layer output above.)
 
@@ -3128,13 +3093,11 @@ def build_module():
                     # q (whole 2048) -> q broadcast memtile (1 rope MM2S);
                     # the memtile fans out per-CU reordered (reference mem_5_1).
                     _CH["ropeQ"].put(a_q[0:DQ_PADDED], indices=[0])
-                    if MULTIBLK:
-                        # the reference append: this token's roped K (all heads) and
-                        # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
-                        # whole cache is then read back for the block loop.
-                        if KV_APPEND:
-                            _CH["appendK"].put(a_k[0:DK_TOT_A], indices=[0])
-                            _CH["appendV"].put(a_v[0:DK_TOT_A], indices=[0])
+                    # the reference append: this token's roped K (all heads) and
+                    # raw V -> appendK/appendV -> KVC at APPEND_OFF. The
+                    # whole cache is then read back for the block loop.
+                    _CH["appendK"].put(a_k[0:DK_TOT_A], indices=[0])
+                    _CH["appendV"].put(a_v[0:DK_TOT_A], indices=[0])
                     if _own_qkv:
                         air_api.dealloc(a_qkv)
                     air_api.dealloc(a_lut)
@@ -3552,82 +3515,6 @@ def build_module():
                             _arm_only(_seg_arm_i, {2}, _qmtb_dec)
                     else:
                         _qmtb_dec()
-                    # ===== N_ATTN_CU flash-attention CUs (reference 4-CU) =====
-                    # KV block cache memtile(s): per-CU SEPARATE K/V natural buffers
-                    # [key16,kvh2,dh64]; rope's token-0 K/V -> [0:128]; keys 1..15 pad
-                    # (masked by L=1). Reorders == attn_stream toK/toV (PROVEN):
-                    # nat -> pack_k/pack_v. The memtile gets rope's per-CU k then v
-                    # (FIFO: k0..k{N-1}, v0..v{N-1}) and fans out reordered to each CU.
-                    # L=1 (single-block) KV staging: rope's this-token k/v via
-                    # toAttnKV -> akbs/avbs memtiles -> 1 toK/toV block per CU.
-                    # MULTIBLK uses the DDR-cache l2_kv re-block in _make_cu instead
-                    # (these memtiles would collide with l2_kv on cols 3/4).
-                    if not MULTIBLK:
-                        akbs, avbs = [], []
-                        for c in range(N_ATTN_CU):
-                            akbs.append(
-                                air_api.alloc(
-                                    [16 * KVPC_DH],
-                                    api_types.bf16,
-                                    scope=_seg.private(),
-                                    split=False,
-                                )
-                            )
-                        for c in range(N_ATTN_CU):
-                            avbs.append(
-                                air_api.alloc(
-                                    [16 * KVPC_DH],
-                                    api_types.bf16,
-                                    scope=_seg.private(),
-                                    split=False,
-                                )
-                            )
-                        # per col group: get its CUs' k then v from toAttnKV[gi]
-                        # (matches rope's per-group put order; no cross-col FIFO).
-                        for gi, (_col, cus) in enumerate(ATTN_COL_GROUPS):
-                            for c in cus:
-                                ChannelGet(
-                                    "toAttnKV",
-                                    akbs[c].value,
-                                    indices=[idx(gi)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(KVPC_DH)],
-                                    strides=[idx(1)],
-                                )
-                            for c in cus:
-                                ChannelGet(
-                                    "toAttnKV",
-                                    avbs[c].value,
-                                    indices=[idx(gi)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(KVPC_DH)],
-                                    strides=[idx(1)],
-                                )
-                        for c in range(N_ATTN_CU):
-                            ChannelPut(
-                                "toK",
-                                akbs[c].value,
-                                indices=[idx(c)],
-                                offsets=[idx(0), idx(0), idx(0)],
-                                sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
-                                strides=[idx(8), idx(KVPC_DH), idx(1)],
-                            )
-                            ChannelPut(
-                                "toV",
-                                avbs[c].value,
-                                indices=[idx(c)],
-                                offsets=[idx(0), idx(0), idx(0), idx(0)],
-                                sizes=[idx(2), idx(KVPC_DH // 8), idx(8), idx(8)],
-                                strides=[
-                                    idx(8 * KVPC_DH),
-                                    idx(8),
-                                    idx(KVPC_DH),
-                                    idx(1),
-                                ],
-                            )
-                        for c in range(N_ATTN_CU):
-                            air_api.dealloc(akbs[c])
-                            air_api.dealloc(avbs[c])
 
                     def _make_cu(c):
                         col, qk_row, kv_row = ATTN_CU_LOC[c]
@@ -3638,316 +3525,261 @@ def build_module():
                             [SSZ_BLK], api_types.bf16, scope=_seg.shared()
                         )
 
-                        if MULTIBLK:
-                            # ===== reproducer model A: online-softmax block loop
-                            # over ATTN_ROUNDS=(L+15)/16 KV blocks. Per-CU state
-                            # m/c (qk) and y/l (kv) persists across blocks (reset
-                            # on blk==0 in-kernel); attn_kv_fin normalizes after
-                            # the last block. Lh = RTP_L herd operand (kernel masks
-                            # the last partial block). Compute proven in attn_iso.
-                            L_c = (
-                                _seg_L
-                                if DYNSEQ_RTP
-                                else arith.ConstantOp(
-                                    IntegerAttr.get(i32, ATTN_L), None
-                                ).result
-                            )
+                        # ===== reproducer model A: online-softmax block loop
+                        # over ATTN_ROUNDS=(L+15)/16 KV blocks. Per-CU state
+                        # m/c (qk) and y/l (kv) persists across blocks (reset
+                        # on blk==0 in-kernel); attn_kv_fin normalizes after
+                        # the last block. Lh = RTP_L herd operand (kernel masks
+                        # the last partial block). Compute proven in attn_iso.
+                        L_c = (
+                            _seg_L
+                            if DYNSEQ_RTP
+                            else arith.ConstantOp(
+                                IntegerAttr.get(i32, ATTN_L), None
+                            ).result
+                        )
 
-                            # per-block KV staging ring (attn_iso PASS): fresh kvb
-                            # per block -> count-free ping-pong ring (1 fill : 1
-                            # read). Each block: get this block's [K|V] from the
-                            # readback (inKV) then re-block to toK/toV. Strides
-                            # mirror attn_iso exactly.
-                            # gate-off 2026-07-15b: KV re-block (inKV get + toK/toV put)
-                            # is DECODE-ONLY. In vocab the attn cores are idle (empty
-                            # index_switch case) so they neither need toK/toV nor consume
-                            # the 4-slot count-free KV memtile ring (mem_tile_3_1/4_1) --
-                            # that ring drain was the 16dec+3voc-then-hang bug.
-                            def _reblock_dec():
-                                if KV_SPLIT:
-                                    # the reference mem_3_1: per col GROUP, separate K/V buffers each
-                                    # with its own count-free ring (independent S2MM fill from
-                                    # inKV_K / inKV_V). Emit ONCE per group (on the lead CU);
-                                    # the lead produces toK/toV for every CU in the group. This
-                                    # removes the shared-buffer backward edge (qk-K no longer
-                                    # lock-chained to kv-V drain).
-                                    _gi = ATTN_CU_GROUP[c]
-                                    _gcol, _cus = ATTN_COL_GROUPS[_gi]
-                                    if c != _cus[0]:
-                                        return
-                                    _gw = len(_cus) * KVPC_DH
-                                    for _blk in air_api.sequential(_seg_rounds()):
-                                        _kbuf = air_api.alloc(
-                                            [2 * 16 * KVPC_DH],
-                                            api_types.bf16,
-                                            scope=_seg.private(),
-                                            column=col,
-                                        )
-                                        _vbuf = air_api.alloc(
-                                            [2 * 16 * KVPC_DH],
-                                            api_types.bf16,
-                                            scope=_seg.private(),
-                                            column=col,
-                                        )
-                                        _CH["inKV_K"].get(_kbuf, indices=[_gi])
-                                        _CH["inKV_V"].get(_vbuf, indices=[_gi])
-                                        for _lc, _cc in enumerate(_cus):
-                                            # This CU's dh columns out of the
-                                            # group's [16 pos, _gw] block, then
-                                            # the dh axis split 8-wide and moved
-                                            # outside pos -- the kernel's
-                                            # [dc, key, de] operand order. All
-                                            # view, no copy.
-                                            _o = _lc * KVPC_DH
-                                            _CH["toK"].put(
-                                                _kbuf.reshape(16, _gw)[
-                                                    :, _o : _o + KVPC_DH
-                                                ]
-                                                .reshape(16, KVPC_DH // 8, 8)
-                                                .transpose(1, 0, 2),
-                                                indices=[_cc],
-                                            )
-                                            # V carries two 16-position halves,
-                                            # so the same walk with the halves
-                                            # as an outer axis.
-                                            _CH["toV"].put(
-                                                _vbuf.reshape(2, 8, _gw)[
-                                                    :, :, _o : _o + KVPC_DH
-                                                ]
-                                                .reshape(2, 8, KVPC_DH // 8, 8)
-                                                .transpose(0, 2, 1, 3),
-                                                indices=[_cc],
-                                            )
-                                        air_api.dealloc(_kbuf)
-                                        air_api.dealloc(_vbuf)
-                                    return
-                                # ROLLED (was Python for blk in range(ATTN_ROUNDS)): AIR for_
-                                # -> count-free 2-buffer ring on the memtile (mirror the
-                                # weight-fan) so large ATTN_L stays under the 16-BD limit.
-                                # Fresh kvb per iter (no_split, memtile_col) = the share-ring
-                                # pattern AIR lowers to next_bd rotation, not a repeat_count BD.
-                                # KV_SPLIT and KV_REGION are both fixed True, so this
-                                # rolled fallback is unreachable in every shipped
-                                # config. Left on the raw bindings: the gate cannot
-                                # exercise it, and an unverifiable rewrite of a
-                                # strided descriptor is exactly the change that looks
-                                # right and is not.
-                                for _blk in for_(idx(0), _seg_rounds(), idx(1)):
-                                    kvb = AllocOp(kvblk_l2, [], [])
-                                    kvb.operation.attributes["air.memtile_col"] = (
-                                        IntegerAttr.get(T.i32(), col)
-                                    )
-                                    ChannelGet("inKV", kvb, indices=[idx(c)])
-                                    ChannelPut(
-                                        "toK",
-                                        kvb,
-                                        indices=[idx(c)],
-                                        offsets=[idx(0), idx(0), idx(0)],
-                                        sizes=[idx(KVPC_DH // 8), idx(16), idx(8)],
-                                        strides=[idx(8), idx(KVPC_DH), idx(1)],
-                                    )
-                                    ChannelPut(
-                                        "toV",
-                                        kvb,
-                                        indices=[idx(c)],
-                                        offsets=[idx(2), idx(0), idx(0), idx(0)],
-                                        sizes=[
-                                            idx(2),
-                                            idx(KVPC_DH // 8),
-                                            idx(8),
-                                            idx(8),
-                                        ],
-                                        strides=[
-                                            idx(8 * KVPC_DH),
-                                            idx(8),
-                                            idx(KVPC_DH),
-                                            idx(1),
-                                        ],
-                                    )
-                                    DeallocOp(kvb)
-                                    yield_([])
-
-                            _gated = _seg_arm_i is not None
-                            if _gated:
-
-                                def _rb_voc():
-                                    yield_([])
-
-                                def _rb_dec():
-                                    _reblock_dec()
-                                    yield_([])
-
-                                if HYBRID_MIXER:
-                                    # Segment scope => wave-invariant, so
-                                    # the KV readback runs on EVERY decode
-                                    # wave. That is the hybrid's one real
-                                    # cost (+40 MB/token at ctx 2048, ~6%).
-                                    # It only works because its producer
-                                    # (the shim inKV feed) and its consumer
-                                    # (the CUs) are ungated too -- an
-                                    # ungated memtile between a gated
-                                    # producer and a gated consumer is the
-                                    # configuration that deadlocked even
-                                    # with zero attention waves in the
-                                    # build.
-                                    _reblock_dec()
-                                else:
-                                    _arm_only(_seg_arm_i, {2}, _reblock_dec)
-                            else:
-                                _reblock_dec()
-
-                            def _core_rounds(Lh):
-                                """The core-side attention loop bound.
-
-                                With DYNSEQ_TRIP this is ceil(Lh/16) built from the
-                                RTP-L herd block-arg, so it is opaque to folding and
-                                survives to core codegen as a real runtime trip count
-                                -- the same count the shim's readback BD pushes, which
-                                is what keeps the core off a channel get that never
-                                arrives.
-
-                                Without it the bound is the compile-time ATTN_ROUNDS
-                                and the far blocks are skipped by masking instead. A
-                                static TXN binary (--output-format=elf) has no
-                                representation for a runtime trip count, so that is
-                                the only form the full-ELF path can build; the shim's
-                                push count is then fixed and agrees by construction.
-                                """
-                                if not DYNSEQ_TRIP:
-                                    return idx(ATTN_ROUNDS)
-                                _s = arith.addi(
-                                    Lh,
-                                    arith.ConstantOp(
-                                        IntegerAttr.get(i32, 15), None
-                                    ).result,
+                        # per-block KV staging ring (attn_iso PASS): fresh kvb
+                        # per block -> count-free ping-pong ring (1 fill : 1
+                        # read). Each block: get this block's [K|V] from the
+                        # readback (inKV) then re-block to toK/toV. Strides
+                        # mirror attn_iso exactly.
+                        # gate-off 2026-07-15b: KV re-block (inKV get + toK/toV put)
+                        # is DECODE-ONLY. In vocab the attn cores are idle (empty
+                        # index_switch case) so they neither need toK/toV nor consume
+                        # the 4-slot count-free KV memtile ring (mem_tile_3_1/4_1) --
+                        # that ring drain was the 16dec+3voc-then-hang bug.
+                        def _reblock_dec():
+                            # the reference mem_3_1: per col GROUP, separate K/V buffers each
+                            # with its own count-free ring (independent S2MM fill from
+                            # inKV_K / inKV_V). Emit ONCE per group (on the lead CU);
+                            # the lead produces toK/toV for every CU in the group. This
+                            # removes the shared-buffer backward edge (qk-K no longer
+                            # lock-chained to kv-V drain).
+                            _gi = ATTN_CU_GROUP[c]
+                            _gcol, _cus = ATTN_COL_GROUPS[_gi]
+                            if c != _cus[0]:
+                                return
+                            _gw = len(_cus) * KVPC_DH
+                            for _blk in air_api.sequential(_seg_rounds()):
+                                _kbuf = air_api.alloc(
+                                    [2 * 16 * KVPC_DH],
+                                    api_types.bf16,
+                                    scope=_seg.private(),
+                                    column=col,
                                 )
-                                _q = arith.divui(
-                                    _s,
-                                    arith.ConstantOp(
-                                        IntegerAttr.get(i32, 16), None
-                                    ).result,
+                                _vbuf = air_api.alloc(
+                                    [2 * 16 * KVPC_DH],
+                                    api_types.bf16,
+                                    scope=_seg.private(),
+                                    column=col,
                                 )
-                                return arith.index_cast(idx_t, _q)
-
-                            def _qk_body(sh, Lh, _c, _arm=None):
-                                _ac = _attn_h.private()
-                                a_q = air_api.alloc(
-                                    [DQ_PADDED_PER_CU], api_types.bf16, scope=_ac
-                                )
-                                _CH["toAttnQ"].get(a_q, indices=[_c])
-                                a_m = air_api.alloc([16], api_types.bf16, scope=_ac)
-                                a_cc = air_api.alloc([8], api_types.f32, scope=_ac)
-                                # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
-                                # block-arg (opaque region arg -> not const-folded -> stays a
-                                # runtime scf.for bound; the AIE core loops per the RTP-L the
-                                # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
-                                # unrollSCFFors only unrolls all-constant loops, so this
-                                # survives to core codegen as a real runtime loop.
-                                _nblk_qk = _core_rounds(Lh)
-                                for _blk in air_api.sequential(_nblk_qk):
-                                    # REQUIRED single-buffer: ping-pong would unroll-by-2 +
-                                    # 1-remainder over a 3-buffer toK ring whose remainder reads
-                                    # the wrong buffer vs the DMA rotation -> misaligned KV ->
-                                    # garbage chat. Single-buffer is aligned.
-                                    a_k = air_api.alloc(
-                                        [16 * KVPC_DH], api_types.bf16, scope=_ac
-                                    )
-                                    _CH["toK"].get(a_k, indices=[_c])
-                                    blk_c = arith.index_cast(i32, _blk.materialize())
-                                    attn_qk_blk(a_q, a_k, a_m, a_cc, sh, blk_c, Lh)
-                                    air_api.dealloc(a_k)
-                                air_api.dealloc(a_q)
-                                air_api.dealloc(a_m)
-                                air_api.dealloc(a_cc)
-
-                            def _kv_body(sh, Lh, _c, _arm=None):
-                                _ac = _attn_h.private()
-                                a_y = air_api.alloc(
-                                    [DQ_PADDED_PER_CU], api_types.f32, scope=_ac
-                                )
-                                a_l = air_api.alloc([16], api_types.f32, scope=_ac)
-                                a_o = air_api.alloc(
-                                    [DQ_PADDED_PER_CU], api_types.bf16, scope=_ac
-                                )
-                                # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
-                                # loops per RTP-L; matched by the shim readback push count.
-                                _nblk_kv = _core_rounds(Lh)
-                                for _blk in air_api.sequential(_nblk_kv):
-                                    # REQUIRED single-buffer (see _qk_body): keeps toV/toK
-                                    # consumption aligned with the DMA rotation (no unroll-by-2
-                                    # remainder desync -> no misaligned KV).
-                                    a_v = air_api.alloc(
-                                        [16 * KVPC_DH], api_types.bf16, scope=_ac
-                                    )
-                                    _CH["toV"].get(a_v, indices=[_c])
-                                    blk_c = arith.index_cast(i32, _blk.materialize())
-                                    attn_kv_blk(sh, a_v, a_y, a_l, blk_c, Lh)
-                                    air_api.dealloc(a_v)
-                                attn_kv_fin(a_y, a_l, a_o)
-                                if MIX_TO_CU:
-                                    # Take the mixer's broadcast and, on a
-                                    # ShortConv wave, overwrite o with this
-                                    # CU's slice. The get is UNGATED to match
-                                    # the mixer's ungated put; the pick is the
-                                    # kernel's `arm != 1` early-out, which is
-                                    # the reference's IS_ATTN and the only
-                                    # layer-type branch left in a core.
-                                    a_mix = air_api.alloc(
-                                        [CONV_DIM if CONV_MIXER else 1],
-                                        api_types.bf16,
-                                        scope=_ac,
-                                    )
-                                    # Broadcast POSITION, not a bundle index:
-                                    # every CU receives the whole CONV_DIM and
-                                    # keeps its own slice in C. Indexing by _c is
-                                    # what makes air-to-aie keep all four
-                                    # destinations on the one flow.
-                                    _CH["mixToCU"].get(
-                                        a_mix[0:CONV_DIM], indices=[0, _c]
-                                    )
-                                    conv_o_pass(
-                                        a_mix,
-                                        a_o,
-                                        arith.ConstantOp(
-                                            IntegerAttr.get(i32, _c), None
-                                        ).result,
-                                        _arm,
-                                    )
-                                    air_api.dealloc(a_mix)
-
-                                def _put_o():
-                                    # o un-interleave: the kernel writes
-                                    # [q_head, dc, de] and the gather wants
-                                    # natural (q_head, dh), so the DMA reads the
-                                    # buffer as [dc, q_head, de] and transposes
-                                    # the first two axes back. A walk, not a
-                                    # copy -- the same reshape/transpose pair a
-                                    # blocked matmul operand uses.
-                                    _CH["attnO"].put(
-                                        a_o[0 : Q_HEADS_PER_CU * DH]
-                                        .reshape(DH // 8, Q_HEADS_PER_CU, 8)
+                                _CH["inKV_K"].get(_kbuf, indices=[_gi])
+                                _CH["inKV_V"].get(_vbuf, indices=[_gi])
+                                for _lc, _cc in enumerate(_cus):
+                                    # This CU's dh columns out of the
+                                    # group's [16 pos, _gw] block, then
+                                    # the dh axis split 8-wide and moved
+                                    # outside pos -- the kernel's
+                                    # [dc, key, de] operand order. All
+                                    # view, no copy.
+                                    _o = _lc * KVPC_DH
+                                    _CH["toK"].put(
+                                        _kbuf.reshape(16, _gw)[:, _o : _o + KVPC_DH]
+                                        .reshape(16, KVPC_DH // 8, 8)
                                         .transpose(1, 0, 2),
-                                        indices=[_c],
+                                        indices=[_cc],
                                     )
+                                    # V carries two 16-position halves,
+                                    # so the same walk with the halves
+                                    # as an outer axis.
+                                    _CH["toV"].put(
+                                        _vbuf.reshape(2, 8, _gw)[
+                                            :, :, _o : _o + KVPC_DH
+                                        ]
+                                        .reshape(2, 8, KVPC_DH // 8, 8)
+                                        .transpose(0, 2, 1, 3),
+                                        indices=[_cc],
+                                    )
+                                air_api.dealloc(_kbuf)
+                                air_api.dealloc(_vbuf)
+                            return
 
-                                # Unconditional on both decode arms: the CU is
-                                # the sole @attnO producer, and running the
-                                # block loop is also how it drains toAttnQ /
-                                # toK / toV, which the (necessarily
-                                # wave-invariant) KV memtile pushes every wave.
-                                # The wasted attention compute on a ShortConv
-                                # wave is largely free -- the CU is paced by
-                                # the KV readback DMA, which we pay anyway.
-                                _put_o()
-                                air_api.dealloc(a_o)
-                                air_api.dealloc(a_y)
-                                air_api.dealloc(a_l)
+                        _gated = _seg_arm_i is not None
+                        if _gated:
 
-                            # Segment-level per-CU setup done (a_sh scores buffer, L_c,
-                            # the memtile KV reblock, and the qk/kv body closures). The
-                            # herd is NOT emitted here -- all 8 attn cores are fused into
-                            # ONE [2,4] block herd after the loop (see below).
-                            return (a_sh, col, qk_row, L_c, _qk_body, _kv_body)
+                            def _rb_voc():
+                                yield_([])
+
+                            def _rb_dec():
+                                _reblock_dec()
+                                yield_([])
+
+                            if HYBRID_MIXER:
+                                # Segment scope => wave-invariant, so
+                                # the KV readback runs on EVERY decode
+                                # wave. That is the hybrid's one real
+                                # cost (+40 MB/token at ctx 2048, ~6%).
+                                # It only works because its producer
+                                # (the shim inKV feed) and its consumer
+                                # (the CUs) are ungated too -- an
+                                # ungated memtile between a gated
+                                # producer and a gated consumer is the
+                                # configuration that deadlocked even
+                                # with zero attention waves in the
+                                # build.
+                                _reblock_dec()
+                            else:
+                                _arm_only(_seg_arm_i, {2}, _reblock_dec)
+                        else:
+                            _reblock_dec()
+
+                        def _core_rounds(Lh):
+                            """The core-side attention loop bound.
+
+                            With DYNSEQ_TRIP this is ceil(Lh/16) built from the
+                            RTP-L herd block-arg, so it is opaque to folding and
+                            survives to core codegen as a real runtime trip count
+                            -- the same count the shim's readback BD pushes, which
+                            is what keeps the core off a channel get that never
+                            arrives.
+
+                            Without it the bound is the compile-time ATTN_ROUNDS
+                            and the far blocks are skipped by masking instead. A
+                            static TXN binary (--output-format=elf) has no
+                            representation for a runtime trip count, so that is
+                            the only form the full-ELF path can build; the shim's
+                            push count is then fixed and agrees by construction.
+                            """
+                            if not DYNSEQ_TRIP:
+                                return idx(ATTN_ROUNDS)
+                            _s = arith.addi(
+                                Lh,
+                                arith.ConstantOp(IntegerAttr.get(i32, 15), None).result,
+                            )
+                            _q = arith.divui(
+                                _s,
+                                arith.ConstantOp(IntegerAttr.get(i32, 16), None).result,
+                            )
+                            return arith.index_cast(idx_t, _q)
+
+                        def _qk_body(sh, Lh, _c, _arm=None):
+                            _ac = _attn_h.private()
+                            a_q = air_api.alloc(
+                                [DQ_PADDED_PER_CU], api_types.bf16, scope=_ac
+                            )
+                            _CH["toAttnQ"].get(a_q, indices=[_c])
+                            a_m = air_api.alloc([16], api_types.bf16, scope=_ac)
+                            a_cc = air_api.alloc([8], api_types.f32, scope=_ac)
+                            # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
+                            # block-arg (opaque region arg -> not const-folded -> stays a
+                            # runtime scf.for bound; the AIE core loops per the RTP-L the
+                            # shim writes, exactly like the reference's in-core rounds=(L+15)/16).
+                            # unrollSCFFors only unrolls all-constant loops, so this
+                            # survives to core codegen as a real runtime loop.
+                            _nblk_qk = _core_rounds(Lh)
+                            for _blk in air_api.sequential(_nblk_qk):
+                                # REQUIRED single-buffer: ping-pong would unroll-by-2 +
+                                # 1-remainder over a 3-buffer toK ring whose remainder reads
+                                # the wrong buffer vs the DMA rotation -> misaligned KV ->
+                                # garbage chat. Single-buffer is aligned.
+                                a_k = air_api.alloc(
+                                    [16 * KVPC_DH], api_types.bf16, scope=_ac
+                                )
+                                _CH["toK"].get(a_k, indices=[_c])
+                                blk_c = arith.index_cast(i32, _blk.materialize())
+                                attn_qk_blk(a_q, a_k, a_m, a_cc, sh, blk_c, Lh)
+                                air_api.dealloc(a_k)
+                            air_api.dealloc(a_q)
+                            air_api.dealloc(a_m)
+                            air_api.dealloc(a_cc)
+
+                        def _kv_body(sh, Lh, _c, _arm=None):
+                            _ac = _attn_h.private()
+                            a_y = air_api.alloc(
+                                [DQ_PADDED_PER_CU], api_types.f32, scope=_ac
+                            )
+                            a_l = air_api.alloc([16], api_types.f32, scope=_ac)
+                            a_o = air_api.alloc(
+                                [DQ_PADDED_PER_CU], api_types.bf16, scope=_ac
+                            )
+                            # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
+                            # loops per RTP-L; matched by the shim readback push count.
+                            _nblk_kv = _core_rounds(Lh)
+                            for _blk in air_api.sequential(_nblk_kv):
+                                # REQUIRED single-buffer (see _qk_body): keeps toV/toK
+                                # consumption aligned with the DMA rotation (no unroll-by-2
+                                # remainder desync -> no misaligned KV).
+                                a_v = air_api.alloc(
+                                    [16 * KVPC_DH], api_types.bf16, scope=_ac
+                                )
+                                _CH["toV"].get(a_v, indices=[_c])
+                                blk_c = arith.index_cast(i32, _blk.materialize())
+                                attn_kv_blk(sh, a_v, a_y, a_l, blk_c, Lh)
+                                air_api.dealloc(a_v)
+                            attn_kv_fin(a_y, a_l, a_o)
+                            if MIX_TO_CU:
+                                # Take the mixer's broadcast and, on a
+                                # ShortConv wave, overwrite o with this
+                                # CU's slice. The get is UNGATED to match
+                                # the mixer's ungated put; the pick is the
+                                # kernel's `arm != 1` early-out, which is
+                                # the reference's IS_ATTN and the only
+                                # layer-type branch left in a core.
+                                a_mix = air_api.alloc(
+                                    [CONV_DIM if CONV_MIXER else 1],
+                                    api_types.bf16,
+                                    scope=_ac,
+                                )
+                                # Broadcast POSITION, not a bundle index:
+                                # every CU receives the whole CONV_DIM and
+                                # keeps its own slice in C. Indexing by _c is
+                                # what makes air-to-aie keep all four
+                                # destinations on the one flow.
+                                _CH["mixToCU"].get(a_mix[0:CONV_DIM], indices=[0, _c])
+                                conv_o_pass(
+                                    a_mix,
+                                    a_o,
+                                    arith.ConstantOp(
+                                        IntegerAttr.get(i32, _c), None
+                                    ).result,
+                                    _arm,
+                                )
+                                air_api.dealloc(a_mix)
+
+                            def _put_o():
+                                # o un-interleave: the kernel writes
+                                # [q_head, dc, de] and the gather wants
+                                # natural (q_head, dh), so the DMA reads the
+                                # buffer as [dc, q_head, de] and transposes
+                                # the first two axes back. A walk, not a
+                                # copy -- the same reshape/transpose pair a
+                                # blocked matmul operand uses.
+                                _CH["attnO"].put(
+                                    a_o[0 : Q_HEADS_PER_CU * DH]
+                                    .reshape(DH // 8, Q_HEADS_PER_CU, 8)
+                                    .transpose(1, 0, 2),
+                                    indices=[_c],
+                                )
+
+                            # Unconditional on both decode arms: the CU is
+                            # the sole @attnO producer, and running the
+                            # block loop is also how it drains toAttnQ /
+                            # toK / toV, which the (necessarily
+                            # wave-invariant) KV memtile pushes every wave.
+                            # The wasted attention compute on a ShortConv
+                            # wave is largely free -- the CU is paced by
+                            # the KV readback DMA, which we pay anyway.
+                            _put_o()
+                            air_api.dealloc(a_o)
+                            air_api.dealloc(a_y)
+                            air_api.dealloc(a_l)
+
+                        # Segment-level per-CU setup done (a_sh scores buffer, L_c,
+                        # the memtile KV reblock, and the qk/kv body closures). The
+                        # herd is NOT emitted here -- all 8 attn cores are fused into
+                        # ONE [2,4] block herd after the loop (see below).
+                        return (a_sh, col, qk_row, L_c, _qk_body, _kv_body)
 
                     _cus = [_make_cu(c) for c in range(N_ATTN_CU)]
                     # Fuse ALL 8 attn cores into ONE [2,4] block over the contiguous
@@ -4642,14 +4474,6 @@ def build_module():
                 def _rms_body(tx):
                     _arm_rtp = _rms_h.params[0]
                     _arm = _arm_rtp.value
-                    # DIAGNOSTIC (later43e): make rms SINGLE-mode in the LM_HEAD build
-                    # (standalone form). The dual-mode index_switch over DATAFLOW puts
-                    # BOTH branches' channel ops in the rms mem block -> doubled BDs on
-                    # the tile's 2 S2MM + 2 MM2S -> suspected over-subscription that
-                    # breaks the vocab compute. If single-mode rms (attention still
-                    # un-gated) makes vocab WORK, the fix is to rewrite rms dual-mode
-                    # the proj way (scalar _sel over one BD set), preserving CDO.
-                    _SINGLE_RMS = True  # fixed config
 
                     def _rms_lm_head():
                         # mode 0 (LM head): final rmsnorm(x) -> feed proj X
@@ -4772,7 +4596,10 @@ def build_module():
                     # device (mem_2_2 BDs) is IDENTICAL in the decode and lm_head
                     # builds -> one shared CDO. arm=1 -> decode residual; arm=0 ->
                     # vocab final-norm + logit forward.
-                    if _SINGLE_RMS and LM_HEAD:
+                    # An LM_HEAD build is single-mode: emitting both arms puts
+                    # their channel ops in one rms mem block, doubling BDs on the
+                    # tile's 2 S2MM + 2 MM2S.
+                    if LM_HEAD:
                         _rms_lm_head()
                         return
 
