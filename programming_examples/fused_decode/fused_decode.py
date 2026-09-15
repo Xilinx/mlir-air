@@ -1585,7 +1585,7 @@ def build_module():
                 link_with=obj,
                 link_with_mode="merge" if merge else None,
                 emit_c_interface=False,
-            ).decl
+            )
 
         def _attn_kernel(name, sig, base):
             """An attention kernel, on whichever of the .o / .ll paths is built."""
@@ -3101,8 +3101,15 @@ def build_module():
                     a_q = air_api.alloc([DQ_PADDED], api_types.bf16, scope=_scope)
                     a_k = air_api.alloc([DK], api_types.bf16, scope=_scope)
                     a_v = air_api.alloc([DK], api_types.bf16, scope=_scope)
+                    # Raw call, on .decl: a HYBRID runs this on the conv herd's
+                    # stage tile, which also calls the shortconv kernels, and a
+                    # herd links against ONE object file. air.extern would refuse
+                    # the second; the raw form does not register an object, and
+                    # the herds above carry the right link_with themselves (the
+                    # hybrid's carries none -- it merge-links through attn).
+                    _rope = rope_compute_hyb if HYBRID_MIXER else rope_compute
                     CallOp(
-                        rope_compute_hyb if HYBRID_MIXER else rope_compute,
+                        _rope.decl,
                         [
                             a_q.value,
                             a_k.value,
@@ -3215,7 +3222,10 @@ def build_module():
                     @_conv_h.body
                     def conv_h(_tx_ix, _ty_ix):
                         tx, ty = _raw(_tx_ix), _raw(_ty_ix)
-                        mix = a_mix.value
+                        # The Buffer, not its value: the kernel calls below
+                        # take it whole -- it is a flat tile the stage and
+                        # conv tiles alias, not a per-core slab.
+                        mix = a_mix
                         _arm = _conv_h.params[0].value
 
                         def _stage_ingest():
@@ -3261,13 +3271,8 @@ def build_module():
 
                         def _convw_get():
                             # Taps land in the tail of the shared buffer.
-                            ChannelGet(
-                                "convW",
-                                mix,
-                                indices=[idx(0)],
-                                offsets=[idx(CONV_IN)],
-                                sizes=[idx(CONV_W_LEN)],
-                                strides=[idx(1)],
+                            _CH["convW"].get(
+                                mix[CONV_IN : CONV_IN + CONV_W_LEN], indices=[0]
                             )
 
                         def _stage(_lands):
@@ -3294,10 +3299,10 @@ def build_module():
                             # copies.
                             if CONV_WAVES == 1:
                                 CallOp(
-                                    shortconv_stage,
+                                    shortconv_stage.decl,
                                     [
                                         _lands[0].value,
-                                        mix,
+                                        mix.value,
                                         arith.ConstantOp(
                                             IntegerAttr.get(i32, 0), None
                                         ).result,
@@ -3306,8 +3311,13 @@ def build_module():
                                 )
                             else:
                                 CallOp(
-                                    shortconv_stage2,
-                                    [_lands[0].value, _lands[1].value, mix, _arm],
+                                    shortconv_stage2.decl,
+                                    [
+                                        _lands[0].value,
+                                        _lands[1].value,
+                                        mix.value,
+                                        _arm,
+                                    ],
                                 )
 
                         def _mix():
@@ -3329,8 +3339,14 @@ def build_module():
                                 scope=_mc,
                             )
                             CallOp(
-                                shortconv_compute,
-                                [mix, a_st.value, a_y.value, a_bx.value, _arm],
+                                shortconv_compute.decl,
+                                [
+                                    mix.value,
+                                    a_st.value,
+                                    a_y.value,
+                                    a_bx.value,
+                                    _arm,
+                                ],
                             )
 
                             # y -> o-proj X (the attnO slot); the shifted state ->
@@ -3838,18 +3854,7 @@ def build_module():
                                     )
                                     _CH["toK"].get(a_k, indices=[_c])
                                     blk_c = arith.index_cast(i32, _blk.materialize())
-                                    CallOp(
-                                        attn_qk_blk,
-                                        [
-                                            a_q.value,
-                                            a_k.value,
-                                            a_m.value,
-                                            a_cc.value,
-                                            sh,
-                                            blk_c,
-                                            Lh,
-                                        ],
-                                    )
+                                    attn_qk_blk(a_q, a_k, a_m, a_cc, sh, blk_c, Lh)
                                     air_api.dealloc(a_k)
                                 air_api.dealloc(a_q)
                                 air_api.dealloc(a_m)
@@ -3881,18 +3886,7 @@ def build_module():
                                     )
                                     _CH["toK"].get(a_k, indices=[_c])
                                     blk_c = arith.index_cast(i32, _blk.materialize())
-                                    CallOp(
-                                        attn_qk_blk,
-                                        [
-                                            a_q.value,
-                                            a_k.value,
-                                            a_m.value,
-                                            a_cc.value,
-                                            sh,
-                                            blk_c,
-                                            Lh,
-                                        ],
-                                    )
+                                    attn_qk_blk(a_q, a_k, a_m, a_cc, sh, blk_c, Lh)
                                     air_api.dealloc(a_k)
                                 air_api.dealloc(a_q)
                                 air_api.dealloc(a_m)
@@ -3919,19 +3913,9 @@ def build_module():
                                     )
                                     _CH["toV"].get(a_v, indices=[_c])
                                     blk_c = arith.index_cast(i32, _blk.materialize())
-                                    CallOp(
-                                        attn_kv_blk,
-                                        [
-                                            sh,
-                                            a_v.value,
-                                            a_y.value,
-                                            a_l.value,
-                                            blk_c,
-                                            Lh,
-                                        ],
-                                    )
+                                    attn_kv_blk(sh, a_v, a_y, a_l, blk_c, Lh)
                                     air_api.dealloc(a_v)
-                                CallOp(attn_kv_fin, [a_y.value, a_l.value, a_o.value])
+                                attn_kv_fin(a_y, a_l, a_o)
                                 if MIX_TO_CU:
                                     # Take the mixer's broadcast and, on a
                                     # ShortConv wave, overwrite o with this
@@ -3953,16 +3937,13 @@ def build_module():
                                     _CH["mixToCU"].get(
                                         a_mix[0:CONV_DIM], indices=[0, _c]
                                     )
-                                    CallOp(
-                                        conv_o_pass,
-                                        [
-                                            a_mix.value,
-                                            a_o.value,
-                                            arith.ConstantOp(
-                                                IntegerAttr.get(i32, _c), None
-                                            ).result,
-                                            _arm,
-                                        ],
+                                    conv_o_pass(
+                                        a_mix,
+                                        a_o,
+                                        arith.ConstantOp(
+                                            IntegerAttr.get(i32, _c), None
+                                        ).result,
+                                        _arm,
                                     )
                                     air_api.dealloc(a_mix)
 
@@ -4072,7 +4053,9 @@ def build_module():
                         @_attn_h.body
                         def attn_blk(_tx_ix, _ty_ix):
                             _tx, _ty = _raw(_tx_ix), _raw(_ty_ix)
-                            shs = [b.value for b in _sh]
+                            # Buffers, not raw values: the kernel call narrows or passes
+                            # each one as its shape says.
+                            shs = list(_sh)
                             Lh = _attn_h.params[0].value
                             _arm = _attn_h.params[1].value
 
@@ -4121,7 +4104,7 @@ def build_module():
                             _attn_dec(
                                 _raw(_tx_ix),
                                 _raw(_ty_ix),
-                                [b.value for b in _sh],
+                                list(_sh),
                                 _attn_h.params[0].value,
                             )
 
@@ -4249,7 +4232,7 @@ def build_module():
                                 gh = air_api.alloc(
                                     [GLU_HID], api_types.bf16, scope=_glu_h.private()
                                 )
-                                CallOp(glu_aie, [gh.value, gx.value, _arm])
+                                glu_aie(gh, gx, _arm)
                                 _CH["gluOut"].put(gh[0:GLU_HID])
                                 air_api.dealloc(gx)
                                 air_api.dealloc(gh)
@@ -4361,7 +4344,7 @@ def build_module():
                             a_acc = air_api.alloc(
                                 [ROW_BLOCK], api_types.f32, scope=_np_core
                             )
-                            CallOp(zero, [a_acc.value, _arm])
+                            zero(a_acc, _arm)
                             for _j in air_api.sequential(J2x2):
                                 a_x = air_api.alloc(
                                     [COL_BLOCK], api_types.bf16, scope=_np_core
@@ -4371,7 +4354,7 @@ def build_module():
                                     [BLOCK_BF16], api_types.bf16, scope=_np_core
                                 )
                                 _CH["wL2ToL1"].get(a_w, indices=[gcx, gcy])
-                                CallOp(acc256, [a_x.value, a_w.value, a_acc.value])
+                                acc256(a_x, a_w, a_acc)
                                 air_api.dealloc(a_x)
                                 air_api.dealloc(a_w)
                             return a_acc
@@ -4382,7 +4365,7 @@ def build_module():
                                 api_types.bf16,
                                 scope=_np_core,
                             )
-                            CallOp(flush_row, [a_acc.value, yb.value, c0i])
+                            flush_row(a_acc, yb, c0i)
                             # dest = which egress consumer this round feeds.
                             # The compiler allocates that destination's packet
                             # id and emits the header store at offsets[0]; the
@@ -4435,9 +4418,10 @@ def build_module():
 
                     def body(_tx_ix, _ty_ix):
                         tx, ty = _raw(_tx_ix), _raw(_ty_ix)
-                        c0a0, c0a1, c0b0, c0b1, c1a0, c1a1, c1b0, c1b1 = (
-                            b.value for b in _blk_bufs
-                        )
+                        # Buffers, not raw values: each is a flat tile shared
+                        # by one vertical pair, so the kernel call passes it
+                        # whole -- there is no per-core slab to narrow to.
+                        c0a0, c0a1, c0b0, c0b1, c1a0, c1a1, c1b0, c1b1 = _blk_bufs
                         _arm = _blk_arm.value
 
                         # [2,4] block herd over TWO contiguous proj columns.
@@ -4479,7 +4463,7 @@ def build_module():
                         def _gemv(J2v, a_rc=None, fill=None):
                             J2x2 = arith.muli(J2v, c2)
                             a_acc = air_api.alloc([ROW_BLOCK], api_types.f32, scope=_pc)
-                            CallOp(zero, [a_acc.value, _arm])
+                            zero(a_acc, _arm)
                             for _j in air_api.sequential(J2x2):
                                 a_x = air_api.alloc(
                                     [COL_BLOCK], api_types.bf16, scope=_pc
@@ -4490,22 +4474,12 @@ def build_module():
                                 )
                                 _CH["wL2ToL1"].get(a_w, indices=[gcx, gcy])
                                 if a_rc is None:
-                                    CallOp(acc256, [a_x.value, a_w.value, a_acc.value])
+                                    acc256(a_x, a_w, a_acc)
                                 else:
                                     # slot = this col-block; fill only on the
                                     # projection's first row-block.
                                     _ji = arith.index_cast(i32, _j.materialize())
-                                    CallOp(
-                                        acc256_c,
-                                        [
-                                            a_x.value,
-                                            a_w.value,
-                                            a_acc.value,
-                                            a_rc.value,
-                                            _ji,
-                                            fill,
-                                        ],
-                                    )
+                                    acc256_c(a_x, a_w, a_acc, a_rc, _ji, fill)
                                 air_api.dealloc(a_x)
                                 air_api.dealloc(a_w)
                             return a_acc
@@ -4525,19 +4499,15 @@ def build_module():
                                 )
                                 _if = IfOp(_is_lead, [], has_else=True)
                                 with InsertionPoint(_if.thenRegion.blocks[0]):
-                                    CallOp(flush_row, [a_acc.value, bufs[yb], c0i])
-                                    ChannelPut(
-                                        "outA",
-                                        bufs[yb],
-                                        indices=[gcx, idx(pp_c)],
-                                        offsets=[idx(14)],
-                                        sizes=[idx(HDR + PAIR_PAY)],
-                                        strides=[idx(1)],
+                                    flush_row(a_acc, bufs[yb], c0i)
+                                    _CH["outA"].put(
+                                        bufs[yb][14 : 14 + HDR + PAIR_PAY],
+                                        indices=[gcx, pp_c],
                                         dest=pktv,
                                     )
                                     yield_([])
                                 with InsertionPoint(_if.elseRegion.blocks[0]):
-                                    CallOp(flush_row, [a_acc.value, bufs[yb], c1i])
+                                    flush_row(a_acc, bufs[yb], c1i)
                                     yield_([])
 
                             def _pairs(pA, pB):
@@ -4604,7 +4574,7 @@ def build_module():
                                 a_rc = air_api.alloc(
                                     [RCACHE_LEN], api_types.bf16, scope=_pc
                                 )
-                                CallOp(rc_arm, [a_rc.value, _arm])
+                                rc_arm(a_rc, _arm)
                             for _v1 in for_(idx(0), I2v, idx(1)):
                                 # PAIR_ROWS GEMV emits per v1 into the PAIR_ROWS y
                                 # buffers: paired (llama) -> y_0 then y_1 (2 blocks/
@@ -4783,7 +4753,7 @@ def build_module():
                         # the identical bytes: VOCAB_RNDS per wave, 252 per token
                         # at ~1.5k cycles each, sitting directly in front of each
                         # x-send that the 16 proj cores wait on.
-                        CallOp(_rms_final, [a_xnl.value, a_xl.value, a_wl.value, _arm])
+                        _rms_final(a_xnl, a_xl, a_wl, _arm)
                         for _rv in air_api.sequential(_voc_blks_2k):
                             # a_xnl is now loop-invariant, so this IS a
                             # re-broadcast: air-annotate-refeed collapses it to
@@ -4881,30 +4851,18 @@ def build_module():
                         # step1: input_layernorm (g_wa lo) -> QKV X feed (ph0).
                         # Normalize once, then re-broadcast the resident result
                         # XN_REFEED times.
-                        CallOp(
-                            rms_norm_lo_aie,
-                            [g_xn.value, g_x.value, g_wa.value, _arm],
-                        )
+                        rms_norm_lo_aie(g_xn, g_x, g_wa, _arm)
                         _xn_refeed(g_xn, _arm)
                         # step2 (residual1): h = x + post_attention_norm(o_proj) [g_wa hi]
                         _CH["outY"].get(
                             g_sub[0 : OPROJ_RNDS * PAYLOAD], indices=[0, RMS_DEST]
                         )
-                        CallOp(
-                            rms_norm_hi_aie,
-                            [g_subn.value, g_sub.value, g_wa.value, _arm],
-                        )
-                        CallOp(
-                            residual_add_aie,
-                            [g_h.value, g_x.value, g_subn.value],
-                        )
+                        rms_norm_hi_aie(g_subn, g_sub, g_wa, _arm)
+                        residual_add_aie(g_h, g_x, g_subn)
                         air_api.dealloc(g_wa)
                         # step3: pre_feedforward_norm(h) [g_wb lo] -> GLU X feed (ph2).
                         # baked per-put refeed = GLU proj rounds that re-read X.
-                        CallOp(
-                            rms_norm_lo_aie,
-                            [g_xn.value, g_h.value, g_wb.value, _arm],
-                        )
+                        rms_norm_lo_aie(g_xn, g_h, g_wb, _arm)
                         refeed(
                             REFEED[GATEUP_PHASE],
                             lambda: _CH["xnorm"].put(g_xn[0:K]),
@@ -4915,14 +4873,8 @@ def build_module():
                         _CH["outY"].get(
                             g_sub[0 : DOWN_RNDS * PAYLOAD], indices=[0, RMS_DEST]
                         )
-                        CallOp(
-                            rms_norm_hi_aie,
-                            [g_subn.value, g_sub.value, g_wb.value, _arm],
-                        )
-                        CallOp(
-                            residual_add_aie,
-                            [g_x.value, g_h.value, g_subn.value],
-                        )
+                        rms_norm_hi_aie(g_subn, g_sub, g_wb, _arm)
+                        residual_add_aie(g_x, g_h, g_subn)
                         air_api.dealloc(g_h)
                         air_api.dealloc(g_sub)
                         air_api.dealloc(g_subn)
@@ -4946,7 +4898,7 @@ def build_module():
                         _CH["rmsW2"].get(a_w2, indices=[0])
                     # step1: input layernorm -> X feed (re-fed RMS_REFEED via xnorm)
                     a_xn = _rbuf()
-                    CallOp(rms_norm_aie, [a_xn.value, a_x.value, a_w.value, _arm])
+                    rms_norm_aie(a_xn, a_x, a_w, _arm)
                     _xn_refeed(a_xn, _arm)
                     # a_w and a_xn are kept for the ph2 (gate-up) emission (step2).
                     if RMS_DEST < 0:
@@ -4965,7 +4917,7 @@ def build_module():
                             a_op[0 : OPROJ_RNDS * PAYLOAD], indices=[0, RMS_DEST]
                         )
                         a_h = _rbuf()
-                        CallOp(residual_add_aie, [a_h.value, a_x.value, a_op.value])
+                        residual_add_aie(a_h, a_x, a_op)
                         air_api.dealloc(a_x)
                         air_api.dealloc(a_op)
                         # FAITHFUL ph2 (reproducer core_2_2 step2): gate-up X
@@ -4975,15 +4927,7 @@ def build_module():
                         # a REFEED[ph2]-trip (32) re-broadcast loop. This is
                         # the per-step single-channel re-feed (ph0 x6, ph2 x32)
                         # -- replaces the invented buf_ph2 memtile stand-in.
-                        CallOp(
-                            rms_norm_aie,
-                            [
-                                a_xn.value,
-                                a_h.value,
-                                (a_w2 if POST_RMS else a_w).value,
-                                _arm,
-                            ],
-                        )
+                        rms_norm_aie(a_xn, a_h, (a_w2 if POST_RMS else a_w), _arm)
                         refeed(
                             REFEED[GATEUP_PHASE],
                             lambda: _CH["xnorm"].put(a_xn[0:K]),
@@ -4999,7 +4943,7 @@ def build_module():
                             a_dn[0 : DOWN_RNDS * PAYLOAD], indices=[0, RMS_DEST]
                         )
                         a_r2 = _rbuf()
-                        CallOp(residual_add_aie, [a_r2.value, a_h.value, a_dn.value])
+                        residual_add_aie(a_r2, a_h, a_dn)
                         air_api.dealloc(a_h)
                         air_api.dealloc(a_dn)
                         # BD-COMPACTION: single full-size layerOut put.
