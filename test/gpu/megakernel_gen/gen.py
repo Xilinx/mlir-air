@@ -43,6 +43,14 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # unused heads sit at zero.
     maxdies = 16
     qslots = stages * maxdies
+    # accumulate + arrivals per (layer, stage, die), then one word for flushes
+    slots = layers * stages * maxdies
+    flushword = 2 * slots
+    locwords = flushword + 1
+    # Only the multi-task stages signal per worker; the four single-task
+    # ones are claimed by one workgroup and already signal once.
+    strided_stages = 5  # stages 1, 2, 4, 6, 7
+    naive = workers * strided_stages * layers
     o = []
     w = o.append
 
@@ -281,6 +289,17 @@ module {{
         memref.store %zero, %Q[%l, %k] : memref<{layers}x{qslots}xi32>
       }}
     }}
+    // Two-level event counting (persistent_kernel.cuh:1226-1251): workers add
+    // into a counter only their own die touches, and the last one out flushes
+    // the die's whole share to the device counter. Slots per (layer, stage,
+    // die): the running total, then how many workers have finished, then one
+    // word counting flushes so the host can see how many device-scope atomics
+    // actually happened.
+    %Loc = memref.alloc() : memref<{locwords}xi32>
+    %cloc = arith.constant {locwords} : index
+    scf.for %i = %c0 to %cloc step %c1 {{
+      memref.store %zero, %Loc[%i] : memref<{locwords}xi32>
+    }}
     %E = memref.alloc() : memref<{events}xi32>
     %ce = arith.constant {events} : index
     scf.for %i = %c0 to %ce step %c1 {{
@@ -302,6 +321,7 @@ module {{
     %dW1 = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dW2 = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dQ = gpu.alloc () : memref<{layers}x{qslots}xi32>
+    %dLoc = gpu.alloc () : memref<{locwords}xi32>
     %dE = gpu.alloc () : memref<{events}xi32>
     gpu.memcpy %dX, %X : memref<{dim}xf32>, memref<{dim}xf32>
     gpu.memcpy %dR, %R : memref<{dim}xf32>, memref<{dim}xf32>
@@ -318,6 +338,7 @@ module {{
     gpu.memcpy %dW1, %W1 : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dW2, %W2 : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
+    gpu.memcpy %dLoc, %Loc : memref<{locwords}xi32>, memref<{locwords}xi32>
     gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
 
     // --repeat runs the chain more than once so an external clock has
@@ -337,20 +358,25 @@ module {{
       scf.for %i = %c0 to %ce step %c1 {{
         memref.store %zero, %E[%i] : memref<{events}xi32>
       }}
+      scf.for %i = %c0 to %cloc step %c1 {{
+        memref.store %zero, %Loc[%i] : memref<{locwords}xi32>
+      }}
+      gpu.memcpy %dLoc, %Loc : memref<{locwords}xi32>, memref<{locwords}xi32>
       gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
-      gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
+      gpu.memcpy %dLoc, %Loc : memref<{locwords}xi32>, memref<{locwords}xi32>
+    gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
       // The chain rewrites x in place, so a second repetition would start from
       // the first one's output rather than the input.
       gpu.memcpy %dX, %X0 : memref<{dim}xf32>, memref<{dim}xf32>
       func.call @chain(%dQ, %dE, %dX, %dR, %dH, %dY, %dW1, %dW2,
-                       %dWq, %dKc, %dVc, %dQv, %dSv, %dPv, %dAv, %dXa)
+                       %dWq, %dKc, %dVc, %dQv, %dSv, %dPv, %dAv, %dXa, %dLoc)
         : (memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
            memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
            memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
            memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
            memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
            memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-           memref<{dim}xf32>) -> ()
+           memref<{dim}xf32>, memref<{locwords}xi32>) -> ()
     }}
 
     gpu.memcpy %X, %dX : memref<{dim}xf32>, memref<{dim}xf32>
@@ -374,6 +400,14 @@ module {{
     vector.print str "layers = "
     %nl = arith.constant {layers} : i32
     vector.print %nl : i32
+    gpu.memcpy %Loc, %dLoc : memref<{locwords}xi32>, memref<{locwords}xi32>
+    %cflush = arith.constant {flushword} : index
+    %flushes = memref.load %Loc[%cflush] : memref<{locwords}xi32>
+    vector.print str "device-scope event flushes = "
+    vector.print %flushes : i32
+    %cnaive = arith.constant {naive} : i32
+    vector.print str "what signalling per worker would have been = "
+    vector.print %cnaive : i32
     vector.print str "output elements differing from the reference = "
     vector.print %bad : i32
     return
@@ -392,28 +426,28 @@ module {{
                    %Vc: memref<{layers}x{cache}x{dim}xf32>,
                    %Qv: memref<{dim}xf32>, %Sv: memref<{cache}xf32>,
                    %Pv: memref<{cache}xf32>, %Av: memref<{dim}xf32>,
-                   %Xa: memref<{dim}xf32>) {{
+                   %Xa: memref<{dim}xf32>, %Loc: memref<{locwords}xi32>) {{
     %c1 = arith.constant 1 : index
     %cw = arith.constant {workers} : index
     air.launch (%bx, %by) in (%nbx=%cw, %nby=%c1)
         args(%q=%Q, %eb=%E, %x=%X, %r=%Rv, %h=%Hv, %y=%Yv, %w1=%W1, %w2=%W2,
-             %wq=%Wq, %kc=%Kc, %vc=%Vc, %qv=%Qv, %sv=%Sv, %pv=%Pv, %av=%Av, %xab=%Xa)
+             %wq=%Wq, %kc=%Kc, %vc=%Vc, %qv=%Qv, %sv=%Sv, %pv=%Pv, %av=%Av, %xab=%Xa, %loc=%Loc)
         : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
           memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
           memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
           memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-          memref<{dim}xf32> {{
+          memref<{dim}xf32>, memref<{locwords}xi32> {{
       air.segment @worker args(%sq=%q, %se=%eb, %sx=%x, %sr=%r, %sh=%h, %sy=%y, %sw1=%w1, %sw2=%w2,
-                               %swq=%wq, %skc=%kc, %svc=%vc, %sqv=%qv, %ssv=%sv, %spv=%pv, %sav=%av, %sxa=%xab)
+                               %swq=%wq, %skc=%kc, %svc=%vc, %sqv=%qv, %ssv=%sv, %spv=%pv, %sav=%av, %sxa=%xab, %sloc=%loc)
           : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
             memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
             memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
             memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
             memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
             memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-          memref<{dim}xf32> {{
+          memref<{dim}xf32>, memref<{locwords}xi32> {{
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
         %c2_s = arith.constant 2 : index
@@ -451,6 +485,16 @@ module {{
         %cmaxdies = arith.constant {maxdies} : index
         %mydie = arith.remui %mydie_raw, %cmaxdies : index
 {layer_consts}
+        %locbase = memref.extract_aligned_pointer_as_index %sloc : memref<{locwords}xi32> -> index
+        %locbi = arith.index_cast %locbase : index to i64
+        %locp = llvm.inttoptr %locbi : i64 to !llvm.ptr
+        %fourL = arith.constant 4 : i64
+        %cflushW = arith.constant {4*flushword} : i64
+        %flushP = llvm.getelementptr %locp[%cflushW] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %cslots = arith.constant {slots} : index
+        %myrank2 = air.chiplet_block_id
+        %mycnt = air.chiplet_dim_blocks
+        %mycnt_i = arith.index_cast %mycnt : index to i32
         %evbase = memref.extract_aligned_pointer_as_index %se : memref<{events}xi32> -> index
         %evi = arith.index_cast %evbase : index to i64
         %evptr = llvm.inttoptr %evi : i64 to !llvm.ptr
@@ -499,7 +543,29 @@ module {{
             }}
             scf.yield %inner#1 : i32
           }}
-          %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %t{l}_{stage} syncscope("") release : !llvm.ptr, i32
+          // Two-level: add into a counter only this die touches, then let the
+          // last worker on the die flush the die's whole share once. The
+          // instructions are the same as signalling per worker; what changes is
+          // how many times the device-scope one runs.
+          %lw{l}_{stage} = arith.constant {4*(( (l)*stages + (stage) )*maxdies)} : i64
+          %myd{l}_{stage} = arith.index_cast %mydie : index to i64
+          %myd4{l}_{stage} = arith.muli %myd{l}_{stage}, %fourL : i64
+          %lo{l}_{stage} = arith.addi %lw{l}_{stage}, %myd4{l}_{stage} : i64
+          %locP{l}_{stage} = llvm.getelementptr %locp[%lo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+          %aw{l}_{stage} = arith.constant {4*slots} : i64
+          %ao{l}_{stage} = arith.addi %aw{l}_{stage}, %lo{l}_{stage} : i64
+          %arrP{l}_{stage} = llvm.getelementptr %locp[%ao{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+          %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %t{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
+          // Release on the arrival so the accumulate above is visible to
+          // whoever turns out to be last.
+          %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
+          %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
+          %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
+          scf.if %amLast{l}_{stage} {{
+            %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+            %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
+            %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
+          }}
           scf.while : () -> () {{
             %seen = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
             %notYet = arith.cmpi ult, %seen, {total_const} : i32
@@ -613,46 +679,13 @@ module {{
             scf.condition(%notYet)
           }} do {{
             scf.yield
-          }}
-
-          // stage 4: a[j] = sum_t p[t] * V[t,j].
-          %p{l}_4 = llvm.getelementptr %evptr[{4*(base+4)}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %t{l}_4:2 = scf.while (%go = %true, %acc = %zero_s) : (i1, i32) -> (i1, i32) {{
-            scf.condition(%go) %go, %acc : i1, i32
-          }} do {{
-          ^bb0(%g: i1, %acc: i32):
-            %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c4_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
-            %ix = arith.index_cast %cl : i32 to index
-            %has = arith.cmpi ult, %ix, %ctasks : index
-            %acc2 = scf.if %has -> i32 {{
-              %j0 = arith.muli %ix, %cslice : index
-              scf.for %jj = %c0_s to %cslice step %c1_s {{
-                %j = arith.addi %j0, %jj : index
-                %a = scf.for %t = %c0_s to %ccache_s step %c1_s
-                    iter_args(%sacc = %fzero_s) -> (f32) {{
-                  %pn = memref.load %spv[%t] : memref<{cache}xf32>
-                  %vv = memref.load %svc[%L{l}, %t, %j] : memref<{layers}x{cache}x{dim}xf32>
-                  %m = arith.mulf %pn, %vv : f32
-                  %s2 = arith.addf %sacc, %m : f32
-                  scf.yield %s2 : f32
-                }}
-                memref.store %a, %sav[%j] : memref<{dim}xf32>
-              }}
-              %n = arith.addi %acc, %one_s : i32
-              scf.yield %n : i32
-            }} else {{
-              scf.yield %acc : i32
-            }}
-            scf.yield %has, %acc2 : i1, i32
-          }}
-          %sig{l}_4 = llvm.atomicrmw add %p{l}_4, %t{l}_4#1 syncscope("") release : !llvm.ptr, i32
-          scf.while : () -> () {{
-            %seen = llvm.load %p{l}_4 atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
-            %notYet = arith.cmpi ult, %seen, %ntasks : i32
-            scf.condition(%notYet)
-          }} do {{
-            scf.yield
           }}""")
+
+        # stage 4: the attention-weighted sum of V, claimed like the
+        # matmuls so it signals the same way they do.
+        w(strided_stage(l, 4, base + 4, "%ctasks", "%ntasks",
+                        f'                %j0 = arith.muli %ix, %cslice : index\n                scf.for %jj = %c0_s to %cslice step %c1_s {{\n                  %j = arith.addi %j0, %jj : index\n                  %a = scf.for %t = %c0_s to %ccache_s step %c1_s\n                      iter_args(%sacc = %fzero_s) -> (f32) {{\n                    %pn = memref.load %spv[%t] : memref<{cache}xf32>\n                    %vv = memref.load %svc[%L{l}, %t, %j] : memref<{layers}x{cache}x{dim}xf32>\n                    %m = arith.mulf %pn, %vv : f32\n                    %s2 = arith.addf %sacc, %m : f32\n                    scf.yield %s2 : f32\n                  }}\n                  memref.store %a, %sav[%j] : memref<{dim}xf32>\n                }}'))
+
 
         # stage 5: the residual around attention. One task; it is elementwise
         # but it reads x, which the MLP stages are about to overwrite.
