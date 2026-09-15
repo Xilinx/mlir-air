@@ -944,16 +944,22 @@ def render_llm_benchmark(
     # Models with a sweep are published in the sweep table below instead; a
     # single near-zero-context point next to a curve invites reading the two as
     # comparable numbers, and they are not.
-    # Only a sweep that measured something displaces the scalar row; otherwise a
-    # model whose every context failed appears in neither table.
-    swept = {
-        s.get("model")
-        for s in (sweep_recs or ())
-        if any(
-            p.get("decode_tokens_per_sec") is not None
-            for p in s.get("points", []) or ()
-        )
-    }
+    #
+    # PARTICIPATING in the sweep displaces the scalar row -- not measuring
+    # something in it. This used to require a non-null tok/s, to stop a model
+    # whose every context failed from appearing in neither table. That guard is
+    # obsolete: render_llm_sweep emits a row for every record it is given, with
+    # a marker per failed cell, so such a model does appear. What the guard
+    # actually produced was the opposite problem -- gemma4_e2b_q4nx, whose every
+    # context is an expected failure under #1984, was listed THREE times: once
+    # here with a null decode, once in the sweep table, and once in the prefill
+    # sweep table.
+    #
+    # Keyed on the decode sweep alone, deliberately. The prefill-sweep models are
+    # a subset of the decode-sweep ones, so this covers them; keying on either
+    # would risk dropping a model that is only in the prefill sweep, taking its
+    # decode number off the page entirely.
+    swept = {s.get("model") for s in (sweep_recs or ()) if (s.get("points") or ())}
 
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
