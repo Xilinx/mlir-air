@@ -176,6 +176,90 @@ def main():
         check(RUNNER not in page, "the CI runner label stays off the page")
         check("| 🟢 |" in page, "scalar table renders a verify badge")
 
+        # A model in the sweep belongs to the sweep table ONLY, even when every
+        # one of its contexts failed and it therefore contributes no number.
+        # gemma4_e2b_q4nx is that case under #1984, and it used to be listed
+        # three times: a null-decode scalar row plus both sweep tables.
+        allfail = {
+            "model": "toy_hang_q4nx",
+            "timestamp_utc": "2026-08-21T10:31:45Z",
+            "verify_status": "pass",
+            "points": [
+                {
+                    "context_len": 1024,
+                    "decode_tokens_per_sec": None,
+                    "status": "expected_fail",
+                },
+                {
+                    "context_len": 65536,
+                    "decode_tokens_per_sec": None,
+                    "status": "expected_fail",
+                },
+            ],
+        }
+        # Written through append_history.py rather than hand-shaped: the ndjson
+        # rows are FLAT, and a hand-built {"metrics": {...}} row loads with every
+        # metric empty -- which silently turns an assertion on the TTFT into one
+        # that cannot fail.
+        hang_hist = tmp / "hang_history.ndjson"
+        append(
+            "perf",
+            [
+                {
+                    "model": "toy_hang_q4nx",
+                    "timestamp_utc": "2026-08-21T10:31:45Z",
+                    "runner": RUNNER,
+                    "verify_status": "pass",
+                    "metrics": {
+                        "ttft_ms": 3930.0,
+                        "decode_tokens_per_sec": None,
+                        "context_len": 2048,
+                    },
+                    "toolchain": TOOLCHAIN,
+                }
+            ],
+            hang_hist,
+            2,
+        )
+        hang_page = render_llm_benchmark(
+            None, sweep_recs=curves + [allfail], history_path=str(hang_hist)
+        )
+        # Rows, not name occurrences: the model cell is a link, so the name
+        # appears twice in every row it is on.
+        hang_rows = sum(
+            1 for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
+        )
+        check(hang_rows == 1, "an all-failed sweep model is listed once, not twice")
+
+        # ...but a sweep the table cannot render must NOT suppress the scalar
+        # row. render_llm_sweep returns "" when no point carries a context_len,
+        # so counting such a record as published drops the model off the page
+        # entirely -- the same vanishing the old predicate guarded against,
+        # reintroduced from the other side.
+        axisless = [
+            {
+                "model": "toy_hang_q4nx",
+                "timestamp_utc": "2026-08-21T10:31:45Z",
+                "verify_status": "pass",
+                "points": [{"decode_tokens_per_sec": None, "status": "expected_fail"}],
+            }
+        ]
+        axisless_page = render_llm_benchmark(
+            None, sweep_recs=axisless, history_path=str(hang_hist)
+        )
+        check(
+            render_llm_sweep(axisless) == "",
+            "an axis-less sweep renders no table (the premise of the next check)",
+        )
+        check(
+            "3930.0" in axisless_page,
+            "a sweep that renders no table leaves the scalar row alone",
+        )
+        check(
+            "3930.0" not in hang_page,
+            "an all-failed sweep model does not keep its scalar row",
+        )
+
         sweep_md = render_llm_sweep(curves)
         check(
             sweep_md.count("🟢") == 1 and sweep_md.count("⚪") == 1,

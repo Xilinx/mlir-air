@@ -672,6 +672,26 @@ def _sweep_cell(pt):
     return "—" if pt.get("status", "") in ("", "ok", "expected_fail") else "✗"
 
 
+def _swept_models(recs):
+    """The models render_llm_sweep will actually put a row on.
+
+    THIS MUST AGREE WITH render_llm_sweep EXACTLY. It is what the scalar table
+    uses to decide a model is published below instead, so a model counted here
+    but omitted there is dropped from the page altogether -- which is the defect
+    the old "did the sweep measure anything" test produced in reverse.
+
+    The one case where a record is not rendered is an axis-less sweep: if no
+    point anywhere carries a context_len, render_llm_sweep has no columns to
+    build and returns "" for the whole table. Otherwise every record gets a row,
+    with a marker per cell it could not fill.
+    """
+    if not recs:
+        return set()
+    if not any(pt.get("context_len") for d in recs for pt in d.get("points") or ()):
+        return set()
+    return {d.get("model") for d in recs}
+
+
 def render_llm_sweep(recs, base_url=""):
     """Render decode tok/s against context length, one row per model.
 
@@ -944,16 +964,22 @@ def render_llm_benchmark(
     # Models with a sweep are published in the sweep table below instead; a
     # single near-zero-context point next to a curve invites reading the two as
     # comparable numbers, and they are not.
-    # Only a sweep that measured something displaces the scalar row; otherwise a
-    # model whose every context failed appears in neither table.
-    swept = {
-        s.get("model")
-        for s in (sweep_recs or ())
-        if any(
-            p.get("decode_tokens_per_sec") is not None
-            for p in s.get("points", []) or ()
-        )
-    }
+    #
+    # PARTICIPATING in the sweep displaces the scalar row -- not measuring
+    # something in it. This used to require a non-null tok/s, to stop a model
+    # whose every context failed from appearing in neither table. That guard is
+    # obsolete: render_llm_sweep emits a row for every record it is given, with
+    # a marker per failed cell, so such a model does appear. What the guard
+    # actually produced was the opposite problem -- gemma4_e2b_q4nx, whose every
+    # context is an expected failure under #1984, was listed THREE times: once
+    # here with a null decode, once in the sweep table, and once in the prefill
+    # sweep table.
+    #
+    # Keyed on the decode sweep alone, deliberately. The prefill-sweep models are
+    # a subset of the decode-sweep ones, so this covers them; keying on either
+    # would risk dropping a model that is only in the prefill sweep, taking its
+    # decode number off the page entirely.
+    swept = _swept_models(sweep_recs)
 
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
