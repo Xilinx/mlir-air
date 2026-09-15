@@ -41,6 +41,7 @@ TESTS=(
   megakernel_attention
   megakernel_gen
   gang_task
+  scheduler_broadcast
 )
 
 fails=0
