@@ -2340,3 +2340,42 @@ def _():
             air.ops.load(a, A[0:64, 0:64])
 
     _trace(body)
+
+
+# A segment coordinate handed over raw must be refused as a loop bound for the
+# same reason a herd's is: it differs between segment instances. The three
+# levels are not reached the same way -- a herd keeps its position in _coords,
+# a segment and a launch expose theirs as leaves.
+# CHECK-LABEL: TEST: raw_segment_coordinate_is_spatial
+# CHECK: TypeError: air.sequential(stop=...) {{.*}} built from a tile coordinate
+@expect(TypeError, "raw_segment_coordinate_is_spatial")
+def _():
+    A = air.tensor([64, 64], bf16)
+    C = air.tensor([64, 64], bf16)
+
+    with air.launch(name="k") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(product(range(0, 128, 64)), name="seg") as seg:
+
+                @seg.body
+                def _(sx):
+                    with air.herd(range(1), name="h") as h:
+
+                        @h.body
+                        def _(tx):
+                            raw = list(sx.leaves())[0].value
+                            for _ in air.sequential(raw):
+                                pass
+
+    launch.mlir()
+
+
+# params= is shared between air.herd and air.segment, and the diagnostic has to
+# name the one that was written.
+# CHECK-LABEL: TEST: segment_params_names_the_segment
+# CHECK: TypeError: air.segment 'seg': params= takes values from air.rtp()
+@expect(TypeError, "segment_params_names_the_segment")
+def _():
+    air.segment(name="seg", params=[object()])

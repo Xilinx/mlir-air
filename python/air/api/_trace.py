@@ -1011,7 +1011,7 @@ class SegmentContext:
         # inside the segment instead lets cloneL2AndL3MemcpysToDeviceOp fold it
         # to the wave-0 arm. Left off, a segment takes the launch's coordinates
         # and the tensors, as before.
-        self.params = _parse_herd_params(params, name or "seg")
+        self.params = _parse_herd_params(params, name or "seg", "air.segment")
         # A grid here is this segment's *own* iteration space -- air.segment's
         # `sizes`, which the dialect prints as `unroll(...)`. air.launch,
         # air.segment and air.herd each carry one and they are not the same
@@ -1764,8 +1764,11 @@ def run_strip_mined(run, repeats, range_, yield_):
 # ---------------------------------------------------------------------------
 
 
-def _parse_herd_params(params, name):
-    """Validate ``air.herd(params=[...])`` into a tuple of RuntimeParams, or None.
+def _parse_herd_params(params, name, what="air.herd"):
+    """Validate ``params=[...]`` into a tuple of RuntimeParams, or None.
+
+    Shared by air.herd and air.segment; ``what`` names the one that is being
+    built, so a bad element is reported against the construct the caller wrote.
 
     ``None`` means "thread whatever single parameter is live", which is what a
     design with one of them wants and what every herd got before this existed.
@@ -1779,9 +1782,9 @@ def _parse_herd_params(params, name):
     for p in params:
         if not isinstance(p, RuntimeParam):
             raise TypeError(
-                f"air.herd {name!r}: params= takes values from air.rtp(), got "
-                f"{p!r} ({type(p).__name__}). A herd operand that is a buffer "
-                "is passed by using it in the body; params= is only for the "
+                f"{what} {name!r}: params= takes values from air.rtp(), got "
+                f"{p!r} ({type(p).__name__}). An operand that is a buffer is "
+                "passed by using it in the body; params= is only for the "
                 "scalars air.rtp builds."
             )
         out.append(p)

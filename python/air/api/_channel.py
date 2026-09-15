@@ -97,7 +97,7 @@ class Channel:
         "broadcast_shape",
         "channel_type",
         "attrs",
-        "_declared",
+        "_declared_in",
         "_seq",
     )
 
@@ -182,7 +182,7 @@ class Channel:
         # it air-to-aie fuses them into a single interleaved ring of twice the
         # depth, which covers the wrong blocks.
         self.attrs = tuple(attrs or ())
-        self._declared = False
+        self._declared_in = None
         self._seq = _NEXT_SEQ[0]
         _NEXT_SEQ[0] += 1
 
@@ -218,7 +218,13 @@ class Channel:
         private ``func.func``: the module does not exist until a trace is
         active, and this way a channel declared but never used emits nothing.
         """
-        if self._declared:
+        from ._trace import active_trace as _active
+
+        # Keyed on the MODULE, not a bool. A Channel built once at import scope
+        # and used by two launches is one Python object and two modules, and a
+        # bool would emit the symbol into the first and leave every put/get in
+        # the second pointing at a name its module does not define.
+        if self._declared_in is _active().module:
             return
         from air.ir import InsertionPoint
         from air.dialects.air import Channel as ChannelOp
@@ -329,7 +335,7 @@ class Channel:
                 for attr in self.attrs:
                     op.operation.attributes[attr] = UnitAttr.get()
         _DECLARED_SEQ[self.name] = self._seq
-        self._declared = True
+        self._declared_in = trace.module
 
     def _indices(self, indices, direction):
         if indices is None:

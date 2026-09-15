@@ -391,14 +391,30 @@ def _is_spatial_value(value):
     bound itself. A bound computed from one with raw arith is not detectable and
     is not claimed to be; air.sequential sees through that only when the
     arithmetic went through IndexExpr.
-    """
-    from ._trace import current_herd, current_segment
 
-    for ctx in (current_herd(required=False), current_segment(required=False)):
-        for expr in getattr(ctx, "_coords", ()) or ():
-            for leaf in expr.leaves():
-                if leaf.value is value:
-                    return True
+    All three levels count, and they are not reached the same way: a herd keeps
+    its core position in ``_coords``, while a segment and a launch expose theirs
+    as ``leaves``. The launch's *wave* is deliberately not among them -- a
+    dispatch index is the same on every core, which is why a herd may loop on
+    it.
+    """
+    from ._trace import current_herd, current_launch, current_segment
+
+    herd = current_herd(required=False)
+    segment = current_segment(required=False)
+    try:
+        launch = current_launch()
+    except RuntimeError:
+        launch = None
+
+    for expr in getattr(herd, "_coords", ()) or ():
+        for leaf in expr.leaves():
+            if leaf.value is value:
+                return True
+    for ctx in (segment, launch):
+        for leaf in getattr(ctx, "leaves", ()) or ():
+            if leaf.value is value:
+                return True
     return False
 
 
