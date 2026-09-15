@@ -690,6 +690,59 @@ jobs:
             perf_out/
             verify.xml
 
+      # The decode binaries the sweep actually dispatched, so a number on the
+      # page can be traced back to the bytes that produced it.
+      #
+      # This exists because #1984 cannot be investigated without it. That defect
+      # is a dispatch timeout reproducible ONLY on this runner, and the record
+      # already notes that a matching insts.bin md5 does not license "same
+      # binary" -- the instruction stream is byte-identical local-vs-CI while
+      # the CDO, which lives in the xclbin's AIE_PARTITION section, has never
+      # been compared at all. Without the artifact there is nothing to compare.
+      #
+      # gemma3_4b_q4nx is collected alongside gemma4_e2b_q4nx deliberately, as a
+      # CONTROL: it is the closest sibling design and it sweeps clean on this
+      # runner. A byte difference that shows up in both is the toolchain; one
+      # that shows up only in gemma4 is the defect.
+      - name: Collect decode templates (gemma4 + gemma3 control)
+        if: ${{ !cancelled() }}
+        run: |
+          set -u
+          out=templates_out; mkdir -p "$out"
+          # Both the sweep's staged per-context copies and whatever the example
+          # dir kept, since only the former covers every context.
+          for m in gemma4_e2b_q4nx gemma3_4b_q4nx; do
+            find build_assert programming_examples -path "*$m*" \
+                 \( -name 'decode_L*.xclbin' -o -name 'decode_L*.insts.bin' \) \
+                 -print0 2>/dev/null |
+              while IFS= read -r -d '' f; do
+                d="$out/$m"; mkdir -p "$d"
+                # Flatten, keeping the context dir so L1024 and L1023 cannot
+                # collide across the sweep's per-context workdirs.
+                cp -n "$f" "$d/$(basename "$(dirname "$f")")_$(basename "$f")" 2>/dev/null || true
+              done
+          done
+          # md5 manifest for EVERY model's templates, not just the two copied:
+          # it is small, and it says at a glance whether a difference is
+          # gemma4-specific without another CI round trip.
+          find build_assert programming_examples \
+               \( -name 'decode_L*.xclbin' -o -name 'decode_L*.insts.bin' \) \
+               -exec md5sum {} + 2>/dev/null | sort -k2 > "$out/md5sums.txt" || true
+          # Provenance the comparison needs, and which nothing else in this job
+          # records: the exact device, driver, XRT and firmware.
+          { xrt-smi examine 2>&1 | head -40
+            echo "--- amdxdna ---"; cat /sys/module/amdxdna/version 2>/dev/null
+            echo "--- platform profile ---"; cat /sys/firmware/acpi/platform_profile 2>/dev/null
+          } > "$out/device.txt" 2>&1 || true
+          echo "collected:"; du -sh "$out"; wc -l < "$out/md5sums.txt"
+
+      - name: Upload decode templates
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: decode-templates-${{ github.run_id }}
+          path: templates_out/
+
       # Same payload, name the publisher ignores: still there to download.
       - name: Upload perf artifact (partial run)
         if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
