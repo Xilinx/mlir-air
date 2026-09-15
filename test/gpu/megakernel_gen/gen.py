@@ -25,7 +25,7 @@ import argparse
 import sys
 
 
-def emit(layers: int, dim: int, tasks: int, workers: int) -> str:
+def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1) -> str:
     assert dim % tasks == 0, "dim must divide evenly into tasks"
     slice_w = dim // tasks
     # Per layer: one event for the reduction, one for each of the two matmul
@@ -56,6 +56,7 @@ module {{
     %clayers = arith.constant {layers} : index
 
     %X = memref.alloc() : memref<{dim}xf32>
+    %X0 = memref.alloc() : memref<{dim}xf32>
     %W1 = memref.alloc() : memref<{layers}x{dim}x{dim}xf32>
     %W2 = memref.alloc() : memref<{layers}x{dim}x{dim}xf32>
     %R = memref.alloc() : memref<{dim}xf32>
@@ -70,6 +71,7 @@ module {{
       %v = arith.remf %fi, %c3f : f32
       %v2 = arith.addf %v, %scale : f32
       memref.store %v2, %X[%i] : memref<{dim}xf32>
+      memref.store %v2, %X0[%i] : memref<{dim}xf32>
       memref.store %v2, %ref[%i] : memref<{dim}xf32>
       memref.store %fzero, %R[%i] : memref<{dim}xf32>
       memref.store %fzero, %H[%i] : memref<{dim}xf32>
@@ -169,10 +171,33 @@ module {{
     gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
     gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
 
-    call @chain(%dQ, %dE, %dX, %dR, %dH, %dY, %dW1, %dW2)
-      : (memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
-         memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
-         memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>) -> ()
+    // --repeat runs the chain more than once so an external clock has
+    // something to measure. Timing it from inside with mgpuEventRecord does not
+    // work: the events go on the stream created here, while gpu-to-llvm puts
+    // the kernel on one of its own, so the elapsed time is between two events
+    // on an idle stream -- mgpuEventElapsedTime returns hipErrorInvalidHandle
+    // and the number is garbage. The 4k GEMM test has the same problem.
+    %crep = arith.constant {repeat} : index
+    scf.for %rep = %c0 to %crep step %c1 {{
+      // Re-arm the queues and events so each repetition is a fresh chain.
+      scf.for %l = %c0 to %clayers step %c1 {{
+        scf.for %k = %c0 to %cq step %c1 {{
+          memref.store %zero, %Q[%l, %k] : memref<{layers}x{qslots}xi32>
+        }}
+      }}
+      scf.for %i = %c0 to %ce step %c1 {{
+        memref.store %zero, %E[%i] : memref<{events}xi32>
+      }}
+      gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
+      gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
+      // The chain rewrites x in place, so a second repetition would start from
+      // the first one's output rather than the input.
+      gpu.memcpy %dX, %X0 : memref<{dim}xf32>, memref<{dim}xf32>
+      func.call @chain(%dQ, %dE, %dX, %dR, %dH, %dY, %dW1, %dW2)
+        : (memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
+           memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
+           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>) -> ()
+    }}
 
     gpu.memcpy %X, %dX : memref<{dim}xf32>, memref<{dim}xf32>
 
@@ -403,8 +428,12 @@ def main() -> int:
                     help="tasks per matmul stage; dim must divide by this")
     ap.add_argument("--workers", type=int, default=32,
                     help="resident workgroups; must fit the device at once")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="how many times to launch the chain, for timing: "
+                         "--layers 36 --repeat 1 is one launch doing 36 layers, "
+                         "--layers 1 --repeat 36 is 36 launches doing one each")
     a = ap.parse_args()
-    sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers))
+    sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat))
     return 0
 
 
