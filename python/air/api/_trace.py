@@ -1364,20 +1364,24 @@ class HerdContext:
         writes a func.call, so air.extern -- which exists to emit one -- cannot
         express it, but link_with is needed all the same.
 
-        aircc links one object per herd -- link_with is a single string -- so a
-        body that reaches into two of them cannot be built.
+        Several are allowed. A core's link set is exactly that -- a set:
+        aie-assign-core-link-files walks the call edges out of each core to the
+        func.func declarations carrying link_with and collects a de-duplicated
+        list into the core's link_files / link_merge_files. The per-declaration
+        attribute is what drives it, and air.extern puts one on every kernel it
+        declares. The single string on the herd is the *deprecated* core-level
+        spelling, which that pass now merely migrates into the same set, so
+        stamping it is only how a link_with= declaration with no call of its own
+        reaches the core.
+
+        This used to refuse the second object, on the reading that a herd links
+        one file because the attribute holds one name. fused_decode's hybrid is
+        the counter-example: its conv herd stages a ShortConv layer and runs
+        rope on the same tile, which is two objects by construction.
         """
-        if self._objects and obj not in self._objects:
-            other, other_kernel = next(iter(self._objects.items()))
-            raise ValueError(
-                f"herd '{self.name}' {_needs(obj, kernel)} and "
-                f"{_needs(other, other_kernel)}, but a herd links against a "
-                "single object file. Compile both kernels into one object, or "
-                "put them in separate herds."
-            )
         # An air.extern call names the symbol it wants; keep that over a bare
-        # link_with= declaration of the same file, since it makes a later conflict
-        # report the more specific of the two.
+        # link_with= declaration of the same file, since it is the more specific
+        # of the two in a diagnostic.
         if kernel is not None or obj not in self._objects:
             self._objects[obj] = kernel
 
@@ -1665,13 +1669,41 @@ class HerdContext:
                     leaf.value = v
                 _CURRENT_HERD = previous
 
-        # aircc compiles the object named here alongside the herd's cores.
-        if herd_self._objects:
+        # The deprecated core-level attribute, which holds ONE name.
+        # aie-assign-core-link-files builds each core's link set from the
+        # per-declaration link_with that air.extern already stamps, and merely
+        # migrates this one into the same set -- so it is redundant when every
+        # kernel is reached by a call, and cannot express two objects at all.
+        # Stamped when there is exactly one, because that is what the
+        # hand-written herds emit and matching them keeps the IR identical.
+        #
+        # With several, only a *declared* one -- an object named by
+        # link_with= whose call the DSL never emits, so no func.func carries it
+        # and this attribute is its only route to the core (ops.exp on bf16 is
+        # the case: it becomes math.exp, and the AIE lowering turns that into a
+        # call to getExpBf16 several passes later). Objects reached by an
+        # air.extern call need nothing here; their declarations carry
+        # link_with and aie-assign-core-link-files traces the call edge.
+        # fused_decode's hybrid conv herd is that shape and stamps nothing.
+        _declared = [o for o, kern in herd_self._objects.items() if kern is None]
+        if len(herd_self._objects) == 1:
+            _stamp = next(iter(herd_self._objects))
+        elif len(_declared) == 1:
+            _stamp = _declared[0]
+        elif _declared:
+            raise ValueError(
+                f"herd '{herd_self.name}' declares link_with for "
+                f"{', '.join(sorted(_declared))}. A declared object reaches the "
+                "core only through the core-level attribute, which holds one "
+                "name; a kernel called through air.extern carries its own and "
+                "does not need it."
+            )
+        else:
+            _stamp = None
+        if _stamp is not None:
             from air.ir import StringAttr
 
-            herd_body.attributes["link_with"] = StringAttr.get(
-                next(iter(herd_self._objects))
-            )
+            herd_body.attributes["link_with"] = StringAttr.get(_stamp)
 
         # at=(col, row) pins the herd's origin, as air-place-herds reads it.
         if herd_self.at is not None:

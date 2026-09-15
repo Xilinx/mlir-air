@@ -3066,24 +3066,11 @@ def build_module():
                     a_q = air_api.alloc([DQ_PADDED], api_types.bf16, scope=_scope)
                     a_k = air_api.alloc([DK], api_types.bf16, scope=_scope)
                     a_v = air_api.alloc([DK], api_types.bf16, scope=_scope)
-                    # Raw call, on .decl: a HYBRID runs this on the conv herd's
-                    # stage tile, which also calls the shortconv kernels, and a
-                    # herd links against ONE object file. air.extern would refuse
-                    # the second; the raw form does not register an object, and
-                    # the herds above carry the right link_with themselves (the
-                    # hybrid's carries none -- it merge-links through attn).
+                    # A HYBRID runs this on the conv herd's stage tile, which
+                    # also calls the shortconv kernels: two objects on one core,
+                    # which is a set, not a choice -- see require_object.
                     _rope = rope_compute_hyb if HYBRID_MIXER else rope_compute
-                    CallOp(
-                        _rope.decl,
-                        [
-                            a_q.value,
-                            a_k.value,
-                            a_v.value,
-                            a_qkv.value,
-                            a_lut.value,
-                            _arm,
-                        ],
-                    )
+                    _rope(a_q, a_k, a_v, a_qkv, a_lut, _arm)
                     # S3a: feed flash attention (1 CU = CU0). q[0:512] -> qk
                     # tile directly (MM2S0). k[0:128]+v[0:128] (CU0's 2 KV
                     # heads) -> KV staging memtile on ONE MM2S (rope's 2nd
@@ -3261,27 +3248,9 @@ def build_module():
                             # releases its cross-tile lock once, after both
                             # copies.
                             if CONV_WAVES == 1:
-                                CallOp(
-                                    shortconv_stage.decl,
-                                    [
-                                        _lands[0].value,
-                                        mix.value,
-                                        arith.ConstantOp(
-                                            IntegerAttr.get(i32, 0), None
-                                        ).result,
-                                        _arm,
-                                    ],
-                                )
+                                shortconv_stage(_lands[0], mix, 0, _arm)
                             else:
-                                CallOp(
-                                    shortconv_stage2.decl,
-                                    [
-                                        _lands[0].value,
-                                        _lands[1].value,
-                                        mix.value,
-                                        _arm,
-                                    ],
-                                )
+                                shortconv_stage2(_lands[0], _lands[1], mix, _arm)
 
                         def _mix():
                             _mc = _conv_h.private()
@@ -3301,16 +3270,7 @@ def build_module():
                                 api_types.bf16,
                                 scope=_mc,
                             )
-                            CallOp(
-                                shortconv_compute.decl,
-                                [
-                                    mix.value,
-                                    a_st.value,
-                                    a_y.value,
-                                    a_bx.value,
-                                    _arm,
-                                ],
-                            )
+                            shortconv_compute(mix, a_st, a_y, a_bx, _arm)
 
                             # y -> o-proj X (the attnO slot); the shifted state ->
                             # arg4 as the next token's [BX(t-2)|BX(t-1)].
