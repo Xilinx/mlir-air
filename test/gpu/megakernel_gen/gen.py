@@ -38,7 +38,11 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # attention residual, the two MLP matmuls, then the residual carry.
     stages = 9
     events = stages * layers
-    qslots = stages
+    # A head per die per stage. The die count is not known until the program
+    # runs, so allocate for more dies than any current part has and let the
+    # unused heads sit at zero.
+    maxdies = 16
+    qslots = stages * maxdies
     o = []
     w = o.append
 
@@ -441,6 +445,11 @@ module {{
         %t01 = arith.ori %tx_s, %ty_s : index
         %t012 = arith.ori %t01, %tz_s : index
         %isLead = arith.cmpi eq, %t012, %c0_s : index
+        // Which die this workgroup is on. Work is claimed per die so that the
+        // slices a die computes are the ones its own cache is holding.
+        %mydie_raw = air.chiplet_id
+        %cmaxdies = arith.constant {maxdies} : index
+        %mydie = arith.remui %mydie_raw, %cmaxdies : index
 {layer_consts}
         %evbase = memref.extract_aligned_pointer_as_index %se : memref<{events}xi32> -> index
         %evi = arith.index_cast %evbase : index to i64
@@ -448,60 +457,84 @@ module {{
 
         scf.if %isLead {{""")
 
-    # A matmul-shaped stage: claim a slice of the output and fill it.
-    def matmul_stage(l, stage, ev, out, lhs, wmat, wtype, relu):
-        act_open = "arith.maxnumf " if relu else ""
-        load_lhs = f"%lv = memref.load {lhs}[%i] : memref<{dim}xf32>"
-        act = (f"%la = arith.maxnumf %lv, %fzero_s : f32" if relu
-               else f"%la = arith.addf %lv, %fzero_s : f32")
+    # Queue head for (stage, die): heads are laid out stage-major so a die's
+    # heads are strided, which keeps two dies off the same cache line more
+    # often than not.
+    def head(stage, die_expr):
+        return f"{stage} * {maxdies} + {die_expr}"
+
+    # A stage whose work splits into independent pieces. Each die has its own
+    # head and its own stride of pieces, so what a die touches is what its cache
+    # already holds. A die that runs out steals from the others, which is what
+    # keeps this correct when the dispatcher does not use every die: locality is
+    # a preference here, not an assumption.
+    def strided_stage(l, stage, ev, count_expr, total_const, body):
         return f"""
-          // stage {stage}: {out[2:]} = {'relu(' if relu else ''}{lhs[2:]}{')' if relu else ''} @ {wmat[2:]}
+          // stage {stage}
           %p{l}_{stage} = llvm.getelementptr %evptr[{4*ev}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %t{l}_{stage}:2 = scf.while (%go = %true, %acc = %zero_s) : (i1, i32) -> (i1, i32) {{
-            scf.condition(%go) %go, %acc : i1, i32
-          }} do {{
-          ^bb0(%g: i1, %acc: i32):
-            %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c{stage}_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
-            %ix = arith.index_cast %cl : i32 to index
-            %has = arith.cmpi ult, %ix, %ctasks : index
-            %acc2 = scf.if %has -> i32 {{
-              %j0 = arith.muli %ix, %cslice : index
-              scf.for %jj = %c0_s to %cslice step %c1_s {{
-                %j = arith.addi %j0, %jj : index
-                %a = scf.for %i = %c0_s to %cdim_s step %c1_s
-                    iter_args(%sacc = %fzero_s) -> (f32) {{
-                  {load_lhs}
-                  {act}
-                  %wv = memref.load {wmat}[%L{l}, %i, %j] : {wtype}
-                  %m = arith.mulf %la, %wv : f32
-                  %s2 = arith.addf %sacc, %m : f32
-                  scf.yield %s2 : f32
-                }}
-                memref.store %a, {out}[%j] : memref<{dim}xf32>
+          %hb{l}_{stage} = arith.constant {stage * maxdies} : index
+          %t{l}_{stage} = scf.for %pp = %c0_s to %cmaxdies step %c1_s
+              iter_args(%outer = %zero_s) -> (i32) {{
+            // Own die first, then the others in order.
+            %draw = arith.addi %mydie, %pp : index
+            %d = arith.remui %draw, %cmaxdies : index
+            %hidx = arith.addi %hb{l}_{stage}, %d : index
+            %inner:2 = scf.while (%go = %true, %acc = %outer) : (i1, i32) -> (i1, i32) {{
+              scf.condition(%go) %go, %acc : i1, i32
+            }} do {{
+            ^bb0(%g: i1, %acc: i32):
+              %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hidx] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+              %k = arith.index_cast %cl : i32 to index
+              %kstride = arith.muli %k, %cmaxdies : index
+              %ix = arith.addi %d, %kstride : index
+              %has = arith.cmpi ult, %ix, {count_expr} : index
+              %acc2 = scf.if %has -> i32 {{
+{body}
+                %n = arith.addi %acc, %one_s : i32
+                scf.yield %n : i32
+              }} else {{
+                scf.yield %acc : i32
               }}
-              %n = arith.addi %acc, %one_s : i32
-              scf.yield %n : i32
-            }} else {{
-              scf.yield %acc : i32
+              scf.yield %has, %acc2 : i1, i32
             }}
-            scf.yield %has, %acc2 : i1, i32
+            scf.yield %inner#1 : i32
           }}
-          %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %t{l}_{stage}#1 syncscope("") release : !llvm.ptr, i32
+          %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %t{l}_{stage} syncscope("") release : !llvm.ptr, i32
           scf.while : () -> () {{
             %seen = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
-            %notYet = arith.cmpi ult, %seen, %ntasks : i32
+            %notYet = arith.cmpi ult, %seen, {total_const} : i32
             scf.condition(%notYet)
           }} do {{
             scf.yield
           }}"""
+
+    def matmul_stage(l, stage, ev, out, lhs, wmat, wtype, relu):
+        act = ("%la = arith.maxnumf %lv, %fzero_s : f32" if relu
+               else "%la = arith.addf %lv, %fzero_s : f32")
+        body = f"""                %j0 = arith.muli %ix, %cslice : index
+                scf.for %jj = %c0_s to %cslice step %c1_s {{
+                  %j = arith.addi %j0, %jj : index
+                  %a = scf.for %i = %c0_s to %cdim_s step %c1_s
+                      iter_args(%sacc = %fzero_s) -> (f32) {{
+                    %lv = memref.load {lhs}[%i] : memref<{dim}xf32>
+                    {act}
+                    %wv = memref.load {wmat}[%L{l}, %i, %j] : {wtype}
+                    %m = arith.mulf %la, %wv : f32
+                    %s2 = arith.addf %sacc, %m : f32
+                    scf.yield %s2 : f32
+                  }}
+                  memref.store %a, {out}[%j] : memref<{dim}xf32>
+                }}"""
+        return strided_stage(l, stage, ev, "%ctasks", "%ntasks", body)
 
     for l in range(layers):
         base = stages * l
         w(f"""
           // ================= layer {l} =================
           // stage 0: rmsnorm. One task -- it reduces over all of x.
+          %hsingle0_{l} = arith.constant 0 : index
           %p{l}_0 = llvm.getelementptr %evptr[{4*base}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %cl{l}_0 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c0_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+          %cl{l}_0 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle0_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_0 = arith.cmpi eq, %cl{l}_0, %zero_s : i32
           scf.if %mine{l}_0 {{
             %ss{l} = scf.for %i = %c0_s to %cdim_s step %c1_s
@@ -532,47 +565,24 @@ module {{
         w(matmul_stage(l, 1, base + 1, "%sqv", "%sr", "%swq",
                        f"memref<{layers}x{dim}x{dim}xf32>", False))
 
-        # stage 2: one score per cache entry.
-        w(f"""
-          // stage 2: score[t] = dot(q, K[t]) / sqrt(dim), one task per entry.
-          %p{l}_2 = llvm.getelementptr %evptr[{4*(base+2)}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %t{l}_2:2 = scf.while (%go = %true, %acc = %zero_s) : (i1, i32) -> (i1, i32) {{
-            scf.condition(%go) %go, %acc : i1, i32
-          }} do {{
-          ^bb0(%g: i1, %acc: i32):
-            %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c2_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
-            %ix = arith.index_cast %cl : i32 to index
-            %has = arith.cmpi ult, %ix, %ccache_s : index
-            %acc2 = scf.if %has -> i32 {{
-              %dot = scf.for %i = %c0_s to %cdim_s step %c1_s
-                  iter_args(%s = %fzero_s) -> (f32) {{
-                %qv2 = memref.load %sqv[%i] : memref<{dim}xf32>
-                %kv = memref.load %skc[%L{l}, %ix, %i] : memref<{layers}x{cache}x{dim}xf32>
-                %m = arith.mulf %qv2, %kv : f32
-                %s2 = arith.addf %s, %m : f32
-                scf.yield %s2 : f32
-              }}
-              %sc = arith.mulf %dot, %invsqrtd_s : f32
-              memref.store %sc, %ssv[%ix] : memref<{cache}xf32>
-              %n = arith.addi %acc, %one_s : i32
-              scf.yield %n : i32
-            }} else {{
-              scf.yield %acc : i32
-            }}
-            scf.yield %has, %acc2 : i1, i32
-          }}
-          %sig{l}_2 = llvm.atomicrmw add %p{l}_2, %t{l}_2#1 syncscope("") release : !llvm.ptr, i32
-          scf.while : () -> () {{
-            %seen = llvm.load %p{l}_2 atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
-            %notYet = arith.cmpi ult, %seen, %ncache : i32
-            scf.condition(%notYet)
-          }} do {{
-            scf.yield
-          }}
+        # stage 2: one score per cache entry, claimed per die like the rest.
+        w(strided_stage(l, 2, base + 2, "%ccache_s", "%ncache",
+                        f"""                %dot = scf.for %i = %c0_s to %cdim_s step %c1_s
+                    iter_args(%sdot = %fzero_s) -> (f32) {{
+                  %qv2 = memref.load %sqv[%i] : memref<{dim}xf32>
+                  %kv = memref.load %skc[%L{l}, %ix, %i] : memref<{layers}x{cache}x{dim}xf32>
+                  %m = arith.mulf %qv2, %kv : f32
+                  %s2 = arith.addf %sdot, %m : f32
+                  scf.yield %s2 : f32
+                }}
+                %sc = arith.mulf %dot, %invsqrtd_s : f32
+                memref.store %sc, %ssv[%ix] : memref<{cache}xf32>"""))
 
+        w(f"""
           // stage 3: softmax. One task -- it reduces over every score.
+          %hsingle3_{l} = arith.constant {3*maxdies} : index
           %p{l}_3 = llvm.getelementptr %evptr[{4*(base+3)}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %cl{l}_3 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c3_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+          %cl{l}_3 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle3_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_3 = arith.cmpi eq, %cl{l}_3, %zero_s : i32
           scf.if %mine{l}_3 {{
             %mx{l} = scf.for %t = %c0_s to %ccache_s step %c1_s
@@ -648,8 +658,9 @@ module {{
         # but it reads x, which the MLP stages are about to overwrite.
         w(f"""
           // stage 5: xa = x + a, the residual around attention.
+          %hsingle5_{l} = arith.constant {5*maxdies} : index
           %p{l}_5 = llvm.getelementptr %evptr[{4*(base+5)}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %cl{l}_5 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c5_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+          %cl{l}_5 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle5_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_5 = arith.cmpi eq, %cl{l}_5, %zero_s : i32
           scf.if %mine{l}_5 {{
             scf.for %i = %c0_s to %cdim_s step %c1_s {{
@@ -675,8 +686,9 @@ module {{
         w(f"""
           // stage 8: x = xa + y, the residual around the MLP, carried into
           // the next layer.
+          %hsingle8_{l} = arith.constant {8*maxdies} : index
           %p{l}_8 = llvm.getelementptr %evptr[{4*(base+8)}] : (!llvm.ptr) -> !llvm.ptr, i8
-          %cl{l}_8 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %c8_s] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+          %cl{l}_8 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle8_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_8 = arith.cmpi eq, %cl{l}_8, %zero_s : i32
           scf.if %mine{l}_8 {{
             scf.for %i = %c0_s to %cdim_s step %c1_s {{
