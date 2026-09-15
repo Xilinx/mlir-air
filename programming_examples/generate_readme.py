@@ -672,6 +672,26 @@ def _sweep_cell(pt):
     return "—" if pt.get("status", "") in ("", "ok", "expected_fail") else "✗"
 
 
+def _swept_models(recs):
+    """The models render_llm_sweep will actually put a row on.
+
+    THIS MUST AGREE WITH render_llm_sweep EXACTLY. It is what the scalar table
+    uses to decide a model is published below instead, so a model counted here
+    but omitted there is dropped from the page altogether -- which is the defect
+    the old "did the sweep measure anything" test produced in reverse.
+
+    The one case where a record is not rendered is an axis-less sweep: if no
+    point anywhere carries a context_len, render_llm_sweep has no columns to
+    build and returns "" for the whole table. Otherwise every record gets a row,
+    with a marker per cell it could not fill.
+    """
+    if not recs:
+        return set()
+    if not any(pt.get("context_len") for d in recs for pt in d.get("points") or ()):
+        return set()
+    return {d.get("model") for d in recs}
+
+
 def render_llm_sweep(recs, base_url=""):
     """Render decode tok/s against context length, one row per model.
 
@@ -959,7 +979,7 @@ def render_llm_benchmark(
     # a subset of the decode-sweep ones, so this covers them; keying on either
     # would risk dropping a model that is only in the prefill sweep, taking its
     # decode number off the page entirely.
-    swept = {s.get("model") for s in (sweep_recs or ()) if (s.get("points") or ())}
+    swept = _swept_models(sweep_recs)
 
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
