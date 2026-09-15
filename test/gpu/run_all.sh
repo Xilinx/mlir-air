@@ -28,12 +28,14 @@ TIMEOUT="${TIMEOUT:-600}"
 declare -A EXPECT=( [4k_4k_mul]="Output Matched!" )
 
 # A test name is a directory under test/gpu/ unless it appears here, which lets
-# one generator be run in more than one configuration. Both configurations have
-# to be in the suite: M = 1 and M > 1 take different paths through the piece
-# decomposition, and the one that only M > 1 reaches is the one that carries
-# Fleet's traversal.
-declare -A DIR=( [megakernel_gen_prefill]=megakernel_gen )
-declare -A ENVV=( [megakernel_gen_prefill]="TOKENS=4 LAYERS=2" )
+# one generator be run in more than one configuration. All three have to be in
+# the suite: M = 1 and M > 1 take different paths through the piece
+# decomposition, and only a run with more than one decode step exercises the
+# iteration versioning that lets one launch reuse the same task graph.
+declare -A DIR=( [megakernel_gen_prefill]=megakernel_gen
+                 [megakernel_gen_decode]=megakernel_gen )
+declare -A ENVV=( [megakernel_gen_prefill]="TOKENS=4 LAYERS=2"
+                  [megakernel_gen_decode]="STEPS=3 TOKENS=2 LAYERS=2" )
 
 TESTS=(
   4k_4k_mul
@@ -49,6 +51,7 @@ TESTS=(
   megakernel_attention
   megakernel_gen
   megakernel_gen_prefill
+  megakernel_gen_decode
   gang_task
   scheduler_broadcast
   gang_mmajor
