@@ -40,6 +40,7 @@ TESTS=(
   megakernel_decode
   megakernel_attention
   megakernel_gen
+  gang_task
 )
 
 fails=0
