@@ -18,7 +18,17 @@ Every stage boundary is an event, and the whole chain is one launch. The stage
 structure is what scales: adding a layer adds queue slots and event slots, not
 a kernel launch.
 
+With --tokens M > 1 the chain runs M tokens at once, which is what a prefill or
+a speculative window looks like: the M tokens attend a shared KV prefix (they
+are not in each other's cache, so there is no mask among them) and every linear
+stage becomes an (m, n) grid rather than a row of n. The traversal of that grid
+is Fleet's, and it is the reason M > 1 is not just a bigger loop -- see
+strided_stage below. At M = 1 the decomposition collapses to exactly the
+index arithmetic this generator used before --tokens existed, so the decode
+numbers stay comparable.
+
     ./gen.py --layers 4 --dim 128 > chain.mlir
+    ./gen.py --layers 2 --dim 128 --tokens 4 > prefill.mlir
 """
 
 import argparse
@@ -27,15 +37,24 @@ import sys
 
 
 def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
-         cache: int = 32) -> str:
+         cache: int = 32, tokens: int = 1) -> str:
     assert dim % tasks == 0, "dim must divide evenly into tasks"
     slice_w = dim // tasks
+    # Activations carry a token dimension; weights and the KV cache do not.
+    # That asymmetry is the whole reason M > 1 changes the traversal: a weight
+    # block is worth reading once and using `tokens` times.
+    AT = f"memref<{tokens}x{dim}xf32>"
+    ST = f"memref<{tokens}x{cache}xf32>"
     invsqrtd = dim ** -0.5
-    residual_scale = 0.125 / max(1.0, float(layers)) ** 0.5
+    # Weight magnitude. Small enough that relu(xa @ W1) @ W2 does not dominate
+    # the residual it is added to; see the centring note where the weights are
+    # built.
+    wscale = 0.0625
     # Per layer: one event for the reduction, one for each of the two matmul
     # stages, and one for the carry.
     # Per layer: rmsnorm, q proj, scores, softmax, attn-weighted V, the
-    # attention residual, the two MLP matmuls, then the residual carry.
+    # attention residual and pre-MLP norm, the two MLP matmuls, then the
+    # residual carry.
     stages = 9
     events = stages * layers
     # A head per die per stage. The die count is not known until the program
@@ -69,67 +88,94 @@ module {{
     %fzero = arith.constant 0.0 : f32
     %eps = arith.constant 1.0e-6 : f32
     %fdim = arith.constant {float(dim):.6e} : f32
+    %c1f = arith.constant 1.0 : f32
+    %c2f = arith.constant 2.0 : f32
     %c3f = arith.constant 3.0 : f32
     %c5f = arith.constant 5.0 : f32
+    %c7f = arith.constant 7.0 : f32
     %scale = arith.constant 1.250000e-01 : f32
-    // The residual stream is not renormalised between layers, so whatever a
-    // layer adds compounds. Real models keep that in check through how the
-    // weights are initialised; these are synthetic, so scale the second matmul
-    // by the depth to keep the stream bounded. Without it the chain still
-    // computes, but by ~30 layers host and device rounding have diverged past
-    // any sensible tolerance and the comparison stops meaning anything.
-    %scale2 = arith.constant {residual_scale:.8e} : f32
+    %wscale = arith.constant {wscale:.8e} : f32
     %clayers = arith.constant {layers} : index
+    %ctok = arith.constant {tokens} : index
 
-    %X = memref.alloc() : memref<{dim}xf32>
-    %X0 = memref.alloc() : memref<{dim}xf32>
+    %X = memref.alloc() : {AT}
+    %X0 = memref.alloc() : {AT}
     %W1 = memref.alloc() : memref<{layers}x{dim}x{dim}xf32>
     %W2 = memref.alloc() : memref<{layers}x{dim}x{dim}xf32>
     %Wq = memref.alloc() : memref<{layers}x{dim}x{dim}xf32>
     %Kc = memref.alloc() : memref<{layers}x{cache}x{dim}xf32>
     %Vc = memref.alloc() : memref<{layers}x{cache}x{dim}xf32>
-    %Qv = memref.alloc() : memref<{dim}xf32>
-    %Sv = memref.alloc() : memref<{cache}xf32>
-    %Pv = memref.alloc() : memref<{cache}xf32>
-    %Av = memref.alloc() : memref<{dim}xf32>
-    %Xa = memref.alloc() : memref<{dim}xf32>
-    %R = memref.alloc() : memref<{dim}xf32>
-    %H = memref.alloc() : memref<{dim}xf32>
-    %Y = memref.alloc() : memref<{dim}xf32>
-    %ref = memref.alloc() : memref<{dim}xf32>
+    %Qv = memref.alloc() : {AT}
+    %Sv = memref.alloc() : {ST}
+    %Pv = memref.alloc() : {ST}
+    %Av = memref.alloc() : {AT}
+    %Xa = memref.alloc() : {AT}
+    %R = memref.alloc() : {AT}
+    %H = memref.alloc() : {AT}
+    %Y = memref.alloc() : {AT}
+    %ref = memref.alloc() : {AT}
     %refh = memref.alloc() : memref<{dim}xf32>
+
+    // Each token gets a different *pattern*, not the same pattern shifted by a
+    // constant. A constant offset does not survive: rmsnorm divides most of it
+    // out, so the queries come out within a few percent of each other, the
+    // attention outputs within 0.04%, and a token reading another token's
+    // scores is then indistinguishable from correct. 3i + 7m mod 5 gives each
+    // token a different rotation of the same values.
+    scf.for %m = %c0 to %ctok step %c1 {{
+      scf.for %i = %c0 to %cdim step %c1 {{
+        %ii = arith.index_cast %i : index to i32
+        %fi = arith.sitofp %ii : i32 to f32
+        %mm = arith.index_cast %m : index to i32
+        %fm = arith.sitofp %mm : i32 to f32
+        %fi3 = arith.mulf %fi, %c3f : f32
+        %fm7 = arith.mulf %fm, %c7f : f32
+        %fim = arith.addf %fi3, %fm7 : f32
+        %v0 = arith.remf %fim, %c5f : f32
+        %v = arith.mulf %v0, %scale : f32
+        %v2 = arith.addf %v, %scale : f32
+        memref.store %v2, %X[%m, %i] : {AT}
+        memref.store %v2, %X0[%m, %i] : {AT}
+        memref.store %v2, %ref[%m, %i] : {AT}
+        memref.store %fzero, %R[%m, %i] : {AT}
+        memref.store %fzero, %H[%m, %i] : {AT}
+        memref.store %fzero, %Y[%m, %i] : {AT}
+        memref.store %fzero, %Qv[%m, %i] : {AT}
+        memref.store %fzero, %Av[%m, %i] : {AT}
+        memref.store %fzero, %Xa[%m, %i] : {AT}
+      }}
+    }}
 
     scf.for %i = %c0 to %cdim step %c1 {{
       %ii = arith.index_cast %i : index to i32
       %fi = arith.sitofp %ii : i32 to f32
-      %v = arith.remf %fi, %c3f : f32
-      %v2 = arith.addf %v, %scale : f32
-      memref.store %v2, %X[%i] : memref<{dim}xf32>
-      memref.store %v2, %X0[%i] : memref<{dim}xf32>
-      memref.store %v2, %ref[%i] : memref<{dim}xf32>
-      memref.store %fzero, %R[%i] : memref<{dim}xf32>
-      memref.store %fzero, %H[%i] : memref<{dim}xf32>
-      memref.store %fzero, %Y[%i] : memref<{dim}xf32>
-      memref.store %fzero, %Qv[%i] : memref<{dim}xf32>
-      memref.store %fzero, %Av[%i] : memref<{dim}xf32>
-      memref.store %fzero, %Xa[%i] : memref<{dim}xf32>
       scf.for %l = %c0 to %clayers step %c1 {{
         scf.for %j = %c0 to %cdim step %c1 {{
           %jj = arith.index_cast %j : index to i32
           %fj = arith.sitofp %jj : i32 to f32
           %ll = arith.index_cast %l : index to i32
           %fl = arith.sitofp %ll : i32 to f32
+          // Centred. x % 5 lands in [0, 5), so an uncentred weight matrix is
+          // entirely non-negative and a matmul over `dim` of them is a sum of
+          // non-negative terms rather than a random walk -- a gain of
+          // ~dim*mean(W) per matmul, which ran the residual stream up to 1e4
+          // by two layers and 1e71 by thirty-six. The tolerance below is
+          // relative, so at that magnitude it admitted absolute errors in the
+          // hundreds and the comparison stopped being a comparison.
           %d = arith.subf %fi, %fj : f32
           %d2 = arith.addf %d, %fl : f32
-          %ww = arith.remf %d2, %c5f : f32
-          %wn = arith.mulf %ww, %scale : f32
+          %ww0 = arith.remf %d2, %c5f : f32
+          %ww = arith.subf %ww0, %c2f : f32
+          %wn = arith.mulf %ww, %wscale : f32
           memref.store %wn, %W1[%l, %i, %j] : memref<{layers}x{dim}x{dim}xf32>
           %w3 = arith.addf %d2, %c3f : f32
-          %w4 = arith.remf %w3, %c5f : f32
-          %wn2 = arith.mulf %w4, %scale2 : f32
+          %w40 = arith.remf %w3, %c5f : f32
+          %w4 = arith.subf %w40, %c2f : f32
+          %wn2 = arith.mulf %w4, %wscale : f32
           memref.store %wn2, %W2[%l, %i, %j] : memref<{layers}x{dim}x{dim}xf32>
           %wq0 = arith.addf %d2, %scale : f32
-          %wq1 = arith.remf %wq0, %c3f : f32
+          %wq10 = arith.remf %wq0, %c3f : f32
+          %wq1 = arith.subf %wq10, %c1f : f32
           %wq2 = arith.mulf %wq1, %scale : f32
           memref.store %wq2, %Wq[%l, %i, %j] : memref<{layers}x{dim}x{dim}xf32>
         }}
@@ -149,6 +195,10 @@ module {{
           %fl2 = arith.sitofp %ll2 : i32 to f32
           %ks = arith.addf %ft, %fi2 : f32
           %ks2 = arith.addf %ks, %fl2 : f32
+          // Not centred, unlike the weight matrices below, because for K it
+          // would change nothing: a constant added to every K entry adds a
+          // t-independent constant to every score, and softmax is invariant
+          // to that.
           %kr = arith.remf %ks2, %c5f : f32
           %kn = arith.mulf %kr, %scale : f32
           memref.store %kn, %Kc[%l, %t, %i] : memref<{layers}x{cache}x{dim}xf32>
@@ -159,9 +209,11 @@ module {{
         }}
       }}
     }}
-    scf.for %t = %c0 to %ccache step %c1 {{
-      memref.store %fzero, %Sv[%t] : memref<{cache}xf32>
-      memref.store %fzero, %Pv[%t] : memref<{cache}xf32>
+    scf.for %m = %c0 to %ctok step %c1 {{
+      scf.for %t = %c0 to %ccache step %c1 {{
+        memref.store %fzero, %Sv[%m, %t] : {ST}
+        memref.store %fzero, %Pv[%m, %t] : {ST}
+      }}
     }}
 
     // Reference for the whole chain, on the host.
@@ -171,10 +223,11 @@ module {{
     %refa = memref.alloc() : memref<{dim}xf32>
     %refq = memref.alloc() : memref<{dim}xf32>
     scf.for %l = %c0 to %clayers step %c1 {{
+     scf.for %m = %c0 to %ctok step %c1 {{
       // rmsnorm
       %ss = scf.for %i = %c0 to %cdim step %c1
           iter_args(%s = %fzero) -> (f32) {{
-        %v = memref.load %ref[%i] : memref<{dim}xf32>
+        %v = memref.load %ref[%m, %i] : {AT}
         %sq = arith.mulf %v, %v : f32
         %s2 = arith.addf %s, %sq : f32
         scf.yield %s2 : f32
@@ -186,11 +239,11 @@ module {{
       scf.for %j = %c0 to %cdim step %c1 {{
         %acc = scf.for %i = %c0 to %cdim step %c1
             iter_args(%s = %fzero) -> (f32) {{
-          %xv = memref.load %ref[%i] : memref<{dim}xf32>
+          %xv = memref.load %ref[%m, %i] : {AT}
           %rv = arith.divf %xv, %rms : f32
           %wv = memref.load %Wq[%l, %i, %j] : memref<{layers}x{dim}x{dim}xf32>
-          %m = arith.mulf %rv, %wv : f32
-          %s2 = arith.addf %s, %m : f32
+          %mu = arith.mulf %rv, %wv : f32
+          %s2 = arith.addf %s, %mu : f32
           scf.yield %s2 : f32
         }}
         memref.store %acc, %refq[%j] : memref<{dim}xf32>
@@ -201,17 +254,17 @@ module {{
             iter_args(%s = %fzero) -> (f32) {{
           %qv = memref.load %refq[%i] : memref<{dim}xf32>
           %kv = memref.load %Kc[%l, %t, %i] : memref<{layers}x{cache}x{dim}xf32>
-          %m = arith.mulf %qv, %kv : f32
-          %s2 = arith.addf %s, %m : f32
+          %mu = arith.mulf %qv, %kv : f32
+          %s2 = arith.addf %s, %mu : f32
           scf.yield %s2 : f32
         }}
         %sc = arith.mulf %dot, %invsqrtd : f32
         memref.store %sc, %refs[%t] : memref<{cache}xf32>
       }}
       %mx = scf.for %t = %c0 to %ccache step %c1
-          iter_args(%m = %negbig) -> (f32) {{
+          iter_args(%mv = %negbig) -> (f32) {{
         %v = memref.load %refs[%t] : memref<{cache}xf32>
-        %m2 = arith.maxnumf %m, %v : f32
+        %m2 = arith.maxnumf %mv, %v : f32
         scf.yield %m2 : f32
       }}
       %sum = scf.for %t = %c0 to %ccache step %c1
@@ -230,27 +283,40 @@ module {{
           %e = memref.load %refs[%t] : memref<{cache}xf32>
           %pp = arith.divf %e, %sum : f32
           %vv = memref.load %Vc[%l, %t, %j] : memref<{layers}x{cache}x{dim}xf32>
-          %m = arith.mulf %pp, %vv : f32
-          %s2 = arith.addf %s, %m : f32
+          %mu = arith.mulf %pp, %vv : f32
+          %s2 = arith.addf %s, %mu : f32
           scf.yield %s2 : f32
         }}
         memref.store %acc, %refa[%j] : memref<{dim}xf32>
       }}
-      // residual around attention: xa = x + a
-      scf.for %j = %c0 to %cdim step %c1 {{
-        %xv2 = memref.load %ref[%j] : memref<{dim}xf32>
+      // residual around attention, then the norm the MLP reads:
+      // xa = rmsnorm(x + a)
+      %ssa = scf.for %j = %c0 to %cdim step %c1
+          iter_args(%s = %fzero) -> (f32) {{
+        %xv2 = memref.load %ref[%m, %j] : {AT}
         %avv = memref.load %refa[%j] : memref<{dim}xf32>
         %xa = arith.addf %xv2, %avv : f32
-        memref.store %xa, %Xa[%j] : memref<{dim}xf32>
+        memref.store %xa, %Xa[%m, %j] : {AT}
+        %sqa = arith.mulf %xa, %xa : f32
+        %s2 = arith.addf %s, %sqa : f32
+        scf.yield %s2 : f32
+      }}
+      %meana = arith.divf %ssa, %fdim : f32
+      %mea = arith.addf %meana, %eps : f32
+      %rmsa = math.sqrt %mea : f32
+      scf.for %j = %c0 to %cdim step %c1 {{
+        %xv3 = memref.load %Xa[%m, %j] : {AT}
+        %xn = arith.divf %xv3, %rmsa : f32
+        memref.store %xn, %Xa[%m, %j] : {AT}
       }}
       // h = xa @ W1
       scf.for %j = %c0 to %cdim step %c1 {{
         %acc = scf.for %i = %c0 to %cdim step %c1
             iter_args(%s = %fzero) -> (f32) {{
-          %av = memref.load %Xa[%i] : memref<{dim}xf32>
+          %av = memref.load %Xa[%m, %i] : {AT}
           %wv = memref.load %W1[%l, %i, %j] : memref<{layers}x{dim}x{dim}xf32>
-          %m = arith.mulf %av, %wv : f32
-          %s2 = arith.addf %s, %m : f32
+          %mu = arith.mulf %av, %wv : f32
+          %s2 = arith.addf %s, %mu : f32
           scf.yield %s2 : f32
         }}
         memref.store %acc, %refh[%j] : memref<{dim}xf32>
@@ -262,23 +328,26 @@ module {{
           %hv = memref.load %refh[%i] : memref<{dim}xf32>
           %rl = arith.maxnumf %hv, %fzero : f32
           %wv = memref.load %W2[%l, %i, %j] : memref<{layers}x{dim}x{dim}xf32>
-          %m = arith.mulf %rl, %wv : f32
-          %s2 = arith.addf %s, %m : f32
+          %mu = arith.mulf %rl, %wv : f32
+          %s2 = arith.addf %s, %mu : f32
           scf.yield %s2 : f32
         }}
-        memref.store %acc, %Y[%j] : memref<{dim}xf32>
+        memref.store %acc, %Y[%m, %j] : {AT}
       }}
       // residual around the MLP: x = xa + y
       scf.for %j = %c0 to %cdim step %c1 {{
-        %xav = memref.load %Xa[%j] : memref<{dim}xf32>
-        %yv = memref.load %Y[%j] : memref<{dim}xf32>
+        %xav = memref.load %Xa[%m, %j] : {AT}
+        %yv = memref.load %Y[%m, %j] : {AT}
         %nx = arith.addf %xav, %yv : f32
-        memref.store %nx, %ref[%j] : memref<{dim}xf32>
+        memref.store %nx, %ref[%m, %j] : {AT}
       }}
+     }}
     }}
-    scf.for %i = %c0 to %cdim step %c1 {{
-      memref.store %fzero, %Y[%i] : memref<{dim}xf32>
-      memref.store %fzero, %Xa[%i] : memref<{dim}xf32>
+    scf.for %m = %c0 to %ctok step %c1 {{
+      scf.for %i = %c0 to %cdim step %c1 {{
+        memref.store %fzero, %Y[%m, %i] : {AT}
+        memref.store %fzero, %Xa[%m, %i] : {AT}
+      }}
     }}
 
     // Queues and events, sized by the chain rather than hand-counted.
@@ -306,35 +375,35 @@ module {{
       memref.store %zero, %E[%i] : memref<{events}xi32>
     }}
 
-    %dX = gpu.alloc () : memref<{dim}xf32>
-    %dR = gpu.alloc () : memref<{dim}xf32>
-    %dH = gpu.alloc () : memref<{dim}xf32>
-    %dY = gpu.alloc () : memref<{dim}xf32>
+    %dX = gpu.alloc () : {AT}
+    %dR = gpu.alloc () : {AT}
+    %dH = gpu.alloc () : {AT}
+    %dY = gpu.alloc () : {AT}
     %dWq = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dKc = gpu.alloc () : memref<{layers}x{cache}x{dim}xf32>
     %dVc = gpu.alloc () : memref<{layers}x{cache}x{dim}xf32>
-    %dQv = gpu.alloc () : memref<{dim}xf32>
-    %dSv = gpu.alloc () : memref<{cache}xf32>
-    %dPv = gpu.alloc () : memref<{cache}xf32>
-    %dAv = gpu.alloc () : memref<{dim}xf32>
-    %dXa = gpu.alloc () : memref<{dim}xf32>
+    %dQv = gpu.alloc () : {AT}
+    %dSv = gpu.alloc () : {ST}
+    %dPv = gpu.alloc () : {ST}
+    %dAv = gpu.alloc () : {AT}
+    %dXa = gpu.alloc () : {AT}
     %dW1 = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dW2 = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dQ = gpu.alloc () : memref<{layers}x{qslots}xi32>
     %dLoc = gpu.alloc () : memref<{locwords}xi32>
     %dE = gpu.alloc () : memref<{events}xi32>
-    gpu.memcpy %dX, %X : memref<{dim}xf32>, memref<{dim}xf32>
-    gpu.memcpy %dR, %R : memref<{dim}xf32>, memref<{dim}xf32>
-    gpu.memcpy %dH, %H : memref<{dim}xf32>, memref<{dim}xf32>
-    gpu.memcpy %dY, %Y : memref<{dim}xf32>, memref<{dim}xf32>
+    gpu.memcpy %dX, %X : {AT}, {AT}
+    gpu.memcpy %dR, %R : {AT}, {AT}
+    gpu.memcpy %dH, %H : {AT}, {AT}
+    gpu.memcpy %dY, %Y : {AT}, {AT}
     gpu.memcpy %dWq, %Wq : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dKc, %Kc : memref<{layers}x{cache}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>
     gpu.memcpy %dVc, %Vc : memref<{layers}x{cache}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>
-    gpu.memcpy %dQv, %Qv : memref<{dim}xf32>, memref<{dim}xf32>
-    gpu.memcpy %dSv, %Sv : memref<{cache}xf32>, memref<{cache}xf32>
-    gpu.memcpy %dPv, %Pv : memref<{cache}xf32>, memref<{cache}xf32>
-    gpu.memcpy %dAv, %Av : memref<{dim}xf32>, memref<{dim}xf32>
-    gpu.memcpy %dXa, %Xa : memref<{dim}xf32>, memref<{dim}xf32>
+    gpu.memcpy %dQv, %Qv : {AT}, {AT}
+    gpu.memcpy %dSv, %Sv : {ST}, {ST}
+    gpu.memcpy %dPv, %Pv : {ST}, {ST}
+    gpu.memcpy %dAv, %Av : {AT}, {AT}
+    gpu.memcpy %dXa, %Xa : {AT}, {AT}
     gpu.memcpy %dW1, %W1 : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dW2, %W2 : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
@@ -367,39 +436,46 @@ module {{
     gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
       // The chain rewrites x in place, so a second repetition would start from
       // the first one's output rather than the input.
-      gpu.memcpy %dX, %X0 : memref<{dim}xf32>, memref<{dim}xf32>
+      gpu.memcpy %dX, %X0 : {AT}, {AT}
       func.call @chain(%dQ, %dE, %dX, %dR, %dH, %dY, %dW1, %dW2,
                        %dWq, %dKc, %dVc, %dQv, %dSv, %dPv, %dAv, %dXa, %dLoc)
-        : (memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
-           memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
+        : (memref<{layers}x{qslots}xi32>, memref<{events}xi32>, {AT},
+           {AT}, {AT}, {AT},
            memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
            memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
-           memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
-           memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-           memref<{dim}xf32>, memref<{locwords}xi32>) -> ()
+           memref<{layers}x{cache}x{dim}xf32>, {AT},
+           {ST}, {ST}, {AT},
+           {AT}, memref<{locwords}xi32>) -> ()
     }}
 
-    gpu.memcpy %X, %dX : memref<{dim}xf32>, memref<{dim}xf32>
+    gpu.memcpy %X, %dX : {AT}, {AT}
 
     %tol = arith.constant 2.0e-2 : f32
     %fone = arith.constant 1.0 : f32
-    %bad = scf.for %i = %c0 to %cdim step %c1
-        iter_args(%b = %zero) -> (i32) {{
-      %got = memref.load %X[%i] : memref<{dim}xf32>
-      %want = memref.load %ref[%i] : memref<{dim}xf32>
-      %d = arith.subf %got, %want : f32
-      %ad = math.absf %d : f32
-      %aw = math.absf %want : f32
-      %sc = arith.maxnumf %aw, %fone : f32
-      %rel = arith.divf %ad, %sc : f32
-      %ok = arith.cmpf ole, %rel, %tol : f32
-      %inc = arith.select %ok, %zero, %one : i32
-      %b2 = arith.addi %b, %inc : i32
-      scf.yield %b2 : i32
+    %bad = scf.for %m = %c0 to %ctok step %c1
+        iter_args(%bo = %zero) -> (i32) {{
+      %bi = scf.for %i = %c0 to %cdim step %c1
+          iter_args(%b = %bo) -> (i32) {{
+        %got = memref.load %X[%m, %i] : {AT}
+        %want = memref.load %ref[%m, %i] : {AT}
+        %d = arith.subf %got, %want : f32
+        %ad = math.absf %d : f32
+        %aw = math.absf %want : f32
+        %sc = arith.maxnumf %aw, %fone : f32
+        %rel = arith.divf %ad, %sc : f32
+        %ok = arith.cmpf ole, %rel, %tol : f32
+        %inc = arith.select %ok, %zero, %one : i32
+        %b2 = arith.addi %b, %inc : i32
+        scf.yield %b2 : i32
+      }}
+      scf.yield %bi : i32
     }}
     vector.print str "layers = "
     %nl = arith.constant {layers} : i32
     vector.print %nl : i32
+    vector.print str "tokens = "
+    %ntk = arith.constant {tokens} : i32
+    vector.print %ntk : i32
     gpu.memcpy %Loc, %dLoc : memref<{locwords}xi32>, memref<{locwords}xi32>
     %cflush = arith.constant {flushword} : index
     %flushes = memref.load %Loc[%cflush] : memref<{locwords}xi32>
@@ -418,36 +494,36 @@ module {{
         f"        %L{i} = arith.constant {i} : index" for i in range(layers))
     w(f"""
   func.func @chain(%Q: memref<{layers}x{qslots}xi32>, %E: memref<{events}xi32>,
-                   %X: memref<{dim}xf32>, %Rv: memref<{dim}xf32>,
-                   %Hv: memref<{dim}xf32>, %Yv: memref<{dim}xf32>,
+                   %X: {AT}, %Rv: {AT},
+                   %Hv: {AT}, %Yv: {AT},
                    %W1: memref<{layers}x{dim}x{dim}xf32>, %W2: memref<{layers}x{dim}x{dim}xf32>,
                    %Wq: memref<{layers}x{dim}x{dim}xf32>,
                    %Kc: memref<{layers}x{cache}x{dim}xf32>,
                    %Vc: memref<{layers}x{cache}x{dim}xf32>,
-                   %Qv: memref<{dim}xf32>, %Sv: memref<{cache}xf32>,
-                   %Pv: memref<{cache}xf32>, %Av: memref<{dim}xf32>,
-                   %Xa: memref<{dim}xf32>, %Loc: memref<{locwords}xi32>) {{
+                   %Qv: {AT}, %Sv: {ST},
+                   %Pv: {ST}, %Av: {AT},
+                   %Xa: {AT}, %Loc: memref<{locwords}xi32>) {{
     %c1 = arith.constant 1 : index
     %cw = arith.constant {workers} : index
     air.launch (%bx, %by) in (%nbx=%cw, %nby=%c1)
         args(%q=%Q, %eb=%E, %x=%X, %r=%Rv, %h=%Hv, %y=%Yv, %w1=%W1, %w2=%W2,
              %wq=%Wq, %kc=%Kc, %vc=%Vc, %qv=%Qv, %sv=%Sv, %pv=%Pv, %av=%Av, %xab=%Xa, %loc=%Loc)
-        : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
-          memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
+        : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, {AT},
+          {AT}, {AT}, {AT},
           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
-          memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
-          memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-          memref<{dim}xf32>, memref<{locwords}xi32> {{
+          memref<{layers}x{cache}x{dim}xf32>, {AT},
+          {ST}, {ST}, {AT},
+          {AT}, memref<{locwords}xi32> {{
       air.segment @worker args(%sq=%q, %se=%eb, %sx=%x, %sr=%r, %sh=%h, %sy=%y, %sw1=%w1, %sw2=%w2,
                                %swq=%wq, %skc=%kc, %svc=%vc, %sqv=%qv, %ssv=%sv, %spv=%pv, %sav=%av, %sxa=%xab, %sloc=%loc)
-          : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
-            memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
+          : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, {AT},
+            {AT}, {AT}, {AT},
             memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
             memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
-            memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
-            memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-          memref<{dim}xf32>, memref<{locwords}xi32> {{
+            memref<{layers}x{cache}x{dim}xf32>, {AT},
+            {ST}, {ST}, {AT},
+          {AT}, memref<{locwords}xi32> {{
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
         %c2_s = arith.constant 2 : index
@@ -458,6 +534,11 @@ module {{
         %one_s = arith.constant 1 : i32
         %zero_s = arith.constant 0 : i32
         %ntasks = arith.constant {tasks} : i32
+        %ctok_s = arith.constant {tokens} : index
+        // A stage's pieces are the (token, n-slice) grid, so the event it
+        // signals counts tokens * slices.
+        %ntasks_t = arith.constant {tokens * tasks} : i32
+        %ncache_t = arith.constant {tokens * cache} : i32
         %n1 = arith.constant 1 : i32
         %fzero_s = arith.constant 0.0 : f32
         %eps_s = arith.constant 1.0e-6 : f32
@@ -512,6 +593,22 @@ module {{
     # already holds. A die that runs out steals from the others, which is what
     # keeps this correct when the dispatcher does not use every die: locality is
     # a preference here, not an assumption.
+    #
+    # With `tokens` > 1 a piece is an (m, n) pair and the order the die walks
+    # them in matters. Fleet sweeps M fast and N slow
+    # (gang_linear_mi300.cuh:75-76, full-M-major so its window W is m_tiles):
+    #
+    #     m_tile = local % win_h        n_tile = local / win_h
+    #
+    # so `win_h` consecutive claims land on the same n -- the same block of
+    # weight rows -- with different tokens. The block is read into the die's
+    # cache once and serves all of them. Walking N fast instead computes the
+    # same numbers while pulling a different weight block on every claim.
+    #
+    # Applied here to the die's own claim counter rather than a global tile id,
+    # because that counter is what a die's workgroups share. At tokens == 1
+    # this is m = 0, n = k, which is the index arithmetic the decode chain
+    # already had -- so M = 1 stays byte-for-byte what it was.
     def strided_stage(l, stage, ev, count_expr, total_const, body):
         return f"""
           // stage {stage}
@@ -529,7 +626,11 @@ module {{
             ^bb0(%g: i1, %acc: i32):
               %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hidx] : (i32, memref<{layers}x{qslots}xi32>) -> i32
               %k = arith.index_cast %cl : i32 to index
-              %kstride = arith.muli %k, %cmaxdies : index
+              // M fast, N slow: the token moves every claim, the weight block
+              // only every `tokens` claims.
+              %m = arith.remui %k, %ctok_s : index
+              %kn = arith.divui %k, %ctok_s : index
+              %kstride = arith.muli %kn, %cmaxdies : index
               %ix = arith.addi %d, %kstride : index
               %has = arith.cmpi ult, %ix, {count_expr} : index
               %acc2 = scf.if %has -> i32 {{
@@ -590,16 +691,16 @@ module {{
                   %j = arith.addi %j0, %jj : index
                   %a = scf.for %i = %c0_s to %cdim_s step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
-                    %lv = memref.load {lhs}[%i] : memref<{dim}xf32>
+                    %lv = memref.load {lhs}[%m, %i] : {AT}
                     {act}
                     %wv = memref.load {wmat}[%L{l}, %i, %j] {{nontemporal = true}} : {wtype}
-                    %m = arith.mulf %la, %wv : f32
-                    %s2 = arith.addf %sacc, %m : f32
+                    %mp = arith.mulf %la, %wv : f32
+                    %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
                   }}
-                  memref.store %a, {out}[%j] : memref<{dim}xf32>
+                  memref.store %a, {out}[%m, %j] : {AT}
                 }}"""
-        return strided_stage(l, stage, ev, "%ctasks", "%ntasks", body)
+        return strided_stage(l, stage, ev, "%ctasks", "%ntasks_t", body)
 
     for l in range(layers):
         base = stages * l
@@ -611,20 +712,22 @@ module {{
           %cl{l}_0 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle0_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_0 = arith.cmpi eq, %cl{l}_0, %zero_s : i32
           scf.if %mine{l}_0 {{
-            %ss{l} = scf.for %i = %c0_s to %cdim_s step %c1_s
-                iter_args(%s = %fzero_s) -> (f32) {{
-              %v = memref.load %sx[%i] : memref<{dim}xf32>
-              %sq2 = arith.mulf %v, %v : f32
-              %s2 = arith.addf %s, %sq2 : f32
-              scf.yield %s2 : f32
-            }}
-            %mean{l} = arith.divf %ss{l}, %fdim_s : f32
-            %me{l} = arith.addf %mean{l}, %eps_s : f32
-            %rms{l} = math.sqrt %me{l} : f32
-            scf.for %i = %c0_s to %cdim_s step %c1_s {{
-              %v = memref.load %sx[%i] : memref<{dim}xf32>
-              %n = arith.divf %v, %rms{l} : f32
-              memref.store %n, %sr[%i] : memref<{dim}xf32>
+            scf.for %m = %c0_s to %ctok_s step %c1_s {{
+              %ss{l} = scf.for %i = %c0_s to %cdim_s step %c1_s
+                  iter_args(%s = %fzero_s) -> (f32) {{
+                %v = memref.load %sx[%m, %i] : {AT}
+                %sq2 = arith.mulf %v, %v : f32
+                %s2 = arith.addf %s, %sq2 : f32
+                scf.yield %s2 : f32
+              }}
+              %mean{l} = arith.divf %ss{l}, %fdim_s : f32
+              %me{l} = arith.addf %mean{l}, %eps_s : f32
+              %rms{l} = math.sqrt %me{l} : f32
+              scf.for %i = %c0_s to %cdim_s step %c1_s {{
+                %v = memref.load %sx[%m, %i] : {AT}
+                %n = arith.divf %v, %rms{l} : f32
+                memref.store %n, %sr[%m, %i] : {AT}
+              }}
             }}
             %sig{l}_0 = llvm.atomicrmw add %p{l}_0, %n1 syncscope("") release : !llvm.ptr, i32
           }}
@@ -640,17 +743,17 @@ module {{
                        f"memref<{layers}x{dim}x{dim}xf32>", False))
 
         # stage 2: one score per cache entry, claimed per die like the rest.
-        w(strided_stage(l, 2, base + 2, "%ccache_s", "%ncache",
+        w(strided_stage(l, 2, base + 2, "%ccache_s", "%ncache_t",
                         f"""                %dot = scf.for %i = %c0_s to %cdim_s step %c1_s
                     iter_args(%sdot = %fzero_s) -> (f32) {{
-                  %qv2 = memref.load %sqv[%i] : memref<{dim}xf32>
+                  %qv2 = memref.load %sqv[%m, %i] : {AT}
                   %kv = memref.load %skc[%L{l}, %ix, %i] {{nontemporal = true}} : memref<{layers}x{cache}x{dim}xf32>
-                  %m = arith.mulf %qv2, %kv : f32
-                  %s2 = arith.addf %sdot, %m : f32
+                  %mp = arith.mulf %qv2, %kv : f32
+                  %s2 = arith.addf %sdot, %mp : f32
                   scf.yield %s2 : f32
                 }}
                 %sc = arith.mulf %dot, %invsqrtd_s : f32
-                memref.store %sc, %ssv[%ix] : memref<{cache}xf32>"""))
+                memref.store %sc, %ssv[%m, %ix] : {ST}"""))
 
         w(f"""
           // stage 3: softmax. One task -- it reduces over every score.
@@ -659,25 +762,27 @@ module {{
           %cl{l}_3 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle3_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_3 = arith.cmpi eq, %cl{l}_3, %zero_s : i32
           scf.if %mine{l}_3 {{
-            %mx{l} = scf.for %t = %c0_s to %ccache_s step %c1_s
-                iter_args(%m = %negbig_s) -> (f32) {{
-              %v = memref.load %ssv[%t] : memref<{cache}xf32>
-              %m2 = arith.maxnumf %m, %v : f32
-              scf.yield %m2 : f32
-            }}
-            %sum{l} = scf.for %t = %c0_s to %ccache_s step %c1_s
-                iter_args(%sm = %fzero_s) -> (f32) {{
-              %v = memref.load %ssv[%t] : memref<{cache}xf32>
-              %d = arith.subf %v, %mx{l} : f32
-              %e = math.exp %d : f32
-              memref.store %e, %spv[%t] : memref<{cache}xf32>
-              %s2 = arith.addf %sm, %e : f32
-              scf.yield %s2 : f32
-            }}
-            scf.for %t = %c0_s to %ccache_s step %c1_s {{
-              %en = memref.load %spv[%t] : memref<{cache}xf32>
-              %pn = arith.divf %en, %sum{l} : f32
-              memref.store %pn, %spv[%t] : memref<{cache}xf32>
+            scf.for %m = %c0_s to %ctok_s step %c1_s {{
+              %mx{l} = scf.for %t = %c0_s to %ccache_s step %c1_s
+                  iter_args(%mv = %negbig_s) -> (f32) {{
+                %v = memref.load %ssv[%m, %t] : {ST}
+                %m2 = arith.maxnumf %mv, %v : f32
+                scf.yield %m2 : f32
+              }}
+              %sum{l} = scf.for %t = %c0_s to %ccache_s step %c1_s
+                  iter_args(%sm = %fzero_s) -> (f32) {{
+                %v = memref.load %ssv[%m, %t] : {ST}
+                %d = arith.subf %v, %mx{l} : f32
+                %e = math.exp %d : f32
+                memref.store %e, %spv[%m, %t] : {ST}
+                %s2 = arith.addf %sm, %e : f32
+                scf.yield %s2 : f32
+              }}
+              scf.for %t = %c0_s to %ccache_s step %c1_s {{
+                %en = memref.load %spv[%m, %t] : {ST}
+                %pn = arith.divf %en, %sum{l} : f32
+                memref.store %pn, %spv[%m, %t] : {ST}
+              }}
             }}
             %sig{l}_3 = llvm.atomicrmw add %p{l}_3, %n1 syncscope("") release : !llvm.ptr, i32
           }}
@@ -691,24 +796,46 @@ module {{
 
         # stage 4: the attention-weighted sum of V, claimed like the
         # matmuls so it signals the same way they do.
-        w(strided_stage(l, 4, base + 4, "%ctasks", "%ntasks",
-                        f'                %j0 = arith.muli %ix, %cslice : index\n                scf.for %jj = %c0_s to %cslice step %c1_s {{\n                  %j = arith.addi %j0, %jj : index\n                  %a = scf.for %t = %c0_s to %ccache_s step %c1_s\n                      iter_args(%sacc = %fzero_s) -> (f32) {{\n                    %pn = memref.load %spv[%t] : memref<{cache}xf32>\n                    %vv = memref.load %svc[%L{l}, %t, %j] {{nontemporal = true}} : memref<{layers}x{cache}x{dim}xf32>\n                    %m = arith.mulf %pn, %vv : f32\n                    %s2 = arith.addf %sacc, %m : f32\n                    scf.yield %s2 : f32\n                  }}\n                  memref.store %a, %sav[%j] : memref<{dim}xf32>\n                }}'))
+        w(strided_stage(l, 4, base + 4, "%ctasks", "%ntasks_t",
+                        f'                %j0 = arith.muli %ix, %cslice : index\n                scf.for %jj = %c0_s to %cslice step %c1_s {{\n                  %j = arith.addi %j0, %jj : index\n                  %a = scf.for %t = %c0_s to %ccache_s step %c1_s\n                      iter_args(%sacc = %fzero_s) -> (f32) {{\n                    %pn = memref.load %spv[%m, %t] : {ST}\n                    %vv = memref.load %svc[%L{l}, %t, %j] {{nontemporal = true}} : memref<{layers}x{cache}x{dim}xf32>\n                    %mp = arith.mulf %pn, %vv : f32\n                    %s2 = arith.addf %sacc, %mp : f32\n                    scf.yield %s2 : f32\n                  }}\n                  memref.store %a, %sav[%m, %j] : {AT}\n                }}'))
 
 
-        # stage 5: the residual around attention. One task; it is elementwise
-        # but it reads x, which the MLP stages are about to overwrite.
+        # stage 5: the residual around attention and the norm in front of the
+        # MLP. One task: the norm is a reduction, and it reads x, which the MLP
+        # stages are about to overwrite.
+        #
+        # The norm is not decoration. Without it nothing renormalises the
+        # residual stream -- stage 0's rmsnorm feeds only the q projection --
+        # so the stream grows or decays geometrically with depth, and since the
+        # host comparison is relative, a stream in the thousands hides every
+        # error smaller than itself. A real decoder layer has this norm too.
         w(f"""
-          // stage 5: xa = x + a, the residual around attention.
+          // stage 5: xa = rmsnorm(x + a), the residual around attention and
+          // the norm the MLP reads.
           %hsingle5_{l} = arith.constant {5*maxdies} : index
           %p{l}_5 = llvm.getelementptr %evptr[{4*(base+5)}] : (!llvm.ptr) -> !llvm.ptr, i8
           %cl{l}_5 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle5_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_5 = arith.cmpi eq, %cl{l}_5, %zero_s : i32
           scf.if %mine{l}_5 {{
-            scf.for %i = %c0_s to %cdim_s step %c1_s {{
-              %xv = memref.load %sx[%i] : memref<{dim}xf32>
-              %avv = memref.load %sav[%i] : memref<{dim}xf32>
-              %xa = arith.addf %xv, %avv : f32
-              memref.store %xa, %sxa[%i] : memref<{dim}xf32>
+            scf.for %m = %c0_s to %ctok_s step %c1_s {{
+              %ssa{l} = scf.for %i = %c0_s to %cdim_s step %c1_s
+                  iter_args(%s = %fzero_s) -> (f32) {{
+                %xv = memref.load %sx[%m, %i] : {AT}
+                %avv = memref.load %sav[%m, %i] : {AT}
+                %xa = arith.addf %xv, %avv : f32
+                memref.store %xa, %sxa[%m, %i] : {AT}
+                %sqa = arith.mulf %xa, %xa : f32
+                %s2 = arith.addf %s, %sqa : f32
+                scf.yield %s2 : f32
+              }}
+              %meana{l} = arith.divf %ssa{l}, %fdim_s : f32
+              %mea{l} = arith.addf %meana{l}, %eps_s : f32
+              %rmsa{l} = math.sqrt %mea{l} : f32
+              scf.for %i = %c0_s to %cdim_s step %c1_s {{
+                %xv3 = memref.load %sxa[%m, %i] : {AT}
+                %xn = arith.divf %xv3, %rmsa{l} : f32
+                memref.store %xn, %sxa[%m, %i] : {AT}
+              }}
             }}
             %sig{l}_5 = llvm.atomicrmw add %p{l}_5, %n1 syncscope("") release : !llvm.ptr, i32
           }}
@@ -732,11 +859,13 @@ module {{
           %cl{l}_8 = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hsingle8_{l}] : (i32, memref<{layers}x{qslots}xi32>) -> i32
           %mine{l}_8 = arith.cmpi eq, %cl{l}_8, %zero_s : i32
           scf.if %mine{l}_8 {{
-            scf.for %i = %c0_s to %cdim_s step %c1_s {{
-              %xav = memref.load %sxa[%i] : memref<{dim}xf32>
-              %v = memref.load %sy[%i] : memref<{dim}xf32>
-              %nx = arith.addf %xav, %v : f32
-              memref.store %nx, %sx[%i] : memref<{dim}xf32>
+            scf.for %m = %c0_s to %ctok_s step %c1_s {{
+              scf.for %i = %c0_s to %cdim_s step %c1_s {{
+                %xav = memref.load %sxa[%m, %i] : {AT}
+                %v = memref.load %sy[%m, %i] : {AT}
+                %nx = arith.addf %xav, %v : f32
+                memref.store %nx, %sx[%m, %i] : {AT}
+              }}
             }}
             %sig{l}_8 = llvm.atomicrmw add %p{l}_8, %n1 syncscope("") release : !llvm.ptr, i32
           }}
@@ -773,12 +902,17 @@ def main() -> int:
                     help="resident workgroups; must fit the device at once")
     ap.add_argument("--cache", type=int, default=32,
                     help="KV cache length the attention stage reads")
+    ap.add_argument("--tokens", type=int, default=1,
+                    help="tokens in flight (M). 1 is a decode step; >1 is a "
+                         "prefill or speculative window, and is what makes the "
+                         "M-major traversal do anything")
     ap.add_argument("--repeat", type=int, default=1,
                     help="how many times to launch the chain, for timing: "
                          "--layers 36 --repeat 1 is one launch doing 36 layers, "
                          "--layers 1 --repeat 36 is 36 launches doing one each")
     a = ap.parse_args()
-    sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat, a.cache))
+    sys.stdout.write(
+        emit(a.layers, a.dim, a.tasks, a.workers, a.repeat, a.cache, a.tokens))
     return 0
 
 

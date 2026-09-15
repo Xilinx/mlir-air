@@ -27,6 +27,14 @@ TIMEOUT="${TIMEOUT:-600}"
 # its output with "<something> = <count>".
 declare -A EXPECT=( [4k_4k_mul]="Output Matched!" )
 
+# A test name is a directory under test/gpu/ unless it appears here, which lets
+# one generator be run in more than one configuration. Both configurations have
+# to be in the suite: M = 1 and M > 1 take different paths through the piece
+# decomposition, and the one that only M > 1 reaches is the one that carries
+# Fleet's traversal.
+declare -A DIR=( [megakernel_gen_prefill]=megakernel_gen )
+declare -A ENVV=( [megakernel_gen_prefill]="TOKENS=4 LAYERS=2" )
+
 TESTS=(
   4k_4k_mul
   chiplet_identity
@@ -40,6 +48,7 @@ TESTS=(
   megakernel_decode
   megakernel_attention
   megakernel_gen
+  megakernel_gen_prefill
   gang_task
   scheduler_broadcast
   gang_mmajor
@@ -49,8 +58,8 @@ fails=0
 for t in "${TESTS[@]}"; do
   printf '%-24s ' "$t"
   log=$(mktemp)
-  if ! TMPDIR="${TMPDIR_BASE:-/tmp}/air_runall_$t" timeout "$TIMEOUT" \
-        bash "$SCRIPT_DIR/$t/run.sh" > "$log" 2>&1; then
+  if ! env TMPDIR="${TMPDIR_BASE:-/tmp}/air_runall_$t" ${ENVV[$t]:-} timeout "$TIMEOUT" \
+        bash "$SCRIPT_DIR/${DIR[$t]:-$t}/run.sh" > "$log" 2>&1; then
     echo "FAIL (runner exited nonzero; $log)"
     fails=$((fails + 1))
     continue
