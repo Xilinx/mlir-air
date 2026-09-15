@@ -1,0 +1,49 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// GEMMA4-E2B Q4NX profiling: build the prefill ELFs, run the prefill at CTX and
+// capture the result into gemma4_e2b_q4nx.perf.json via bench/extract_perf.py
+// (collected by the nightly LLM benchmark). Weights come from the model.q4nx
+// bundle pre-seeded into the runner's HF cache.
+//
+// TTFT ONLY, and that is the difference from the sibling profile tests. Theirs
+// measures TTFT *and* decode tok/s over N generated tokens, so extract_perf.py
+// records decode_tokens_per_sec as null here.
+//
+// NOT because the driver is missing -- gemma4_e2b_q4nx_inference.py exists and
+// `make profile` measures both halves, which is why this test deliberately runs
+// `profile-prefill` instead. It is #1984: the full-depth 35-wave decode dispatch
+// hangs on THIS RUNNER (amdxdna 2.21.0) while being clean on a development box
+// (2.23.0), the same defect that puts every point of run_npu2_sweep.lit in
+// --expect-fail. Measuring decode here would redden a nightly for a defect that
+// is not in this model's code. WHEN #1984 IS FIXED, point the RUN line back at
+// `profile`, pass --n-tokens 64 to extract_perf.py, and add a CHECK on a parsed
+// decode_tokens_per_sec.
+//
+// The nightly derives its per-model row from <model>.perf.json, and for a model
+// that ran verify but produced no perf.json it synthesizes an all-null row whose
+// documented meaning is "this model's profile compile/run failed". Gemma4's
+// prefill does not fail -- so without this test the dashboard would report a
+// working engine as a broken one. A real TTFT and a null tok/s says what is
+// actually true.
+//
+// Builds compile-prefill, not compile: no decode template is needed for a TTFT
+// measurement, and building one would pull in that 35-wave dispatch.
+//
+// Perf is best-effort; this test gates only that profiling ran end to end.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hfweights_fastflowlm_gemma4_e2b_it_npu2
+//
+// RUN: mkdir -p test_npu2_profile
+// RUN: cd test_npu2_profile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile profile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | tee profile.txt
+// RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model gemma4_e2b_q4nx --n-tokens 0 > gemma4_e2b_q4nx.perf.json
+// RUN: FileCheck %s < gemma4_e2b_q4nx.perf.json
+// CHECK: "model": "gemma4_e2b_q4nx"
+// A parsed TTFT, not just a well-formed file: the whole point of this test is
+// that the row carries a real number, so if the driver's TTFT line ever drifts
+// out of extract_perf.py's regex this must go red rather than publish the null
+// row it exists to prevent.
+// CHECK: "ttft_ms": {{[0-9]}}

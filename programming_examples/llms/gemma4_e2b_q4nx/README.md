@@ -3,24 +3,35 @@
 FastFlowLM's 4-bit `model.q4nx` bundle for Gemma4-E2B, running on the NPU
 through the [`fused_decode_ple`](../../fused_decode_ple) engine.
 
-**This example is partial, and the target list says which half is which.** The
-decoder layer runs on the NPU and is gated there per layer. There is no prefill
-engine and no token-level generation on device yet, so the `run` / `ask` /
-`profile` targets the other `llms/` examples carry are deliberately absent
-rather than present and broken -- each of them times or generates through a
-prefill.
+Both halves run on the NPU: the prefill end to end, and the decode token by
+token through a single 35-layer dispatch.
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # must be >= 22.0.0, see Reproducibility
-make compile               # build the decode template (weight-free)
-make verify                # the on-device gate: every layer class
+make compile               # prefill ELFs + both decode templates
+make run                   # generate on device; gated on the Paris continuation
+make ask PROMPT="..."      # a single Q&A turn
+make prefill               # prefill only, gated vs the CPU reference
+make profile               # TTFT + decode tok/s into the nightly's perf.json row
+make verify                # the on-device decode gate: every layer class
 make layer-gate            # just the own-KV classes
 make layer-gate-shared     # just the KV-shared classes
+make verify-topk           # the shared top-k gate vs the bf16 HF reference
 make help                  # everything else
 ```
 
+**Two decode templates, and they are not interchangeable.** `compile-decode`
+builds the layer gate's -- ONE decoder layer, left in the engine directory.
+`compile-decode-full` builds the token driver's -- all 35 layers, left here as
+`decode_L<N>.{xclbin,insts.bin}`. Pointing the driver at the gate's template does
+not fail; it dispatches a 1/35-scale model.
+
 `make verify` here scores the decoder layer per class against a numpy reference
-rather than running the siblings' top-k token-set check, which needs a prefill.
+rather than the siblings' top-k token-set check. That check is available as
+`make verify-topk` / `make verify-full`, but it is not what `verify` runs: the
+layer gate needs no second checkpoint, and the top-k one downloads a bf16
+Gemma4-E2B. Two gates over different things, neither subsuming the other. See
+[The top-k gate](#the-top-k-gate) for why `verify-topk` currently fails.
 
 ## What makes this model need its own engine
 
@@ -98,19 +109,138 @@ The bundle carries **two** codecs — Codec B (I8, packed) for the projections a
 lm_head, int8 group-32 with an f32 per-group scale for the two embedding tables
 — and `model.per_layer_token_embd.weight` is already pre-scaled by `sqrt(256)`.
 
-## Not here yet
+## Prefill
 
-Prefill, token-level generation on device, a top-k verify against an HF bf16
-reference, and everything on the [LLM benchmark
-page](https://xilinx.github.io/mlir-air/llms/) -- TTFT, profile, and the decode
-throughput curve.
+`gemma4_e2b_q4nx_prefill.py` builds 22 ELFs and runs the whole prompt on the
+NPU: RMSNorm, Q/K/V, per-head QK-norm, the weightless value-norm, RoPE, MQA
+flash attention, the GELU-tanh GLU, the per-layer-embedding branch and the LM
+head. `make prefill` scores the full 262144-wide logit vector against
+`gemma4_e2b_q4nx_weights.forward_prompt`; measured **cosine 0.998582**, argmax
+9079 `' Paris'`.
 
-TTFT and profile need a prefill engine this example does not have. The decode
-sweep does not, and `_compile_decode_build` here builds exactly what it wants
-(the full 35-wave decode, not the layer gate's single wave) -- but the dispatch
-hangs nondeterministically on the benchmark runner: ERT_CMD_STATE_TIMEOUT on
-~40% of attempts at 4-5 waves, which compounds to near-certain failure at 35.
-The same binaries run clean on a development box, so a sweep lit cannot be
-landed until that is understood. Reproduce with:
+Twenty-two rather than Gemma3-4B's eight, because the per-layer class map
+reaches the ELF shapes: every attention-shaped ELF is built at head_dim 256 and
+512, every FFN-shaped one at 6144 and 12288, plus the three PLE stages.
+
+Two device constraints are worth knowing before changing the tiling:
+
+- **One GEMM per ELF.** Two GEMM slices stitched into one ELF returned partial
+  NaN nondeterministically -- the same binary and inputs, clean on 2 of 4
+  repeats. Q, K and V therefore each get their own ELF rather than sharing the
+  siblings' fused `rms_qkv_qknorm_rope`.
+- **Narrow GEMMs take fewer herd columns, not a smaller tile.** At N=256 the
+  4-column/64-wide shape was nondeterministic the same way; 2 columns x 128 is
+  stable over repeats and more accurate. See `gemm_herd_n`.
+
+The 28 sliding layers and the 7 full layers differ in head_dim (256 / 512), and
+512 is a head dim no other model here builds -- `shared/infra/fa_headfirst`
+gained a `_FA_TILING[512]` entry for it, verified on device at cos 0.999700
+against a float64 SDPA reference.
+
+## Decode
+
+`gemma4_e2b_q4nx_inference.py` runs the prefill, seeds the device KV cache from
+it, and then dispatches one token at a time: all 35 decoder layers, the PLE
+branch and the 4-bit LM head in a single dispatch per token. One template built
+at `RUN_LBUILD` serves every context length in `[1, ATTN_MAXL]`; the
+L-dependent instruction words are patched per token.
+
+`make run` is the gate. Greedy from `<bos> The capital of France is`, it must
+produce `[9079, 236761]` -- `' Paris.'` -- and then stop on `<end_of_turn>`.
+That sequence is not merely recorded from a device run: the CPU oracle
+(`forward_prompt`, re-run on the growing prompt) emits exactly
+`[9079, 236761, 106]`.
+
+**The gate covers the stop, not just the tokens,** because two of them is a
+short sequence and the failure mode here is a correct first token followed by
+plausible garbage. The first token comes from the *prefill*, so it passes even
+when the decode is broken -- seeding the KV cache without the padded-head
+interleave produced `' Parisнии est le Humदा is a het de'`.
+
+**The KV hand-off is the part with no sibling.** Every device KV row is
+`REGION_W = 1024 = 2 CUs x 512`, and the single MQA head is replicated into both
+halves. A sliding layer's head is 256 wide and does *not* sit contiguously in
+its 512-wide slot: it is scattered as `[real_lo | zeros | real_hi | zeros]` so
+that the rope kernel's fixed `(i, i+256)` pairing lands on the real `(i, i+128)`
+pairs. `seed_kv` is the only place that knows this, and getting it wrong seeds
+plausible garbage rather than raising.
+
+Measured here end to end (`make profile`, 64 tokens from a 6-token prompt):
+TTFT **4.505 s**, decode **19.72 tok/s**. That sits just above the synthetic
+sweep's 18.21 tok/s at 1k context, which is what a 70-slot cache against a
+1024-slot one should look like.
+
+## The top-k gate
+
+`verify_adapter.py` wires this example into the shared `verify/` subsystem, and
+`make diagnosis` passes through it. **`make verify-topk` does not, and the cause
+is the prompt, not the device.**
+
+`verify_runner` tokenizes with `tok.encode(prompt)`, and the Gemma4 tokenizer
+adds no `<bos>` -- which is exactly why every other entry point here (the prefill
+driver, `run_reference.py`, the inference driver) prepends `2` by hand. Without
+it the model is out of distribution and its logits go near-flat. At the first
+divergence the NPU's top-5 was `[4092, 4094, 4095, 4096, 4098]`: a run of
+consecutive ids, which is what a flat logit vector looks like.
+
+The evidence that this is the **model** and not the implementation: on that same
+prompt the CPU oracle for this bundle -- `forward_prompt`, no NPU involved --
+emits `[786, 786, 786, 786]`. A degenerate q4nx model cannot match bf16 top-5 no
+matter what runs it. Re-tokenized with `<bos>`, the NPU generates `'?\n\nA GPU ('`
+and the oracle `' is a ...'`: both fluent, differing at a near-tie the prefill's
+0.998582 logit cosine easily flips.
+
+So: triage any failure here by re-running the same ids through `forward_prompt`
+before suspecting the decode. `make run` is the gate that matches that oracle
+token for token.
+
+## Benchmarks
+
+Both curves the [LLM benchmark page](https://xilinx.github.io/mlir-air/llms/)
+carries are wired up:
+
+- `run_npu2_prefill_sweep.lit` -- TTFT vs padded prompt length. Measured here:
+  512 -> 1184 ms (432 tok/s), 1024 -> 2177 ms (470 tok/s), 2048 -> 4719 ms
+  (434 tok/s), first-token gate passing at every length.
+- `run_npu2_sweep.lit` -- decode tok/s vs KV depth, all 35 layers. Measured
+  here: 18.21 / 16.27 / 13.39 / 9.91 / 6.52 / 3.87 / 2.14 tok/s at
+  1k / 2k / 4k / 8k / 16k / 32k / 64k; 128k is out of reach.
+
+The decode sweep's points are all marked expected-fail, which is temporary and
+is the subject of the section below -- it publishes those numbers on a host that
+can produce them, and does not redden a nightly on one that cannot.
+
+`run_npu2_profile.lit` runs `profile-prefill`, so the published row carries a
+real TTFT and a null decode tok/s. That is the same #1984 constraint, NOT a
+missing driver: `make profile` measures both halves, and does so with
+`--ignore-eos`, because this model answers the Paris prompt in two tokens and a
+run that honours the stop reports per-call setup rather than decode.
+
+## The decode dispatch hang (#1984)
+
+`_compile_decode_build` builds exactly what the sweep wants (the full 35-wave
+decode, not the layer gate's single wave), and on a development box every
+context dispatches cleanly. On the benchmark runner the same binaries hang
+nondeterministically: ERT_CMD_STATE_TIMEOUT on ~40% of attempts at 4-5 waves,
+which compounds to near-certain failure at 35.
+
+The only measured difference between the two hosts is amdxdna/XRT 2.21.0 on the
+runner against 2.23.0 on the development box; firmware, Peano and power mode
+match. That is why `run_npu2_sweep.lit` marks every context expected-fail rather
+than being held out of the tree: the build is still exercised and the numbers
+are still published wherever the dispatch works. Drop `--expect-fail` once this
+is fixed.
+
+**This, not a missing driver, is why the token gate has no lit.** `make run` is
+a real gate and passes locally, but every one of its dispatches is a 35-wave
+decode. A lit around it would not go red on this runner, it would TIME OUT and
+block the nightly, which `--expect-fail` cannot express. So the decode gate is
+local-only, `run_npu2_profile.lit` measures TTFT through `profile-prefill`, and
+CI's on-device decode coverage stays the per-layer gate (one wave, reliable).
+When #1984 is fixed, three things land together: `--expect-fail` comes off the
+sweep, the profile lit goes back to `make profile` with `--n-tokens 64`, and a
+`run_npu2_verify_decode.lit` around `make run` becomes possible.
+
+Reproduce with:
 
     make -C ../../fused_decode_ple compile-decode LBUILD=1024 UNI_DEC=35

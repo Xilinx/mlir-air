@@ -55,6 +55,16 @@ XRT_FAIL_RE = re.compile(
     r"ERT_CMD_STATE|did not complete|not COMPLETED|command timeout|xrt::error", re.I
 )
 
+# Statuses --expect-fail is allowed to forgive: ONLY a dispatch that reached the
+# device and did not complete. Everything else a point can fail with --
+# build_fail, no_template, stale_template, run_fail -- is a regression in this
+# repo, and forgiving those would make a broken build indistinguishable from the
+# known runner defect a sweep is marked expected-fail for. That is not
+# hypothetical: gemma4_e2b_q4nx marks every context expected-fail for the
+# amdxdna dispatch hang (#1984), which under a blanket exemption would also have
+# turned a failed template build green.
+EXPECTABLE = frozenset({"xrt_incomplete"})
+
 
 def _md5(path):
     return hashlib.md5(path.read_bytes()).hexdigest()[:12]
@@ -200,7 +210,9 @@ def main():
     p.add_argument(
         "--expect-fail",
         default="",
-        help="contexts allowed to fail without failing the run",
+        help="contexts allowed to fail without failing the run, and ONLY with a "
+        f"dispatch-time status ({'/'.join(sorted(EXPECTABLE))}); a build or "
+        "staging failure at one of these contexts is still hard",
     )
     p.add_argument("--bench-model", help="DECODE_MODEL for bench_decode geometry")
     p.add_argument("--vocab-chunk-i2", help="VOCAB_CHUNK_I2 for bench_decode geometry")
@@ -228,12 +240,12 @@ def main():
     p.add_argument(
         "--peano-dir",
         default="",
-        help="Peano install (lit's %PEANO_INSTALL_DIR), forwarded to make.",
+        help="Peano install (lit's %%PEANO_INSTALL_DIR), forwarded to make.",
     )
     p.add_argument(
         "--xrt-dir",
         default="",
-        help="XRT install (lit's %XRT_DIR). bench_decode.exe's build rule needs "
+        help="XRT install (lit's %%XRT_DIR). bench_decode.exe's build rule needs "
         "XILINX_XRT set, and the lit environment does not export it.",
     )
     p.add_argument("--out", required=True, type=Path)
@@ -337,7 +349,7 @@ def main():
                     )
 
         if rec["status"] != "ok":
-            if ctx in expect_fail:
+            if ctx in expect_fail and rec["status"] in EXPECTABLE:
                 rec["status"] = "expected_fail"
             else:
                 hard_fail = True

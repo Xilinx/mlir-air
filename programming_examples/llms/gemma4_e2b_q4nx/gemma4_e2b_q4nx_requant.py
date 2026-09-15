@@ -122,7 +122,9 @@ def layer_rope_w(pos, L, fd, rope_freqs):
     return np.concatenate([c, s]).astype(np.float32), dh
 
 
-def build_requant_cache(model, fd, cache_path, layers=None, verbose=True):
+def build_requant_cache(
+    model, fd, cache_path, layers=None, verbose=True, pack_vocab=False
+):
     """Re-quantize + cascade-pack model.q4nx into the decode .npz.
 
     `fd` is the loaded fused_decode_ple module (DECODE_MODEL=gemma4-e2b), which
@@ -130,6 +132,11 @@ def build_requant_cache(model, fd, cache_path, layers=None, verbose=True):
     drift. `layers` selects which model layers become device slabs, in order --
     it exists so a 1-layer build can be pointed at a FULL-attention layer
     (4, 9, ...) instead of layer 0, which is sliding. Default is 0..UNI_DEC-1.
+
+    `pack_vocab` appends the LM-head chunks after the layer slabs, which is what
+    the decode dispatch expects in the weight BO. Off by default because the
+    per-layer gate never reads logits and packing 262144x1536 costs minutes;
+    the token-level driver needs it and passes True.
     """
     qm = gw.Q4nxModel(model)
     G, NCX, NCY, NPH = fd.GROUP, fd.NCX, fd.NCY, fd.NPH
@@ -228,12 +235,48 @@ def build_requant_cache(model, fd, cache_path, layers=None, verbose=True):
                 flush=True,
             )
 
+    # --- LM head. Gemma4's lm_head is its OWN 4-bit matrix (NOT tied to
+    # embed_tokens, unlike Llama-3.2-1B), so the untied path is the only one.
+    # Read in row chunks rather than dequantizing 262144x1536 in one go, the
+    # same reason gemma4_e2b_q4nx_weights.lm_head_rows exists.
+    if pack_vocab:
+        VP, VPF, VOCAB, UNI_LM = (
+            fd.VOCAB_SIZE_PADDED,
+            fd.VOCAB_SIZE_PADDED_FULL,
+            fd.VOCAB_SIZE,
+            fd.UNI_LM,
+        )
+        lm_pad = np.zeros((VPF, K), np.float32)
+        CH = 16384
+        for r0 in range(0, VOCAB, CH):
+            r1 = min(r0 + CH, VOCAB)
+            lm_pad[r0:r1] = qm.lm_head_rows(r0, r1)
+            if verbose:
+                print(f"[gemma4 requant] lm_head rows {r0}:{r1}", flush=True)
+        lq, ls, lmn = _requant_q4k(lm_pad, G)
+        del lm_pad
+        for w in range(UNI_LM):
+            W_all.append(
+                fd.pack_q4k_cascade(
+                    lq[w * VP : (w + 1) * VP],
+                    ls[w * VP : (w + 1) * VP],
+                    lmn[w * VP : (w + 1) * VP],
+                    NCX,
+                    NCY,
+                    iter_major=True,
+                    dual_chan=DUAL,
+                )
+            )
+        if verbose:
+            print(f"[gemma4 requant] packed {UNI_LM} lm_head chunks", flush=True)
+
     os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
     np.savez(
         cache_path,
         W=np.concatenate(W_all).view(np.int16),
         PLE=np.concatenate(PLE_all).view(np.int16),
         layers=np.asarray(layers, np.int32),
+        has_vocab=np.asarray(int(pack_vocab), np.int32),
         **{
             f"RMS_{n}": np.stack(RMS[n]).view(np.int16)
             for n in ("in", "post_attn", "pre_ffn", "post_ffn", "post_ple")
