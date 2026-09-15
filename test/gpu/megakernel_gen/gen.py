@@ -281,6 +281,13 @@ module {{
         memref.store %zero, %Q[%l, %k] : memref<{layers}x{qslots}xi32>
       }}
     }}
+    // Per-die barrier state: arrivals, generation, and the slot the die's
+    // leader publishes its claim into.
+    %Bar = memref.alloc() : memref<{3*maxdies}xi32>
+    %cbar = arith.constant {3*maxdies} : index
+    scf.for %i = %c0 to %cbar step %c1 {{
+      memref.store %zero, %Bar[%i] : memref<{3*maxdies}xi32>
+    }}
     %E = memref.alloc() : memref<{events}xi32>
     %ce = arith.constant {events} : index
     scf.for %i = %c0 to %ce step %c1 {{
@@ -302,6 +309,7 @@ module {{
     %dW1 = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dW2 = gpu.alloc () : memref<{layers}x{dim}x{dim}xf32>
     %dQ = gpu.alloc () : memref<{layers}x{qslots}xi32>
+    %dBar = gpu.alloc () : memref<{3*maxdies}xi32>
     %dE = gpu.alloc () : memref<{events}xi32>
     gpu.memcpy %dX, %X : memref<{dim}xf32>, memref<{dim}xf32>
     gpu.memcpy %dR, %R : memref<{dim}xf32>, memref<{dim}xf32>
@@ -318,6 +326,7 @@ module {{
     gpu.memcpy %dW1, %W1 : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dW2, %W2 : memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>
     gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
+    gpu.memcpy %dBar, %Bar : memref<{3*maxdies}xi32>, memref<{3*maxdies}xi32>
     gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
 
     // --repeat runs the chain more than once so an external clock has
@@ -337,20 +346,25 @@ module {{
       scf.for %i = %c0 to %ce step %c1 {{
         memref.store %zero, %E[%i] : memref<{events}xi32>
       }}
+      scf.for %i = %c0 to %cbar step %c1 {{
+        memref.store %zero, %Bar[%i] : memref<{3*maxdies}xi32>
+      }}
+      gpu.memcpy %dBar, %Bar : memref<{3*maxdies}xi32>, memref<{3*maxdies}xi32>
       gpu.memcpy %dQ, %Q : memref<{layers}x{qslots}xi32>, memref<{layers}x{qslots}xi32>
-      gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
+      gpu.memcpy %dBar, %Bar : memref<{3*maxdies}xi32>, memref<{3*maxdies}xi32>
+    gpu.memcpy %dE, %E : memref<{events}xi32>, memref<{events}xi32>
       // The chain rewrites x in place, so a second repetition would start from
       // the first one's output rather than the input.
       gpu.memcpy %dX, %X0 : memref<{dim}xf32>, memref<{dim}xf32>
       func.call @chain(%dQ, %dE, %dX, %dR, %dH, %dY, %dW1, %dW2,
-                       %dWq, %dKc, %dVc, %dQv, %dSv, %dPv, %dAv, %dXa)
+                       %dWq, %dKc, %dVc, %dQv, %dSv, %dPv, %dAv, %dXa, %dBar)
         : (memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
            memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
            memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
            memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
            memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
            memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-           memref<{dim}xf32>) -> ()
+           memref<{dim}xf32>, memref<{3*maxdies}xi32>) -> ()
     }}
 
     gpu.memcpy %X, %dX : memref<{dim}xf32>, memref<{dim}xf32>
@@ -392,28 +406,28 @@ module {{
                    %Vc: memref<{layers}x{cache}x{dim}xf32>,
                    %Qv: memref<{dim}xf32>, %Sv: memref<{cache}xf32>,
                    %Pv: memref<{cache}xf32>, %Av: memref<{dim}xf32>,
-                   %Xa: memref<{dim}xf32>) {{
+                   %Xa: memref<{dim}xf32>, %Bar: memref<{3*maxdies}xi32>) {{
     %c1 = arith.constant 1 : index
     %cw = arith.constant {workers} : index
     air.launch (%bx, %by) in (%nbx=%cw, %nby=%c1)
         args(%q=%Q, %eb=%E, %x=%X, %r=%Rv, %h=%Hv, %y=%Yv, %w1=%W1, %w2=%W2,
-             %wq=%Wq, %kc=%Kc, %vc=%Vc, %qv=%Qv, %sv=%Sv, %pv=%Pv, %av=%Av, %xab=%Xa)
+             %wq=%Wq, %kc=%Kc, %vc=%Vc, %qv=%Qv, %sv=%Sv, %pv=%Pv, %av=%Av, %xab=%Xa, %bar=%Bar)
         : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
           memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
           memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
           memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
           memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-          memref<{dim}xf32> {{
+          memref<{dim}xf32>, memref<{3*maxdies}xi32> {{
       air.segment @worker args(%sq=%q, %se=%eb, %sx=%x, %sr=%r, %sh=%h, %sy=%y, %sw1=%w1, %sw2=%w2,
-                               %swq=%wq, %skc=%kc, %svc=%vc, %sqv=%qv, %ssv=%sv, %spv=%pv, %sav=%av, %sxa=%xab)
+                               %swq=%wq, %skc=%kc, %svc=%vc, %sqv=%qv, %ssv=%sv, %spv=%pv, %sav=%av, %sxa=%xab, %sbar=%bar)
           : memref<{layers}x{qslots}xi32>, memref<{events}xi32>, memref<{dim}xf32>,
             memref<{dim}xf32>, memref<{dim}xf32>, memref<{dim}xf32>,
             memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{dim}x{dim}xf32>,
             memref<{layers}x{dim}x{dim}xf32>, memref<{layers}x{cache}x{dim}xf32>,
             memref<{layers}x{cache}x{dim}xf32>, memref<{dim}xf32>,
             memref<{cache}xf32>, memref<{cache}xf32>, memref<{dim}xf32>,
-          memref<{dim}xf32> {{
+          memref<{dim}xf32>, memref<{3*maxdies}xi32> {{
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
         %c2_s = arith.constant 2 : index
@@ -450,6 +464,28 @@ module {{
         %mydie_raw = air.chiplet_id
         %cmaxdies = arith.constant {maxdies} : index
         %mydie = arith.remui %mydie_raw, %cmaxdies : index
+        // A task is claimed by the die and worked by all of it, so the
+        // workgroups on a die need somewhere to meet. gpu.barrier is inside a
+        // workgroup and the one behind chiplet_dim_blocks is device-wide;
+        // neither is this scope, so build it: arrivals and a generation per
+        // die, plus a slot the leader publishes the claim into.
+        %myrank = air.chiplet_block_id
+        %mycount = air.chiplet_dim_blocks
+        %mycount_i = arith.index_cast %mycount : index to i32
+        %isDieLead = arith.cmpi eq, %myrank, %c0_s : index
+        %barbase = memref.extract_aligned_pointer_as_index %sbar : memref<{3*maxdies}xi32> -> index
+        %barbi = arith.index_cast %barbase : index to i64
+        %barp = llvm.inttoptr %barbi : i64 to !llvm.ptr
+        %four_i64 = arith.constant 4 : i64
+        %arrW = arith.index_cast %mydie : index to i64
+        %genW0 = arith.addi %mydie, %cmaxdies : index
+        %genW = arith.index_cast %genW0 : index to i64
+        %arrB = arith.muli %arrW, %four_i64 : i64
+        %genB = arith.muli %genW, %four_i64 : i64
+        %arrP = llvm.getelementptr %barp[%arrB] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %genP = llvm.getelementptr %barp[%genB] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %cl2maxdies = arith.muli %cmaxdies, %c2_s : index
+        %claimIdx = arith.addi %cl2maxdies, %mydie : index
 {layer_consts}
         %evbase = memref.extract_aligned_pointer_as_index %se : memref<{events}xi32> -> index
         %evi = arith.index_cast %evbase : index to i64
@@ -468,7 +504,53 @@ module {{
     # already holds. A die that runs out steals from the others, which is what
     # keeps this correct when the dispatcher does not use every die: locality is
     # a preference here, not an assumption.
-    def strided_stage(l, stage, ev, count_expr, total_const, body):
+    def strided_stage(l, stage, ev, count_expr, total_const, body, gang=False):
+        """A stage whose work splits into independent pieces.
+
+        Each die has its own head and its own stride of pieces, so what a die
+        computes is what its cache already holds; a die that runs out moves on
+        to the others, which keeps it correct when the dispatcher does not use
+        every die. Locality is a preference, not an assumption.
+
+        With gang=True a piece is claimed by the die rather than by a workgroup,
+        and every workgroup on the die works on it, splitting the piece between
+        them. That is what stops three quarters of the workgroups idling when a
+        stage has fewer pieces than there are workgroups.
+        """
+        if not gang:
+            claim = f"""              %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hidx] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+              %k = arith.index_cast %cl : i32 to index"""
+            tally = "              %n = arith.addi %acc, %one_s : i32"
+        else:
+            claim = f"""              // The die's leader claims one piece for the whole die...
+              scf.if %isDieLead {{
+                %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hidx] : (i32, memref<{layers}x{qslots}xi32>) -> i32
+                memref.store %cl, %sbar[%claimIdx] : memref<{3*maxdies}xi32>
+              }}
+              // ...and nobody reads it until every workgroup on the die is
+              // here. Sense-reversing, so the next piece starts from zero.
+              %g0 = llvm.load %genP atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %prevA = llvm.atomicrmw add %arrP, %one_s syncscope("") release : !llvm.ptr, i32
+              %lastA = arith.subi %mycount_i, %one_s : i32
+              %isLastA = arith.cmpi eq, %prevA, %lastA : i32
+              scf.if %isLastA {{
+                %rearm = llvm.atomicrmw xchg %arrP, %zero_s syncscope("") monotonic : !llvm.ptr, i32
+                %bump = llvm.atomicrmw add %genP, %one_s syncscope("") release : !llvm.ptr, i32
+              }} else {{
+                scf.while : () -> () {{
+                  %gn = llvm.load %genP atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+                  %same = arith.cmpi eq, %gn, %g0 : i32
+                  scf.condition(%same)
+                }} do {{
+                  scf.yield
+                }}
+              }}
+              %cl = memref.load %sbar[%claimIdx] : memref<{3*maxdies}xi32>
+              %k = arith.index_cast %cl : i32 to index"""
+            # only the leader counts the piece, or the event would see one
+            # arrival per workgroup instead of one per piece
+            tally = """              %inc1 = arith.select %isDieLead, %one_s, %zero_s : i32
+                %n = arith.addi %acc, %inc1 : i32"""
         return f"""
           // stage {stage}
           %p{l}_{stage} = llvm.getelementptr %evptr[{4*ev}] : (!llvm.ptr) -> !llvm.ptr, i8
@@ -483,14 +565,13 @@ module {{
               scf.condition(%go) %go, %acc : i1, i32
             }} do {{
             ^bb0(%g: i1, %acc: i32):
-              %cl = memref.atomic_rmw addi %one_s, %sq[%L{l}, %hidx] : (i32, memref<{layers}x{qslots}xi32>) -> i32
-              %k = arith.index_cast %cl : i32 to index
+{claim}
               %kstride = arith.muli %k, %cmaxdies : index
               %ix = arith.addi %d, %kstride : index
               %has = arith.cmpi ult, %ix, {count_expr} : index
               %acc2 = scf.if %has -> i32 {{
 {body}
-                %n = arith.addi %acc, %one_s : i32
+{tally}
                 scf.yield %n : i32
               }} else {{
                 scf.yield %acc : i32
@@ -512,7 +593,9 @@ module {{
         act = ("%la = arith.maxnumf %lv, %fzero_s : f32" if relu
                else "%la = arith.addf %lv, %fzero_s : f32")
         body = f"""                %j0 = arith.muli %ix, %cslice : index
-                scf.for %jj = %c0_s to %cslice step %c1_s {{
+                // The gang splits the piece: worker r of n takes columns
+                // r, r+n, r+2n ... of it.
+                scf.for %jj = %myrank to %cslice step %mycount {{
                   %j = arith.addi %j0, %jj : index
                   %a = scf.for %i = %c0_s to %cdim_s step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
@@ -525,7 +608,7 @@ module {{
                   }}
                   memref.store %a, {out}[%j] : memref<{dim}xf32>
                 }}"""
-        return strided_stage(l, stage, ev, "%ctasks", "%ntasks", body)
+        return strided_stage(l, stage, ev, "%ctasks", "%ntasks", body, gang=True)
 
     for l in range(layers):
         base = stages * l
