@@ -575,6 +575,14 @@ module {{
           }}"""
 
     def matmul_stage(l, stage, ev, out, lhs, wmat, wtype, relu):
+        # The weights are read once per layer and never again inside a decode
+        # step, and they are far larger than anything else in flight, so they
+        # are exactly what would evict the activations. Fleet loads them
+        # non-temporally too (gang_ksplit_linear_mi300.cuh:88 uses
+        # amd_buffer_coherence_enum(18), which is nt|sc1). The activations are
+        # deliberately left alone: Fleet marks its activation stores
+        # non-temporal as well, but at 128 floats these live in cache happily
+        # and pushing them to HBM would only cost.
         act = ("%la = arith.maxnumf %lv, %fzero_s : f32" if relu
                else "%la = arith.addf %lv, %fzero_s : f32")
         body = f"""                %j0 = arith.muli %ix, %cslice : index
@@ -584,7 +592,7 @@ module {{
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %lv = memref.load {lhs}[%i] : memref<{dim}xf32>
                     {act}
-                    %wv = memref.load {wmat}[%L{l}, %i, %j] : {wtype}
+                    %wv = memref.load {wmat}[%L{l}, %i, %j] {{nontemporal = true}} : {wtype}
                     %m = arith.mulf %la, %wv : f32
                     %s2 = arith.addf %sacc, %m : f32
                     scf.yield %s2 : f32
@@ -636,7 +644,7 @@ module {{
                         f"""                %dot = scf.for %i = %c0_s to %cdim_s step %c1_s
                     iter_args(%sdot = %fzero_s) -> (f32) {{
                   %qv2 = memref.load %sqv[%i] : memref<{dim}xf32>
-                  %kv = memref.load %skc[%L{l}, %ix, %i] : memref<{layers}x{cache}x{dim}xf32>
+                  %kv = memref.load %skc[%L{l}, %ix, %i] {{nontemporal = true}} : memref<{layers}x{cache}x{dim}xf32>
                   %m = arith.mulf %qv2, %kv : f32
                   %s2 = arith.addf %sdot, %m : f32
                   scf.yield %s2 : f32
@@ -684,7 +692,7 @@ module {{
         # stage 4: the attention-weighted sum of V, claimed like the
         # matmuls so it signals the same way they do.
         w(strided_stage(l, 4, base + 4, "%ctasks", "%ntasks",
-                        f'                %j0 = arith.muli %ix, %cslice : index\n                scf.for %jj = %c0_s to %cslice step %c1_s {{\n                  %j = arith.addi %j0, %jj : index\n                  %a = scf.for %t = %c0_s to %ccache_s step %c1_s\n                      iter_args(%sacc = %fzero_s) -> (f32) {{\n                    %pn = memref.load %spv[%t] : memref<{cache}xf32>\n                    %vv = memref.load %svc[%L{l}, %t, %j] : memref<{layers}x{cache}x{dim}xf32>\n                    %m = arith.mulf %pn, %vv : f32\n                    %s2 = arith.addf %sacc, %m : f32\n                    scf.yield %s2 : f32\n                  }}\n                  memref.store %a, %sav[%j] : memref<{dim}xf32>\n                }}'))
+                        f'                %j0 = arith.muli %ix, %cslice : index\n                scf.for %jj = %c0_s to %cslice step %c1_s {{\n                  %j = arith.addi %j0, %jj : index\n                  %a = scf.for %t = %c0_s to %ccache_s step %c1_s\n                      iter_args(%sacc = %fzero_s) -> (f32) {{\n                    %pn = memref.load %spv[%t] : memref<{cache}xf32>\n                    %vv = memref.load %svc[%L{l}, %t, %j] {{nontemporal = true}} : memref<{layers}x{cache}x{dim}xf32>\n                    %m = arith.mulf %pn, %vv : f32\n                    %s2 = arith.addf %sacc, %m : f32\n                    scf.yield %s2 : f32\n                  }}\n                  memref.store %a, %sav[%j] : memref<{dim}xf32>\n                }}'))
 
 
         # stage 5: the residual around attention. One task; it is elementwise
