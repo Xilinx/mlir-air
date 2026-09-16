@@ -1676,9 +1676,19 @@ module {{
           // One lane spins; the rest wait on the broadcast. Sixty-four lanes
           // polling the same address would be sixty-four times the traffic on
           // the one line every workgroup in the step is already contending for.
+          //
+          // The poll itself is relaxed and the acquire happens once, after the
+          // wait is over. An acquire load compiles to buffer_inv, which throws
+          // away the whole CU's vector cache; at full issue rate that costs
+          // every other wave on the CU its working set and costs this one every
+          // line it re-reads afterwards. What the reader actually needs is that
+          // whatever the signaller released is visible once the count is high
+          // enough, and one fence says that. Fleet's poll loop has the same
+          // shape -- __ATOMIC_RELAXED inside, an acquire fence outside
+          // (persistent_kernel.cuh:944-966).
           scf.while : () -> () {{
             %seen_l{l}_{stage} = scf.if %isLead -> (i32) {{
-              %v = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") monotonic {{alignment = 4 : i64}} : !llvm.ptr -> i32
               scf.yield %v : i32
             }} else {{
               scf.yield %zero_s : i32
@@ -1687,8 +1697,11 @@ module {{
             %notYet = arith.cmpi ult, %seen, {total_const} : i32
             scf.condition(%notYet)
           }} do {{
+            // Back off between polls, as Fleet does (persistent_kernel.cuh:959).
+            rocdl.s.sleep 1
             scf.yield
-          }}"""
+          }}
+          llvm.fence syncscope("") acquire"""
 
     def single_stage(l, stage, ev, body, slot=None, lc=None, lanes=False):
         slot = (l * stages + stage) if slot is None else slot
@@ -1726,9 +1739,10 @@ module {{
           scf.if %mine{l}_{stage} {{
 {body_block}
           }}
+          // Relaxed poll, one acquire at the end; see the note in strided_stage.
           scf.while : () -> () {{
             %seenl{l}_{stage} = scf.if %isLead -> (i32) {{
-              %v = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") monotonic {{alignment = 4 : i64}} : !llvm.ptr -> i32
               scf.yield %v : i32
             }} else {{
               scf.yield %zero_s : i32
@@ -1737,8 +1751,10 @@ module {{
             %notYet = arith.cmpi ult, %seen, %n1_s : i32
             scf.condition(%notYet)
           }} do {{
+            rocdl.s.sleep 1
             scf.yield
-          }}"""
+          }}
+          llvm.fence syncscope("") acquire"""
 
     # The weights are read once per layer and never again inside a decode step,
     # and they are far larger than anything else in flight, so they are exactly
