@@ -75,9 +75,21 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
          heads: int = 4, kv_heads: int = 2, steps: int = 1,
          vocab: int = 256, head_dim: int = 0,
          rope_theta: float = 10000.0, W=None, prompt=None,
-         prompt_len: int = 0) -> str:
+         prompt_len: int = 0, wave: int = 64) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
+    # The wave is where the parallelism inside a task lives: a task body splits
+    # its outermost loop across the lanes and closes any reduction with a
+    # butterfly over them. Both need the same number, and it has to be the one
+    # the lowering picks -- `-air-to-rocdl{wave-size=N}`, default 64
+    # (GPUPasses.td:40), times the herd's x extent, which this file emits as 1.
+    #
+    # Disagreeing is not silent. Too small and the strided loops leave the tail
+    # of every row unwritten; too large and each wave reduces only its own
+    # lanes and reads a claim no one broadcast to it. Either way the numbers
+    # come out wrong and the host comparison in this same program says so.
+    assert wave & (wave - 1) == 0 and wave > 1, "wave size must be a power of two"
+    wave_steps = wave.bit_length() - 1
     # Qwen3 states head_dim in its config and it is not hidden/heads: 0.6B has
     # hidden 1024, 16 heads and head_dim 128, so the q projection is wider than
     # the residual stream and o_proj is the thing that narrows it again.
@@ -1451,6 +1463,18 @@ module {{
         %t01 = arith.ori %tx_s, %ty_s : index
         %t012 = arith.ori %t01, %tz_s : index
         %isLead = arith.cmpi eq, %t012, %c0_s : index
+        // %tx_s is the lane, and %nlane the wave, because the block is exactly
+        // one wavefront: air.herd at the bottom is 1x1 and the AIR compute
+        // model makes one herd tile one wavefront (AIRToROCDLPass.cpp:1066),
+        // so blockDim.x == wave size. The protocol below leans on that --
+        // rocdl.readfirstlane broadcasts within a wave, and only because the
+        // wave is the whole block does that reach every thread that claimed
+        // nothing. A wider herd would need the broadcast to go through LDS.
+        //
+        // A constant rather than gpu.block_dim x so that this and the width of
+        // the butterfly reduction cannot drift apart: see the note on `wave`
+        // at the top of emit().
+        %nlane = arith.constant {wave} : index
         // Which die this workgroup is on. Work is claimed per die so that the
         // slices a die computes are the ones its own cache is holding.
         %mydie_raw = air.chiplet_id
@@ -1470,7 +1494,13 @@ module {{
         %evi = arith.index_cast %evbase : index to i64
         %evptr = llvm.inttoptr %evi : i64 to !llvm.ptr
 
-        scf.if %isLead {{
+        scf.execute_region {{
+          // Every lane runs this, not just the lead one. The scheduler is
+          // still per workgroup -- the claims and the signals below are taken
+          // by the lead lane and broadcast -- but the task bodies are the
+          // wave's work, which is the only way an MFMA or an LDS staging step
+          // could ever be reached: both are wavefront instructions.
+          //
           // One launch runs the whole decode. The task graph is the same every
           // step; what changes is the iteration it belongs to. Fleet versions
           // task identity the same way -- TaskId is
@@ -1498,6 +1528,33 @@ module {{
             %wbase = arith.addi %cpre_s, %seq : index
             %curlen = arith.addi %wbase, %nat : index""")
 
+    def wave_reduce(src, dst, op, tag, indent, ty="f32"):
+        """Combine one value per lane into one value the whole wave has.
+
+        gpu.subgroup_reduce says this in a single op, but nothing in the
+        pipeline lowers it -- the patterns exist only behind
+        `--test-gpu-subgroup-reduce-lowering` -- while convert-gpu-to-rocdl
+        does lower gpu.shuffle. So the butterfly is written out: log2(wave)
+        exchanges, each lane adding what it got from the lane one bit away.
+
+        Every lane ends with the total, which is the property the callers use:
+        the divisor of an rmsnorm and the max of a softmax are needed by all of
+        them, and this way none of it has to be broadcast afterwards.
+        """
+        pad = " " * indent
+        out = []
+        cur = src
+        for k in range(wave_steps):
+            nxt = dst if k == wave_steps - 1 else f"%wv{tag}{k}"
+            out.append(
+                f"{pad}%wo{tag}{k} = arith.constant {1 << k} : i32\n"
+                f"{pad}%ww{tag}{k} = arith.constant {wave} : i32\n"
+                f"{pad}%ws{tag}{k}, %wp{tag}{k} = gpu.shuffle xor {cur}, "
+                f"%wo{tag}{k}, %ww{tag}{k} : {ty}\n"
+                f"{pad}{nxt} = {op} {cur}, %ws{tag}{k} : {ty}")
+            cur = nxt
+        return "\n".join(out)
+
     # A stage whose work splits into independent pieces. Each die has its own
     # head and its own stride of pieces, so what a die touches is what its cache
     # already holds. A die that runs out steals from the others, which keeps
@@ -1516,9 +1573,18 @@ module {{
     # counter rather than a global tile id, because that counter is what a
     # die's workgroups share. At tokens == 1 this is m = 0, n = k.
     def strided_stage(l, stage, ev, count_expr, total_const, body,
-                      slot=None, lc=None):
+                      slot=None, lc=None, lanes=False):
         slot = (l * stages + stage) if slot is None else slot
         lc = f"%L{l}" if lc is None else lc
+        # `lanes` says the body already spreads itself over the wave, by
+        # striding its outermost loop from %tx_s by %nlane. A body that does
+        # not is run by the lead lane alone: the wave executes the same
+        # instructions either way, so an unspread body would have all 64 lanes
+        # recompute the piece and store the same values on top of each other.
+        # That is not wrong, but it is not faster, and in the stages that read
+        # back what they just wrote it stops being obviously right.
+        open_body = "" if lanes else "                  scf.if %isLead {"
+        close_body = "" if lanes else "                  }"
         return f"""
           // stage {stage}
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
@@ -1535,7 +1601,18 @@ module {{
               scf.condition(%go) %go, %acc : i1, i32
             }} do {{
             ^bb0(%g: i1, %acc: i32):
-              %cl = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hidx] : (i32, {QUT}) -> i32
+              // One claim for the whole wave, made by the lead lane and read
+              // out of its register by the rest. Letting every lane claim
+              // would be a different scheduler: the queue counts workgroups
+              // and so does the two-level event flush below, which arrives
+              // once per workgroup and compares against air.chiplet_dim_blocks.
+              %cl_l{l}_{stage} = scf.if %isLead -> (i32) {{
+                %a = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hidx] : (i32, {QUT}) -> i32
+                scf.yield %a : i32
+              }} else {{
+                scf.yield %zero_s : i32
+              }}
+              %cl = rocdl.readfirstlane %cl_l{l}_{stage} : i32
               %k = arith.index_cast %cl : i32 to index
               // M fast, N slow: the token moves every claim, the weight block
               // only every `tokens` claims.
@@ -1552,7 +1629,9 @@ module {{
               %mAct = arith.cmpi ult, %m, %nat : index
               %acc2 = scf.if %has -> i32 {{
                 scf.if %mAct {{
+{open_body}
 {body}
+{close_body}
                 }}
                 %n = arith.addi %acc, %one_s : i32
                 scf.yield %n : i32
@@ -1576,28 +1655,59 @@ module {{
           %aw{l}_{stage} = arith.constant {4 * slots} : i64
           %ao{l}_{stage} = arith.addi %aw{l}_{stage}, %lo{l}_{stage} : i64
           %arrP{l}_{stage} = llvm.getelementptr %locp[%ao{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-          %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %t{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
-          // Release on the arrival so the accumulate above is visible to
-          // whoever turns out to be last.
-          %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
-          %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
-          %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
-          scf.if %amLast{l}_{stage} {{
-            %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
-            %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
-            %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
+          // Signalling is the lead lane's job alone -- one arrival per
+          // workgroup is the whole premise of the reduction. The release still
+          // covers what the other lanes stored: vmcnt is a wave counter, not a
+          // lane counter, so the s_waitcnt the release compiles to waits on
+          // every store the wave issued, whatever exec mask it issued it under.
+          scf.if %isLead {{
+            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %t{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
+            // Release on the arrival so the accumulate above is visible to
+            // whoever turns out to be last.
+            %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
+            %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
+            %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
+            scf.if %amLast{l}_{stage} {{
+              %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
+              %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
+            }}
           }}
+          // One lane spins; the rest wait on the broadcast. Sixty-four lanes
+          // polling the same address would be sixty-four times the traffic on
+          // the one line every workgroup in the step is already contending for.
           scf.while : () -> () {{
-            %seen = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+            %seen_l{l}_{stage} = scf.if %isLead -> (i32) {{
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              scf.yield %v : i32
+            }} else {{
+              scf.yield %zero_s : i32
+            }}
+            %seen = rocdl.readfirstlane %seen_l{l}_{stage} : i32
             %notYet = arith.cmpi ult, %seen, {total_const} : i32
             scf.condition(%notYet)
           }} do {{
             scf.yield
           }}"""
 
-    def single_stage(l, stage, ev, body, slot=None, lc=None):
+    def single_stage(l, stage, ev, body, slot=None, lc=None, lanes=False):
         slot = (l * stages + stage) if slot is None else slot
         lc = f"%L{l}" if lc is None else lc
+        # As in strided_stage: `lanes` means the body strides its own loops
+        # from %tx_s and closes them with gpu.subgroup_reduce. A body that
+        # does not runs on the lead lane alone. The signal stays on the lead
+        # lane either way -- the event counts tasks, and the task is one.
+        body_block = (f"""            scf.for %m = %c0_s to %nat step %c1_s {{
+{body}
+            }}
+            scf.if %isLead {{
+              %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %n1_s syncscope("") release : !llvm.ptr, i32
+            }}""" if lanes else f"""            scf.if %isLead {{
+              scf.for %m = %c0_s to %nat step %c1_s {{
+{body}
+              }}
+              %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %n1_s syncscope("") release : !llvm.ptr, i32
+            }}""")
         return f"""
           // stage {stage} -- one task: a reduction over the whole row, so it
           // cannot be split by output slice the way the matmuls can.
@@ -1605,16 +1715,25 @@ module {{
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-          %cl{l}_{stage} = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hsingle{stage}_{l}] : (i32, {QUT}) -> i32
+          %cll{l}_{stage} = scf.if %isLead -> (i32) {{
+            %a = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hsingle{stage}_{l}] : (i32, {QUT}) -> i32
+            scf.yield %a : i32
+          }} else {{
+            scf.yield %zero_s : i32
+          }}
+          %cl{l}_{stage} = rocdl.readfirstlane %cll{l}_{stage} : i32
           %mine{l}_{stage} = arith.cmpi eq, %cl{l}_{stage}, %zero_s : i32
           scf.if %mine{l}_{stage} {{
-            scf.for %m = %c0_s to %nat step %c1_s {{
-{body}
-            }}
-            %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %n1_s syncscope("") release : !llvm.ptr, i32
+{body_block}
           }}
           scf.while : () -> () {{
-            %seen = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+            %seenl{l}_{stage} = scf.if %isLead -> (i32) {{
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              scf.yield %v : i32
+            }} else {{
+              scf.yield %zero_s : i32
+            }}
+            %seen = rocdl.readfirstlane %seenl{l}_{stage} : i32
             %notYet = arith.cmpi ult, %seen, %n1_s : i32
             scf.condition(%notYet)
           }} do {{
@@ -1634,8 +1753,15 @@ module {{
                   memref.store %a2, {out}[%m, %j] : {outty}"""
                  if residual else f"""
                   memref.store %a, {out}[%m, %j] : {outty}""")
+        # A lane per output column. Splitting the columns rather than the
+        # reduction needs no cross-lane anything -- the columns are
+        # independent, and each lane keeps its own accumulator in a register --
+        # and it is the split that reads the weights coalesced: %j is the
+        # fastest axis of {wmat}, so lane n and lane n+1 ask for adjacent
+        # words of the same cache line. Splitting %i instead would have every
+        # lane on a different row, one line each.
         return strided_stage(l, stage, ev, "%ctasks", "%ntasks_t", f"""                %j0 = arith.muli %ix, {slice_c} : index
-                scf.for %jj = %c0_s to {slice_c} step %c1_s {{
+                scf.for %jj = %tx_s to {slice_c} step %nlane {{
                   %j = arith.addi %j0, %jj : index
                   %a = scf.for %i = %c0_s to {red_c} step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
@@ -1645,7 +1771,7 @@ module {{
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
                   }}{store}
-                }}""")
+                }}""", lanes=True)
 
     # Per-head rmsnorm then rope, in place in the qkv buffer. Rope reads both
     # halves of a head before writing either, which is why it is a second loop
@@ -1707,34 +1833,41 @@ module {{
                 %tk = memref.load %stok[%tp] : {TKT}
                 %tki = arith.index_cast %tk : i32 to index
                 %j0 = arith.muli %ix, %csliceD : index
-                scf.for %jj = %c0_s to %csliceD step %c1_s {{
+                scf.for %jj = %tx_s to %csliceD step %nlane {{
                   %j = arith.addi %j0, %jj : index
                   %ev = memref.load %semb[%tki, %j] {{nontemporal = true}} : {EMT}
                   memref.store %ev, %sx[%m, %j] : {AT}
-                }}""", slot=base_x + 0, lc="%L0"))
+                }}""", slot=base_x + 0, lc="%L0", lanes=True))
 
     for l in range(layers):
         base = stages * l
         w(f"\n          // ================= layer {l} =================")
 
         # 0: r = rmsnorm(x) * n1
-        w(single_stage(l, 0, base + 0, f"""              %ss{l} = scf.for %i = %c0_s to %cdim_s step %c1_s
+        w(single_stage(l, 0, base + 0, f"""              %sp{l} = scf.for %i = %tx_s to %cdim_s step %nlane
                   iter_args(%s = %fzero_s) -> (f32) {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %sq2 = arith.mulf %v, %v : f32
                 %s2 = arith.addf %s, %sq2 : f32
                 scf.yield %s2 : f32
               }}
+              // Each lane sums its own stride of the row and the wave adds the
+              // 64 partials, which every lane then has -- so %rms below is
+              // uniform without anything being broadcast. Reassociating a
+              // float sum moves the last bits; the host comparison is relative
+              // to 2e-2 and the token check is an argmax, and the independent
+              // numpy reference already sums in a third order again.
+{wave_reduce("%sp" + str(l), "%ss" + str(l), "arith.addf", "n" + str(l), 14)}
               %mean{l} = arith.divf %ss{l}, %fdim_s : f32
               %me{l} = arith.addf %mean{l}, %eps_s : f32
               %rms{l} = math.sqrt %me{l} : f32
-              scf.for %i = %c0_s to %cdim_s step %c1_s {{
+              scf.for %i = %tx_s to %cdim_s step %nlane {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %nv = arith.divf %v, %rms{l} : f32
                 %nw = memref.load %sn1[%L{l}, %i] : {NT}
                 %rv = arith.mulf %nv, %nw : f32
                 memref.store %rv, %sr[%m, %i] : {AT}
-              }}"""))
+              }}""", lanes=True))
 
         # 1: qkv = r @ Wqkv
         w(matmul_stage(l, 1, base + 1, "%sqkv", QT, "%sr", AT, "%swqkv", WQT,
@@ -1775,7 +1908,11 @@ module {{
                 %qhb = arith.muli %ix, %chd_s : index
                 %hb = arith.muli %ix, %chd_s : index
                 %hk = arith.divui %ix, %cgroup_s : index
-                %mxs = scf.for %t = %c0_s to %curlen step %c1_s
+                // A lane per key position. Each t writes its own %ssc slot and
+                // the only thing crossing lanes is the running max, so the
+                // three loops below each close with one subgroup reduction and
+                // otherwise never look at another lane.
+                %mxp = scf.for %t = %tx_s to %curlen step %nlane
                     iter_args(%mv = %negbig_s) -> (f32) {{
                   %dot = scf.for %hdi = %c0_s to %chd_s step %c1_s
                       iter_args(%s = %fzero_s) -> (f32) {{
@@ -1795,7 +1932,10 @@ module {{
                   %m2 = arith.maxnumf %mv, %scm : f32
                   scf.yield %m2 : f32
                 }}
-                %sum = scf.for %t = %c0_s to %curlen step %c1_s
+{wave_reduce("%mxp", "%mxs", "arith.maxnumf", "mx" + str(l), 16)}
+                // Same stride again, so the slot a lane rewrites here is the
+                // one it wrote above.
+                %sump = scf.for %t = %tx_s to %curlen step %nlane
                     iter_args(%sm = %fzero_s) -> (f32) {{
                   %v = memref.load %ssc[%m, %ix, %t] : {SCT}
                   %dd = arith.subf %v, %mxs : f32
@@ -1804,7 +1944,13 @@ module {{
                   %s2 = arith.addf %sm, %e : f32
                   scf.yield %s2 : f32
                 }}
-                scf.for %hdi = %c0_s to %chd_s step %c1_s {{
+{wave_reduce("%sump", "%sum", "arith.addf", "sm" + str(l), 16)}
+                // The last loop needs no reduction at all: a lane owns a set
+                // of output components outright. But it reads every %ssc slot,
+                // including the ones other lanes just rewrote, so the wave has
+                // to be square with itself first.
+                gpu.barrier
+                scf.for %hdi = %tx_s to %chd_s step %nlane {{
                   %a = scf.for %t = %c0_s to %curlen step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %e = memref.load %ssc[%m, %ix, %t] : {SCT}
@@ -1816,7 +1962,7 @@ module {{
                   }}
                   %oi = arith.addi %hb, %hdi : index
                   memref.store %a, %sav[%m, %oi] : {QWT}
-                }}"""))
+                }}""", lanes=True))
 
         # 4: ao = a @ Wo
         w(matmul_stage(l, 4, base + 4, "%saov", AT, "%sav", QWT, "%swo", WT,
@@ -1828,7 +1974,7 @@ module {{
         # decays geometrically with depth, and since the host comparison is
         # relative, a stream in the thousands hides every error smaller than
         # itself.
-        w(single_stage(l, 5, base + 5, f"""              %ssa{l} = scf.for %i = %c0_s to %cdim_s step %c1_s
+        w(single_stage(l, 5, base + 5, f"""              %spa{l} = scf.for %i = %tx_s to %cdim_s step %nlane
                   iter_args(%s = %fzero_s) -> (f32) {{
                 %xv = memref.load %sx[%m, %i] : {AT}
                 %avv = memref.load %saov[%m, %i] : {AT}
@@ -1838,19 +1984,23 @@ module {{
                 %s2 = arith.addf %s, %sqa : f32
                 scf.yield %s2 : f32
               }}
+{wave_reduce("%spa" + str(l), "%ssa" + str(l), "arith.addf", "a" + str(l), 14)}
               %meana{l} = arith.divf %ssa{l}, %fdim_s : f32
               %mea{l} = arith.addf %meana{l}, %eps_s : f32
               %rmsa{l} = math.sqrt %mea{l} : f32
               // The normed copy goes somewhere else: stage 8 closes the
               // residual onto the unnormalised one, which is what a decoder
               // layer does. %sr is free here -- stage 1 was the last reader.
-              scf.for %i = %c0_s to %cdim_s step %c1_s {{
+              //
+              // Same stride as the loop above, so the %sxa slot a lane reads
+              // here is the one it wrote itself -- no lane waits on another.
+              scf.for %i = %tx_s to %cdim_s step %nlane {{
                 %xv3 = memref.load %sxa[%m, %i] : {AT}
                 %nv = arith.divf %xv3, %rmsa{l} : f32
                 %nw = memref.load %sn2[%L{l}, %i] : {NT}
                 %xn = arith.mulf %nv, %nw : f32
                 memref.store %xn, %sr[%m, %i] : {AT}
-              }}"""))
+              }}""", lanes=True))
 
         # 6: gu = xa @ Wgu, gate and up in one matmul as Fleet fuses them
         w(matmul_stage(l, 6, base + 6, "%sgu", GT, "%sr", AT, "%swgu", WGT,
@@ -1860,7 +2010,7 @@ module {{
         # width rather than a reduction.
         w(strided_stage(l, 7, base + 7, "%ctasks", "%ntasks_t",
                         f"""                %j0 = arith.muli %ix, %csliceI : index
-                scf.for %jj = %c0_s to %csliceI step %c1_s {{
+                scf.for %jj = %tx_s to %csliceI step %nlane {{
                   %j = arith.addi %j0, %jj : index
                   %gv = memref.load %sgu[%m, %j] : {GT}
                   %ju = arith.addi %j, %cinter_s : index
@@ -1871,7 +2021,7 @@ module {{
                   %si = arith.divf %gv, %de : f32
                   %actv = arith.mulf %si, %uv : f32
                   memref.store %actv, %sact[%m, %j] : {IT}
-                }}"""))
+                }}""", lanes=True))
 
         # 8: x = xa + act @ Wd, the residual folded into the matmul as Fleet
         # folds it (linear_with_residual_layer).
@@ -1879,26 +2029,27 @@ module {{
                        "%csliceD", "%cinter_s", residual="%sxa"))
 
     # final norm, lm head, and Fleet's two-stage argmax
-    w(single_stage("x", stages + 1, base_x + 1, f"""              %fs = scf.for %i = %c0_s to %cdim_s step %c1_s
+    w(single_stage("x", stages + 1, base_x + 1, f"""              %fp = scf.for %i = %tx_s to %cdim_s step %nlane
                   iter_args(%a = %fzero_s) -> (f32) {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %fq = arith.mulf %v, %v : f32
                 %a2 = arith.addf %a, %fq : f32
                 scf.yield %a2 : f32
               }}
+{wave_reduce("%fp", "%fs", "arith.addf", "f", 14)}
               %fm = arith.divf %fs, %fdim_s : f32
               %fme = arith.addf %fm, %eps_s : f32
               %fr = math.sqrt %fme : f32
-              scf.for %i = %c0_s to %cdim_s step %c1_s {{
+              scf.for %i = %tx_s to %cdim_s step %nlane {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %nv = arith.divf %v, %fr : f32
                 %nw = memref.load %snf[%i] : {NFT}
                 %o = arith.mulf %nv, %nw : f32
                 memref.store %o, %sr[%m, %i] : {AT}
-              }}""", slot=base_x + 1, lc="%L0"))
+              }}""", slot=base_x + 1, lc="%L0", lanes=True))
     w(strided_stage("x", stages + 2, base_x + 2, "%ctasks", "%ntasks_t",
                     f"""                %v0 = arith.muli %ix, %csliceV : index
-                scf.for %jj = %c0_s to %csliceV step %c1_s {{
+                scf.for %jj = %tx_s to %csliceV step %nlane {{
                   %v = arith.addi %v0, %jj : index
                   %a = scf.for %i = %c0_s to %cdim_s step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
@@ -1909,7 +2060,7 @@ module {{
                     scf.yield %s2 : f32
                   }}
                   memref.store %a, %slg[%m, %v] : {LGT}
-                }}""", slot=base_x + 2, lc="%L0"))
+                }}""", slot=base_x + 2, lc="%L0", lanes=True))
     # argmax_partial_layer: the best in this piece of the vocabulary
     w(strided_stage("x", stages + 3, base_x + 3, "%ctasks", "%ntasks_t",
                     f"""                %v0 = arith.muli %ix, %csliceV : index
@@ -1954,8 +2105,11 @@ module {{
             %seqn = arith.addi %seq, %nat : index
             scf.yield %seqn : index
           }}
+          scf.yield
         }}
 
+        // One tile, so one wavefront, so blockDim.x is the wave size -- the
+        // preamble's %nlane and every rocdl.readfirstlane above depend on that.
         air.herd @herd tile (%htx, %hty) in (%ntx=%c1_s, %nty=%c1_s) {{
         }}
       }}
@@ -2013,6 +2167,10 @@ def main() -> int:
                          "run prompt, so every step is a prefill chunk.")
     ap.add_argument("--repeat", type=int, default=1,
                     help="how many times to launch the chain, for timing")
+    ap.add_argument("--wave", type=int, default=64,
+                    help="lanes per wavefront. A task body is split across "
+                         "these and its reductions closed over them, so this "
+                         "must equal what -air-to-rocdl{wave-size=} uses")
     a = ap.parse_args()
     W = None
     if a.weights:
@@ -2036,7 +2194,7 @@ def main() -> int:
     sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat,
                           a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
                           a.steps, a.vocab, a.head_dim, a.rope_theta, W,
-                          prompt, a.prompt_len))
+                          prompt, a.prompt_len, a.wave))
     return 0
 
 
