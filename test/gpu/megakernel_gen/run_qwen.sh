@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#===- run_qwen.sh ----------------------------------*-
+#
+# Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#===------------------------------------------------------------------===//
+#
+# Run a real Qwen3 checkpoint through the generated megakernel and check the
+# tokens against an independent numpy implementation of the same model.
+#
+# Not in run_all.sh: it needs a checkpoint, which is gigabytes and not in the
+# repository. Point it at one:
+#
+#   QWEN_DIR=/shared/erweiw/qwen3-0.6b test/gpu/megakernel_gen/run_qwen.sh
+#
+# The directory needs config.json and model.safetensors, as downloaded from
+# Hugging Face. The first run converts the checkpoint into the flat float32
+# blob the chain reads and leaves it in <QWEN_DIR>/air.
+#
+# The two sides being compared are: the chain (device, plus the host reference
+# in the same program) and qwen3_ref.py, which reads the Hugging Face files
+# directly. That second one is the point -- the chain agreeing with the host
+# reference next to it only proves the two match.
+#
+#===------------------------------------------------------------------===//
+
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QWEN_DIR="${QWEN_DIR:?set QWEN_DIR to a directory holding config.json and model.safetensors}"
+PY="${PY:-python3}"
+TMPDIR="${TMPDIR:-/tmp/air_qwen}"
+LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
+TASKS="${TASKS:-32}"
+WORKERS="${WORKERS:-32}"
+# "The capital of France is"
+PROMPT="${PROMPT:-785,6722,315,9625,374}"
+mkdir -p "$TMPDIR"
+
+[ -f "$QWEN_DIR/config.json" ] || { echo "no $QWEN_DIR/config.json" >&2; exit 1; }
+[ -f "$QWEN_DIR/model.safetensors" ] || { echo "no $QWEN_DIR/model.safetensors" >&2; exit 1; }
+
+if [ ! -f "$QWEN_DIR/air/manifest.json" ]; then
+  echo "converting the checkpoint (once)..."
+  "$PY" "$SCRIPT_DIR/weights.py" "$QWEN_DIR" "$QWEN_DIR/air"
+fi
+if [ "$LAYERS" = "0" ]; then
+  LAYERS=$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['config']['layers'])" "$QWEN_DIR/air/manifest.json")
+fi
+NTOK=$(awk -F, '{print NF}' <<< "$PROMPT")
+
+if [ -z "${GFX_TARGET:-}" ]; then
+  AMDGPU_ARCH_BIN=$(command -v amdgpu-arch || echo /opt/rocm/llvm/bin/amdgpu-arch)
+  GFX_TARGET=$("$AMDGPU_ARCH_BIN" 2>/dev/null | head -1 | cut -d: -f1 || true)
+fi
+[ -n "$GFX_TARGET" ] || { echo "ERROR: set GFX_TARGET, e.g. GFX_TARGET=gfx942 $0" >&2; exit 1; }
+echo "GFX_TARGET=$GFX_TARGET LAYERS=$LAYERS PROMPT=$PROMPT ($NTOK tokens)"
+
+clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loader.c"
+
+"$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
+  --tasks "$TASKS" --workers "$WORKERS" --tokens "$NTOK" --cache 0 --steps 1 \
+  --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
+air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
+air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
+mlir-opt "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), gpu-kernel-outlining)" \
+    "$TMPDIR/s2.mlir" -o "$TMPDIR/s3.mlir"
+mlir-opt "--pass-pipeline=builtin.module(rocdl-attach-target{chip=$GFX_TARGET O=3},gpu.module(convert-gpu-to-rocdl{chipset=$GFX_TARGET runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary, func.func(gpu-async-region),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)" \
+    "$TMPDIR/s3.mlir" -o "$TMPDIR/s4.mlir"
+
+LLVM_LIB_DIR="${LLVM_INSTALL_DIR:+$LLVM_INSTALL_DIR/lib}"
+LLVM_LIB_DIR="${LLVM_LIB_DIR:-$(dirname "$(which mlir-opt)")/../lib}"
+MLIR_AIR_LIB_DIR="${MLIR_AIR_INSTALL_DIR:+$MLIR_AIR_INSTALL_DIR/lib}"
+MLIR_AIR_LIB_DIR="${MLIR_AIR_LIB_DIR:-$(dirname "$(which air-opt)")/../lib}"
+
+AIR_WEIGHTS="$QWEN_DIR/air/weights.f32" mlir-runner --entry-point-result=void \
+    --shared-libs="$LLVM_LIB_DIR/libmlir_rocm_runtime.so" \
+    --shared-libs="$LLVM_LIB_DIR/libmlir_runner_utils.so" \
+    --shared-libs="$LLVM_LIB_DIR/libmlir_c_runner_utils.so" \
+    --shared-libs="$MLIR_AIR_LIB_DIR/libairgpu.so" \
+    --shared-libs="$TMPDIR/libairweights.so" \
+    "$TMPDIR/s4.mlir" | tee "$TMPDIR/out.txt"
+
+# The chain prints the reference token ids one per line after the marker.
+GOT=$(sed -n '/^reference tokens:/,$p' "$TMPDIR/out.txt" \
+      | sed 's/^reference tokens://' | grep -E '^[0-9]+$' | paste -sd, -)
+WANT=$("$PY" "$SCRIPT_DIR/qwen3_ref.py" "$QWEN_DIR" "$PROMPT" "$LAYERS" \
+       | sed -n 's/^argmax per position: \[\(.*\)\]$/\1/p' | tr -d ' ')
+echo
+echo "chain : $GOT"
+echo "numpy : $WANT"
+[ -n "$GOT" ] || { echo "FAIL: the chain printed no tokens"; exit 1; }
+[ -n "$WANT" ] || { echo "FAIL: the numpy reference printed no tokens"; exit 1; }
+if [ "$GOT" != "$WANT" ]; then echo "FAIL: tokens differ"; exit 1; fi
+if ! tail -1 "$TMPDIR/out.txt" | grep -q '= 0$'; then
+  echo "FAIL: $(tail -1 "$TMPDIR/out.txt")"; exit 1
+fi
+echo "PASS: device, host reference and an independent numpy Qwen3 all agree"
