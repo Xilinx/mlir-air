@@ -31,8 +31,29 @@ QWEN_DIR="${QWEN_DIR:?set QWEN_DIR to a directory holding config.json and model.
 PY="${PY:-python3}"
 TMPDIR="${TMPDIR:-/tmp/air_qwen}"
 LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
-TASKS="${TASKS:-32}"
-WORKERS="${WORKERS:-32}"
+# A stage has `tasks` pieces at one token per step, so `tasks` is the ceiling
+# on how many workgroups can be doing anything -- and each workgroup is one
+# wavefront, so it is also the ceiling on how much memory latency the device
+# has anything to hide behind. Measured on Qwen3-0.6B, 28 layers, six tokens,
+# slope over eight extra launches:
+#
+#   workers/tasks    ms per token
+#     32 /  32          227.0
+#     64 /  64          179.1
+#    128 / 128          153.0
+#    256 / 128          261.1
+#
+# The last row is the shape of the cost: a workgroup with no piece left to
+# claim does not go away, it spins on every event for the rest of the launch,
+# so over-provisioning workers is worse than not provisioning them. Keep the
+# two equal.
+#
+# 128 is the ceiling for this checkpoint, not a tuned optimum: gen.py requires
+# tasks to divide the width of every stage it splits, and the vocabulary is
+# 151936 = 128 * 1187. It asserts if they do not divide, so a checkpoint that
+# cannot take 128 says so rather than computing a fraction of the work.
+TASKS="${TASKS:-128}"
+WORKERS="${WORKERS:-128}"
 # Decode steps in the single launch. Step 0 prefills the whole prompt; each
 # later step carries one token, which is what makes this a decode rather than
 # a prefill -- the window has to shrink after the prompt is used up.
