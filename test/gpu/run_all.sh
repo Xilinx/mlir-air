@@ -33,9 +33,15 @@ declare -A EXPECT=( [4k_4k_mul]="Output Matched!" )
 # decomposition, and only a run with more than one decode step exercises the
 # iteration versioning that lets one launch reuse the same task graph.
 declare -A DIR=( [megakernel_gen_prefill]=megakernel_gen
-                 [megakernel_gen_decode]=megakernel_gen )
+                 [megakernel_gen_decode]=megakernel_gen
+                 [megakernel_gen_chunked]=megakernel_gen )
 declare -A ENVV=( [megakernel_gen_prefill]="TOKENS=4 LAYERS=2"
-                  [megakernel_gen_decode]="STEPS=3 TOKENS=2 LAYERS=2" )
+                  [megakernel_gen_decode]="STEPS=3 TOKENS=2 LAYERS=2"
+                  # A 5-token prompt in a window of 2: the steps carry 2, 2, 1,
+                  # 1, 1 tokens off one static task graph. The 1 in the middle
+                  # is the ragged tail of the prompt, so three different
+                  # counts, not just "prefill then decode".
+                  [megakernel_gen_chunked]="STEPS=5 TOKENS=2 LAYERS=2 PROMPT_LEN=5" )
 
 TESTS=(
   4k_4k_mul
@@ -52,6 +58,7 @@ TESTS=(
   megakernel_gen
   megakernel_gen_prefill
   megakernel_gen_decode
+  megakernel_gen_chunked
   gang_task
   scheduler_broadcast
   gang_mmajor

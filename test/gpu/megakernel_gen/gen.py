@@ -74,7 +74,8 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
          cache: int = 32, tokens: int = 1, inter: int = 0,
          heads: int = 4, kv_heads: int = 2, steps: int = 1,
          vocab: int = 256, head_dim: int = 0,
-         rope_theta: float = 10000.0, W=None, prompt=None) -> str:
+         rope_theta: float = 10000.0, W=None, prompt=None,
+         prompt_len: int = 0) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
     # Qwen3 states head_dim in its config and it is not hidden/heads: 0.6B has
@@ -122,24 +123,45 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     LGT = f"memref<{tokens}x{vocab}xf32>"
     PVT = f"memref<{tokens}x{tasks}xf32>"
     PIT = f"memref<{tokens}x{tasks}xi32>"
-    TKT = f"memref<{steps + 1}x{tokens}xi32>"
+    # One flat token stream rather than a token per (step, row). A row of a
+    # step is a position in the same sequence -- the attention inside a step is
+    # windowed-causal, so token m of a step already reads what token m-1 of the
+    # same step appended -- and a sequence has one next token, not `tokens` of
+    # them. Fleet keeps the same shape: config.tokens is indexed by absolute
+    # position within a request (persistent_kernel.cuh:397).
+    maxseq = steps * tokens + 1
+    TKT = f"memref<{maxseq}xi32>"
+    PLT = "memref<1xi32>"
     NFT = f"memref<{dim}xf32>"
 
+    # How many of the stream's tokens are the prompt. Everything past it is
+    # generated. Default: the whole run is prompt, which makes every step a
+    # prefill chunk of `tokens` -- the shape this generator had before decode
+    # existed, so the existing tests stay an exact regression baseline.
     if prompt:
-        assert len(prompt) == tokens, "prompt must have exactly --tokens ids"
+        prompt_len = prompt_len or len(prompt)
+        assert prompt_len == len(prompt), (
+            "--prompt-len must match the length of --prompt")
+    prompt_len = prompt_len or steps * tokens
+    # A prompt longer than the window is consumed over several steps, which is
+    # Fleet's chunked prefill (MPK_MAX_TOKENS_PER_REQUEST, persistent_kernel.cuh
+    # :445). It needs enough steps to get through the prompt and still decode.
+    assert 0 < prompt_len <= steps * tokens, "prompt-len out of range"
+
+    if prompt:
         prompt_init = "\n".join(
             f"    %pt{k} = arith.constant {tid} : i32\n"
             f"    %pk{k} = arith.constant {k} : index\n"
-            f"    memref.store %pt{k}, %Tok[%c0, %pk{k}] : {TKT}"
+            f"    memref.store %pt{k}, %Tok[%pk{k}] : {TKT}"
             for k, tid in enumerate(prompt))
     else:
         prompt_init = (
-            "    scf.for %m = %c0 to %ctok step %c1 {\n"
+            "    scf.for %m = %c0 to %cplen step %c1 {\n"
             "      %mm = arith.index_cast %m : index to i32\n"
             "      %t0 = arith.muli %mm, %c3i : i32\n"
             "      %t1 = arith.addi %t0, %one : i32\n"
             "      %t2 = arith.remsi %t1, %cvocabi : i32\n"
-            f"      memref.store %t2, %Tok[%c0, %m] : {TKT}\n"
+            f"      memref.store %t2, %Tok[%m] : {TKT}\n"
             "    }")
 
     stages = 9
@@ -226,6 +248,8 @@ module {{
     %clayers = arith.constant {layers} : index
     %ctok = arith.constant {tokens} : index
     %csteps = arith.constant {steps} : index
+    %cplen = arith.constant {prompt_len} : index
+    %cmaxseq = arith.constant {maxseq} : index
 
     %X = memref.alloc() : {AT}
     %X0 = memref.alloc() : {AT}
@@ -258,6 +282,14 @@ module {{
     %Xf = memref.alloc() : {AT}
     %Tok0 = memref.alloc() : {TKT}
     %LgD = memref.alloc() : {LGT}
+    // The prompt length reaches the device as data, not as a folded constant:
+    // how many tokens a step has is a runtime quantity in Fleet too
+    // (qo_indptr_buffer, read inside the task -- see
+    // multitoken_paged_attention_mfma_mi300.cuh:78-83), because prefill and
+    // decode run the same static task graph with different trip counts.
+    %Plen = memref.alloc() : {PLT}
+    %pleni = arith.constant {prompt_len} : i32
+    memref.store %pleni, %Plen[%c0] : {PLT}
 
     // Each token gets a different *pattern*, not the same pattern shifted by a
     // constant. A constant offset does not survive: rmsnorm divides most of it
@@ -463,10 +495,8 @@ module {{
     // The prompt, and room for what each step produces.
     %csteps1 = arith.constant {steps + 1} : index
     %csliceVh = arith.constant {slice_v} : index
-    scf.for %sp = %c0 to %csteps1 step %c1 {{
-      scf.for %m = %c0 to %ctok step %c1 {{
-        memref.store %zero, %Tok[%sp, %m] : {TKT}
-      }}
+    scf.for %m = %c0 to %cmaxseq step %c1 {{
+      memref.store %zero, %Tok[%m] : {TKT}
     }}
 {prompt_init}
     scf.for %m = %c0 to %ctok step %c1 {{
@@ -716,17 +746,25 @@ module {{
     %rxr = memref.alloc() : memref<{dim}xf32>
     %rgu = memref.alloc() : memref<{2 * inter}xf32>
     %ract = memref.alloc() : memref<{inter}xf32>
-    scf.for %sp = %c0 to %csteps step %c1 {{
-     // Step s appends its window at cache + s*tokens and attends everything up
-     // to and including its own entry, so both the slot and the length move
-     // with the step. Fleet does the same thing by advancing
-     // config.step[request_id] on the device (persistent_kernel.cuh:392).
-     %spt = arith.muli %sp, %ctok : index
-     %wbase = arith.addi %cpre, %spt : index
-     %curlen = arith.addi %wbase, %ctok : index
-     // embed: this step's input is the token the last step produced
-     scf.for %m = %c0 to %ctok step %c1 {{
-       %tk = memref.load %Tok[%sp, %m] : {TKT}
+    %seqend = scf.for %sp = %c0 to %csteps step %c1
+        iter_args(%seq = %c0) -> (index) {{
+     // A step consumes as many tokens as are left of the prompt, capped at the
+     // window, and one once the prompt is used up -- Fleet's
+     // prepare_next_batch, which is `prompt_length - step` clamped for prefill
+     // requests and 1 for decode requests (persistent_kernel.cuh:441-450). So
+     // the slot the step appends at and the length it attends both move by the
+     // step's own token count, not by a fixed stride.
+     %rem = arith.subi %cplen, %seq : index
+     %isPre = arith.cmpi sgt, %rem, %c0 : index
+     %capped = arith.minsi %rem, %ctok : index
+     %nat = arith.select %isPre, %capped, %c1 : index
+     %wbase = arith.addi %cpre, %seq : index
+     %curlen = arith.addi %wbase, %nat : index
+     // embed: the step's input is the next slice of the token stream, which
+     // for anything past the prompt is what the previous step produced
+     scf.for %m = %c0 to %nat step %c1 {{
+       %tp = arith.addi %seq, %m : index
+       %tk = memref.load %Tok[%tp] : {TKT}
        %tki = arith.index_cast %tk : i32 to index
        scf.for %i = %c0 to %cdim step %c1 {{
          %ev = memref.load %Emb[%tki, %i] : {EMT}
@@ -736,7 +774,7 @@ module {{
      scf.for %l = %c0 to %clayers step %c1 {{
       // 0, 1, 2 for every token before any attention, because token m's scores
       // read what tokens before it appended.
-      scf.for %m = %c0 to %ctok step %c1 {{
+      scf.for %m = %c0 to %nat step %c1 {{
        %ss = scf.for %i = %c0 to %cdim step %c1
            iter_args(%s = %fzero) -> (f32) {{
          %v = memref.load %ref[%m, %i] : {AT}
@@ -874,7 +912,7 @@ module {{
        }}
       }}
       // 3 onwards, now that every token has appended
-      scf.for %m = %c0 to %ctok step %c1 {{
+      scf.for %m = %c0 to %nat step %c1 {{
        %pos = arith.addi %wbase, %m : index
        scf.for %h = %c0 to %cheads step %c1 {{
          %hb = arith.muli %h, %chd : index
@@ -999,7 +1037,7 @@ module {{
      }}
      // final norm, lm head, then argmax the way Fleet does it: a partial per
      // piece, then a reduce over the pieces
-     scf.for %m = %c0 to %ctok step %c1 {{
+     scf.for %m = %c0 to %nat step %c1 {{
        %fs = scf.for %i = %c0 to %cdim step %c1
            iter_args(%a = %fzero) -> (f32) {{
          %v = memref.load %ref[%m, %i] : {AT}
@@ -1054,9 +1092,23 @@ module {{
          %nx = arith.select %gt, %pi, %bx : i32
          scf.yield %nv2, %nx : f32, i32
        }}
-       %spn = arith.addi %sp, %c1 : index
-       memref.store %rd#1, %Tok[%spn, %m] : {TKT}
+       // A sequence has one next token: the argmax of its last position. The
+       // earlier rows of a prefill chunk predict tokens the prompt already
+       // supplies, and Fleet drops those too -- it only copies an output token
+       // back into the stream when the slot is at or past the prompt
+       // (persistent_kernel.cuh:396).
+       %lastm = arith.subi %nat, %c1 : index
+       %isLastRow = arith.cmpi eq, %m, %lastm : index
+       scf.if %isLastRow {{
+         %nxt = arith.addi %seq, %nat : index
+         %past = arith.cmpi sge, %nxt, %cplen : index
+         scf.if %past {{
+           memref.store %rd#1, %Tok[%nxt] : {TKT}
+         }}
+       }}
      }}
+     %seqn = arith.addi %seq, %nat : index
+     scf.yield %seqn : index
     }}
     // The reference used these as scratch; hand the device zeroed copies.
     scf.for %m = %c0 to %ctok step %c1 {{
@@ -1138,6 +1190,8 @@ module {{
     %dQ = gpu.alloc () : {QUT}
     %dLoc = gpu.alloc () : memref<{locwords}xi32>
     %dE = gpu.alloc () : memref<{events}xi32>
+    %dPlen = gpu.alloc () : {PLT}
+    gpu.memcpy %dPlen, %Plen : {PLT}, {PLT}
     gpu.memcpy %dX, %X : {AT}, {AT}
     gpu.memcpy %dRv, %Rv : {AT}, {AT}
     gpu.memcpy %dQKV, %QKV : {QT}, {QT}
@@ -1194,24 +1248,22 @@ module {{
       // cache slot, so only x has to be restored.
       // Only the prompt is restored: the chain embeds it, and every later
       // token is produced on the device.
-      scf.for %sp2 = %c0 to %csteps1 step %c1 {{
-        scf.for %m = %c0 to %ctok step %c1 {{
-          %keep = arith.cmpi eq, %sp2, %c0 : index
-          %cur = memref.load %Tok[%sp2, %m] : {TKT}
-          %nv = arith.select %keep, %cur, %zero : i32
-          memref.store %nv, %Tok0[%sp2, %m] : {TKT}
-        }}
+      scf.for %m = %c0 to %cmaxseq step %c1 {{
+        %keep = arith.cmpi ult, %m, %cplen : index
+        %cur = memref.load %Tok[%m] : {TKT}
+        %nv = arith.select %keep, %cur, %zero : i32
+        memref.store %nv, %Tok0[%m] : {TKT}
       }}
       gpu.memcpy %dTok, %Tok0 : {TKT}, {TKT}
       func.call @chain(%dQ, %dE, %dX, %dRv, %dQKV, %dSc, %dAv, %dAov, %dXa,
                        %dGU, %dActv, %dWqkv, %dWo, %dWgu, %dWd, %dKc, %dVc,
                        %dN1, %dN2, %dQKN, %dRO, %dEmb, %dWlm, %dNf, %dTok,
-                       %dLg, %dPV, %dPI, %dLoc)
+                       %dLg, %dPV, %dPI, %dLoc, %dPlen)
         : ({QUT}, memref<{events}xi32>, {AT}, {AT},
            {QT}, {SCT}, {QWT}, {AT}, {AT}, {GT}, {IT},
            {WQT}, {WT}, {WGT}, {WDT}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
            {EMT}, {LMT}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
-           memref<{locwords}xi32>) -> ()
+           memref<{locwords}xi32>, {PLT}) -> ()
     }}
 
     gpu.memcpy %X, %dX : {AT}, {AT}
@@ -1260,18 +1312,15 @@ module {{
     // The token check is exact, not a tolerance: argmax turns the whole chain
     // into a discrete answer, so a token either matches or it does not.
     gpu.memcpy %Tok0, %dTok : {TKT}, {TKT}
-    %tbad = scf.for %sp = %c1 to %csteps1 step %c1
-        iter_args(%bo = %zero) -> (i32) {{
-      %bi = scf.for %m = %c0 to %ctok step %c1
-          iter_args(%b = %bo) -> (i32) {{
-        %g = memref.load %Tok0[%sp, %m] : {TKT}
-        %wt = memref.load %Tok[%sp, %m] : {TKT}
-        %eq = arith.cmpi eq, %g, %wt : i32
-        %inc = arith.select %eq, %zero, %one : i32
-        %b2 = arith.addi %b, %inc : i32
-        scf.yield %b2 : i32
-      }}
-      scf.yield %bi : i32
+    // Only the generated tail is compared: the prompt was handed to both sides.
+    %tbad = scf.for %m = %cplen to %cmaxseq step %c1
+        iter_args(%b = %zero) -> (i32) {{
+      %g = memref.load %Tok0[%m] : {TKT}
+      %wt = memref.load %Tok[%m] : {TKT}
+      %eq = arith.cmpi eq, %g, %wt : i32
+      %inc = arith.select %eq, %zero, %one : i32
+      %b2 = arith.addi %b, %inc : i32
+      scf.yield %b2 : i32
     }}
     // The logits are where the vocabulary tail is actually checked. The token
     // on top of them is a much blunter instrument: this chain is contractive,
@@ -1303,11 +1352,9 @@ module {{
     // Print the reference token ids so an outside model can check them: the
     // device agreeing with the host reference only proves they match.
     vector.print str "reference tokens:"
-    scf.for %sp = %c1 to %csteps1 step %c1 {{
-      scf.for %m = %c0 to %ctok step %c1 {{
-        %tv = memref.load %Tok[%sp, %m] : {TKT}
-        vector.print %tv : i32
-      }}
+    scf.for %m = %cplen to %cmaxseq step %c1 {{
+      %tv = memref.load %Tok[%m] : {TKT}
+      vector.print %tv : i32
     }}
     vector.print str "tokens differing from the reference = "
     vector.print %tbad : i32
@@ -1329,7 +1376,7 @@ module {{
                    %Kc: {KVT}, %Vc: {KVT}, %N1: {NT}, %N2: {NT},
                    %QKN: {QKNT}, %RO: {ROT}, %Emb: {EMT}, %Wlm: {LMT},
                    %Nf: {NFT}, %Tok: {TKT}, %Lg: {LGT}, %PV: {PVT},
-                   %PI: {PIT}, %Loc: memref<{locwords}xi32>) {{
+                   %PI: {PIT}, %Loc: memref<{locwords}xi32>, %Pl: {PLT}) {{
     %c1 = arith.constant 1 : index
     %cw = arith.constant {workers} : index
     air.launch (%bx, %by) in (%nbx=%cw, %nby=%c1)
@@ -1337,12 +1384,12 @@ module {{
              %aov=%Aov, %xab=%Xa, %gub=%GU, %actb=%Actv, %wqkv=%Wqkv,
              %wo=%Wo, %wgu=%Wgu, %wd=%Wd, %kc=%Kc, %vc=%Vc, %n1=%N1,
              %n2=%N2, %qkn=%QKN, %ro=%RO, %emb=%Emb, %wlm=%Wlm, %nf=%Nf,
-             %tok=%Tok, %lg=%Lg, %pvb=%PV, %pib=%PI, %loc=%Loc)
+             %tok=%Tok, %lg=%Lg, %pvb=%PV, %pib=%PI, %loc=%Loc, %plb=%Pl)
         : {QUT}, memref<{events}xi32>, {AT}, {AT},
           {QT}, {SCT}, {QWT}, {AT}, {AT}, {GT}, {IT},
           {WQT}, {WT}, {WGT}, {WDT}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
           {EMT}, {LMT}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
-          memref<{locwords}xi32> {{
+          memref<{locwords}xi32>, {PLT} {{
       air.segment @worker args(%sq=%q, %se=%eb, %sx=%x, %sr=%r, %sqkv=%qkv,
                                %ssc=%scb, %sav=%av, %saov=%aov, %sxa=%xab,
                                %sgu=%gub, %sact=%actb, %swqkv=%wqkv,
@@ -1350,12 +1397,12 @@ module {{
                                %svc=%vc, %sn1=%n1, %sn2=%n2, %sqkn=%qkn,
                                %sro=%ro, %semb=%emb, %swlm=%wlm, %snf=%nf,
                                %stok=%tok, %slg=%lg, %spv=%pvb, %spi=%pib,
-                               %sloc=%loc)
+                               %sloc=%loc, %splen=%plb)
           : {QUT}, memref<{events}xi32>, {AT}, {AT},
             {QT}, {SCT}, {QWT}, {AT}, {AT}, {GT}, {IT},
             {WQT}, {WT}, {WGT}, {WDT}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
             {EMT}, {LMT}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
-            memref<{locwords}xi32> {{
+            memref<{locwords}xi32>, {PLT} {{
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
         %ctasks = arith.constant {tasks} : index
@@ -1430,13 +1477,26 @@ module {{
           // (iteration_num << 32) | position_index
           // (persistent_kernel.cuh:263) -- so a step gets fresh event and queue
           // slots without anything having to be reset between steps.
-          scf.for %step = %c0_s to %csteps_s step %c1_s {{
+          %seqend = scf.for %step = %c0_s to %csteps_s step %c1_s
+              iter_args(%seq = %c0_s) -> (index) {{
             %stepi = arith.index_cast %step : index to i64
             %stepev = arith.muli %stepi, %cevstep : i64
             %steploc = arith.muli %stepi, %clocstep : i64
-            %spt = arith.muli %step, %ctok_s : index
-            %wbase = arith.addi %cpre_s, %spt : index
-            %curlen = arith.addi %wbase, %ctok_s : index""")
+            // How many tokens this step actually carries. It is read from a
+            // buffer, not folded from %step, because that is the whole point:
+            // one static task graph serves a prefill chunk of `tokens` and a
+            // decode step of 1, exactly as Fleet's does -- prepare_next_batch
+            // writes qo_indptr_buffer on the device and the tasks read their
+            // trip counts out of it (persistent_kernel.cuh:441-450,
+            // multitoken_paged_attention_mfma_mi300.cuh:78-83).
+            %plv = memref.load %splen[%c0_s] : {PLT}
+            %plen_s = arith.index_cast %plv : i32 to index
+            %rem_s = arith.subi %plen_s, %seq : index
+            %isPre_s = arith.cmpi sgt, %rem_s, %c0_s : index
+            %capped_s = arith.minsi %rem_s, %ctok_s : index
+            %nat = arith.select %isPre_s, %capped_s, %c1_s : index
+            %wbase = arith.addi %cpre_s, %seq : index
+            %curlen = arith.addi %wbase, %nat : index""")
 
     # A stage whose work splits into independent pieces. Each die has its own
     # head and its own stride of pieces, so what a die touches is what its cache
@@ -1484,8 +1544,16 @@ module {{
               %kstride = arith.muli %kn, %cmaxdies : index
               %ix = arith.addi %d, %kstride : index
               %has = arith.cmpi ult, %ix, {count_expr} : index
+              // A piece whose token is past this step's active count is still
+              // claimed and still counted -- the event totals are a property of
+              // the task graph, which is static -- it just has nothing to do.
+              // Fleet keeps the same static grid and passes num_active_tokens
+              // down for the trip counts (gang_linear_mi300.cuh:51).
+              %mAct = arith.cmpi ult, %m, %nat : index
               %acc2 = scf.if %has -> i32 {{
+                scf.if %mAct {{
 {body}
+                }}
                 %n = arith.addi %acc, %one_s : i32
                 scf.yield %n : i32
               }} else {{
@@ -1540,7 +1608,7 @@ module {{
           %cl{l}_{stage} = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hsingle{stage}_{l}] : (i32, {QUT}) -> i32
           %mine{l}_{stage} = arith.cmpi eq, %cl{l}_{stage}, %zero_s : i32
           scf.if %mine{l}_{stage} {{
-            scf.for %m = %c0_s to %ctok_s step %c1_s {{
+            scf.for %m = %c0_s to %nat step %c1_s {{
 {body}
             }}
             %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %n1_s syncscope("") release : !llvm.ptr, i32
@@ -1635,7 +1703,8 @@ module {{
     # embed: this step's input is the token the last step produced. Fleet's
     # embed_layer (builder.py:755) does the same gather.
     w(strided_stage("x", stages + 0, base_x + 0, "%ctasks", "%ntasks_t",
-                    f"""                %tk = memref.load %stok[%step, %m] : {TKT}
+                    f"""                %tp = arith.addi %seq, %m : index
+                %tk = memref.load %stok[%tp] : {TKT}
                 %tki = arith.index_cast %tk : i32 to index
                 %j0 = arith.muli %ix, %csliceD : index
                 scf.for %jj = %c0_s to %csliceD step %c1_s {{
@@ -1867,11 +1936,23 @@ module {{
                 %nx = arith.select %gt, %api, %bidx : i32
                 scf.yield %nv2, %nx : f32, i32
               }}
-              %spn = arith.addi %step, %c1_s : index
-              memref.store %rd#1, %stok[%spn, %m] : {TKT}""",
+              // One next token per sequence: the argmax of the last active
+              // position, and only once that slot is past the prompt. Fleet
+              // guards the same write (persistent_kernel.cuh:396).
+              %lastm = arith.subi %nat, %c1_s : index
+              %isLastRow = arith.cmpi eq, %m, %lastm : index
+              scf.if %isLastRow {{
+                %nxt = arith.addi %seq, %nat : index
+                %past = arith.cmpi sge, %nxt, %plen_s : index
+                scf.if %past {{
+                  memref.store %rd#1, %stok[%nxt] : {TKT}
+                }}
+              }}""",
                    slot=base_x + 4, lc="%L0"))
 
     w(f"""
+            %seqn = arith.addi %seq, %nat : index
+            scf.yield %seqn : index
           }}
         }}
 
@@ -1923,7 +2004,13 @@ def main() -> int:
                          "written by weights.py; takes every shape but "
                          "--layers from the checkpoint config")
     ap.add_argument("--prompt", type=str, default=None,
-                    help="comma-separated prompt token ids, one per --tokens")
+                    help="comma-separated prompt token ids; at most --tokens "
+                         "of them, and they set --prompt-len")
+    ap.add_argument("--prompt-len", type=int, default=0,
+                    help="how many of the run's tokens are prompt. Steps "
+                         "consume the prompt --tokens at a time and then "
+                         "decode one token each. Default (0) makes the whole "
+                         "run prompt, so every step is a prefill chunk.")
     ap.add_argument("--repeat", type=int, default=1,
                     help="how many times to launch the chain, for timing")
     a = ap.parse_args()
@@ -1949,7 +2036,7 @@ def main() -> int:
     sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat,
                           a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
                           a.steps, a.vocab, a.head_dim, a.rope_theta, W,
-                          prompt))
+                          prompt, a.prompt_len))
     return 0
 
 

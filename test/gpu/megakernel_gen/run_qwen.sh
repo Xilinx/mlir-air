@@ -33,6 +33,10 @@ TMPDIR="${TMPDIR:-/tmp/air_qwen}"
 LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
 TASKS="${TASKS:-32}"
 WORKERS="${WORKERS:-32}"
+# Decode steps in the single launch. Step 0 prefills the whole prompt; each
+# later step carries one token, which is what makes this a decode rather than
+# a prefill -- the window has to shrink after the prompt is used up.
+STEPS="${STEPS:-1}"
 # "The capital of France is"
 PROMPT="${PROMPT:-785,6722,315,9625,374}"
 mkdir -p "$TMPDIR"
@@ -48,19 +52,28 @@ if [ "$LAYERS" = "0" ]; then
   LAYERS=$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['config']['layers'])" "$QWEN_DIR/air/manifest.json")
 fi
 NTOK=$(awk -F, '{print NF}' <<< "$PROMPT")
+# Tokens per step. Smaller than the prompt means the prompt is prefilled in
+# chunks over several steps before any decoding starts, which is what Fleet's
+# per-request cap does.
+WIN="${WIN:-$NTOK}"
+# Steps spent on the prompt, then one generated token per step from the last
+# of them onwards.
+PRE=$(( (NTOK + WIN - 1) / WIN ))
+[ "$STEPS" -ge "$PRE" ] || { echo "STEPS must be at least $PRE to finish the prompt" >&2; exit 1; }
+NGEN=$(( STEPS - PRE + 1 ))
 
 if [ -z "${GFX_TARGET:-}" ]; then
   AMDGPU_ARCH_BIN=$(command -v amdgpu-arch || echo /opt/rocm/llvm/bin/amdgpu-arch)
   GFX_TARGET=$("$AMDGPU_ARCH_BIN" 2>/dev/null | head -1 | cut -d: -f1 || true)
 fi
 [ -n "$GFX_TARGET" ] || { echo "ERROR: set GFX_TARGET, e.g. GFX_TARGET=gfx942 $0" >&2; exit 1; }
-echo "GFX_TARGET=$GFX_TARGET LAYERS=$LAYERS PROMPT=$PROMPT ($NTOK tokens)"
+echo "GFX_TARGET=$GFX_TARGET LAYERS=$LAYERS STEPS=$STEPS WIN=$WIN NGEN=$NGEN PROMPT=$PROMPT ($NTOK tokens)"
 
 clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loader.c"
 
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
-  --tasks "$TASKS" --workers "$WORKERS" --tokens "$NTOK" --cache 0 --steps 1 \
-  --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
+  --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 \
+  --steps "$STEPS" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
 mlir-opt "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), gpu-kernel-outlining)" \
@@ -82,10 +95,13 @@ AIR_WEIGHTS="$QWEN_DIR/air/weights.f32" mlir-runner --entry-point-result=void \
     "$TMPDIR/s4.mlir" | tee "$TMPDIR/out.txt"
 
 # The chain prints the reference token ids one per line after the marker.
+# It prints a slot for every position the run could reach, and the ones past
+# the last step are still zero, so only the first STEPS of them are generated.
 GOT=$(sed -n '/^reference tokens:/,$p' "$TMPDIR/out.txt" \
-      | sed 's/^reference tokens://' | grep -E '^[0-9]+$' | paste -sd, -)
-WANT=$("$PY" "$SCRIPT_DIR/qwen3_ref.py" "$QWEN_DIR" "$PROMPT" "$LAYERS" \
-       | sed -n 's/^argmax per position: \[\(.*\)\]$/\1/p' | tr -d ' ')
+      | sed 's/^reference tokens://' | grep -E '^[0-9]+$' \
+      | head -n "$NGEN" | paste -sd, -)
+WANT=$("$PY" "$SCRIPT_DIR/qwen3_ref.py" "$QWEN_DIR" "$PROMPT" "$LAYERS" "$NGEN" \
+       | sed -n 's/^generated: //p' | tr -d ' ')
 echo
 echo "chain : $GOT"
 echo "numpy : $WANT"

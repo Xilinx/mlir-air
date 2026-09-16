@@ -6,7 +6,11 @@ writes, so it checks the conversion as well as the chain: if the two agree on
 the predicted tokens, the transposes, the fused layouts and the architecture in
 gen.py are all right.
 
-    ./qwen3_ref.py /shared/erweiw/qwen3-0.6b 3838,1128,525,498
+    ./qwen3_ref.py /shared/erweiw/qwen3-0.6b 3838,1128,525,498 [layers] [steps]
+
+With `steps` > 1 it greedily decodes, and it does so by re-running the whole
+prefix every step with no KV cache at all. That is deliberate: the chain's
+cache is one of the things under test, so the reference must not share it.
 """
 
 import json
@@ -86,15 +90,31 @@ def forward(src, tokens, layers=None):
     return xf @ lm.T
 
 
+def generate(src, prompt, layers=None, steps=1):
+    """Greedy decode. Step 0 prefills the prompt, each later step adds one
+    token -- the same schedule the chain runs, arrived at independently."""
+    seq, out, first = list(prompt), [], None
+    for _ in range(steps):
+        lg = forward(src, seq, layers)
+        if first is None:
+            first = lg
+        nxt = int(lg[-1].argmax())
+        out.append(nxt)
+        seq.append(nxt)
+    return out, lg, first
+
+
 def main(argv):
     if len(argv) < 3:
         print(__doc__)
         return 2
     tokens = [int(v) for v in argv[2].split(",")]
     layers = int(argv[3]) if len(argv) > 3 else None
-    lg = forward(argv[1], tokens, layers)
+    steps = int(argv[4]) if len(argv) > 4 else 1
+    gen, lg, first = generate(argv[1], tokens, layers, steps)
     print("prompt:", tokens)
-    print("argmax per position:", lg.argmax(-1).tolist())
+    print("argmax per position:", first.argmax(-1).tolist())
+    print("generated:", ",".join(str(v) for v in gen))
     top = np.argsort(lg[-1])[::-1][:5]
     print("last position top-5:",
           [(int(i), round(float(lg[-1, i]), 3)) for i in top])
