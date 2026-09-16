@@ -37,6 +37,10 @@ WORKERS="${WORKERS:-32}"
 # later step carries one token, which is what makes this a decode rather than
 # a prefill -- the window has to shrink after the prompt is used up.
 STEPS="${STEPS:-1}"
+# Launches per run. The wall time is dominated by reading three gigabytes of
+# weights off NFS and by the single-threaded host reference, both of which
+# happen once; the slope over REPEAT is what isolates the device.
+REPEAT="${REPEAT:-1}"
 # "The capital of France is"
 PROMPT="${PROMPT:-785,6722,315,9625,374}"
 mkdir -p "$TMPDIR"
@@ -73,7 +77,7 @@ clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loade
 
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
   --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 \
-  --steps "$STEPS" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
+  --steps "$STEPS" --repeat "$REPEAT" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
 mlir-opt "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), gpu-kernel-outlining)" \
