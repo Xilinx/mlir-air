@@ -1963,7 +1963,7 @@ module {{
         folded into the first; both halves use the same frequency, which is
         what makes rotate-half a rotation (tasks/ampere/norm.cuh:101-118).
         """
-        return f"""                  %hs_{tag} = scf.for %hdi = %c0_s to %chd_s step %c1_s
+        return f"""                  %hp_{tag} = scf.for %hdi = %tx_s to %chd_s step %nlane
                       iter_args(%sa_{tag} = %fzero_s) -> (f32) {{
                     %hi_{tag} = arith.addi {base}, %hdi : index
                     %hv_{tag} = memref.load %sqkv[%m, %hi_{tag}] : {QT}
@@ -1971,10 +1971,11 @@ module {{
                     %hn_{tag} = arith.addf %sa_{tag}, %hq_{tag} : f32
                     scf.yield %hn_{tag} : f32
                   }}
+{wave_reduce("%hp_" + tag, "%hs_" + tag, "arith.addf", "h" + tag, 18)}
                   %hm_{tag} = arith.divf %hs_{tag}, %fhd_s : f32
                   %hme_{tag} = arith.addf %hm_{tag}, %eps_s : f32
                   %hr_{tag} = math.sqrt %hme_{tag} : f32
-                  scf.for %hdi = %c0_s to %chd_s step %c1_s {{
+                  scf.for %hdi = %tx_s to %chd_s step %nlane {{
                     %wi_{tag} = arith.addi %hdi, {wofs} : index
                     %hj_{tag} = arith.addi {base}, %hdi : index
                     %hw_{tag} = memref.load %sqkv[%m, %hj_{tag}] : {QT}
@@ -1983,7 +1984,7 @@ module {{
                     %ov_{tag} = arith.mulf %nv_{tag}, %nw_{tag} : f32
                     memref.store %ov_{tag}, %sqkv[%m, %hj_{tag}] : {QT}
                   }}
-                  scf.for %hdi = %c0_s to %ch2_s step %c1_s {{
+                  scf.for %hdi = %tx_s to %ch2_s step %nlane {{
                     %i1_{tag} = arith.addi {base}, %hdi : index
                     %dh_{tag} = arith.addi %hdi, %ch2_s : index
                     %i2_{tag} = arith.addi {base}, %dh_{tag} : index
@@ -2068,7 +2069,7 @@ module {{
                   %kb = arith.addi %ckbase, %khb : index
 {head_norm_rope("%kb", "%chd_s", l, "k")}
                   %vb = arith.addi %cvbase, %khb : index
-                  scf.for %hdi = %c0_s to %chd_s step %c1_s {{
+                  scf.for %hdi = %tx_s to %chd_s step %nlane {{
                     %ki = arith.addi %kb, %hdi : index
                     %kv = memref.load %sqkv[%m, %ki] : {QT}
                     memref.store %kv, %skc[%L{l}, %pos, %ix, %hdi] : {KVT}
@@ -2076,7 +2077,7 @@ module {{
                     %vv = memref.load %sqkv[%m, %vi] : {QT}
                     memref.store %vv, %svc[%L{l}, %pos, %ix, %hdi] : {KVT}
                   }}
-                }}"""))
+                }}""", lanes=True))
 
         # 3: attention for one (token, query head). Scores, softmax and the
         # weighted sum of V in one task, which is how Fleet packages it
