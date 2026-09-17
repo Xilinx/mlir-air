@@ -1602,6 +1602,28 @@ module {{
             %ntasks_t = arith.muli %nat_i, %ctasks_i : i32
             %nheads_t = arith.muli %nat_i, %cheads_i : i32""")
 
+    # The event wait, and who pays for it.
+    #
+    # Every wave polling the same counter is eight times the traffic on the one
+    # cache line the whole device is contending for, and on gfx9 an acquire
+    # load is `global_load` + `s_waitcnt` + `buffer_inv sc0 sc1` -- which
+    # invalidates the CU's vector cache *and* the XCD's L2. Doing that at full
+    # issue rate from 1024 waves leaves the L2 permanently cold.
+    #
+    # So one wave waits and a barrier releases the workgroup, which it was
+    # going to meet at before the next claim anyway; and the poll is relaxed
+    # with a single acquire fence once the wait is over, which is the standard
+    # idiom and the shape Fleet's own loop has -- __ATOMIC_RELAXED inside, an
+    # acquire fence outside (persistent_kernel.cuh:944-966).
+    if waves == 1:
+        spin_open, spin_close, spin_end = "", "", ""
+        spin_order = "acquire"
+    else:
+        spin_open = "          scf.if %isW0 {"
+        spin_close = "          }"
+        spin_end = "          gpu.barrier\n          llvm.fence syncscope(\"\") acquire"
+        spin_order = "monotonic"
+
     # Emitted before every event signal once the workgroup is more than one
     # wave; see the note at the signal site.
     stage_bar = "" if waves == 1 else "          gpu.barrier"
@@ -1759,12 +1781,12 @@ module {{
               %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
             }}
           }}
-          // One lane spins; the rest wait on the broadcast. Sixty-four lanes
-          // polling the same address would be sixty-four times the traffic on
-          // the one line every workgroup in the step is already contending for.
+          // See the note on spin_open: one wave waits, a barrier releases the
+          // workgroup, and the acquire happens once rather than per poll.
+{spin_open}
           scf.while : () -> () {{
             %seen_l{l}_{stage} = scf.if %isL0 -> (i32) {{
-              %v = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") {spin_order} {{alignment = 4 : i64}} : !llvm.ptr -> i32
               scf.yield %v : i32
             }} else {{
               scf.yield %zero_s : i32
@@ -1774,7 +1796,9 @@ module {{
             scf.condition(%notYet)
           }} do {{
             scf.yield
-          }}"""
+          }}
+{spin_close}
+{spin_end}"""
 
     def single_stage(l, stage, ev, body, slot=None, lc=None, lanes=False):
         slot = (l * stages + stage) if slot is None else slot
@@ -1817,9 +1841,10 @@ module {{
           scf.if %mine{l}_{stage} {{
 {body_block}
           }}
+{spin_open}
           scf.while : () -> () {{
             %seenl{l}_{stage} = scf.if %isL0 -> (i32) {{
-              %v = llvm.load %p{l}_{stage} atomic syncscope("") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") {spin_order} {{alignment = 4 : i64}} : !llvm.ptr -> i32
               scf.yield %v : i32
             }} else {{
               scf.yield %zero_s : i32
@@ -1829,7 +1854,9 @@ module {{
             scf.condition(%notYet)
           }} do {{
             scf.yield
-          }}"""
+          }}
+{spin_close}
+{spin_end}"""
 
     # The weights are read once per layer and never again inside a decode step,
     # and they are far larger than anything else in flight, so they are exactly
