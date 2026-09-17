@@ -1760,6 +1760,34 @@ module {{
             cur = nxt
         return "\n".join(out)
 
+    def block_sum(src, dst, tag, indent):
+        """Combine one value per *thread* into one value the whole block has.
+
+        wave_reduce first, so what crosses waves is one number per wave
+        rather than one per lane, then a slot each in LDS and every wave adds
+        the same `waves` of them. Reading the slots redundantly is cheaper
+        than reducing them on one wave and broadcasting: it is `waves` LDS
+        reads either way, and this way there is no third barrier.
+        """
+        pad = " " * indent
+        if waves == 1:
+            return wave_reduce(src, dst, "arith.addf", tag, indent)
+        return (
+            f"{wave_reduce(src, '%bw' + tag, 'arith.addf', tag, indent)}\n"
+            f"{pad}gpu.barrier\n"
+            f"{pad}scf.if %isL0 {{\n"
+            f"{pad}  memref.store %bw{tag}, %ldsr[%wid] : "
+            f"memref<{nthreads}xf32, 3>\n"
+            f"{pad}}}\n"
+            f"{pad}gpu.barrier\n"
+            f"{pad}{dst} = scf.for %bi{tag} = %c0_s to %cwaves step %c1_s\n"
+            f"{pad}    iter_args(%ba{tag} = %fzero_s) -> (f32) {{\n"
+            f"{pad}  %bv{tag} = memref.load %ldsr[%bi{tag}] : "
+            f"memref<{nthreads}xf32, 3>\n"
+            f"{pad}  %bn{tag} = arith.addf %ba{tag}, %bv{tag} : f32\n"
+            f"{pad}  scf.yield %bn{tag} : f32\n"
+            f"{pad}}}")
+
     # A stage whose work splits into independent pieces. Each die has its own
     # head and its own stride of pieces, so what a die touches is what its cache
     # already holds. A die that runs out steals from the others, which keeps
@@ -1927,8 +1955,14 @@ module {{
         # from %tx_s and closes them with gpu.subgroup_reduce. A body that
         # does not runs on the lead lane alone. The signal stays on the lead
         # lane either way -- the event counts tasks, and the task is one.
-        w0open = "" if waves == 1 else "            scf.if %isW0 {"
-        w0close = "" if waves == 1 else "            }"
+        # "block" means the body spreads itself over every wave and reduces
+        # across them, so it must not be pinned to wave 0 -- the barriers
+        # inside it are barriers the whole workgroup has to reach.
+        if lanes == "block":
+            w0open, w0close = "", ""
+        else:
+            w0open = "" if waves == 1 else "            scf.if %isW0 {"
+            w0close = "" if waves == 1 else "            }"
         body_block = (f"""{w0open}
             scf.for %m = %c0_s to %nat step %c1_s {{
 {body}
@@ -2188,30 +2222,30 @@ module {{
         w(f"\n          // ================= layer {l} =================")
 
         # 0: r = rmsnorm(x) * n1
-        w(single_stage(l, 0, base + 0, f"""              %sp{l} = scf.for %i = %tx_s to %cdim_s step %nlane
+        w(single_stage(l, 0, base + 0, f"""              %sp{l} = scf.for %i = %tx_s to %cdim_s step %nthr
                   iter_args(%s = %fzero_s) -> (f32) {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %sq2 = arith.mulf %v, %v : f32
                 %s2 = arith.addf %s, %sq2 : f32
                 scf.yield %s2 : f32
               }}
-              // Each lane sums its own stride of the row and the wave adds the
-              // 64 partials, which every lane then has -- so %rms below is
+              // Each thread sums its own stride of the row and the block adds
+              // the partials, which every thread then has -- so %rms below is
               // uniform without anything being broadcast. Reassociating a
               // float sum moves the last bits; the host comparison is relative
               // to 2e-2 and the token check is an argmax, and the independent
               // numpy reference already sums in a third order again.
-{wave_reduce("%sp" + str(l), "%ss" + str(l), "arith.addf", "n" + str(l), 14)}
+{block_sum("%sp" + str(l), "%ss" + str(l), "n" + str(l), 14)}
               %mean{l} = arith.divf %ss{l}, %fdim_s : f32
               %me{l} = arith.addf %mean{l}, %eps_s : f32
               %rms{l} = math.sqrt %me{l} : f32
-              scf.for %i = %tx_s to %cdim_s step %nlane {{
+              scf.for %i = %tx_s to %cdim_s step %nthr {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %nv = arith.divf %v, %rms{l} : f32
                 %nw = memref.load %sn1[%L{l}, %i] : {NT}
                 %rv = arith.mulf %nv, %nw : f32
                 memref.store %rv, %sr[%m, %i] : {AT}
-              }}""", lanes=True))
+              }}""", lanes="block"))
 
         # 1: qkv = r @ Wqkv
         w(matmul_stage(l, 1, base + 1, "%sqkv", QT, "%sr", AT, "%swqkv", WQTB,
@@ -2351,7 +2385,7 @@ module {{
         # decays geometrically with depth, and since the host comparison is
         # relative, a stream in the thousands hides every error smaller than
         # itself.
-        w(single_stage(l, 5, base + 5, f"""              %spa{l} = scf.for %i = %tx_s to %cdim_s step %nlane
+        w(single_stage(l, 5, base + 5, f"""              %spa{l} = scf.for %i = %tx_s to %cdim_s step %nthr
                   iter_args(%s = %fzero_s) -> (f32) {{
                 %xv = memref.load %sx[%m, %i] : {AT}
                 %avv = memref.load %saov[%m, %i] : {AT}
@@ -2361,7 +2395,7 @@ module {{
                 %s2 = arith.addf %s, %sqa : f32
                 scf.yield %s2 : f32
               }}
-{wave_reduce("%spa" + str(l), "%ssa" + str(l), "arith.addf", "a" + str(l), 14)}
+{block_sum("%spa" + str(l), "%ssa" + str(l), "a" + str(l), 14)}
               %meana{l} = arith.divf %ssa{l}, %fdim_s : f32
               %mea{l} = arith.addf %meana{l}, %eps_s : f32
               %rmsa{l} = math.sqrt %mea{l} : f32
@@ -2369,15 +2403,16 @@ module {{
               // residual onto the unnormalised one, which is what a decoder
               // layer does. %sr is free here -- stage 1 was the last reader.
               //
-              // Same stride as the loop above, so the %sxa slot a lane reads
-              // here is the one it wrote itself -- no lane waits on another.
-              scf.for %i = %tx_s to %cdim_s step %nlane {{
+              // Same stride as the loop above, so the %sxa slot a thread
+              // reads here is the one it wrote itself -- nobody waits on
+              // anybody, and the block_sum above already met at a barrier.
+              scf.for %i = %tx_s to %cdim_s step %nthr {{
                 %xv3 = memref.load %sxa[%m, %i] : {AT}
                 %nv = arith.divf %xv3, %rmsa{l} : f32
                 %nw = memref.load %sn2[%L{l}, %i] : {NT}
                 %xn = arith.mulf %nv, %nw : f32
                 memref.store %xn, %sr[%m, %i] : {AT}
-              }}""", lanes=True))
+              }}""", lanes="block"))
 
         # 6: gu = xa @ Wgu, gate and up in one matmul as Fleet fuses them
         w(matmul_stage(l, 6, base + 6, "%sgu", GT, "%sr", AT, "%swgu", WGTB,
@@ -2406,24 +2441,24 @@ module {{
                        "%csliceD", "%cinter_s", slice_d, residual="%sxa"))
 
     # final norm, lm head, and Fleet's two-stage argmax
-    w(single_stage("x", stages + 1, base_x + 1, f"""              %fp = scf.for %i = %tx_s to %cdim_s step %nlane
+    w(single_stage("x", stages + 1, base_x + 1, f"""              %fp = scf.for %i = %tx_s to %cdim_s step %nthr
                   iter_args(%a = %fzero_s) -> (f32) {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %fq = arith.mulf %v, %v : f32
                 %a2 = arith.addf %a, %fq : f32
                 scf.yield %a2 : f32
               }}
-{wave_reduce("%fp", "%fs", "arith.addf", "f", 14)}
+{block_sum("%fp", "%fs", "f", 14)}
               %fm = arith.divf %fs, %fdim_s : f32
               %fme = arith.addf %fm, %eps_s : f32
               %fr = math.sqrt %fme : f32
-              scf.for %i = %tx_s to %cdim_s step %nlane {{
+              scf.for %i = %tx_s to %cdim_s step %nthr {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %nv = arith.divf %v, %fr : f32
                 %nw = memref.load %snf[%i] : {NFT}
                 %o = arith.mulf %nv, %nw : f32
                 memref.store %o, %sr[%m, %i] : {AT}
-              }}""", slot=base_x + 1, lc="%L0", lanes=True))
+              }}""", slot=base_x + 1, lc="%L0", lanes="block"))
     w(strided_stage("x", stages + 2, base_x + 2, "%ctasks", "%ntasks_t",
                     f"""                %v0 = arith.muli %ix, %csliceV : index
                 scf.for %jj = %tx_s to %csliceV step %nthr {{
