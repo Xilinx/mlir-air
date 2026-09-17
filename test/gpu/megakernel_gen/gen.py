@@ -254,7 +254,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # this chiplet's workgroups -- and the count no longer matches what shows
     # up. MI300X and MI350X are both 8 XCDs.
     maxdies = dies
-    qslots = (stages + extras) * maxdies
+    qslots = (stages + extras) * maxdies * 2
     QUT = f"memref<{steps}x{layers}x{qslots}xi32>"
     slots = steps * per_step * maxdies
     flushword = 2 * slots
@@ -1590,6 +1590,7 @@ module {{
             memref<{locwords}xi32>, {PLT} {{
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
+        %c2_s = arith.constant 2 : index
         %ctasks = arith.constant {tasks} : index
         %csliceD = arith.constant {slice_d} : index
         %csliceI = arith.constant {slice_i} : index
@@ -1922,13 +1923,24 @@ module {{
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-          %hb{l}_{stage} = arith.constant {stage * maxdies} : index
+          %hb{l}_{stage} = arith.constant {stage * maxdies * 2} : index
           %t{l}_{stage} = scf.for %pp = %c0_s to %cmaxdies step %c1_s
               iter_args(%outer = %zero_s) -> (i32) {{
             // Own die first, then the others in order.
             %draw = arith.addi %mydie, %pp : index
             %d = arith.remui %draw, %cmaxdies : index
-            %hidx = arith.addi %hb{l}_{stage}, %d : index
+            %d2 = arith.muli %d, %c2_s : index
+            %hidx = arith.addi %hb{l}_{stage}, %d2 : index
+            %fidx = arith.addi %hidx, %c1_s : index
+            // Uniform load: every thread reads the same word and gets the same
+            // answer, so skipping a drained queue costs one load and no
+            // broadcast, against an atomic and a broadcast to discover the
+            // same thing.
+            %flg = memref.load %sq[%step, {lc}, %fidx] : {QUT}
+            %drained = arith.cmpi ne, %flg, %zero_s : i32
+            %inner1 = scf.if %drained -> (i32) {{
+              scf.yield %outer : i32
+            }} else {{
             %inner:2 = scf.while (%go = %true, %acc = %outer) : (i1, i32) -> (i1, i32) {{
               scf.condition(%go) %go, %acc : i1, i32
             }} do {{
@@ -1978,11 +1990,16 @@ module {{
                 %n = arith.addi %acc, %one_s : i32
                 scf.yield %n : i32
               }} else {{
+                scf.if %isLead {{
+                  memref.store %one_s, %sq[%step, {lc}, %fidx] : {QUT}
+                }}
                 scf.yield %acc : i32
               }}
               scf.yield %has, %acc2 : i1, i32
             }}
             scf.yield %inner#1 : i32
+            }}
+            scf.yield %inner1 : i32
           }}
           // Two-level: add into a counter only this die touches, then let the
           // last worker on the die flush the die's whole share once. The
@@ -2073,7 +2090,7 @@ module {{
           // stage {stage} -- one task: a reduction over the whole row, so it
           // cannot be split by output slice the way the matmuls can.
 {timer_begin(l, stage)}
-          %hsingle{stage}_{l} = arith.constant {stage * maxdies} : index
+          %hsingle{stage}_{l} = arith.constant {stage * maxdies * 2} : index
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
