@@ -2247,18 +2247,35 @@ module {{
         # 3: attention for one (token, query head). Scores, softmax and the
         # weighted sum of V in one task, which is how Fleet packages it
         # (paged_attention_layer is one task per request and kv head).
+        #
+        # A lane per key position -- what this was -- leaves `curlen` lanes
+        # busy, and at a decode step curlen is the sequence so far: ten of the
+        # workgroup's five hundred and twelve threads, each running a 128-deep
+        # dependent FMA chain down the head. The head is the only axis with
+        # width at batch one, so the wave takes one key position and its lanes
+        # split the head; the waves take the key positions in turn. Same
+        # arithmetic, a 128-deep chain traded for two MACs and a butterfly.
+        #
+        # At one wave the workgroup is the wave, so the softmax needs neither
+        # the guard nor the trip through LDS to reach the threads that use it.
+        if waves == 1:
+            sm_open, sm_close, sm_pub, sm_get, sumref = "", "", "", "", "%sum"
+        else:
+            sm_open = "                scf.if %isW0 {"
+            sm_close = "                }"
+            sm_pub = ("                  memref.store %sum, %ldsr[%c0_s] : "
+                      f"memref<{nthreads}xf32, 3>")
+            sm_get = ("                gpu.barrier\n"
+                      "                %sumb = memref.load %ldsr[%c0_s] : "
+                      f"memref<{nthreads}xf32, 3>")
+            sumref = "%sumb"
         w(strided_stage(l, 3, base + 3, "%cheads_s", "%nheads_t",
                         f"""                %pos = arith.addi %wbase, %m : index
                 %qhb = arith.muli %ix, %chd_s : index
                 %hb = arith.muli %ix, %chd_s : index
                 %hk = arith.divui %ix, %cgroup_s : index
-                // A lane per key position. Each t writes its own %ssc slot and
-                // the only thing crossing lanes is the running max, so the
-                // three loops below each close with one subgroup reduction and
-                // otherwise never look at another lane.
-                %mxp = scf.for %t = %tx_s to %curlen step %nlane
-                    iter_args(%mv = %negbig_s) -> (f32) {{
-                  %dot = scf.for %hdi = %c0_s to %chd_s step %c1_s
+                scf.for %t = %wid to %curlen step %cwaves {{
+                  %dotp = scf.for %hdi = %lid to %chd_s step %nlane
                       iter_args(%s = %fzero_s) -> (f32) {{
                     %hi = arith.addi %qhb, %hdi : index
                     %qv = memref.load %sqkv[%m, %hi] : {QT}
@@ -2267,38 +2284,54 @@ module {{
                     %s2 = arith.addf %s, %mp : f32
                     scf.yield %s2 : f32
                   }}
+{wave_reduce("%dotp", "%dot", "arith.addf", "dt" + str(l), 18)}
                   %scv = arith.mulf %dot, %invsqrthd_s : f32
                   // causal over the window: token m sees the prefix and the
                   // window entries up to and including its own
                   %okm = arith.cmpi ule, %t, %pos : index
                   %scm = arith.select %okm, %scv, %negbig_s : f32
-                  memref.store %scm, %ssc[%m, %ix, %t] : {SCT}
-                  %m2 = arith.maxnumf %mv, %scm : f32
-                  scf.yield %m2 : f32
+                  // the butterfly left every lane holding the score; one of
+                  // them writes it
+                  scf.if %isL0 {{
+                    memref.store %scm, %ssc[%m, %ix, %t] : {SCT}
+                  }}
                 }}
-{wave_reduce("%mxp", "%mxs", "arith.maxnumf", "mx" + str(l), 16)}
-                // Same stride again, so the slot a lane rewrites here is the
-                // one it wrote above.
-                %sump = scf.for %t = %tx_s to %curlen step %nlane
-                    iter_args(%sm = %fzero_s) -> (f32) {{
-                  %v = memref.load %ssc[%m, %ix, %t] : {SCT}
-                  %dd = arith.subf %v, %mxs : f32
-                  %e = math.exp %dd : f32
-                  memref.store %e, %ssc[%m, %ix, %t] : {SCT}
-                  %s2 = arith.addf %sm, %e : f32
-                  scf.yield %s2 : f32
-                }}
-{wave_reduce("%sump", "%sum", "arith.addf", "sm" + str(l), 16)}
-                // The last loop needs no reduction at all: a lane owns a set
-                // of output components outright. But it reads every %ssc slot,
-                // including the ones other lanes just rewrote, so the wave has
-                // to be square with itself first.
+                // The softmax is over the whole row, so it waits for every
+                // wave's scores -- and it rewrites the slots it reads, which is
+                // why it stays on one wave instead of being repeated by all of
+                // them racing over the same addresses. curlen is one lane's
+                // worth, so this is two loop bodies and a broadcast.
                 gpu.barrier
-                scf.for %hdi = %tx_s to %chd_s step %nlane {{
+{sm_open}
+                  %mxp = scf.for %t = %lid to %curlen step %nlane
+                      iter_args(%mv = %negbig_s) -> (f32) {{
+                    %v = memref.load %ssc[%m, %ix, %t] : {SCT}
+                    %m2 = arith.maxnumf %mv, %v : f32
+                    scf.yield %m2 : f32
+                  }}
+{wave_reduce("%mxp", "%mxs", "arith.maxnumf", "mx" + str(l), 18)}
+                  %sump = scf.for %t = %lid to %curlen step %nlane
+                      iter_args(%sm = %fzero_s) -> (f32) {{
+                    %v = memref.load %ssc[%m, %ix, %t] : {SCT}
+                    %dd = arith.subf %v, %mxs : f32
+                    %e = math.exp %dd : f32
+                    memref.store %e, %ssc[%m, %ix, %t] : {SCT}
+                    %s2 = arith.addf %sm, %e : f32
+                    scf.yield %s2 : f32
+                  }}
+{wave_reduce("%sump", "%sum", "arith.addf", "sm" + str(l), 18)}
+{sm_pub}
+{sm_close}
+{sm_get}
+                // The last loop needs no reduction at all: a thread owns an
+                // output component outright, and there are more threads than
+                // components, so the chain is curlen deep rather than curlen
+                // times the components a lane was carrying.
+                scf.for %hdi = %tx_s to %chd_s step %nthr {{
                   %a = scf.for %t = %c0_s to %curlen step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %e = memref.load %ssc[%m, %ix, %t] : {SCT}
-                    %pv = arith.divf %e, %sum : f32
+                    %pv = arith.divf %e, {sumref} : f32
                     %vv = memref.load %svc[%L{l}, %t, %hk, %hdi] {{nontemporal = true}} : {KVT}
                     %mp = arith.mulf %pv, %vv : f32
                     %s2 = arith.addf %sacc, %mp : f32
@@ -2306,7 +2339,7 @@ module {{
                   }}
                   %oi = arith.addi %hb, %hdi : index
                   memref.store %a, %sav[%m, %oi] : {QWT}
-                }}""", lanes=True))
+                }}""", lanes="block"))
 
         # 4: ao = a @ Wo
         w(matmul_stage(l, 4, base + 4, "%saov", AT, "%sav", QWT, "%swo", WTB,
