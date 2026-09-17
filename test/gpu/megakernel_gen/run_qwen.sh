@@ -53,6 +53,8 @@ LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
 # 151936 = 128 * 1187. It asserts if they do not divide, so a checkpoint that
 # cannot take 128 says so rather than computing a fraction of the work.
 TASKS="${TASKS:-128}"
+# Wavefronts per workgroup; see gen.py --waves.
+WAVES="${WAVES:-8}"
 WORKERS="${WORKERS:-128}"
 # Decode steps in the single launch. Step 0 prefills the whole prompt; each
 # later step carries one token, which is what makes this a decode rather than
@@ -97,7 +99,7 @@ echo "GFX_TARGET=$GFX_TARGET LAYERS=$LAYERS STEPS=$STEPS WIN=$WIN NGEN=$NGEN PRO
 clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loader.c"
 
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
-  --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 \
+  --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 --waves "$WAVES" \
   --steps "$STEPS" --repeat "$REPEAT" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
