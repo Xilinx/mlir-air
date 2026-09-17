@@ -24,7 +24,16 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 
-.PHONY: help compile run profile chat verify verify-full diagnosis all clean
+# Padded prefill length (see `make profile-prefill`): 512 | 1024 | 2048 | 4096.
+# Bounded below by the fused-cast GEMM (multiple of 64) and the seq-first
+# FlashAttention (multiple of 256), and above by the GEMM registry, which has
+# no measured shape past M=4096.
+CTX ?= 2048
+export LLM_SEQ_LEN   := $(CTX)
+export LLM_CACHE_DIR := prefill_kernel_cache_$(CTX)
+
+.PHONY: help compile run profile profile-prefill chat verify verify-full \
+        diagnosis all clean
 
 # ============================================================
 # Help
@@ -46,6 +55,9 @@ help:
 	@echo "  make verify-full      Same as above but runs the full prompt set (longer, exhaustive)"
 	@echo "  make diagnosis        Per-layer ffn_out cosine + max_abs vs HF bf16 (single prompt, informational)"
 	@echo ""
+	@echo "Prefill latency sweep:"
+	@echo "  make profile-prefill  Warm prefill TTFT at CTX=$(CTX) (builds the engines at that length)"
+	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean            Remove all build artifacts and verify reports"
 	@echo ""
@@ -53,6 +65,7 @@ help:
 	@echo "  N_TOKENS=1000         Max decode tokens for run/profile/chat"
 	@echo "  PROMPT=\"...\"          Input prompt text (run/profile/diagnosis)"
 	@echo "  MODEL=base|instruct   Model variant (default: instruct)"
+	@echo "  CTX=2048              Padded prefill length (512|1024|2048|4096)"
 
 # ============================================================
 # Unified Pipeline (NPU prefill + NPU decode)
@@ -72,6 +85,15 @@ run:
 profile:
 	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/smollm2_1_7b_inference.py \
 		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
+
+## Warm prefill-only TTFT at CTX. Builds the engines at that length first --
+## the kernel cache is keyed on kernel name, so reusing another CTX's directory
+## would time the wrong engines and report a flat curve.
+profile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/smollm2_1_7b_inference.py --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/smollm2_1_7b_inference.py \
+		--run-only --bench-prefill --model $(MODEL)
 
 ## Interactive chat: prepare runtime once, then loop on prompts
 chat:

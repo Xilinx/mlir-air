@@ -90,7 +90,7 @@ class Session:
     """Everything `run_once` needs that should not be rebuilt per turn."""
 
     config: Any  # LlamaConfig
-    seq_len: int  # padded prompt length (today: 2048)
+    seq_len: int  # padded prompt length the engines were built for
     weights: Any  # LlamaWeights, mutated by prepare_runtime()
     tokenizer: Any  # transformers AutoTokenizer
     prefill_cache: Any  # KernelCache
@@ -945,14 +945,17 @@ def build_session(args) -> Session:
     twice (prepare_runtime mutates `weights` with idempotency guards but the
     intent is one-shot)."""
     config = LlamaConfig()
-    seq_len = 2048
+    seq_len = args.seq_len
 
     # Each cache gets its own Profiler so the final report can separate
     # prefill from decode phases. Profilers are enabled only under
     # --profile; otherwise every record_* call is a noop (production
     # path is identical to make run).
+    #
+    # Cache entries are keyed on kernel name alone, so two seq_lens must not
+    # share a directory: the second would silently load the first's ELFs.
     prefill_cache = KernelCache(
-        "prefill_kernel_cache",
+        args.cache_dir or "prefill_kernel_cache",
         verbose=args.verbose,
         profiler=Profiler(enabled=args.profile),
     )
@@ -1065,6 +1068,45 @@ def run_once(
     return generated, prompt_len_actual
 
 
+def bench_prefill(session: Session, cpu_attn: bool = False) -> None:
+    """Warm prefill-only TTFT at session.seq_len, on a synthetic prompt.
+
+    Latency only, never a correctness gate. The ids are synthetic because the
+    axis is the PADDED length the engines were built for: a real prompt is
+    padded to the same length and measures the same thing. Warmup first, so the
+    number is steady-state rather than the one-time NPU wake.
+    """
+    ids = [int(t % session.config.vocab_size) for t in range(session.seq_len)]
+
+    def _prefill():
+        run_npu_prefill(
+            ids,
+            session.weights,
+            session.config,
+            session.prefill_cache,
+            session.decode_cache,
+            session.rope_lut_bf16,
+            session.seq_len,
+            tokenizer=session.tokenizer,
+            cpu_attn=cpu_attn,
+            quiet=True,
+        )
+
+    print(f"[bench] warmup prefill L={session.seq_len}...", flush=True)
+    _prefill()
+    print(f"[bench] timed prefill L={session.seq_len}...", flush=True)
+    t0 = time.perf_counter()
+    _prefill()
+    wall = time.perf_counter() - t0
+    # The line formats bench/extract_perf.py and bench/sweep_prefill.py parse.
+    print(f"\nLLAMA Inference: prompt_len={session.seq_len}, n_tokens=0", flush=True)
+    print(f"Time to first token (TTFT): {wall:.3f}s", flush=True)
+    print(
+        f"[bench] L={session.seq_len}: {session.seq_len / wall:.0f} tok/s prefill",
+        flush=True,
+    )
+
+
 def _print_one_shot_output(
     session: Session,
     prompt_text: str,
@@ -1161,6 +1203,25 @@ if __name__ == "__main__":
         help="Number of decode tokens to generate (default: 10)",
     )
     parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("LLM_SEQ_LEN", "2048")),
+        help="Padded prompt length the prefill engines are built for "
+        "(multiple of 256; default: 2048)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("LLM_CACHE_DIR") or None,
+        help="Prefill kernel cache directory. Must differ per --seq-len: cache "
+        "entries are keyed on kernel name, not on shape",
+    )
+    parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="Enable per-token timing instrumentation",
@@ -1209,7 +1270,9 @@ if __name__ == "__main__":
 
     session = build_session(args)
 
-    if args.interactive:
+    if args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
+    elif args.interactive:
         repl_loop(session, args)
     else:
         generated, prompt_len_actual = run_once(

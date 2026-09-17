@@ -94,7 +94,9 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     kv_dim = n_kv_heads * head_dim
 
     print(f"\n{'='*60}")
-    print(f"Compiling unique kernels (Llama-3.2-3B, seq_len={seq_len})...")
+    # Wording is load-bearing: bench/sweep_prefill.py reads the built length off
+    # this line to reject a point whose engines came out at some other seq_len.
+    print(f"Compiling prefill kernels (seq_len={seq_len}, Llama-3.2-3B)...")
     print(f"{'='*60}\n")
 
     from shared.infra.external_kernels import compile_gemm_mm

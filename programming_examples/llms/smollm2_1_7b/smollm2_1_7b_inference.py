@@ -21,6 +21,7 @@ Usage:
   python3 smollm2_1_7b_inference.py --run-only --profile --n-tokens 20
 """
 
+import os
 from pathlib import Path
 import sys
 
@@ -47,6 +48,7 @@ from llama32_1b_decode import compile_decode_kernels  # noqa: E402
 # Reuse the reference's Session machinery + run loops verbatim.
 from llama32_1b_inference import (  # noqa: E402
     Session,
+    bench_prefill,
     prepare_runtime,
     run_once,
     repl_loop,
@@ -58,7 +60,6 @@ MODEL_CHOICES = {
     "instruct": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
 }
 DEFAULT_MODEL = "base"
-SEQ_LEN = 2048
 
 
 def build_session(args) -> Session:
@@ -66,10 +67,12 @@ def build_session(args) -> Session:
     prepare_runtime(). Mirrors llama32_1b_inference.build_session with SmolLM2
     config + the MHA-safe prefill patched in at import time."""
     config = LlamaConfig()
-    seq_len = SEQ_LEN
+    seq_len = args.seq_len
 
+    # Cache entries are keyed on kernel name alone, so two seq_lens must not
+    # share a directory: the second would silently load the first's ELFs.
     prefill_cache = KernelCache(
-        "prefill_kernel_cache",
+        args.cache_dir or "prefill_kernel_cache",
         verbose=args.verbose,
         profiler=Profiler(enabled=args.profile),
     )
@@ -136,6 +139,25 @@ if __name__ == "__main__":
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--cpu-attn", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("LLM_SEQ_LEN", "2048")),
+        help="Padded prompt length the prefill engines are built for "
+        "(multiple of 256; default: 2048)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("LLM_CACHE_DIR") or None,
+        help="Prefill kernel cache directory. Must differ per --seq-len: cache "
+        "entries are keyed on kernel name, not on shape",
+    )
+    parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
     args = parser.parse_args()
 
     if args.interactive:
@@ -151,7 +173,9 @@ if __name__ == "__main__":
 
     session = build_session(args)
 
-    if args.interactive:
+    if args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
+    elif args.interactive:
         repl_loop(session, args)
     else:
         generated, prompt_len_actual = run_once(
