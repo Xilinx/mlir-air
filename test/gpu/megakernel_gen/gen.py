@@ -186,7 +186,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     EMT = f"memref<{vocab}x{dim}xf32>"
     EMTB = f"memref<{vocab}x{dim}xbf16>"
     LMT = f"memref<{dim}x{vocab}xf32>"
-    LMTB = f"memref<{dim}x{vocab}xbf16>"
+    LMTB = f"memref<{vocab}x{dim}xbf16>"
     LGT = f"memref<{tokens}x{vocab}xf32>"
     PVT = f"memref<{tokens}x{tasks}xf32>"
     PIT = f"memref<{tokens}x{tasks}xi32>"
@@ -249,7 +249,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # each on the device -- not to infer it by subtracting deliberately-broken
     # builds, which measures "cost of the program without this stage" and does
     # not sum to the total when the stages meet at a rendezvous.
-    nclass = stages + extras
+    nclass = 2 * (stages + extras)   # body and rendezvous wait, per class
     timerbase = flushword + 1
     locwords = timerbase + (nclass if timers else 0)
     # One workgroup owns the clock. Timing from all of them and summing would
@@ -271,8 +271,12 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
         + "\n".join(
             f'    %tk{i} = arith.constant {timerbase + i} : index\n'
             f'    %tv{i} = memref.load %Loc[%tk{i}] : memref<{locwords}xi32>\n'
-            f'    vector.print str "  {nm}"\n'
-            f'    vector.print %tv{i} : i32'
+            f'    %wk{i} = arith.constant {timerbase + nclass // 2 + i} : index\n'
+            f'    %wv{i} = memref.load %Loc[%wk{i}] : memref<{locwords}xi32>\n'
+            f'    vector.print str "  {nm} body"\n'
+            f'    vector.print %tv{i} : i32\n'
+            f'    vector.print str "  {nm} wait"\n'
+            f'    vector.print %wv{i} : i32'
             for i, nm in enumerate(timer_names)))
     strided_stages = 7  # every layer stage but 0 and 5
     # embed, lm head and the partial argmax are split by piece too; the final
@@ -888,7 +892,7 @@ module {{
       scf.for %j = %c0 to %cvocab step %c1 {{
         %v = memref.load %Wlm[%i, %j] : {LMT}
         %b = arith.truncf %v : f32 to bf16
-        memref.store %b, %WlmB[%i, %j] : {LMTB}
+        memref.store %b, %WlmB[%j, %i] : {LMTB}
       }}
     }}
 """)
@@ -1224,7 +1228,7 @@ module {{
          %acc = scf.for %i = %c0 to %cdim step %c1
              iter_args(%a = %fzero) -> (f32) {{
            %xv = memref.load %Xf[%m, %i] : {AT}
-           %wb = memref.load %WlmB[%i, %v] : {LMTB}
+           %wb = memref.load %WlmB[%v, %i] : {LMTB}
            %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %xv, %wv : f32
            %a2 = arith.addf %a, %mu : f32
@@ -1771,11 +1775,26 @@ module {{
         return (f"          %tb{l}_{stage} = llvm.call_intrinsic "
                 f'"llvm.amdgcn.s.memrealtime"() : () -> i64')
 
+    def timer_mid(l, stage):
+        """Between the body and the rendezvous.
+
+        A stage does not end when this workgroup finishes its pieces; it ends
+        when the slowest of the 128 does. Splitting here separates the work
+        from the wait, which is the difference between "the GEMM is slow" and
+        "the GEMM is fine and the stage is bounded by a straggler".
+        """
+        if not timers:
+            return ""
+        return (f'          %tm{l}_{stage} = llvm.call_intrinsic '
+                f'"llvm.amdgcn.s.memrealtime"() : () -> i64')
+
     def timer_end(l, stage):
         if not timers:
             return ""
         return f"""          %te{l}_{stage} = llvm.call_intrinsic "llvm.amdgcn.s.memrealtime"() : () -> i64
-          %dt{l}_{stage} = arith.subi %te{l}_{stage}, %tb{l}_{stage} : i64
+          %dw{l}_{stage} = arith.subi %te{l}_{stage}, %tm{l}_{stage} : i64
+          %dwi{l}_{stage} = arith.trunci %dw{l}_{stage} : i64 to i32
+          %dt{l}_{stage} = arith.subi %tm{l}_{stage}, %tb{l}_{stage} : i64
           %dti{l}_{stage} = arith.trunci %dt{l}_{stage} : i64 to i32
           %isT{l}_{stage} = arith.andi %isWG0, %isLead : i1
           scf.if %isT{l}_{stage} {{
@@ -1783,6 +1802,10 @@ module {{
             %to{l}_{stage} = memref.load %sloc[%tc{l}_{stage}] : memref<{locwords}xi32>
             %tn{l}_{stage} = arith.addi %to{l}_{stage}, %dti{l}_{stage} : i32
             memref.store %tn{l}_{stage}, %sloc[%tc{l}_{stage}] : memref<{locwords}xi32>
+            %wc{l}_{stage} = arith.constant {timerbase + nclass // 2 + stage} : index
+            %wo{l}_{stage} = memref.load %sloc[%wc{l}_{stage}] : memref<{locwords}xi32>
+            %wn{l}_{stage} = arith.addi %wo{l}_{stage}, %dwi{l}_{stage} : i32
+            memref.store %wn{l}_{stage}, %sloc[%wc{l}_{stage}] : memref<{locwords}xi32>
           }}"""
 
     def wave_reduce(src, dst, op, tag, indent, ty="f32"):
@@ -1984,6 +2007,7 @@ module {{
           }}
           // See the note on spin_open: one wave waits, a barrier releases the
           // workgroup, and the acquire happens once rather than per poll.
+{timer_mid(l, stage)}
 {spin_open}
           scf.while : () -> () {{
             %seen_l{l}_{stage} = scf.if %isL0 -> (i32) {{
@@ -2050,6 +2074,7 @@ module {{
           scf.if %mine{l}_{stage} {{
 {body_block}
           }}
+{timer_mid(l, stage)}
 {spin_open}
           scf.while : () -> () {{
             %seenl{l}_{stage} = scf.if %isL0 -> (i32) {{
@@ -2522,7 +2547,7 @@ module {{
                   %a = scf.for %i = %c0_s to %cdim_s step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %xv = memref.load %sr[%m, %i] : {AT}
-                    %wb = memref.load %swlm[%i, %v] : {LMTB}
+                    %wb = memref.load %swlm[%v, %i] : {LMTB}
                     %wv = arith.extf %wb : bf16 to f32
                     %mp = arith.mulf %xv, %wv : f32
                     %s2 = arith.addf %sacc, %mp : f32
