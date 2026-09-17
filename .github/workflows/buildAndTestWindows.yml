@@ -113,3 +113,18 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=install
 
           ninja
+
+      # This job built but never ran anything, so every Windows-only behaviour
+      # difference was invisible here: the LLP64 `long` bug this commit fixes
+      # made 26 of the 56 air-runner tests fail on Windows and no CI noticed,
+      # because Linux is LP64 and its runs were green.  check-air-mlir is the
+      # suite that catches that class -- it is pure air-opt/air-runner +
+      # FileCheck, needs no NPU, no XRT and no Vitis, and takes ~30s.
+      #
+      # check-air-python is deliberately NOT added: api/errors.py takes ~74s on
+      # Windows against the suite's 30s lit timeout, so it would go red for a
+      # slowness reason unrelated to correctness.  Worth fixing separately.
+      - name: Test
+        run: |
+          cd build
+          ninja check-air-mlir
