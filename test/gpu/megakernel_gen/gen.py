@@ -166,16 +166,27 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     GT = f"memref<{tokens}x{2 * inter}xf32>"
     QT = f"memref<{tokens}x{qkvo}xf32>"
     SCT = f"memref<{tokens}x{heads}x{total}xf32>"
+    # The weights arrive as bf16 -- that is the only dtype in a Qwen3
+    # checkpoint -- and weights.py widens them to f32, which doubles the bytes
+    # for no information at all. The device reads the bf16 copies below and
+    # widens each value with a single shift; f32 stays on the host, where the
+    # synthetic generator and its centring pass write to it.
     WQT = f"memref<{layers}x{dim}x{qkvo}xf32>"
+    WQTB = f"memref<{layers}x{dim}x{qkvo}xbf16>"
     WT = f"memref<{layers}x{qw}x{dim}xf32>"
+    WTB = f"memref<{layers}x{qw}x{dim}xbf16>"
     WGT = f"memref<{layers}x{dim}x{2 * inter}xf32>"
+    WGTB = f"memref<{layers}x{dim}x{2 * inter}xbf16>"
     WDT = f"memref<{layers}x{inter}x{dim}xf32>"
+    WDTB = f"memref<{layers}x{inter}x{dim}xbf16>"
     KVT = f"memref<{layers}x{total}x{kv_heads}x{hd}xf32>"
     NT = f"memref<{layers}x{dim}xf32>"
     QKNT = f"memref<{layers}x{2 * hd}xf32>"
     ROT = f"memref<{total}x{2 * hd}xf32>"
     EMT = f"memref<{vocab}x{dim}xf32>"
+    EMTB = f"memref<{vocab}x{dim}xbf16>"
     LMT = f"memref<{dim}x{vocab}xf32>"
+    LMTB = f"memref<{dim}x{vocab}xbf16>"
     LGT = f"memref<{tokens}x{vocab}xf32>"
     PVT = f"memref<{tokens}x{tasks}xf32>"
     PIT = f"memref<{tokens}x{tasks}xi32>"
@@ -790,6 +801,69 @@ module {{
                 ("%Wd", WDT, "Wd", layers * inter * dim)):
             w(load(buf, mtype, name, count))
 
+    w(f"""
+    // Narrow the weights to the precision they arrived in. Every one of these
+    // came from a bf16 checkpoint and was widened by weights.py, so the
+    // truncation is exact -- and it halves what the device has to read, which
+    // is what the decode is actually waiting on.
+    %WqkvB = memref.alloc() : {WQTB}
+    scf.for %l = %c0 to %clayers step %c1 {{
+      scf.for %i = %c0 to %cdim step %c1 {{
+        scf.for %j = %c0 to %cqkvo step %c1 {{
+          %v = memref.load %Wqkv[%l, %i, %j] : {WQT}
+          %b = arith.truncf %v : f32 to bf16
+          memref.store %b, %WqkvB[%l, %i, %j] : {WQTB}
+        }}
+      }}
+    }}
+    %WoB = memref.alloc() : {WTB}
+    scf.for %l = %c0 to %clayers step %c1 {{
+      scf.for %i = %c0 to %cqw step %c1 {{
+        scf.for %j = %c0 to %cdim step %c1 {{
+          %v = memref.load %Wo[%l, %i, %j] : {WT}
+          %b = arith.truncf %v : f32 to bf16
+          memref.store %b, %WoB[%l, %i, %j] : {WTB}
+        }}
+      }}
+    }}
+    %WguB = memref.alloc() : {WGTB}
+    scf.for %l = %c0 to %clayers step %c1 {{
+      scf.for %i = %c0 to %cdim step %c1 {{
+        scf.for %j = %c0 to %c2inter step %c1 {{
+          %v = memref.load %Wgu[%l, %i, %j] : {WGT}
+          %b = arith.truncf %v : f32 to bf16
+          memref.store %b, %WguB[%l, %i, %j] : {WGTB}
+        }}
+      }}
+    }}
+    %WdB = memref.alloc() : {WDTB}
+    scf.for %l = %c0 to %clayers step %c1 {{
+      scf.for %i = %c0 to %cinter step %c1 {{
+        scf.for %j = %c0 to %cdim step %c1 {{
+          %v = memref.load %Wd[%l, %i, %j] : {WDT}
+          %b = arith.truncf %v : f32 to bf16
+          memref.store %b, %WdB[%l, %i, %j] : {WDTB}
+        }}
+      }}
+    }}
+    %EmbB = memref.alloc() : {EMTB}
+    scf.for %i = %c0 to %cvocab step %c1 {{
+      scf.for %j = %c0 to %cdim step %c1 {{
+        %v = memref.load %Emb[%i, %j] : {EMT}
+        %b = arith.truncf %v : f32 to bf16
+        memref.store %b, %EmbB[%i, %j] : {EMTB}
+      }}
+    }}
+    %WlmB = memref.alloc() : {LMTB}
+    scf.for %i = %c0 to %cdim step %c1 {{
+      scf.for %j = %c0 to %cvocab step %c1 {{
+        %v = memref.load %Wlm[%i, %j] : {LMT}
+        %b = arith.truncf %v : f32 to bf16
+        memref.store %b, %WlmB[%i, %j] : {LMTB}
+      }}
+    }}
+""")
+
     # ---- host reference ----
     w(f"""
 
@@ -824,7 +898,8 @@ module {{
        %tk = memref.load %Tok[%tp] : {TKT}
        %tki = arith.index_cast %tk : i32 to index
        scf.for %i = %c0 to %cdim step %c1 {{
-         %ev = memref.load %Emb[%tki, %i] : {EMT}
+         %embh = memref.load %EmbB[%tki, %i] : {EMTB}
+         %ev = arith.extf %embh : bf16 to f32
          memref.store %ev, %ref[%m, %i] : {AT}
        }}
      }}
@@ -853,7 +928,8 @@ module {{
          %acc = scf.for %i = %c0 to %cdim step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %rv = memref.load %Rv[%m, %i] : {AT}
-           %wv = memref.load %Wqkv[%l, %i, %n] : {WQT}
+           %wb = memref.load %WqkvB[%l, %i, %n] : {WQTB}
+           %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %rv, %wv : f32
            %s2 = arith.addf %s, %mu : f32
            scf.yield %s2 : f32
@@ -1022,7 +1098,8 @@ module {{
          %acc = scf.for %i = %c0 to %cqw step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %av = memref.load %ra[%i] : memref<{qw}xf32>
-           %wv = memref.load %Wo[%l, %i, %j] : {WT}
+           %wb = memref.load %WoB[%l, %i, %j] : {WTB}
+           %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %av, %wv : f32
            %s2 = arith.addf %s, %mu : f32
            scf.yield %s2 : f32
@@ -1057,7 +1134,8 @@ module {{
          %acc = scf.for %i = %c0 to %cdim step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %xv = memref.load %rxa[%i] : memref<{dim}xf32>
-           %wv = memref.load %Wgu[%l, %i, %p] : {WGT}
+           %wb = memref.load %WguB[%l, %i, %p] : {WGTB}
+           %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %xv, %wv : f32
            %s2 = arith.addf %s, %mu : f32
            scf.yield %s2 : f32
@@ -1081,7 +1159,8 @@ module {{
          %acc = scf.for %p = %c0 to %cinter step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %av = memref.load %ract[%p] : memref<{inter}xf32>
-           %wv = memref.load %Wd[%l, %p, %j] : {WDT}
+           %wb = memref.load %WdB[%l, %p, %j] : {WDTB}
+           %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %av, %wv : f32
            %s2 = arith.addf %s, %mu : f32
            scf.yield %s2 : f32
@@ -1116,7 +1195,8 @@ module {{
          %acc = scf.for %i = %c0 to %cdim step %c1
              iter_args(%a = %fzero) -> (f32) {{
            %xv = memref.load %Xf[%m, %i] : {AT}
-           %wv = memref.load %Wlm[%i, %v] : {LMT}
+           %wb = memref.load %WlmB[%i, %v] : {LMTB}
+           %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %xv, %wv : f32
            %a2 = arith.addf %a, %mu : f32
            scf.yield %a2 : f32
@@ -1227,18 +1307,18 @@ module {{
     %dXa = gpu.alloc () : {AT}
     %dGU = gpu.alloc () : {GT}
     %dActv = gpu.alloc () : {IT}
-    %dWqkv = gpu.alloc () : {WQT}
-    %dWo = gpu.alloc () : {WT}
-    %dWgu = gpu.alloc () : {WGT}
-    %dWd = gpu.alloc () : {WDT}
+    %dWqkv = gpu.alloc () : {WQTB}
+    %dWo = gpu.alloc () : {WTB}
+    %dWgu = gpu.alloc () : {WGTB}
+    %dWd = gpu.alloc () : {WDTB}
     %dKc = gpu.alloc () : {KVT}
     %dVc = gpu.alloc () : {KVT}
     %dN1 = gpu.alloc () : {NT}
     %dN2 = gpu.alloc () : {NT}
     %dQKN = gpu.alloc () : {QKNT}
     %dRO = gpu.alloc () : {ROT}
-    %dEmb = gpu.alloc () : {EMT}
-    %dWlm = gpu.alloc () : {LMT}
+    %dEmb = gpu.alloc () : {EMTB}
+    %dWlm = gpu.alloc () : {LMTB}
     %dNf = gpu.alloc () : {NFT}
     %dTok = gpu.alloc () : {TKT}
     %dLg = gpu.alloc () : {LGT}
@@ -1258,18 +1338,18 @@ module {{
     gpu.memcpy %dXa, %Xa : {AT}, {AT}
     gpu.memcpy %dGU, %GU : {GT}, {GT}
     gpu.memcpy %dActv, %Actv : {IT}, {IT}
-    gpu.memcpy %dWqkv, %Wqkv : {WQT}, {WQT}
-    gpu.memcpy %dWo, %Wo : {WT}, {WT}
-    gpu.memcpy %dWgu, %Wgu : {WGT}, {WGT}
-    gpu.memcpy %dWd, %Wd : {WDT}, {WDT}
+    gpu.memcpy %dWqkv, %WqkvB : {WQTB}, {WQTB}
+    gpu.memcpy %dWo, %WoB : {WTB}, {WTB}
+    gpu.memcpy %dWgu, %WguB : {WGTB}, {WGTB}
+    gpu.memcpy %dWd, %WdB : {WDTB}, {WDTB}
     gpu.memcpy %dKc, %Kc : {KVT}, {KVT}
     gpu.memcpy %dVc, %Vc : {KVT}, {KVT}
     gpu.memcpy %dN1, %N1 : {NT}, {NT}
     gpu.memcpy %dN2, %N2 : {NT}, {NT}
     gpu.memcpy %dQKN, %QKN : {QKNT}, {QKNT}
     gpu.memcpy %dRO, %RO : {ROT}, {ROT}
-    gpu.memcpy %dEmb, %Emb : {EMT}, {EMT}
-    gpu.memcpy %dWlm, %Wlm : {LMT}, {LMT}
+    gpu.memcpy %dEmb, %EmbB : {EMTB}, {EMTB}
+    gpu.memcpy %dWlm, %WlmB : {LMTB}, {LMTB}
     gpu.memcpy %dNf, %Nf : {NFT}, {NFT}
     gpu.memcpy %dLg, %Lg : {LGT}, {LGT}
     gpu.memcpy %dPV, %PV : {PVT}, {PVT}
@@ -1318,8 +1398,8 @@ module {{
                        %dLg, %dPV, %dPI, %dLoc, %dPlen)
         : ({QUT}, memref<{events}xi32>, {AT}, {AT},
            {QT}, {SCT}, {QWT}, {AT}, {AT}, {GT}, {IT},
-           {WQT}, {WT}, {WGT}, {WDT}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
-           {EMT}, {LMT}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
+           {WQTB}, {WTB}, {WGTB}, {WDTB}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
+           {EMTB}, {LMTB}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
            memref<{locwords}xi32>, {PLT}) -> ()
     }}
 
@@ -1429,9 +1509,9 @@ module {{
   func.func @chain(%Q: {QUT}, %E: memref<{events}xi32>,
                    %X: {AT}, %Rv: {AT}, %QKV: {QT}, %Sc: {SCT},
                    %Av: {QWT}, %Aov: {AT}, %Xa: {AT}, %GU: {GT}, %Actv: {IT},
-                   %Wqkv: {WQT}, %Wo: {WT}, %Wgu: {WGT}, %Wd: {WDT},
+                   %Wqkv: {WQTB}, %Wo: {WTB}, %Wgu: {WGTB}, %Wd: {WDTB},
                    %Kc: {KVT}, %Vc: {KVT}, %N1: {NT}, %N2: {NT},
-                   %QKN: {QKNT}, %RO: {ROT}, %Emb: {EMT}, %Wlm: {LMT},
+                   %QKN: {QKNT}, %RO: {ROT}, %Emb: {EMTB}, %Wlm: {LMTB},
                    %Nf: {NFT}, %Tok: {TKT}, %Lg: {LGT}, %PV: {PVT},
                    %PI: {PIT}, %Loc: memref<{locwords}xi32>, %Pl: {PLT}) {{
     %c1 = arith.constant 1 : index
@@ -1444,8 +1524,8 @@ module {{
              %tok=%Tok, %lg=%Lg, %pvb=%PV, %pib=%PI, %loc=%Loc, %plb=%Pl)
         : {QUT}, memref<{events}xi32>, {AT}, {AT},
           {QT}, {SCT}, {QWT}, {AT}, {AT}, {GT}, {IT},
-          {WQT}, {WT}, {WGT}, {WDT}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
-          {EMT}, {LMT}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
+          {WQTB}, {WTB}, {WGTB}, {WDTB}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
+          {EMTB}, {LMTB}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
           memref<{locwords}xi32>, {PLT} {{
       air.segment @worker args(%sq=%q, %se=%eb, %sx=%x, %sr=%r, %sqkv=%qkv,
                                %ssc=%scb, %sav=%av, %saov=%aov, %sxa=%xab,
@@ -1457,8 +1537,8 @@ module {{
                                %sloc=%loc, %splen=%plb)
           : {QUT}, memref<{events}xi32>, {AT}, {AT},
             {QT}, {SCT}, {QWT}, {AT}, {AT}, {GT}, {IT},
-            {WQT}, {WT}, {WGT}, {WDT}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
-            {EMT}, {LMT}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
+            {WQTB}, {WTB}, {WGTB}, {WDTB}, {KVT}, {KVT}, {NT}, {NT}, {QKNT}, {ROT},
+            {EMTB}, {LMTB}, {NFT}, {TKT}, {LGT}, {PVT}, {PIT},
             memref<{locwords}xi32>, {PLT} {{
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
@@ -1927,7 +2007,8 @@ module {{
                   %a = scf.for %i = %c0_s to {red_c} step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %lv = memref.load {lhs}[%m, %i] : {lhsty}
-                    %wv = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
+                    %wb = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
+                    %wv = arith.extf %wb : bf16 to f32
                     %mp = arith.mulf %lv, %wv : f32
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
@@ -1979,7 +2060,8 @@ module {{
                   %part0 = scf.for %i = %ksl{l}_{stage} to {red_c} step %cKS{l}_{stage}
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %lv = memref.load {lhs}[%m, %i] : {lhsty}
-                    %wv = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
+                    %wb = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
+                    %wv = arith.extf %wb : bf16 to f32
                     %mp = arith.mulf %lv, %wv : f32
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
@@ -2081,7 +2163,8 @@ module {{
                 %j0 = arith.muli %ix, %csliceD : index
                 scf.for %jj = %tx_s to %csliceD step %nthr {{
                   %j = arith.addi %j0, %jj : index
-                  %ev = memref.load %semb[%tki, %j] {{nontemporal = true}} : {EMT}
+                  %embw = memref.load %semb[%tki, %j] : {EMTB}
+                  %ev = arith.extf %embw : bf16 to f32
                   memref.store %ev, %sx[%m, %j] : {AT}
                 }}""", slot=base_x + 0, lc="%L0", lanes="threads"))
 
@@ -2116,7 +2199,7 @@ module {{
               }}""", lanes=True))
 
         # 1: qkv = r @ Wqkv
-        w(matmul_stage(l, 1, base + 1, "%sqkv", QT, "%sr", AT, "%swqkv", WQT,
+        w(matmul_stage(l, 1, base + 1, "%sqkv", QT, "%sr", AT, "%swqkv", WQTB,
                        "%csliceQ", "%cdim_s", slice_q))
 
         # 2: per-head norm, rope, and the cache append. One piece per
@@ -2211,7 +2294,7 @@ module {{
                 }}""", lanes=True))
 
         # 4: ao = a @ Wo
-        w(matmul_stage(l, 4, base + 4, "%saov", AT, "%sav", QWT, "%swo", WT,
+        w(matmul_stage(l, 4, base + 4, "%saov", AT, "%sav", QWT, "%swo", WTB,
                        "%csliceD", "%cqw_s", slice_d))
 
         # 5: xa = rmsnorm(x + ao) * n2. The norm in front of the MLP is not
@@ -2249,7 +2332,7 @@ module {{
               }}""", lanes=True))
 
         # 6: gu = xa @ Wgu, gate and up in one matmul as Fleet fuses them
-        w(matmul_stage(l, 6, base + 6, "%sgu", GT, "%sr", AT, "%swgu", WGT,
+        w(matmul_stage(l, 6, base + 6, "%sgu", GT, "%sr", AT, "%swgu", WGTB,
                        "%cslice2I", "%cdim_s", slice_2i))
 
         # 7: SwiGLU. Elementwise, so a piece is a slice of the intermediate
@@ -2271,7 +2354,7 @@ module {{
 
         # 8: x = xa + act @ Wd, the residual folded into the matmul as Fleet
         # folds it (linear_with_residual_layer).
-        w(matmul_stage(l, 8, base + 8, "%sx", AT, "%sact", IT, "%swd", WDT,
+        w(matmul_stage(l, 8, base + 8, "%sx", AT, "%sact", IT, "%swd", WDTB,
                        "%csliceD", "%cinter_s", slice_d, residual="%sxa"))
 
     # final norm, lm head, and Fleet's two-stage argmax
@@ -2300,7 +2383,8 @@ module {{
                   %a = scf.for %i = %c0_s to %cdim_s step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %xv = memref.load %sr[%m, %i] : {AT}
-                    %wv = memref.load %swlm[%i, %v] {{nontemporal = true}} : {LMT}
+                    %wb = memref.load %swlm[%i, %v] : {LMTB}
+                    %wv = arith.extf %wb : bf16 to f32
                     %mp = arith.mulf %xv, %wv : f32
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
