@@ -1083,6 +1083,11 @@ def bench_prefill(session, cpu_attn=False):
     _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
 
 
+def bench_decode(session, contexts):
+    """Decode tok/s at each KV depth, via the shared host-attention bench."""
+    _bench_decode(session, contexts, run_npu_decode_step)
+
+
 def _print_one_shot_output(
     session: Session,
     prompt_text: str,

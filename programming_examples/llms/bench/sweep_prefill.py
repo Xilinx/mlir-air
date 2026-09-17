@@ -46,6 +46,11 @@ BENCH_RE = re.compile(
 # "[q4nx_prefill] constructing seq_len=2048 (compiling engines)..." (q4nx family)
 # "Compiling LFM2 prefill kernels (seq_len=2048)"                   (lfm2)
 SEQ_RE = re.compile(r"(?:constructing seq_len=|prefill kernels \(seq_len=)(\d+)")
+# "[bench] prefill median 3498.0 ms min 3480.2 ms" -- optional, emitted only by
+# the shared prefill_bench.py. Recorded because the NPU is shared: median >> min
+# is how a reader tells a contended nightly from a real regression, and its
+# absence is exactly how a 60550 ms outlier once became a published "cliff".
+MINMAX_RE = re.compile(r"^\[bench\] prefill median ([\d.]+) ms min ([\d.]+) ms", re.M)
 PARIS_RE = re.compile(r"\*\*\* PARIS \*\*\*")
 MISS_RE = re.compile(r"\]\s*MISS\b")
 
@@ -181,6 +186,9 @@ def run_point(args, length, logdir):
 
     pt["ttft_ms"] = round(float(ttft.group(1)) * 1000.0, 2)
     pt["prefill_tokens_per_sec"] = round(length / float(ttft.group(1)), 1)
+    mm = MINMAX_RE.search(out)
+    if mm:
+        pt["min_ttft_ms"] = round(float(mm.group(2)), 2)
     b = BENCH_RE.search(out)
     if b:
         pt["npu_dispatch_ms"] = round(float(b.group(3)), 2)

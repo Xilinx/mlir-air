@@ -766,12 +766,6 @@ if __name__ == "__main__":
         "exit (latency only, not a correctness gate)",
     )
     parser.add_argument(
-        "--bench-prefill",
-        action="store_true",
-        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
-        "exit (latency only, not a correctness gate)",
-    )
-    parser.add_argument(
         "--bench-decode",
         default="",
         help="Comma-separated KV depths to measure decode tok/s at, in one "
