@@ -993,9 +993,11 @@ def build_session(args) -> Session:
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+    # The decode sweep attends from positions far past the prefill length, so
+    # the LUT is sized to the deepest benched context when there is one.
     rope_lut_bf16 = generate_rope_lut(
         config=config,
-        seq_len=seq_len + args.n_tokens,
+        seq_len=max(seq_len + args.n_tokens, _bench_rope_len(args)),
     ).astype(bfloat16)
 
     prepare_runtime(
@@ -1105,6 +1107,66 @@ def bench_prefill(session: Session, cpu_attn: bool = False) -> None:
         f"[bench] L={session.seq_len}: {session.seq_len / wall:.0f} tok/s prefill",
         flush=True,
     )
+
+
+def _bench_contexts(args) -> list[int]:
+    """--bench-decode as a list of KV depths."""
+    return [int(c) for c in args.bench_decode.split(",") if c.strip()]
+
+
+def _bench_rope_len(args) -> int:
+    """RoPE LUT rows the decode sweep needs, or 0 when it is not running."""
+    ctxs = _bench_contexts(args) if getattr(args, "bench_decode", "") else []
+    return max(ctxs) + 16 if ctxs else 0
+
+
+def bench_decode(session: Session, contexts: list[int], iters=8, warmup=2) -> None:
+    """Decode throughput at each KV depth in `contexts`, in one session.
+
+    The context is set by sizing the KV cache and telling the step which
+    position to attend from, not by prefilling a real prompt of that length --
+    so a 32k point costs a few seconds, not a 32k prefill. Contents are
+    synthetic: this is LATENCY ONLY and never a correctness gate.
+
+    No rebuild per point, unlike the fused-decode sweep: the NPU kernels here
+    are per-token GEMVs with no context dependence and attention runs on the
+    host, so every context shares one build and one set of resident weight BOs.
+    That is also what the curve measures -- the slope is host attention, not
+    NPU KV streaming.
+    """
+    cfg = session.config
+    max_seq = max(contexts) + iters + warmup
+    k_cache = np.zeros(
+        (cfg.n_layers, cfg.n_kv_heads, max_seq, cfg.head_dim), dtype=bfloat16
+    )
+    v_cache = np.zeros_like(k_cache)
+    print(f"[bench] KV cache {2 * k_cache.nbytes / 1e9:.2f} GB", flush=True)
+    x = session.weights.embed_table[1].astype(bfloat16)
+
+    def _step(pos):
+        run_npu_decode_step(
+            x,
+            session.weights,
+            cfg,
+            session.decode_cache,
+            session.rope_lut_bf16,
+            k_cache,
+            v_cache,
+            pos,
+        )
+
+    for ctx in contexts:
+        for i in range(warmup):
+            _step(ctx + i)
+        t0 = time.perf_counter()
+        for i in range(iters):
+            _step(ctx + warmup + i)
+        ms = (time.perf_counter() - t0) / iters * 1000.0
+        # The line format bench/sweep_decode_runtime.py parses.
+        print(
+            f"[bench] decode ctx={ctx} mean {ms:.3f} ms ({1000.0 / ms:.2f} tok/s)",
+            flush=True,
+        )
 
 
 def _print_one_shot_output(
@@ -1222,6 +1284,12 @@ if __name__ == "__main__":
         "exit (latency only, not a correctness gate)",
     )
     parser.add_argument(
+        "--bench-decode",
+        default="",
+        help="Comma-separated KV depths to measure decode tok/s at, in one "
+        "session, then exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="Enable per-token timing instrumentation",
@@ -1270,7 +1338,9 @@ if __name__ == "__main__":
 
     session = build_session(args)
 
-    if args.bench_prefill:
+    if args.bench_decode:
+        bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
         bench_prefill(session, cpu_attn=args.cpu_attn)
     elif args.interactive:
         repl_loop(session, args)

@@ -48,6 +48,9 @@ from llama32_1b_decode import compile_decode_kernels  # noqa: E402
 # Reuse the reference's Session machinery + run loops verbatim.
 from llama32_1b_inference import (  # noqa: E402
     Session,
+    _bench_contexts,
+    _bench_rope_len,
+    bench_decode,
     bench_prefill,
     prepare_runtime,
     run_once,
@@ -105,9 +108,11 @@ def build_session(args) -> Session:
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+    # The decode sweep attends from positions far past the prefill length, so
+    # the LUT is sized to the deepest benched context when there is one.
     rope_lut_bf16 = generate_rope_lut(
         config=config,
-        seq_len=seq_len + args.n_tokens,
+        seq_len=max(seq_len + args.n_tokens, _bench_rope_len(args)),
     ).astype(bfloat16)
 
     prepare_runtime(
@@ -158,6 +163,12 @@ if __name__ == "__main__":
         help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
         "exit (latency only, not a correctness gate)",
     )
+    parser.add_argument(
+        "--bench-decode",
+        default="",
+        help="Comma-separated KV depths to measure decode tok/s at, in one "
+        "session, then exit (latency only, not a correctness gate)",
+    )
     args = parser.parse_args()
 
     if args.interactive:
@@ -173,7 +184,9 @@ if __name__ == "__main__":
 
     session = build_session(args)
 
-    if args.bench_prefill:
+    if args.bench_decode:
+        bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
         bench_prefill(session, cpu_attn=args.cpu_attn)
     elif args.interactive:
         repl_loop(session, args)

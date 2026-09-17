@@ -36,8 +36,14 @@ CTX ?= 2048
 export LLM_SEQ_LEN   := $(CTX)
 export LLM_CACHE_DIR := prefill_kernel_cache_$(CTX)
 
-.PHONY: help compile run profile profile-prefill chat verify verify-full \
-        diagnosis clean
+# KV depths `make profile-decode` measures decode tok/s at. Unlike CTX these
+# need no rebuild -- the decode kernels are per-token GEMVs with no context
+# dependence -- so one run walks the whole list. Bounded by the host KV cache:
+# n_layers * n_kv_heads * L * head_dim * 4 bytes, 4.3GB at 128k here.
+CONTEXTS ?= 1024,2048,4096,8192,16384,32768,65536,131072
+
+.PHONY: help compile run profile profile-prefill profile-decode chat verify \
+        verify-full diagnosis clean
 
 # ============================================================
 # Help
@@ -62,6 +68,9 @@ help:
 	@echo "Prefill latency sweep:"
 	@echo "  make profile-prefill  Warm prefill TTFT at CTX=$(CTX) (builds the engines at that length)"
 	@echo ""
+	@echo "Decode throughput sweep:"
+	@echo "  make profile-decode   Decode tok/s at each CONTEXTS depth (one run, no rebuild per point)"
+	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean            Remove all build artifacts and verify reports"
 	@echo ""
@@ -70,6 +79,7 @@ help:
 	@echo "  PROMPT=\"...\"          Input prompt text (run/profile/diagnosis)"
 	@echo "  MODEL=base|instruct   Model variant (default: instruct)"
 	@echo "  CTX=2048              Padded prefill length (512|1024|2048|4096)"
+	@echo "  CONTEXTS=1024,...     KV depths for profile-decode"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make run N_TOKENS=50"
@@ -105,6 +115,15 @@ profile-prefill:
 	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py --compile-only
 	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py \
 		--run-only --bench-prefill --model $(MODEL)
+
+## Decode tok/s at each CONTEXTS depth, in ONE session. The context is set by
+## sizing the KV cache, not by prefilling a prompt of that length, so a 128k
+## point costs seconds. Latency only -- `make verify` is the correctness gate.
+profile-decode:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_inference.py \
+		--run-only --bench-decode $(CONTEXTS) --model $(MODEL)
 
 ## Interactive chat: prepare runtime once, then loop on prompts
 chat:
