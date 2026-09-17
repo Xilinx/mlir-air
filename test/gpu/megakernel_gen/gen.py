@@ -1629,6 +1629,30 @@ module {{
     # wave; see the note at the signal site.
     stage_bar = "" if waves == 1 else "          gpu.barrier"
 
+    def lane_reduce(src, dst, op, tag, indent, stride, steps, ty="f32"):
+        """Butterfly over the lanes `stride` apart -- 2**steps of them.
+
+        wave_reduce is the stride-1 case. Used where a wave's lanes are split
+        two ways, some across output columns and the rest across the reduction:
+        the lanes sharing a column are the ones differing only in the bits above
+        log2(stride), so xor-ing exactly those bits adds their partials up and
+        leaves every one of them holding the total.
+        """
+        pad = " " * indent
+        if steps == 0:
+            return f"{pad}{dst} = arith.addf {src}, %fzero_s : {ty}"
+        out, cur = [], src
+        for k in range(steps):
+            nxt = dst if k == steps - 1 else f"%lr{tag}{k}"
+            out.append(
+                f"{pad}%lro{tag}{k} = arith.constant {stride << k} : i32\n"
+                f"{pad}%lrw{tag}{k} = arith.constant {wave} : i32\n"
+                f"{pad}%lrs{tag}{k}, %lrp{tag}{k} = gpu.shuffle xor {cur}, "
+                f"%lro{tag}{k}, %lrw{tag}{k} : {ty}\n"
+                f"{pad}{nxt} = {op} {cur}, %lrs{tag}{k} : {ty}")
+            cur = nxt
+        return "\n".join(out)
+
     def wave_reduce(src, dst, op, tag, indent, ty="f32"):
         """Combine one value per lane into one value the whole wave has.
 
@@ -1922,17 +1946,37 @@ module {{
         # barriers; a lane-dependent trip count around a gpu.barrier hangs the
         # workgroup. Columns past the end are computed on a clamped index and
         # thrown away, which keeps every load in bounds.
-        nblk = (slice_num + wave - 1) // wave
+        cols = 1
+        while cols * 2 <= min(slice_num, wave):
+            cols *= 2
+        klanes = wave // cols
+        ksteps = klanes.bit_length() - 1
+        nblk = (slice_num + cols - 1) // cols
+        # A slice is `width / tasks` columns -- 8 for anything dim-wide at 128
+        # tasks -- so a lane per column left 56 of 64 lanes idle and used 32 of
+        # every 128-byte line. Splitting the lanes two ways, `cols` across the
+        # columns and the remaining `klanes` across the reduction, keeps all 64
+        # busy whatever the slice is; the lanes sharing a column differ only in
+        # the bits above log2(cols), so an xor butterfly over those bits folds
+        # their partials together. Across the four matmuls that is 3.7x of
+        # arithmetic that was being thrown away.
         return strided_stage(l, stage, ev, "%ctasks", "%ntasks_t", f"""                %j0 = arith.muli %ix, {slice_c} : index
+                %cC{l}_{stage} = arith.constant {cols} : index
+                %cKS{l}_{stage} = arith.constant {waves * klanes} : index
+                %cKL{l}_{stage} = arith.constant {klanes} : index
                 %cnblk{l}_{stage} = arith.constant {nblk} : index
                 %cslast{l}_{stage} = arith.constant {slice_num - 1} : index
+                %col{l}_{stage} = arith.remui %lid, %cC{l}_{stage} : index
+                %kln{l}_{stage} = arith.divui %lid, %cC{l}_{stage} : index
+                %kwo{l}_{stage} = arith.muli %wid, %cKL{l}_{stage} : index
+                %ksl{l}_{stage} = arith.addi %kwo{l}_{stage}, %kln{l}_{stage} : index
                 scf.for %jb = %c0_s to %cnblk{l}_{stage} step %c1_s {{
-                  %jbo = arith.muli %jb, %nlane : index
-                  %jj = arith.addi %jbo, %lid : index
+                  %jbo = arith.muli %jb, %cC{l}_{stage} : index
+                  %jj = arith.addi %jbo, %col{l}_{stage} : index
                   %jok = arith.cmpi ult, %jj, {slice_c} : index
                   %jcl = arith.minsi %jj, %cslast{l}_{stage} : index
                   %j = arith.addi %j0, %jcl : index
-                  %part = scf.for %i = %wid to {red_c} step %cwaves
+                  %part0 = scf.for %i = %ksl{l}_{stage} to {red_c} step %cKS{l}_{stage}
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %lv = memref.load {lhs}[%m, %i] : {lhsty}
                     %wv = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
@@ -1940,6 +1984,7 @@ module {{
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
                   }}
+                  %part = arith.addf %part0, %fzero_s : f32
                   // The wave partials for one column live at the same lane of
                   // every wave, so the slot is just the thread id and wave 0
                   // walks them with a fixed stride.
@@ -1947,16 +1992,28 @@ module {{
                   memref.store %part, %ldsr[%tx_s] : memref<{nthreads}xf32, 3>
                   gpu.barrier
                   scf.if %isW0 {{
-                    %a = scf.for %blw = %c0_s to %cwaves step %c1_s
-                        iter_args(%blacc = %fzero_s) -> (f32) {{
-                      %blo = arith.muli %blw, %nlane : index
-                      %bli = arith.addi %blo, %lid : index
-                      %blv = memref.load %ldsr[%bli] : memref<{nthreads}xf32, 3>
-                      %bln = arith.addf %blacc, %blv : f32
-                      scf.yield %bln : f32
-                    }}
-                    scf.if %jok {{
-                      %j2 = arith.addi %j0, %jj : index{store_blk}
+                    // Lane c of wave 0 finishes column c: the butterfly left
+                    // every lane sharing a column holding that column's wave
+                    // total, so slot w*wave + c is wave w's share of column c.
+                    %inC{l}_{stage} = arith.cmpi ult, %lid, %cC{l}_{stage} : index
+                    scf.if %inC{l}_{stage} {{
+                      %a = scf.for %blw = %c0_s to %cwaves step %c1_s
+                          iter_args(%blacc = %fzero_s) -> (f32) {{
+                        %blo = arith.muli %blw, %nlane : index
+                        %bin = scf.for %blk = %c0_s to %cKL{l}_{stage} step %c1_s
+                            iter_args(%bkacc = %blacc) -> (f32) {{
+                          %bko = arith.muli %blk, %cC{l}_{stage} : index
+                          %bkb = arith.addi %blo, %bko : index
+                          %bli = arith.addi %bkb, %lid : index
+                          %blv = memref.load %ldsr[%bli] : memref<{nthreads}xf32, 3>
+                          %bln = arith.addf %bkacc, %blv : f32
+                          scf.yield %bln : f32
+                        }}
+                        scf.yield %bin : f32
+                      }}
+                      scf.if %jok {{
+                        %j2 = arith.addi %j0, %jj : index{store_blk}
+                      }}
                     }}
                   }}
                 }}""", lanes="block")
