@@ -75,7 +75,8 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
          heads: int = 4, kv_heads: int = 2, steps: int = 1,
          vocab: int = 256, head_dim: int = 0,
          rope_theta: float = 10000.0, W=None, prompt=None,
-         prompt_len: int = 0, wave: int = 64, waves: int = 1) -> str:
+         prompt_len: int = 0, wave: int = 64, waves: int = 1,
+         nt_weights: bool = False) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
     # The wave is where the parallelism inside a task lives: a task body splits
@@ -1859,10 +1860,19 @@ module {{
 {spin_end}"""
 
     # The weights are read once per layer and never again inside a decode step,
-    # and they are far larger than anything else in flight, so they are exactly
-    # what would evict the activations. Fleet loads them non-temporally too
-    # (gang_ksplit_linear_mi300.cuh:88 uses amd_buffer_coherence_enum(18),
-    # which is nt|sc1).
+    # and they are far larger than anything else in flight, so they look like
+    # exactly what should be streamed past the cache rather than kept in it.
+    # Measured, they are 7% faster kept: 44.7 ms/token with `nt` on the weight
+    # loads against 41.7 without, slope over 99 extra launches.
+    #
+    # That is also closer to what Fleet does here, not further from it. Fleet's
+    # non-temporal weight loads live in the gang_ksplit path
+    # (gang_ksplit_linear_mi300.cuh:88, amd_buffer_coherence_enum(18) = nt|sc1),
+    # which its batch-1 build does not compile -- `fleet.s` contains no `nt` at
+    # all, while this chain was emitting 74. So the default is off and --nt
+    # turns it back on; the lowering itself is covered by the ISA gate in
+    # mlir/test/Conversion/AIRToROCDL/air_nontemporal.mlir either way.
+    ntw = " {{nontemporal = true}}" if nt_weights else ''
     def matmul_stage(l, stage, ev, out, outty, lhs, lhsty, wmat, wty,
                      slice_c, red_c, slice_num, residual=None):
         store = (f"""
@@ -1893,7 +1903,7 @@ module {{
                   %a = scf.for %i = %c0_s to {red_c} step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %lv = memref.load {lhs}[%m, %i] : {lhsty}
-                    %wv = memref.load {wmat}[%L{l}, %i, %j] {{nontemporal = true}} : {wty}
+                    %wv = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
                     %mp = arith.mulf %lv, %wv : f32
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
@@ -1925,7 +1935,7 @@ module {{
                   %part = scf.for %i = %wid to {red_c} step %cwaves
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %lv = memref.load {lhs}[%m, %i] : {lhsty}
-                    %wv = memref.load {wmat}[%L{l}, %i, %j] {{nontemporal = true}} : {wty}
+                    %wv = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
                     %mp = arith.mulf %lv, %wv : f32
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
@@ -2348,6 +2358,10 @@ def main() -> int:
                          "run prompt, so every step is a prefill chunk.")
     ap.add_argument("--repeat", type=int, default=1,
                     help="how many times to launch the chain, for timing")
+    ap.add_argument("--nt", action="store_true",
+                    help="load the weights non-temporally. Off by default: it "
+                         "measured 7%% slower, and Fleet's batch-1 build emits "
+                         "no nt either")
     ap.add_argument("--waves", type=int, default=1,
                     help="wavefronts per workgroup (the herd's x extent). "
                          "Above 1 the waves split the reduction of each matmul "
@@ -2380,7 +2394,7 @@ def main() -> int:
     sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat,
                           a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
                           a.steps, a.vocab, a.head_dim, a.rope_theta, W,
-                          prompt, a.prompt_len, a.wave, a.waves))
+                          prompt, a.prompt_len, a.wave, a.waves, a.nt))
     return 0
 
 
