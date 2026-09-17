@@ -1833,8 +1833,23 @@ module {{
               // count, so at a decode step the grid is one token deep and every
               // piece claimed is a piece that computes -- see the note where
               // %ntasks_t is built.
-              %m = arith.remui %k, %nat : index
-              %kn = arith.divui %k, %nat : index
+              // %nat is a runtime value, so these are a software divide --
+              // roughly thirty instructions of v_rcp_f32 and Newton steps, on
+              // a path taken once per die probe per stage, which is the same
+              // order as the MACs a lane does in the piece it wins. At a decode
+              // step %nat is 1 and the answer is (0, k); the branch is
+              // wave-uniform, so it is an s_cbranch and the divide is simply
+              // not executed.
+              %isN1 = arith.cmpi eq, %nat, %c1_s : index
+              %mkn:2 = scf.if %isN1 -> (index, index) {{
+                scf.yield %c0_s, %k : index, index
+              }} else {{
+                %mr = arith.remui %k, %nat : index
+                %kd = arith.divui %k, %nat : index
+                scf.yield %mr, %kd : index, index
+              }}
+              %m = arith.addi %mkn#0, %c0_s : index
+              %kn = arith.addi %mkn#1, %c0_s : index
               %kstride = arith.muli %kn, %cmaxdies : index
               %ix = arith.addi %d, %kstride : index
               %has = arith.cmpi ult, %ix, {count_expr} : index
