@@ -76,7 +76,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
          vocab: int = 256, head_dim: int = 0,
          rope_theta: float = 10000.0, W=None, prompt=None,
          prompt_len: int = 0, wave: int = 64, waves: int = 1,
-         nt_weights: bool = False) -> str:
+         nt_weights: bool = False, timers: bool = False) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
     # The wave is where the parallelism inside a task lives: a task body splits
@@ -244,7 +244,36 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     QUT = f"memref<{steps}x{layers}x{qslots}xi32>"
     slots = steps * per_step * maxdies
     flushword = 2 * slots
-    locwords = flushword + 1
+    # One i32 accumulator per stage class for --timers. Qwen is a pile of
+    # operators, and the only honest way to say which one costs what is to time
+    # each on the device -- not to infer it by subtracting deliberately-broken
+    # builds, which measures "cost of the program without this stage" and does
+    # not sum to the total when the stages meet at a rendezvous.
+    nclass = stages + extras
+    timerbase = flushword + 1
+    locwords = timerbase + (nclass if timers else 0)
+    # One workgroup owns the clock. Timing from all of them and summing would
+    # overflow i32 and would also count the same wall-clock window `workers`
+    # times; one workgroup's view of a stage is that stage's duration, waiting
+    # at the rendezvous included, which is exactly its contribution to the
+    # critical path.
+    timer_id = "" if not timers else """        %isDie0 = arith.cmpi eq, %mydie, %c0_s : index
+        %isRank0 = arith.cmpi eq, %myrank2, %c0_s : index
+        %isWG0 = arith.andi %isDie0, %isRank0 : i1"""
+    # Names in stage order: nine per layer, then the five outside the loop.
+    timer_names = ["rmsnorm.attn", "qkv", "rope+kv_append", "attention",
+                   "o_proj", "rmsnorm.mlp", "gate_up", "swiglu", "down",
+                   "embed", "final_norm", "lm_head", "argmax_partial",
+                   "argmax_reduce"]
+    timer_report = "" if not timers else (
+        '    vector.print str "--- per-operator device ticks (100 MHz), '
+        'workgroup 0, summed over layers and steps:"\n'
+        + "\n".join(
+            f'    %tk{i} = arith.constant {timerbase + i} : index\n'
+            f'    %tv{i} = memref.load %Loc[%tk{i}] : memref<{locwords}xi32>\n'
+            f'    vector.print str "  {nm}"\n'
+            f'    vector.print %tv{i} : i32'
+            for i, nm in enumerate(timer_names)))
     strided_stages = 7  # every layer stage but 0 and 5
     # embed, lm head and the partial argmax are split by piece too; the final
     # norm and the argmax reduce are single-task.
@@ -1439,6 +1468,7 @@ module {{
     gpu.memcpy %Loc, %dLoc : memref<{locwords}xi32>, memref<{locwords}xi32>
     %cflush = arith.constant {flushword} : index
     %flushes = memref.load %Loc[%cflush] : memref<{locwords}xi32>
+{timer_report}
     vector.print str "device-scope event flushes = "
     vector.print %flushes : i32
     %cnaive = arith.constant {naive} : i32
@@ -1623,6 +1653,7 @@ module {{
         %cflushW = arith.constant {4 * flushword} : i64
         %flushP = llvm.getelementptr %locp[%cflushW] : (!llvm.ptr, i64) -> !llvm.ptr, i8
         %myrank2 = air.chiplet_block_id
+{timer_id}
         %mycnt = air.chiplet_dim_blocks
         %mycnt_i = arith.index_cast %mycnt : index to i32
         %evbase = memref.extract_aligned_pointer_as_index %se : memref<{events}xi32> -> index
@@ -1733,6 +1764,27 @@ module {{
             cur = nxt
         return "\n".join(out)
 
+
+    def timer_begin(l, stage):
+        if not timers:
+            return ""
+        return (f"          %tb{l}_{stage} = llvm.call_intrinsic "
+                f'"llvm.amdgcn.s.memrealtime"() : () -> i64')
+
+    def timer_end(l, stage):
+        if not timers:
+            return ""
+        return f"""          %te{l}_{stage} = llvm.call_intrinsic "llvm.amdgcn.s.memrealtime"() : () -> i64
+          %dt{l}_{stage} = arith.subi %te{l}_{stage}, %tb{l}_{stage} : i64
+          %dti{l}_{stage} = arith.trunci %dt{l}_{stage} : i64 to i32
+          %isT{l}_{stage} = arith.andi %isWG0, %isLead : i1
+          scf.if %isT{l}_{stage} {{
+            %tc{l}_{stage} = arith.constant {timerbase + stage} : index
+            %to{l}_{stage} = memref.load %sloc[%tc{l}_{stage}] : memref<{locwords}xi32>
+            %tn{l}_{stage} = arith.addi %to{l}_{stage}, %dti{l}_{stage} : i32
+            memref.store %tn{l}_{stage}, %sloc[%tc{l}_{stage}] : memref<{locwords}xi32>
+          }}"""
+
     def wave_reduce(src, dst, op, tag, indent, ty="f32"):
         """Combine one value per lane into one value the whole wave has.
 
@@ -1829,6 +1881,7 @@ module {{
             close_body = "                  }"
         return f"""
           // stage {stage}
+{timer_begin(l, stage)}
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -1946,7 +1999,8 @@ module {{
             scf.yield
           }}
 {spin_close}
-{spin_end}"""
+{spin_end}
+{timer_end(l, stage)}"""
 
     def single_stage(l, stage, ev, body, slot=None, lc=None, lanes=False):
         slot = (l * stages + stage) if slot is None else slot
@@ -1980,6 +2034,7 @@ module {{
         return f"""
           // stage {stage} -- one task: a reduction over the whole row, so it
           // cannot be split by output slice the way the matmuls can.
+{timer_begin(l, stage)}
           %hsingle{stage}_{l} = arith.constant {stage * maxdies} : index
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
@@ -2010,7 +2065,8 @@ module {{
             scf.yield
           }}
 {spin_close}
-{spin_end}"""
+{spin_end}
+{timer_end(l, stage)}"""
 
     # The weights are read once per layer and never again inside a decode step,
     # and they are far larger than anything else in flight, so they look like
@@ -2586,6 +2642,9 @@ def main() -> int:
                     help="load the weights non-temporally. Off by default: it "
                          "measured 7%% slower, and Fleet's batch-1 build emits "
                          "no nt either")
+    ap.add_argument("--timers", action="store_true",
+                    help="accumulate per-operator device ticks and print them; "
+                         "adds two s_memrealtime per stage, so measure without it")
     ap.add_argument("--waves", type=int, default=1,
                     help="wavefronts per workgroup (the herd's x extent). "
                          "Above 1 the waves split the reduction of each matmul "
@@ -2618,7 +2677,8 @@ def main() -> int:
     sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat,
                           a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
                           a.steps, a.vocab, a.head_dim, a.rope_theta, W,
-                          prompt, a.prompt_len, a.wave, a.waves, a.nt))
+                          prompt, a.prompt_len, a.wave, a.waves, a.nt,
+                          a.timers))
     return 0
 
 
