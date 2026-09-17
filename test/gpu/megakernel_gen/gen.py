@@ -100,6 +100,14 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # columns, and the wave partials meet in LDS.
     assert waves & (waves - 1) == 0 and waves >= 1, "waves must be a power of two"
     nthreads = waves * wave
+    # 16 waves -- a 1024-thread workgroup -- does not finish. A four-layer
+    # config that takes half a minute at 8 was still running after four, on
+    # hardware that has the registers for it (92 VGPRs, so 20 wave slots a CU
+    # against the 16 a block would need). Not understood, so it is refused
+    # rather than left to burn an allocation discovering it again.
+    assert nthreads <= 512, (
+        f"waves={waves} gives a {nthreads}-thread workgroup; anything past 512 "
+        "hangs and the reason is not yet known")
     lds_globals = "" if waves == 1 else (
         f"  memref.global \"private\" @air_bcast : memref<4xi32, 3>\n"
         f"  memref.global \"private\" @air_red : memref<{nthreads}xf32, 3>")
