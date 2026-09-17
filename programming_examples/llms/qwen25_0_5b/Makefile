@@ -24,6 +24,15 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 
+# Padded prefill length (see `make profile-prefill`). Bounded below by the
+# fused-cast GEMM (multiple of 64) and the seq-first FlashAttention (multiple of
+# 256), and above by the GEMM registry, which has no measured shape past
+# M=4096. Which lengths this model actually has shapes for is recorded in its
+# run_npu2_prefill_sweep.lit.
+CTX ?= 2048
+export LLM_SEQ_LEN   := $(CTX)
+export LLM_CACHE_DIR := prefill_kernel_cache_$(CTX)
+
 # KV depths `make profile-decode` measures decode tok/s at. These need no
 # rebuild -- the decode kernels are per-token GEMVs with no context
 # dependence and attention runs on the host -- so one run walks the whole
@@ -31,7 +40,8 @@ MODEL    ?= instruct
 # n_layers * n_kv_heads * L * head_dim * 4 bytes.
 CONTEXTS ?= 1024,2048,4096,8192,16384,32768,65536,131072
 
-.PHONY: help compile run profile profile-decode chat verify verify-full \
+.PHONY: help compile run profile profile-prefill profile-decode chat \
+        verify verify-full \
         diagnosis all clean
 
 help:
@@ -67,6 +77,15 @@ run:
 profile:
 	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/qwen25_0_5b_inference.py \
 		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
+
+## Warm prefill-only TTFT at CTX. Builds the engines at that length first --
+## the kernel cache is keyed on kernel name, so reusing another CTX's directory
+## would time the wrong engines and report a flat curve.
+profile-prefill:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/qwen25_0_5b_inference.py --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/qwen25_0_5b_inference.py \
+		--run-only --bench-prefill --model $(MODEL)
 
 ## Decode tok/s at each CONTEXTS depth, in ONE session. The context is set by
 ## sizing the KV cache, not by prefilling a prompt of that length, so a deep

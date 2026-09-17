@@ -37,6 +37,9 @@ from shared.infra.decode_bench import (  # noqa: E402
     bench_rope_len as _bench_rope_len,
     bench_decode as _bench_decode,
 )
+from shared.infra.prefill_bench import (  # noqa: E402
+    bench_prefill as _bench_prefill,
+)
 from qwen3_4b_prefill import (
     compile_all_kernels,
     run_transformer_block_qwen3,
@@ -619,10 +622,12 @@ MODEL_CHOICES = {"base": "Qwen/Qwen3-4B", "instruct": "Qwen/Qwen3-4B"}
 
 def build_session(args) -> Session:
     config = LlamaConfig()
-    seq_len = 2048
+    seq_len = args.seq_len
 
+    # Cache entries are keyed on kernel name alone, so two seq_lens must not
+    # share a directory: the second would silently load the first's ELFs.
     prefill_cache = KernelCache(
-        "prefill_kernel_cache",
+        args.cache_dir or "prefill_kernel_cache",
         verbose=args.verbose,
         profiler=Profiler(enabled=args.profile),
     )
@@ -717,6 +722,11 @@ def run_once(
     return generated, prompt_len_actual
 
 
+def bench_prefill(session, cpu_attn=False):
+    """Warm prefill TTFT at session.seq_len, via the shared bench."""
+    _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
+
+
 def bench_decode(session, contexts):
     """Decode tok/s at each KV depth, via the shared host-attention bench."""
     _bench_decode(session, contexts, run_npu_decode_step)
@@ -785,6 +795,25 @@ if __name__ == "__main__":
     )
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("LLM_SEQ_LEN", "2048")),
+        help="Padded prompt length the prefill engines are built for "
+        "(multiple of 256; default: 2048)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("LLM_CACHE_DIR") or None,
+        help="Prefill kernel cache directory. Must differ per --seq-len: cache "
+        "entries are keyed on kernel name, not on shape",
+    )
+    parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
         "--bench-decode",
         default="",
         help="Comma-separated KV depths to measure decode tok/s at, in one "
@@ -803,6 +832,8 @@ if __name__ == "__main__":
 
     if args.bench_decode:
         bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
     elif args.interactive:
         repl_loop(session, args)
     else:

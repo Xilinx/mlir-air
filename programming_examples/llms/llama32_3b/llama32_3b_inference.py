@@ -45,6 +45,9 @@ from shared.infra.decode_bench import (  # noqa: E402
     bench_rope_len as _bench_rope_len,
     bench_decode as _bench_decode,
 )
+from shared.infra.prefill_bench import (  # noqa: E402
+    bench_prefill as _bench_prefill,
+)
 from shared.infra.external_kernels import compile_all_external_kernels
 from shared.infra.backend_presets import LM_GEMV_BACKEND, RGR_BACKEND
 
@@ -671,6 +674,11 @@ def run_once(
     return generated, prompt_len_actual
 
 
+def bench_prefill(session, cpu_attn=False):
+    """Warm prefill TTFT at session.seq_len, via the shared bench."""
+    _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
+
+
 def bench_decode(session, contexts):
     """Decode tok/s at each KV depth, via the shared host-attention bench."""
     _bench_decode(session, contexts, run_npu_decode_step)
@@ -758,6 +766,12 @@ if __name__ == "__main__":
         "exit (latency only, not a correctness gate)",
     )
     parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
         "--bench-decode",
         default="",
         help="Comma-separated KV depths to measure decode tok/s at, in one "
@@ -776,6 +790,8 @@ if __name__ == "__main__":
 
     if args.bench_decode:
         bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
     elif args.bench_prefill:
         bench_prefill(session, cpu_attn=args.cpu_attn)
     elif args.interactive:

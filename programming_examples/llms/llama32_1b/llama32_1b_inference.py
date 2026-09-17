@@ -44,6 +44,9 @@ from shared.infra.decode_bench import (  # noqa: E402
     bench_rope_len as _bench_rope_len,
     bench_decode as _bench_decode,
 )
+from shared.infra.prefill_bench import (  # noqa: E402
+    bench_prefill as _bench_prefill,
+)
 from shared.infra.external_kernels import compile_all_external_kernels
 from shared.infra.backend_presets import (
     LM_GEMV_BACKEND,
@@ -1075,48 +1078,9 @@ def run_once(
     return generated, prompt_len_actual
 
 
-def bench_prefill(session: Session, cpu_attn: bool = False) -> None:
-    """Warm prefill-only TTFT at session.seq_len, on a synthetic prompt.
-
-    Latency only, never a correctness gate. The ids are synthetic because the
-    axis is the PADDED length the engines were built for: a real prompt is
-    padded to the same length and measures the same thing. Warmup first, so the
-    number is steady-state rather than the one-time NPU wake.
-    """
-    ids = [int(t % session.config.vocab_size) for t in range(session.seq_len)]
-
-    def _prefill():
-        run_npu_prefill(
-            ids,
-            session.weights,
-            session.config,
-            session.prefill_cache,
-            session.decode_cache,
-            session.rope_lut_bf16,
-            session.seq_len,
-            tokenizer=session.tokenizer,
-            cpu_attn=cpu_attn,
-            quiet=True,
-        )
-
-    print(f"[bench] warmup prefill L={session.seq_len}...", flush=True)
-    _prefill()
-    print(f"[bench] timed prefill L={session.seq_len}...", flush=True)
-    t0 = time.perf_counter()
-    _prefill()
-    wall = time.perf_counter() - t0
-    # The line formats bench/extract_perf.py and bench/sweep_prefill.py parse.
-    print(f"\nLLAMA Inference: prompt_len={session.seq_len}, n_tokens=0", flush=True)
-    print(f"Time to first token (TTFT): {wall:.3f}s", flush=True)
-    print(
-        f"[bench] L={session.seq_len}: {session.seq_len / wall:.0f} tok/s prefill",
-        flush=True,
-    )
-
-
-def bench_decode(session, contexts):
-    """Decode tok/s at each KV depth, via the shared host-attention bench."""
-    _bench_decode(session, contexts, run_npu_decode_step)
+def bench_prefill(session, cpu_attn=False):
+    """Warm prefill TTFT at session.seq_len, via the shared bench."""
+    _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
 
 
 def _print_one_shot_output(

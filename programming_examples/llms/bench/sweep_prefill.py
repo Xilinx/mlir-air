@@ -67,6 +67,25 @@ BUILD_LIMIT_RES = (
         re.compile(r"Too many simultaneously active buffer descriptors[^\n]*"),
         "bd_exhaustion",
     ),
+    # A registry row whose stored tile contradicts the method it names, e.g.
+    # "registry tile_m=64 != method 'drain' tile_m=32". The shape IS in the
+    # registry, so this is not no_registry_shape: it is an inconsistent entry,
+    # and the distinction is the whole point -- one is answered by running a
+    # sweep for a missing shape, the other by correcting a row that already
+    # exists. Reported rather than worked around, because which of the two
+    # fields is wrong is a question for whoever measured it.
+    (
+        re.compile(r"registry tile_m=\d+ != method '[^']+' tile_m=\d+"),
+        "registry_inconsistent",
+    ),
+)
+
+
+# A host that could not hold the point, as opposed to a repo that could not
+# build it. Checked before the generic rc!=0 branch, which used to fold these
+# into an unnameable "fail: Killed".
+HOST_OOM_RE = re.compile(
+    r"std::bad_alloc|MemoryError|Cannot allocate|Killed|out of memory", re.I
 )
 
 
@@ -77,10 +96,36 @@ def _classify(out, rc):
             return status
     if XRT_FAIL_RE.search(out):
         return "device_fail"
+    if HOST_OOM_RE.search(out):
+        return "host_oom"
     if rc != 0:
-        m = re.search(r"error: .{0,90}|Killed|Cannot allocate|out of memory", out)
+        m = re.search(r"error: .{0,90}", out)
         return f"fail: {m.group(0)}" if m else "fail: rc=%d" % rc
     return "no_number"
+
+
+# Statuses --expect-fail may forgive. This list is the point of having one:
+# every entry names a reason the length is unavailable on this design or this
+# box, and nothing else is forgiven. Without it --expect-fail forgave ANY
+# status, so a length listed because it needs a GEMM registry sweep would also
+# have swallowed a genuine build break at that length -- a broken repo and a
+# known gap rendering as the same cell. sweep_decode.py has always gated this
+# way; this file did not.
+EXPECTABLE = frozenset(
+    {
+        "no_registry_shape",
+        "registry_inconsistent",
+        "bd_exhaustion",
+        "device_fail",
+        "host_oom",
+        "timeout",
+    }
+)
+# NOT in the list: wrong_seq_len. That status means the guard fired -- the
+# build produced engines at some other length and would have published a
+# number belonging to a different point. It is a repo defect at every length,
+# including one listed as expected-fail, and forgiving it would retire the
+# guard.
 
 
 def run_point(args, length, logdir):
@@ -161,7 +206,8 @@ def main():
     p.add_argument(
         "--expect-fail",
         default="",
-        help="lengths allowed to fail without failing the run (see sweep_decode.py)",
+        help="lengths allowed to fail without failing the run, and ONLY with a "
+        f"reason the length is genuinely unavailable ({'/'.join(sorted(EXPECTABLE))})",
     )
     p.add_argument("--seq-env", default="Q4NX_SEQ_LEN", help="engine seq_len env var")
     p.add_argument("--bench-env", default="Q4NX_BENCH_L", help="bench length env var")
@@ -182,7 +228,10 @@ def main():
         print(f"[sweep_prefill] {args.model_name} L={length} ...", flush=True)
         pt, _ = run_point(args, length, logdir)
         if pt["status"] != "ok":
-            if length in expect_fail:
+            # A wrong_seq_len status carries the built length in its text, so
+            # match on the prefix rather than the whole string.
+            base = pt["status"].split(":")[0]
+            if length in expect_fail and base in EXPECTABLE:
                 # Mirror sweep_decode.py exactly: the published status becomes
                 # "expected_fail" and the real cause moves to `detail`. A
                 # separate boolean would not reach the dashboard -- both
