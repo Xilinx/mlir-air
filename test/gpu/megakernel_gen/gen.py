@@ -76,7 +76,8 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
          vocab: int = 256, head_dim: int = 0,
          rope_theta: float = 10000.0, W=None, prompt=None,
          prompt_len: int = 0, wave: int = 64, waves: int = 1,
-         nt_weights: bool = False, timers: bool = False) -> str:
+         nt_weights: bool = False, timers: bool = False,
+         dies: int = 8) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
     # The wave is where the parallelism inside a task lives: a task body splits
@@ -239,7 +240,20 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     extras = 5
     per_step = layers * stages + extras
     events = per_step * steps
-    maxdies = 16
+    # How many per-chiplet task queues the scheduler keeps, and therefore how
+    # many it probes before it can conclude a stage is drained. Every probe is
+    # an atomic claim plus a broadcast of the result to the workgroup, which
+    # past one wavefront means LDS and two barriers -- and a stage pays that
+    # `dies` times whatever it computes. Measured on MI350X, dropping 16 to 8
+    # took 15.42 to 10.57 ms/token, and only the stages that probe moved: the
+    # single-task rmsnorms and the argmax reduce did not shift at all.
+    #
+    # It must be at least the device's chiplet count. `%mydie` is
+    # `air.chiplet_id % dies`, so if two chiplets alias onto one queue the
+    # two-level flush compares arrivals against `air.chiplet_dim_blocks` --
+    # this chiplet's workgroups -- and the count no longer matches what shows
+    # up. MI300X and MI350X are both 8 XCDs.
+    maxdies = dies
     qslots = (stages + extras) * maxdies
     QUT = f"memref<{steps}x{layers}x{qslots}xi32>"
     slots = steps * per_step * maxdies
@@ -2667,6 +2681,11 @@ def main() -> int:
                     help="load the weights non-temporally. Off by default: it "
                          "measured 7%% slower, and Fleet's batch-1 build emits "
                          "no nt either")
+    ap.add_argument("--dies", type=int, default=8,
+                    help="per-chiplet task queues; must be >= the device's "
+                         "chiplet count (8 on MI300X and MI350X). Every stage "
+                         "probes this many queues, so a value larger than the "
+                         "hardware costs time in every stage")
     ap.add_argument("--timers", action="store_true",
                     help="accumulate per-operator device ticks and print them; "
                          "adds two s_memrealtime per stage, so measure without it")
@@ -2703,7 +2722,7 @@ def main() -> int:
                           a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
                           a.steps, a.vocab, a.head_dim, a.rope_theta, W,
                           prompt, a.prompt_len, a.wave, a.waves, a.nt,
-                          a.timers))
+                          a.timers, a.dies))
     return 0
 
 
