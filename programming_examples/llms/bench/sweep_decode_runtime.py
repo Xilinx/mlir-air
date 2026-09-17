@@ -35,10 +35,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-# "[bench] decode ctx=8192 mean 380.625 ms (2.63 tok/s)" -- the line the bf16
-# drivers print per context.
+# "[bench] decode ctx=8192 median 380.6 ms min 372.1 ms (2.63 tok/s)" -- the
+# line the host-attention drivers print per context. Median and min, never a
+# mean: see shared/infra/decode_bench.py for the 46-second outlier that makes a
+# mean unpublishable here.
 POINT_RE = re.compile(
-    r"^\[bench\] decode ctx=(\d+)\s+mean\s+([\d.]+)\s*ms\s*\(([\d.]+)\s*tok/s\)", re.M
+    r"^\[bench\] decode ctx=(\d+)\s+median\s+([\d.]+)\s*ms\s+min\s+([\d.]+)\s*ms"
+    r"\s*\(([\d.]+)\s*tok/s\)",
+    re.M,
 )
 
 # Device-side "the dispatch did not complete" evidence. Same list sweep_decode.py
@@ -105,7 +109,7 @@ def run_sweep(args, contexts, logdir):
     # single-process design is what makes losing them otherwise likely, so they
     # are kept rather than discarding the whole curve.
     got = {
-        int(m.group(1)): (float(m.group(2)), float(m.group(3)))
+        int(m.group(1)): (float(m.group(2)), float(m.group(3)), float(m.group(4)))
         for m in POINT_RE.finditer(out)
     }
     missing = _classify(out, rc) if not timed_out else "timeout"
@@ -119,7 +123,14 @@ def run_sweep(args, contexts, logdir):
             "status": "ok",
         }
         if ctx in got:
-            rec["ms_per_token"], rec["decode_tokens_per_sec"] = got[ctx]
+            # min is published, not just logged: the curve cell is the median,
+            # and median >> min is how a reader tells a contended nightly from
+            # a real cliff.
+            (
+                rec["ms_per_token"],
+                rec["min_ms_per_token"],
+                rec["decode_tokens_per_sec"],
+            ) = got[ctx]
         else:
             rec["status"] = missing
         points.append(rec)
@@ -166,9 +177,14 @@ def main():
             else:
                 hard_fail = True
         tps = pt["decode_tokens_per_sec"]
+        spread = (
+            f"  (median/min {pt['ms_per_token'] / pt['min_ms_per_token']:.2f})"
+            if pt.get("min_ms_per_token")
+            else ""
+        )
         print(
             f"[sweep] {args.model_name} ctx={pt['context_len']:<7} "
-            f"{f'{tps:.2f} tok/s' if tps is not None else pt['status']}",
+            f"{f'{tps:.2f} tok/s' if tps is not None else pt['status']}{spread}",
             flush=True,
         )
 

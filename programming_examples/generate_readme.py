@@ -529,6 +529,17 @@ def generate_dashboard_table(base_url=""):
 
 _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 
+# Models that are NOT autoregressive language models and so cannot share the
+# LLM table. A vision-language-action policy emits one action chunk, not a token
+# stream: it has no decode throughput to report and no KV depth to sweep, so two
+# of the LLM table's three metrics are structurally inapplicable to it. It used
+# to be listed there anyway, with a permanent em-dash under Decode.
+#
+# An explicit list rather than a heuristic. "decode_tokens_per_sec is null"
+# would also match an LLM whose profile run half-failed, and quietly moving a
+# broken LLM into the VLA table is a worse failure than maintaining one name.
+_VLA_MODELS = frozenset({"smolvla"})
+
 # ── LLM model registry ────────────────────────────────────────────────
 # Maps the perf.json "model" key (which matches the directory name under
 # programming_examples/llms/) to the canonical HuggingFace repo id it
@@ -739,7 +750,12 @@ def render_llm_sweep(recs, base_url=""):
     legend = "\n\n".join(
         note
         for marker, note in (
-            ("—", "— expected failure."),
+            # Both meanings, because a dash carries both and the reader cannot
+            # tell them apart from the cell. Models no longer share one context
+            # list -- a host-attention design's KV cache is numpy, so its list
+            # stops where the box stops holding it -- and this used to claim
+            # every dash was a failure.
+            ("—", "— not swept at this context, or an expected failure."),
             ("✗", "✗ unexpected failure."),
         )
         if marker in markers
@@ -935,6 +951,43 @@ def load_llm_history(path):
     ]
 
 
+def render_vla_benchmark(recs, base_url=""):
+    """The VLA section, or "" when no VLA model has a row.
+
+    Its own table because the column meanings differ, not just the numbers. A
+    policy emits one action chunk: the latency to that chunk is what `ttft_ms`
+    carries for these models (extract_perf.py reads it off an "Action chunk"
+    line), and `context_len` is the prefix the backbone attends over, not a KV
+    depth that could be swept. Naming those columns what they are is the point
+    of splitting -- rendering them under "TTFT" and "Context" next to nine
+    autoregressive models invites reading a chunk latency as a prefill latency.
+    """
+    rows = [d for d in recs if d.get("model") in _VLA_MODELS]
+    if not rows:
+        return ""
+    body = "\n".join(
+        f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+        f'| {"—" if (m := d.get("metrics", {})).get("context_len") is None else m["context_len"]} '
+        f'| {"—" if m.get("ttft_ms") is None else m["ttft_ms"]} '
+        f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
+        f'| {_VERIFY_EMOJI.get(d.get("verify_status", ""), "")} |'
+        for d in sorted(rows, key=lambda r: r.get("model", ""))
+    )
+    return f"""\
+### Vision-Language-Action policies
+
+Not autoregressive: these emit one action chunk per observation rather than a
+token stream, so there is no decode throughput and no context to sweep.
+**Action chunk** is the latency to the model's first usable output.
+**Prefix** is the token count the backbone attends over.
+
+| Model | Prefix | Action chunk (ms) | Measured | Verify |
+|:------|-------:|------------------:|:---------|:------:|
+{body}
+
+"""
+
+
 def render_llm_benchmark(
     perf_path,
     base_url="",
@@ -983,7 +1036,9 @@ def render_llm_benchmark(
 
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
-        if d.get("model") in swept:
+        # A VLA model is published in its own table below; two of these three
+        # columns do not apply to it. See _VLA_MODELS.
+        if d.get("model") in swept or d.get("model") in _VLA_MODELS:
             continue
         m = d.get("metrics", {})
         verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
@@ -1021,22 +1076,36 @@ def render_llm_benchmark(
 
     _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
     _prefill_table = render_llm_prefill_sweep(prefill_sweep_recs, base_url=base_url)
-    table = "\n".join(rows)
+    _vla_table = render_vla_benchmark(recs, base_url=base_url)
+
+    # The single-point table is for models that have no curve yet. Once every
+    # model is swept it has no rows, and a header with an empty body renders as
+    # a broken table rather than as nothing -- so it is omitted entirely. This
+    # is the expected steady state, not an error: the curves below carry the
+    # same models at every context instead of at one.
+    _scalar_table = (
+        f"""\
+Single-point rows — models that do not yet publish a curve below.
+
+| Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
+|:------|--------:|----------:|---------------:|:---------|:------:|
+{chr(10).join(rows)}
+
+"""
+        if rows
+        else ""
+    )
     return f"""\
 
 ## Nightly LLM Benchmark (NPU2)
 
 End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
-| Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
-|:------|--------:|----------:|---------------:|:---------|:------:|
-{table}
-
 Verify: \U0001f7e2 pass &nbsp; \U0001f534 fail &nbsp; ⚪ skipped. &nbsp; — not measured.
 
-{_sweep_table}
+{_scalar_table}{_sweep_table}
 {_prefill_table}
-\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
+{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
 

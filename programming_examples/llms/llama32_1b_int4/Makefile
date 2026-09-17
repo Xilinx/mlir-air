@@ -40,6 +40,12 @@ MIN_OVERLAP   ?= 6
 PROMPTS_FILE  ?= $(srcdir)/../verify/prompts/instruct.txt
 
 N_TOKENS      ?= 30
+# KV depths `make profile-decode` measures decode tok/s at. These need no
+# rebuild -- the int4 decode kernels are per-token GEMVs with no context
+# dependence and attention runs on the host -- so one run walks the whole
+# list. The list is bounded by the host KV cache, which is numpy:
+# n_layers * n_kv_heads * L * head_dim * 4 bytes.
+CONTEXTS      ?= 1024,2048,4096,8192,16384,32768,65536,131072
 PREFILL_INF_CACHE ?= $(srcdir)/inference_prefill_cache
 DECODE_INF_CACHE  ?= $(srcdir)/inference_decode_cache
 
@@ -49,7 +55,8 @@ DECODE_INF_CACHE  ?= $(srcdir)/inference_decode_cache
 VERIFY_RUNNER  = $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER = llama32_1b_int4.verify_adapter
 
-.PHONY: help compile run profile verify-prefill verify-prefill-full \
+.PHONY: help compile run profile profile-decode verify-prefill \
+        verify-prefill-full \
         diagnosis-prefill verify verify-full diagnosis clean \
         compile-inference run-inference chat compile-decode
 
@@ -179,6 +186,22 @@ profile:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_int4_inference.py \
 		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" \
+		--model-path $(MODEL) \
+		--prefill-cache-dir $(PREFILL_INF_CACHE) \
+		--decode-cache-dir $(DECODE_INF_CACHE)
+
+## Decode tok/s at each CONTEXTS depth, in ONE session. The context is set by
+## sizing the KV cache, not by prefilling a prompt of that length, so a deep
+## point costs seconds. Latency only -- `make verify` is the correctness gate.
+profile-decode:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_int4_inference.py \
+		--compile-only \
+		--model-path $(MODEL) \
+		--prefill-cache-dir $(PREFILL_INF_CACHE) \
+		--decode-cache-dir $(DECODE_INF_CACHE)
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/llama32_1b_int4_inference.py \
+		--run-only --bench-decode $(CONTEXTS) \
 		--model-path $(MODEL) \
 		--prefill-cache-dir $(PREFILL_INF_CACHE) \
 		--decode-cache-dir $(DECODE_INF_CACHE)

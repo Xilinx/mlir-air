@@ -24,7 +24,15 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 
-.PHONY: help compile run profile chat verify verify-full diagnosis all clean
+# KV depths `make profile-decode` measures decode tok/s at. These need no
+# rebuild -- the decode kernels are per-token GEMVs with no context
+# dependence and attention runs on the host -- so one run walks the whole
+# list. The list is bounded by the host KV cache, which is numpy:
+# n_layers * n_kv_heads * L * head_dim * 4 bytes.
+CONTEXTS ?= 1024,2048,4096,8192,16384,32768
+
+.PHONY: help compile run profile profile-decode chat verify verify-full \
+        diagnosis all clean
 
 help:
 	@echo "============================================================"
@@ -59,6 +67,15 @@ run:
 profile:
 	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/qwen3_0_6b_inference.py \
 		--run-only --n-tokens $(N_TOKENS) --profile --prompt "$(PROMPT)" --model $(MODEL)
+
+## Decode tok/s at each CONTEXTS depth, in ONE session. The context is set by
+## sizing the KV cache, not by prefilling a prompt of that length, so a deep
+## point costs seconds. Latency only -- `make verify` is the correctness gate.
+profile-decode:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/qwen3_0_6b_inference.py --compile-only
+	cd $(BUILD_DIR) && $(PYTHON) $(srcdir)/qwen3_0_6b_inference.py \
+		--run-only --bench-decode $(CONTEXTS) --model $(MODEL)
 
 ## Interactive chat
 chat:

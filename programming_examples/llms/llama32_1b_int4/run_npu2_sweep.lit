@@ -1,0 +1,43 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// LLAMA-3.2-1B AWQ-int4 decode throughput vs context length, into
+// llama32_1b_int4.sweep.json (collected by the nightly LLM benchmark).
+//
+// Complements run_npu2_profile.lit rather than repeating it: that test profiles
+// the real prefill+decode path at one context. Decode tok/s falls from 13.98 to
+// 0.08 tok/s between 1k and 128k on this design, so a single point cannot see a
+// regression anywhere on that range.
+//
+// Driven by bench/sweep_decode_runtime.py, not bench/sweep_decode.py. The split
+// is the mechanism: the fused-decode family compiles its context in, so every
+// point there is a template build. Here the NPU kernels are per-token GEMVs
+// with no context dependence and attention runs on the host, so the context is
+// a runtime value and the whole list is walked in ONE process off ONE build.
+//
+// The slope is therefore host attention, not NPU KV streaming, which is what
+// the same curve measures for a q4nx model. The two are comparable as published
+// latency and are not comparable as a statement about the NPU design.
+//
+// Decode-only and synthetic (latency, never correctness -- run_npu2_verify.lit
+// is the correctness gate): a context is set by sizing the KV cache and telling
+// the step which position to attend from, not by prefilling a prompt of that
+// length. It still needs weights, because the GEMVs are real.
+//
+// The deepest points are swept but allowed to fail: the KV cache is host
+// numpy, so whether 128k fits alongside the resident weight BOs is a
+// property of the box, not of the design.
+//
+// REQUIRES: ryzen_ai_npu2, peano, hf_token, hfweights_amd_llama_3_2_1b_instruct_awq_uint4_asym_g128_bf16_lmhead
+//
+// RUN: mkdir -p test_peano_sweep
+// RUN: cd test_peano_sweep
+// RUN: %PYTHON %S/../bench/sweep_decode_runtime.py --model-name llama32_1b_int4 --makefile %S/Makefile --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --out llama32_1b_int4.sweep.json
+// RUN: FileCheck %s < llama32_1b_int4.sweep.json
+// CHECK: "model": "llama32_1b_int4"
+// CHECK: "axis": "context_len"
+// A parsed number at the reference context, not just a well-formed file: if the
+// driver's bench line drifts out of sweep_decode_runtime.py's regex every point
+// goes null and the published curve silently empties while the test stays green.
+// CHECK: "context_len": 2048
+// CHECK-NEXT: "decode_tokens_per_sec": {{[0-9]}}
