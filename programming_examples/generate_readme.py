@@ -951,6 +951,20 @@ def load_llm_history(path):
     ]
 
 
+def _prefill_swept_models(recs):
+    """The models render_llm_prefill_sweep will actually put a row on.
+
+    MUST AGREE WITH render_llm_prefill_sweep, for the same reason
+    _swept_models must agree with render_llm_sweep: the scalar table consults
+    it to decide a metric is published below instead.
+    """
+    if not recs:
+        return frozenset()
+    if not any(pt.get("prefill_len") for d in recs for pt in d.get("points", []) or []):
+        return frozenset()
+    return frozenset(d.get("model", "") for d in recs)
+
+
 def render_vla_benchmark(recs, base_url=""):
     """The VLA section, or "" when no VLA model has a row.
 
@@ -1034,19 +1048,34 @@ def render_llm_benchmark(
     # decode number off the page entirely.
     swept = _swept_models(sweep_recs)
 
+    # A row is displaced by CURVES, per metric -- not by participating in one
+    # sweep. A model in the decode sweep with no prefill sweep still needs its
+    # TTFT published somewhere, and this table is the only somewhere there is.
+    # Keying the whole row on the decode sweep alone deleted the TTFT of nine
+    # models the moment they were swept, which is the mirror image of the
+    # failure the comment above warns about.
+    prefill_swept = _prefill_swept_models(prefill_sweep_recs)
+
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
         # A VLA model is published in its own table below; two of these three
         # columns do not apply to it. See _VLA_MODELS.
-        if d.get("model") in swept or d.get("model") in _VLA_MODELS:
+        name = d.get("model")
+        if name in _VLA_MODELS:
+            continue
+        in_decode, in_prefill = name in swept, name in prefill_swept
+        if in_decode and in_prefill:
             continue
         m = d.get("metrics", {})
         verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        # Blank whichever metric a curve below already carries, so the reader is
+        # never invited to compare a single near-zero-context point against that
+        # model's own curve.
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_model_cell(name or "", base_url)} '
             f'| {_fmt(m.get("context_len"))} '
-            f'| {_fmt(m.get("ttft_ms"))} '
-            f'| {_fmt(m.get("decode_tokens_per_sec"))} '
+            f'| {"↓" if in_prefill else _fmt(m.get("ttft_ms"))} '
+            f'| {"↓" if in_decode else _fmt(m.get("decode_tokens_per_sec"))} '
             f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
             f"| {verify} |"
         )
@@ -1085,7 +1114,8 @@ def render_llm_benchmark(
     # same models at every context instead of at one.
     _scalar_table = (
         f"""\
-Single-point rows — models that do not yet publish a curve below.
+Single-point rows — metrics that do not yet have a curve below. ↓ means that
+model's number for this metric is in a curve instead.
 
 | Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
 |:------|--------:|----------:|---------------:|:---------|:------:|

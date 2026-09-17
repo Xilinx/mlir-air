@@ -220,12 +220,19 @@ def main():
         print("an all-swept page drops the empty scalar table")
         # The steady state once every LLM publishes a curve. A header with no
         # body renders as a broken table, not as nothing.
-        # Every model in this history is also in `curves`, so no scalar row
-        # survives -- the state the page reaches once all models are swept.
+        # Every model in this history is in BOTH curves, so neither of its
+        # metrics needs a scalar cell -- the state the page reaches once every
+        # model is fully swept. Both are required: a model in only the decode
+        # sweep keeps its row for the TTFT no curve carries.
         swept_perf = [dict(PERF[0], model=c["model"]) for c in curves]
+        swept_pf = [
+            {"model": c["model"], "points": [{"prefill_len": 2048, "ttft_ms": 900.0}]}
+            for c in curves
+        ]
         swept_only = render_llm_benchmark(
             None,
             sweep_recs=curves,
+            prefill_sweep_recs=swept_pf,
             history_path=_history(tmp, swept_perf, "swept.ndjson"),
         )
         check(
@@ -298,7 +305,14 @@ def main():
         hang_rows = sum(
             1 for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
         )
-        check(hang_rows == 1, "an all-failed sweep model is listed once, not twice")
+        check(hang_rows == 2, "an all-failed sweep model keeps one row per table")
+        hang_scalar = next(
+            l for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
+        )
+        check(
+            hang_scalar.rstrip().endswith("| 🟢 |") and "| ↓ |" in hang_scalar,
+            "its decode cell defers to the curve instead of repeating a number",
+        )
 
         # ...but a sweep the table cannot render must NOT suppress the scalar
         # row. render_llm_sweep returns "" when no point carries a context_len,
@@ -324,9 +338,12 @@ def main():
             "3930.0" in axisless_page,
             "a sweep that renders no table leaves the scalar row alone",
         )
+        # The regression this pair now guards, from the other side: being in
+        # the decode sweep used to delete the whole row, and with it a TTFT no
+        # curve on the page carried. Nine models lost their TTFT that way.
         check(
-            "3930.0" not in hang_page,
-            "an all-failed sweep model does not keep its scalar row",
+            "3930.0" in hang_page,
+            "a decode-swept model with no prefill curve keeps its TTFT",
         )
 
         sweep_md = render_llm_sweep(curves)
