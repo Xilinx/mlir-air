@@ -1,0 +1,37 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// decode_geometry.py's self-check, as a PR gate.
+//
+// decode_geometry derives every host BO size the decode sweep dispatches with
+// by importing the builder (fused_decode.py, or the fused_decode_ple fork for
+// gemma4-e2b) and reading its constants. That coupling is deliberate -- the
+// alternative is restating the builder's arithmetic and letting the two drift
+// -- but it means an ordinary edit to the builder can break the sweep for every
+// model without touching a line the sweep owns.
+//
+// Which is what happened. #1989 dropped MULTIBLK, a builder constant pinned to
+// True, and decode_geometry was its last reader; ten of the eleven sweeps died
+// on AttributeError before any NPU dispatch. Only gemma4-e2b survived, because
+// it imports the PLE fork where the constant still exists, so the breakage read
+// as one model's problem when it was every other model's. Nothing ran --check,
+// so a two-second pure-Python failure took two ~4.5h nightlies to surface.
+//
+// --check is a value gate, not a smoke test: it re-derives w_elems, the
+// qwen3-8b / llama-3.1-8b weight splits and the rope-per-layer geometry against
+// expected numbers carried in the script, and reproduces bench_decode.cpp's
+// built-in defaults for llama-3.2-1b. A change that keeps the import working
+// but shifts a size still fails here.
+//
+// REQUIRES is deliberately empty. This needs no NPU, no xclbin, no HF weights
+// and no secrets -- it imports Python modules and does arithmetic. Gating it on
+// ryzen_ai_npu2 or peano the way the model lits do would make it silently
+// unsupported on exactly the runners where a cheap gate is most useful. The
+// builder import resolves through the PYTHONPATH lit already sets (air, aie,
+// xrt), so the only requirement is a configured build.
+//
+// Collected by check-programming-examples-llms-geometry via path-based
+// --filter; see programming_examples/CMakeLists.txt.
+//
+// RUN: %PYTHON %S/decode_geometry.py --check | FileCheck %s
+// CHECK: SELF-CHECK PASS

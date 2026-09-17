@@ -137,6 +137,21 @@ add_lit_testsuite(check-programming-examples-llms-compile-llama32_1b
 )
 set_target_properties(check-programming-examples-llms-compile-llama32_1b PROPERTIES FOLDER "Tests")
 
+# LLM decode-geometry self-check: the one LLM target cheap enough to be a PR
+# gate. Pure Python -- imports the decode builders and checks the derived host
+# BO sizes against expected values -- so it needs no NPU, no weights and no
+# secrets, and takes seconds rather than the minutes a compile does. It is the
+# gate that would have caught #1989's dropped MULTIBLK constant in PR CI
+# instead of in two consecutive nightly sweeps. Not -j1: nothing here touches
+# the device, and there is only one test.
+add_lit_testsuite(check-programming-examples-llms-geometry
+  "Running LLM decode-geometry self-check (no NPU, no weights)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "llms/bench/run_geometry_check"
+)
+set_target_properties(check-programming-examples-llms-geometry PROPERTIES FOLDER "Tests")
+
 # LLM verify suite: all models, requires hf_token + NPU.
 # Sequential (-j1) mandatory — concurrent LLM inference causes NPU OOM.
 # Not invoked in PR CI (hf_token unavailable in fork PRs); run by repo

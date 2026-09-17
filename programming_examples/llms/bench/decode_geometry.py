@@ -111,9 +111,14 @@ def _rope_w_elems(fd):
     slabs (ROPE_W_PER_LAYER = qk-norm or qkv-bias) carry UNI_DEC of them, and
     ROPE_W_LEN itself is per model -- qwen2.5-7b's is 4736, so its RMS BO was
     short by 132544 elements and the device read past the end of it.
+
+    Unconditional, and must stay that way: this restates how the builder sizes
+    the rms tensor (fused_decode.py's `rms_t`), which has no such branch either.
+    It used to be guarded on fd.MULTIBLK, a builder constant pinned to True that
+    the air.api conversion inlined away -- leaving this the only reader of a name
+    that no longer existed, so every model but gemma4-e2b (which imports the PLE
+    fork, where the constant survives) raised AttributeError here.
     """
-    if not fd.MULTIBLK:
-        return 0
     return (fd.UNI_DEC if fd.ROPE_W_PER_LAYER else 1) * fd.ROPE_W_LEN
 
 

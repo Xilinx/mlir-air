@@ -162,6 +162,14 @@ jobs:
           # which serves weights from a warm offline HF cache. Running them in
           # the per-PR matrix duplicated that work, was slow (int4's compile
           # alone exceeds the 600s per-test timeout), and needed HF secrets.
+          #
+          # The exception, and the reason the pip install above is not dead
+          # weight: the decode-geometry self-check. It imports the decode
+          # builders and checks the host BO sizes the sweep dispatches with, so
+          # it needs no NPU, no weights and no secrets and finishes in seconds.
+          # Leaving it to the nightly cost two consecutive red runs over a
+          # constant one PR had deleted and another file still read.
+          ninja check-programming-examples-llms-geometry
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess
