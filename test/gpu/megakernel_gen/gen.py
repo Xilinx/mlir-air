@@ -77,7 +77,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
          rope_theta: float = 10000.0, W=None, prompt=None,
          prompt_len: int = 0, wave: int = 64, waves: int = 1,
          nt_weights: bool = False, timers: bool = False,
-         dies: int = 8) -> str:
+         dies: int = 8, unroll: int = 8) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
     # The wave is where the parallelism inside a task lives: a task body splits
@@ -2236,8 +2236,75 @@ module {{
     # turns it back on; the lowering itself is covered by the ISA gate in
     # mlir/test/Conversion/AIRToROCDL/air_nontemporal.mlir either way.
     ntw = " {{nontemporal = true}}" if nt_weights else ''
+
+    def dot_loop(dst, start, red_c, red_num, step_c, step_num, lhs, lhsty,
+                 wmat, wty, l, jname, tag, indent):
+        """The dot product one lane owns, with `unroll` loads in flight.
+
+        Rolled, this loop asks for one weight and waits for it. The arithmetic
+        says that is the whole story of the matmuls: at 128 workers gate_up
+        gives each thread 2688 weights over 28 layers and takes 2.13 ms/token,
+        which is about 1660 cycles a weight against fourteen instructions of
+        work -- one full memory latency per iteration, overlapped with nothing.
+        A wave has 128 bytes outstanding where it would need tens of kilobytes
+        to hold the machine's bandwidth open.
+
+        `unroll` loads before the first `extf` forces that many to be in
+        flight: the wave issues them back to back and only then takes the
+        `s_waitcnt`, which is the one lever here that does not need more
+        workgroups. The accumulate stays a single chain in the original order,
+        so the result is bit for bit what the rolled loop produced and a
+        difference in the output is a bug rather than a rounding change.
+
+        Falls back to rolled whenever the trip count does not divide, which is
+        checked here rather than assumed: a remainder loop would double the
+        code for the cases that do not arise in this model.
+        """
+        pad = " " * indent
+        u = 1
+        if unroll > 1 and step_num > 0 and red_num % step_num == 0:
+            while u * 2 <= unroll and red_num % (step_num * u * 2) == 0:
+                u *= 2
+        if u == 1:
+            return (
+                f"{pad}{dst} = scf.for %i{tag} = {start} to {red_c} step {step_c}\n"
+                f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{\n"
+                f"{pad}  %lv{tag} = memref.load {lhs}[%m, %i{tag}] : {lhsty}\n"
+                f"{pad}  %wb{tag} = memref.load {wmat}[%L{l}, %i{tag}, {jname}]{ntw} : {wty}\n"
+                f"{pad}  %wv{tag} = arith.extf %wb{tag} : bf16 to f32\n"
+                f"{pad}  %mp{tag} = arith.mulf %lv{tag}, %wv{tag} : f32\n"
+                f"{pad}  %s2{tag} = arith.addf %sacc{tag}, %mp{tag} : f32\n"
+                f"{pad}  scf.yield %s2{tag} : f32\n"
+                f"{pad}}}")
+        out = [f"{pad}%cSU{tag} = arith.constant {step_num * u} : index"]
+        for k in range(1, u):
+            out.append(f"{pad}%cO{tag}_{k} = arith.constant {step_num * k} : index")
+        out.append(
+            f"{pad}{dst} = scf.for %i{tag} = {start} to {red_c} step %cSU{tag}\n"
+            f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{")
+        # Every load first, so the wave has all of them outstanding before the
+        # first extf makes it wait.
+        for k in range(u):
+            idx = f"%i{tag}" if k == 0 else f"%ik{tag}_{k}"
+            if k:
+                out.append(f"{pad}  {idx} = arith.addi %i{tag}, %cO{tag}_{k} : index")
+            out.append(
+                f"{pad}  %wb{tag}_{k} = memref.load {wmat}[%L{l}, {idx}, {jname}]{ntw} : {wty}")
+        for k in range(u):
+            idx = f"%i{tag}" if k == 0 else f"%ik{tag}_{k}"
+            out.append(f"{pad}  %lv{tag}_{k} = memref.load {lhs}[%m, {idx}] : {lhsty}")
+        prev = f"%sacc{tag}"
+        for k in range(u):
+            out.append(
+                f"{pad}  %wv{tag}_{k} = arith.extf %wb{tag}_{k} : bf16 to f32\n"
+                f"{pad}  %mp{tag}_{k} = arith.mulf %lv{tag}_{k}, %wv{tag}_{k} : f32\n"
+                f"{pad}  %s2{tag}_{k} = arith.addf {prev}, %mp{tag}_{k} : f32")
+            prev = f"%s2{tag}_{k}"
+        out.append(f"{pad}  scf.yield {prev} : f32\n{pad}}}")
+        return "\n".join(out)
+
     def matmul_stage(l, stage, ev, out, outty, lhs, lhsty, wmat, wty,
-                     slice_c, red_c, slice_num, residual=None):
+                     slice_c, red_c, red_num, slice_num, residual=None):
         store = (f"""
                   %rv = memref.load {residual}[%m, %j] : {outty}
                   %a2 = arith.addf %rv, %a : f32
@@ -2263,15 +2330,8 @@ module {{
             return strided_stage(l, stage, ev, "%ctasks", "%ntasks_t", f"""                %j0 = arith.muli %ix, {slice_c} : index
                 scf.for %jj = %tx_s to {slice_c} step %nlane {{
                   %j = arith.addi %j0, %jj : index
-                  %a = scf.for %i = %c0_s to {red_c} step %c1_s
-                      iter_args(%sacc = %fzero_s) -> (f32) {{
-                    %lv = memref.load {lhs}[%m, %i] : {lhsty}
-                    %wb = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
-                    %wv = arith.extf %wb : bf16 to f32
-                    %mp = arith.mulf %lv, %wv : f32
-                    %s2 = arith.addf %sacc, %mp : f32
-                    scf.yield %s2 : f32
-                  }}{store}
+{dot_loop("%a", "%c0_s", red_c, red_num, "%c1_s", 1, lhs, lhsty, wmat, wty,
+          l, "%j", f"w1_{l}_{stage}", 18)}{store}
                 }}""", lanes=True)
 
         # With more than one wave the columns alone cannot keep them busy: a
@@ -2316,15 +2376,9 @@ module {{
                   %jok = arith.cmpi ult, %jj, {slice_c} : index
                   %jcl = arith.minsi %jj, %cslast{l}_{stage} : index
                   %j = arith.addi %j0, %jcl : index
-                  %part0 = scf.for %i = %ksl{l}_{stage} to {red_c} step %cKS{l}_{stage}
-                      iter_args(%sacc = %fzero_s) -> (f32) {{
-                    %lv = memref.load {lhs}[%m, %i] : {lhsty}
-                    %wb = memref.load {wmat}[%L{l}, %i, %j]{ntw} : {wty}
-                    %wv = arith.extf %wb : bf16 to f32
-                    %mp = arith.mulf %lv, %wv : f32
-                    %s2 = arith.addf %sacc, %mp : f32
-                    scf.yield %s2 : f32
-                  }}
+{dot_loop("%part0", f"%ksl{l}_{stage}", red_c, red_num,
+          f"%cKS{l}_{stage}", waves * klanes, lhs, lhsty, wmat, wty,
+          l, "%j", f"wm_{l}_{stage}", 18)}
                   %part = arith.addf %part0, %fzero_s : f32
                   // The wave partials for one column live at the same lane of
                   // every wave, so the slot is just the thread id and wave 0
@@ -2459,7 +2513,7 @@ module {{
 
         # 1: qkv = r @ Wqkv
         w(matmul_stage(l, 1, base + 1, "%sqkv", QT, "%sr", AT, "%swqkv", WQTB,
-                       "%csliceQ", "%cdim_s", slice_q))
+                       "%csliceQ", "%cdim_s", dim, slice_q))
 
         # 2: per-head norm, rope, and the cache append. One piece per
         # (token, query head); the kv heads ride along on the first `kv_heads`
@@ -2587,7 +2641,7 @@ module {{
 
         # 4: ao = a @ Wo
         w(matmul_stage(l, 4, base + 4, "%saov", AT, "%sav", QWT, "%swo", WTB,
-                       "%csliceD", "%cqw_s", slice_d))
+                       "%csliceD", "%cqw_s", qw, slice_d))
 
         # 5: xa = rmsnorm(x + ao) * n2. The norm in front of the MLP is not
         # decoration: without it nothing renormalises the residual stream --
@@ -2626,7 +2680,7 @@ module {{
 
         # 6: gu = xa @ Wgu, gate and up in one matmul as Fleet fuses them
         w(matmul_stage(l, 6, base + 6, "%sgu", GT, "%sr", AT, "%swgu", WGTB,
-                       "%cslice2I", "%cdim_s", slice_2i))
+                       "%cslice2I", "%cdim_s", dim, slice_2i))
 
         # 7: SwiGLU. Elementwise, so a piece is a slice of the intermediate
         # width rather than a reduction.
@@ -2648,7 +2702,7 @@ module {{
         # 8: x = xa + act @ Wd, the residual folded into the matmul as Fleet
         # folds it (linear_with_residual_layer).
         w(matmul_stage(l, 8, base + 8, "%sx", AT, "%sact", IT, "%swd", WDTB,
-                       "%csliceD", "%cinter_s", slice_d, residual="%sxa"))
+                       "%csliceD", "%cinter_s", inter, slice_d, residual="%sxa"))
 
     # final norm, lm head, and Fleet's two-stage argmax
     w(single_stage("x", stages + 1, base_x + 1, f"""              %fp = scf.for %i = %tx_s to %cdim_s step %nthr
@@ -2810,6 +2864,17 @@ def main() -> int:
                          "chiplet count (8 on MI300X and MI350X). Every stage "
                          "probes this many queues, so a value larger than the "
                          "hardware costs time in every stage")
+    ap.add_argument("--reduce-unroll", type=int, default=8,
+                    help="how many weight loads a lane issues before it waits "
+                         "for the first. The matmul inner loop is one memory "
+                         "latency per iteration overlapped with nothing, and "
+                         "this is the only way to hold more of the machine's "
+                         "bandwidth open without more workgroups. Rounded down "
+                         "to a power of two that divides the trip count, per "
+                         "stage; the accumulate order is unchanged, so the "
+                         "output is bit for bit the rolled loop's. Measured "
+                         "1/2/4/8/16 on MI350X: 8 is the knee and 16 gives the "
+                         "registers back to spills and lands on 1's numbers")
     ap.add_argument("--timers", action="store_true",
                     help="accumulate per-operator device ticks and print them; "
                          "adds two s_memrealtime per stage, so measure without it")
@@ -2846,7 +2911,7 @@ def main() -> int:
                           a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
                           a.steps, a.vocab, a.head_dim, a.rope_theta, W,
                           prompt, a.prompt_len, a.wave, a.waves, a.nt,
-                          a.timers, a.dies))
+                          a.timers, a.dies, a.reduce_unroll))
     return 0
 
 
