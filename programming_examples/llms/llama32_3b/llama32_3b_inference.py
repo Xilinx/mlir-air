@@ -786,8 +786,6 @@ if __name__ == "__main__":
         bench_decode(session, _bench_contexts(args))
     elif args.bench_prefill:
         bench_prefill(session, cpu_attn=args.cpu_attn)
-    elif args.bench_prefill:
-        bench_prefill(session, cpu_attn=args.cpu_attn)
     elif args.interactive:
         repl_loop(session, args)
     else:
