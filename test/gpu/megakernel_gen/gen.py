@@ -96,6 +96,7 @@ def emit(
     unroll: int = 8,
     stage_timers: bool = True,
     static_claim: bool = True,
+    pad_stages: int = 0,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -342,7 +343,15 @@ def emit(
             "    }"
         )
 
-    stages = 9
+    # Nine stages a layer, plus however many empty ones were asked for. A pad
+    # stage claims its pieces, signals, and waits, and its body computes
+    # nothing -- so the model still produces the right tokens and the launch
+    # gets longer by exactly what a stage boundary costs. That is the only way
+    # to price the boundary with an instrument other than the one that
+    # measured it: the per-class table says every stage carries about 8.7 us
+    # that has nothing to do with what it computes, and a table cannot check
+    # itself. Here the answer is a slope on the launch clock.
+    stages = 9 + pad_stages
     # Around the layers: embed at the front, then the final norm, the lm head
     # and Fleet's two-stage argmax (argmax_partial_layer + argmax_reduce_layer,
     # builder.py:799-811). Their slots sit past the layers' in the same
@@ -413,6 +422,7 @@ def emit(
         "gate_up",
         "swiglu",
         "down",
+        *[f"pad{i}" for i in range(pad_stages)],
         "embed",
         "final_norm",
         "lm_head",
@@ -3202,6 +3212,13 @@ module {{
             )
         )
 
+        # 9..: the empty stages, if any were asked for. Same claim, same
+        # signal, same rendezvous, no body -- so they change the launch by the
+        # cost of a stage boundary and by nothing else, and the token stream
+        # they produce is still the right one.
+        for p in range(pad_stages):
+            w(strided_stage(l, 9 + p, base + 9 + p, "%ctasks", "%ntasks_t", ""))
+
     # final norm, lm head, and Fleet's two-stage argmax
     w(
         single_stage(
@@ -3481,6 +3498,17 @@ def main() -> int:
         "registers back to spills and lands on 1's numbers",
     )
     ap.add_argument(
+        "--pad-stages",
+        type=int,
+        default=0,
+        help="add this many empty stages to every layer. They claim, signal "
+        "and wait like any other stage and compute nothing, so the tokens are "
+        "unchanged and the launch grows by the cost of a stage boundary times "
+        "the number added. The per-class table says that boundary is about "
+        "8.7 us; this measures the same quantity as a slope on the launch "
+        "clock, which is a different instrument",
+    )
+    ap.add_argument(
         "--timers-total-only",
         action="store_true",
         help="with --timers, report only the whole launch and emit no "
@@ -3561,6 +3589,7 @@ def main() -> int:
             a.reduce_unroll,
             not a.timers_total_only,
             not a.dynamic_claim,
+            a.pad_stages,
         )
     )
     return 0
