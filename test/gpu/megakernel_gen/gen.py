@@ -135,6 +135,28 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
             f"{pad}}}\n"
             f"{pad}gpu.barrier\n"
             f"{pad}{dst} = memref.load %bcast[%c0_s] : memref<4xi32, 3>")
+
+    def bcast_i32x2(src0, src1, dst0, dst1, tag, indent):
+        """bcast_i32 for a pair, through one pair of barriers rather than two.
+
+        The claim below is two numbers -- which queue the piece came from and
+        which piece -- and they have to arrive together, because a workgroup
+        that agreed on one and not the other would compute a piece nobody
+        claimed. @air_bcast has four slots for exactly this.
+        """
+        pad = " " * indent
+        if waves == 1:
+            return (f"{pad}{dst0} = rocdl.readfirstlane {src0} : i32\n"
+                    f"{pad}{dst1} = rocdl.readfirstlane {src1} : i32")
+        return (
+            f"{pad}gpu.barrier\n"
+            f"{pad}scf.if %isLead {{\n"
+            f"{pad}  memref.store {src0}, %bcast[%c0_s] : memref<4xi32, 3>\n"
+            f"{pad}  memref.store {src1}, %bcast[%c1_s] : memref<4xi32, 3>\n"
+            f"{pad}}}\n"
+            f"{pad}gpu.barrier\n"
+            f"{pad}{dst0} = memref.load %bcast[%c0_s] : memref<4xi32, 3>\n"
+            f"{pad}{dst1} = memref.load %bcast[%c1_s] : memref<4xi32, 3>")
     # Qwen3 states head_dim in its config and it is not hidden/heads: 0.6B has
     # hidden 1024, 16 heads and head_dim 128, so the q projection is wider than
     # the residual stream and o_proj is the thing that narrows it again.
@@ -1640,6 +1662,11 @@ module {{
         %invsqrthd_s = arith.constant {invsqrthd:.8e} : f32
         %negbig_s = arith.constant -1.000000e30 : f32
         %true = arith.constant true
+        %false = arith.constant false
+        // Stands for "the scan found nothing". It is fed through the same
+        // claim path as a real claim so that the workgroup reaches the same
+        // out-of-range test either way; see strided_stage.
+        %nopiece_s = arith.constant {1 << 24} : i32
 
         %tx_s = gpu.thread_id x
         %ty_s = gpu.thread_id y
@@ -1769,6 +1796,26 @@ module {{
 
     # Emitted before every event signal once the workgroup is more than one
     # wave; see the note at the signal site.
+    #
+    # KNOWN HOLE, measured but not yet closed. `gpu.barrier` is `s_barrier`
+    # preceded by at most `s_waitcnt lgkmcnt(0)` -- checked in the emitted ISA,
+    # where most of them carry no `s_waitcnt` at all and none carries `vmcnt`.
+    # So the barrier orders LDS and control flow and says nothing about whether
+    # a wave's global stores have left the wave, while the signal below is one
+    # thread's release and `vmcnt` is per wave. A workgroup can therefore
+    # announce "my piece is readable" with seven waves' stores still in flight.
+    # The window is short -- the stores were issued before the barrier and the
+    # reader has an event, a barrier and a fence to get through -- and it has
+    # never been caught, but it is not closed by anything here.
+    #
+    # Closing it with an agent-scope release fence in every thread works and
+    # costs 17.5% of the device ticks at 128/128 (rope and attention both
+    # double), because agent scope on this part writes back L2 per wave. A
+    # workgroup-scope fence should emit the `s_waitcnt vmcnt(0)` and not the
+    # writeback, which is all that is needed here -- the lead thread's
+    # system-scope release below already does the L2 flush. That is the next
+    # thing to measure; it is deliberately not bundled with the claim rewrite
+    # above, so that each has its own number.
     stage_bar = "" if waves == 1 else "          gpu.barrier"
 
     def lane_reduce(src, dst, op, tag, indent, stride, steps, ty="f32"):
@@ -1936,39 +1983,84 @@ module {{
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
           %hb{l}_{stage} = arith.constant {stage * maxdies * 2} : index
-          %t{l}_{stage} = scf.for %pp = %c0_s to %cmaxdies step %c1_s
-              iter_args(%outer = %zero_s) -> (i32) {{
-            // Own die first, then the others in order.
-            %draw = arith.addi %mydie, %pp : index
-            %d = arith.remui %draw, %cmaxdies : index
-            %d2 = arith.muli %d, %c2_s : index
-            %hidx = arith.addi %hb{l}_{stage}, %d2 : index
-            %fidx = arith.addi %hidx, %c1_s : index
-            // Uniform load: every thread reads the same word and gets the same
-            // answer, so skipping a drained queue costs one load and no
-            // broadcast, against an atomic and a broadcast to discover the
-            // same thing.
-            %flg = memref.load %sq[%step, {lc}, %fidx] : {QUT}
-            %drained = arith.cmpi ne, %flg, %zero_s : i32
-            %inner1 = scf.if %drained -> (i32) {{
-              scf.yield %outer : i32
-            }} else {{
-            %inner:2 = scf.while (%go = %true, %acc = %outer) : (i1, i32) -> (i1, i32) {{
-              scf.condition(%go) %go, %acc : i1, i32
-            }} do {{
-            ^bb0(%g: i1, %acc: i32):
-              // One claim for the whole wave, made by the lead lane and read
-              // out of its register by the rest. Letting every lane claim
-              // would be a different scheduler: the queue counts workgroups
-              // and so does the two-level event flush below, which arrives
-              // once per workgroup and compares against air.chiplet_dim_blocks.
-              %cl_l{l}_{stage} = scf.if %isLead -> (i32) {{
-                %a = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hidx] : (i32, {QUT}) -> i32
-                scf.yield %a : i32
+          %t{l}_{stage}:2 = scf.while (%go = %true, %outer = %zero_s) : (i1, i32) -> (i1, i32) {{
+            scf.condition(%go) %go, %outer : i1, i32
+          }} do {{
+          ^bb0(%g: i1, %acc: i32):
+              // One claim for the whole workgroup, and the entire search for it
+              // is the lead thread's -- it reads the drained flags, takes the
+              // atomics and comes back with a queue and a piece, or with
+              // nothing. Letting every lane claim would be a different
+              // scheduler: the queue counts workgroups and so does the
+              // two-level event flush below, which arrives once per workgroup
+              // and compares against air.chiplet_dim_blocks.
+              //
+              // The search being one thread's is not only about the count. The
+              // flags are written by other workgroups while this one reads
+              // them, so a plain load of one is not workgroup-uniform however
+              // uniform its address is: two waves can read it either side of
+              // the write and disagree. Branching on that disagreement was a
+              // real bug -- the branch led to the broadcast below, which is two
+              // gpu.barriers, so the waves of one workgroup met different
+              // barriers and read each other's claims. Measured: 28 layers at
+              // 256 workers came out wrong three runs out of three, and right
+              // three out of three with the flag test removed. Here nothing
+              // outside the lead thread ever looks at a flag, and every wave
+              // reaches the same barriers because there is no longer a branch
+              // between them.
+              %sc{l}_{stage}:2 = scf.if %isLead -> (i32, i32) {{
+                %fnd:3 = scf.for %pp = %c0_s to %cmaxdies step %c1_s
+                    iter_args(%got = %false, %gd = %zero_s, %gk = %nopiece_s) -> (i1, i32, i32) {{
+                  %step1:3 = scf.if %got -> (i1, i32, i32) {{
+                    scf.yield %got, %gd, %gk : i1, i32, i32
+                  }} else {{
+                    // Own die first, then the others in order.
+                    %draw = arith.addi %mydie, %pp : index
+                    %ds = arith.remui %draw, %cmaxdies : index
+                    %d2 = arith.muli %ds, %c2_s : index
+                    %hidx = arith.addi %hb{l}_{stage}, %d2 : index
+                    %fidx = arith.addi %hidx, %c1_s : index
+                    // Skipping a drained queue costs one load, against an
+                    // atomic and a trip round the broadcast to discover the
+                    // same thing.
+                    %flg = memref.load %sq[%step, {lc}, %fidx] : {QUT}
+                    %drained = arith.cmpi ne, %flg, %zero_s : i32
+                    %step2:3 = scf.if %drained -> (i1, i32, i32) {{
+                      scf.yield %false, %zero_s, %nopiece_s : i1, i32, i32
+                    }} else {{
+                      %a = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hidx] : (i32, {QUT}) -> i32
+                      %ka = arith.index_cast %a : i32 to index
+                      %isN1a = arith.cmpi eq, %nat, %c1_s : index
+                      %kna = scf.if %isN1a -> (index) {{
+                        scf.yield %ka : index
+                      }} else {{
+                        %kda = arith.divui %ka, %nat : index
+                        scf.yield %kda : index
+                      }}
+                      %ksa = arith.muli %kna, %cmaxdies : index
+                      %ixa = arith.addi %ds, %ksa : index
+                      %hasa = arith.cmpi ult, %ixa, {count_expr} : index
+                      %step3:3 = scf.if %hasa -> (i1, i32, i32) {{
+                        %dsi = arith.index_cast %ds : index to i32
+                        scf.yield %true, %dsi, %a : i1, i32, i32
+                      }} else {{
+                        // Last one out says so, so the next workgroup round
+                        // reads a word instead of taking an atomic.
+                        memref.store %one_s, %sq[%step, {lc}, %fidx] : {QUT}
+                        scf.yield %false, %zero_s, %nopiece_s : i1, i32, i32
+                      }}
+                      scf.yield %step3#0, %step3#1, %step3#2 : i1, i32, i32
+                    }}
+                    scf.yield %step2#0, %step2#1, %step2#2 : i1, i32, i32
+                  }}
+                  scf.yield %step1#0, %step1#1, %step1#2 : i1, i32, i32
+                }}
+                scf.yield %fnd#2, %fnd#1 : i32, i32
               }} else {{
-                scf.yield %zero_s : i32
+                scf.yield %zero_s, %zero_s : i32, i32
               }}
-{bcast_i32(f"%cl_l{l}_{stage}", "%cl", f"c{l}_{stage}", 14)}
+{bcast_i32x2(f"%sc{l}_{stage}#0", f"%sc{l}_{stage}#1", "%cl", "%cd", f"c{l}_{stage}", 14)}
+              %d = arith.index_cast %cd : i32 to index
               %k = arith.index_cast %cl : i32 to index
               // M fast, N slow: the token moves every claim, the weight block
               // only every %nat claims. The extent is this step's active token
@@ -2002,16 +2094,9 @@ module {{
                 %n = arith.addi %acc, %one_s : i32
                 scf.yield %n : i32
               }} else {{
-                scf.if %isLead {{
-                  memref.store %one_s, %sq[%step, {lc}, %fidx] : {QUT}
-                }}
                 scf.yield %acc : i32
               }}
               scf.yield %has, %acc2 : i1, i32
-            }}
-            scf.yield %inner#1 : i32
-            }}
-            scf.yield %inner1 : i32
           }}
           // Two-level: add into a counter only this die touches, then let the
           // last worker on the die flush the die's whole share once. The
@@ -2030,13 +2115,14 @@ module {{
           // workgroup is the whole premise of the reduction. Within a wave the
           // release covers what the other lanes stored, because vmcnt counts
           // the wave's memory operations whatever exec mask they issued under.
-          // Across waves it does not and nothing else would: wave 0's
-          // s_waitcnt says nothing about wave 5's stores. So the workgroup
-          // meets first, which is what makes the event mean "this workgroup's
-          // output is readable" rather than "wave 0's is".
+          // Across waves it does not: wave 0's s_waitcnt says nothing about
+          // wave 5's stores, and neither does s_barrier. So every wave takes
+          // its own release fence and only then do they meet, which is what
+          // makes the event mean "this workgroup's output is readable" rather
+          // than "wave 0's is" -- see the note on stage_bar.
 {stage_bar}
           scf.if %isLead {{
-            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %t{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
+            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %t{l}_{stage}#1 syncscope("agent") monotonic : !llvm.ptr, i32
             // Release on the arrival so the accumulate above is visible to
             // whoever turns out to be last.
             %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
