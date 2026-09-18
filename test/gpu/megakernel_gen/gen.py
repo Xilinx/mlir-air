@@ -2007,9 +2007,39 @@ module {{
             cur = nxt
         return "\n".join(out)
 
+    # The running end of the chain: the clock value that the next stage will
+    # call its own start. Reset per generated program, threaded by emission
+    # order -- every stage string is built exactly once and in the order it
+    # appears in the step body, so the name is always already in scope.
+    tprev = [None]
+
     def timer_begin(l, stage):
+        """Only the first stage of the step body reads the clock.
+
+        Every later stage starts where the one before it ended, and that is
+        the whole point. A window needs both of its edges nailed to the
+        program, and only one of the two was: the end read sits immediately
+        after the stage's `gpu.barrier` and `llvm.fence`, which the backend
+        will not schedule across, while a start read at the top of a stage has
+        nothing around it but address arithmetic and sinks into the body it is
+        supposed to be measuring. Two independent reads per stage therefore
+        measured an interval strictly inside the stage, and the shortfall did
+        not go anywhere -- it was simply not attributed. Summed over the 257
+        stage instances of a step it came to 41% of the launch.
+
+        Chaining removes the question. Consecutive windows share an edge, so
+        the classes telescope: whatever the total is, it equals the last read
+        minus the first, however the scheduler places the reads in between. A
+        read that drifts now moves time from one class to its neighbour
+        instead of deleting it, which is a bias that shows up as a suspicious
+        class rather than as a missing 41%. It also halves the number of
+        clock reads.
+        """
         if not timers or not stage_timers:
             return ""
+        if tprev[0] is not None:
+            return ""
+        tprev[0] = f"%tb{l}_{stage}"
         return (
             f"          %tb{l}_{stage} = llvm.call_intrinsic "
             f'"llvm.amdgcn.s.memrealtime"() : () -> i64'
@@ -2033,10 +2063,17 @@ module {{
     def timer_end(l, stage):
         if not timers or not stage_timers:
             return ""
+        beg = tprev[0]
+        assert beg is not None, (
+            f"stage ({l}, {stage}) ended a timing window that never started -- "
+            "timer_begin must be interpolated before timer_end in the same "
+            "stage template, and stage strings must be built in emission order"
+        )
+        tprev[0] = f"%te{l}_{stage}"
         return f"""          %te{l}_{stage} = llvm.call_intrinsic "llvm.amdgcn.s.memrealtime"() : () -> i64
           %dw{l}_{stage} = arith.subi %te{l}_{stage}, %tm{l}_{stage} : i64
           %dwi{l}_{stage} = arith.trunci %dw{l}_{stage} : i64 to i32
-          %dt{l}_{stage} = arith.subi %tm{l}_{stage}, %tb{l}_{stage} : i64
+          %dt{l}_{stage} = arith.subi %tm{l}_{stage}, {beg} : i64
           %dti{l}_{stage} = arith.trunci %dt{l}_{stage} : i64 to i32
           %isT{l}_{stage} = arith.andi %isWG0, %isLead : i1
           scf.if %isT{l}_{stage} {{
