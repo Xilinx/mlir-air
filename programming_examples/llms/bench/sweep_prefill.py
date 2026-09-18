@@ -72,16 +72,39 @@ BUILD_LIMIT_RES = (
         re.compile(r"Too many simultaneously active buffer descriptors[^\n]*"),
         "bd_exhaustion",
     ),
-    # A registry row whose stored tile contradicts the method it names, e.g.
-    # "registry tile_m=64 != method 'drain' tile_m=32". The shape IS in the
-    # registry, so this is not no_registry_shape: it is an inconsistent entry,
-    # and the distinction is the whole point -- one is answered by running a
-    # sweep for a missing shape, the other by correcting a row that already
-    # exists. Reported rather than worked around, because which of the two
-    # fields is wrong is a question for whoever measured it.
+    # The registry's best config for this shape exists and is valid, but the
+    # multi-launch path cannot LINK it, e.g. "registry tile_m=64 != method
+    # 'drain' tile_m=32". Not no_registry_shape (the shape is measured) and not
+    # a bad row: compile_gemm_mm bakes DIM_M into mm.o at compile time, the
+    # stitcher pre-builds exactly two variants (_m32/DIM_M=32, _m64/DIM_M=64),
+    # and gemm_method_spec wires drain to _m32 -- so a measured drain@tile_m=64
+    # has no object to link against here. The standalone
+    # matrix_multiplication harness recompiles mm.o per run and can build it,
+    # which is where such a row comes from. Named for the observable rather
+    # than for a culprit.
     (
         re.compile(r"registry tile_m=\d+ != method '[^']+' tile_m=\d+"),
-        "registry_inconsistent",
+        "method_tile_mismatch",
+    ),
+    # The registry's best method FLIPS between lengths -- the square Q/O proj
+    # is fused-cast (tile_m=64) at M=2048 and drain (tile_m=32) at 512/1024 --
+    # and a model whose stitcher fuses several GEMMs into one ELF assumes they
+    # share a tile_m. Two ways it surfaces: an explicit assert in the model's
+    # stitcher, or MLIR that will not parse because one launch was built at
+    # tile_m=64 and its neighbour at 32 (the memref dim is tile_m/4, so
+    # 1x1x16x4x8x8 against 1x1x8x4x8x8). Not a registry problem: both rows are
+    # measured and correct. The stitchers were written when only M=2048 was
+    # reachable, so the flip had never been expressible.
+    (
+        re.compile(r"assumes all \d+ GEMMs share the .{0,40}suffix"),
+        "stitcher_mixed_tile_m",
+    ),
+    (
+        re.compile(
+            r"'func\.call' op operand type mismatch: expected operand type "
+            r"'memref<1x1x\d+x4x8x8xf32"
+        ),
+        "stitcher_mixed_tile_m",
     ),
 )
 
@@ -119,7 +142,8 @@ def _classify(out, rc):
 EXPECTABLE = frozenset(
     {
         "no_registry_shape",
-        "registry_inconsistent",
+        "method_tile_mismatch",
+        "stitcher_mixed_tile_m",
         "bd_exhaustion",
         "device_fail",
         "host_oom",

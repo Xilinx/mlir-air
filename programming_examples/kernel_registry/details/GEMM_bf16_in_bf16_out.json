@@ -4491,6 +4491,912 @@
       "best": {
         "high": "fused-cast"
       }
+    },
+    {
+      "M": 512,
+      "K": 896,
+      "N": 128,
+      "used_by": "Qwen2.5-0.5B K/V proj @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 859,
+          "mean_rel_L1": 0.009413,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 896,
+      "N": 896,
+      "used_by": "Qwen2.5-0.5B O proj/Q proj @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 1870,
+          "mean_rel_L1": 0.009454,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 896,
+      "N": 4864,
+      "used_by": "Qwen2.5-0.5B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 2604,
+          "mean_rel_L1": 0.01112,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 1024,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B K/V proj @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3831,
+          "mean_rel_L1": 0.009408,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 1024,
+      "N": 2048,
+      "used_by": "Qwen3-0.6B Q proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2329,
+          "mean_rel_L1": 0.00988,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 1024,
+      "N": 3072,
+      "used_by": "Qwen3-0.6B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2150,
+          "mean_rel_L1": 0.009871,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4043,
+          "mean_rel_L1": 0.01133,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 1536,
+      "N": 256,
+      "used_by": "Qwen2.5-1.5B K/V proj @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 2326,
+          "mean_rel_L1": 0.009317,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 1536,
+      "N": 1536,
+      "used_by": "Qwen2.5-1.5B O proj/Q proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2615,
+          "mean_rel_L1": 0.009728,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 1536,
+      "N": 8960,
+      "used_by": "Qwen2.5-1.5B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3496,
+          "mean_rel_L1": 0.01202,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 256,
+      "used_by": "Qwen2.5-3B K/V proj @L=512 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 2824,
+          "mean_rel_L1": 0.009245,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B O proj; Qwen3-1.7B K/V proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2809,
+          "mean_rel_L1": 0.009734,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2048,
+      "N": 11008,
+      "used_by": "Qwen2.5-3B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3681,
+          "mean_rel_L1": 0.01275,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2560,
+      "N": 4096,
+      "used_by": "Qwen3-4B Q proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4667,
+          "mean_rel_L1": 0.009792,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 2560,
+      "N": 9728,
+      "used_by": "Qwen3-4B Gate/Up proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 4750,
+          "mean_rel_L1": 0.009796,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4291,
+          "mean_rel_L1": 0.01351,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 512,
+      "K": 4096,
+      "N": 2560,
+      "used_by": "Qwen3-4B O proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5781,
+          "mean_rel_L1": 0.009859,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 4864,
+      "N": 896,
+      "used_by": "Qwen2.5-0.5B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 2744,
+          "mean_rel_L1": 0.009792,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 6144,
+      "N": 2048,
+      "used_by": "Qwen3-1.7B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6833,
+          "mean_rel_L1": 0.009743,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 8960,
+      "N": 1536,
+      "used_by": "Qwen2.5-1.5B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6909,
+          "mean_rel_L1": 0.009745,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 9728,
+      "N": 2560,
+      "used_by": "Qwen3-4B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7846,
+          "mean_rel_L1": 0.009791,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 512,
+      "K": 11008,
+      "N": 2048,
+      "used_by": "Qwen2.5-3B Down proj @L=512 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7568,
+          "mean_rel_L1": 0.009832,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 896,
+      "N": 128,
+      "used_by": "Qwen2.5-0.5B K/V proj @L=1024 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 1248,
+          "mean_rel_L1": 0.009456,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 896,
+      "N": 896,
+      "used_by": "Qwen2.5-0.5B O proj/Q proj @L=1024 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 2159,
+          "mean_rel_L1": 0.009464,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 896,
+      "N": 4864,
+      "used_by": "Qwen2.5-0.5B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3369,
+          "mean_rel_L1": 0.01113,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 1024,
+      "N": 2048,
+      "used_by": "Qwen3-0.6B Q proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 2860,
+          "mean_rel_L1": 0.009869,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 1024,
+      "N": 3072,
+      "used_by": "Qwen3-0.6B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3481,
+          "mean_rel_L1": 0.009856,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3686,
+          "mean_rel_L1": 0.01132,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 1536,
+      "N": 256,
+      "used_by": "Qwen2.5-1.5B K/V proj @L=1024 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3079,
+          "mean_rel_L1": 0.009284,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 1536,
+      "N": 1536,
+      "used_by": "Qwen2.5-1.5B O proj/Q proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3149,
+          "mean_rel_L1": 0.009706,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 1536,
+      "N": 8960,
+      "used_by": "Qwen2.5-1.5B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3872,
+          "mean_rel_L1": 0.01201,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 256,
+      "used_by": "Qwen2.5-3B K/V proj @L=1024 prefill",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 3459,
+          "mean_rel_L1": 0.009275,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 1024,
+      "used_by": "Qwen3-0.6B O proj; Qwen3-1.7B K/V proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 3440,
+          "mean_rel_L1": 0.009694,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2048,
+      "N": 11008,
+      "used_by": "Qwen2.5-3B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4092,
+          "mean_rel_L1": 0.01276,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2560,
+      "N": 4096,
+      "used_by": "Qwen3-4B Q proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6562,
+          "mean_rel_L1": 0.009792,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 2560,
+      "N": 9728,
+      "used_by": "Qwen3-4B Gate/Up proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 64,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 5309,
+          "mean_rel_L1": 0.009799,
+          "tier": "high"
+        },
+        "direct": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "gflops": 4302,
+          "mean_rel_L1": 0.01352,
+          "tier": "low"
+        }
+      },
+      "best": {
+        "high": "fused-cast",
+        "low": "direct"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 4096,
+      "N": 2560,
+      "used_by": "Qwen3-4B O proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 6152,
+          "mean_rel_L1": 0.009857,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 4864,
+      "N": 896,
+      "used_by": "Qwen2.5-0.5B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 32
+          },
+          "gflops": 2846,
+          "mean_rel_L1": 0.009792,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 6144,
+      "N": 2048,
+      "used_by": "Qwen3-1.7B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7261,
+          "mean_rel_L1": 0.009717,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 8960,
+      "N": 1536,
+      "used_by": "Qwen2.5-1.5B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 7676,
+          "mean_rel_L1": 0.009726,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 9728,
+      "N": 2560,
+      "used_by": "Qwen3-4B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8069,
+          "mean_rel_L1": 0.00978,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
+    },
+    {
+      "M": 1024,
+      "K": 11008,
+      "N": 2048,
+      "used_by": "Qwen2.5-3B Down proj @L=1024 prefill",
+      "methods": {
+        "fused-cast": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 256,
+            "tile_k_l1": 32,
+            "tile_n": 128
+          },
+          "gflops": 8119,
+          "mean_rel_L1": 0.009825,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "fused-cast"
+      }
     }
   ]
 }
