@@ -94,6 +94,7 @@ def emit(
     timers: bool = False,
     dies: int = 8,
     unroll: int = 8,
+    static_claim: bool = True,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -322,6 +323,20 @@ def emit(
     # this chiplet's workgroups -- and the count no longer matches what shows
     # up. MI300X and MI350X are both 8 XCDs.
     maxdies = dies
+    # The static claim tightens this from "at least the chiplet count" to
+    # "exactly it". Pieces are partitioned over die indices 0..dies-1, so a die
+    # index that no workgroup reports keeps its pieces, nobody computes them,
+    # the stage's event never reaches its total and the launch hangs. With
+    # `dies` larger than the hardware, the indices past the end are exactly
+    # that. Half of it is checkable here; the other half is a property of the
+    # part and is why `dies` defaults to 8.
+    if static_claim:
+        assert workers >= dies, (
+            f"--static-claim partitions the pieces over {dies} chiplets and "
+            f"there are only {workers} workgroups, so some chiplet gets none "
+            "and its pieces are never computed. Raise --workers to at least "
+            "--dies, or pass --dynamic-claim"
+        )
     qslots = (stages + extras) * maxdies * 2
     QUT = f"memref<{steps}x{layers}x{qslots}xi32>"
     slots = steps * per_step * maxdies
@@ -1739,6 +1754,7 @@ module {{
         // claim path as a real claim so that the workgroup reaches the same
         // out-of-range test either way; see strided_stage.
         %nopiece_s = arith.constant {1 << 24} : i32
+        %cmaxm1 = arith.constant {maxdies - 1} : index
 
         %tx_s = gpu.thread_id x
         %ty_s = gpu.thread_id y
@@ -2032,37 +2048,38 @@ module {{
     # cache once and serves all of them. Applied here to the die's own claim
     # counter rather than a global tile id, because that counter is what a
     # die's workgroups share. At tokens == 1 this is m = 0, n = k.
-    def strided_stage(
-        l, stage, ev, count_expr, total_const, body, slot=None, lc=None, lanes=False
-    ):
-        slot = (l * stages + stage) if slot is None else slot
-        lc = f"%L{l}" if lc is None else lc
-        # How much of the workgroup the body uses.
-        #   False  -- the lead thread alone; the body is a reduction or an
-        #             in-place update that has not been spread yet.
-        #   True   -- one wave, striding its outer loop from %lid by %nlane.
-        #   "block"-- the body handles every wave itself, and may barrier.
-        # The middle case has to be pinned to wave 0 once there is more than
-        # one wave. Letting all of them run it is not the harmless duplication
-        # it looks like: rope reads two halves of a head and writes both back,
-        # so a second wave arriving late reads what the first already rotated
-        # and rotates it again.
-        if lanes in ("block", "threads"):
-            open_body, close_body = "", ""
-        elif lanes:
-            open_body = "" if waves == 1 else "                  scf.if %isW0 {"
-            close_body = "" if waves == 1 else "                  }"
-        else:
-            open_body = "                  scf.if %isLead {"
-            close_body = "                  }"
-        return f"""
-          // stage {stage}
-{timer_begin(l, stage)}
-          %ec{l}_{stage} = arith.constant {4 * ev} : i64
-          %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
-          %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-          %hb{l}_{stage} = arith.constant {stage * maxdies * 2} : index
-          %t{l}_{stage}:2 = scf.while (%go = %true, %outer = %zero_s) : (i1, i32) -> (i1, i32) {{
+    def single_claim(l, stage, lc):
+        """Which one workgroup runs a stage that cannot be split.
+
+        The dynamic form races for it: every workgroup takes an atomic on one
+        counter and the one that reads zero wins, then broadcasts the answer to
+        its own waves. That is `workers` atomics on a single address and two
+        barriers each, to decide something that has no inputs -- so under the
+        static claim the answer is simply "the first workgroup of the first
+        chiplet", which every thread already knows.
+        """
+        if static_claim:
+            return (
+                f"          %d0{l}_{stage} = arith.cmpi eq, %mydie, %c0_s : index\n"
+                f"          %r0{l}_{stage} = arith.cmpi eq, %myrank2, %c0_s : index\n"
+                f"          %mine{l}_{stage} = arith.andi %d0{l}_{stage}, %r0{l}_{stage} : i1"
+            )
+        return (
+            f"          %cll{l}_{stage} = scf.if %isLead -> (i32) {{\n"
+            f"            %a = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, "
+            f"%hsingle{stage}_{l}] : (i32, {QUT}) -> i32\n"
+            f"            scf.yield %a : i32\n"
+            f"          }} else {{\n"
+            f"            scf.yield %zero_s : i32\n"
+            f"          }}\n"
+            + bcast_i32(f"%cll{l}_{stage}", f"%cl{l}_{stage}", f"s{l}_{stage}", 10)
+            + f"\n          %mine{l}_{stage} = arith.cmpi eq, %cl{l}_{stage}, %zero_s : i32"
+        )
+
+    # The two ways a workgroup can find out which pieces are its. Kept as
+    # templates rather than branches inside strided_stage so the two are
+    # readable side by side: one is a protocol, the other is arithmetic.
+    DYNAMIC_CLAIM = """          %t{l}_{stage}:2 = scf.while (%go = %true, %outer = %zero_s) : (i1, i32) -> (i1, i32) {{
             scf.condition(%go) %go, %outer : i1, i32
           }} do {{
           ^bb0(%g: i1, %acc: i32):
@@ -2138,7 +2155,7 @@ module {{
               }} else {{
                 scf.yield %zero_s, %zero_s : i32, i32
               }}
-{bcast_i32x2(f"%sc{l}_{stage}#0", f"%sc{l}_{stage}#1", "%cl", "%cd", f"c{l}_{stage}", 14)}
+{bcast}
               %d = arith.index_cast %cd : i32 to index
               %k = arith.index_cast %cl : i32 to index
               // M fast, N slow: the token moves every claim, the weight block
@@ -2177,7 +2194,110 @@ module {{
               }}
               scf.yield %has, %acc2 : i1, i32
           }}
-          // Two-level: add into a counter only this die touches, then let the
+          %pcount{l}_{stage} = arith.addi %t{l}_{stage}#1, %zero_s : i32
+"""
+
+    STATIC_CLAIM = """          // Static claim: no queue, no atomic, no broadcast.
+          //
+          // The dynamic queue costs more than the work it hands out. Per layer
+          // step at 128 workers, swiglu spends 14.7 us in its body on about a
+          // thousandth of qkv's arithmetic, and what it is paying for is one
+          // successful claim atomic, one failing one, two LDS broadcasts and
+          // their four barriers -- on a counter that sixteen workgroups a die
+          // are hammering, so the atomics serialise and the last workgroup
+          // waits behind all the others to be told which single piece is its.
+          //
+          // None of that is needed to decide which piece is whose. The chiplet
+          // reporting protocol already told this workgroup its rank among the
+          // workgroups sharing its chiplet and how many there are, both
+          // workgroup uniform and both already paid for, and the pieces of die
+          // d are exactly the indices congruent to d mod maxdies. So rank r
+          // takes every mycnt-th of those, and the partition is disjoint and
+          // complete by arithmetic rather than by a protocol.
+          //
+          // What it gives up is stealing: a die the dispatcher put no
+          // workgroups on keeps its pieces, nobody computes them, the stage's
+          // event never reaches its total and the launch hangs. That is the
+          // same failure mode air.launch's co-residency guarantee already has,
+          // and it is loud rather than silent.
+          //
+          // The token loop is inside the piece loop, which is the M-fast
+          // traversal the dynamic path needed a software divide to express:
+          // one weight block, then every token against it.
+          %ndie{l}_{stage} = arith.addi {count_expr}, %cmaxm1 : index
+          %nper{l}_{stage} = arith.divui %ndie{l}_{stage}, %cmaxdies : index
+          %tst{l}_{stage} = scf.for %kn = %myrank2 to %nper{l}_{stage} step %mycnt
+              iter_args(%accs = %zero_s) -> (i32) {{
+            %kstride = arith.muli %kn, %cmaxdies : index
+            %ix = arith.addi %mydie, %kstride : index
+            %has = arith.cmpi ult, %ix, {count_expr} : index
+            %accn = scf.if %has -> i32 {{
+              %a2 = scf.for %m = %c0_s to %nat step %c1_s
+                  iter_args(%accm = %accs) -> (i32) {{
+{open_body}
+{body}
+{close_body}
+                %nm = arith.addi %accm, %one_s : i32
+                scf.yield %nm : i32
+              }}
+              scf.yield %a2 : i32
+            }} else {{
+              scf.yield %accs : i32
+            }}
+            scf.yield %accn : i32
+          }}
+          %pcount{l}_{stage} = arith.addi %tst{l}_{stage}, %zero_s : i32
+"""
+
+    def strided_stage(
+        l, stage, ev, count_expr, total_const, body, slot=None, lc=None, lanes=False
+    ):
+        slot = (l * stages + stage) if slot is None else slot
+        lc = f"%L{l}" if lc is None else lc
+        # How much of the workgroup the body uses.
+        #   False  -- the lead thread alone; the body is a reduction or an
+        #             in-place update that has not been spread yet.
+        #   True   -- one wave, striding its outer loop from %lid by %nlane.
+        #   "block"-- the body handles every wave itself, and may barrier.
+        # The middle case has to be pinned to wave 0 once there is more than
+        # one wave. Letting all of them run it is not the harmless duplication
+        # it looks like: rope reads two halves of a head and writes both back,
+        # so a second wave arriving late reads what the first already rotated
+        # and rotates it again.
+        if lanes in ("block", "threads"):
+            open_body, close_body = "", ""
+        elif lanes:
+            open_body = "" if waves == 1 else "                  scf.if %isW0 {"
+            close_body = "" if waves == 1 else "                  }"
+        else:
+            open_body = "                  scf.if %isLead {"
+            close_body = "                  }"
+        claim_block = (STATIC_CLAIM if static_claim else DYNAMIC_CLAIM).format(
+            l=l,
+            stage=stage,
+            lc=lc,
+            QUT=QUT,
+            count_expr=count_expr,
+            body=body,
+            open_body=open_body,
+            close_body=close_body,
+            bcast=bcast_i32x2(
+                "%sc" + str(l) + "_" + str(stage) + "#0",
+                "%sc" + str(l) + "_" + str(stage) + "#1",
+                "%cl",
+                "%cd",
+                f"c{l}_{stage}",
+                14,
+            ),
+        )
+        return f"""
+          // stage {stage}
+{timer_begin(l, stage)}
+          %ec{l}_{stage} = arith.constant {4 * ev} : i64
+          %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
+          %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+          %hb{l}_{stage} = arith.constant {stage * maxdies * 2} : index
+{claim_block}          // Two-level: add into a counter only this die touches, then let the
           // last worker on the die flush the die's whole share once. The
           // instructions are the same as signalling per worker; what changes is
           // how many times the device-scope one runs.
@@ -2201,7 +2321,7 @@ module {{
           // than "wave 0's is" -- see the note on stage_bar.
 {stage_bar}
           scf.if %isLead {{
-            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %t{l}_{stage}#1 syncscope("agent") monotonic : !llvm.ptr, i32
+            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %pcount{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
             // Release on the arrival so the accumulate above is visible to
             // whoever turns out to be last.
             %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
@@ -2275,14 +2395,7 @@ module {{
           %ec{l}_{stage} = arith.constant {4 * ev} : i64
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-          %cll{l}_{stage} = scf.if %isLead -> (i32) {{
-            %a = memref.atomic_rmw addi %one_s, %sq[%step, {lc}, %hsingle{stage}_{l}] : (i32, {QUT}) -> i32
-            scf.yield %a : i32
-          }} else {{
-            scf.yield %zero_s : i32
-          }}
-{bcast_i32(f"%cll{l}_{stage}", f"%cl{l}_{stage}", f"s{l}_{stage}", 10)}
-          %mine{l}_{stage} = arith.cmpi eq, %cl{l}_{stage}, %zero_s : i32
+{single_claim(l, stage, lc)}
           scf.if %mine{l}_{stage} {{
 {body_block}
           }}
@@ -3214,6 +3327,15 @@ def main() -> int:
         "hardware costs time in every stage",
     )
     ap.add_argument(
+        "--dynamic-claim",
+        action="store_true",
+        help="hand the pieces out from per-chiplet queues instead of "
+        "partitioning them by chiplet rank. Measured 1.60x slower on "
+        "Qwen3-0.6B at 128 workers, because the queue costs more than the "
+        "work it hands out; it is kept because it is the form that tolerates "
+        "a chiplet the dispatcher gave no workgroups to",
+    )
+    ap.add_argument(
         "--reduce-unroll",
         type=int,
         default=8,
@@ -3299,6 +3421,7 @@ def main() -> int:
             a.timers,
             a.dies,
             a.reduce_unroll,
+            not a.dynamic_claim,
         )
     )
     return 0
