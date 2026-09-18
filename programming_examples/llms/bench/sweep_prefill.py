@@ -46,6 +46,11 @@ BENCH_RE = re.compile(
 # "[q4nx_prefill] constructing seq_len=2048 (compiling engines)..." (q4nx family)
 # "Compiling LFM2 prefill kernels (seq_len=2048)"                   (lfm2)
 SEQ_RE = re.compile(r"(?:constructing seq_len=|prefill kernels \(seq_len=)(\d+)")
+# "[bench] prefill median 3498.0 ms min 3480.2 ms" -- optional, emitted only by
+# the shared prefill_bench.py. Recorded because the NPU is shared: median >> min
+# is how a reader tells a contended nightly from a real regression, and its
+# absence is exactly how a 60550 ms outlier once became a published "cliff".
+MINMAX_RE = re.compile(r"^\[bench\] prefill median ([\d.]+) ms min ([\d.]+) ms", re.M)
 PARIS_RE = re.compile(r"\*\*\* PARIS \*\*\*")
 MISS_RE = re.compile(r"\]\s*MISS\b")
 
@@ -67,6 +72,48 @@ BUILD_LIMIT_RES = (
         re.compile(r"Too many simultaneously active buffer descriptors[^\n]*"),
         "bd_exhaustion",
     ),
+    # The registry's best config for this shape exists and is valid, but the
+    # multi-launch path cannot LINK it, e.g. "registry tile_m=64 != method
+    # 'drain' tile_m=32". Not no_registry_shape (the shape is measured) and not
+    # a bad row: compile_gemm_mm bakes DIM_M into mm.o at compile time, the
+    # stitcher pre-builds exactly two variants (_m32/DIM_M=32, _m64/DIM_M=64),
+    # and gemm_method_spec wires drain to _m32 -- so a measured drain@tile_m=64
+    # has no object to link against here. The standalone
+    # matrix_multiplication harness recompiles mm.o per run and can build it,
+    # which is where such a row comes from. Named for the observable rather
+    # than for a culprit.
+    (
+        re.compile(r"registry tile_m=\d+ != method '[^']+' tile_m=\d+"),
+        "method_tile_mismatch",
+    ),
+    # The registry's best method FLIPS between lengths -- the square Q/O proj
+    # is fused-cast (tile_m=64) at M=2048 and drain (tile_m=32) at 512/1024 --
+    # and a model whose stitcher fuses several GEMMs into one ELF assumes they
+    # share a tile_m. Two ways it surfaces: an explicit assert in the model's
+    # stitcher, or MLIR that will not parse because one launch was built at
+    # tile_m=64 and its neighbour at 32 (the memref dim is tile_m/4, so
+    # 1x1x16x4x8x8 against 1x1x8x4x8x8). Not a registry problem: both rows are
+    # measured and correct. The stitchers were written when only M=2048 was
+    # reachable, so the flip had never been expressible.
+    (
+        re.compile(r"assumes all \d+ GEMMs share the .{0,40}suffix"),
+        "stitcher_mixed_tile_m",
+    ),
+    (
+        re.compile(
+            r"'func\.call' op operand type mismatch: expected operand type "
+            r"'memref<1x1x\d+x4x8x8xf32"
+        ),
+        "stitcher_mixed_tile_m",
+    ),
+)
+
+
+# A host that could not hold the point, as opposed to a repo that could not
+# build it. Checked before the generic rc!=0 branch, which used to fold these
+# into an unnameable "fail: Killed".
+HOST_OOM_RE = re.compile(
+    r"std::bad_alloc|MemoryError|Cannot allocate|Killed|out of memory", re.I
 )
 
 
@@ -77,10 +124,37 @@ def _classify(out, rc):
             return status
     if XRT_FAIL_RE.search(out):
         return "device_fail"
+    if HOST_OOM_RE.search(out):
+        return "host_oom"
     if rc != 0:
-        m = re.search(r"error: .{0,90}|Killed|Cannot allocate|out of memory", out)
+        m = re.search(r"error: .{0,90}", out)
         return f"fail: {m.group(0)}" if m else "fail: rc=%d" % rc
     return "no_number"
+
+
+# Statuses --expect-fail may forgive. This list is the point of having one:
+# every entry names a reason the length is unavailable on this design or this
+# box, and nothing else is forgiven. Without it --expect-fail forgave ANY
+# status, so a length listed because it needs a GEMM registry sweep would also
+# have swallowed a genuine build break at that length -- a broken repo and a
+# known gap rendering as the same cell. sweep_decode.py has always gated this
+# way; this file did not.
+EXPECTABLE = frozenset(
+    {
+        "no_registry_shape",
+        "method_tile_mismatch",
+        "stitcher_mixed_tile_m",
+        "bd_exhaustion",
+        "device_fail",
+        "host_oom",
+        "timeout",
+    }
+)
+# NOT in the list: wrong_seq_len. That status means the guard fired -- the
+# build produced engines at some other length and would have published a
+# number belonging to a different point. It is a repo defect at every length,
+# including one listed as expected-fail, and forgiving it would retire the
+# guard.
 
 
 def run_point(args, length, logdir):
@@ -136,6 +210,9 @@ def run_point(args, length, logdir):
 
     pt["ttft_ms"] = round(float(ttft.group(1)) * 1000.0, 2)
     pt["prefill_tokens_per_sec"] = round(length / float(ttft.group(1)), 1)
+    mm = MINMAX_RE.search(out)
+    if mm:
+        pt["min_ttft_ms"] = round(float(mm.group(2)), 2)
     b = BENCH_RE.search(out)
     if b:
         pt["npu_dispatch_ms"] = round(float(b.group(3)), 2)
@@ -161,7 +238,8 @@ def main():
     p.add_argument(
         "--expect-fail",
         default="",
-        help="lengths allowed to fail without failing the run (see sweep_decode.py)",
+        help="lengths allowed to fail without failing the run, and ONLY with a "
+        f"reason the length is genuinely unavailable ({'/'.join(sorted(EXPECTABLE))})",
     )
     p.add_argument("--seq-env", default="Q4NX_SEQ_LEN", help="engine seq_len env var")
     p.add_argument("--bench-env", default="Q4NX_BENCH_L", help="bench length env var")
@@ -182,7 +260,10 @@ def main():
         print(f"[sweep_prefill] {args.model_name} L={length} ...", flush=True)
         pt, _ = run_point(args, length, logdir)
         if pt["status"] != "ok":
-            if length in expect_fail:
+            # A wrong_seq_len status carries the built length in its text, so
+            # match on the prefix rather than the whole string.
+            base = pt["status"].split(":")[0]
+            if length in expect_fail and base in EXPECTABLE:
                 # Mirror sweep_decode.py exactly: the published status becomes
                 # "expected_fail" and the real cause moves to `detail`. A
                 # separate boolean would not reach the dashboard -- both

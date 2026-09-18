@@ -128,8 +128,11 @@ class NpuRunner:
         # absolute (anchored to _THIS_DIR) so it stays per-model and never
         # contaminates another model's cache regardless of CWD.
         _cache_root = _THIS_DIR / "build_peano"
+        # Keyed on max_seq, matching the Makefile's prefill_kernel_cache_$(CTX):
+        # KernelCache entries are keyed on kernel name alone, so one directory
+        # shared across lengths would serve another length's ELFs.
         self.prefill_cache = KernelCache(
-            str(_cache_root / "prefill_kernel_cache"), verbose=False
+            str(_cache_root / f"prefill_kernel_cache_{max_seq}"), verbose=False
         )
         compile_prefill_kernels(
             self.prefill_cache,

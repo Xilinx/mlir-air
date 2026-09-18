@@ -39,6 +39,14 @@ from llama32_1b_weights import (
     generate_rope_lut,
 )
 from shared.infra.cache import KernelCache, Profiler
+from shared.infra.decode_bench import (  # noqa: E402
+    bench_contexts as _bench_contexts,
+    bench_rope_len as _bench_rope_len,
+    bench_decode as _bench_decode,
+)
+from shared.infra.prefill_bench import (  # noqa: E402
+    bench_prefill as _bench_prefill,
+)
 from shared.infra.external_kernels import compile_all_external_kernels
 from shared.infra.backend_presets import (
     LM_GEMV_BACKEND,
@@ -90,7 +98,7 @@ class Session:
     """Everything `run_once` needs that should not be rebuilt per turn."""
 
     config: Any  # LlamaConfig
-    seq_len: int  # padded prompt length (today: 2048)
+    seq_len: int  # padded prompt length the engines were built for
     weights: Any  # LlamaWeights, mutated by prepare_runtime()
     tokenizer: Any  # transformers AutoTokenizer
     prefill_cache: Any  # KernelCache
@@ -945,14 +953,17 @@ def build_session(args) -> Session:
     twice (prepare_runtime mutates `weights` with idempotency guards but the
     intent is one-shot)."""
     config = LlamaConfig()
-    seq_len = 2048
+    seq_len = args.seq_len
 
     # Each cache gets its own Profiler so the final report can separate
     # prefill from decode phases. Profilers are enabled only under
     # --profile; otherwise every record_* call is a noop (production
     # path is identical to make run).
+    #
+    # Cache entries are keyed on kernel name alone, so two seq_lens must not
+    # share a directory: the second would silently load the first's ELFs.
     prefill_cache = KernelCache(
-        "prefill_kernel_cache",
+        args.cache_dir or "prefill_kernel_cache",
         verbose=args.verbose,
         profiler=Profiler(enabled=args.profile),
     )
@@ -990,9 +1001,11 @@ def build_session(args) -> Session:
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+    # The decode sweep attends from positions far past the prefill length, so
+    # the LUT is sized to the deepest benched context when there is one.
     rope_lut_bf16 = generate_rope_lut(
         config=config,
-        seq_len=seq_len + args.n_tokens,
+        seq_len=max(seq_len + args.n_tokens, _bench_rope_len(args)),
     ).astype(bfloat16)
 
     prepare_runtime(
@@ -1063,6 +1076,16 @@ def run_once(
         ttft_start=ttft_start,
     )
     return generated, prompt_len_actual
+
+
+def bench_prefill(session, cpu_attn=False):
+    """Warm prefill TTFT at session.seq_len, via the shared bench."""
+    _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
+
+
+def bench_decode(session, contexts):
+    """Decode tok/s at each KV depth, via the shared host-attention bench."""
+    _bench_decode(session, contexts, run_npu_decode_step)
 
 
 def _print_one_shot_output(
@@ -1161,6 +1184,31 @@ if __name__ == "__main__":
         help="Number of decode tokens to generate (default: 10)",
     )
     parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("LLM_SEQ_LEN", "2048")),
+        help="Padded prompt length the prefill engines are built for "
+        "(multiple of 256; default: 2048)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("LLM_CACHE_DIR") or None,
+        help="Prefill kernel cache directory. Must differ per --seq-len: cache "
+        "entries are keyed on kernel name, not on shape",
+    )
+    parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
+        "--bench-decode",
+        default="",
+        help="Comma-separated KV depths to measure decode tok/s at, in one "
+        "session, then exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="Enable per-token timing instrumentation",
@@ -1209,7 +1257,11 @@ if __name__ == "__main__":
 
     session = build_session(args)
 
-    if args.interactive:
+    if args.bench_decode:
+        bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
+    elif args.interactive:
         repl_loop(session, args)
     else:
         generated, prompt_len_actual = run_once(

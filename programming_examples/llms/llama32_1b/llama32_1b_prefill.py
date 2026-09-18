@@ -162,7 +162,9 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     kv_dim = n_kv_heads * head_dim
 
     print(f"\n{'='*60}")
-    print(f"Compiling unique kernels (seq_len={seq_len})...")
+    # Wording is load-bearing: bench/sweep_prefill.py reads the built length off
+    # this line to reject a point whose engines came out at some other seq_len.
+    print(f"Compiling prefill kernels (seq_len={seq_len})...")
     print(f"{'='*60}\n")
 
     # External-GEMM mm.o variants — compile FIRST (before any compile_and_cache, so

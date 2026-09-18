@@ -35,6 +35,7 @@ from generate_readme import (  # noqa: E402
     load_llm_sweep_history,
     render_llm_benchmark,
     render_llm_sweep,
+    render_vla_benchmark,
 )
 
 TOOLCHAIN = {
@@ -135,6 +136,17 @@ def append(src_flag, payload, history, run_id):
     return r.stdout.strip()
 
 
+def _history(tmp, recs, name):
+    """An ndjson history holding `recs`, as load_llm_history expects them.
+
+    Written through append_history.py like the other fixtures, so a field these
+    checks rely on cannot survive here while being dropped on the real path.
+    """
+    path = tmp / name
+    append("perf", recs, path, 1)
+    return path
+
+
 def main():
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -166,6 +178,70 @@ def main():
             byname["toy_1b_q4nx"].get("verify_status") == "pass"
             and byname["toy_3b_q4nx"].get("verify_status") == "skip",
             "sweep load carries verify_status onto each curve",
+        )
+
+        print("VLA models are not LLM rows")
+        # smolvla emits one action chunk, so two of the LLM table's three
+        # metrics are structurally inapplicable and it gets its own table. It
+        # was published as an LLM row with a permanent em-dash under Decode.
+        vla = [
+            {
+                "model": "smolvla",
+                "timestamp_utc": "2026-09-16T04:31:45Z",
+                "verify_status": "pass",
+                "metrics": {
+                    "ttft_ms": 637.8,
+                    "decode_tokens_per_sec": None,
+                    "context_len": 241,
+                },
+                "toolchain": TOOLCHAIN,
+            }
+        ]
+        vla_page = render_llm_benchmark(
+            None, history_path=_history(tmp, vla, "vla.ndjson")
+        )
+        check("Vision-Language-Action" in vla_page, "the VLA table renders")
+        # Row count, not a substring count: _llm_model_cell emits the name
+        # twice per row (label + repo path).
+        check(
+            sum(1 for l in vla_page.splitlines() if l.startswith("| [smolvla]")) == 1,
+            "a VLA model is listed once, not in both tables",
+        )
+        check(
+            "Decode (tok/s)" not in vla_page,
+            "an all-VLA page shows no LLM decode column",
+        )
+        check(
+            "637.8" in vla_page and "241" in vla_page,
+            "the VLA row keeps its chunk latency and prefix",
+        )
+        check(render_vla_benchmark([]) == "", "no VLA model renders no VLA table")
+
+        print("an all-swept page drops the empty scalar table")
+        # The steady state once every LLM publishes a curve. A header with no
+        # body renders as a broken table, not as nothing.
+        # Every model in this history is in BOTH curves, so neither of its
+        # metrics needs a scalar cell -- the state the page reaches once every
+        # model is fully swept. Both are required: a model in only the decode
+        # sweep keeps its row for the TTFT no curve carries.
+        swept_perf = [dict(PERF[0], model=c["model"]) for c in curves]
+        swept_pf = [
+            {"model": c["model"], "points": [{"prefill_len": 2048, "ttft_ms": 900.0}]}
+            for c in curves
+        ]
+        swept_only = render_llm_benchmark(
+            None,
+            sweep_recs=curves,
+            prefill_sweep_recs=swept_pf,
+            history_path=_history(tmp, swept_perf, "swept.ndjson"),
+        )
+        check(
+            "| Model | Context | TTFT (ms) |" not in swept_only,
+            "the scalar table is omitted when it would have no rows",
+        )
+        check(
+            "Decode throughput vs context" in swept_only,
+            "...and the curve table is still there",
         )
 
         print("loaders -> rendered page")
@@ -229,7 +305,14 @@ def main():
         hang_rows = sum(
             1 for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
         )
-        check(hang_rows == 1, "an all-failed sweep model is listed once, not twice")
+        check(hang_rows == 2, "an all-failed sweep model keeps one row per table")
+        hang_scalar = next(
+            l for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
+        )
+        check(
+            hang_scalar.rstrip().endswith("| 🟢 |") and "| ↓ |" in hang_scalar,
+            "its decode cell defers to the curve instead of repeating a number",
+        )
 
         # ...but a sweep the table cannot render must NOT suppress the scalar
         # row. render_llm_sweep returns "" when no point carries a context_len,
@@ -255,9 +338,12 @@ def main():
             "3930.0" in axisless_page,
             "a sweep that renders no table leaves the scalar row alone",
         )
+        # The regression this pair now guards, from the other side: being in
+        # the decode sweep used to delete the whole row, and with it a TTFT no
+        # curve on the page carried. Nine models lost their TTFT that way.
         check(
-            "3930.0" not in hang_page,
-            "an all-failed sweep model does not keep its scalar row",
+            "3930.0" in hang_page,
+            "a decode-swept model with no prefill curve keeps its TTFT",
         )
 
         sweep_md = render_llm_sweep(curves)
@@ -269,7 +355,7 @@ def main():
         check("✗" in sweep_md, "a build_fail renders as a failure, not a dash")
         check("—" in sweep_md, "an expected_fail still renders as a dash")
         check(
-            "— expected failure" in sweep_md and "✗ unexpected failure" in sweep_md,
+            "or an expected failure" in sweep_md and "✗ unexpected failure" in sweep_md,
             "both markers present -> both legends shown",
         )
 

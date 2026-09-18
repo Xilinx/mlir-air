@@ -48,6 +48,14 @@ for _p in (_PROG_EXAMPLES, _LLAMA_BF16, _THIS_DIR):
 
 from llama32_1b_weights import LlamaConfig, generate_rope_lut  # noqa: E402
 from shared.infra.cache import KernelCache, Profiler  # noqa: E402
+from shared.infra.decode_bench import (  # noqa: E402
+    bench_contexts as _bench_contexts,
+    bench_rope_len as _bench_rope_len,
+    bench_decode as _bench_decode,
+)
+from shared.infra.prefill_bench import (  # noqa: E402
+    bench_prefill as _bench_prefill,
+)
 from shared.infra.external_kernels import (  # noqa: E402
     compile_all_external_kernels,
 )
@@ -582,7 +590,7 @@ def generate(
 
 def build_session(args) -> Session:
     config = LlamaConfig()
-    seq_len = 2048
+    seq_len = args.seq_len
 
     prefill_cache = KernelCache(
         cache_dir=args.prefill_cache_dir,
@@ -625,8 +633,10 @@ def build_session(args) -> Session:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
+    # The decode sweep attends from positions far past the prefill length, so
+    # the LUT is sized to the deepest benched context when there is one.
     rope_lut_bf16 = generate_rope_lut(
-        config=config, seq_len=seq_len + args.n_tokens
+        config=config, seq_len=max(seq_len + args.n_tokens, _bench_rope_len(args))
     ).astype(bfloat16)
 
     prepare_runtime(
@@ -686,6 +696,16 @@ def run_once(
         ttft_start=ttft_start,
     )
     return generated, prompt_len_actual
+
+
+def bench_prefill(session, cpu_attn=False):
+    """Warm prefill TTFT at session.seq_len, via the shared bench."""
+    _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
+
+
+def bench_decode(session, contexts):
+    """Decode tok/s at each KV depth, via the shared host-attention bench."""
+    _bench_decode(session, contexts, run_npu_decode_step)
 
 
 def _print_one_shot_output(session: Session, prompt: str, generated: list) -> None:
@@ -780,6 +800,26 @@ if __name__ == "__main__":
         action="store_true",
         help="Drop into a REPL after runtime prep. Each prompt is independent.",
     )
+    parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("LLM_SEQ_LEN", "2048")),
+        help="Padded prompt length the prefill engines are built for "
+        "(multiple of 256; default: 2048). The cache dirs are already per-run "
+        "flags here, so the sweep varies them via the Makefile",
+    )
+    parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
+        "--bench-decode",
+        default="",
+        help="Comma-separated KV depths to measure decode tok/s at, in one "
+        "session, then exit (latency only, not a correctness gate)",
+    )
     args = parser.parse_args()
 
     if args.interactive:
@@ -789,7 +829,11 @@ if __name__ == "__main__":
             parser.error("--interactive requires --run-only")
 
     session = build_session(args)
-    if args.interactive:
+    if args.bench_decode:
+        bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
+    elif args.interactive:
         repl_loop(session, args)
     else:
         generated, _ = run_once(

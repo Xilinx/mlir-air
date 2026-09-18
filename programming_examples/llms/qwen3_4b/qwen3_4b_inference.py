@@ -32,6 +32,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from qwen3_4b_weights import LlamaConfig, load_weights, generate_rope_lut
 from qwen3_4b_cpu_helpers import rms_norm
 from shared.infra.cache import KernelCache, Profiler
+from shared.infra.decode_bench import (  # noqa: E402
+    bench_contexts as _bench_contexts,
+    bench_rope_len as _bench_rope_len,
+    bench_decode as _bench_decode,
+)
+from shared.infra.prefill_bench import (  # noqa: E402
+    bench_prefill as _bench_prefill,
+)
 from qwen3_4b_prefill import (
     compile_all_kernels,
     run_transformer_block_qwen3,
@@ -614,10 +622,12 @@ MODEL_CHOICES = {"base": "Qwen/Qwen3-4B", "instruct": "Qwen/Qwen3-4B"}
 
 def build_session(args) -> Session:
     config = LlamaConfig()
-    seq_len = 2048
+    seq_len = args.seq_len
 
+    # Cache entries are keyed on kernel name alone, so two seq_lens must not
+    # share a directory: the second would silently load the first's ELFs.
     prefill_cache = KernelCache(
-        "prefill_kernel_cache",
+        args.cache_dir or "prefill_kernel_cache",
         verbose=args.verbose,
         profiler=Profiler(enabled=args.profile),
     )
@@ -651,8 +661,10 @@ def build_session(args) -> Session:
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+    # The decode sweep attends from positions far past the prefill length, so
+    # the LUT is sized to the deepest benched context when there is one.
     rope_lut_bf16 = generate_rope_lut(
-        config=config, seq_len=seq_len + args.n_tokens
+        config=config, seq_len=max(seq_len + args.n_tokens, _bench_rope_len(args))
     ).astype(bfloat16)
 
     prepare_runtime(
@@ -708,6 +720,16 @@ def run_once(
         ttft_start=ttft_start,
     )
     return generated, prompt_len_actual
+
+
+def bench_prefill(session, cpu_attn=False):
+    """Warm prefill TTFT at session.seq_len, via the shared bench."""
+    _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
+
+
+def bench_decode(session, contexts):
+    """Decode tok/s at each KV depth, via the shared host-attention bench."""
+    _bench_decode(session, contexts, run_npu_decode_step)
 
 
 def _print_one_shot_output(session, prompt_text, generated, prompt_len_actual):
@@ -772,6 +794,31 @@ if __name__ == "__main__":
         "--model", type=str, choices=["base", "instruct"], default="instruct"
     )
     parser.add_argument("--interactive", action="store_true")
+    parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=int(os.environ.get("LLM_SEQ_LEN", "2048")),
+        help="Padded prompt length the prefill engines are built for "
+        "(multiple of 256; default: 2048)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("LLM_CACHE_DIR") or None,
+        help="Prefill kernel cache directory. Must differ per --seq-len: cache "
+        "entries are keyed on kernel name, not on shape",
+    )
+    parser.add_argument(
+        "--bench-prefill",
+        action="store_true",
+        help="Warm prefill-only TTFT at --seq-len on a synthetic prompt, then "
+        "exit (latency only, not a correctness gate)",
+    )
+    parser.add_argument(
+        "--bench-decode",
+        default="",
+        help="Comma-separated KV depths to measure decode tok/s at, in one "
+        "session, then exit (latency only, not a correctness gate)",
+    )
     args = parser.parse_args()
 
     if args.interactive:
@@ -783,7 +830,11 @@ if __name__ == "__main__":
 
     session = build_session(args)
 
-    if args.interactive:
+    if args.bench_decode:
+        bench_decode(session, _bench_contexts(args))
+    elif args.bench_prefill:
+        bench_prefill(session, cpu_attn=args.cpu_attn)
+    elif args.interactive:
         repl_loop(session, args)
     else:
         generated, plen = run_once(

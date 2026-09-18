@@ -80,6 +80,10 @@ def _flat_sweep_rows(recs, run_id):
                 "context_len": pt.get("context_len"),
                 "decode_tokens_per_sec": pt.get("decode_tokens_per_sec"),
                 "ms_per_token": pt.get("ms_per_token"),
+                # Only the runtime-context sweeper reports one. Carried into
+                # the series because a contended point and a real cliff render
+                # identically in the curve without it.
+                "min_ms_per_token": pt.get("min_ms_per_token"),
                 "status": pt.get("status", ""),
                 "verify_status": d.get("verify_status", ""),
             }
