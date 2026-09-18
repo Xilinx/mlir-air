@@ -39,8 +39,9 @@ def read_safetensors(path):
             s, e = meta["data_offsets"]
             f.seek(base + s)
             raw = np.frombuffer(f.read(e - s), dtype="<u2")
-            out[name] = (raw.astype(np.uint32) << 16).view(np.float32).reshape(
-                meta["shape"])
+            out[name] = (
+                (raw.astype(np.uint32) << 16).view(np.float32).reshape(meta["shape"])
+            )
     return out
 
 
@@ -80,34 +81,51 @@ def main(argv):
         # [dim, vocab]: the lm head reduces over dim
         "Wlm": np.ascontiguousarray(lm.astype(np.float32).T),
         "Nf": t["model.norm.weight"].astype(np.float32),
-        "N1": layerstack(
-            lambda l: t[(pre % l) + "input_layernorm.weight"], (dim,)),
+        "N1": layerstack(lambda l: t[(pre % l) + "input_layernorm.weight"], (dim,)),
         "N2": layerstack(
-            lambda l: t[(pre % l) + "post_attention_layernorm.weight"], (dim,)),
+            lambda l: t[(pre % l) + "post_attention_layernorm.weight"], (dim,)
+        ),
         # q_norm in [0, hd), k_norm in [hd, 2hd)
         "QKN": layerstack(
-            lambda l: np.concatenate([
-                t[(pre % l) + "self_attn.q_norm.weight"],
-                t[(pre % l) + "self_attn.k_norm.weight"]]), (2 * hd,)),
+            lambda l: np.concatenate(
+                [
+                    t[(pre % l) + "self_attn.q_norm.weight"],
+                    t[(pre % l) + "self_attn.k_norm.weight"],
+                ]
+            ),
+            (2 * hd,),
+        ),
         # one fused projection, q then k then v, transposed to reduce over dim
         "Wqkv": layerstack(
-            lambda l: np.concatenate([
-                t[(pre % l) + "self_attn.q_proj.weight"],
-                t[(pre % l) + "self_attn.k_proj.weight"],
-                t[(pre % l) + "self_attn.v_proj.weight"]], 0).T.astype(
-                    np.float32), (dim, qkvo)),
+            lambda l: np.concatenate(
+                [
+                    t[(pre % l) + "self_attn.q_proj.weight"],
+                    t[(pre % l) + "self_attn.k_proj.weight"],
+                    t[(pre % l) + "self_attn.v_proj.weight"],
+                ],
+                0,
+            ).T.astype(np.float32),
+            (dim, qkvo),
+        ),
         "Wo": layerstack(
-            lambda l: t[(pre % l) + "self_attn.o_proj.weight"].T.astype(
-                np.float32), (qw, dim)),
+            lambda l: t[(pre % l) + "self_attn.o_proj.weight"].T.astype(np.float32),
+            (qw, dim),
+        ),
         # gate then up, the fusion Fleet also uses
         "Wgu": layerstack(
-            lambda l: np.concatenate([
-                t[(pre % l) + "mlp.gate_proj.weight"],
-                t[(pre % l) + "mlp.up_proj.weight"]], 0).T.astype(np.float32),
-            (dim, 2 * inter)),
+            lambda l: np.concatenate(
+                [
+                    t[(pre % l) + "mlp.gate_proj.weight"],
+                    t[(pre % l) + "mlp.up_proj.weight"],
+                ],
+                0,
+            ).T.astype(np.float32),
+            (dim, 2 * inter),
+        ),
         "Wd": layerstack(
-            lambda l: t[(pre % l) + "mlp.down_proj.weight"].T.astype(
-                np.float32), (inter, dim)),
+            lambda l: t[(pre % l) + "mlp.down_proj.weight"].T.astype(np.float32),
+            (inter, dim),
+        ),
     }
 
     offsets, cur = {}, 0
@@ -115,25 +133,39 @@ def main(argv):
     with open(blob, "wb") as f:
         for name, a in tensors.items():
             a = np.ascontiguousarray(a, dtype="<f4")
-            offsets[name] = {"offset": cur, "count": int(a.size),
-                             "shape": list(a.shape)}
+            offsets[name] = {
+                "offset": cur,
+                "count": int(a.size),
+                "shape": list(a.shape),
+            }
             f.write(a.tobytes())
             cur += a.size
-            print(f"  {name:5s} {str(list(a.shape)):24s} "
-                  f"{a.size * 4 / 1e6:8.1f} MB", file=sys.stderr)
+            print(
+                f"  {name:5s} {str(list(a.shape)):24s} " f"{a.size * 4 / 1e6:8.1f} MB",
+                file=sys.stderr,
+            )
     manifest = {
         "blob": blob.name,
         "floats": cur,
-        "config": {"layers": L, "dim": dim, "inter": inter, "heads": nq,
-                   "kv_heads": nkv, "head_dim": hd, "vocab": vocab,
-                   "rope_theta": cfg["rope_theta"],
-                   "rms_eps": cfg["rms_norm_eps"],
-                   "tie_word_embeddings": tied},
+        "config": {
+            "layers": L,
+            "dim": dim,
+            "inter": inter,
+            "heads": nq,
+            "kv_heads": nkv,
+            "head_dim": hd,
+            "vocab": vocab,
+            "rope_theta": cfg["rope_theta"],
+            "rms_eps": cfg["rms_norm_eps"],
+            "tie_word_embeddings": tied,
+        },
         "tensors": offsets,
     }
     (dst / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"wrote {blob} ({cur * 4 / 1e9:.2f} GB) and {dst / 'manifest.json'}",
-          file=sys.stderr)
+    print(
+        f"wrote {blob} ({cur * 4 / 1e9:.2f} GB) and {dst / 'manifest.json'}",
+        file=sys.stderr,
+    )
     return 0
 
 

@@ -24,7 +24,7 @@ from weights import read_safetensors  # noqa: E402
 
 
 def rmsnorm(x, w, eps):
-    return x / np.sqrt((x ** 2).mean(-1, keepdims=True) + eps) * w
+    return x / np.sqrt((x**2).mean(-1, keepdims=True) + eps) * w
 
 
 def rope(v, pos, cos, sin):
@@ -41,8 +41,11 @@ def forward(src, tokens, layers=None):
     t = read_safetensors(Path(src) / "model.safetensors")
     L = layers or cfg["num_hidden_layers"]
     dim, inter = cfg["hidden_size"], cfg["intermediate_size"]
-    nq, nkv, hd = (cfg["num_attention_heads"], cfg["num_key_value_heads"],
-                   cfg["head_dim"])
+    nq, nkv, hd = (
+        cfg["num_attention_heads"],
+        cfg["num_key_value_heads"],
+        cfg["head_dim"],
+    )
     eps, theta = cfg["rms_norm_eps"], cfg["rope_theta"]
     g = nq // nkv
     T = len(tokens)
@@ -81,8 +84,14 @@ def forward(src, tokens, layers=None):
         up = xa @ t[p + "mlp.up_proj.weight"].T
         # exp(-gt) overflows for very negative gt; the identity below is the
         # same function written so neither branch overflows.
-        act = np.where(gt >= 0, gt / (1.0 + np.exp(-np.abs(gt))),
-                       gt * np.exp(-np.abs(gt)) / (1.0 + np.exp(-np.abs(gt)))) * up
+        act = (
+            np.where(
+                gt >= 0,
+                gt / (1.0 + np.exp(-np.abs(gt))),
+                gt * np.exp(-np.abs(gt)) / (1.0 + np.exp(-np.abs(gt))),
+            )
+            * up
+        )
         x = x + act @ t[p + "mlp.down_proj.weight"].T
 
     xf = rmsnorm(x, t["model.norm.weight"], eps)
@@ -116,8 +125,7 @@ def main(argv):
     print("argmax per position:", first.argmax(-1).tolist())
     print("generated:", ",".join(str(v) for v in gen))
     top = np.argsort(lg[-1])[::-1][:5]
-    print("last position top-5:",
-          [(int(i), round(float(lg[-1, i]), 3)) for i in top])
+    print("last position top-5:", [(int(i), round(float(lg[-1, i]), 3)) for i in top])
     return 0
 
 
