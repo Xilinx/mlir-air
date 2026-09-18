@@ -149,13 +149,19 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     total = cache + steps * tokens
     assert hd % 2 == 0, "head dim must be even for rope"
     for n, v in (("dim", dim), ("inter", inter), ("2*inter", 2 * inter),
-                 ("qkv out", qkvo), ("vocab", vocab)):
+                 ("qkv out", qkvo)):
         assert v % tasks == 0, f"{n} ({v}) must divide evenly into tasks"
     slice_d = dim // tasks
     slice_i = inter // tasks
     slice_2i = (2 * inter) // tasks
     slice_q = qkvo // tasks
-    slice_v = vocab // tasks
+    # The vocabulary is the one width that does not have to divide: Qwen3's is
+    # 151936 = 2^7 * 1187, so requiring it to capped `tasks` at 128 -- and the
+    # measured sweep says the four layer matmuls are bound by how many
+    # workgroups there are, nothing else (128/64/32 tasks give 8.87/12.72/21.52
+    # ms/token). So the last piece is short and the three places that walk it
+    # skip the columns past the end.
+    slice_v = (vocab + tasks - 1) // tasks
     invsqrthd = hd ** -0.5
     lnrope = _math.log(rope_theta)
     # Activations carry a token dimension; weights do not. That asymmetry is
@@ -1256,7 +1262,13 @@ module {{
          %bi:2 = scf.for %jj = %c0 to %csliceVh step %c1
              iter_args(%bv = %negbig, %bx = %zero) -> (f32, i32) {{
            %v = arith.addi %v0, %jj : index
-           %lv = memref.load %Lg[%m, %v] : {LGT}
+           %vokh = arith.cmpi ult, %v, %cvocab : index
+           %lv = scf.if %vokh -> (f32) {{
+             %lvr = memref.load %Lg[%m, %v] : {LGT}
+             scf.yield %lvr : f32
+           }} else {{
+             scf.yield %negbig : f32
+           }}
            %gt = arith.cmpf ogt, %lv, %bv : f32
            %nv2 = arith.select %gt, %lv, %bv : f32
            %vi = arith.index_cast %v : index to i32
@@ -2575,16 +2587,19 @@ module {{
                     f"""                %v0 = arith.muli %ix, %csliceV : index
                 scf.for %jj = %tx_s to %csliceV step %nthr {{
                   %v = arith.addi %v0, %jj : index
-                  %a = scf.for %i = %c0_s to %cdim_s step %c1_s
-                      iter_args(%sacc = %fzero_s) -> (f32) {{
-                    %xv = memref.load %sr[%m, %i] : {AT}
-                    %wb = memref.load %swlm[%v, %i] : {LMTB}
-                    %wv = arith.extf %wb : bf16 to f32
-                    %mp = arith.mulf %xv, %wv : f32
-                    %s2 = arith.addf %sacc, %mp : f32
-                    scf.yield %s2 : f32
+                  %vok = arith.cmpi ult, %v, %cvocab_s : index
+                  scf.if %vok {{
+                    %a = scf.for %i = %c0_s to %cdim_s step %c1_s
+                        iter_args(%sacc = %fzero_s) -> (f32) {{
+                      %xv = memref.load %sr[%m, %i] : {AT}
+                      %wb = memref.load %swlm[%v, %i] : {LMTB}
+                      %wv = arith.extf %wb : bf16 to f32
+                      %mp = arith.mulf %xv, %wv : f32
+                      %s2 = arith.addf %sacc, %mp : f32
+                      scf.yield %s2 : f32
+                    }}
+                    memref.store %a, %slg[%m, %v] : {LGT}
                   }}
-                  memref.store %a, %slg[%m, %v] : {LGT}
                 }}""", slot=base_x + 2, lc="%L0", lanes="threads"))
     # argmax_partial_layer: the best in this piece of the vocabulary
     w(strided_stage("x", stages + 3, base_x + 3, "%ctasks", "%ntasks_t",
@@ -2592,7 +2607,13 @@ module {{
                 %bi:2 = scf.for %jj = %c0_s to %csliceV step %c1_s
                     iter_args(%bv = %negbig_s, %bidx = %zero_s) -> (f32, i32) {{
                   %v = arith.addi %v0, %jj : index
-                  %lv = memref.load %slg[%m, %v] : {LGT}
+                  %vok = arith.cmpi ult, %v, %cvocab_s : index
+                  %lv = scf.if %vok -> (f32) {{
+                    %lvr = memref.load %slg[%m, %v] : {LGT}
+                    scf.yield %lvr : f32
+                  }} else {{
+                    scf.yield %negbig_s : f32
+                  }}
                   %gt = arith.cmpf ogt, %lv, %bv : f32
                   %nv2 = arith.select %gt, %lv, %bv : f32
                   %vi = arith.index_cast %v : index to i32
