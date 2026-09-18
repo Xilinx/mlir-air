@@ -94,6 +94,7 @@ def emit(
     timers: bool = False,
     dies: int = 8,
     unroll: int = 8,
+    stage_timers: bool = True,
     static_claim: bool = True,
 ) -> str:
     inter = inter or 2 * dim
@@ -388,7 +389,7 @@ def emit(
     # not sum to the total when the stages meet at a rendezvous.
     nclass = 2 * (stages + extras)  # body and rendezvous wait, per class
     timerbase = flushword + 1
-    locwords = timerbase + (nclass if timers else 0)
+    locwords = timerbase + (nclass + 1 if timers else 0)
     # One workgroup owns the clock. Timing from all of them and summing would
     # overflow i32 and would also count the same wall-clock window `workers`
     # times; one workgroup's view of a stage is that stage's duration, waiting
@@ -418,12 +419,39 @@ def emit(
         "argmax_partial",
         "argmax_reduce",
     ]
+    # The sum of the stages is what workgroup 0 spent inside them. It is not
+    # the same thing as how long the kernel ran, and the difference is exactly
+    # the cost that no per-operator table can show. Two more clock reads say
+    # what it is.
+    timer_launch0 = (
+        ""
+        if not timers
+        else '        %tl0 = llvm.call_intrinsic "llvm.amdgcn.s.memrealtime"() : () -> i64'
+    )
+    timer_launch1 = (
+        ""
+        if not timers
+        else f"""          %tl1 = llvm.call_intrinsic "llvm.amdgcn.s.memrealtime"() : () -> i64
+          %tld = arith.subi %tl1, %tl0 : i64
+          %tldi = arith.trunci %tld : i64 to i32
+          %isTL = arith.andi %isWG0, %isLead : i1
+          scf.if %isTL {{
+            %tlk = arith.constant {timerbase + nclass} : index
+            %tlo = memref.load %sloc[%tlk] : memref<{locwords}xi32>
+            %tln = arith.addi %tlo, %tldi : i32
+            memref.store %tln, %sloc[%tlk] : memref<{locwords}xi32>
+          }}"""
+    )
     timer_report = (
         ""
         if not timers
         else (
             '    vector.print str "--- per-operator device ticks (100 MHz), '
             'workgroup 0, summed over layers and steps:"\n'
+            + f"\n    %tlk = arith.constant {timerbase + nclass} : index\n"
+            f"    %tlv = memref.load %Loc[%tlk] : memref<{locwords}xi32>\n"
+            '    vector.print str "  WHOLE LAUNCH, workgroup 0"\n'
+            "    vector.print %tlv : i32\n"
             + "\n".join(
                 f"    %tk{i} = arith.constant {timerbase + i} : index\n"
                 f"    %tv{i} = memref.load %Loc[%tk{i}] : memref<{locwords}xi32>\n"
@@ -1846,6 +1874,7 @@ module {{
         %myrank2 = air.chiplet_block_id
 {timer_id}
         %mycnt = air.chiplet_dim_blocks
+{timer_launch0}
         %mycnt_i = arith.index_cast %mycnt : index to i32
         %evbase = memref.extract_aligned_pointer_as_index %se : memref<{events}xi32> -> index
         %evi = arith.index_cast %evbase : index to i64
@@ -1979,7 +2008,7 @@ module {{
         return "\n".join(out)
 
     def timer_begin(l, stage):
-        if not timers:
+        if not timers or not stage_timers:
             return ""
         return (
             f"          %tb{l}_{stage} = llvm.call_intrinsic "
@@ -1994,7 +2023,7 @@ module {{
         from the wait, which is the difference between "the GEMM is slow" and
         "the GEMM is fine and the stage is bounded by a straggler".
         """
-        if not timers:
+        if not timers or not stage_timers:
             return ""
         return (
             f"          %tm{l}_{stage} = llvm.call_intrinsic "
@@ -2002,7 +2031,7 @@ module {{
         )
 
     def timer_end(l, stage):
-        if not timers:
+        if not timers or not stage_timers:
             return ""
         return f"""          %te{l}_{stage} = llvm.call_intrinsic "llvm.amdgcn.s.memrealtime"() : () -> i64
           %dw{l}_{stage} = arith.subi %te{l}_{stage}, %tm{l}_{stage} : i64
@@ -3261,6 +3290,7 @@ module {{
             %seqn = arith.addi %seq, %nat : index
             scf.yield %seqn : index
           }}
+{timer_launch1}
           scf.yield
         }}
 
@@ -3414,6 +3444,14 @@ def main() -> int:
         "registers back to spills and lands on 1's numbers",
     )
     ap.add_argument(
+        "--timers-total-only",
+        action="store_true",
+        help="with --timers, report only the whole launch and emit no "
+        "per-stage clock reads. The per-operator table accounts for 59%% of "
+        "the launch; this says whether the other 41%% is the program or the "
+        "reading of it",
+    )
+    ap.add_argument(
         "--timers",
         action="store_true",
         help="accumulate per-operator device ticks and print them; "
@@ -3484,6 +3522,7 @@ def main() -> int:
             a.timers,
             a.dies,
             a.reduce_unroll,
+            not a.timers_total_only,
             not a.dynamic_claim,
         )
     )
