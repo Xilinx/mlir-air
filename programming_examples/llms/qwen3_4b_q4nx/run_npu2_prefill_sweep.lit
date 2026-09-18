@@ -17,10 +17,14 @@
 // file the scalar table has no rows left at all.
 //
 // Unlike the bf16 models' prefill sweep, this path has no median/min: the q4nx
-// prefill driver does its own timing rather than going through
-// shared/infra/prefill_bench.py. Worth unifying -- lfm2_1_2b_q4nx published
-// 81871 ms at 4096 against 1112 ms at 2048 on run 35307304793, and with no min
-// beside it there is no way to tell a real cliff from a contended sample.
+// prefill driver times itself rather than going through
+// shared/infra/prefill_bench.py. Still worth unifying, but note the open item
+// it was first cited for turned out NOT to be a measurement problem:
+// lfm2_1_2b_q4nx publishes 81871 ms at 4096 against 1112 ms at 2048, and that
+// REPRODUCES -- 81794 ms on an idle second machine. The 2048 point differs 18%
+// between the two boxes and the 4096 point differs 0.1%, which is the signature
+// of a deterministic fixed cost, not contention. It is a real cliff and wants
+// its own investigation.
 //
 // Latency only, never a correctness gate (run_npu2_verify.lit is that). The
 // per-length first-token argmax the driver already prints is recorded with each
