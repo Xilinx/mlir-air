@@ -211,7 +211,47 @@ def emit(
         ("qkv out", qkvo),
     ):
         assert v % tasks == 0, f"{n} ({v}) must divide evenly into tasks"
+    # How many pieces a stage splits into is a property of the stage, not of
+    # the model, and the measured sweep says so in three directions at once.
+    # Bodies at 32/64/128/256 pieces, 28 layers, 6 steps:
+    #
+    #             32       64      128      256
+    #   gate_up  761036  464392  246988   297740
+    #   qkv      622300  332236  172216   206064
+    #   down     416168  242288  281456   322164
+    #   o_proj   283160  175468  184324   257108
+    #   lm_head  600372  310400  168628   118664
+    #
+    # o_proj and down write a dim-wide output, so at 128 pieces a piece is
+    # `dim/128` = 8 columns: the lanes spread across those 8, which is 16 bytes
+    # of every 64-byte line, and the other 48 are fetched and thrown away. They
+    # want the slice wider even at the price of half the workgroups. The lm
+    # head has a whole vocabulary of columns and wants the opposite. gate_up
+    # and qkv are already wide enough to fill a line at 128 and only want
+    # workgroups.
+    #
+    # So: half as many pieces for the dim-wide matmuls, `tasks` for everything
+    # else. Clamped to at least `dies`, because a stage with fewer pieces than
+    # chiplets leaves a chiplet with none and the static claim needs every
+    # chiplet to have work.
+    #
+    # The lm head row above says 256, and acting on it made the lm head 11%
+    # *worse* (171 236 ticks to 190 700). The sweep moved `tasks` and `workers`
+    # together, so what that row measured was 256 workgroups, not 256 pieces --
+    # and the lm head is the one stage already running at about 1.17 TB/s, so
+    # what it wants is more of the machine, not a finer division of the same
+    # 128 workgroups' work. Two pieces of 594 columns instead of one of 1187 is
+    # the same bytes and one more loop. Left at `tasks`, with the measurement
+    # written down so the row is not read that way again.
+    tasks_d = max(dies, tasks // 2)
+    tasks_v = tasks
+    for n, v in (("dim", dim), ("inter", inter)):
+        assert v % tasks_d == 0, (
+            f"{n} ({v}) must divide evenly into the {tasks_d} pieces the "
+            "dim-wide matmuls split into"
+        )
     slice_d = dim // tasks
+    slice_dw = dim // tasks_d
     slice_i = inter // tasks
     slice_2i = (2 * inter) // tasks
     slice_q = qkvo // tasks
@@ -221,7 +261,7 @@ def emit(
     # workgroups there are, nothing else (128/64/32 tasks give 8.87/12.72/21.52
     # ms/token). So the last piece is short and the three places that walk it
     # skip the columns past the end.
-    slice_v = (vocab + tasks - 1) // tasks
+    slice_v = (vocab + tasks_v - 1) // tasks_v
     invsqrthd = hd**-0.5
     lnrope = _math.log(rope_theta)
     # Activations carry a token dimension; weights do not. That asymmetry is
@@ -255,8 +295,8 @@ def emit(
     LMT = f"memref<{dim}x{vocab}xf32>"
     LMTB = f"memref<{vocab}x{dim}xbf16>"
     LGT = f"memref<{tokens}x{vocab}xf32>"
-    PVT = f"memref<{tokens}x{tasks}xf32>"
-    PIT = f"memref<{tokens}x{tasks}xi32>"
+    PVT = f"memref<{tokens}x{tasks_v}xf32>"
+    PIT = f"memref<{tokens}x{tasks_v}xi32>"
     # One flat token stream rather than a token per (step, row). A row of a
     # step is a position in the same sequence -- the attention inside a step is
     # windowed-causal, so token m of a step already reads what token m-1 of the
@@ -1713,6 +1753,9 @@ module {{
         %c1_s = arith.constant 1 : index
         %c2_s = arith.constant 2 : index
         %ctasks = arith.constant {tasks} : index
+        %ctasksD = arith.constant {tasks_d} : index
+        %ctasksV = arith.constant {tasks_v} : index
+        %csliceDW = arith.constant {slice_dw} : index
         %csliceD = arith.constant {slice_d} : index
         %csliceI = arith.constant {slice_i} : index
         %cslice2I = arith.constant {slice_2i} : index
@@ -1739,6 +1782,8 @@ module {{
         %zero_s = arith.constant 0 : i32
         %ctok_s = arith.constant {tokens} : index
         %ctasks_i = arith.constant {tasks} : i32
+        %ctasksD_i = arith.constant {tasks_d} : i32
+        %ctasksV_i = arith.constant {tasks_v} : i32
         %cheads_i = arith.constant {heads} : i32
         %n1_s = arith.constant 1 : i32
         %fzero_s = arith.constant 0.0 : f32
@@ -1858,6 +1903,8 @@ module {{
             // pieces that were never going to do anything.
             %nat_i = arith.index_cast %nat : index to i32
             %ntasks_t = arith.muli %nat_i, %ctasks_i : i32
+            %ntasksD_t = arith.muli %nat_i, %ctasksD_i : i32
+            %ntasksV_t = arith.muli %nat_i, %ctasksV_i : i32
             %nheads_t = arith.muli %nat_i, %cheads_i : i32""")
 
     # The event wait, and who pays for it.
@@ -2532,6 +2579,8 @@ module {{
         red_num,
         slice_num,
         residual=None,
+        count_c="%ctasks",
+        total_c="%ntasks_t",
     ):
         store = (
             f"""
@@ -2565,8 +2614,8 @@ module {{
                 l,
                 stage,
                 ev,
-                "%ctasks",
-                "%ntasks_t",
+                count_c,
+                total_c,
                 f"""                %j0 = arith.muli %ix, {slice_c} : index
                 scf.for %jj = %tx_s to {slice_c} step %nlane {{
                   %j = arith.addi %j0, %jj : index
@@ -2606,8 +2655,8 @@ module {{
             l,
             stage,
             ev,
-            "%ctasks",
-            "%ntasks_t",
+            count_c,
+            total_c,
             f"""                %j0 = arith.muli %ix, {slice_c} : index
                 %cC{l}_{stage} = arith.constant {cols} : index
                 %cKS{l}_{stage} = arith.constant {waves * klanes} : index
@@ -2967,10 +3016,12 @@ module {{
                 QWT,
                 "%swo",
                 WTB,
-                "%csliceD",
+                "%csliceDW",
                 "%cqw_s",
                 qw,
-                slice_d,
+                slice_dw,
+                count_c="%ctasksD",
+                total_c="%ntasksD_t",
             )
         )
 
@@ -3075,11 +3126,13 @@ module {{
                 IT,
                 "%swd",
                 WDTB,
-                "%csliceD",
+                "%csliceDW",
                 "%cinter_s",
                 inter,
-                slice_d,
+                slice_dw,
                 residual="%sxa",
+                count_c="%ctasksD",
+                total_c="%ntasksD_t",
             )
         )
 
@@ -3117,8 +3170,8 @@ module {{
             "x",
             stages + 2,
             base_x + 2,
-            "%ctasks",
-            "%ntasks_t",
+            "%ctasksV",
+            "%ntasksV_t",
             f"""                %v0 = arith.muli %ix, %csliceV : index
                 scf.for %jj = %tx_s to %csliceV step %nthr {{
                   %v = arith.addi %v0, %jj : index
@@ -3147,8 +3200,8 @@ module {{
             "x",
             stages + 3,
             base_x + 3,
-            "%ctasks",
-            "%ntasks_t",
+            "%ctasksV",
+            "%ntasksV_t",
             f"""                %v0 = arith.muli %ix, %csliceV : index
                 %bi:2 = scf.for %jj = %c0_s to %csliceV step %c1_s
                     iter_args(%bv = %negbig_s, %bidx = %zero_s) -> (f32, i32) {{
@@ -3178,7 +3231,7 @@ module {{
             "x",
             stages + 4,
             base_x + 4,
-            f"""              %rd:2 = scf.for %k = %c0_s to %ctasks step %c1_s
+            f"""              %rd:2 = scf.for %k = %c0_s to %ctasksV step %c1_s
                   iter_args(%bv = %negbig_s, %bidx = %zero_s) -> (f32, i32) {{
                 %apv = memref.load %spv[%m, %k] : {PVT}
                 %api = memref.load %spi[%m, %k] : {PIT}
