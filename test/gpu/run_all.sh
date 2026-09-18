@@ -36,7 +36,8 @@ declare -A DIR=( [megakernel_gen_prefill]=megakernel_gen
                  [megakernel_gen_decode]=megakernel_gen
                  [megakernel_gen_chunked]=megakernel_gen
                  [megakernel_gen_waves]=megakernel_gen
-                 [megakernel_gen_waves_prefill]=megakernel_gen )
+                 [megakernel_gen_waves_prefill]=megakernel_gen
+                 [megakernel_gen_contend]=megakernel_gen )
 declare -A ENVV=( [megakernel_gen_prefill]="TOKENS=4 LAYERS=2"
                   [megakernel_gen_decode]="STEPS=3 TOKENS=2 LAYERS=2"
                   # A 5-token prompt in a window of 2: the steps carry 2, 2, 1,
@@ -53,7 +54,25 @@ declare -A ENVV=( [megakernel_gen_prefill]="TOKENS=4 LAYERS=2"
                   # benchmark turned, so the multi-wave path could only be
                   # checked by a run that reads three gigabytes off NFS first.
                   [megakernel_gen_waves]="WAVES=8 STEPS=3 TOKENS=2 LAYERS=2"
-                  [megakernel_gen_waves_prefill]="WAVES=8 TOKENS=4 LAYERS=2" )
+                  [megakernel_gen_waves_prefill]="WAVES=8 TOKENS=4 LAYERS=2"
+                  # Many workgroups contending for few task queues, deep enough
+                  # to keep rolling the dice. This is the shape that catches a
+                  # workgroup-divergent barrier in the claim path: the queues
+                  # drain almost at once, so the "this queue is empty" flags
+                  # flip while thirty-odd workgroups a die are reading them,
+                  # and a workgroup whose waves disagree about a flag meets
+                  # different barriers and reads someone else's claim.
+                  #
+                  # Chosen by running candidates against the generator that had
+                  # that bug: this one failed three times out of three, and the
+                  # passing configurations above all failed zero out of three.
+                  # Every 128-worker shape tried came out two out of three at
+                  # best, which is a coin and not a test, so this one needs 256
+                  # workgroups of 512 threads co-resident -- two per CU on a
+                  # 256-CU part. On a part that cannot hold them the megakernel
+                  # does not run slowly, it hangs, and the suite timeout is
+                  # what reports it.
+                  [megakernel_gen_contend]="WAVES=8 LAYERS=16 DIM=256 TASKS=16 WORKERS=256 STEPS=2" )
 
 TESTS=(
   4k_4k_mul
@@ -73,6 +92,7 @@ TESTS=(
   megakernel_gen_chunked
   megakernel_gen_waves
   megakernel_gen_waves_prefill
+  megakernel_gen_contend
   gang_task
   scheduler_broadcast
   gang_mmajor
