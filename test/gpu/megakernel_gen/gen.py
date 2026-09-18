@@ -2880,7 +2880,7 @@ module {{
                       iter_args(%s = %fzero_s) -> (f32) {{
                     %hi = arith.addi %qhb, %hdi : index
                     %qv = memref.load %sqkv[%m, %hi] : {QT}
-                    %kv = memref.load %skc[%L{l}, %t, %hk, %hdi] {{nontemporal = true}} : {KVT}
+                    %kv = memref.load %skc[%L{l}, %t, %hk, %hdi] : {KVT}
                     %mp = arith.mulf %qv, %kv : f32
                     %s2 = arith.addf %s, %mp : f32
                     scf.yield %s2 : f32
@@ -2928,12 +2928,22 @@ module {{
                 // output component outright, and there are more threads than
                 // components, so the chain is curlen deep rather than curlen
                 // times the components a lane was carrying.
+                //
+                // Nothing here is non-temporal. The kv cache is the one thing
+                // in a decode step that is read again -- every head of a kv
+                // group reads the same rows, and every step re-reads every row
+                // the previous ones wrote -- and the whole cache for this
+                // model is about a megabyte over all 28 layers, so it belongs
+                // in L2 and nowhere else. It was marked non-temporal, which
+                // sends each element to memory and back; this loop is a chain
+                // of `curlen` dependent loads, so that was `curlen` memory
+                // latencies end to end, per head, per layer, per step.
                 scf.for %hdi = %tx_s to %chd_s step %nthr {{
                   %a = scf.for %t = %c0_s to %curlen step %c1_s
                       iter_args(%sacc = %fzero_s) -> (f32) {{
                     %e = memref.load %ssc[%m, %ix, %t] : {SCT}
                     %pv = arith.divf %e, {sumref} : f32
-                    %vv = memref.load %svc[%L{l}, %t, %hk, %hdi] {{nontemporal = true}} : {KVT}
+                    %vv = memref.load %svc[%L{l}, %t, %hk, %hdi] : {KVT}
                     %mp = arith.mulf %pv, %vv : f32
                     %s2 = arith.addf %sacc, %mp : f32
                     scf.yield %s2 : f32
