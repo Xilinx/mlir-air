@@ -59,7 +59,13 @@ jobs:
           # drift. A constraints file only bounds packages that are actually
           # being installed, so the cmake/ninja entries in it are inert (both
           # come from setup-cpp above).
-          pip install lit PyYAML numpy nanobind -c utils/requirements_dev.txt
+          #
+          # psutil has to be named here for that same reason. It is in
+          # requirements_dev.txt, but being in a constraints file installs
+          # nothing, and lit treats a missing psutil as fatal rather than
+          # degrading: the suite's --timeout makes `lit: fatal: Setting a
+          # timeout per test not supported` the outcome, so no test runs at all.
+          pip install lit PyYAML numpy nanobind psutil -c utils/requirements_dev.txt
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@v1.2
@@ -113,3 +119,18 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=install
 
           ninja
+
+      # This job built but never ran anything, so every Windows-only behaviour
+      # difference was invisible here: the LLP64 `long` bug this commit fixes
+      # made 26 of the 56 air-runner tests fail on Windows and no CI noticed,
+      # because Linux is LP64 and its runs were green.  check-air-mlir is the
+      # suite that catches that class -- it is pure air-opt/air-runner +
+      # FileCheck, needs no NPU, no XRT and no Vitis, and takes ~30s.
+      #
+      # check-air-python is deliberately NOT added: api/errors.py takes ~74s on
+      # Windows against the suite's 30s lit timeout, so it would go red for a
+      # slowness reason unrelated to correctness.  Worth fixing separately.
+      - name: Test
+        run: |
+          cd build
+          ninja check-air-mlir

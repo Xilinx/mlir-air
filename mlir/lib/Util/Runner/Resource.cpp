@@ -106,8 +106,22 @@ public:
 
   void add_connection(port *p) { connected_ports[p->name] = p; }
 
-  void set_data_rate(long bytes_per_cycle) {
-    this->data_rate = bytes_per_cycle;
+  // Bytes per SECOND, which is what getTransferCost divides by to get seconds
+  // before scaling by the clock. The parameter used to be named
+  // bytes_per_cycle, after the JSON key read by the json::Object constructor
+  // above -- but no arch model in the tree carries a bytes_per_cycle field and
+  // nothing constructs a port that way, so the only live spelling is the
+  // bytes_per_second the hierarchy passes down.
+  //
+  // double, not an integer type: data_rate is a double and both callers pass
+  // one, and the rates run to 1e11. Taking `long` here narrowed every rate
+  // through a 32-bit int on Windows -- LLP64 makes long 32 bits, where LP64
+  // Linux makes it 64 -- so 1e11 overflowed and MSVC's out-of-range conversion
+  // produced INT32_MIN. A negative rate gives a negative transfer cost, which
+  // the unsigned cycle counters then wrapped to ~2^64, stalling the
+  // simulation. Linux never saw it.
+  void set_data_rate(double bytes_per_second) {
+    this->data_rate = bytes_per_second;
   }
 
   void set_latency(double cycles) { this->latency = cycles; }
