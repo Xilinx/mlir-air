@@ -52,13 +52,6 @@ CTX ?= 2048
 export LFM2_SEQ_LEN   := $(CTX)
 export LFM2_CACHE_DIR := $(srcdir)/$(BUILD_DIR)/kernel_cache_$(CTX)
 
-# Dual-MM2S weight feed for the fused decode (see fused_decode/fused_decode.py).
-# The BUILD and the RUN must agree -- the flag selects both the shim channel
-# split and the weight cascade order -- so export it here and let it reach both
-# the decode build and the inference driver.
-W_DUAL_CHAN ?= 1
-export W_DUAL_CHAN
-
 DEC           := $(srcdir)/../../fused_decode
 DECODE_DRIVER := $(DEC)/fused_decode.py
 AIEOPT_DIR    := $(shell realpath $(dir $(shell which aie-opt))/..)
@@ -108,7 +101,7 @@ ATTN_EXTRA    ?=
 
 # VOCAB_CHUNK_I2 must satisfy UNI_LM*VOCAB_CHUNK_I2 = VOCAB_FULL_ROWBLKS/32 = 64
 # against UNI_LM=4 in the lfm2-1.2b _MODELS entry; fused_decode.py asserts it.
-DECODE_ENV := DECODE_MODEL=lfm2-1.2b VOCAB_CHUNK_I2=16 UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
+DECODE_ENV := DECODE_MODEL=lfm2-1.2b UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
 # so a header copied from another model can disagree with the IR -- silently, at
@@ -135,7 +128,13 @@ endif
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN) LBUILD=$(LBUILD) SC_WAVES=$(SC_WAVES)
+# W_DUAL_CHAN / VOCAB_CHUNK_I2 / DECODE_STACK / DECODE_WGROUP are NOT set here.
+# They are properties of the model, so they live in fused_decode.py's _MODELS
+# table and the engine reads them from there -- a value this Makefile could pass
+# is a value it could pass wrong, and the build and the host MUST agree on all
+# four. Stamped below so editing the table invalidates the warm templates.
+MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+DECODE_FLAGS       = $(MODEL_CFG) LBUILD=$(LBUILD) SC_WAVES=$(SC_WAVES)
 
 .PHONY: help compile compile-decode _compile_decode_build run profile chat \
         verify verify-full diagnosis verify-paris decode-gate weights \

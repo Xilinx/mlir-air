@@ -62,23 +62,11 @@ def llama3_rope(
     return np.cos(emb).astype(np.float32), np.sin(emb).astype(np.float32)
 
 
-# fused_decode model key + vocab chunking. VOCAB_CHUNK_I2 must satisfy
-# (K/PAYLOAD) | VOCAB_I2*PAIR_ROWS -- 8 | 32 here -- or the vocab wave deadlocks;
-# it also has to match the model entry's UNI_LM (see fused_decode.py).
+# The vocab chunking, the weight-BO split and the core stack are properties of
+# this model, so they come from fused_decode.py's _MODELS entry -- read them back
+# off the module (fd.VOCAB_I2 / fd.W_GROUP / fd.STACK_SIZE) rather than setting
+# them here, where the build and this host could disagree.
 DECODE_MODEL = "llama-3.1-8b"
-VOCAB_CHUNK_I2 = "16"
-# Decode layers per weight BO. A shim BD's byte offset is a uint32, so ONE buffer
-# is only addressable over 4 GiB; the 32 layers + lm-head are 4.375 GiB here and
-# wrapped (every logit came back NaN). 8 gives four 0.9 GiB groups, comfortably
-# under the line, plus the lm-head on its own. Must match what the templates were
-# built with (the Makefile's DECODE_WGROUP).
-DECODE_WGROUP = 8
-# Core stack. At K=4096 the rms core's seven K-wide L1 activation buffers leave
-# under 8 KiB, so the 10240 default does not fit and buffer allocation fails at
-# build time. 8064 keeps a measured >2x margin over the deepest decode frame
-# (2112 B, proj_qmm_pass256 / attn_kv_fin). Near-exact fit: another K-sized
-# buffer on the rms core needs a real change here, not another trim.
-DECODE_STACK = 8064
 
 
 def load_fd(model_type="LLAMA_3_1_8B"):
@@ -87,14 +75,11 @@ def load_fd(model_type="LLAMA_3_1_8B"):
     generator selects the same model with DECODE_MODEL."""
     os.environ.update(
         DECODE_MODEL=DECODE_MODEL,
-        VOCAB_CHUNK_I2=VOCAB_CHUNK_I2,
         UNIFIED="1",
         LM_HEAD="0",
         NLAYERS="1",
         DECODE_GOLDEN="1",
         DECODE_GOLDEN_L="2048",
-        DECODE_WGROUP=str(DECODE_WGROUP),
-        DECODE_STACK=str(DECODE_STACK),
     )
     spec = importlib.util.spec_from_file_location("fu8b", str(_DEC / "fused_decode.py"))
     fd = importlib.util.module_from_spec(spec)

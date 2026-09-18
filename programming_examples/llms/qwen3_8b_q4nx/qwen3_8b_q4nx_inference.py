@@ -54,11 +54,6 @@ PARIS_FIRST = 12095
 # in which case the gate checks the first token only and prints the run to paste back.
 PARIS_GREEDY = [12095, 13, 576, 6722, 315, 15344, 374, 21718, 13, 576]
 EOS_IDS = (151643, 151645)  # <|endoftext|>, <|im_end|>
-# Decode layers per weight BO. A shim BD's byte offset is a uint32, so ONE buffer
-# is only addressable over 4 GiB; 36 layers of Q4NX weights are 4.04 GiB and wrap
-# (every logit came back NaN). 9 gives four 1.01 GiB groups -- 4x under the line --
-# plus the lm-head on its own. Must match the value the templates were built with.
-DECODE_WGROUP = 9
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_qwen3_8b")
 
 
@@ -169,12 +164,10 @@ class FusedDecoder:
         os.environ.update(
             DECODE_MODEL="qwen3-8b",
             UNIFIED="1",
-            VOCAB_CHUNK_I2="8",
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",
             DECODE_GOLDEN_L=str(self.ATTN_MAXL),
-            DECODE_WGROUP=str(DECODE_WGROUP),
         )
         spec = importlib.util.spec_from_file_location(
             "fu_qwen3_8b", str(_DEC / "fused_decode.py")

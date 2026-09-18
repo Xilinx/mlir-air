@@ -156,7 +156,6 @@ class FusedDecoder:
         os.environ.update(
             DECODE_MODEL="qwen2.5-3b",
             UNIFIED="1",
-            VOCAB_CHUNK_I2="12",
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",

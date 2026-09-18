@@ -16,10 +16,9 @@
 // a real prompt of that length. llvm_link_pre23 is still required because the
 // build goes through fused_decode's inline-attn merge.
 //
-// Unlike qwen3_8b_q4nx this passes neither DECODE_WGROUP nor DECODE_STACK: at
-// K=2560 the decode weights are ~2.1 GiB, under the 4 GiB one-BO limit that
-// forces 8B's weight split, and the default core stack fits. The Makefile's
-// defaults (DECODE_WGROUP=0, no DECODE_STACK) are the correct ones here.
+// At K=2560 the decode weights are ~2.1 GiB, under the 4 GiB one-BO limit that
+// forces 8B's weight split, so this model's _MODELS entry keeps the defaults
+// (DECODE_WGROUP=0, DECODE_STACK=10240).
 //
 // 64k and 128k are swept but allowed to fail. Whether a model reaches them
 // depends on how much host memory XRT will pin for its KV BO, which differs

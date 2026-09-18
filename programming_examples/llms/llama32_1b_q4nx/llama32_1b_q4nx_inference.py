@@ -343,7 +343,6 @@ class FusedDecoder:
             # overriding this one alone trips fused_decode.py's
             # `UNI_LM == N_VOCAB_CHUNKS` assert. That is deliberate: the assert names
             # both values, and a silent mismatch would sweep the wrong vocab length.
-            VOCAB_CHUNK_I2=os.environ.get("VOCAB_CHUNK_I2", "18"),
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",  # boolean flag: enable post-attn-RMS decode path

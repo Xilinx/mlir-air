@@ -57,19 +57,11 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 
 # Qwen3-4B decode env (module-level constants read these): 36 layers, vocab-151936
-# chunking. VOCAB_CHUNK_I2=30 is this model's own value (build_template.sh) -- the
+# chunking. is this model's own value (build_template.sh) -- the
 # vocab-chunk divisibility constraints depend on NCX/NCY/PAIR_ROWS, which do not
 # transfer from qwen3_8b_q4nx's 8.
 #
-# DECODE_WGROUP: decode layers per weight BO, only needed past the 4 GiB one-BO
-# limit (qwen3-4b's 2.1 GiB total does not need it -- see the module docstring in
-# qwen3_4b_q4nx_inference.py). 0 = disabled. If nonzero, must match
-# Q4NX_DECODE_WGROUP in qwen3_4b_q4nx_inference.py -- the host slices the weights
-# the same way.
-DECODE_WGROUP ?= 0
-DECODE_ENV := DECODE_MODEL=qwen3-4b VOCAB_CHUNK_I2=30 UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-              $(if $(filter-out 0,$(DECODE_WGROUP)),DECODE_WGROUP=$(DECODE_WGROUP),)
-
+DECODE_ENV := DECODE_MODEL=qwen3-4b UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
 # so a header copied from another model can disagree with the IR -- silently, at
 # runtime. Hand the builder's value to the kernel compile; glu.cc asserts on it.
@@ -99,16 +91,6 @@ PROFILE_PROMPT := $(if $(PROMPT),$(PROMPT),What is the capital of France?)
 MODEL_SOURCE ?= FastFlowLM/Qwen3-4B-NPU2
 export Q4NX_MODEL_SOURCE := $(MODEL_SOURCE)
 
-# Dual-MM2S weight feed for the fused decode (fused_decode/fused_decode.py).
-# ON by default. The BUILD and the RUN must agree -- the flag selects both the
-# shim channel split and the DDR weight cascade order -- so export it here and let
-# it reach the delegated decode build AND the inference driver. The requant cache
-# is keyed on it, so flipping it needs no manual cache purge.
-W_DUAL_CHAN ?= 1
-export W_DUAL_CHAN
-
-
-# ---- shared verify subsystem (programming_examples/llms/verify/) ----
 VERIFY_RUNNER  := $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER := qwen3_4b_q4nx.verify_adapter
 MODEL_CHOICE   ?= instruct
@@ -143,7 +125,7 @@ help:
 	@echo "  PROMPT=\"...\"             Prompt for 'make run' / 'make ask'"
 	@echo "  CTX=2048                 Prefill context length (padded)"
 	@echo "  MODEL_SOURCE=<repo|dir>  model.q4nx source (default FastFlowLM/Qwen3-4B-NPU2)"
-	@echo "  DECODE_WGROUP=$(DECODE_WGROUP)               Decode layers per weight BO (0 = disabled; not needed at 4B's size)"
+	@echo "                Decode layers per weight BO (0 = disabled; not needed at 4B's size)"
 
 ## Build the Qwen3-4B decode: kernels (QWEN3_4B) + two same-ATTN_MAXL templates
 ## (decode_L$(LBUILD) + decode_L$(LREF)) into this dir. Weight-free build.
@@ -155,7 +137,13 @@ help:
 # other setting must NOT be reused -- it would be fed the wrong blocks and produce
 # silent garbage. The stamp makes the skip below flag-aware.
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN) DECODE_WGROUP=$(DECODE_WGROUP)
+# W_DUAL_CHAN / VOCAB_CHUNK_I2 / DECODE_STACK / DECODE_WGROUP are NOT set here.
+# They are properties of the model, so they live in fused_decode.py's _MODELS
+# table and the engine reads them from there -- a value this Makefile could pass
+# is a value it could pass wrong, and the build and the host MUST agree on all
+# four. Stamped below so editing the table invalidates the warm templates.
+MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP python3 $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+DECODE_FLAGS       = $(MODEL_CFG)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \

@@ -116,12 +116,13 @@ def _make_vars(args):
     build fails at preflight-peano. The profile/verify lits pass
     PEANO_INSTALL_DIR on each make line for exactly this reason.
 
-    --builder-env goes to make too, not only to the geometry import. The split-
-    weight models take DECODE_WGROUP, which decides both how the device build
-    partitions the weight args and how the host has to slice them; if the two
-    disagree the dispatch still runs and reports a plausible number. Forwarding
-    the same value to both makes that impossible. The model Makefiles declare
-    these with `?=`, so a command-line assignment wins.
+    --builder-env goes to make too, not only to the geometry import, for knobs
+    that are genuinely per-run. It is NOT how the model's own configuration
+    travels: W_DUAL_CHAN / VOCAB_CHUNK_I2 / DECODE_STACK / DECODE_WGROUP decide
+    both how the device build partitions the weight args and how the host slices
+    them, and if the two disagree the dispatch still runs and reports a plausible
+    number -- so those live in fused_decode.py's _MODELS table and neither side
+    can be told otherwise.
     """
     v = [f"PEANO_INSTALL_DIR={args.peano_dir}"] if args.peano_dir else []
     return v + list(args.builder_env or [])
@@ -228,9 +229,9 @@ def main():
         "--builder-env",
         action="append",
         metavar="K=V",
-        help="extra builder knobs (repeatable), e.g. DECODE_WGROUP=9. Passed "
-        "both to the geometry import and to make, so the device build and the "
-        "host BO split cannot drift apart.",
+        help="extra per-run builder knobs (repeatable). Passed both to the "
+        "geometry import and to make. Model configuration does NOT travel "
+        "this way -- see fused_decode.py's _MODELS table.",
     )
     p.add_argument("--iters", type=int, default=20)
     p.add_argument("--warmup", type=int, default=6)

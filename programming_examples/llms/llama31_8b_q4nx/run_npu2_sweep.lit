@@ -16,10 +16,10 @@
 // a real prompt of that length. llvm_link_pre23 is still required because the
 // build goes through fused_decode's inline-attn merge.
 //
-// DECODE_WGROUP / DECODE_STACK are passed rather than left to the Makefile's
-// defaults because they reach two places that have to agree: the device build
-// (how many weight args the signature carries) and the host BO split. Passing
-// them here sends one value to both.
+// DECODE_WGROUP / DECODE_STACK are not passed: they reach two places that have
+// to agree -- the device build (how many weight args the signature carries) and
+// the host BO split -- so they live in fused_decode.py's _MODELS entry and both
+// sides read them from there.
 //
 // 64k and 128k are swept but allowed to fail. Whether a model reaches them
 // depends on how much host memory XRT will pin for its KV BO, which differs
@@ -32,7 +32,7 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama31_8b_q4nx --makefile %S/Makefile --template-dir %S --bench-model llama-3.1-8b --vocab-chunk-i2 16 --n-layers 32 --builder-env DECODE_WGROUP=8 --builder-env DECODE_STACK=8064 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out llama31_8b_q4nx.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama31_8b_q4nx --makefile %S/Makefile --template-dir %S --bench-model llama-3.1-8b --vocab-chunk-i2 16 --n-layers 32 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out llama31_8b_q4nx.sweep.json
 // RUN: FileCheck %s < llama31_8b_q4nx.sweep.json
 // CHECK: "model": "llama31_8b_q4nx"
 // CHECK: "axis": "context_len"

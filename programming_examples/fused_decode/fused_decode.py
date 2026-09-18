@@ -190,6 +190,28 @@ from proj_qmm_pack import (
 # reproduces the original hardcoded values BYTE-IDENTICALLY (no-op).
 import os as _os
 
+# What a model's entry inherits unless it says otherwise. These four are NOT read
+# from the environment: they are properties of the model, and a build and the host
+# that drives it MUST agree on them, so having a front end able to pass them is
+# having a front end able to pass them wrong. Both ways it can go wrong have
+# already happened to qwen2.5-3b, which is the one model wanting W_DUAL_CHAN=0:
+# the value missing (running the driver without the Makefile's export) decodes
+# fluent garbage, and the value leaking in from a sibling (bench/decode_geometry
+# pinning 1) wedged every dispatch on a Krackan NPU.
+_MODEL_DEFAULTS = dict(
+    # Dual-MM2S weight feed: drive each proj column's weight stream on both of its
+    # shim MM2S channels. Reorders the DDR cascade, so the weights must be PACKED
+    # the same way -- the drivers key their requant cache on it.
+    W_DUAL_CHAN=1,
+    # lm-head vocab chunk. UNI_LM * VOCAB_CHUNK_I2 covers the padded vocab, and
+    # the assert below holds the pair together.
+    VOCAB_CHUNK_I2=18,
+    # Core stack. Only the K=4096 geometries need less; see their entries.
+    DECODE_STACK=10240,
+    # Decode layers per weight BO; 0 = one buffer for all of them.
+    DECODE_WGROUP=0,
+)
+
 _MODELS = {
     "llama-3.2-1b": dict(
         K=2048,  # model dim
@@ -245,6 +267,7 @@ _MODELS = {
         # per-dispatch op-count/BDs small (RNDS=5, 80 rowblocks/chunk) -> 103 chunks.
         # The driver MUST set VOCAB_CHUNK_I2=5 (env) to match this UNI_LM.
         UNI_LM=103,  # vocab chunks per LM head (VOCAB_CHUNK_I2=5)
+        VOCAB_CHUNK_I2=5,
     ),
     # Llama-3.2-3B: same topology as the 1B entry, only dimensions differ
     # (FLM's 1B and 3B layer.mlir are byte-structurally identical). head_dim
@@ -277,6 +300,7 @@ _MODELS = {
         # full-vocab rowblocks into 14 chunks. The driver MUST set
         # VOCAB_CHUNK_I2=9 (env) to match this UNI_LM.
         UNI_LM=14,  # vocab chunks per LM head (VOCAB_CHUNK_I2=9)
+        VOCAB_CHUNK_I2=9,
     ),
     # Phi-4-mini-instruct. Attention topology and per-phase block counts are
     # IDENTICAL to llama-3.2-3b (K=3072, M=5120, 8 kv heads, 2x4x1, DH=128), so
@@ -338,6 +362,13 @@ _MODELS = {
         # below the 18-chunk ceiling -> 19 waves, 256 rowblocks/chunk.
         # The driver MUST set VOCAB_CHUNK_I2=8 (env) to match this UNI_LM.
         UNI_LM=19,  # vocab chunks per LM head (VOCAB_CHUNK_I2=8)
+        VOCAB_CHUNK_I2=8,
+        # K=4096: the rms core's seven K-wide L1 activation buffers leave under
+        # 8 KiB, so the 10240 default does not fit and allocation fails at build.
+        DECODE_STACK=6144,
+        # 32 layers of K=4096 weights exceed the 4 GiB a uint32 BD offset can
+        # address in ONE buffer (every logit came back NaN); split them.
+        DECODE_WGROUP=9,
     ),
     # Qwen2.5-7B-Instruct: the first HAS_QKV_BIAS model on this engine (q/k/v_proj
     # carry a bias, added in-place before RoPE from a slab at rope_w+DH -- see
@@ -372,6 +403,9 @@ _MODELS = {
         # gemma) -> 43 waves, 112 rowblocks/chunk.
         # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
         UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
+        VOCAB_CHUNK_I2=7,
+        DECODE_STACK=6144,  # K=4096, as qwen3-8b
+        DECODE_WGROUP=7,
     ),
     # Qwen2.5-3B-Instruct: same family as qwen2.5-7b, one third the width, and
     # the only entry with 2 kv heads -- so the only one whose attention herd is
@@ -403,6 +437,11 @@ _MODELS = {
         VOCAB_SIZE=151936,
         UNI_DEC=36,  # 36 decoder layers
         UNI_LM=25,  # VOCAB_CHUNK_I2=12
+        VOCAB_CHUNK_I2=12,
+        # OFF for this model, unlike the other nine. The dual feed wedges every
+        # decode dispatch on a Krackan NPU -- 0 of 13 complete, at every context
+        # from 1024 to 32768; off completes 10 of 10. Costs ~16% decode on Strix.
+        W_DUAL_CHAN=0,
     ),
     # Qwen3-4B: the DFlash target (see docs/DFlashFeasibility.md). Qwen3 QK-norm
     # like qwen3-8b, but with the DECOUPLED q dim the bf16 llms/qwen3_4b example
@@ -440,6 +479,7 @@ _MODELS = {
         # 30 is the largest, i.e. the fewest host-armed waves: 300/30 = 10.
         # The driver MUST set VOCAB_CHUNK_I2=30 (env) to match this UNI_LM.
         UNI_LM=10,  # vocab chunks per LM head (VOCAB_CHUNK_I2=30)
+        VOCAB_CHUNK_I2=30,
     ),
     # Llama-3.1-8B: same attention topology as 1B/3B (2x4x1, 8 kv heads, DH=128),
     # so the per-CU KV geometry is unchanged; only the proj/FFN widths grow. Like
@@ -473,6 +513,13 @@ _MODELS = {
         # envelope rules out 32, so 16 is the largest -> 8 waves.
         # The driver MUST set VOCAB_CHUNK_I2=16 (env) to match this UNI_LM.
         UNI_LM=8,  # vocab chunks per LM head (VOCAB_CHUNK_I2=16)
+        VOCAB_CHUNK_I2=16,
+        # K=4096; 8064 keeps a measured >2x margin over the deepest decode frame
+        # (2112 B, proj_qmm_pass256 / attn_kv_fin). Near-exact fit.
+        DECODE_STACK=8064,
+        # 32 layers + lm-head are 4.375 GiB, over the 4 GiB one BO can address
+        # (it wrapped: every logit NaN). 8 gives four 0.9 GiB groups.
+        DECODE_WGROUP=8,
     ),
     # ===== LFM2-1.2B: a HYBRID conv-attention decoder, whole model ==========
     #
@@ -511,11 +558,16 @@ _MODELS = {
         VOCAB_SIZE=65536,
         UNI_DEC=16,  # ALL 16 layers
         UNI_LM=4,
+        VOCAB_CHUNK_I2=16,  # UNI_LM*VOCAB_CHUNK_I2 = VOCAB_FULL_ROWBLKS/32 = 64
         ATTN_LAYERS=(2, 5, 8, 10, 12, 14),
     ),
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
-MODEL = _MODELS[MODEL_NAME]
+MODEL = {**_MODEL_DEFAULTS, **_MODELS[MODEL_NAME]}
+# The build stamps embed this so editing a model's entry invalidates its warm
+# templates. Queried by the Makefiles with FUSED_DECODE_PRINT_CONST, which prints
+# any global by name -- the same hook GLU_SLICE uses.
+MODEL_CONFIG_STAMP = " ".join(f"{k}={MODEL[k]}" for k in sorted(_MODEL_DEFAULTS))
 
 # ph0 egress consumer. "rope" = attention (RoPE -> KV append -> block attention);
 # "conv" = LFM2 Lfm2ShortConv (gate -> causal depthwise k=3 -> gate), which needs
@@ -807,7 +859,7 @@ GRP_PCOL = (
 # Requires the host weight array packed with pack_q4k_cascade(dual_chan=True).
 # Exported so the weight packers (llms/*_q4nx requant) key their cascade order and
 # their cache off the same flag as the build.
-W_DUAL_CHAN = int(_os.environ.get("W_DUAL_CHAN", "1"))
+W_DUAL_CHAN = MODEL["W_DUAL_CHAN"]
 
 
 def _wname(ci, cx):
@@ -938,7 +990,7 @@ DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
 COALESCE = 1
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
 # under 8 KiB, so that geometry lowers it; every other model keeps 10240.
-STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
+STACK_SIZE = MODEL["DECODE_STACK"]
 # The attention K and V memtile rings are decoupled (the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K /
 # inKV_V), so the qk core's K supply is not lock-chained to the kv core's V
@@ -1100,7 +1152,7 @@ VOCAB_FULL_ROWBLKS = VOCAB_SIZE_PADDED_FULL // ROW_BLOCK  # 4032
 # hashes the same) and ~0.05 ms/token faster -- consistent with 2 waves x ~20 us, but
 # that is BELOW run-to-run noise at n=4, so treat the win as principled rather than
 # measured. The wave-cost slope itself is only resolvable over the wider 23->37 range.
-VOCAB_I2 = int(_os.environ.get("VOCAB_CHUNK_I2", "18"))
+VOCAB_I2 = MODEL["VOCAB_CHUNK_I2"]
 VOCAB_ROWBLKS = VOCAB_I2 * (NCX * NCY) * PAIR_ROWS  # rowblocks per chunk/dispatch
 VOCAB_SIZE_PADDED = VOCAB_ROWBLKS * ROW_BLOCK  # logits per chunk (device drain size)
 assert VOCAB_FULL_ROWBLKS % VOCAB_ROWBLKS == 0, "chunk must divide the full vocab"
@@ -1184,7 +1236,7 @@ UNI_WAVE_HI = UNI_WAVES
 # except we keep ONE dispatch (our runtime sequence is unrolled, so each wave's
 # BDs can name a different arg). G<=0 or G>=UNI_DEC => single buffer, and the
 # emitted IR is byte-identical to before this knob existed.
-W_GROUP = int(_os.environ.get("DECODE_WGROUP", "0"))
+W_GROUP = MODEL["DECODE_WGROUP"]
 W_SPLIT = 0 < W_GROUP < UNI_DEC
 N_WGRP = ((UNI_DEC + W_GROUP - 1) // W_GROUP) if W_SPLIT else 1
 # The split keys off the wave induction variable, which only exists in the fused
