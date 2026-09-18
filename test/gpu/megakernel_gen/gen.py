@@ -70,14 +70,31 @@ def _scale(mod, red, gain=1.0):
     return gain / _math.sqrt(red) / _math.sqrt((mod * mod - 1) / 12.0)
 
 
-def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
-         cache: int = 32, tokens: int = 1, inter: int = 0,
-         heads: int = 4, kv_heads: int = 2, steps: int = 1,
-         vocab: int = 256, head_dim: int = 0,
-         rope_theta: float = 10000.0, W=None, prompt=None,
-         prompt_len: int = 0, wave: int = 64, waves: int = 1,
-         nt_weights: bool = False, timers: bool = False,
-         dies: int = 8, unroll: int = 8) -> str:
+def emit(
+    layers: int,
+    dim: int,
+    tasks: int,
+    workers: int,
+    repeat: int = 1,
+    cache: int = 32,
+    tokens: int = 1,
+    inter: int = 0,
+    heads: int = 4,
+    kv_heads: int = 2,
+    steps: int = 1,
+    vocab: int = 256,
+    head_dim: int = 0,
+    rope_theta: float = 10000.0,
+    W=None,
+    prompt=None,
+    prompt_len: int = 0,
+    wave: int = 64,
+    waves: int = 1,
+    nt_weights: bool = False,
+    timers: bool = False,
+    dies: int = 8,
+    unroll: int = 8,
+) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
     # The wave is where the parallelism inside a task lives: a task body splits
@@ -109,13 +126,24 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # rather than left to burn an allocation discovering it again.
     assert nthreads <= 512, (
         f"waves={waves} gives a {nthreads}-thread workgroup; anything past 512 "
-        "hangs and the reason is not yet known")
-    lds_globals = "" if waves == 1 else (
-        f"  memref.global \"private\" @air_bcast : memref<4xi32, 3>\n"
-        f"  memref.global \"private\" @air_red : memref<{nthreads}xf32, 3>")
-    lds_handles = "" if waves == 1 else (
-        "        %bcast = memref.get_global @air_bcast : memref<4xi32, 3>\n"
-        f"        %ldsr = memref.get_global @air_red : memref<{nthreads}xf32, 3>")
+        "hangs and the reason is not yet known"
+    )
+    lds_globals = (
+        ""
+        if waves == 1
+        else (
+            f'  memref.global "private" @air_bcast : memref<4xi32, 3>\n'
+            f'  memref.global "private" @air_red : memref<{nthreads}xf32, 3>'
+        )
+    )
+    lds_handles = (
+        ""
+        if waves == 1
+        else (
+            "        %bcast = memref.get_global @air_bcast : memref<4xi32, 3>\n"
+            f"        %ldsr = memref.get_global @air_red : memref<{nthreads}xf32, 3>"
+        )
+    )
 
     def bcast_i32(src, dst, tag, indent):
         """Give every thread of the workgroup the value thread 0 computed.
@@ -134,7 +162,8 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
             f"{pad}  memref.store {src}, %bcast[%c0_s] : memref<4xi32, 3>\n"
             f"{pad}}}\n"
             f"{pad}gpu.barrier\n"
-            f"{pad}{dst} = memref.load %bcast[%c0_s] : memref<4xi32, 3>")
+            f"{pad}{dst} = memref.load %bcast[%c0_s] : memref<4xi32, 3>"
+        )
 
     def bcast_i32x2(src0, src1, dst0, dst1, tag, indent):
         """bcast_i32 for a pair, through one pair of barriers rather than two.
@@ -146,8 +175,10 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
         """
         pad = " " * indent
         if waves == 1:
-            return (f"{pad}{dst0} = rocdl.readfirstlane {src0} : i32\n"
-                    f"{pad}{dst1} = rocdl.readfirstlane {src1} : i32")
+            return (
+                f"{pad}{dst0} = rocdl.readfirstlane {src0} : i32\n"
+                f"{pad}{dst1} = rocdl.readfirstlane {src1} : i32"
+            )
         return (
             f"{pad}gpu.barrier\n"
             f"{pad}scf.if %isLead {{\n"
@@ -156,13 +187,15 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
             f"{pad}}}\n"
             f"{pad}gpu.barrier\n"
             f"{pad}{dst0} = memref.load %bcast[%c0_s] : memref<4xi32, 3>\n"
-            f"{pad}{dst1} = memref.load %bcast[%c1_s] : memref<4xi32, 3>")
+            f"{pad}{dst1} = memref.load %bcast[%c1_s] : memref<4xi32, 3>"
+        )
+
     # Qwen3 states head_dim in its config and it is not hidden/heads: 0.6B has
     # hidden 1024, 16 heads and head_dim 128, so the q projection is wider than
     # the residual stream and o_proj is the thing that narrows it again.
     hd = head_dim or (dim // heads)
-    qw = heads * hd            # width of the q projection and of o_proj's input
-    h2 = hd // 2               # rope pairs
+    qw = heads * hd  # width of the q projection and of o_proj's input
+    h2 = hd // 2  # rope pairs
     group = heads // kv_heads  # query heads per kv head
     qkvo = (heads + 2 * kv_heads) * hd
     # The cache holds the prefix plus every window the run will append. Step s
@@ -170,8 +203,12 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # everything up to its own, so the attention length is a runtime value.
     total = cache + steps * tokens
     assert hd % 2 == 0, "head dim must be even for rope"
-    for n, v in (("dim", dim), ("inter", inter), ("2*inter", 2 * inter),
-                 ("qkv out", qkvo)):
+    for n, v in (
+        ("dim", dim),
+        ("inter", inter),
+        ("2*inter", 2 * inter),
+        ("qkv out", qkvo),
+    ):
         assert v % tasks == 0, f"{n} ({v}) must divide evenly into tasks"
     slice_d = dim // tasks
     slice_i = inter // tasks
@@ -184,7 +221,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # ms/token). So the last piece is short and the three places that walk it
     # skip the columns past the end.
     slice_v = (vocab + tasks - 1) // tasks
-    invsqrthd = hd ** -0.5
+    invsqrthd = hd**-0.5
     lnrope = _math.log(rope_theta)
     # Activations carry a token dimension; weights do not. That asymmetry is
     # the whole reason M > 1 changes the traversal: a weight block is worth
@@ -236,8 +273,9 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # existed, so the existing tests stay an exact regression baseline.
     if prompt:
         prompt_len = prompt_len or len(prompt)
-        assert prompt_len == len(prompt), (
-            "--prompt-len must match the length of --prompt")
+        assert prompt_len == len(
+            prompt
+        ), "--prompt-len must match the length of --prompt"
     prompt_len = prompt_len or steps * tokens
     # A prompt longer than the window is consumed over several steps, which is
     # Fleet's chunked prefill (MPK_MAX_TOKENS_PER_REQUEST, persistent_kernel.cuh
@@ -249,7 +287,8 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
             f"    %pt{k} = arith.constant {tid} : i32\n"
             f"    %pk{k} = arith.constant {k} : index\n"
             f"    memref.store %pt{k}, %Tok[%pk{k}] : {TKT}"
-            for k, tid in enumerate(prompt))
+            for k, tid in enumerate(prompt)
+        )
     else:
         prompt_init = (
             "    scf.for %m = %c0 to %cplen step %c1 {\n"
@@ -258,7 +297,8 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
             "      %t1 = arith.addi %t0, %one : i32\n"
             "      %t2 = arith.remsi %t1, %cvocabi : i32\n"
             f"      memref.store %t2, %Tok[%m] : {TKT}\n"
-            "    }")
+            "    }"
+        )
 
     stages = 9
     # Around the layers: embed at the front, then the final norm, the lm head
@@ -291,7 +331,7 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # each on the device -- not to infer it by subtracting deliberately-broken
     # builds, which measures "cost of the program without this stage" and does
     # not sum to the total when the stages meet at a rendezvous.
-    nclass = 2 * (stages + extras)   # body and rendezvous wait, per class
+    nclass = 2 * (stages + extras)  # body and rendezvous wait, per class
     timerbase = flushword + 1
     locwords = timerbase + (nclass if timers else 0)
     # One workgroup owns the clock. Timing from all of them and summing would
@@ -299,27 +339,49 @@ def emit(layers: int, dim: int, tasks: int, workers: int, repeat: int = 1,
     # times; one workgroup's view of a stage is that stage's duration, waiting
     # at the rendezvous included, which is exactly its contribution to the
     # critical path.
-    timer_id = "" if not timers else """        %isDie0 = arith.cmpi eq, %mydie, %c0_s : index
+    timer_id = (
+        ""
+        if not timers
+        else """        %isDie0 = arith.cmpi eq, %mydie, %c0_s : index
         %isRank0 = arith.cmpi eq, %myrank2, %c0_s : index
         %isWG0 = arith.andi %isDie0, %isRank0 : i1"""
+    )
     # Names in stage order: nine per layer, then the five outside the loop.
-    timer_names = ["rmsnorm.attn", "qkv", "rope+kv_append", "attention",
-                   "o_proj", "rmsnorm.mlp", "gate_up", "swiglu", "down",
-                   "embed", "final_norm", "lm_head", "argmax_partial",
-                   "argmax_reduce"]
-    timer_report = "" if not timers else (
-        '    vector.print str "--- per-operator device ticks (100 MHz), '
-        'workgroup 0, summed over layers and steps:"\n'
-        + "\n".join(
-            f'    %tk{i} = arith.constant {timerbase + i} : index\n'
-            f'    %tv{i} = memref.load %Loc[%tk{i}] : memref<{locwords}xi32>\n'
-            f'    %wk{i} = arith.constant {timerbase + nclass // 2 + i} : index\n'
-            f'    %wv{i} = memref.load %Loc[%wk{i}] : memref<{locwords}xi32>\n'
-            f'    vector.print str "  {nm} body"\n'
-            f'    vector.print %tv{i} : i32\n'
-            f'    vector.print str "  {nm} wait"\n'
-            f'    vector.print %wv{i} : i32'
-            for i, nm in enumerate(timer_names)))
+    timer_names = [
+        "rmsnorm.attn",
+        "qkv",
+        "rope+kv_append",
+        "attention",
+        "o_proj",
+        "rmsnorm.mlp",
+        "gate_up",
+        "swiglu",
+        "down",
+        "embed",
+        "final_norm",
+        "lm_head",
+        "argmax_partial",
+        "argmax_reduce",
+    ]
+    timer_report = (
+        ""
+        if not timers
+        else (
+            '    vector.print str "--- per-operator device ticks (100 MHz), '
+            'workgroup 0, summed over layers and steps:"\n'
+            + "\n".join(
+                f"    %tk{i} = arith.constant {timerbase + i} : index\n"
+                f"    %tv{i} = memref.load %Loc[%tk{i}] : memref<{locwords}xi32>\n"
+                f"    %wk{i} = arith.constant {timerbase + nclass // 2 + i} : index\n"
+                f"    %wv{i} = memref.load %Loc[%wk{i}] : memref<{locwords}xi32>\n"
+                f'    vector.print str "  {nm} body"\n'
+                f"    vector.print %tv{i} : i32\n"
+                f'    vector.print str "  {nm} wait"\n'
+                f"    vector.print %wv{i} : i32"
+                for i, nm in enumerate(timer_names)
+            )
+        )
+    )
     strided_stages = 7  # every layer stage but 0 and 5
     # embed, lm head and the partial argmax are split by piece too; the final
     # norm and the argmax reduce are single-task.
@@ -659,7 +721,7 @@ module {{
     # Raw weight patterns; the centring pass below is what makes them usable.
     # --weights replaces all of this with a read from the checkpoint.
     if not W:
-      w(f"""
+        w(f"""
     scf.for %l = %c0 to %clayers step %c1 {{
       %ll = arith.index_cast %l : index to i32
       %fl = arith.sitofp %ll : i32 to f32
@@ -780,14 +842,21 @@ module {{
     }}"""
 
     if not W:
-      for nm, val in (("sqkv", s_qkv), ("so", s_o), ("sg", s_g), ("su", s_u),
-                      ("sd", s_d), ("sk", s_k), ("sv", s_v)):
-          w(f"\n    %{nm}c = arith.constant {val:.10e} : f32")
-      w(centre("%Wqkv", WQT, "%cdim", "%fred_d", "%cqkvo", "%sqkvc", "wq"))
-      w(centre("%Wo", WT, "%cqw", "%fred_qw", "%cdim", "%soc", "wo"))
-      # Wgu holds the gate half and the up half side by side and they come
-      # from different moduli, so the scale is selected per column.
-      w(f"""
+        for nm, val in (
+            ("sqkv", s_qkv),
+            ("so", s_o),
+            ("sg", s_g),
+            ("su", s_u),
+            ("sd", s_d),
+            ("sk", s_k),
+            ("sv", s_v),
+        ):
+            w(f"\n    %{nm}c = arith.constant {val:.10e} : f32")
+        w(centre("%Wqkv", WQT, "%cdim", "%fred_d", "%cqkvo", "%sqkvc", "wq"))
+        w(centre("%Wo", WT, "%cqw", "%fred_qw", "%cdim", "%soc", "wo"))
+        # Wgu holds the gate half and the up half side by side and they come
+        # from different moduli, so the scale is selected per column.
+        w(f"""
     scf.for %l = %c0 to %clayers step %c1 {{
       scf.for %o_gu = %c0 to %c2inter step %c1 {{
         %isup = arith.cmpi uge, %o_gu, %cinter : index
@@ -807,10 +876,10 @@ module {{
         }}
       }}
     }}""")
-      w(centre("%Wd", WDT, "%cinter", "%fred_i", "%cdim", "%sdc", "wd"))
-      # The KV prefix is 4-D and only its prefix rows exist, so it gets its
-      # own loop rather than the helper's.
-      w(f"""
+        w(centre("%Wd", WDT, "%cinter", "%fred_i", "%cdim", "%sdc", "wd"))
+        # The KV prefix is 4-D and only its prefix rows exist, so it gets its
+        # own loop rather than the helper's.
+        w(f"""
     scf.for %l = %c0 to %clayers step %c1 {{
       scf.for %hk = %c0 to %ckvh step %c1 {{
         scf.for %d = %c0 to %chd step %c1 {{
@@ -862,18 +931,20 @@ module {{
     %cn_{name} = arith.constant {count} : i64
     func.call @air_load_weights(%pp_{name}, %of_{name}, %cn_{name})
         : (!llvm.ptr, i64, i64) -> ()"""
+
         w("\n    // Qwen3 weights, straight from the checkpoint.")
         for buf, mtype, name, count in (
-                ("%Emb", EMT, "Emb", vocab * dim),
-                ("%Wlm", LMT, "Wlm", dim * vocab),
-                ("%Nf", NFT, "Nf", dim),
-                ("%N1", NT, "N1", layers * dim),
-                ("%N2", NT, "N2", layers * dim),
-                ("%QKN", QKNT, "QKN", layers * 2 * hd),
-                ("%Wqkv", WQT, "Wqkv", layers * dim * qkvo),
-                ("%Wo", WT, "Wo", layers * qw * dim),
-                ("%Wgu", WGT, "Wgu", layers * dim * 2 * inter),
-                ("%Wd", WDT, "Wd", layers * inter * dim)):
+            ("%Emb", EMT, "Emb", vocab * dim),
+            ("%Wlm", LMT, "Wlm", dim * vocab),
+            ("%Nf", NFT, "Nf", dim),
+            ("%N1", NT, "N1", layers * dim),
+            ("%N2", NT, "N2", layers * dim),
+            ("%QKN", QKNT, "QKN", layers * 2 * hd),
+            ("%Wqkv", WQT, "Wqkv", layers * dim * qkvo),
+            ("%Wo", WT, "Wo", layers * qw * dim),
+            ("%Wgu", WGT, "Wgu", layers * dim * 2 * inter),
+            ("%Wd", WDT, "Wd", layers * inter * dim),
+        ):
             w(load(buf, mtype, name, count))
 
     w(f"""
@@ -1586,7 +1657,8 @@ module {{
 """)
 
     layer_consts = "\n".join(
-        f"        %L{i} = arith.constant {i} : index" for i in range(layers))
+        f"        %L{i} = arith.constant {i} : index" for i in range(layers)
+    )
     w(f"""
   func.func @chain(%Q: {QUT}, %E: memref<{events}xi32>,
                    %X: {AT}, %Rv: {AT}, %QKV: {QT}, %Sc: {SCT},
@@ -1791,7 +1863,7 @@ module {{
     else:
         spin_open = "          scf.if %isW0 {"
         spin_close = "          }"
-        spin_end = "          gpu.barrier\n          llvm.fence syncscope(\"\") acquire"
+        spin_end = '          gpu.barrier\n          llvm.fence syncscope("") acquire'
         spin_order = "monotonic"
 
     # Emitted before every event signal once the workgroup is more than one
@@ -1838,16 +1910,18 @@ module {{
                 f"{pad}%lrw{tag}{k} = arith.constant {wave} : i32\n"
                 f"{pad}%lrs{tag}{k}, %lrp{tag}{k} = gpu.shuffle xor {cur}, "
                 f"%lro{tag}{k}, %lrw{tag}{k} : {ty}\n"
-                f"{pad}{nxt} = {op} {cur}, %lrs{tag}{k} : {ty}")
+                f"{pad}{nxt} = {op} {cur}, %lrs{tag}{k} : {ty}"
+            )
             cur = nxt
         return "\n".join(out)
-
 
     def timer_begin(l, stage):
         if not timers:
             return ""
-        return (f"          %tb{l}_{stage} = llvm.call_intrinsic "
-                f'"llvm.amdgcn.s.memrealtime"() : () -> i64')
+        return (
+            f"          %tb{l}_{stage} = llvm.call_intrinsic "
+            f'"llvm.amdgcn.s.memrealtime"() : () -> i64'
+        )
 
     def timer_mid(l, stage):
         """Between the body and the rendezvous.
@@ -1859,8 +1933,10 @@ module {{
         """
         if not timers:
             return ""
-        return (f'          %tm{l}_{stage} = llvm.call_intrinsic '
-                f'"llvm.amdgcn.s.memrealtime"() : () -> i64')
+        return (
+            f"          %tm{l}_{stage} = llvm.call_intrinsic "
+            f'"llvm.amdgcn.s.memrealtime"() : () -> i64'
+        )
 
     def timer_end(l, stage):
         if not timers:
@@ -1905,7 +1981,8 @@ module {{
                 f"{pad}%ww{tag}{k} = arith.constant {wave} : i32\n"
                 f"{pad}%ws{tag}{k}, %wp{tag}{k} = gpu.shuffle xor {cur}, "
                 f"%wo{tag}{k}, %ww{tag}{k} : {ty}\n"
-                f"{pad}{nxt} = {op} {cur}, %ws{tag}{k} : {ty}")
+                f"{pad}{nxt} = {op} {cur}, %ws{tag}{k} : {ty}"
+            )
             cur = nxt
         return "\n".join(out)
 
@@ -1935,7 +2012,8 @@ module {{
             f"memref<{nthreads}xf32, 3>\n"
             f"{pad}  %bn{tag} = arith.addf %ba{tag}, %bv{tag} : f32\n"
             f"{pad}  scf.yield %bn{tag} : f32\n"
-            f"{pad}}}")
+            f"{pad}}}"
+        )
 
     # A stage whose work splits into independent pieces. Each die has its own
     # head and its own stride of pieces, so what a die touches is what its cache
@@ -1954,8 +2032,9 @@ module {{
     # cache once and serves all of them. Applied here to the die's own claim
     # counter rather than a global tile id, because that counter is what a
     # die's workgroups share. At tokens == 1 this is m = 0, n = k.
-    def strided_stage(l, stage, ev, count_expr, total_const, body,
-                      slot=None, lc=None, lanes=False):
+    def strided_stage(
+        l, stage, ev, count_expr, total_const, body, slot=None, lc=None, lanes=False
+    ):
         slot = (l * stages + stage) if slot is None else slot
         lc = f"%L{l}" if lc is None else lc
         # How much of the workgroup the body uses.
@@ -2170,7 +2249,8 @@ module {{
         else:
             w0open = "" if waves == 1 else "            scf.if %isW0 {"
             w0close = "" if waves == 1 else "            }"
-        body_block = (f"""{w0open}
+        body_block = (
+            f"""{w0open}
             scf.for %m = %c0_s to %nat step %c1_s {{
 {body}
             }}
@@ -2178,12 +2258,15 @@ module {{
 {stage_bar}
             scf.if %isLead {{
               %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %n1_s syncscope("") release : !llvm.ptr, i32
-            }}""" if lanes else f"""            scf.if %isLead {{
+            }}"""
+            if lanes
+            else f"""            scf.if %isLead {{
               scf.for %m = %c0_s to %nat step %c1_s {{
 {body}
               }}
               %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %n1_s syncscope("") release : !llvm.ptr, i32
-            }}""")
+            }}"""
+        )
         return f"""
           // stage {stage} -- one task: a reduction over the whole row, so it
           // cannot be split by output slice the way the matmuls can.
@@ -2235,10 +2318,24 @@ module {{
     # all, while this chain was emitting 74. So the default is off and --nt
     # turns it back on; the lowering itself is covered by the ISA gate in
     # mlir/test/Conversion/AIRToROCDL/air_nontemporal.mlir either way.
-    ntw = " {{nontemporal = true}}" if nt_weights else ''
+    ntw = " {{nontemporal = true}}" if nt_weights else ""
 
-    def dot_loop(dst, start, red_c, red_num, step_c, step_num, lhs, lhsty,
-                 wmat, wty, l, jname, tag, indent):
+    def dot_loop(
+        dst,
+        start,
+        red_c,
+        red_num,
+        step_c,
+        step_num,
+        lhs,
+        lhsty,
+        wmat,
+        wty,
+        l,
+        jname,
+        tag,
+        indent,
+    ):
         """The dot product one lane owns, with `unroll` loads in flight.
 
         Rolled, this loop asks for one weight and waits for it. The arithmetic
@@ -2275,13 +2372,15 @@ module {{
                 f"{pad}  %mp{tag} = arith.mulf %lv{tag}, %wv{tag} : f32\n"
                 f"{pad}  %s2{tag} = arith.addf %sacc{tag}, %mp{tag} : f32\n"
                 f"{pad}  scf.yield %s2{tag} : f32\n"
-                f"{pad}}}")
+                f"{pad}}}"
+            )
         out = [f"{pad}%cSU{tag} = arith.constant {step_num * u} : index"]
         for k in range(1, u):
             out.append(f"{pad}%cO{tag}_{k} = arith.constant {step_num * k} : index")
         out.append(
             f"{pad}{dst} = scf.for %i{tag} = {start} to {red_c} step %cSU{tag}\n"
-            f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{")
+            f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{"
+        )
         # Every load first, so the wave has all of them outstanding before the
         # first extf makes it wait.
         for k in range(u):
@@ -2289,7 +2388,8 @@ module {{
             if k:
                 out.append(f"{pad}  {idx} = arith.addi %i{tag}, %cO{tag}_{k} : index")
             out.append(
-                f"{pad}  %wb{tag}_{k} = memref.load {wmat}[%L{l}, {idx}, {jname}]{ntw} : {wty}")
+                f"{pad}  %wb{tag}_{k} = memref.load {wmat}[%L{l}, {idx}, {jname}]{ntw} : {wty}"
+            )
         for k in range(u):
             idx = f"%i{tag}" if k == 0 else f"%ik{tag}_{k}"
             out.append(f"{pad}  %lv{tag}_{k} = memref.load {lhs}[%m, {idx}] : {lhsty}")
@@ -2298,27 +2398,48 @@ module {{
             out.append(
                 f"{pad}  %wv{tag}_{k} = arith.extf %wb{tag}_{k} : bf16 to f32\n"
                 f"{pad}  %mp{tag}_{k} = arith.mulf %lv{tag}_{k}, %wv{tag}_{k} : f32\n"
-                f"{pad}  %s2{tag}_{k} = arith.addf {prev}, %mp{tag}_{k} : f32")
+                f"{pad}  %s2{tag}_{k} = arith.addf {prev}, %mp{tag}_{k} : f32"
+            )
             prev = f"%s2{tag}_{k}"
         out.append(f"{pad}  scf.yield {prev} : f32\n{pad}}}")
         return "\n".join(out)
 
-    def matmul_stage(l, stage, ev, out, outty, lhs, lhsty, wmat, wty,
-                     slice_c, red_c, red_num, slice_num, residual=None):
-        store = (f"""
+    def matmul_stage(
+        l,
+        stage,
+        ev,
+        out,
+        outty,
+        lhs,
+        lhsty,
+        wmat,
+        wty,
+        slice_c,
+        red_c,
+        red_num,
+        slice_num,
+        residual=None,
+    ):
+        store = (
+            f"""
                   %rv = memref.load {residual}[%m, %j] : {outty}
                   %a2 = arith.addf %rv, %a : f32
                   memref.store %a2, {out}[%m, %j] : {outty}"""
-                 if residual else f"""
-                  memref.store %a, {out}[%m, %j] : {outty}""")
+            if residual
+            else f"""
+                  memref.store %a, {out}[%m, %j] : {outty}"""
+        )
         # Same store, but on the unclamped column, and indented for the
         # extra scf.if the multi-wave path wraps it in.
-        store_blk = (f"""
+        store_blk = (
+            f"""
                       %rv = memref.load {residual}[%m, %j2] : {outty}
                       %a2 = arith.addf %rv, %a : f32
                       memref.store %a2, {out}[%m, %j2] : {outty}"""
-                     if residual else f"""
-                      memref.store %a, {out}[%m, %j2] : {outty}""")
+            if residual
+            else f"""
+                      memref.store %a, {out}[%m, %j2] : {outty}"""
+        )
         # A lane per output column. Splitting the columns rather than the
         # reduction needs no cross-lane anything -- the columns are
         # independent, and each lane keeps its own accumulator in a register --
@@ -2327,12 +2448,20 @@ module {{
         # words of the same cache line. Splitting %i instead would have every
         # lane on a different row, one line each.
         if waves == 1:
-            return strided_stage(l, stage, ev, "%ctasks", "%ntasks_t", f"""                %j0 = arith.muli %ix, {slice_c} : index
+            return strided_stage(
+                l,
+                stage,
+                ev,
+                "%ctasks",
+                "%ntasks_t",
+                f"""                %j0 = arith.muli %ix, {slice_c} : index
                 scf.for %jj = %tx_s to {slice_c} step %nlane {{
                   %j = arith.addi %j0, %jj : index
 {dot_loop("%a", "%c0_s", red_c, red_num, "%c1_s", 1, lhs, lhsty, wmat, wty,
           l, "%j", f"w1_{l}_{stage}", 18)}{store}
-                }}""", lanes=True)
+                }}""",
+                lanes=True,
+            )
 
         # With more than one wave the columns alone cannot keep them busy: a
         # slice is `width / tasks` wide and at 128 tasks that is 8 for anything
@@ -2360,7 +2489,13 @@ module {{
         # the bits above log2(cols), so an xor butterfly over those bits folds
         # their partials together. Across the four matmuls that is 3.7x of
         # arithmetic that was being thrown away.
-        return strided_stage(l, stage, ev, "%ctasks", "%ntasks_t", f"""                %j0 = arith.muli %ix, {slice_c} : index
+        return strided_stage(
+            l,
+            stage,
+            ev,
+            "%ctasks",
+            "%ntasks_t",
+            f"""                %j0 = arith.muli %ix, {slice_c} : index
                 %cC{l}_{stage} = arith.constant {cols} : index
                 %cKS{l}_{stage} = arith.constant {waves * klanes} : index
                 %cKL{l}_{stage} = arith.constant {klanes} : index
@@ -2411,7 +2546,9 @@ module {{
                       }}
                     }}
                   }}
-                }}""", lanes="block")
+                }}""",
+            lanes="block",
+        )
 
     # Per-head rmsnorm then rope, in place in the qkv buffer. Rope reads both
     # halves of a head before writing either, which is why it is a second loop
@@ -2469,8 +2606,14 @@ module {{
 
     # embed: this step's input is the token the last step produced. Fleet's
     # embed_layer (builder.py:755) does the same gather.
-    w(strided_stage("x", stages + 0, base_x + 0, "%ctasks", "%ntasks_t",
-                    f"""                %tp = arith.addi %seq, %m : index
+    w(
+        strided_stage(
+            "x",
+            stages + 0,
+            base_x + 0,
+            "%ctasks",
+            "%ntasks_t",
+            f"""                %tp = arith.addi %seq, %m : index
                 %tk = memref.load %stok[%tp] : {TKT}
                 %tki = arith.index_cast %tk : i32 to index
                 %j0 = arith.muli %ix, %csliceD : index
@@ -2479,14 +2622,24 @@ module {{
                   %embw = memref.load %semb[%tki, %j] : {EMTB}
                   %ev = arith.extf %embw : bf16 to f32
                   memref.store %ev, %sx[%m, %j] : {AT}
-                }}""", slot=base_x + 0, lc="%L0", lanes="threads"))
+                }}""",
+            slot=base_x + 0,
+            lc="%L0",
+            lanes="threads",
+        )
+    )
 
     for l in range(layers):
         base = stages * l
         w(f"\n          // ================= layer {l} =================")
 
         # 0: r = rmsnorm(x) * n1
-        w(single_stage(l, 0, base + 0, f"""              %sp{l} = scf.for %i = %tx_s to %cdim_s step %nthr
+        w(
+            single_stage(
+                l,
+                0,
+                base + 0,
+                f"""              %sp{l} = scf.for %i = %tx_s to %cdim_s step %nthr
                   iter_args(%s = %fzero_s) -> (f32) {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %sq2 = arith.mulf %v, %v : f32
@@ -2509,17 +2662,41 @@ module {{
                 %nw = memref.load %sn1[%L{l}, %i] : {NT}
                 %rv = arith.mulf %nv, %nw : f32
                 memref.store %rv, %sr[%m, %i] : {AT}
-              }}""", lanes="block"))
+              }}""",
+                lanes="block",
+            )
+        )
 
         # 1: qkv = r @ Wqkv
-        w(matmul_stage(l, 1, base + 1, "%sqkv", QT, "%sr", AT, "%swqkv", WQTB,
-                       "%csliceQ", "%cdim_s", dim, slice_q))
+        w(
+            matmul_stage(
+                l,
+                1,
+                base + 1,
+                "%sqkv",
+                QT,
+                "%sr",
+                AT,
+                "%swqkv",
+                WQTB,
+                "%csliceQ",
+                "%cdim_s",
+                dim,
+                slice_q,
+            )
+        )
 
         # 2: per-head norm, rope, and the cache append. One piece per
         # (token, query head); the kv heads ride along on the first `kv_heads`
         # of them, which is Fleet's shape too -- the update is per kv head.
-        w(strided_stage(l, 2, base + 2, "%cheads_s", "%nheads_t",
-                        f"""                %pos = arith.addi %wbase, %m : index
+        w(
+            strided_stage(
+                l,
+                2,
+                base + 2,
+                "%cheads_s",
+                "%nheads_t",
+                f"""                %pos = arith.addi %wbase, %m : index
                 %ropepos = arith.addi %wbase, %m : index
                 %hb = arith.muli %ix, %chd_s : index
                 scf.execute_region {{
@@ -2540,7 +2717,10 @@ module {{
                     %vv = memref.load %sqkv[%m, %vi] : {QT}
                     memref.store %vv, %svc[%L{l}, %pos, %ix, %hdi] : {KVT}
                   }}
-                }}""", lanes=True))
+                }}""",
+                lanes=True,
+            )
+        )
 
         # 3: attention for one (token, query head). Scores, softmax and the
         # weighted sum of V in one task, which is how Fleet packages it
@@ -2561,14 +2741,24 @@ module {{
         else:
             sm_open = "                scf.if %isW0 {"
             sm_close = "                }"
-            sm_pub = ("                  memref.store %sum, %ldsr[%c0_s] : "
-                      f"memref<{nthreads}xf32, 3>")
-            sm_get = ("                gpu.barrier\n"
-                      "                %sumb = memref.load %ldsr[%c0_s] : "
-                      f"memref<{nthreads}xf32, 3>")
+            sm_pub = (
+                "                  memref.store %sum, %ldsr[%c0_s] : "
+                f"memref<{nthreads}xf32, 3>"
+            )
+            sm_get = (
+                "                gpu.barrier\n"
+                "                %sumb = memref.load %ldsr[%c0_s] : "
+                f"memref<{nthreads}xf32, 3>"
+            )
             sumref = "%sumb"
-        w(strided_stage(l, 3, base + 3, "%cheads_s", "%nheads_t",
-                        f"""                %pos = arith.addi %wbase, %m : index
+        w(
+            strided_stage(
+                l,
+                3,
+                base + 3,
+                "%cheads_s",
+                "%nheads_t",
+                f"""                %pos = arith.addi %wbase, %m : index
                 %qhb = arith.muli %ix, %chd_s : index
                 %hb = arith.muli %ix, %chd_s : index
                 %hk = arith.divui %ix, %cgroup_s : index
@@ -2637,11 +2827,29 @@ module {{
                   }}
                   %oi = arith.addi %hb, %hdi : index
                   memref.store %a, %sav[%m, %oi] : {QWT}
-                }}""", lanes="block"))
+                }}""",
+                lanes="block",
+            )
+        )
 
         # 4: ao = a @ Wo
-        w(matmul_stage(l, 4, base + 4, "%saov", AT, "%sav", QWT, "%swo", WTB,
-                       "%csliceD", "%cqw_s", qw, slice_d))
+        w(
+            matmul_stage(
+                l,
+                4,
+                base + 4,
+                "%saov",
+                AT,
+                "%sav",
+                QWT,
+                "%swo",
+                WTB,
+                "%csliceD",
+                "%cqw_s",
+                qw,
+                slice_d,
+            )
+        )
 
         # 5: xa = rmsnorm(x + ao) * n2. The norm in front of the MLP is not
         # decoration: without it nothing renormalises the residual stream --
@@ -2649,7 +2857,12 @@ module {{
         # decays geometrically with depth, and since the host comparison is
         # relative, a stream in the thousands hides every error smaller than
         # itself.
-        w(single_stage(l, 5, base + 5, f"""              %spa{l} = scf.for %i = %tx_s to %cdim_s step %nthr
+        w(
+            single_stage(
+                l,
+                5,
+                base + 5,
+                f"""              %spa{l} = scf.for %i = %tx_s to %cdim_s step %nthr
                   iter_args(%s = %fzero_s) -> (f32) {{
                 %xv = memref.load %sx[%m, %i] : {AT}
                 %avv = memref.load %saov[%m, %i] : {AT}
@@ -2676,16 +2889,40 @@ module {{
                 %nw = memref.load %sn2[%L{l}, %i] : {NT}
                 %xn = arith.mulf %nv, %nw : f32
                 memref.store %xn, %sr[%m, %i] : {AT}
-              }}""", lanes="block"))
+              }}""",
+                lanes="block",
+            )
+        )
 
         # 6: gu = xa @ Wgu, gate and up in one matmul as Fleet fuses them
-        w(matmul_stage(l, 6, base + 6, "%sgu", GT, "%sr", AT, "%swgu", WGTB,
-                       "%cslice2I", "%cdim_s", dim, slice_2i))
+        w(
+            matmul_stage(
+                l,
+                6,
+                base + 6,
+                "%sgu",
+                GT,
+                "%sr",
+                AT,
+                "%swgu",
+                WGTB,
+                "%cslice2I",
+                "%cdim_s",
+                dim,
+                slice_2i,
+            )
+        )
 
         # 7: SwiGLU. Elementwise, so a piece is a slice of the intermediate
         # width rather than a reduction.
-        w(strided_stage(l, 7, base + 7, "%ctasks", "%ntasks_t",
-                        f"""                %j0 = arith.muli %ix, %csliceI : index
+        w(
+            strided_stage(
+                l,
+                7,
+                base + 7,
+                "%ctasks",
+                "%ntasks_t",
+                f"""                %j0 = arith.muli %ix, %csliceI : index
                 scf.for %jj = %tx_s to %csliceI step %nthr {{
                   %j = arith.addi %j0, %jj : index
                   %gv = memref.load %sgu[%m, %j] : {GT}
@@ -2697,15 +2934,39 @@ module {{
                   %si = arith.divf %gv, %de : f32
                   %actv = arith.mulf %si, %uv : f32
                   memref.store %actv, %sact[%m, %j] : {IT}
-                }}""", lanes="threads"))
+                }}""",
+                lanes="threads",
+            )
+        )
 
         # 8: x = xa + act @ Wd, the residual folded into the matmul as Fleet
         # folds it (linear_with_residual_layer).
-        w(matmul_stage(l, 8, base + 8, "%sx", AT, "%sact", IT, "%swd", WDTB,
-                       "%csliceD", "%cinter_s", inter, slice_d, residual="%sxa"))
+        w(
+            matmul_stage(
+                l,
+                8,
+                base + 8,
+                "%sx",
+                AT,
+                "%sact",
+                IT,
+                "%swd",
+                WDTB,
+                "%csliceD",
+                "%cinter_s",
+                inter,
+                slice_d,
+                residual="%sxa",
+            )
+        )
 
     # final norm, lm head, and Fleet's two-stage argmax
-    w(single_stage("x", stages + 1, base_x + 1, f"""              %fp = scf.for %i = %tx_s to %cdim_s step %nthr
+    w(
+        single_stage(
+            "x",
+            stages + 1,
+            base_x + 1,
+            f"""              %fp = scf.for %i = %tx_s to %cdim_s step %nthr
                   iter_args(%a = %fzero_s) -> (f32) {{
                 %v = memref.load %sx[%m, %i] : {AT}
                 %fq = arith.mulf %v, %v : f32
@@ -2722,9 +2983,20 @@ module {{
                 %nw = memref.load %snf[%i] : {NFT}
                 %o = arith.mulf %nv, %nw : f32
                 memref.store %o, %sr[%m, %i] : {AT}
-              }}""", slot=base_x + 1, lc="%L0", lanes="block"))
-    w(strided_stage("x", stages + 2, base_x + 2, "%ctasks", "%ntasks_t",
-                    f"""                %v0 = arith.muli %ix, %csliceV : index
+              }}""",
+            slot=base_x + 1,
+            lc="%L0",
+            lanes="block",
+        )
+    )
+    w(
+        strided_stage(
+            "x",
+            stages + 2,
+            base_x + 2,
+            "%ctasks",
+            "%ntasks_t",
+            f"""                %v0 = arith.muli %ix, %csliceV : index
                 scf.for %jj = %tx_s to %csliceV step %nthr {{
                   %v = arith.addi %v0, %jj : index
                   %vok = arith.cmpi ult, %v, %cvocab_s : index
@@ -2740,10 +3012,21 @@ module {{
                     }}
                     memref.store %a, %slg[%m, %v] : {LGT}
                   }}
-                }}""", slot=base_x + 2, lc="%L0", lanes="threads"))
+                }}""",
+            slot=base_x + 2,
+            lc="%L0",
+            lanes="threads",
+        )
+    )
     # argmax_partial_layer: the best in this piece of the vocabulary
-    w(strided_stage("x", stages + 3, base_x + 3, "%ctasks", "%ntasks_t",
-                    f"""                %v0 = arith.muli %ix, %csliceV : index
+    w(
+        strided_stage(
+            "x",
+            stages + 3,
+            base_x + 3,
+            "%ctasks",
+            "%ntasks_t",
+            f"""                %v0 = arith.muli %ix, %csliceV : index
                 %bi:2 = scf.for %jj = %c0_s to %csliceV step %c1_s
                     iter_args(%bv = %negbig_s, %bidx = %zero_s) -> (f32, i32) {{
                   %v = arith.addi %v0, %jj : index
@@ -2762,9 +3045,17 @@ module {{
                 }}
                 memref.store %bi#0, %spv[%m, %ix] : {PVT}
                 memref.store %bi#1, %spi[%m, %ix] : {PIT}""",
-                    slot=base_x + 3, lc="%L0"))
+            slot=base_x + 3,
+            lc="%L0",
+        )
+    )
     # argmax_reduce_layer: the best across pieces, ties to the lower index
-    w(single_stage("x", stages + 4, base_x + 4, f"""              %rd:2 = scf.for %k = %c0_s to %ctasks step %c1_s
+    w(
+        single_stage(
+            "x",
+            stages + 4,
+            base_x + 4,
+            f"""              %rd:2 = scf.for %k = %c0_s to %ctasks step %c1_s
                   iter_args(%bv = %negbig_s, %bidx = %zero_s) -> (f32, i32) {{
                 %apv = memref.load %spv[%m, %k] : {PVT}
                 %api = memref.load %spi[%m, %k] : {PIT}
@@ -2785,7 +3076,10 @@ module {{
                   memref.store %rd#1, %stok[%nxt] : {TKT}
                 }}
               }}""",
-                   slot=base_x + 4, lc="%L0"))
+            slot=base_x + 4,
+            lc="%L0",
+        )
+    )
 
     w(f"""
             %seqn = arith.addi %seq, %nat : index
@@ -2810,88 +3104,159 @@ module {{
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--dim", type=int, default=128)
-    ap.add_argument("--inter", type=int, default=0,
-                    help="MLP intermediate width; defaults to 2*dim")
+    ap.add_argument(
+        "--inter", type=int, default=0, help="MLP intermediate width; defaults to 2*dim"
+    )
     ap.add_argument("--heads", type=int, default=4, help="query heads")
-    ap.add_argument("--kv-heads", type=int, default=2,
-                    help="key/value heads; heads must be a multiple of this")
-    ap.add_argument("--tasks", type=int, default=8,
-                    help="tasks per matmul stage; dim, inter and the qkv width "
-                         "must divide by this")
-    ap.add_argument("--workers", type=int, default=32,
-                    help="resident workgroups; must fit the device at once")
-    ap.add_argument("--cache", type=int, default=32,
-                    help="KV cache prefix the window attends")
-    ap.add_argument("--tokens", type=int, default=1,
-                    help="tokens in flight (M). 1 is a decode step; >1 is a "
-                         "prefill or speculative window, and is what makes the "
-                         "M-major traversal do anything")
-    ap.add_argument("--head-dim", type=int, default=0,
-                    help="head dim; defaults to dim/heads. Qwen3 states it "
-                         "separately and it is not dim/heads")
-    ap.add_argument("--rope-theta", type=float, default=10000.0,
-                    help="rope base; Qwen3-0.6B uses 1e6")
-    ap.add_argument("--vocab", type=int, default=256,
-                    help="vocabulary size; must divide by tasks")
-    ap.add_argument("--steps", type=int, default=1,
-                    help="decode steps in one launch. Each step appends its "
-                         "own window to the KV cache and attends everything up "
-                         "to it, so the attention length is a runtime value")
-    ap.add_argument("--weights", type=str, default=None,
-                    help="directory holding manifest.json and weights.f32 "
-                         "written by weights.py; takes every shape but "
-                         "--layers from the checkpoint config")
-    ap.add_argument("--prompt", type=str, default=None,
-                    help="comma-separated prompt token ids; at most --tokens "
-                         "of them, and they set --prompt-len")
-    ap.add_argument("--prompt-len", type=int, default=0,
-                    help="how many of the run's tokens are prompt. Steps "
-                         "consume the prompt --tokens at a time and then "
-                         "decode one token each. Default (0) makes the whole "
-                         "run prompt, so every step is a prefill chunk.")
-    ap.add_argument("--repeat", type=int, default=1,
-                    help="how many times to launch the chain, for timing")
-    ap.add_argument("--nt", action="store_true",
-                    help="load the weights non-temporally. Off by default: it "
-                         "measured 7%% slower, and Fleet's batch-1 build emits "
-                         "no nt either")
-    ap.add_argument("--dies", type=int, default=8,
-                    help="per-chiplet task queues; must be >= the device's "
-                         "chiplet count (8 on MI300X and MI350X). Every stage "
-                         "probes this many queues, so a value larger than the "
-                         "hardware costs time in every stage")
-    ap.add_argument("--reduce-unroll", type=int, default=8,
-                    help="how many weight loads a lane issues before it waits "
-                         "for the first. The matmul inner loop is one memory "
-                         "latency per iteration overlapped with nothing, and "
-                         "this is the only way to hold more of the machine's "
-                         "bandwidth open without more workgroups. Rounded down "
-                         "to a power of two that divides the trip count, per "
-                         "stage; the accumulate order is unchanged, so the "
-                         "output is bit for bit the rolled loop's. Measured "
-                         "1/2/4/8/16 on MI350X: 8 is the knee and 16 gives the "
-                         "registers back to spills and lands on 1's numbers")
-    ap.add_argument("--timers", action="store_true",
-                    help="accumulate per-operator device ticks and print them; "
-                         "adds two s_memrealtime per stage, so measure without it")
-    ap.add_argument("--waves", type=int, default=1,
-                    help="wavefronts per workgroup (the herd's x extent). "
-                         "Above 1 the waves split the reduction of each matmul "
-                         "and meet in LDS, which is the only way a decode step "
-                         "can use more of the machine than its output width")
-    ap.add_argument("--wave", type=int, default=64,
-                    help="lanes per wavefront. A task body is split across "
-                         "these and its reductions closed over them, so this "
-                         "must equal what -air-to-rocdl{wave-size=} uses")
+    ap.add_argument(
+        "--kv-heads",
+        type=int,
+        default=2,
+        help="key/value heads; heads must be a multiple of this",
+    )
+    ap.add_argument(
+        "--tasks",
+        type=int,
+        default=8,
+        help="tasks per matmul stage; dim, inter and the qkv width "
+        "must divide by this",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=32,
+        help="resident workgroups; must fit the device at once",
+    )
+    ap.add_argument(
+        "--cache", type=int, default=32, help="KV cache prefix the window attends"
+    )
+    ap.add_argument(
+        "--tokens",
+        type=int,
+        default=1,
+        help="tokens in flight (M). 1 is a decode step; >1 is a "
+        "prefill or speculative window, and is what makes the "
+        "M-major traversal do anything",
+    )
+    ap.add_argument(
+        "--head-dim",
+        type=int,
+        default=0,
+        help="head dim; defaults to dim/heads. Qwen3 states it "
+        "separately and it is not dim/heads",
+    )
+    ap.add_argument(
+        "--rope-theta",
+        type=float,
+        default=10000.0,
+        help="rope base; Qwen3-0.6B uses 1e6",
+    )
+    ap.add_argument(
+        "--vocab", type=int, default=256, help="vocabulary size; must divide by tasks"
+    )
+    ap.add_argument(
+        "--steps",
+        type=int,
+        default=1,
+        help="decode steps in one launch. Each step appends its "
+        "own window to the KV cache and attends everything up "
+        "to it, so the attention length is a runtime value",
+    )
+    ap.add_argument(
+        "--weights",
+        type=str,
+        default=None,
+        help="directory holding manifest.json and weights.f32 "
+        "written by weights.py; takes every shape but "
+        "--layers from the checkpoint config",
+    )
+    ap.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="comma-separated prompt token ids; at most --tokens "
+        "of them, and they set --prompt-len",
+    )
+    ap.add_argument(
+        "--prompt-len",
+        type=int,
+        default=0,
+        help="how many of the run's tokens are prompt. Steps "
+        "consume the prompt --tokens at a time and then "
+        "decode one token each. Default (0) makes the whole "
+        "run prompt, so every step is a prefill chunk.",
+    )
+    ap.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="how many times to launch the chain, for timing",
+    )
+    ap.add_argument(
+        "--nt",
+        action="store_true",
+        help="load the weights non-temporally. Off by default: it "
+        "measured 7%% slower, and Fleet's batch-1 build emits "
+        "no nt either",
+    )
+    ap.add_argument(
+        "--dies",
+        type=int,
+        default=8,
+        help="per-chiplet task queues; must be >= the device's "
+        "chiplet count (8 on MI300X and MI350X). Every stage "
+        "probes this many queues, so a value larger than the "
+        "hardware costs time in every stage",
+    )
+    ap.add_argument(
+        "--reduce-unroll",
+        type=int,
+        default=8,
+        help="how many weight loads a lane issues before it waits "
+        "for the first. The matmul inner loop is one memory "
+        "latency per iteration overlapped with nothing, and "
+        "this is the only way to hold more of the machine's "
+        "bandwidth open without more workgroups. Rounded down "
+        "to a power of two that divides the trip count, per "
+        "stage; the accumulate order is unchanged, so the "
+        "output is bit for bit the rolled loop's. Measured "
+        "1/2/4/8/16 on MI350X: 8 is the knee and 16 gives the "
+        "registers back to spills and lands on 1's numbers",
+    )
+    ap.add_argument(
+        "--timers",
+        action="store_true",
+        help="accumulate per-operator device ticks and print them; "
+        "adds two s_memrealtime per stage, so measure without it",
+    )
+    ap.add_argument(
+        "--waves",
+        type=int,
+        default=1,
+        help="wavefronts per workgroup (the herd's x extent). "
+        "Above 1 the waves split the reduction of each matmul "
+        "and meet in LDS, which is the only way a decode step "
+        "can use more of the machine than its output width",
+    )
+    ap.add_argument(
+        "--wave",
+        type=int,
+        default=64,
+        help="lanes per wavefront. A task body is split across "
+        "these and its reductions closed over them, so this "
+        "must equal what -air-to-rocdl{wave-size=} uses",
+    )
     a = ap.parse_args()
     W = None
     if a.weights:
         import json
         from pathlib import Path
+
         W = json.loads((Path(a.weights) / "manifest.json").read_text())
         c = W["config"]
         # Everything but the layer count comes from the checkpoint; the layer
@@ -2901,17 +3266,41 @@ def main() -> int:
         a.heads, a.kv_heads = c["heads"], c["kv_heads"]
         a.head_dim, a.vocab = c["head_dim"], c["vocab"]
         a.rope_theta = c["rope_theta"]
-        assert a.layers <= c["layers"], (
-            f"checkpoint has {c['layers']} layers, asked for {a.layers}")
+        assert (
+            a.layers <= c["layers"]
+        ), f"checkpoint has {c['layers']} layers, asked for {a.layers}"
         assert a.cache == 0, (
             "--weights needs --cache 0: a synthetic KV prefix is not something "
-            "the model produced, so the tokens would not mean anything")
+            "the model produced, so the tokens would not mean anything"
+        )
     prompt = [int(x) for x in a.prompt.split(",")] if a.prompt else None
-    sys.stdout.write(emit(a.layers, a.dim, a.tasks, a.workers, a.repeat,
-                          a.cache, a.tokens, a.inter, a.heads, a.kv_heads,
-                          a.steps, a.vocab, a.head_dim, a.rope_theta, W,
-                          prompt, a.prompt_len, a.wave, a.waves, a.nt,
-                          a.timers, a.dies, a.reduce_unroll))
+    sys.stdout.write(
+        emit(
+            a.layers,
+            a.dim,
+            a.tasks,
+            a.workers,
+            a.repeat,
+            a.cache,
+            a.tokens,
+            a.inter,
+            a.heads,
+            a.kv_heads,
+            a.steps,
+            a.vocab,
+            a.head_dim,
+            a.rope_theta,
+            W,
+            prompt,
+            a.prompt_len,
+            a.wave,
+            a.waves,
+            a.nt,
+            a.timers,
+            a.dies,
+            a.reduce_unroll,
+        )
+    )
     return 0
 
 
