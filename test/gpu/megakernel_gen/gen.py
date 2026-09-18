@@ -97,6 +97,7 @@ def emit(
     stage_timers: bool = True,
     static_claim: bool = True,
     pad_stages: int = 0,
+    pad_strip: int = 0,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -2373,7 +2374,16 @@ module {{
 """
 
     def strided_stage(
-        l, stage, ev, count_expr, total_const, body, slot=None, lc=None, lanes=False
+        l,
+        stage,
+        ev,
+        count_expr,
+        total_const,
+        body,
+        slot=None,
+        lc=None,
+        lanes=False,
+        strip=0,
     ):
         slot = (l * stages + stage) if slot is None else slot
         lc = f"%L{l}" if lc is None else lc
@@ -2413,6 +2423,61 @@ module {{
                 14,
             ),
         )
+        # A stage boundary costs 12.40 us -- the slope of the launch clock
+        # against --pad-stages, four points, linear to 0.15%. That is 3.19 of
+        # the 5.43 ms a token takes, which makes it the largest single thing in
+        # the program, so it is worth knowing which part of it that is.
+        #
+        # `strip` takes the boundary apart. It is only ever used on a pad
+        # stage, and a pad stage is exactly the right place for it: its body is
+        # empty, so nothing it fails to publish is ever read, and its event
+        # word is read by nothing but its own spin -- every stage waits on its
+        # own event and no other. So each level below can be removed with the
+        # model still producing the same six tokens, and the difference between
+        # two slopes is the price of what was removed.
+        #
+        #   0  the whole boundary, as a real stage has it
+        #   1  no acquire fence after the rendezvous (the `buffer_inv sc0 sc1`)
+        #   2  no rendezvous at all: no spin, no release barrier
+        #   3  no signal either: no atomics
+        #   4  no claim either: two barriers and nothing else
+        sig_block = (
+            ""
+            if strip >= 3
+            else f"""          scf.if %isLead {{
+            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %pcount{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
+            // Release on the arrival so the accumulate above is visible to
+            // whoever turns out to be last.
+            %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
+            %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
+            %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
+            scf.if %amLast{l}_{stage} {{
+              %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
+              %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
+            }}
+          }}"""
+        )
+        spin_block = (
+            ""
+            if strip >= 2
+            else f"""{spin_open}
+          scf.while : () -> () {{
+            %seen_l{l}_{stage} = scf.if %isL0 -> (i32) {{
+              %v = llvm.load %p{l}_{stage} atomic syncscope("") {spin_order} {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              scf.yield %v : i32
+            }} else {{
+              scf.yield %zero_s : i32
+            }}
+            %seen = rocdl.readfirstlane %seen_l{l}_{stage} : i32
+            %notYet = arith.cmpi ult, %seen, {total_const} : i32
+            scf.condition(%notYet)
+          }} do {{
+            scf.yield
+          }}
+{spin_close}
+{'          gpu.barrier' if (strip == 1 and spin_end) else spin_end}"""
+        )
         return f"""
           // stage {stage}
 {timer_begin(l, stage)}
@@ -2420,7 +2485,7 @@ module {{
           %eo{l}_{stage} = arith.addi %stepev, %ec{l}_{stage} : i64
           %p{l}_{stage} = llvm.getelementptr %evptr[%eo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
           %hb{l}_{stage} = arith.constant {stage * maxdies * 2} : index
-{claim_block}          // Two-level: add into a counter only this die touches, then let the
+{"" if strip >= 4 else claim_block}          // Two-level: add into a counter only this die touches, then let the
           // last worker on the die flush the die's whole share once. The
           // instructions are the same as signalling per worker; what changes is
           // how many times the device-scope one runs.
@@ -2443,38 +2508,11 @@ module {{
           // makes the event mean "this workgroup's output is readable" rather
           // than "wave 0's is" -- see the note on stage_bar.
 {stage_bar}
-          scf.if %isLead {{
-            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %pcount{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
-            // Release on the arrival so the accumulate above is visible to
-            // whoever turns out to be last.
-            %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
-            %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
-            %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
-            scf.if %amLast{l}_{stage} {{
-              %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
-              %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
-              %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
-            }}
-          }}
+{sig_block}
           // See the note on spin_open: one wave waits, a barrier releases the
           // workgroup, and the acquire happens once rather than per poll.
 {timer_mid(l, stage)}
-{spin_open}
-          scf.while : () -> () {{
-            %seen_l{l}_{stage} = scf.if %isL0 -> (i32) {{
-              %v = llvm.load %p{l}_{stage} atomic syncscope("") {spin_order} {{alignment = 4 : i64}} : !llvm.ptr -> i32
-              scf.yield %v : i32
-            }} else {{
-              scf.yield %zero_s : i32
-            }}
-            %seen = rocdl.readfirstlane %seen_l{l}_{stage} : i32
-            %notYet = arith.cmpi ult, %seen, {total_const} : i32
-            scf.condition(%notYet)
-          }} do {{
-            scf.yield
-          }}
-{spin_close}
-{spin_end}
+{spin_block}
 {timer_end(l, stage)}"""
 
     def single_stage(l, stage, ev, body, slot=None, lc=None, lanes=False):
@@ -3217,7 +3255,17 @@ module {{
         # cost of a stage boundary and by nothing else, and the token stream
         # they produce is still the right one.
         for p in range(pad_stages):
-            w(strided_stage(l, 9 + p, base + 9 + p, "%ctasks", "%ntasks_t", ""))
+            w(
+                strided_stage(
+                    l,
+                    9 + p,
+                    base + 9 + p,
+                    "%ctasks",
+                    "%ntasks_t",
+                    "",
+                    strip=pad_strip,
+                )
+            )
 
     # final norm, lm head, and Fleet's two-stage argmax
     w(
@@ -3509,6 +3557,17 @@ def main() -> int:
         "clock, which is a different instrument",
     )
     ap.add_argument(
+        "--pad-strip",
+        type=int,
+        default=0,
+        help="how much of the stage boundary to leave out of a pad stage. "
+        "0 all of it, 1 no acquire fence, 2 no rendezvous, 3 no signal, "
+        "4 no claim. A pad stage publishes nothing and nothing waits on its "
+        "event, so every level still produces the right tokens, and the "
+        "difference between two --pad-stages slopes is the price of what was "
+        "removed",
+    )
+    ap.add_argument(
         "--timers-total-only",
         action="store_true",
         help="with --timers, report only the whole launch and emit no "
@@ -3590,6 +3649,7 @@ def main() -> int:
             not a.timers_total_only,
             not a.dynamic_claim,
             a.pad_stages,
+            a.pad_strip,
         )
     )
     return 0
