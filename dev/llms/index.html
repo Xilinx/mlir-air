@@ -1310,6 +1310,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#vision-language-action-policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vision-Language-Action policies
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1341,6 +1352,9 @@
 <p>End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped to the AMD NPU2 in bf16 via MLIR-AIR. Coverage and performance below are refreshed nightly. Per-model details and source are in <a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/"><code>programming_examples/llms/</code></a>.</p>
 <h2 id="nightly-llm-benchmark-npu2">Nightly LLM Benchmark (NPU2)<a class="headerlink" href="#nightly-llm-benchmark-npu2" title="Permanent link">&para;</a></h2>
 <p>End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. <strong>TTFT</strong> is time to first token (prefill latency); <strong>Decode</strong> is steady-state generation throughput.</p>
+<p>Verify: 🟢 pass &nbsp; 🔴 fail &nbsp; ⚪ skipped. &nbsp; — not measured.</p>
+<p>Single-point rows — metrics that do not yet have a curve below. ↓ means that
+model's number for this metric is in a curve instead.</p>
 <table>
 <thead>
 <tr>
@@ -1402,6 +1416,14 @@
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
+<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">qwen25_3b_q4</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">4127.0</td>
+<td style="text-align: right;">↓</td>
+<td style="text-align: left;">2026-09-17</td>
+<td style="text-align: center;">🟢</td>
+</tr>
+<tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">qwen3_0_6b</a> (<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</td>
 <td style="text-align: right;">2048</td>
 <td style="text-align: right;">1450.0</td>
@@ -1426,6 +1448,14 @@
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
+<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">qwen3_4b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</td>
+<td style="text-align: right;">24</td>
+<td style="text-align: right;">5110.0</td>
+<td style="text-align: right;">↓</td>
+<td style="text-align: left;">2026-09-17</td>
+<td style="text-align: center;">🟢</td>
+</tr>
+<tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">smollm2_1_7b</a> (<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</td>
 <td style="text-align: right;">2048</td>
 <td style="text-align: right;">1800.0</td>
@@ -1433,17 +1463,8 @@
 <td style="text-align: left;">2026-09-17</td>
 <td style="text-align: center;">🟢</td>
 </tr>
-<tr>
-<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smolvla/">smolvla</a></td>
-<td style="text-align: right;">241</td>
-<td style="text-align: right;">685.3</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: left;">2026-09-17</td>
-<td style="text-align: center;">🟢</td>
-</tr>
 </tbody>
 </table>
-<p>Verify: 🟢 pass &nbsp; 🔴 fail &nbsp; ⚪ skipped. &nbsp; — not measured.</p>
 <h3 id="decode-throughput-vs-context-toks">Decode throughput vs context (tok/s)<a class="headerlink" href="#decode-throughput-vs-context-toks" title="Permanent link">&para;</a></h3>
 <p>Steady-state decode throughput at increasing KV-cache depth.</p>
 <p>The models below reimplement AMD NPU LLM designs originally developed by the
@@ -1599,7 +1620,7 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 </tbody>
 </table>
-<p>— expected failure.</p>
+<p>— not swept at this context, or an expected failure.</p>
 <h3 id="prefill-latency-vs-padded-prefill-length-ttft-ms">Prefill latency vs padded prefill length (TTFT, ms)<a class="headerlink" href="#prefill-latency-vs-padded-prefill-length-ttft-ms" title="Permanent link">&para;</a></h3>
 <p>Time to first token at increasing padded prefill length. Each column is a
 separate build of the prefill ELFs: the prompt is padded to the built length,
@@ -1691,6 +1712,31 @@ so TTFT tracks that length rather than the number of real prompt tokens.</p>
 </tbody>
 </table>
 <p>— not swept at this length, or an expected failure.</p>
+<h3 id="vision-language-action-policies">Vision-Language-Action policies<a class="headerlink" href="#vision-language-action-policies" title="Permanent link">&para;</a></h3>
+<p>Not autoregressive: these emit one action chunk per observation rather than a
+token stream, so there is no decode throughput and no context to sweep.
+<strong>Action chunk</strong> is the latency to the model's first usable output.
+<strong>Prefix</strong> is the token count the backbone attends over.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Model</th>
+<th style="text-align: right;">Prefix</th>
+<th style="text-align: right;">Action chunk (ms)</th>
+<th style="text-align: left;">Measured</th>
+<th style="text-align: center;">Verify</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smolvla/">smolvla</a></td>
+<td style="text-align: right;">241</td>
+<td style="text-align: right;">685.3</td>
+<td style="text-align: left;">2026-09-17</td>
+<td style="text-align: center;">🟢</td>
+</tr>
+</tbody>
+</table>
 <p>📈 <a href="perf-history/">Performance history over time</a> — per-nightly TTFT and decode throughput plotted per model.</p>
 <p><em>Last updated 2026-09-17 · mlir-air 12e6f9f · mlir-aie 10767b5 · llvm-aie 22.0.0.2026090201+a36c62b9</em></p>
 
