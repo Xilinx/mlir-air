@@ -98,6 +98,8 @@ def emit(
     static_claim: bool = True,
     pad_stages: int = 0,
     pad_strip: int = 0,
+    acquire_once: bool = False,
+    acquire_agent: bool = False,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -1960,14 +1962,45 @@ module {{
     # with a single acquire fence once the wait is over, which is the standard
     # idiom and the shape Fleet's own loop has -- __ATOMIC_RELAXED inside, an
     # acquire fence outside (persistent_kernel.cuh:944-966).
+    #
+    # That fence is 7.42 of the 12.28 us a stage boundary costs -- 60% of it,
+    # and 1.9 of the 5.43 ms a token takes -- measured by removing it from a
+    # pad stage and taking the slope. So it is worth saying exactly how much
+    # of it is needed, which is what the two knobs below are for.
+    #
+    # `acquire_once` puts the fence inside the waiting wave's `scf.if`, before
+    # the barrier, instead of after it in all eight waves. `buffer_inv sc0 sc1`
+    # invalidates the CU's vector cache and the XCD's L2, and every wave of a
+    # workgroup is on the same CU and the same XCD, so one wave's invalidate
+    # covers all of them; the barrier then orders every other wave's loads
+    # after it. What refills between the invalidate and those loads can only be
+    # fresh: the producers wrote back past L2 before they signalled, so a line
+    # fetched after that point carries the new value whoever fetched it.
+    #
+    # `acquire_agent` asks for `buffer_inv sc1` rather than `buffer_inv
+    # sc0 sc1`. Every workgroup here is on one device, so agent scope is what
+    # the protocol actually needs; system scope additionally orders against the
+    # host, which nothing in a decode step does.
+    acq = (
+        f'          llvm.fence syncscope("{"agent" if acquire_agent else ""}") acquire'
+    )
     if waves == 1:
         spin_open, spin_close, spin_end = "", "", ""
         spin_order = "acquire"
+    elif acquire_once:
+        spin_open = "          scf.if %isW0 {"
+        spin_close = "  " + acq + "\n          }"
+        spin_end = "          gpu.barrier"
+        spin_order = "monotonic"
     else:
         spin_open = "          scf.if %isW0 {"
         spin_close = "          }"
-        spin_end = '          gpu.barrier\n          llvm.fence syncscope("") acquire'
+        spin_end = "          gpu.barrier\n" + acq
         spin_order = "monotonic"
+    # What --pad-strip 1 leaves behind: the same rendezvous with no fence at
+    # all, wherever the fence would have been.
+    spin_close_nf = "          }"
+    spin_end_nf = "          gpu.barrier"
 
     # Emitted before every event signal once the workgroup is more than one
     # wave; see the note at the signal site.
@@ -2475,8 +2508,8 @@ module {{
           }} do {{
             scf.yield
           }}
-{spin_close}
-{'          gpu.barrier' if (strip == 1 and spin_end) else spin_end}"""
+{spin_close_nf if strip == 1 else spin_close}
+{spin_end_nf if (strip == 1 and spin_end) else spin_end}"""
         )
         return f"""
           // stage {stage}
@@ -3557,6 +3590,20 @@ def main() -> int:
         "clock, which is a different instrument",
     )
     ap.add_argument(
+        "--acquire-once",
+        action="store_true",
+        help="take the post-rendezvous acquire fence in the waiting wave "
+        "before the barrier, instead of in all eight waves after it. That "
+        "fence is 60%% of what a stage boundary costs",
+    )
+    ap.add_argument(
+        "--acquire-agent",
+        action="store_true",
+        help="ask for agent scope on the post-rendezvous acquire fence, "
+        "`buffer_inv sc1` rather than `buffer_inv sc0 sc1`. Every workgroup "
+        "is on one device, so that is the scope the protocol needs",
+    )
+    ap.add_argument(
         "--pad-strip",
         type=int,
         default=0,
@@ -3650,6 +3697,8 @@ def main() -> int:
             not a.dynamic_claim,
             a.pad_stages,
             a.pad_strip,
+            a.acquire_once,
+            a.acquire_agent,
         )
     )
     return 0
