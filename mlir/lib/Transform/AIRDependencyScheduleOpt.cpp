@@ -1715,6 +1715,28 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
+    // Labeling unrolls the body by 2 and alternates the duplicated buffers, so
+    // the producer rotates through exactly 2 slots. A trip count that is NOT a
+    // multiple of 2 leaves a remainder iteration, and that remainder's copy
+    // allocates a THIRD buffer -- AIRToAIE then chains one BD per static put
+    // site, so the consuming DMA round-robins 3 slots against a producer that
+    // only ever alternates 2. Nothing deadlocks (the lock counts still
+    // balance), the DMA just transmits, on every third transfer, a buffer the
+    // core did not write this trip: zeros on the first pass over the ring and
+    // stale data after. Measured on gemma4-e2b's 9-trip vocab egress, where it
+    // silently zeroed logit blocks 2 and 5 of the first chunk.
+    //
+    // isTripCountDivisibleByFactor is the same predicate
+    // loopUnrollByFactorWithAsyncTokenPreserved uses to decide whether the
+    // remainder loop it is about to emit is dead, so asking it here keeps the
+    // labeler and the unroller from holding two independent notions of "even".
+    // It also covers the dynamic case that a constant-folding check cannot: a
+    // runtime bound of the form `2*J` or an affine map with a known divisor
+    // still labels, and anything whose parity is not provable does not --
+    // rejecting on unknown parity rather than assuming even, because the
+    // failure is silent wrong data rather than a crash.
+    if (!air::isTripCountDivisibleByFactor(forOp, 2))
+      return false;
     // Labeling a loop unrolls its body by 2, which duplicates a nested loop
     // and everything that loop allocates per trip. So an unsafe loop anywhere
     // in the region tree disqualifies the enclosing candidate, exactly as the
