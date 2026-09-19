@@ -18,14 +18,14 @@
 # Hugging Face. The first run converts the checkpoint into the flat float32
 # blob the chain reads and leaves it in <QWEN_DIR>/air.
 #
-# The shape that runs Qwen3-0.6B at 3.68 ms a token on one MI350X, which is
-# 1.50x Fleet's mirage_mpk and 26x the memory-bandwidth floor:
+# The shape that runs Qwen3-0.6B at 3.57 ms a token on one MI350X, which is
+# 1.46x Fleet's mirage_mpk and 26x the memory-bandwidth floor:
 #
 #   QWEN_DIR=... TASKS=128 WORKERS=128 WAVES=8 STEPS=6 run_qwen.sh
 #
 # and to see the clock rather than just the tokens, add TIMERS=1 REPEAT=20.
 # No flag is needed to make it fast; gen.py's defaults are the fast ones, and
-# gen.py's module header says where the 3.68 ms goes and how it was measured.
+# gen.py's module header says where the 3.57 ms goes and how it was measured.
 #
 # The two sides being compared are: the chain (device, plus the host reference
 # in the same program) and qwen3_ref.py, which reads the Hugging Face files
@@ -56,7 +56,7 @@ LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
 # The last row is the shape of the cost: a workgroup with no piece left to
 # claim does not go away, it spins on every event for the rest of the launch,
 # so over-provisioning workers is worse than not provisioning them. Keep the
-# two equal. 128/128 is still what the 3.68 ms/token figure is measured at.
+# two equal. 128/128 is still what the 3.57 ms/token figure is measured at.
 #
 # 128 is the ceiling for this checkpoint, not a tuned optimum: gen.py requires
 # tasks to divide the width of every stage it splits, and the vocabulary is

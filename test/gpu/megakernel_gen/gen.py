@@ -51,7 +51,7 @@ Qwen3-0.6B checkpoint, six decode steps, 28 layers.
     QWEN_DIR=/path/to/qwen3-0.6b TASKS=128 WORKERS=128 WAVES=8 STEPS=6 \\
         run_qwen.sh
 
-That is the configuration that runs at **3.68 ms a token**, against Fleet's
+That is the configuration that runs at **3.57 ms a token**, against Fleet's
 mirage_mpk at 2.452 and a memory-bandwidth floor of 0.14. It prints the
 tokens, the host reference's tokens, and an independent numpy Qwen3's, and
 says PASS only when all three agree.
@@ -65,32 +65,51 @@ worth being able to withdraw:
                         the barrier.                        1.48x slower.
     --dynamic-claim     hand pieces out from per-chiplet queues rather than
                         partitioning them by chiplet rank.  1.60x slower.
+    --split-arrival     a die's piece count and arrival count in two words
+                        rather than the halves of one.      1.027x slower.
     --reduce-unroll 1   one weight load in flight per lane at a time.
                         1.61x slower at --reduce-unroll 1; 8 is the default
                         and 16 gives the registers back to spills.
+    --spin-sleep 0      poll the event word as tight as the hardware will
+                        run; 16 is the default and worth 0.8%.
 
-and the flags that only exist to measure -- `--timers`, `--timers-total-only`,
-`--pad-stages`, `--pad-strip`. See "Measuring it" below.
+`--fuse-swiglu` is the one flag that is off without being slower on purpose:
+it removes a stage and is 0.63% slower anyway, for a reason worth reading
+before trying it again -- see the note next to `slice_i`.
 
-Where the 3.68 ms goes
+Then the flags that only exist to measure -- `--timers`,
+`--timers-total-only`, `--pad-stages`, `--pad-strip`. See "Measuring it".
+
+Where the 3.57 ms goes
 ----------------------
 
 Two thirds of it is the program and one third is the stages meeting. A stage
-boundary -- claim, signal, rendezvous, acquire -- costs 5.52 us whatever the
-stage computes, and a decode step has 257 of them, so 1.42 of the 3.68 is
-boundary. The remaining 2.26 is every weight load, every FMA, the attention
-and the argmax, which is already inside Fleet's 2.452 for the whole model.
+boundary -- claim, signal, rendezvous, acquire -- costs about 5 us whatever
+the stage computes, and a decode step has 257 of them, so roughly 1.3 of the
+3.57 is boundary. The rest is every weight load, every FMA, the attention and
+the argmax, which is already inside Fleet's 2.452 for the whole model. The
+arithmetic and the traffic are not the gap; the way the stages meet is.
 
 Priced by `--pad-strip`, which removes one piece of the boundary at a time
-from a stage that computes nothing:
+from a stage that computes nothing. Measured before the arrival counts were
+packed, when a boundary was 5.52 us:
 
     the spin and its barrier      2.65 us      48%
     the four atomics              2.09 us      38%
     the acquire fence             0.87 us      16%
     the claim                     free
 
-The acquire fence was 7.42 us of a 12.28 us boundary until it stopped being
-taken once per wave; that single change was 1.48x on the whole model.
+Two of those three have since been cut and the ladder has not been re-run, so
+re-measure it before acting on the shares. The history is the useful part: the
+acquire fence was 7.42 us of a 12.28 us boundary until it stopped being taken
+once per wave, which was 1.48x on the whole model; and signalling was three
+memory operations until the two counters moved into one word, which was 2.7%.
+
+What is left of the rendezvous is latency, not congestion -- backing the poll
+off by a factor of sixteen is worth 0.8% -- so it is spent by having fewer
+stages, not by polling them better. The one fusion tried so far does remove a
+stage and does not pay, for a reason that is about weight layout rather than
+about fusing.
 
 Measuring it
 ------------
@@ -2149,7 +2168,8 @@ module {{
     # 128 workgroups are issuing them continuously against one cache line.
     #
     # The rendezvous is 2.65 us of a 5.52 us stage boundary, 0.68 of the
-    # 3.68 ms a token takes, and a single uncached read does not cost 2.65 us.
+    # 3.68 ms a token then took, and a single uncached read does not cost
+    # 2.65 us.
     # `s_sleep n` idles the wave for n*64 clocks -- 30 ns a unit at 2.1 GHz --
     # which is small against one poll's latency and large against the interval
     # between polls, so it trades detection latency the loop was not using for
@@ -2632,9 +2652,11 @@ module {{
             ),
         )
         # A stage boundary costs 5.52 us -- the slope of the launch clock
-        # against --pad-stages. That is 1.42 of the 3.68 ms a token takes,
-        # which makes it the largest single thing in the program, so it is
-        # worth knowing which part of it that is.
+        # against --pad-stages, measured when a token took 3.68 ms, of which
+        # it was 1.42. Still the largest single thing in the program, so it
+        # is worth knowing which part of it is which -- and worth re-running
+        # this ladder, because two of the three pieces it found have been cut
+        # since and the shares below are from before that.
         #
         # `strip` takes the boundary apart. It is only ever used on a pad
         # stage, and a pad stage is exactly the right place for it: its body is
