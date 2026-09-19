@@ -118,8 +118,6 @@ help:
 	@echo "  PROMPT=\"...\"             Prompt for 'make run' / 'make ask'"
 	@echo "  CTX=2048                 Prefill context length (padded)"
 	@echo "  MODEL_SOURCE=<repo|dir>  model.q4nx source (default FastFlowLM/Qwen3-8B-NPU2)"
-	@echo "           Decode layers per weight BO (one BO reaches only 4 GiB)"
-	@echo "         Decode core stack; K=4096 needs less than the 10240 default"
 
 ## Build the Qwen3-8B decode: kernels (QWEN3_8B) + two same-ATTN_MAXL templates
 ## (decode_L$(LBUILD) + decode_L$(LREF)) into this dir. Weight-free build.

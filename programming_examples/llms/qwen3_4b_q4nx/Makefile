@@ -57,9 +57,9 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 
 # Qwen3-4B decode env (module-level constants read these): 36 layers, vocab-151936
-# chunking. is this model's own value (build_template.sh) -- the
-# vocab-chunk divisibility constraints depend on NCX/NCY/PAIR_ROWS, which do not
-# transfer from qwen3_8b_q4nx's 8.
+# chunking. VOCAB_CHUNK_I2 is set in fused_decode.py's _MODELS entry for this
+# model -- the vocab-chunk divisibility constraints depend on NCX/NCY/PAIR_ROWS,
+# which do not transfer from qwen3_8b_q4nx's 8.
 #
 DECODE_ENV := DECODE_MODEL=qwen3-4b UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
@@ -125,7 +125,6 @@ help:
 	@echo "  PROMPT=\"...\"             Prompt for 'make run' / 'make ask'"
 	@echo "  CTX=2048                 Prefill context length (padded)"
 	@echo "  MODEL_SOURCE=<repo|dir>  model.q4nx source (default FastFlowLM/Qwen3-4B-NPU2)"
-	@echo "                Decode layers per weight BO (0 = disabled; not needed at 4B's size)"
 
 ## Build the Qwen3-4B decode: kernels (QWEN3_4B) + two same-ATTN_MAXL templates
 ## (decode_L$(LBUILD) + decode_L$(LREF)) into this dir. Weight-free build.

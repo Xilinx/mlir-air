@@ -120,8 +120,6 @@ help:
 	@echo "  PROMPT=\"...\"             Prompt for 'make run' / 'make ask'"
 	@echo "  CTX=2048                 Prefill context length (padded)"
 	@echo "  MODEL_SOURCE=<repo|dir>  weight source (default Qwen/Qwen2.5-7B-Instruct)"
-	@echo "           Decode layers per weight BO (one BO reaches only 4 GiB)"
-	@echo "         Decode core stack; K=3584 needs less than the 10240 default"
 
 ## Build the Qwen2.5-7B decode: kernels (QWEN2_5_7B) + two same-ATTN_MAXL templates
 ## (decode_L$(LBUILD) + decode_L$(LREF)) into this dir. Weight-free build.

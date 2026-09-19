@@ -87,6 +87,7 @@
 # This file is built up incrementally but stays a SINGLE clean path. The prior
 # flag-heavy stage-2 build is preserved as q4nx_decode_BACKUP_stage2_circuit_golden.py.
 import argparse
+import hashlib as _hashlib
 from itertools import product
 
 import numpy as np
@@ -265,7 +266,8 @@ _MODELS = {
         # 263680 -> 8240 rowblocks = 16*515, 515=5*103. VOCAB_ROWBLKS = 16*VOCAB_I2
         # (PAIR_ROWS=1) must divide 8240 -> VOCAB_I2 in {5,103}. VOCAB_I2=5 keeps the
         # per-dispatch op-count/BDs small (RNDS=5, 80 rowblocks/chunk) -> 103 chunks.
-        # The driver MUST set VOCAB_CHUNK_I2=5 (env) to match this UNI_LM.
+        # Paired with VOCAB_CHUNK_I2=5 below; the assert after the
+        # table holds the two together.
         UNI_LM=103,  # vocab chunks per LM head (VOCAB_CHUNK_I2=5)
         VOCAB_CHUNK_I2=5,
     ),
@@ -332,7 +334,8 @@ _MODELS = {
         # K/PAYLOAD = 6 must divide VOCAB_I2*PAIR_ROWS, i.e. 3 | VOCAB_I2, and the
         # tested envelope caps 2*VOCAB_I2 <= 63. That leaves {3,6,9,18}; 18 is the
         # largest, i.e. the fewest host-armed waves: 198/18 = 11.
-        # The driver MUST set VOCAB_CHUNK_I2=18 (env) to match this UNI_LM.
+        # Paired with VOCAB_CHUNK_I2=18 below; the assert after the
+        # table holds the two together.
         UNI_LM=11,  # vocab chunks per LM head (VOCAB_CHUNK_I2=18)
     ),
     # Qwen3-8B: same paired-egress topology as the llama entries (ATTN_IMPL_2x4x1,
@@ -360,7 +363,8 @@ _MODELS = {
         # K/PAYLOAD = 4096/512 = 8 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS, so
         # VOCAB_I2 must be a multiple of 4: {4,8,76,152}. 8 is the largest at or
         # below the 18-chunk ceiling -> 19 waves, 256 rowblocks/chunk.
-        # The driver MUST set VOCAB_CHUNK_I2=8 (env) to match this UNI_LM.
+        # Paired with VOCAB_CHUNK_I2=8 below; the assert after the
+        # table holds the two together.
         UNI_LM=19,  # vocab chunks per LM head (VOCAB_CHUNK_I2=8)
         VOCAB_CHUNK_I2=8,
         # K=4096: the rms core's seven K-wide L1 activation buffers leave under
@@ -401,7 +405,8 @@ _MODELS = {
         # dropping 1; the 2*VOCAB_I2 <= 63 envelope drops 43 and 301. VOCAB_I2=7 is
         # therefore the ONLY legal chunk (RNDS=7 = exactly one relay round, as in
         # gemma) -> 43 waves, 112 rowblocks/chunk.
-        # The driver MUST set VOCAB_CHUNK_I2=7 (env) to match this UNI_LM.
+        # Paired with VOCAB_CHUNK_I2=7 below; the assert after the
+        # table holds the two together.
         UNI_LM=43,  # vocab chunks per LM head (VOCAB_CHUNK_I2=7)
         VOCAB_CHUNK_I2=7,
         DECODE_STACK=6144,  # K=4096, as qwen3-8b
@@ -419,7 +424,7 @@ _MODELS = {
     # K/PAYLOAD = 4 must divide VOCAB_I2, leaving {4,12,20} under 2*VOCAB_I2<=63.
     # Of those only 12 runs: VOCAB_I2=20 (UNI_LM=15) satisfies every divisibility
     # rule above and still DEADLOCKS the vocab wave on device, the same way the
-    # 1B default does on llama-3.2-3b. Driver MUST set VOCAB_CHUNK_I2=12.
+    # 1B default does on llama-3.2-3b. Paired with VOCAB_CHUNK_I2=12 below.
     "qwen2.5-3b": dict(
         K=2048,
         M=2560,  # DQ+DK+DV = 2048+256+256
@@ -477,7 +482,8 @@ _MODELS = {
         # = 5 must divide VOCAB_RNDS = VOCAB_I2, so VOCAB_I2 is a multiple of 5:
         # {5,10,15,20,25,30} once the tested 2*VOCAB_I2 <= 63 envelope is applied.
         # 30 is the largest, i.e. the fewest host-armed waves: 300/30 = 10.
-        # The driver MUST set VOCAB_CHUNK_I2=30 (env) to match this UNI_LM.
+        # Paired with VOCAB_CHUNK_I2=30 below; the assert after the
+        # table holds the two together.
         UNI_LM=10,  # vocab chunks per LM head (VOCAB_CHUNK_I2=30)
         VOCAB_CHUNK_I2=30,
     ),
@@ -511,7 +517,8 @@ _MODELS = {
         # 4096/512 = 8 must divide VOCAB_RNDS = VOCAB_I2*PAIR_ROWS, so VOCAB_I2
         # must be a multiple of 4: {4,8,16,32}. The tested 2*VOCAB_I2 <= 63
         # envelope rules out 32, so 16 is the largest -> 8 waves.
-        # The driver MUST set VOCAB_CHUNK_I2=16 (env) to match this UNI_LM.
+        # Paired with VOCAB_CHUNK_I2=16 below; the assert after the
+        # table holds the two together.
         UNI_LM=8,  # vocab chunks per LM head (VOCAB_CHUNK_I2=16)
         VOCAB_CHUNK_I2=16,
         # K=4096; 8064 keeps a measured >2x margin over the deepest decode frame
@@ -567,7 +574,21 @@ MODEL = {**_MODEL_DEFAULTS, **_MODELS[MODEL_NAME]}
 # The build stamps embed this so editing a model's entry invalidates its warm
 # templates. Queried by the Makefiles with FUSED_DECODE_PRINT_CONST, which prints
 # any global by name -- the same hook GLU_SLICE uses.
-MODEL_CONFIG_STAMP = " ".join(f"{k}={MODEL[k]}" for k in sorted(_MODEL_DEFAULTS))
+#
+# The digest covers the WHOLE entry, not just the four keys spelled out: K, I2P,
+# UNI_DEC and the rest shape the IR too, and a stamp that only tracked the four
+# would promise an invalidation it does not deliver. The four stay in plain text
+# because the stamp file is also what a human reads to see how a template was
+# built; the digest is what actually makes the guarantee.
+MODEL_CONFIG_STAMP = " ".join(
+    [f"{k}={MODEL[k]}" for k in sorted(_MODEL_DEFAULTS)]
+    + [
+        "MODEL_SHA="
+        + _hashlib.sha256(
+            repr((MODEL_NAME, sorted(MODEL.items()))).encode()
+        ).hexdigest()[:12]
+    ]
+)
 
 # ph0 egress consumer. "rope" = attention (RoPE -> KV append -> block attention);
 # "conv" = LFM2 Lfm2ShortConv (gate -> causal depthwise k=3 -> gate), which needs

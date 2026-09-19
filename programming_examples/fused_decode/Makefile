@@ -34,10 +34,10 @@ PEANO_KBASE    := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 # DECODE_GOLDEN=1 enables the post-attention-RMS decode path (a boolean flag; no
 # weight files are read at build time -- the compile is weight-free).
-# VOCAB_CHUNK_I2 / UNI_LM: overridable so the lm-head wave count can be varied at
-# CONSTANT work (UNI_LM*VOCAB_CHUNK_I2 must stay = VOCAB_FULL_ROWBLKS/32). Defaults
-# reproduce the shipped config exactly. fused_decode.py asserts the two agree.
-VOCAB_CHUNK_I2 ?= 18
+# UNI_LM: overridable so the lm-head wave count can be varied at CONSTANT work
+# (UNI_LM*VOCAB_CHUNK_I2 must stay = VOCAB_FULL_ROWBLKS/32). VOCAB_CHUNK_I2 is
+# NOT settable here -- it is a property of the model and comes from
+# fused_decode.py's _MODELS entry, which asserts the two agree.
 # PROJ_RC_CACHE=1 (default) computes the proj +min-term reduction of the
 # activation ONCE per col-block per projection and reuses it across that
 # projection's row-blocks, instead of recomputing it on every (row, col) block.
@@ -48,13 +48,9 @@ VOCAB_CHUNK_I2 ?= 18
 # 15.87 -> 15.30 ms; slope unchanged at 1.14 ms/1k). Only engages on the
 # PAIR_ROWS=2 proj path (llama); the PAIR_ROWS=1 gemma path is untouched.
 # PROJ_RC_CACHE=0 restores the recompute-every-block kernel for A/B.
-# Dual-MM2S weight feed. Per model: qwen2.5-3b builds with 0. It changes the DDR
-# cascade order, so a consumer must pack its weights with the same setting -- the
-# llms/*_q4nx drivers read it and key their requant cache on it.
-W_DUAL_CHAN    ?= 1
 PROJ_RC_CACHE  ?= 1
-DECODE_ENV     := VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-                  W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
+DECODE_ENV     := LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
+                  PROJ_RC_CACHE=$(PROJ_RC_CACHE) \
                   $(if $(UNI_LM),UNI_LM=$(UNI_LM),)
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
@@ -101,7 +97,13 @@ help:
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN) PROJ_RC_CACHE=$(PROJ_RC_CACHE)
+# The model's own config (W_DUAL_CHAN, VOCAB_CHUNK_I2, DECODE_STACK,
+# DECODE_WGROUP and a digest of the rest of its _MODELS entry) comes from the
+# engine, not from here. llama32_1b_q4nx delegates its decode build to this
+# Makefile, so without this in the stamp a llama-3.2-1b table edit would leave
+# its warm templates in place while the host imported the new values.
+MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+DECODE_FLAGS        = $(MODEL_CFG) PROJ_RC_CACHE=$(PROJ_RC_CACHE)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
