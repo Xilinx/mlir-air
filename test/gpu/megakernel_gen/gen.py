@@ -84,32 +84,32 @@ Where the 3.57 ms goes
 ----------------------
 
 Two thirds of it is the program and one third is the stages meeting. A stage
-boundary -- claim, signal, rendezvous, acquire -- costs about 5 us whatever
-the stage computes, and a decode step has 257 of them, so roughly 1.3 of the
-3.57 is boundary. The rest is every weight load, every FMA, the attention and
+boundary -- claim, signal, rendezvous, acquire -- costs 5.15 us whatever the
+stage computes, and a decode step has 257 of them, so 1.32 of the 3.58 is
+boundary. The rest is every weight load, every FMA, the attention and
 the argmax, which is already inside Fleet's 2.452 for the whole model. The
 arithmetic and the traffic are not the gap; the way the stages meet is.
 
 Priced by `--pad-strip`, which removes one piece of the boundary at a time
-from a stage that computes nothing. Measured before the arrival counts were
-packed, when a boundary was 5.52 us:
+from a stage that computes nothing:
 
-    the spin and its barrier      2.65 us      48%
-    the four atomics              2.09 us      38%
-    the acquire fence             0.87 us      16%
+    the spin and its barrier      2.53 us      49%
+    the atomics                   1.86 us      36%
+    the acquire fence             0.69 us      13%
     the claim                     free
 
-Two of those three have since been cut and the ladder has not been re-run, so
-re-measure it before acting on the shares. The history is the useful part: the
-acquire fence was 7.42 us of a 12.28 us boundary until it stopped being taken
-once per wave, which was 1.48x on the whole model; and signalling was three
-memory operations until the two counters moved into one word, which was 2.7%.
+Both of the changes that made the boundary 12.28 us into 5.15 came out of that
+ladder. The acquire fence was 7.42 us of the 12.28 until it stopped being
+taken once per wave -- 1.48x on the whole model -- and signalling was three
+memory operations until a die's piece count and arrival count moved into the
+two halves of one word, which was 2.7%.
 
-What is left of the rendezvous is latency, not congestion -- backing the poll
-off by a factor of sixteen is worth 0.8% -- so it is spent by having fewer
-stages, not by polling them better. The one fusion tried so far does remove a
-stage and does not pay, for a reason that is about weight layout rather than
-about fusing.
+What is left is half rendezvous, and the rendezvous is latency rather than
+congestion -- backing the poll off by a factor of sixteen is worth 0.8%. So it
+is spent by having fewer stages, not by polling them better. The one fusion
+tried so far removes a stage, is correct, and does not pay; why it does not is
+open, and the two explanations offered so far were both tested and one of them
+was wrong.
 
 Measuring it
 ------------
