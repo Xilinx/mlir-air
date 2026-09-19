@@ -728,10 +728,8 @@ void air::DMAAllocator::activateChainPingPong(ChainLockSet &cls,
   cls.sig_locks.push_back(allocateLockOp(device, tile, /*init=*/0));
 }
 
-std::pair<AIE::LockOp, AIE::LockOp>
-air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
-                                    AIE::DMAChannelDir dir, int stage,
-                                    int slot) {
+std::pair<AIE::LockOp, AIE::LockOp> air::DMAAllocator::pickChainBdLocks(
+    const ChainLockSet &cls, AIE::DMAChannelDir dir, int stage, int slot) {
   // generateDmaBd interprets the returned pair as (rlock, wlock) — the
   // legacy producer-consumer convention — and direction-dependently
   // chooses which is acquired vs released:
@@ -1116,8 +1114,7 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
             "v2 chain-lock: failed to determine BD stage index");
       // This is the PRIMARY buffer's BD, i.e. slot 0. generateDmaBdProgram
       // asks for slot 1 separately when it splices the ping-pong twin.
-      auto pair =
-          pickChainBdLocks(*cls, channel.direction, stage, /*slot=*/0);
+      auto pair = pickChainBdLocks(*cls, channel.direction, stage, /*slot=*/0);
       // Register a lock_allocation_list entry so subsequent reuse-lookup
       // queries on the same (buffer, channel) find the same pair —
       // matches the legacy reuse model for the rare same-channel multi-BD

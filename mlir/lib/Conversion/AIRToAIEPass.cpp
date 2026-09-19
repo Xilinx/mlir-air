@@ -6606,8 +6606,8 @@ public:
           std::optional<std::pair<int64_t, int64_t>> chainLockCounts;
           if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
             if (lockRaceConditionFixV2) {
-              auto clsIt =
-                  dmaAlloc.chain_lock_sets.find(bufferOp.value().getOperation());
+              auto clsIt = dmaAlloc.chain_lock_sets.find(
+                  bufferOp.value().getOperation());
               if (clsIt != dmaAlloc.chain_lock_sets.end())
                 chainLockCounts = clsIt->second.bdLockCounts();
             }
@@ -6673,8 +6673,8 @@ public:
                   auto pongLocks = dmaAlloc.pickChainBdLocks(
                       *cls, dir, pongStage, /*slot=*/1);
                   auto pongBD = generateDmaBd<bufferOpTy>(
-                      loc, dir, pongLocks, tile, targetModel, bd_pong,
-                      memcpyOp, cls->twin_buf, chan, lockRaceConditionFixV2,
+                      loc, dir, pongLocks, tile, targetModel, bd_pong, memcpyOp,
+                      cls->twin_buf, chan, lockRaceConditionFixV2,
                       cls->bdLockCounts());
                   if (failed(pongBD))
                     return cls->twin_buf->emitOpError(
