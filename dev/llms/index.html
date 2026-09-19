@@ -1353,38 +1353,6 @@
 <h2 id="nightly-llm-benchmark-npu2">Nightly LLM Benchmark (NPU2)<a class="headerlink" href="#nightly-llm-benchmark-npu2" title="Permanent link">&para;</a></h2>
 <p>End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. <strong>TTFT</strong> is time to first token (prefill latency); <strong>Decode</strong> is steady-state generation throughput.</p>
 <p>Verify: 🟢 pass &nbsp; 🔴 fail &nbsp; ⚪ skipped. &nbsp; — not measured.</p>
-<p>Single-point rows — metrics that do not yet have a curve below. ↓ means that
-model's number for this metric is in a curve instead.</p>
-<table>
-<thead>
-<tr>
-<th style="text-align: left;">Model</th>
-<th style="text-align: right;">Context</th>
-<th style="text-align: right;">TTFT (ms)</th>
-<th style="text-align: right;">Decode (tok/s)</th>
-<th style="text-align: left;">Measured</th>
-<th style="text-align: center;">Verify</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">qwen25_3b_q4</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</td>
-<td style="text-align: right;">5</td>
-<td style="text-align: right;">4057.0</td>
-<td style="text-align: right;">↓</td>
-<td style="text-align: left;">2026-09-18</td>
-<td style="text-align: center;">🟢</td>
-</tr>
-<tr>
-<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">qwen3_4b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</td>
-<td style="text-align: right;">24</td>
-<td style="text-align: right;">5097.0</td>
-<td style="text-align: right;">↓</td>
-<td style="text-align: left;">2026-09-18</td>
-<td style="text-align: center;">🟢</td>
-</tr>
-</tbody>
-</table>
 <h3 id="decode-throughput-vs-context-toks">Decode throughput vs context (tok/s)<a class="headerlink" href="#decode-throughput-vs-context-toks" title="Permanent link">&para;</a></h3>
 <p>Steady-state decode throughput at increasing KV-cache depth.</p>
 <p>The models below reimplement AMD NPU LLM designs originally developed by the
@@ -1408,10 +1376,10 @@ abstractions of the MLIR-AIR dialect.</p>
 <tbody>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma3_4b_q4nx/">gemma3_4b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2">HF</a>)</td>
-<td style="text-align: right;">20.61</td>
-<td style="text-align: right;">19.20</td>
-<td style="text-align: right;">16.90</td>
-<td style="text-align: right;">13.60</td>
+<td style="text-align: right;">20.62</td>
+<td style="text-align: right;">19.21</td>
+<td style="text-align: right;">16.87</td>
+<td style="text-align: right;">13.59</td>
 <td style="text-align: right;">9.79</td>
 <td style="text-align: right;">6.28</td>
 <td style="text-align: right;">3.66</td>
@@ -1432,12 +1400,12 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/lfm2_1_2b_q4nx/">lfm2_1_2b_q4nx</a> (<a href="https://huggingface.co/LiquidAI/LFM2-1.2B">HF</a>)</td>
-<td style="text-align: right;">67.65</td>
-<td style="text-align: right;">62.39</td>
-<td style="text-align: right;">54.18</td>
-<td style="text-align: right;">42.76</td>
-<td style="text-align: right;">30.17</td>
-<td style="text-align: right;">18.99</td>
+<td style="text-align: right;">67.58</td>
+<td style="text-align: right;">62.38</td>
+<td style="text-align: right;">54.15</td>
+<td style="text-align: right;">42.75</td>
+<td style="text-align: right;">30.15</td>
+<td style="text-align: right;">18.98</td>
 <td style="text-align: right;">10.89</td>
 <td style="text-align: right;">5.88</td>
 <td style="text-align: center;">🟢</td>
@@ -1445,8 +1413,8 @@ abstractions of the MLIR-AIR dialect.</p>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">llama31_8b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</td>
 <td style="text-align: right;">13.20</td>
-<td style="text-align: right;">12.54</td>
-<td style="text-align: right;">11.42</td>
+<td style="text-align: right;">12.53</td>
+<td style="text-align: right;">11.41</td>
 <td style="text-align: right;">9.69</td>
 <td style="text-align: right;">7.44</td>
 <td style="text-align: right;">5.08</td>
@@ -1456,59 +1424,59 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/">llama32_1b</a> (<a href="https://huggingface.co/meta-llama/Llama-3.2-1B">HF</a>)</td>
-<td style="text-align: right;">10.45</td>
-<td style="text-align: right;">8.16</td>
-<td style="text-align: right;">6.22</td>
-<td style="text-align: right;">4.46</td>
-<td style="text-align: right;">2.60</td>
+<td style="text-align: right;">10.49</td>
+<td style="text-align: right;">9.03</td>
+<td style="text-align: right;">6.86</td>
+<td style="text-align: right;">4.37</td>
+<td style="text-align: right;">2.72</td>
 <td style="text-align: right;">1.18</td>
-<td style="text-align: right;">0.49</td>
-<td style="text-align: right;">0.23</td>
+<td style="text-align: right;">0.48</td>
+<td style="text-align: right;">0.22</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_int4/">llama32_1b_int4</a> (<a href="https://huggingface.co/amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead">HF</a>)</td>
-<td style="text-align: right;">13.93</td>
-<td style="text-align: right;">11.50</td>
-<td style="text-align: right;">8.00</td>
-<td style="text-align: right;">5.05</td>
-<td style="text-align: right;">2.85</td>
-<td style="text-align: right;">1.09</td>
-<td style="text-align: right;">0.47</td>
+<td style="text-align: right;">13.98</td>
+<td style="text-align: right;">10.33</td>
+<td style="text-align: right;">8.25</td>
+<td style="text-align: right;">5.04</td>
+<td style="text-align: right;">2.88</td>
+<td style="text-align: right;">1.15</td>
+<td style="text-align: right;">0.49</td>
 <td style="text-align: right;">0.18</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_q4nx/">llama32_1b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2">HF</a>)</td>
-<td style="text-align: right;">68.61</td>
-<td style="text-align: right;">63.33</td>
-<td style="text-align: right;">54.84</td>
-<td style="text-align: right;">43.14</td>
-<td style="text-align: right;">30.41</td>
-<td style="text-align: right;">19.05</td>
+<td style="text-align: right;">68.36</td>
+<td style="text-align: right;">63.23</td>
+<td style="text-align: right;">54.81</td>
+<td style="text-align: right;">43.20</td>
+<td style="text-align: right;">30.35</td>
+<td style="text-align: right;">19.06</td>
 <td style="text-align: right;">10.92</td>
 <td style="text-align: right;">5.89</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">llama32_3b</a> (<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</td>
-<td style="text-align: right;">4.10</td>
-<td style="text-align: right;">3.14</td>
-<td style="text-align: right;">2.38</td>
-<td style="text-align: right;">1.66</td>
+<td style="text-align: right;">4.46</td>
+<td style="text-align: right;">3.56</td>
+<td style="text-align: right;">2.69</td>
+<td style="text-align: right;">1.87</td>
 <td style="text-align: right;">0.82</td>
-<td style="text-align: right;">0.37</td>
+<td style="text-align: right;">0.36</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b_q4nx/">llama32_3b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2">HF</a>)</td>
-<td style="text-align: right;">28.12</td>
-<td style="text-align: right;">25.78</td>
-<td style="text-align: right;">22.06</td>
-<td style="text-align: right;">17.15</td>
-<td style="text-align: right;">11.89</td>
+<td style="text-align: right;">28.13</td>
+<td style="text-align: right;">25.75</td>
+<td style="text-align: right;">22.05</td>
+<td style="text-align: right;">17.16</td>
+<td style="text-align: right;">11.88</td>
 <td style="text-align: right;">7.36</td>
 <td style="text-align: right;">4.18</td>
 <td style="text-align: right;">2.24</td>
@@ -1516,11 +1484,11 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi4_mini_q4nx/">phi4_mini_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2">HF</a>)</td>
-<td style="text-align: right;">23.64</td>
-<td style="text-align: right;">21.65</td>
-<td style="text-align: right;">18.65</td>
-<td style="text-align: right;">14.63</td>
-<td style="text-align: right;">10.21</td>
+<td style="text-align: right;">23.56</td>
+<td style="text-align: right;">21.69</td>
+<td style="text-align: right;">18.68</td>
+<td style="text-align: right;">14.61</td>
+<td style="text-align: right;">10.20</td>
 <td style="text-align: right;">6.37</td>
 <td style="text-align: right;">3.63</td>
 <td style="text-align: right;">1.95</td>
@@ -1528,47 +1496,47 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/">qwen25_0_5b</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">HF</a>)</td>
-<td style="text-align: right;">10.79</td>
-<td style="text-align: right;">9.68</td>
-<td style="text-align: right;">8.24</td>
-<td style="text-align: right;">6.21</td>
-<td style="text-align: right;">4.04</td>
-<td style="text-align: right;">1.75</td>
-<td style="text-align: right;">0.76</td>
+<td style="text-align: right;">10.66</td>
+<td style="text-align: right;">9.67</td>
+<td style="text-align: right;">9.00</td>
+<td style="text-align: right;">6.24</td>
+<td style="text-align: right;">3.59</td>
+<td style="text-align: right;">1.64</td>
+<td style="text-align: right;">0.75</td>
 <td style="text-align: right;">0.37</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/">qwen25_1_5b</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">HF</a>)</td>
-<td style="text-align: right;">6.57</td>
-<td style="text-align: right;">5.84</td>
-<td style="text-align: right;">4.60</td>
-<td style="text-align: right;">3.21</td>
+<td style="text-align: right;">6.60</td>
+<td style="text-align: right;">6.07</td>
+<td style="text-align: right;">4.66</td>
+<td style="text-align: right;">3.55</td>
 <td style="text-align: right;">1.83</td>
-<td style="text-align: right;">0.78</td>
+<td style="text-align: right;">0.80</td>
 <td style="text-align: right;">0.41</td>
 <td style="text-align: right;">0.21</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/">qwen25_3b</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-3B">HF</a>)</td>
-<td style="text-align: right;">3.84</td>
-<td style="text-align: right;">3.49</td>
-<td style="text-align: right;">2.67</td>
-<td style="text-align: right;">2.14</td>
-<td style="text-align: right;">1.11</td>
+<td style="text-align: right;">4.12</td>
+<td style="text-align: right;">3.88</td>
+<td style="text-align: right;">3.02</td>
+<td style="text-align: right;">2.21</td>
+<td style="text-align: right;">1.05</td>
 <td style="text-align: right;">0.48</td>
-<td style="text-align: right;">0.25</td>
+<td style="text-align: right;">0.24</td>
 <td style="text-align: right;">0.10</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">qwen25_3b_q4</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</td>
-<td style="text-align: right;">21.79</td>
-<td style="text-align: right;">19.93</td>
-<td style="text-align: right;">16.96</td>
-<td style="text-align: right;">13.12</td>
-<td style="text-align: right;">8.99</td>
+<td style="text-align: right;">21.83</td>
+<td style="text-align: right;">19.86</td>
+<td style="text-align: right;">16.95</td>
+<td style="text-align: right;">13.10</td>
+<td style="text-align: right;">9.01</td>
 <td style="text-align: right;">5.54</td>
 <td style="text-align: right;">3.14</td>
 <td style="text-align: right;">1.68</td>
@@ -1576,10 +1544,10 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">qwen25_7b_q4nx</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</td>
-<td style="text-align: right;">13.37</td>
+<td style="text-align: right;">13.36</td>
 <td style="text-align: right;">12.80</td>
-<td style="text-align: right;">11.81</td>
-<td style="text-align: right;">10.23</td>
+<td style="text-align: right;">11.80</td>
+<td style="text-align: right;">10.22</td>
 <td style="text-align: right;">8.07</td>
 <td style="text-align: right;">5.68</td>
 <td style="text-align: right;">3.56</td>
@@ -1588,23 +1556,23 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">qwen3_0_6b</a> (<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</td>
-<td style="text-align: right;">8.65</td>
-<td style="text-align: right;">5.84</td>
-<td style="text-align: right;">4.04</td>
-<td style="text-align: right;">2.64</td>
-<td style="text-align: right;">1.24</td>
-<td style="text-align: right;">0.57</td>
+<td style="text-align: right;">8.53</td>
+<td style="text-align: right;">6.31</td>
+<td style="text-align: right;">4.50</td>
+<td style="text-align: right;">2.83</td>
+<td style="text-align: right;">1.27</td>
+<td style="text-align: right;">0.56</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/">qwen3_1_7b</a> (<a href="https://huggingface.co/Qwen/Qwen3-1.7B">HF</a>)</td>
-<td style="text-align: right;">5.60</td>
-<td style="text-align: right;">4.91</td>
-<td style="text-align: right;">3.73</td>
-<td style="text-align: right;">2.58</td>
-<td style="text-align: right;">1.23</td>
+<td style="text-align: right;">6.13</td>
+<td style="text-align: right;">4.94</td>
+<td style="text-align: right;">3.52</td>
+<td style="text-align: right;">2.40</td>
+<td style="text-align: right;">1.22</td>
 <td style="text-align: right;">0.54</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
@@ -1612,10 +1580,10 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">qwen3_4b</a> (<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</td>
-<td style="text-align: right;">3.15</td>
-<td style="text-align: right;">2.38</td>
-<td style="text-align: right;">1.73</td>
-<td style="text-align: right;">1.15</td>
+<td style="text-align: right;">3.27</td>
+<td style="text-align: right;">2.63</td>
+<td style="text-align: right;">1.96</td>
+<td style="text-align: right;">1.31</td>
 <td style="text-align: right;">0.57</td>
 <td style="text-align: right;">0.24</td>
 <td style="text-align: right;">—</td>
@@ -1624,11 +1592,11 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">qwen3_4b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</td>
-<td style="text-align: right;">20.90</td>
+<td style="text-align: right;">20.92</td>
 <td style="text-align: right;">19.16</td>
-<td style="text-align: right;">16.40</td>
+<td style="text-align: right;">16.39</td>
 <td style="text-align: right;">12.75</td>
-<td style="text-align: right;">8.83</td>
+<td style="text-align: right;">8.84</td>
 <td style="text-align: right;">5.47</td>
 <td style="text-align: right;">3.11</td>
 <td style="text-align: right;">1.67</td>
@@ -1636,11 +1604,11 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">qwen3_8b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</td>
-<td style="text-align: right;">12.70</td>
-<td style="text-align: right;">12.03</td>
+<td style="text-align: right;">12.67</td>
+<td style="text-align: right;">12.02</td>
 <td style="text-align: right;">10.86</td>
-<td style="text-align: right;">9.12</td>
-<td style="text-align: right;">6.91</td>
+<td style="text-align: right;">9.13</td>
+<td style="text-align: right;">6.90</td>
 <td style="text-align: right;">4.65</td>
 <td style="text-align: right;">2.81</td>
 <td style="text-align: right;">1.57</td>
@@ -1648,11 +1616,11 @@ abstractions of the MLIR-AIR dialect.</p>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">smollm2_1_7b</a> (<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</td>
-<td style="text-align: right;">5.97</td>
+<td style="text-align: right;">5.95</td>
 <td style="text-align: right;">4.99</td>
-<td style="text-align: right;">3.65</td>
-<td style="text-align: right;">2.19</td>
-<td style="text-align: right;">1.19</td>
+<td style="text-align: right;">3.63</td>
+<td style="text-align: right;">2.15</td>
+<td style="text-align: right;">1.28</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
@@ -1679,154 +1647,170 @@ so TTFT tracks that length rather than the number of real prompt tokens.</p>
 <tbody>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma3_4b_q4nx/">gemma3_4b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2">HF</a>)</td>
-<td style="text-align: right;">1035</td>
-<td style="text-align: right;">1942</td>
-<td style="text-align: right;">3727</td>
-<td style="text-align: right;">7553</td>
+<td style="text-align: right;">1068</td>
+<td style="text-align: right;">1858</td>
+<td style="text-align: right;">3712</td>
+<td style="text-align: right;">7541</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e2b_q4nx/">gemma4_e2b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2">HF</a>)</td>
-<td style="text-align: right;">1041</td>
-<td style="text-align: right;">1917</td>
-<td style="text-align: right;">4042</td>
+<td style="text-align: right;">1078</td>
+<td style="text-align: right;">1991</td>
+<td style="text-align: right;">3922</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/lfm2_1_2b_q4nx/">lfm2_1_2b_q4nx</a> (<a href="https://huggingface.co/LiquidAI/LFM2-1.2B">HF</a>)</td>
-<td style="text-align: right;">393</td>
-<td style="text-align: right;">635</td>
-<td style="text-align: right;">1112</td>
-<td style="text-align: right;">81871</td>
+<td style="text-align: right;">398</td>
+<td style="text-align: right;">639</td>
+<td style="text-align: right;">1110</td>
+<td style="text-align: right;">81877</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">llama31_8b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</td>
-<td style="text-align: right;">1369</td>
-<td style="text-align: right;">2490</td>
-<td style="text-align: right;">5980</td>
-<td style="text-align: right;">13307</td>
+<td style="text-align: right;">1340</td>
+<td style="text-align: right;">2519</td>
+<td style="text-align: right;">5975</td>
+<td style="text-align: right;">13236</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/">llama32_1b</a> (<a href="https://huggingface.co/meta-llama/Llama-3.2-1B">HF</a>)</td>
-<td style="text-align: right;">303</td>
-<td style="text-align: right;">551</td>
-<td style="text-align: right;">1021</td>
-<td style="text-align: right;">2199</td>
+<td style="text-align: right;">320</td>
+<td style="text-align: right;">537</td>
+<td style="text-align: right;">1020</td>
+<td style="text-align: right;">2181</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_int4/">llama32_1b_int4</a> (<a href="https://huggingface.co/amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead">HF</a>)</td>
-<td style="text-align: right;">304</td>
-<td style="text-align: right;">531</td>
+<td style="text-align: right;">302</td>
+<td style="text-align: right;">534</td>
 <td style="text-align: right;">1027</td>
-<td style="text-align: right;">2201</td>
+<td style="text-align: right;">2187</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_q4nx/">llama32_1b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2">HF</a>)</td>
-<td style="text-align: right;">292</td>
+<td style="text-align: right;">309</td>
 <td style="text-align: right;">483</td>
-<td style="text-align: right;">907</td>
-<td style="text-align: right;">2162</td>
+<td style="text-align: right;">921</td>
+<td style="text-align: right;">2130</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">llama32_3b</a> (<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</td>
-<td style="text-align: right;">651</td>
-<td style="text-align: right;">1164</td>
-<td style="text-align: right;">2574</td>
-<td style="text-align: right;">6234</td>
+<td style="text-align: right;">675</td>
+<td style="text-align: right;">1188</td>
+<td style="text-align: right;">2575</td>
+<td style="text-align: right;">6261</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b_q4nx/">llama32_3b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2">HF</a>)</td>
 <td style="text-align: right;">646</td>
 <td style="text-align: right;">1144</td>
-<td style="text-align: right;">2552</td>
-<td style="text-align: right;">6124</td>
+<td style="text-align: right;">2564</td>
+<td style="text-align: right;">6157</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi4_mini_q4nx/">phi4_mini_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2">HF</a>)</td>
-<td style="text-align: right;">788</td>
-<td style="text-align: right;">1359</td>
-<td style="text-align: right;">2906</td>
-<td style="text-align: right;">7013</td>
+<td style="text-align: right;">750</td>
+<td style="text-align: right;">1353</td>
+<td style="text-align: right;">2905</td>
+<td style="text-align: right;">7040</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/">qwen25_0_5b</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">HF</a>)</td>
-<td style="text-align: right;">337</td>
-<td style="text-align: right;">557</td>
-<td style="text-align: right;">859</td>
+<td style="text-align: right;">335</td>
+<td style="text-align: right;">562</td>
+<td style="text-align: right;">875</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/">qwen25_1_5b</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">HF</a>)</td>
-<td style="text-align: right;">683</td>
-<td style="text-align: right;">1192</td>
-<td style="text-align: right;">2201</td>
-<td style="text-align: right;">4710</td>
+<td style="text-align: right;">644</td>
+<td style="text-align: right;">1123</td>
+<td style="text-align: right;">2218</td>
+<td style="text-align: right;">4726</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/">qwen25_3b</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-3B">HF</a>)</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
-<td style="text-align: right;">4108</td>
-<td style="text-align: right;">8804</td>
+<td style="text-align: right;">4084</td>
+<td style="text-align: right;">8763</td>
+<td style="text-align: center;">🟢</td>
+</tr>
+<tr>
+<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">qwen25_3b_q4</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">4130</td>
+<td style="text-align: right;">8692</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">qwen25_7b_q4nx</a> (<a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</td>
-<td style="text-align: right;">2056</td>
-<td style="text-align: right;">3944</td>
-<td style="text-align: right;">8034</td>
-<td style="text-align: right;">16816</td>
+<td style="text-align: right;">2102</td>
+<td style="text-align: right;">3970</td>
+<td style="text-align: right;">8022</td>
+<td style="text-align: right;">16830</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">qwen3_0_6b</a> (<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</td>
 <td style="text-align: right;">400</td>
-<td style="text-align: right;">698</td>
-<td style="text-align: right;">1439</td>
-<td style="text-align: right;">3326</td>
+<td style="text-align: right;">708</td>
+<td style="text-align: right;">1441</td>
+<td style="text-align: right;">3364</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/">qwen3_1_7b</a> (<a href="https://huggingface.co/Qwen/Qwen3-1.7B">HF</a>)</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
-<td style="text-align: right;">2039</td>
-<td style="text-align: right;">4482</td>
+<td style="text-align: right;">2010</td>
+<td style="text-align: right;">4475</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">qwen3_4b</a> (<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</td>
-<td style="text-align: right;">1366</td>
-<td style="text-align: right;">2558</td>
-<td style="text-align: right;">5291</td>
-<td style="text-align: right;">11680</td>
+<td style="text-align: right;">1345</td>
+<td style="text-align: right;">2584</td>
+<td style="text-align: right;">5256</td>
+<td style="text-align: right;">11727</td>
+<td style="text-align: center;">🟢</td>
+</tr>
+<tr>
+<td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">qwen3_4b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</td>
+<td style="text-align: right;">1387</td>
+<td style="text-align: right;">2517</td>
+<td style="text-align: right;">5122</td>
+<td style="text-align: right;">11397</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">qwen3_8b_q4nx</a> (<a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</td>
-<td style="text-align: right;">1816</td>
-<td style="text-align: right;">3573</td>
-<td style="text-align: right;">7102</td>
-<td style="text-align: right;">15281</td>
+<td style="text-align: right;">1901</td>
+<td style="text-align: right;">3510</td>
+<td style="text-align: right;">7107</td>
+<td style="text-align: right;">15357</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">smollm2_1_7b</a> (<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</td>
-<td style="text-align: right;">498</td>
-<td style="text-align: right;">880</td>
-<td style="text-align: right;">1713</td>
-<td style="text-align: right;">3687</td>
+<td style="text-align: right;">489</td>
+<td style="text-align: right;">887</td>
+<td style="text-align: right;">1714</td>
+<td style="text-align: right;">3655</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 </tbody>
@@ -1851,14 +1835,14 @@ token stream, so there is no decode throughput and no context to sweep.
 <tr>
 <td style="text-align: left;"><a href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smolvla/">smolvla</a></td>
 <td style="text-align: right;">241</td>
-<td style="text-align: right;">682.0</td>
-<td style="text-align: left;">2026-09-18</td>
+<td style="text-align: right;">656.0</td>
+<td style="text-align: left;">2026-09-19</td>
 <td style="text-align: center;">🟢</td>
 </tr>
 </tbody>
 </table>
 <p>📈 <a href="perf-history/">Performance history over time</a> — per-nightly TTFT and decode throughput plotted per model.</p>
-<p><em>Last updated 2026-09-18 · mlir-air f4ffd43 · mlir-aie 10767b5 · llvm-aie 22.0.0.2026090201+a36c62b9</em></p>
+<p><em>Last updated 2026-09-19 · mlir-air deffe6f · mlir-aie 10767b5 · llvm-aie 22.0.0.2026090201+a36c62b9</em></p>
 
 
 
