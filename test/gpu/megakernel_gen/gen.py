@@ -379,11 +379,25 @@ def emit(
     # wide and is the largest stage in the layer, so halving the workgroups
     # that have any of it to do costs far more than the line does.
     #
-    # What would make the fusion pay is neither: interleaving the gate and up
-    # halves of Wgu so column j's pair is adjacent in memory. Then a piece
-    # owning 24 pairs reads 96 contiguous bytes, at `tasks` pieces, and the
-    # boundary goes for free. That is a change to weights.py and to both
-    # readers of the matrix, and it has not been done.
+    # The obvious repair was to interleave the gate and up halves of Wgu so
+    # column j's pair is adjacent, giving a piece that owns 24 pairs one run
+    # of 96 bytes again at `tasks` pieces. **That was built and it does not
+    # work.** The whole layout was changed -- weights.py, the synthetic weight
+    # generator, the per-column scale, the host reference's matmul and its
+    # SwiGLU, and the device SwiGLU stage -- every one of them passed, the
+    # suite 21/21 on both paths and every shape token-exact, and the fused
+    # build was still 0.73% slower than the split one measured beside it in
+    # the same job: 2 171 276 against 2 155 608. Reverted.
+    #
+    # So the cache-line story above is not the explanation, or not all of it.
+    # The two forms move the same weight bytes; what differs is that a fused
+    # piece runs its two reductions one after the other, so the row it wants
+    # both columns of is streamed past twice with an entire reduction in
+    # between, and adjacency buys nothing if the line is long gone by the time
+    # the second loop asks for it. The only form where adjacency could pay is
+    # one reduction that takes both columns per row into two accumulators --
+    # a dot_loop over a 2-wide column block. Until someone tries that, the
+    # fusion is off and its cost is unexplained.
     slice_q = qkvo // tasks
     # The vocabulary is the one width that does not have to divide: Qwen3's is
     # 151936 = 2^7 * 1187, so requiring it to capped `tasks` at 128 -- and the
@@ -3950,11 +3964,10 @@ def main() -> int:
         help="compute a gate column and its matching up column in the same "
         "gate_up piece and apply the SwiGLU there, so swiglu is not a stage "
         "and a layer has eight rather than nine. Correct -- suite 21/21 and "
-        "every shape token-exact -- but 0.63%% slower, because a fused piece "
-        "reads two 48-byte strips of the weights where the split one read a "
-        "96-byte strip, and that costs about what the boundary saves. Off "
-        "until the gate and up halves of Wgu are interleaved; see the note "
-        "next to slice_i",
+        "every shape token-exact -- but 0.63%% slower, and not explained: it "
+        "gives back about what the boundary saves, and interleaving the gate "
+        "and up halves of Wgu, which was supposed to be the reason, does not "
+        "recover it. See the note next to slice_i",
     )
     ap.add_argument(
         "--split-arrival",
