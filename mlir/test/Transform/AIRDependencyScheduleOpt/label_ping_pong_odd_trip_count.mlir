@@ -111,9 +111,11 @@ module {
   }
 
 // =============================================================================
-// Case 3 (NEGATIVE): a non-unit step that still yields an odd trip count --
-// 0 to 9 step 1 is 9 trips. Guards the trip-count arithmetic rather than a
-// bound-value pattern.
+// Case 3 (NEGATIVE): UNIT step, so the trip count is the upper bound itself --
+// 0 to 9 step 1 is 9 trips. Case 1 reaches 9 the other way, by striding 64
+// across an even bound of 576, where neither bound is odd and only the derived
+// count is. Having both means the rejection is pinned for a trip count read
+// straight off a bound and for one that only exists after the division.
 // =============================================================================
 
 // CHECK-LABEL: func.func @odd_trip_count_unit_step_rejects
