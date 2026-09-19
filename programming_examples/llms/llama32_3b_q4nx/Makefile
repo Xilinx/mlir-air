@@ -40,15 +40,6 @@ MODEL    ?= instruct
 MODEL_SOURCE ?= FastFlowLM/Llama-3.2-3B-NPU2
 export Q4NX_MODEL_SOURCE := $(MODEL_SOURCE)
 
-# Dual-MM2S weight feed for the fused decode (fused_decode/fused_decode.py).
-# ON by default. The BUILD and the RUN must agree -- the flag selects both the
-# shim channel split and the DDR weight cascade order -- so export it here and let
-# it reach the delegated decode build AND the inference driver. The requant cache
-# is keyed on it, so flipping it needs no manual cache purge.
-W_DUAL_CHAN ?= 1
-export W_DUAL_CHAN
-
-
 DRIVER := $(srcdir)/llama32_3b_q4nx_inference.py
 # The fused per-token decode engine is a SEPARATE reusable example (one dispatch =
 # 28 layers + LM head); this Makefile drives it with the 3B model selection and
@@ -69,11 +60,11 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -I $(AIEOPT_DIR)/include -I $(DEC)/kernels -I $(DEC)/models \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 
-# 3B decode env: 28 layers, vocab chunked at VOCAB_CHUNK_I2=9. That value is NOT
+# 3B decode env: 28 layers, vocab chunked per its _MODELS entry. That value is NOT
 # free -- the vocab relay drains whole-K blocks, so (K/PAYLOAD)=6 must divide
 # VOCAB_I2*PAIR_ROWS=18, and it must match the model entry's UNI_LM=14. The 1B
 # default (14) deadlocks the 3B vocab wave.
-DECODE_ENV := DECODE_MODEL=llama-3.2-3b VOCAB_CHUNK_I2=9 UNIFIED=1 LM_HEAD=0 \
+DECODE_ENV := DECODE_MODEL=llama-3.2-3b UNIFIED=1 LM_HEAD=0 \
               NLAYERS=1 DECODE_GOLDEN=1
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
@@ -146,7 +137,13 @@ compile:
 # other setting must NOT be reused -- it would be fed the wrong blocks and produce
 # silent garbage. The stamp makes the skip below flag-aware.
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
+# W_DUAL_CHAN / VOCAB_CHUNK_I2 / DECODE_STACK / DECODE_WGROUP are NOT set here.
+# They are properties of the model, so they live in fused_decode.py's _MODELS
+# table and the engine reads them from there -- a value this Makefile could pass
+# is a value it could pass wrong, and the build and the host MUST agree on all
+# four. Stamped below so editing the table invalidates the warm templates.
+MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+DECODE_FLAGS       = $(MODEL_CFG)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \

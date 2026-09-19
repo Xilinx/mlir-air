@@ -58,7 +58,6 @@ def phi4_rope(n_pos, model_source):
 # (K/PAYLOAD) | VOCAB_I2*PAIR_ROWS -- 6 | 36 here -- or the vocab wave deadlocks;
 # it also has to match the model entry's UNI_LM (see fused_decode.py).
 DECODE_MODEL = "phi4-mini"
-VOCAB_CHUNK_I2 = "18"
 
 
 def load_fd(model_type="PHI4_4B"):
@@ -67,7 +66,6 @@ def load_fd(model_type="PHI4_4B"):
     generator selects the same model with DECODE_MODEL."""
     os.environ.update(
         DECODE_MODEL=DECODE_MODEL,
-        VOCAB_CHUNK_I2=VOCAB_CHUNK_I2,
         UNIFIED="1",
         LM_HEAD="0",
         NLAYERS="1",

@@ -166,7 +166,6 @@ class FusedDecoder:
         os.environ.update(
             DECODE_MODEL="gemma3-4b",
             UNIFIED="1",
-            VOCAB_CHUNK_I2="5",
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",

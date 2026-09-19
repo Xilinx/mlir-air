@@ -162,13 +162,11 @@ def self_check(verbose=True):
     fd_dir = here.parents[1] / "fused_decode"
     os.environ.update(
         DECODE_MODEL="qwen3-4b",
-        VOCAB_CHUNK_I2="30",
         LM_HEAD="0",
         NLAYERS="1",
         DECODE_GOLDEN="1",
         UNIFIED="1",
         DECODE_GOLDEN_L="2048",
-        W_DUAL_CHAN="1",
     )
     for p in (str(fd_dir), str(here)):
         if p not in sys.path:

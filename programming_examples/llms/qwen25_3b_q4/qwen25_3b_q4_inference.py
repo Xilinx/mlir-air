@@ -150,13 +150,13 @@ class FusedDecoder:
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
         # DECODE_MODEL / geometry env must be set BEFORE importing fused_decode.py (its
-        # module-level constants read them). VOCAB_CHUNK_I2 must match the Makefile's:
-        # it pairs with the model entry's UNI_LM=25 to cover the padded vocab, and 20/15
-        # -- which satisfies every divisibility rule -- deadlocks the vocab wave.
+        # module-level constants read them). Only the per-run knobs are here: the
+        # model's own config (W_DUAL_CHAN=0 for this one, VOCAB_CHUNK_I2, the core
+        # stack and the weight-BO split) comes from its _MODELS entry, so this host
+        # and the build cannot disagree about it.
         os.environ.update(
             DECODE_MODEL="qwen2.5-3b",
             UNIFIED="1",
-            VOCAB_CHUNK_I2="12",
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",

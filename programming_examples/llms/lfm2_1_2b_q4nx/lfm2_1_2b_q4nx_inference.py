@@ -136,10 +136,12 @@ def _ensure_requant_cache(fd):
     """Path to the decode's packed Q4_0 weight cache, building it if absent.
 
     Keyed on the layouts that change the packing, so a warm cache cannot be fed
-    to a build that wants a different one -- each of these would otherwise be a
-    silent wrong-weights run rather than an error:
+    to a build that wants a different one -- each would otherwise be a silent
+    wrong-weights run rather than an error:
       * W_DUAL_CHAN reorders the cascade into per-channel halves;
       * VOCAB_CHUNK_I2 sets how the lm-head rows are split across vocab waves.
+    Both are read back off the imported engine (fused_decode's _MODELS entry for
+    this model), not from the environment.
     """
     rc = os.environ.get("LFM2_DECODE_WEIGHTS_NPZ")
     if rc and os.path.exists(rc):
@@ -339,7 +341,6 @@ class FusedDecoder:
             # overriding this one alone trips fused_decode.py's
             # `UNI_LM == N_VOCAB_CHUNKS` assert. That is deliberate: the assert names
             # both values, and a silent mismatch would sweep the wrong vocab length.
-            VOCAB_CHUNK_I2=os.environ.get("VOCAB_CHUNK_I2", "16"),
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",  # boolean flag: enable post-attn-RMS decode path

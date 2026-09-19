@@ -38,15 +38,6 @@ MODEL    ?= instruct
 MODEL_SOURCE ?= FastFlowLM/Phi4-mini-Instruct-NPU2
 export Q4NX_MODEL_SOURCE := $(MODEL_SOURCE)
 
-# Dual-MM2S weight feed for the fused decode (fused_decode/fused_decode.py).
-# ON by default. The BUILD and the RUN must agree -- the flag selects both the
-# shim channel split and the DDR weight cascade order -- so export it here and let
-# it reach the delegated decode build AND the inference driver. The requant cache
-# is keyed on it, so flipping it needs no manual cache purge.
-W_DUAL_CHAN ?= 1
-export W_DUAL_CHAN
-
-
 DRIVER := $(srcdir)/phi4_mini_q4nx_inference.py
 # The fused per-token decode engine is a SEPARATE reusable example (one dispatch =
 # 32 layers + LM head); this Makefile drives it with the Phi-4-mini model selection and
@@ -68,12 +59,12 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -I $(AIEOPT_DIR)/include -I $(DEC)/kernels -I $(DEC)/models \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 
-# Phi-4-mini decode env: 32 layers, vocab chunked at VOCAB_CHUNK_I2=18. That value is NOT
+# Phi-4-mini decode env: 32 layers, vocab chunked per its _MODELS entry. That value is NOT
 # free -- the vocab relay drains whole-K blocks, so (K/PAYLOAD)=6 must divide
 # VOCAB_I2*PAIR_ROWS=36, and it must match the model entry's UNI_LM=11. The legal
 # set here is {3,6,9,18}; 18 is the largest, i.e. the fewest host-armed waves. The
 # 1B default (14) is not even a divisor and would deadlock the Phi-4-mini vocab wave.
-DECODE_ENV := DECODE_MODEL=phi4-mini VOCAB_CHUNK_I2=18 UNIFIED=1 LM_HEAD=0 \
+DECODE_ENV := DECODE_MODEL=phi4-mini UNIFIED=1 LM_HEAD=0 \
               NLAYERS=1 DECODE_GOLDEN=1
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
@@ -144,7 +135,13 @@ compile:
 # other setting must NOT be reused -- it would be fed the wrong blocks and produce
 # silent garbage. The stamp makes the skip below flag-aware.
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN)
+# W_DUAL_CHAN / VOCAB_CHUNK_I2 / DECODE_STACK / DECODE_WGROUP are NOT set here.
+# They are properties of the model, so they live in fused_decode.py's _MODELS
+# table and the engine reads them from there -- a value this Makefile could pass
+# is a value it could pass wrong, and the build and the host MUST agree on all
+# four. Stamped below so editing the table invalidates the warm templates.
+MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP python3 $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+DECODE_FLAGS       = $(MODEL_CFG)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \

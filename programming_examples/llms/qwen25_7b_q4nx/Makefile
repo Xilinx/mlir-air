@@ -54,14 +54,7 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
   -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 
 # Qwen2.5-7B decode env (module-level constants read these): 28 layers, vocab-152064 chunking.
-# DECODE_STACK: at K=3584 the seven K-wide L1 activation buffers (7*7 KiB) leave
-# under 8 KiB of the 64 KiB core memory, so the engine's default 10240 overflows.
-DECODE_STACK ?= 6144
-# DECODE_WGROUP: decode layers per weight BO. Must match DECODE_WGROUP in
-# qwen25_7b_q4nx_inference.py -- the host slices the weights the same way.
-DECODE_WGROUP ?= 7
-DECODE_ENV := DECODE_MODEL=qwen2.5-7b VOCAB_CHUNK_I2=7 UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
-              DECODE_STACK=$(DECODE_STACK) DECODE_WGROUP=$(DECODE_WGROUP)
+DECODE_ENV := DECODE_MODEL=qwen2.5-7b UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
 # so a header copied from another model can disagree with the IR -- silently, at
@@ -93,16 +86,6 @@ PROFILE_PROMPT := $(if $(PROMPT),$(PROMPT),What is the capital of France?)
 MODEL_SOURCE ?= Qwen/Qwen2.5-7B-Instruct
 export Q4NX_MODEL_SOURCE := $(MODEL_SOURCE)
 
-# Dual-MM2S weight feed for the fused decode (fused_decode/fused_decode.py).
-# ON by default. The BUILD and the RUN must agree -- the flag selects both the
-# shim channel split and the DDR weight cascade order -- so export it here and let
-# it reach the delegated decode build AND the inference driver. The requant cache
-# is keyed on it, so flipping it needs no manual cache purge.
-W_DUAL_CHAN ?= 1
-export W_DUAL_CHAN
-
-
-# ---- shared verify subsystem (programming_examples/llms/verify/) ----
 VERIFY_RUNNER  := $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER := qwen25_7b_q4nx.verify_adapter
 MODEL_CHOICE   ?= instruct
@@ -137,8 +120,6 @@ help:
 	@echo "  PROMPT=\"...\"             Prompt for 'make run' / 'make ask'"
 	@echo "  CTX=2048                 Prefill context length (padded)"
 	@echo "  MODEL_SOURCE=<repo|dir>  weight source (default Qwen/Qwen2.5-7B-Instruct)"
-	@echo "  DECODE_WGROUP=$(DECODE_WGROUP)          Decode layers per weight BO (one BO reaches only 4 GiB)"
-	@echo "  DECODE_STACK=$(DECODE_STACK)        Decode core stack; K=3584 needs less than the 10240 default"
 
 ## Build the Qwen2.5-7B decode: kernels (QWEN2_5_7B) + two same-ATTN_MAXL templates
 ## (decode_L$(LBUILD) + decode_L$(LREF)) into this dir. Weight-free build.
@@ -150,7 +131,13 @@ help:
 # other setting must NOT be reused -- it would be fed the wrong blocks and produce
 # silent garbage. The stamp makes the skip below flag-aware.
 DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
-DECODE_FLAGS       := W_DUAL_CHAN=$(W_DUAL_CHAN) DECODE_STACK=$(DECODE_STACK) DECODE_WGROUP=$(DECODE_WGROUP)
+# W_DUAL_CHAN / VOCAB_CHUNK_I2 / DECODE_STACK / DECODE_WGROUP are NOT set here.
+# They are properties of the model, so they live in fused_decode.py's _MODELS
+# table and the engine reads them from there -- a value this Makefile could pass
+# is a value it could pass wrong, and the build and the host MUST agree on all
+# four. Stamped below so editing the table invalidates the warm templates.
+MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP python3 $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+DECODE_FLAGS       = $(MODEL_CFG)
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L$(LBUILD).xclbin ] && [ -f $(srcdir)/decode_L$(LBUILD).insts.bin ] \

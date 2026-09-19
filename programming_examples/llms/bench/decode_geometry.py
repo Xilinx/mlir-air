@@ -64,21 +64,21 @@ _CHECK_SPLITS = [
         "qwen3-8b",
         "8",
         36,
-        dict(DECODE_STACK="6144", DECODE_WGROUP="9"),
+        None,
         [542638080, 542638080, 542638080, 542638080, 199229440],
     ),
     (
         "llama-3.1-8b",
         "16",
         32,
-        dict(DECODE_STACK="8064", DECODE_WGROUP="8"),
+        None,
         [545259520, 545259520, 545259520, 545259520, 167772160],
     ),
     (
         "qwen2.5-7b",
         "7",
         28,
-        dict(DECODE_STACK="6144", DECODE_WGROUP="7"),
+        None,
         [509788160, 509788160, 509788160, 509788160, 172605440],
     ),
 ]
@@ -89,7 +89,7 @@ _CHECK_ROPE_PER_LAYER = (
     "qwen2.5-7b",
     "7",
     28,
-    dict(DECODE_STACK="6144", DECODE_WGROUP="7"),
+    None,
     dict(rms_size=336896, rms_lut_off=200704),
 )
 _CHECK_WANT = dict(
@@ -181,7 +181,9 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
     # the Makefile says. That is not hypothetical -- W_DUAL_CHAN=1 leaking from
     # here rebuilt qwen25_3b_q4 with the dual weight feed from the second
     # context onward, and every one of those dispatches wedged on a Krackan NPU
-    # while the first context, built before this ran, was fine.
+    # while the first context, built before this ran, was fine. That one can no
+    # longer happen -- the shared engine reads those four from _MODELS now -- but
+    # the pins stay for gemma4-e2b, whose PLE fork still reads the environment.
     pinned = dict(
         DECODE_MODEL=model,
         VOCAB_CHUNK_I2=str(vocab_chunk_i2),
@@ -199,11 +201,11 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
     saved = {k: os.environ.get(k) for k in set(pinned) | set(env_extra or {})}
     try:
         os.environ.update(pinned)
-        # Some models need extra builder env (qwen3-8b's DECODE_STACK/
-        # DECODE_WGROUP). Saved above too, so one call's extras cannot survive
-        # into the next: the builder reads these at import, and a leftover
-        # DECODE_WGROUP would make the following model come back split when it
-        # is not.
+        # env_extra is only for the PLE fork, which still reads its config from
+        # the environment. The shared engine takes W_DUAL_CHAN / VOCAB_CHUNK_I2 /
+        # DECODE_STACK / DECODE_WGROUP from its own _MODELS table and ignores
+        # these, so for those nine models the pins above are inert. Saved anyway,
+        # so one call's extras cannot survive into the next.
         os.environ.update(env_extra or {})
         # fused_decode.py imports its siblings (proj_qmm_pack, ...) by bare name.
         # The PLE fork does too, and takes them from fused_decode, so both dirs

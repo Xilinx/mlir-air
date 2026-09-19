@@ -67,11 +67,6 @@ PARIS_FIRST = 12095
 # every layer and decode produced garbage from the first generated token.
 PARIS_GREEDY = [12095, 13, 576, 6722, 315, 9856, 374, 19846, 13, 576]
 EOS_IDS = (151643, 151645)  # <|endoftext|>, <|im_end|>
-# No weight split needed (see module docstring): total decode weight is
-# ~2.1 GiB, under the 4 GiB one-BO limit that forces qwen3_8b_q4nx's
-# DECODE_WGROUP=9. Kept as an override point (0 = disabled) for parity with
-# the other Q4NX drivers, not because 4B is expected to need it.
-DECODE_WGROUP = int(os.environ.get("Q4NX_DECODE_WGROUP", "0"))
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_qwen3_4b")
 
 
@@ -186,14 +181,11 @@ class FusedDecoder:
         _env = dict(
             DECODE_MODEL="qwen3-4b",
             UNIFIED="1",
-            VOCAB_CHUNK_I2="30",
             LM_HEAD="0",
             NLAYERS="1",
             DECODE_GOLDEN="1",
             DECODE_GOLDEN_L=str(self.ATTN_MAXL),
         )
-        if DECODE_WGROUP:
-            _env["DECODE_WGROUP"] = str(DECODE_WGROUP)
         os.environ.update(_env)
         spec = importlib.util.spec_from_file_location(
             "fu_qwen3_4b", str(_DEC / "fused_decode.py")
