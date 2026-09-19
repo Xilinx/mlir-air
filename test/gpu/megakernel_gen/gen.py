@@ -98,7 +98,7 @@ def emit(
     static_claim: bool = True,
     pad_stages: int = 0,
     pad_strip: int = 0,
-    acquire_once: bool = False,
+    acquire_once: bool = True,
     acquire_agent: bool = False,
 ) -> str:
     inter = inter or 2 * dim
@@ -3590,11 +3590,14 @@ def main() -> int:
         "clock, which is a different instrument",
     )
     ap.add_argument(
-        "--acquire-once",
+        "--acquire-per-wave",
         action="store_true",
-        help="take the post-rendezvous acquire fence in the waiting wave "
-        "before the barrier, instead of in all eight waves after it. That "
-        "fence is 60%% of what a stage boundary costs",
+        help="take the post-rendezvous acquire fence in every wave after the "
+        "barrier instead of once in the wave that waited. That fence is "
+        "`buffer_inv sc0 sc1` and it was 60%% of what a stage boundary cost; "
+        "taking it once is 1.48x on Qwen3-0.6B at 128 workers. Kept because "
+        "it is the form that does not depend on every wave of a workgroup "
+        "sharing a cache with the one that fenced",
     )
     ap.add_argument(
         "--acquire-agent",
@@ -3697,7 +3700,7 @@ def main() -> int:
             not a.dynamic_claim,
             a.pad_stages,
             a.pad_strip,
-            a.acquire_once,
+            not a.acquire_per_wave,
             a.acquire_agent,
         )
     )
