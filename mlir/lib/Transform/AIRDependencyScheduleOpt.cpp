@@ -1715,6 +1715,24 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
+    // Labeling unrolls the body by 2 and alternates the duplicated buffers, so
+    // the producer rotates through exactly 2 slots. An ODD trip count leaves a
+    // peeled remainder iteration, and that peeled copy allocates a THIRD
+    // buffer -- AIRToAIE then chains one BD per static put site, so the
+    // consuming DMA round-robins 3 slots against a producer that only ever
+    // alternates 2. Nothing deadlocks (the lock counts still balance), the DMA
+    // just transmits, on every third transfer, a buffer the core did not write
+    // this trip: zeros on the first pass over the ring and stale data after.
+    // Measured on gemma4-e2b's 9-trip vocab egress, where it silently zeroed
+    // logit blocks 2 and 5 of the first chunk.
+    if (auto lb = getConstantIntValue(forOp.getLowerBound()))
+      if (auto ub = getConstantIntValue(forOp.getUpperBound()))
+        if (auto step = getConstantIntValue(forOp.getStep()))
+          if (*step > 0 && *ub > *lb) {
+            int64_t trips = (*ub - *lb + *step - 1) / *step;
+            if (trips % 2 != 0)
+              return false;
+          }
     // Labeling a loop unrolls its body by 2, which duplicates a nested loop
     // and everything that loop allocates per trip. So an unsafe loop anywhere
     // in the region tree disqualifies the enclosing candidate, exactly as the
