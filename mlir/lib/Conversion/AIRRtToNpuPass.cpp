@@ -1019,8 +1019,24 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       return arith::TruncIOp::create(rewriter, op.getLoc(),
                                      rewriter.getI32Type(), v);
     };
+    // A dynamic offset replaces the BD's static offset, so include the
+    // contributions of the constant dimensions as well. Stride unrolling,
+    // for example, puts each split group's base in those dimensions.
+    auto addStaticOffset = [&](Value v) -> Value {
+      if (!v || !totalOffset)
+        return v;
+      OpBuilder::InsertionGuard g(rewriter);
+      if (Operation *def = v.getDefiningOp())
+        rewriter.setInsertionPointAfter(def);
+      else
+        rewriter.setInsertionPointToStart(cast<BlockArgument>(v).getOwner());
+      Value addend = arith::ConstantOp::create(
+          rewriter, op.getLoc(),
+          rewriter.getIntegerAttr(v.getType(), totalOffset));
+      return arith::AddIOp::create(rewriter, op.getLoc(), v, addend);
+    };
     Value dynLenI32 = narrowToI32(dynLen);
-    Value dynOffsetI32 = narrowToI32(dynOffset);
+    Value dynOffsetI32 = narrowToI32(addStaticOffset(dynOffset));
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -1124,12 +1140,15 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       StringAttr paramName = outputElf
                                  ? declareBlockArgOffsetParameter(
                                        op->getParentOfType<ModuleOp>(),
-                                       dynOffsetI32, rewriter, offsetResidual)
+                                       dynOffset, rewriter, offsetResidual)
                                  : nullptr;
       if (paramName) {
         bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(paramName));
-        // The base keeps its ordinary place on the BD; the parameter is added
-        // to it at dispatch.
+        // Decompose only the original dynamic expression above, preserving
+        // the scratchpad parameter's identity and any casts in its residual.
+        // The static dimensions belong on the BD, not in the host parameter.
+        bd.setStaticOffsetAttr(rewriter.getI32IntegerAttr(totalOffset));
+        offsetResidual = addStaticOffset(offsetResidual);
         if (offsetResidual) {
           // The BD's offset operand is i32; the residual is whatever type the
           // address arithmetic left it in (index, here).
