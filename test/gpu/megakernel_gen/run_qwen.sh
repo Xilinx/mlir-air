@@ -91,8 +91,11 @@ TIMERS="${TIMERS:-}"
 #
 #   ACQPERWAVE=1  the acquire fence in every wave        1.48x slower
 #   DYNAMIC=1     pieces from queues, not by rank        1.60x slower
+#   SPLITARR=1    two counter words, not one packed      1.027x slower
 #   UNROLL=n      weight loads in flight per lane        default 8
+#   SLEEP=n       clocks/64 the waiter idles per poll    default 16
 #   ACQAGENT=1    agent scope on the acquire fence       measures as nothing
+#   FUSESWIGLU=1  swiglu inside gate_up, eight stages a layer
 #   TOTALONLY=1   the launch clock and no per-stage reads
 #   PAD=n         n empty stages a layer, to price a boundary
 #   PADSTRIP=k    leave piece k and beyond out of those empty stages
@@ -134,7 +137,7 @@ clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loade
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
   --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 --waves "$WAVES" \
   ${TIMERS:+--timers} \
-  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${PACK:+--pack-arrival} \
+  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} \
   --steps "$STEPS" --repeat "$REPEAT" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
