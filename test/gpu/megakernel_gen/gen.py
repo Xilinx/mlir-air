@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Emit a megakernel decode chain as AIR MLIR.
 
-Qwen has 36 layers of several stages each. Nobody writes that by hand, and the
-hand-written tests next to this one stop being a plan the moment the layer
+Qwen3-0.6B has 28 layers of nine stages each. Nobody writes that by hand, and
+the hand-written tests next to this one stop being a plan the moment the layer
 count stops being 2. Fleet has the same problem and solves it the same way: its
 task graph is described in Python and `src/kernel/runtime.cc` prints the C++.
 This prints MLIR instead.
@@ -41,6 +41,79 @@ decomposition collapses to the index arithmetic this generator used before
 
     ./gen.py --layers 4 --dim 128 > chain.mlir
     ./gen.py --layers 2 --dim 128 --tokens 4 > prefill.mlir
+
+Running the real model
+----------------------
+
+Everything below was measured on one MI350X (gfx950) against a real
+Qwen3-0.6B checkpoint, six decode steps, 28 layers.
+
+    QWEN_DIR=/path/to/qwen3-0.6b TASKS=128 WORKERS=128 WAVES=8 STEPS=6 \\
+        run_qwen.sh
+
+That is the configuration that runs at **3.68 ms a token**, against Fleet's
+mirage_mpk at 2.452 and a memory-bandwidth floor of 0.14. It prints the
+tokens, the host reference's tokens, and an independent numpy Qwen3's, and
+says PASS only when all three agree.
+
+Nothing here needs a flag to be fast; the defaults are the fast ones. The
+flags that exist are the slow forms, kept because each rests on an assumption
+worth being able to withdraw:
+
+    --acquire-per-wave  every wave takes the post-rendezvous acquire fence,
+                        rather than the one wave that waited taking it before
+                        the barrier.                        1.48x slower.
+    --dynamic-claim     hand pieces out from per-chiplet queues rather than
+                        partitioning them by chiplet rank.  1.60x slower.
+    --reduce-unroll 1   one weight load in flight per lane at a time.
+                        1.61x slower at --reduce-unroll 1; 8 is the default
+                        and 16 gives the registers back to spills.
+
+and the flags that only exist to measure -- `--timers`, `--timers-total-only`,
+`--pad-stages`, `--pad-strip`. See "Measuring it" below.
+
+Where the 3.68 ms goes
+----------------------
+
+Two thirds of it is the program and one third is the stages meeting. A stage
+boundary -- claim, signal, rendezvous, acquire -- costs 5.52 us whatever the
+stage computes, and a decode step has 257 of them, so 1.42 of the 3.68 is
+boundary. The remaining 2.26 is every weight load, every FMA, the attention
+and the argmax, which is already inside Fleet's 2.452 for the whole model.
+
+Priced by `--pad-strip`, which removes one piece of the boundary at a time
+from a stage that computes nothing:
+
+    the spin and its barrier      2.65 us      48%
+    the four atomics              2.09 us      38%
+    the acquire fence             0.87 us      16%
+    the claim                     free
+
+The acquire fence was 7.42 us of a 12.28 us boundary until it stopped being
+taken once per wave; that single change was 1.48x on the whole model.
+
+Measuring it
+------------
+
+Three instruments, and only the first two are worth a number:
+
+  * `TIMERS=1 REPEAT=20` -- the chain reads the 100 MHz clock around the whole
+    worker body and prints "WHOLE LAUNCH". The counters are zeroed per launch,
+    so REPEAT=20 reports a warm one. Reproducible to about 0.2%, and it is
+    what every figure above was taken with.
+  * `TIMERS=1` alone also prints a per-operator table. Its windows are chained
+    -- each stage ends on the read the next one starts from -- so the classes
+    sum to the launch (99.9%, measured) instead of to 59% of it, which is what
+    two independent reads a stage gave.
+  * `workspace/bench.sh` times the process, so it is the only end-to-end
+    check, but the device is a small part of its wall clock. It needs
+    `HI=4000` to resolve anything; at its old default of 100 it is +/- 1.7
+    ms/token and has mis-ranked five changes.
+
+Two things to know before believing a number. A timing from a run that did not
+print PASS is not a measurement. And the launch clock is bimodal: about a
+third of launches come in 35% slow, all of it inside `gate_up`'s body and
+undiagnosed, so take the minimum of repeated runs rather than the mean.
 """
 
 import argparse
@@ -350,10 +423,10 @@ def emit(
     # stage claims its pieces, signals, and waits, and its body computes
     # nothing -- so the model still produces the right tokens and the launch
     # gets longer by exactly what a stage boundary costs. That is the only way
-    # to price the boundary with an instrument other than the one that
-    # measured it: the per-class table says every stage carries about 8.7 us
-    # that has nothing to do with what it computes, and a table cannot check
-    # itself. Here the answer is a slope on the launch clock.
+    # to price the boundary with an instrument other than the one that found
+    # it: the chained per-class table charges every stage the same several
+    # microseconds whatever it computes, and a table cannot check itself.
+    # Here the answer is a slope on the launch clock, and it is 5.52 us.
     stages = 9 + pad_stages
     # Around the layers: embed at the front, then the final norm, the lm head
     # and Fleet's two-stage argmax (argmax_partial_layer + argmax_reduce_layer,
@@ -478,7 +551,8 @@ def emit(
             )
         )
     )
-    strided_stages = 7  # every layer stage but 0 and 5
+    # Every layer stage but 0 and 5 splits into pieces, and so does every pad.
+    strided_stages = 7 + pad_stages
     # embed, lm head and the partial argmax are split by piece too; the final
     # norm and the argmax reduce are single-task.
     naive = workers * (strided_stages * layers + 3) * steps
@@ -1963,24 +2037,35 @@ module {{
     # idiom and the shape Fleet's own loop has -- __ATOMIC_RELAXED inside, an
     # acquire fence outside (persistent_kernel.cuh:944-966).
     #
-    # That fence is 7.42 of the 12.28 us a stage boundary costs -- 60% of it,
-    # and 1.9 of the 5.43 ms a token takes -- measured by removing it from a
-    # pad stage and taking the slope. So it is worth saying exactly how much
-    # of it is needed, which is what the two knobs below are for.
+    # That fence used to be taken by every wave, and it was 7.42 of the 12.28
+    # us a stage boundary then cost -- 60% of the boundary, and 1.9 of the
+    # 5.44 ms a token then took. `acquire_once`, the default, has the one wave
+    # that waited take it inside the `scf.if` it waited in, before the barrier
+    # that releases the other seven. Whole model, 28 layers, 128 workers, six
+    # steps, minimum of two runs: 3 265 096 launch ticks to 2 209 060, **1.48x**.
     #
-    # `acquire_once` puts the fence inside the waiting wave's `scf.if`, before
-    # the barrier, instead of after it in all eight waves. `buffer_inv sc0 sc1`
-    # invalidates the CU's vector cache and the XCD's L2, and every wave of a
-    # workgroup is on the same CU and the same XCD, so one wave's invalidate
-    # covers all of them; the barrier then orders every other wave's loads
-    # after it. What refills between the invalidate and those loads can only be
-    # fresh: the producers wrote back past L2 before they signalled, so a line
-    # fetched after that point carries the new value whoever fetched it.
+    # That is sound because every wave of a workgroup is on one CU and one XCD,
+    # so one wave's `buffer_inv sc0 sc1` empties the vector cache and the L2
+    # that all of them read through, and the barrier orders the rest of the
+    # workgroup's loads after it. A line refilled in between can only be fresh:
+    # the producers wrote back past L2 before they signalled, so anyone
+    # fetching that address afterwards gets the new value.
+    #
+    # It is believed because this is the shape megakernel_gen_contend exists to
+    # catch -- a workgroup whose waves disagree about memory -- and the bug
+    # that test was written for passed 3/3 at 128 workers and failed 3/3 at
+    # 256. So: the suite 21/21, the contending shape five more times at 256
+    # workers with `total differences = 0` every time, and the model at
+    # 256/256, 512/128, 128/128 and 64/64 all agreeing with numpy token for
+    # token. `--acquire-per-wave` restores the old form byte for byte.
     #
     # `acquire_agent` asks for `buffer_inv sc1` rather than `buffer_inv
-    # sc0 sc1`. Every workgroup here is on one device, so agent scope is what
-    # the protocol actually needs; system scope additionally orders against the
-    # host, which nothing in a decode step does.
+    # sc0 sc1`, which is the scope the protocol actually needs -- every
+    # workgroup here is on one device, and system scope additionally orders
+    # against the host, which nothing in a decode step does. It measures as
+    # nothing, both ways round: 3 262 472 against a 3 265 096 baseline per
+    # wave, and 2 215 288 against 2 214 204 with `acquire_once` on. Kept
+    # because it costs nothing to keep and says what the right scope is.
     acq = (
         f'          llvm.fence syncscope("{"agent" if acquire_agent else ""}") acquire'
     )
@@ -2017,13 +2102,19 @@ module {{
     # never been caught, but it is not closed by anything here.
     #
     # Closing it with an agent-scope release fence in every thread works and
-    # costs 17.5% of the device ticks at 128/128 (rope and attention both
-    # double), because agent scope on this part writes back L2 per wave. A
-    # workgroup-scope fence should emit the `s_waitcnt vmcnt(0)` and not the
-    # writeback, which is all that is needed here -- the lead thread's
-    # system-scope release below already does the L2 flush. That is the next
-    # thing to measure; it is deliberately not bundled with the claim rewrite
-    # above, so that each has its own number.
+    # cost 17.5% of the device ticks at 128/128 when it was tried (rope and
+    # attention both doubled), because agent scope on this part writes back L2
+    # per wave. A workgroup-scope fence should emit the `s_waitcnt vmcnt(0)`
+    # and not the writeback, which is all that is needed here -- the lead
+    # thread's system-scope release below already does the L2 flush. That is
+    # still the thing to measure.
+    #
+    # Two cautions for whoever does. The 17.5% is from the build that took the
+    # acquire fence in every wave, which was 1.48x slower overall, so it is a
+    # share of a different program and the agent-scope variant has to be
+    # re-measured rather than compared against. And this is the writer's half
+    # of the protocol, independent of `acquire_once` above, which changed only
+    # the reader's -- fixing one says nothing about the other.
     stage_bar = "" if waves == 1 else "          gpu.barrier"
 
     def lane_reduce(src, dst, op, tag, indent, stride, steps, ty="f32"):
@@ -2456,10 +2547,10 @@ module {{
                 14,
             ),
         )
-        # A stage boundary costs 12.40 us -- the slope of the launch clock
-        # against --pad-stages, four points, linear to 0.15%. That is 3.19 of
-        # the 5.43 ms a token takes, which makes it the largest single thing in
-        # the program, so it is worth knowing which part of it that is.
+        # A stage boundary costs 5.52 us -- the slope of the launch clock
+        # against --pad-stages. That is 1.42 of the 3.68 ms a token takes,
+        # which makes it the largest single thing in the program, so it is
+        # worth knowing which part of it that is.
         #
         # `strip` takes the boundary apart. It is only ever used on a pad
         # stage, and a pad stage is exactly the right place for it: its body is
@@ -2469,11 +2560,18 @@ module {{
         # model still producing the same six tokens, and the difference between
         # two slopes is the price of what was removed.
         #
-        #   0  the whole boundary, as a real stage has it
-        #   1  no acquire fence after the rendezvous (the `buffer_inv sc0 sc1`)
-        #   2  no rendezvous at all: no spin, no release barrier
-        #   3  no signal either: no atomics
-        #   4  no claim either: two barriers and nothing else
+        # Measured on the current default, 28 layers at 128 workers, three
+        # pads, minimum of two runs per point:
+        #
+        #   level  a pad stage contains          us/inst  the piece removed
+        #     0    the whole boundary               5.52
+        #     1    no acquire fence                 4.65   the fence     0.87
+        #     2    and no spin, no release barrier  1.99   spin+barrier  2.65
+        #     3    and no atomics                  -0.09   four atomics  2.09
+        #     4    and no claim                            the claim     free
+        #
+        # Level 3 is indistinguishable from no pad at all, which is what says
+        # the pieces account for the whole boundary rather than most of it.
         sig_block = (
             ""
             if strip >= 3
@@ -3585,9 +3683,10 @@ def main() -> int:
         help="add this many empty stages to every layer. They claim, signal "
         "and wait like any other stage and compute nothing, so the tokens are "
         "unchanged and the launch grows by the cost of a stage boundary times "
-        "the number added. The per-class table says that boundary is about "
-        "8.7 us; this measures the same quantity as a slope on the launch "
-        "clock, which is a different instrument",
+        "the number added. The slope of the launch clock against this is how "
+        "a boundary was priced at 5.52 us, with the per-stage timers off, so "
+        "it does not depend on the instrument that first suggested the "
+        "number. Pair it with --pad-strip to price the pieces",
     )
     ap.add_argument(
         "--acquire-per-wave",
@@ -3604,7 +3703,9 @@ def main() -> int:
         action="store_true",
         help="ask for agent scope on the post-rendezvous acquire fence, "
         "`buffer_inv sc1` rather than `buffer_inv sc0 sc1`. Every workgroup "
-        "is on one device, so that is the scope the protocol needs",
+        "is on one device, so that is the scope the protocol needs -- but it "
+        "measures as nothing either way round, so it is not the default and "
+        "not worth re-measuring",
     )
     ap.add_argument(
         "--pad-strip",
@@ -3621,9 +3722,9 @@ def main() -> int:
         "--timers-total-only",
         action="store_true",
         help="with --timers, report only the whole launch and emit no "
-        "per-stage clock reads. The per-operator table accounts for 59%% of "
-        "the launch; this says whether the other 41%% is the program or the "
-        "reading of it",
+        "per-stage clock reads. This is what says the per-stage reads are "
+        "nearly free -- 0.5%% of the launch -- and it is the mode to use with "
+        "--pad-stages, where the per-class table would only be in the way",
     )
     ap.add_argument(
         "--timers",

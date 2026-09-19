@@ -18,6 +18,15 @@
 # Hugging Face. The first run converts the checkpoint into the flat float32
 # blob the chain reads and leaves it in <QWEN_DIR>/air.
 #
+# The shape that runs Qwen3-0.6B at 3.68 ms a token on one MI350X, which is
+# 1.50x Fleet's mirage_mpk and 26x the memory-bandwidth floor:
+#
+#   QWEN_DIR=... TASKS=128 WORKERS=128 WAVES=8 STEPS=6 run_qwen.sh
+#
+# and to see the clock rather than just the tokens, add TIMERS=1 REPEAT=20.
+# No flag is needed to make it fast; gen.py's defaults are the fast ones, and
+# gen.py's module header says where the 3.68 ms goes and how it was measured.
+#
 # The two sides being compared are: the chain (device, plus the host reference
 # in the same program) and qwen3_ref.py, which reads the Hugging Face files
 # directly. That second one is the point -- the chain agreeing with the host
@@ -35,18 +44,19 @@ LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
 # on how many workgroups can be doing anything -- and each workgroup is one
 # wavefront, so it is also the ceiling on how much memory latency the device
 # has anything to hide behind. Measured on Qwen3-0.6B, 28 layers, six tokens,
-# slope over eight extra launches:
+# on a build that was then at 153 ms a token -- so read the ordering, not the
+# magnitudes; everything since has moved them by two orders:
 #
-#   workers/tasks    ms per token
+#   workers/tasks    ms/token, on that build
 #     32 /  32          227.0
 #     64 /  64          179.1
-#    128 / 128          153.0
+#    128 / 128          153.0     <- best, and still the shape used today
 #    256 / 128          261.1
 #
 # The last row is the shape of the cost: a workgroup with no piece left to
 # claim does not go away, it spins on every event for the rest of the launch,
 # so over-provisioning workers is worse than not provisioning them. Keep the
-# two equal.
+# two equal. 128/128 is still what the 3.68 ms/token figure is measured at.
 #
 # 128 is the ceiling for this checkpoint, not a tuned optimum: gen.py requires
 # tasks to divide the width of every stage it splits, and the vocabulary is
@@ -62,11 +72,31 @@ WORKERS="${WORKERS:-128}"
 STEPS="${STEPS:-1}"
 # Launches per run. The wall time is dominated by reading three gigabytes of
 # weights off NFS and by the single-threaded host reference, both of which
-# happen once; the slope over REPEAT is what isolates the device.
+# happen once; the slope over REPEAT is what isolates the device, and that is
+# what workspace/bench.sh does with it.
+#
+# With TIMERS=1 it does something else and more useful: the counters are
+# zeroed at the start of every launch, so REPEAT=20 costs 0.7 s and makes the
+# printed figure the twentieth, warm launch instead of the first. That is how
+# every number in gen.py's header was taken, and it reproduces to about 0.2%.
 REPEAT="${REPEAT:-1}"
-# TIMERS=1 makes the chain accumulate per-operator device ticks and print them.
-# Two s_memrealtime per stage is not free, so leave it off when timing.
+# TIMERS=1 makes the chain read the device clock and print a per-operator
+# table plus "WHOLE LAUNCH". One s_memrealtime per stage boundary, shared
+# between the stage that ends and the one that starts; measured at 0.5% of
+# the launch, so it is cheap enough to leave on while ranking two builds.
+# Take the launch figure, not the sum of the table, and see gen.py's header.
 TIMERS="${TIMERS:-}"
+# The rest are for measurement and for withdrawing an assumption; all of them
+# are off by default and the defaults are the fast ones. See gen.py --help.
+#
+#   ACQPERWAVE=1  the acquire fence in every wave        1.48x slower
+#   DYNAMIC=1     pieces from queues, not by rank        1.60x slower
+#   UNROLL=n      weight loads in flight per lane        default 8
+#   ACQAGENT=1    agent scope on the acquire fence       measures as nothing
+#   TOTALONLY=1   the launch clock and no per-stage reads
+#   PAD=n         n empty stages a layer, to price a boundary
+#   PADSTRIP=k    leave piece k and beyond out of those empty stages
+#
 # "The capital of France is"
 PROMPT="${PROMPT:-785,6722,315,9625,374}"
 mkdir -p "$TMPDIR"
