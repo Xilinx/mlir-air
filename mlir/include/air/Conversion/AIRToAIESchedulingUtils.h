@@ -91,10 +91,12 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
 //
 // An L2 (memtile) buffer is a chain-lock candidate when its access pattern
 // is fan-in (>1 writers + 1 reader) or fan-out (1 writer + >1 readers).
-// The chain-lock template emits 1 capacity lock (init = # ping-pong slots)
-// plus N init=0 signal locks, daisy-chained across the writer (or reader)
-// stages, replacing the legacy `1 cap (init=N) + 1 done counter` template
-// that allows concurrent stage firing and races on the memtile DMA.
+// The template emits one (capacity, signal) lock pair PER BUFFER SLOT, so
+// each slot is a counted barrier over the N participants on the multi side --
+// replacing both the legacy `1 cap (init=N) + 1 done counter` template, which
+// allowed concurrent stage firing and raced on the memtile DMA, and the
+// daisy chain that replaced it, which serialized the participants and could
+// deadlock against switchbox arbiter sharing. See ChainLockSet below.
 //
 // `isChainLockCandidate` is a pure structural predicate; the caller is
 // responsible for gating it on the `use_lock_race_condition_fix_v2` pass
@@ -226,36 +228,72 @@ struct MemcpyBundleAsFlow {
   MemcpyBundleAsFlow(air::ChannelOp chan);
 };
 
-// v2: chain-lock allocation record for one shared L2 buffer.
-//   cap_lock: capacity (init = pp_slots, the number of ping-pong buffer
-//             instances). When pp_slots == 2 the cap admits two
-//             concurrent stage-K writes (one per buffer) before blocking,
-//             matching a shared-L2 2-slot producer-consumer pattern.
-//   sig_locks: N init=0 locks shared across BOTH ping/pong buffer
-//             instances. One per writer→writer (or reader→reader)
-//             transition + the writer→reader (or reader→writer) handoff.
-//             For fan-in (N writers + 1 reader): sig_locks[i] signals
-//             "writer i done"; writer i+1 acquires sig_locks[i]; the
-//             reader acquires sig_locks[N-1] and releases cap_lock.
-//             For fan-out (1 writer + N readers): sig_locks[0] signals
-//             "writer done"; reader 0 acquires sig_locks[0]; reader i+1
-//             acquires sig_locks[i+1] released by reader i; the last
-//             reader releases cap_lock.
+// v2: rendezvous-lock allocation record for one shared L2 buffer with a
+// fan-in (N writers + 1 reader) or fan-out (1 writer + N readers) shape.
+//
+// `cap_locks` / `sig_locks` are indexed by BUFFER SLOT (size == pp_slots),
+// NOT by chain stage. Slot s owns one capacity lock and one signal lock:
+//
+//   multi side  (the N writers of a fan-in / N readers of a fan-out):
+//       acquire cap_locks[s] >= 1, release sig_locks[s] += 1
+//   single side (the 1 reader of a fan-in / 1 writer of a fan-out):
+//       acquire sig_locks[s] >= N, release cap_locks[s] += N
+//
+//   init: cap_locks[s] = N, sig_locks[s] = 0.
+//
+// So slot s is a counted barrier: the single side fires once all N of the
+// multi side have touched that slot, and hands all N credits back. The N
+// participants are MUTUALLY UNORDERED -- nothing in the lock structure makes
+// writer i wait for writer i-1.
+//
+// That is deliberate, and it is what distinguishes this from the daisy chain
+// this replaced (cap -> W0 -> W1 -> ... -> W{N-1} -> R -> cap). The chain
+// imposed a compile-time total order on arrivals that are independent at
+// runtime: N free-running herds in N columns. When the pathfinder then packs
+// two of those streams onto one switchbox arbiter -- which it must, since a
+// shim switchbox has 6 arbiters and a busy column has more masters than that
+// -- an early-arriving LATE stage stalls on its chain predecessor while
+// holding the arbiter that the EARLY stage needs, and the chain can never
+// advance. Measured on gemma4-e2b, whose four projection columns gather into
+// one memtile: ping-pong let the two east columns (stages 2 and 3) run a
+// round ahead, and stages 0 and 2 shared arbiter 1 in shim tile (2,0).
+// Per-slot counted locks remove the ordering, so run-ahead costs latency and
+// nothing more.
+//
 //   primary_buf / twin_buf: the two ping-pong buffer instances. When
-//             pp_slots == 1, twin_buf is null and only primary_buf is
-//             used. Both buffers share the cap_lock + sig_locks above.
-//   pp_slots: 1 = single-buffer chain (no ping-pong overlap),
-//             2 = 2-buffer ping-pong (default under v2).
+//             pp_slots == 1, twin_buf is null and only primary_buf is used.
+//   pp_slots: 1 = single-buffer (no ping-pong overlap), 2 = 2-buffer
+//             ping-pong (default under v2). A participant can run at most
+//             pp_slots transfers ahead: its (pp_slots+1)'th transfer comes
+//             back round to slot 0, whose cap the single side has not yet
+//             replenished.
+//
+// `serialized` selects the legacy daisy chain instead, and is set only for
+// refeed buffers (air.refeed_count > 1). Those are single-buffer count-free
+// re-broadcast rings whose credit arithmetic is driven by the refeed count
+// rather than the participant count; they keep cap_locks[0] as the single
+// capacity lock and sig_locks indexed by STAGE.
 struct ChainLockSet {
-  AIE::LockOp cap_lock;
+  SmallVector<AIE::LockOp> cap_locks;
   SmallVector<AIE::LockOp> sig_locks;
   AIE::BufferOp primary_buf = nullptr;
   AIE::BufferOp twin_buf = nullptr;
   int n_writers = 0;
   int n_readers = 0;
   int pp_slots = 1;
+  bool serialized = false;
   bool isFanIn() const { return n_writers > 1 && n_readers == 1; }
   bool isFanOut() const { return n_writers == 1 && n_readers > 1; }
+  // Participant count on the multi side: the N of the counted barrier.
+  int multiplicity() const { return isFanIn() ? n_writers : n_readers; }
+  // Per-BD (S2MM, MM2S) acquire/release counts. The multi side moves one
+  // credit at a time; the single side moves all N at once.
+  std::pair<int64_t, int64_t> bdLockCounts() const {
+    if (serialized)
+      return {1, 1};
+    return isFanIn() ? std::make_pair<int64_t, int64_t>(1, multiplicity())
+                     : std::make_pair<int64_t, int64_t>(multiplicity(), 1);
+  }
 };
 
 class DMAAllocator {
@@ -276,23 +314,29 @@ public:
                      int chan, int col, int row, std::vector<int> dma_id);
   void sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops);
 
-  // v2: get-or-create the chain-lock allocation for a shared L2 buffer.
-  // Allocates `cap_lock` + N signal locks on first call for `buf`; reuses
-  // the cached set on subsequent calls. Returns failure if the buffer is
-  // not a chain-lock candidate.
+  // v2: get-or-create the rendezvous-lock allocation for a shared L2 buffer.
+  // Allocates slot 0's (cap, sig) pair on first call for `buf` -- or, for a
+  // refeed buffer, the legacy cap + per-stage signal locks -- and reuses the
+  // cached set on subsequent calls. Returns failure if the buffer is not a
+  // chain-lock candidate.
   FailureOr<ChainLockSet *> getOrCreateChainLockSet(AIE::BufferOp buf,
                                                     AIE::TileLike tile);
 
-  // v2: promote a chain-lock set to 2-slot ping-pong. Records the twin buffer,
-  // sets pp_slots = 2, and bumps cap_lock init to 2 together so the slot count
-  // and buffer-instance count stay in sync.
-  void activateChainPingPong(ChainLockSet &cls, AIE::BufferOp twin);
+  // v2: promote a chain-lock set to 2-slot ping-pong. Records the twin buffer
+  // and allocates slot 1's lock pair, keeping pp_slots, the lock vectors and
+  // the buffer-instance count in sync. (For a serialized/refeed set there is
+  // one shared cap lock instead, whose init is bumped to 2.)
+  void activateChainPingPong(ChainLockSet &cls, AIE::TileLike tile,
+                             AIE::BufferOp twin);
 
-  // v2: pick the (acquire, release) lock pair for one BD's position in
-  // the chain. `stage` is the per-direction stage index returned by
-  // `computeStageIndexForMemcpyOp`.
-  std::pair<AIE::LockOp, AIE::LockOp>
-  pickChainBdLocks(const ChainLockSet &cls, AIE::DMAChannelDir dir, int stage);
+  // v2: pick the (acquire, release) lock pair for one BD. `slot` is the
+  // buffer-slot index (0 = primary, 1 = ping-pong twin). `stage` is the
+  // per-direction stage index from `computeStageIndexForMemcpyOp`, and is
+  // consulted only by the serialized (refeed) template -- the counted
+  // rendezvous deliberately does not order participants.
+  std::pair<AIE::LockOp, AIE::LockOp> pickChainBdLocks(const ChainLockSet &cls,
+                                                       AIE::DMAChannelDir dir,
+                                                       int stage, int slot = 0);
 
 protected:
   AIE::DeviceOp device;

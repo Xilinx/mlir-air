@@ -6600,9 +6600,21 @@ public:
               lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
+          // v2: per-BD acquire/release counts for a rendezvous-locked shared
+          // L2 buffer. getLockForDMA above has already created the set, so a
+          // miss here just means this buffer is not rendezvous-locked.
+          std::optional<std::pair<int64_t, int64_t>> chainLockCounts;
+          if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
+            if (lockRaceConditionFixV2) {
+              auto clsIt = dmaAlloc.chain_lock_sets.find(
+                  bufferOp.value().getOperation());
+              if (clsIt != dmaAlloc.chain_lock_sets.end())
+                chainLockCounts = clsIt->second.bdLockCounts();
+            }
+          }
           auto newBD = generateDmaBd<bufferOpTy>(
               loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
-              bufferOp.value(), chan, lockRaceConditionFixV2);
+              bufferOp.value(), chan, lockRaceConditionFixV2, chainLockCounts);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -6638,7 +6650,7 @@ public:
                   AIE::BufferOp twin = allocateBufferOp(
                       this->BufferId, primaryBuf.getType(), tile,
                       /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
-                  dmaAlloc.activateChainPingPong(*cls, twin);
+                  dmaAlloc.activateChainPingPong(*cls, tile, twin);
                 }
                 if (cls->twin_buf) {
                   // Splice bd_pong between bd and its current next_bd target.
@@ -6647,11 +6659,23 @@ public:
                   Block *bd_pong = new Block();
                   bd_pong->insertBefore(end_bb);
                   primaryNextBd->setSuccessor(bd_pong, 0);
-                  // Emit the twin's acq/dma_bd/rel into bd_pong using the
-                  // SAME lock pair (chain locks are shared across ping/pong).
+                  // The twin is buffer SLOT 1, and under the counted
+                  // rendezvous each slot owns its own (cap, sig) pair -- so
+                  // the pong BD takes slot 1's locks, not the primary's.
+                  // (A serialized/refeed set shares one pair across slots and
+                  // never reaches here: refeed buffers get no twin.)
+                  int pongStage = air::computeStageIndexForMemcpyOp(
+                      memcpyOp.getOperation(), primaryBuf);
+                  if (pongStage < 0)
+                    return memcpyOp->emitOpError(
+                        "v2 chain-lock: failed to determine BD stage index "
+                        "for ping-pong twin");
+                  auto pongLocks = dmaAlloc.pickChainBdLocks(
+                      *cls, dir, pongStage, /*slot=*/1);
                   auto pongBD = generateDmaBd<bufferOpTy>(
-                      loc, dir, locks.value(), tile, targetModel, bd_pong,
-                      memcpyOp, cls->twin_buf, chan, lockRaceConditionFixV2);
+                      loc, dir, pongLocks, tile, targetModel, bd_pong, memcpyOp,
+                      cls->twin_buf, chan, lockRaceConditionFixV2,
+                      cls->bdLockCounts());
                   if (failed(pongBD))
                     return cls->twin_buf->emitOpError(
                         "v2 chain-lock: failed to generate ping-pong twin BD");
@@ -6697,7 +6721,9 @@ public:
                 std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileLike tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
                 air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
-                bool lockRaceConditionFixV2 = false) {
+                bool lockRaceConditionFixV2 = false,
+                std::optional<std::pair<int64_t, int64_t>> chainLockCounts =
+                    std::nullopt) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -6717,25 +6743,27 @@ public:
     if (memcpyOp->hasAttr("air.shared_prod_lock"))
       sharedLockCount = locks.second.getInit();
     bool useSharedL1LockCounts = sharedLockCount.has_value();
-    // v2: when the chain-lock template applies for this buffer (fan-in/
-    // fan-out shared L2 with per-stage signal locks), force per-BD lock
-    // acq/rel counts to 1. The chain semantics rely on each writer/
-    // reader holding/releasing exactly one token at a time; using the
-    // legacy `getLockValuePair`-derived counts (N for the multi-side)
-    // would break the chain because the multi-side BD would acquire/
-    // release N tokens against the cap lock (init=#slots), reverting
-    // to the legacy parallel-acquire behaviour.
+    // v2: when the rendezvous-lock template applies for this buffer (fan-in/
+    // fan-out shared L2), the per-BD acq/rel counts come from the chain lock
+    // set rather than from `getLockValuePair`, which derives its counts from
+    // the buffer alone and cannot tell the multi side from the single side.
+    // ChainLockSet::bdLockCounts gives (S2MM, MM2S): the multi side moves one
+    // credit per BD and the single side moves all N, so one drain of a slot
+    // rendezvouses with all N participants. A serialized (refeed) set reports
+    // (1, 1), preserving the daisy chain's one-token-at-a-time semantics.
     // The 3-way (compute-tile) and chain-lock (memtile) cases are mutually
     // exclusive, so a chained selection is unambiguous.
+    // The optional's presence IS the condition: both call sites set it only
+    // from a live ChainLockSet. Re-deriving it from `bufferOp` here would be
+    // wrong for the ping-pong twin, which carries no air.channel users of its
+    // own and so does not answer isChainLockCandidate.
     bool useChainLockCounts =
-        lockRaceConditionFixV2 &&
-        isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
-        air::isChainLockCandidate(cast<AIE::BufferOp>(bufferOp.getOperation()));
+        lockRaceConditionFixV2 && chainLockCounts.has_value();
     auto aie2LockVal =
         useSharedL1LockCounts
             ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
         : useChainLockCounts
-            ? std::make_pair<int64_t, int64_t>(1, 1)
+            ? *chainLockCounts
             : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;

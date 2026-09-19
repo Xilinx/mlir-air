@@ -7,25 +7,30 @@
 
 // RUN: air-opt %s -air-to-aie="use-lock-race-condition-fix-v2=true row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// v2 chain-lock test: shared L2 buffer with 1 full writer + 4 sub-region
-// readers (fan-out). Fan-out counterpart of the fan-in test, with 2-slot ping-pong.
-// Expected:
-//   - 1 cap lock (init=2; 2-slot ping-pong)
-//   - 4 init=0 signal locks (one per reader transition), SHARED across
-//     primary + twin buffer instances
+// v2 rendezvous-lock test: shared L2 buffer with 1 full writer + 4 sub-region
+// readers (fan-out), with 2-slot ping-pong. Mirror image of the fan-in test:
+//   - one (cap, sig) lock pair PER BUFFER SLOT: 2 locks at init=4 (the
+//     participant count) and 2 at init=0
 //   - TWO aie.buffer instances of the same memref type (primary + twin)
-//   - Writer acquires cap, releases sig[0]
-//   - Reader 0 acquires sig[0], releases sig[1]
-//   - Reader i (i<N-1) acquires sig[i], releases sig[i+1]
-//   - Last reader (i=N-1) acquires sig[N-1], releases cap (closes cycle)
-//   - Each channel's BD chain alternates between primary and twin buffers
+//   - the writer, on slot s, acquires cap[s] by 4 and releases sig[s] by 4
+//   - every reader, on slot s, acquires sig[s] by 1 and releases cap[s] by 1
+//   - each channel's BD chain alternates between primary and twin buffers
+//
+// As in the fan-in case, the load-bearing property is that ALL FOUR readers
+// acquire the SAME lock for a given slot, so no reader waits on another
+// reader. The predecessor chained them (writer -> R0 -> R1 -> R2 -> R3 ->
+// cap), which over-serializes independent consumers and can deadlock against
+// switchbox arbiter sharing -- see the fan-in test for the full mechanism.
 
 // CHECK: aie.device
 // CHECK-DAG: %[[MT:.*]] = aie.logical_tile<MemTile>(?, ?)
 
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 2 : i32}
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
+// Per-slot pairs: two capacity locks primed to the participant count (4) and
+// two signal locks at 0 (the predecessor had ONE cap at init=2 instead, with
+// the slot count encoded in its init). Every lock is bound by name in the
+// memtile_dma checks below, which pin the structure exactly.
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 
@@ -33,14 +38,43 @@
 // CHECK-DAG: aie.buffer(%[[MT]]) {{.*}} : memref<4x8xbf16, 1
 // CHECK-DAG: aie.buffer(%[[MT]]) {{.*}} : memref<4x8xbf16, 1
 
-// memtile_dma: per-BD acquire/release counts are 1 throughout.
 // CHECK: aie.memtile_dma(%[[MT]])
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
-// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
-// (Formerly CHECK-NOT for integer literal 4; with SSA constants the positive
-//  CHECK lines above already confirm all acquire counts are 1.)
+// Reader 0 binds the slot locks: one credit each way, on its own slice.
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK: aie.use_lock(%[[SIG0:.*]], AcquireGreaterEqual, %[[C1:.*]])
+// CHECK: aie.dma_bd({{.*}} offset = 0 len = 8)
+// CHECK: aie.use_lock(%[[CAP0:.*]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1:.*]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.dma_bd({{.*}} offset = 0 len = 8)
+// CHECK: aie.use_lock(%[[CAP1:.*]], Release, %[[C1]])
+
+// Readers 1-3: THE SAME slot locks as reader 0 -- mutually unordered.
+// CHECK: aie.dma_start(MM2S, 1
+// CHECK: aie.use_lock(%[[SIG0]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], Release, %[[C1]])
+// CHECK: aie.dma_start(MM2S, 2
+// CHECK: aie.use_lock(%[[SIG0]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], Release, %[[C1]])
+// CHECK: aie.dma_start(MM2S, 3
+// CHECK: aie.use_lock(%[[SIG0]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], Release, %[[C1]])
+
+// The single writer fills a whole slot: acquire capacity by N=4 (all four
+// readers done with it) and release N read credits.
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK: aie.use_lock(%[[CAP0]], AcquireGreaterEqual, %[[C4:.*]])
+// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1> offset = 0 len = 32)
+// CHECK: aie.use_lock(%[[SIG0]], Release, %[[C4]])
+// CHECK: aie.use_lock(%[[CAP1]], AcquireGreaterEqual, %[[C4]])
+// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1> offset = 0 len = 32)
+// CHECK: aie.use_lock(%[[SIG1]], Release, %[[C4]])
 
 air.channel @w0 [1, 1]
 air.channel @r0 [1, 1]

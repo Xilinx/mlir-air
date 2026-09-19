@@ -664,52 +664,72 @@ air::DMAAllocator::getOrCreateChainLockSet(AIE::BufferOp buf,
 
   int nW = 0, nR = 0;
   classifyChainBuffer(buf, nW, nR);
-  int nStages = (nW > 1) ? nW : nR; // fan-in or fan-out
 
   ChainLockSet cls;
   cls.n_writers = nW;
   cls.n_readers = nR;
   cls.primary_buf = buf;
 
-  // Start single-slot (cap init = 1), which is safe for any chain shape. If
-  // generateDmaBdProgram later allocates a twin buffer it calls
-  // activateChainPingPong, which bumps the cap and pp_slots together so the
-  // slot count and buffer count never diverge.
+  // Start single-slot, which is safe for any shape. If generateDmaBdProgram
+  // later allocates a twin buffer it calls activateChainPingPong, which adds
+  // slot 1's locks and bumps pp_slots together so the slot count and the
+  // buffer count never diverge.
   cls.pp_slots = 1;
-  // A refeed buffer (air.refeed_count=N, single-buffer count-free re-broadcast)
-  // needs the cap_lock primed to N: the first writer acquires cap >= N, and the
-  // single reader releases cap by 1 per re-send (N sends drain sig[last]=N and
-  // restore cap=N). Default init=1 would deadlock the first writer's acq>=N.
-  int capInit = static_cast<int>(
-      std::max<int64_t>(1, air::getRefeedCount(buf.getOperation())));
-  cls.cap_lock = allocateLockOp(device, tile, /*init=*/capInit);
 
-  // N init=0 signal locks for the writer→writer (or reader→reader)
-  // transitions plus the producer→consumer (or last-reader→producer)
-  // handoff. Shared across both ping/pong instances.
-  cls.sig_locks.reserve(nStages);
-  for (int i = 0; i < nStages; i++)
-    cls.sig_locks.push_back(allocateLockOp(device, tile, 0));
+  // A refeed buffer (air.refeed_count=N, single-buffer count-free
+  // re-broadcast) keeps the legacy daisy chain: its credit arithmetic is
+  // driven by the refeed count rather than the participant count (the first
+  // writer acquires cap >= N and the single reader releases cap by 1 per
+  // re-send, so N sends drain sig[last]=N and restore cap=N), and it never
+  // gains a ping-pong twin, so the run-ahead skew the counted rendezvous
+  // exists to tolerate cannot arise. Keeping it on the old template confines
+  // this change to the ordinary case.
+  int64_t refeed = air::getRefeedCount(buf.getOperation());
+  if (refeed > 1) {
+    cls.serialized = true;
+    cls.cap_locks.push_back(
+        allocateLockOp(device, tile, /*init=*/static_cast<int>(refeed)));
+    int nStages = (nW > 1) ? nW : nR; // fan-in or fan-out
+    cls.sig_locks.reserve(nStages);
+    for (int i = 0; i < nStages; i++)
+      cls.sig_locks.push_back(allocateLockOp(device, tile, 0));
+  } else {
+    // Counted rendezvous, slot 0. cap init = the multi-side participant
+    // count, so all N of them may fire into this slot concurrently; the
+    // single side drains the slot with one acquire of N and hands N credits
+    // back. No participant waits on another participant.
+    cls.cap_locks.push_back(
+        allocateLockOp(device, tile, /*init=*/cls.multiplicity()));
+    cls.sig_locks.push_back(allocateLockOp(device, tile, /*init=*/0));
+  }
 
   auto inserted = chain_lock_sets.insert({buf.getOperation(), std::move(cls)});
   return &inserted.first->second;
 }
 
 void air::DMAAllocator::activateChainPingPong(ChainLockSet &cls,
+                                              AIE::TileLike tile,
                                               AIE::BufferOp twin) {
-  // Bump the twin buffer, slot count, and cap-lock init together: the cap
-  // (slot count) must always equal the number of buffer instances, so these
-  // updates are one atomic operation rather than three scattered writes.
+  // Record the twin buffer and the slot's locks together: the lock vectors
+  // must always be as long as the number of buffer instances, so these
+  // updates are one operation rather than several scattered writes.
   cls.twin_buf = twin;
   cls.pp_slots = 2;
-  cls.cap_lock->setAttr(
-      "init",
-      IntegerAttr::get(IntegerType::get(cls.cap_lock->getContext(), 32), 2));
+  if (cls.serialized) {
+    // Legacy daisy chain: one cap lock shared by both slots, so the slot
+    // count lives in its init instead of in a second lock pair.
+    cls.cap_locks[0]->setAttr(
+        "init", IntegerAttr::get(
+                    IntegerType::get(cls.cap_locks[0]->getContext(), 32), 2));
+    return;
+  }
+  cls.cap_locks.push_back(
+      allocateLockOp(device, tile, /*init=*/cls.multiplicity()));
+  cls.sig_locks.push_back(allocateLockOp(device, tile, /*init=*/0));
 }
 
-std::pair<AIE::LockOp, AIE::LockOp>
-air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
-                                    AIE::DMAChannelDir dir, int stage) {
+std::pair<AIE::LockOp, AIE::LockOp> air::DMAAllocator::pickChainBdLocks(
+    const ChainLockSet &cls, AIE::DMAChannelDir dir, int stage, int slot) {
   // generateDmaBd interprets the returned pair as (rlock, wlock) — the
   // legacy producer-consumer convention — and direction-dependently
   // chooses which is acquired vs released:
@@ -717,32 +737,51 @@ air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
   //                  releaseLock = pair.first  (rlock)
   //   MM2S (reader): acquireLock = pair.first  (rlock),
   //                  releaseLock = pair.second (wlock)
-  // We map our chain-lock semantics onto this convention by populating
-  // `first` / `second` so that the direction-dependent acquire/release
-  // gives the correct chain semantics.
+  // We map our semantics onto this convention by populating `first` /
+  // `second` so that the direction-dependent acquire/release comes out right.
   AIE::LockOp toAcquire, toRelease;
 
-  if (cls.isFanIn()) {
-    // Writers serialized W0 → W1 → ... → W{N-1} → Reader → Cap → W0
+  if (!cls.serialized) {
+    // Counted rendezvous on this buffer SLOT. Writers acquire capacity and
+    // release signal; the reader does the reverse. Which side moves 1 credit
+    // and which moves N is a per-BD COUNT, set from cls.bdLockCounts() in
+    // generateDmaBd -- the lock identities here depend only on direction.
+    //
+    // Note the absence of `stage`: participants on the multi side are
+    // mutually unordered by construction. That is the point of the template.
+    unsigned s = static_cast<unsigned>(slot);
+    assert(s < cls.cap_locks.size() && s < cls.sig_locks.size() &&
+           "chain-lock slot index out of range");
+    if (dir == AIE::DMAChannelDir::S2MM) {
+      toAcquire = cls.cap_locks[s];
+      toRelease = cls.sig_locks[s];
+    } else {
+      toAcquire = cls.sig_locks[s];
+      toRelease = cls.cap_locks[s];
+    }
+  } else if (cls.isFanIn()) {
+    // Legacy daisy chain (refeed only):
+    // writers serialized W0 → W1 → ... → W{N-1} → Reader → Cap → W0
     if (dir == AIE::DMAChannelDir::S2MM) {
       // Writer stage `stage` (0..N-1)
-      toAcquire = (stage == 0) ? cls.cap_lock : cls.sig_locks[stage - 1];
+      toAcquire = (stage == 0) ? cls.cap_locks[0] : cls.sig_locks[stage - 1];
       toRelease = cls.sig_locks[stage];
     } else {
       // The single reader: acquire last signal lock, release cap lock.
       toAcquire = cls.sig_locks[cls.n_writers - 1];
-      toRelease = cls.cap_lock;
+      toRelease = cls.cap_locks[0];
     }
   } else {
-    // Fan-out: writer → Reader0 → Reader1 → ... → Reader{N-1} → Cap → writer
+    // Legacy daisy chain, fan-out:
+    // writer → Reader0 → Reader1 → ... → Reader{N-1} → Cap → writer
     if (dir == AIE::DMAChannelDir::MM2S) {
       // Reader stage `stage` (0..N-1)
       toAcquire = cls.sig_locks[stage];
-      toRelease = (stage == cls.n_readers - 1) ? cls.cap_lock
+      toRelease = (stage == cls.n_readers - 1) ? cls.cap_locks[0]
                                                : cls.sig_locks[stage + 1];
     } else {
       // The single writer: acquire cap lock, release first signal lock.
-      toAcquire = cls.cap_lock;
+      toAcquire = cls.cap_locks[0];
       toRelease = cls.sig_locks[0];
     }
   }
@@ -1073,7 +1112,9 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
       if (stage < 0)
         return memcpyOp->emitOpError(
             "v2 chain-lock: failed to determine BD stage index");
-      auto pair = pickChainBdLocks(*cls, channel.direction, stage);
+      // This is the PRIMARY buffer's BD, i.e. slot 0. generateDmaBdProgram
+      // asks for slot 1 separately when it splices the ping-pong twin.
+      auto pair = pickChainBdLocks(*cls, channel.direction, stage, /*slot=*/0);
       // Register a lock_allocation_list entry so subsequent reuse-lookup
       // queries on the same (buffer, channel) find the same pair —
       // matches the legacy reuse model for the rare same-channel multi-BD

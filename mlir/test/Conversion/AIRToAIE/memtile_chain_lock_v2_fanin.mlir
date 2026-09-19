@@ -7,26 +7,39 @@
 
 // RUN: air-opt %s -air-to-aie="use-lock-race-condition-fix-v2=true row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// v2 chain-lock test: shared L2 buffer with 4 sub-region writers + 1 full
-// reader (fan-in). Expected lock pattern (daisy chain) WITH
-// 2-slot ping-pong:
-//   - 1 cap lock (init=2; 2-slot ping-pong)
-//   - 4 init=0 signal locks (one per writer transition + W3->R handoff),
-//     SHARED across both buffer instances
+// v2 rendezvous-lock test: shared L2 buffer with 4 sub-region writers + 1 full
+// reader (fan-in), with 2-slot ping-pong. Expected:
+//   - one (cap, sig) lock pair PER BUFFER SLOT: 2 locks at init=4 (the
+//     participant count) and 2 at init=0
 //   - TWO aie.buffer instances of the same memref type (primary + twin)
-//   - Writer 0 acquires cap_lock, releases sig_lock[0]
-//   - Writer i (i>0) acquires sig_lock[i-1], releases sig_lock[i]
-//   - Reader acquires sig_lock[3], releases cap_lock
-//   - Each channel's BD chain alternates between primary and twin buffers
-// All per-BD acquire/release counts are 1 (no init=N parallel-fire pattern).
+//   - every writer, on slot s, acquires cap[s] by 1 and releases sig[s] by 1
+//   - the reader, on slot s, acquires sig[s] by 4 and releases cap[s] by 4
+//   - each channel's BD chain alternates between primary and twin buffers
+//
+// The load-bearing property is that ALL FOUR writers acquire the SAME lock for
+// a given slot. Writers are mutually unordered, so a writer that arrives early
+// never waits on another writer.
+//
+// That is a fix, not a detail. The predecessor daisy-chained the writers
+// (cap -> W0 -> W1 -> W2 -> W3 -> R -> cap), imposing a compile-time total
+// order on arrivals that are independent at runtime. When the pathfinder packs
+// two of those streams onto one switchbox arbiter -- which it must, a shim
+// switchbox having 6 arbiters and a busy column more masters than that -- an
+// early-arriving LATE writer stalls on its chain predecessor while holding the
+// arbiter the EARLY writer needs, and the chain never advances. Measured on
+// gemma4-e2b: ping-pong let the two east projection columns (stages 2 and 3)
+// run a round ahead, stages 0 and 2 shared arbiter 1 in shim tile (2,0), and
+// decode hung in firmware TDR.
 
 // CHECK: aie.device
 // CHECK-DAG: %[[MT:.*]] = aie.logical_tile<MemTile>(?, ?)
 
-// 1 cap lock with init=2 (2 ping-pong slots), 4 signal locks with init=0.
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 2 : i32}
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
+// Per-slot pairs: two capacity locks primed to the participant count (4) and
+// two signal locks at 0 (the predecessor had ONE cap at init=2 instead, with
+// the slot count encoded in its init). Every lock is bound by name in the
+// memtile_dma checks below, which pin the structure exactly.
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 
@@ -34,18 +47,46 @@
 // CHECK-DAG: aie.buffer(%[[MT]]) {{.*}} : memref<4x8xbf16, 1
 // CHECK-DAG: aie.buffer(%[[MT]]) {{.*}} : memref<4x8xbf16, 1
 
-// memtile_dma: per-BD acquire/release counts are 1 throughout — no init=N
-// parallel acquires. The chain semantics live in the lock identities;
-// the per-count == 1 invariant verifies the v2 path was taken.
 // CHECK: aie.memtile_dma(%[[MT]])
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
-// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
 
-// Negative: no acquire-by-N (rules out the legacy init=N + done-counter
-// pattern that would emit Acquire/Release counts of 4 on this memtile).
-// (Formerly CHECK-NOT for integer literal 4; with SSA constants the positive
-//  CHECK lines above already confirm all acquire counts are 1.)
+// The single reader drains a whole slot: acquire its signal lock by N=4 (one
+// credit from each writer) and hand N capacity credits back. Binds the slot
+// locks for the writer checks below.
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK: aie.use_lock(%[[SIG0:.*]], AcquireGreaterEqual, %[[C4:.*]])
+// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1> offset = 0 len = 32)
+// CHECK: aie.use_lock(%[[CAP0:.*]], Release, %[[C4]])
+// CHECK: aie.use_lock(%[[SIG1:.*]], AcquireGreaterEqual, %[[C4]])
+// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1> offset = 0 len = 32)
+// CHECK: aie.use_lock(%[[CAP1:.*]], Release, %[[C4]])
+
+// Writer 0: slot 0 then slot 1, one credit each way.
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK: aie.use_lock(%[[CAP0]], AcquireGreaterEqual, %[[C1:.*]])
+// CHECK: aie.dma_bd({{.*}} offset = 0 len = 8)
+// CHECK: aie.use_lock(%[[SIG0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.dma_bd({{.*}} offset = 0 len = 8)
+// CHECK: aie.use_lock(%[[SIG1]], Release, %[[C1]])
+
+// Writers 1-3: THE SAME slot locks as writer 0. This is the anti-deadlock
+// invariant -- under the old daisy chain these would have been sig[0], sig[1]
+// and sig[2], each writer gated on its predecessor.
+// CHECK: aie.dma_start(S2MM, 1
+// CHECK: aie.use_lock(%[[CAP0]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1]], Release, %[[C1]])
+// CHECK: aie.dma_start(S2MM, 2
+// CHECK: aie.use_lock(%[[CAP0]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1]], Release, %[[C1]])
+// CHECK: aie.dma_start(S2MM, 3
+// CHECK: aie.use_lock(%[[CAP0]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG0]], Release, %[[C1]])
+// CHECK: aie.use_lock(%[[CAP1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.use_lock(%[[SIG1]], Release, %[[C1]])
 
 air.channel @w0 [1, 1]
 air.channel @w1 [1, 1]
