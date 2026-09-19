@@ -341,6 +341,30 @@ def emit(
     slice_dw = dim // tasks_d
     slice_i = inter // tasks
     slice_2i = (2 * inter) // tasks
+    # Why the fused gate_up keeps `tasks` pieces and does not take the
+    # dim-wide matmuls' halved count, even though its strip has the same
+    # shape of problem theirs did.
+    #
+    # A fused piece owns `inter/tasks` gate columns and the matching up
+    # columns: at 128 tasks that is a 24-column strip of the weights, 48
+    # bytes against a 64-byte line, where the split stage owned 48 columns
+    # and 96 bytes. Measured, the fusion removed the 5.52 us boundary -- worth
+    # 92 736 ticks a launch -- and the narrower strip cost 85 647 of it back,
+    # so the pair came out 7 088 ticks ahead and the launch 0.63% behind.
+    #
+    # Halving the count to `tasks_d` restores the 96-byte strip exactly, and
+    # is **10.4% worse**: 2 369 096 ticks against 2 145 564. o_proj and down
+    # can afford it because they are `dim` wide and 128 pieces leaves them 8
+    # columns each, 16 bytes of a line, which is severe enough that losing
+    # half the workgroups is the cheaper problem. gate_up is three times as
+    # wide and is the largest stage in the layer, so halving the workgroups
+    # that have any of it to do costs far more than the line does.
+    #
+    # What would make the fusion pay is neither: interleaving the gate and up
+    # halves of Wgu so column j's pair is adjacent in memory. Then a piece
+    # owning 24 pairs reads 96 contiguous bytes, at `tasks` pieces, and the
+    # boundary goes for free. That is a change to weights.py and to both
+    # readers of the matrix, and it has not been done.
     slice_q = qkvo // tasks
     # The vocabulary is the one width that does not have to divide: Qwen3's is
     # 151936 = 2^7 * 1187, so requiring it to capped `tasks` at 128 -- and the
@@ -2956,15 +2980,19 @@ module {{
         # same rows -- and the lhs is read once for both, which is the one
         # thing the split stages could not do.
         pairing = pair_off is not None
+        # Names carry the stage, because these live in the same region as the
+        # workgroup's buffers rather than in a stage of their own: plain %av
+        # is already the attention values, and MLIR takes the redefinition as
+        # a parse error rather than a shadow.
         combine = f"""
-                      %ng = arith.negf %a : f32
-                      %eg = math.exp %ng : f32
-                      %de = arith.addf %fone_s, %eg : f32
-                      %si = arith.divf %a, %de : f32
-                      %av = arith.mulf %si, %aB : f32"""
+                      %ng{l}_{stage} = arith.negf %a : f32
+                      %eg{l}_{stage} = math.exp %ng{l}_{stage} : f32
+                      %de{l}_{stage} = arith.addf %fone_s, %eg{l}_{stage} : f32
+                      %si{l}_{stage} = arith.divf %a, %de{l}_{stage} : f32
+                      %sw{l}_{stage} = arith.mulf %si{l}_{stage}, %aB : f32"""
         store = (
             f"""{combine.replace("                      ", "                  ")}
-                  memref.store %av, {out}[%m, %j] : {outty}"""
+                  memref.store %sw{l}_{stage}, {out}[%m, %j] : {outty}"""
             if pairing
             else (
                 f"""
@@ -2980,7 +3008,7 @@ module {{
         # extra scf.if the multi-wave path wraps it in.
         store_blk = (
             f"""{combine}
-                      memref.store %av, {out}[%m, %j2] : {outty}"""
+                      memref.store %sw{l}_{stage}, {out}[%m, %j2] : {outty}"""
             if pairing
             else (
                 f"""
@@ -3898,9 +3926,13 @@ def main() -> int:
         "--fuse-swiglu",
         action="store_true",
         help="compute a gate column and its matching up column in the same "
-        "gate_up piece and apply the SwiGLU there, so swiglu is not a stage. "
-        "A layer goes from nine stages to eight, and a stage boundary is "
-        "5.52 us whatever the stage computes",
+        "gate_up piece and apply the SwiGLU there, so swiglu is not a stage "
+        "and a layer has eight rather than nine. Correct -- suite 21/21 and "
+        "every shape token-exact -- but 0.63%% slower, because a fused piece "
+        "reads two 48-byte strips of the weights where the split one read a "
+        "96-byte strip, and that costs about what the boundary saves. Off "
+        "until the gate and up halves of Wgu are interleaved; see the note "
+        "next to slice_i",
     )
     ap.add_argument(
         "--split-arrival",
