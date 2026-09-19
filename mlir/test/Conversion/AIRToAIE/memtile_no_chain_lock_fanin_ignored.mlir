@@ -9,18 +9,23 @@
 
 // Scope test: the `air.no_chain_lock` opt-out is honored ONLY for fan-out. A
 // fan-in buffer (4 sub-region writers + 1 full reader) still gets the v2
-// chain-lock even when tagged, because reverting fan-in to the counted lock
-// would reintroduce the write-side race the chain-lock exists to prevent. So
-// this tagged fan-in must lower to the daisy-chain (cap init=2 + 4 init=0
-// signal locks + a ping-pong twin), NOT the legacy counted lock (init=4).
+// rendezvous locks even when tagged, because reverting fan-in to the legacy
+// counted lock would reintroduce the write-side race the v2 template exists
+// to prevent. So this tagged fan-in must lower to per-slot (cap, sig) pairs
+// plus a ping-pong twin.
+//
+// Note what the tag was FOR: over-serialization of independent participants.
+// The per-slot rendezvous no longer serializes them, so on the fan-out side
+// the opt-out is now a no-op in practice; it stays honored there so designs
+// carrying it keep their existing lowering.
 
 // CHECK: aie.device
 // CHECK-DAG: %[[MT:.*]] = aie.logical_tile<MemTile>(?, ?)
 
-// Chain-lock emitted despite the tag: cap init=2 + 4 signal locks init=0.
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 2 : i32}
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
+// v2 locks emitted despite the tag: two capacity locks primed to the
+// participant count (4) and two signal locks at 0, one pair per slot.
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 

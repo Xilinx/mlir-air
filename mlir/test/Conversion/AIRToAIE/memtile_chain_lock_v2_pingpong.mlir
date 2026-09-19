@@ -7,48 +7,68 @@
 
 // RUN: air-opt %s -air-to-aie="use-lock-race-condition-fix-v2=true row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// v2 chain-lock 2-slot ping-pong structural test (fan-in shape, 4
+// v2 rendezvous-lock 2-slot ping-pong structural test (fan-in shape, 4
 // writers + 1 reader). Verifies that:
-//   1. The cap_lock is bumped to init=2 (2 ping-pong slots).
+//   1. Each buffer SLOT owns its own (capacity, signal) lock pair, primed to
+//      the participant count and 0 respectively -- so two locks at init=4 and
+//      two at init=0, not one shared cap at init=2.
 //   2. Two aie.buffer instances of the same memref type exist at the
 //      memtile (primary + twin).
 //   3. Each channel's BD chain has exactly 2 BDs that alternate between
 //      the two buffer instances (next_bd loops back to the first BD).
-//   4. The same lock pair is used by BOTH primary and twin BDs at each
-//      chain stage (locks shared across ping-pong instances, matching
-//      a shared-L2 producer-consumer pattern).
-//   5. All per-BD acquire/release counts stay at 1 (chain semantics
-//      preserved; cap=2 admits two stage-K firings before blocking).
+//   4. The two BDs of one chain use DIFFERENT lock pairs -- the primary BD
+//      takes slot 0's pair and the twin BD slot 1's. (The predecessor shared
+//      one pair across both instances and encoded the slot count in its init.)
+//   5. The multi side moves one credit per BD and the single side moves all
+//      N, so a slot drains only once every participant has touched it.
 
 // CHECK: aie.device
 // CHECK-DAG: %[[MT:.*]] = aie.logical_tile<MemTile>(?, ?)
 
-// cap_lock with init=2 and the chain's signal locks (init=0).
-// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 2 : i32}
+// One (cap, sig) pair per slot: two locks at init=4, two at init=0.
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 4 : i32}
+// CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 // CHECK-DAG: aie.lock(%[[MT]], {{[0-9]+}}) {init = 0 : i32}
 
 // Two buffer instances on the same memtile, same memref type.
 // CHECK-DAG: %[[BUF_A:.*]] = aie.buffer(%[[MT]]) {{.*}} : memref<4x8xbf16, 1
 // CHECK-DAG: %[[BUF_B:.*]] = aie.buffer(%[[MT]]) {{.*}} : memref<4x8xbf16, 1
 
-// memtile_dma block: for each channel, the BD chain must contain
-// dma_bds referencing both buffer instances, with identical per-BD
-// acquire/release counts. We do not constrain BD order (greedy lock
-// allocation may emit primary→twin or twin→primary), but both must
-// appear.
+// memtile_dma block: each channel's BD chain contains dma_bds referencing
+// both buffer instances, and the two BDs take DIFFERENT lock pairs -- one per
+// slot. We do not constrain which buffer lands on which slot (greedy lock
+// allocation may emit primary→twin or twin→primary), only that the slots do
+// not share locks.
+//
+// The reader is emitted first, so this also pins the single side's counts:
+// it acquires a slot's signal lock by N=4 and releases N capacity credits.
 // CHECK: aie.memtile_dma(%[[MT]])
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK: aie.use_lock(%[[SIG0:.*]], AcquireGreaterEqual, %[[C4:.*]])
 // CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
-// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
+// CHECK: aie.use_lock(%[[CAP0:.*]], Release, %[[C4]])
 // CHECK: aie.next_bd
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK: aie.use_lock(%[[SIG1:.*]], AcquireGreaterEqual, %[[C4]])
 // CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
-// CHECK: aie.use_lock(%{{.*}}, Release, %{{.*}})
+// CHECK: aie.use_lock(%[[CAP1:.*]], Release, %[[C4]])
 // CHECK: aie.next_bd
 
-// Negative: no acquire-by-N (legacy pattern would emit count=4 on cap).
-// (Formerly CHECK-NOT for integer literal 4; with SSA constants the positive
-//  CHECK lines above already confirm all acquire counts are 1.)
+// That the two BDs take different pairs is enforced by the bindings above:
+// SIG0/CAP0 and SIG1/CAP1 are captured from distinct use_lock operands, and
+// FileCheck's four init-bearing lock lines account for all four locks.
+
+// A writer: the multi side moves exactly one credit per BD, against the same
+// slot locks the reader uses.
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK: aie.use_lock(%[[CAP0]], AcquireGreaterEqual, %[[C1:.*]])
+// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
+// CHECK: aie.use_lock(%[[SIG0]], Release, %[[C1]])
+// CHECK: aie.next_bd
+// CHECK: aie.use_lock(%[[CAP1]], AcquireGreaterEqual, %[[C1]])
+// CHECK: aie.dma_bd({{.*}} : memref<4x8xbf16, 1
+// CHECK: aie.use_lock(%[[SIG1]], Release, %[[C1]])
+// CHECK: aie.next_bd
 
 air.channel @w0 [1, 1]
 air.channel @w1 [1, 1]
