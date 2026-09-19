@@ -303,6 +303,29 @@ _MODELS = {
     # needs. FLM likewise runs two attention tile-pairs in its column.
     "gemma4-e2b": dict(
         K=1536,
+        # A FULL 16 KiB L1 bank, not the 10240 default, and the size is the
+        # point rather than the headroom: at 16384 the stack occupies bank 0
+        # exactly and no buffer shares it. Measured on an NPU2 Krackan, decode
+        # at 34 waves / ATTN_MAXL=1024, dispatches that failed with
+        # ERT_CMD_STATE_TIMEOUT out of 24:
+        #
+        #   stack  8192  6144 B of buffer in bank 0   13/24
+        #   stack 10240  6144 B                       10/24
+        #   stack 12288  3072 B                        4/24
+        #   stack 14336  2048 B                        5/24
+        #   stack 16384     0 B (bank 0 exclusive)     0/24
+        #
+        # It is a threshold on whether anything shares the bank, not a gradient
+        # in headroom: 8192 is a SMALLER stack with the same 6144 B of sharing
+        # and the same failure rate, and the deepest call chain here is ~4 KiB,
+        # so none of these overflow. (A stack that genuinely overflows looks
+        # nothing like this -- 1024 fails 24/24, deterministically.)
+        #
+        # Model-specific on purpose. qwen2.5-7b and qwen3-8b run at 6144 with
+        # L1 too full to fit even 10240 and are clean, so bank sharing alone is
+        # not sufficient to fail; this pairs with something in gemma4's own
+        # geometry. Do not generalise this to the default.
+        DECODE_STACK=16384,
         M=6144,  # DQ+DK+DV at the FULL layer = 4096 + 2*512 + 2*512
         DH_A=512,  # full-attention head dim; sliding layers use DH_SWA
         DH_SWA=256,
@@ -1029,9 +1052,13 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
-# Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
-# under 8 KiB, so that geometry lowers it; every other model keeps 10240.
-STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
+# Per-core stack reservation. The default lives in the model spec, under the
+# same DECODE_STACK key the sibling fused_decode.py uses, because which value
+# is right follows from the model's geometry: at K=4096 (qwen3-8b) the seven
+# K-wide L1 activation buffers leave under 8 KiB so that geometry lowers it,
+# and gemma4-e2b raises it to a full bank. Env still wins, so a sweep can vary
+# it without editing a spec.
+STACK_SIZE = int(_os.environ.get("DECODE_STACK", MODEL.get("DECODE_STACK", 10240)))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off
