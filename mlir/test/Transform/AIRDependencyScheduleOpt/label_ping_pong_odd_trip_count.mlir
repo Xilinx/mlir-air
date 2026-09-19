@@ -20,7 +20,14 @@
 // simply moves the wrong bytes. Measured on gemma4-e2b's 9-trip vocab egress,
 // where it silently zeroed logit blocks 2 and 5 of the first chunk.
 //
-// So an odd-trip-count loop must not be labeled.
+// So a loop must not be labeled unless its trip count is PROVABLY a multiple
+// of 2. The predicate is air::isTripCountDivisibleByFactor -- the same one
+// loopUnrollByFactorWithAsyncTokenPreserved uses to decide whether the
+// remainder loop it emits is dead -- so the labeler and the unroller cannot
+// disagree about what "even" means. "Provably" is doing work in both
+// directions: a dynamic bound of the form 2*J still labels (Case 5), and a
+// dynamic bound of unknown parity does not (Case 4), because an unprovable
+// premise here buys throughput at the price of silent wrong data.
 
 // RUN: air-opt %s -air-label-scf-for-to-ping-pong | FileCheck %s
 
@@ -143,21 +150,21 @@ module {
   }
 
 // =============================================================================
-// Case 4 (POSITIVE, documents a KNOWN LIMIT): the trip count is not a
-// compile-time constant, so the guard cannot see it and the loop is still
-// labeled. A dynamic loop that turns out to be odd at runtime peels into a
-// third buffer exactly as Case 1 would. Fixing that needs the peeled remainder
-// to reuse the ping slot instead of allocating a new buffer; this test exists
-// so the gap is recorded rather than assumed closed.
+// Case 4 (NEGATIVE): a dynamic trip count whose parity is NOT provable. The
+// bound is the herd-size block argument, so nothing says whether it is even.
+// Declined, because the failure mode is silent wrong data rather than a crash:
+// if the count turns out odd at runtime the remainder allocates a third buffer
+// exactly as Case 1 does, and assuming even to keep the optimization would be
+// trading correctness for throughput on an unproven premise.
 // =============================================================================
 
-// CHECK-LABEL: func.func @dynamic_trip_count_still_labels
+// CHECK-LABEL: func.func @dynamic_unprovable_parity_rejects
 // CHECK:       scf.for
-// CHECK:       memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
-// CHECK:       } {unroll = 2 : i32}
+// CHECK-NOT:   hoist_alloc
+// CHECK-NOT:   } {unroll
 // CHECK:       return
 
-  func.func @dynamic_trip_count_still_labels(%arg0: memref<256x1024xbf16>) {
+  func.func @dynamic_unprovable_parity_rejects(%arg0: memref<256x1024xbf16>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 4 : i32} {
       %1 = air.segment async {
@@ -166,9 +173,52 @@ module {
           %c0 = arith.constant 0 : index
           %c1_h = arith.constant 1 : index
           %async_token_0 = air.wait_all async
-          // %arg23 is the herd-size block argument: a runtime value here, so
-          // getConstantIntValue cannot fold it and the guard does not fire.
+          // %arg23 is the herd-size block argument: a runtime value, and
+          // nothing in the IR constrains its parity.
           %3 = scf.for %arg10 = %c0 to %arg23 step %c1_h iter_args(%arg11 = %async_token_0) -> (!air.async.token) {
+            %async_token_a, %results_a = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc_a = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc_a : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%async_token_a] @load_chan[] (%results_a[] [] []) : (memref<32x32xbf16, 2>)
+            %async_token_d = air.execute [%fill] {
+              memref.dealloc %results_a : memref<32x32xbf16, 2>
+            }
+            scf.yield %async_token_d : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+
+// =============================================================================
+// Case 5 (POSITIVE control for Case 4): a dynamic trip count that IS provably
+// even -- `0 to 2*%arg23 step 1`. The guard is about provable parity, not about
+// constants, so this must still be labeled. Without this case, Case 4 would be
+// satisfied by a predicate that simply refuses every dynamic bound, which would
+// cost ping-pong on the runtime-shaped loops that motivated
+// isTripCountDivisibleByFactor in the first place.
+// =============================================================================
+
+// CHECK-LABEL: func.func @dynamic_provably_even_labels
+// CHECK:       scf.for
+// CHECK:       memref.alloc() {hoist_alloc = true} : memref<32x32xbf16, 2>
+// CHECK:       } {unroll = 2 : i32}
+// CHECK:       return
+
+  func.func @dynamic_provably_even_labels(%arg0: memref<256x1024xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 5 : i32} {
+      %1 = air.segment async {
+        %c4 = arith.constant 4 : index
+        %2 = air.herd @herd_4 async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
+          %c0 = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c2_h = arith.constant 2 : index
+          %ub = arith.muli %arg23, %c2_h : index
+          %async_token_0 = air.wait_all async
+          %3 = scf.for %arg10 = %c0 to %ub step %c1_h iter_args(%arg11 = %async_token_0) -> (!air.async.token) {
             %async_token_a, %results_a = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
               %alloc_a = memref.alloc() : memref<32x32xbf16, 2>
               air.execute_terminator %alloc_a : memref<32x32xbf16, 2>
