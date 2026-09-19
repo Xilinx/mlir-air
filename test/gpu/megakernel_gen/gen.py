@@ -172,6 +172,8 @@ def emit(
     pad_stages: int = 0,
     pad_strip: int = 0,
     acquire_once: bool = True,
+    spin_sleep: int = 16,
+    pack_arrival: bool = False,
     acquire_agent: bool = False,
 ) -> str:
     inter = inter or 2 * dim
@@ -1826,6 +1828,18 @@ module {{
   }}
 """)
 
+    # Only the packed form needs these: the arrival bit that lives in the
+
+    # top half of the word, and the shift that reads it back.
+
+    packconsts = (
+        ""
+        if not pack_arrival
+        else "        %eightL = arith.constant 8 : i64\n"
+        "        %arrbit = arith.constant 4294967296 : i64\n"
+        "        %c32L = arith.constant 32 : i64\n"
+    )
+
     layer_consts = "\n".join(
         f"        %L{i} = arith.constant {i} : index" for i in range(layers)
     )
@@ -1956,7 +1970,7 @@ module {{
         %locbi = arith.index_cast %locbase : index to i64
         %locp = llvm.inttoptr %locbi : i64 to !llvm.ptr
         %fourL = arith.constant 4 : i64
-        %cflushW = arith.constant {4 * flushword} : i64
+{packconsts}        %cflushW = arith.constant {4 * flushword} : i64
         %flushP = llvm.getelementptr %locp[%cflushW] : (!llvm.ptr, i64) -> !llvm.ptr, i8
         %myrank2 = air.chiplet_block_id
 {timer_id}
@@ -2086,6 +2100,38 @@ module {{
     # all, wherever the fence would have been.
     spin_close_nf = "          }"
     spin_end_nf = "          gpu.barrier"
+
+    # What the waiting wave does between polls.
+    #
+    # The poll is a system-scope load, which on gfx9 is `global_load_dword
+    # ... sc0 sc1`: it may not be answered from this CU's vector cache or this
+    # XCD's L2, because the workgroup that will set the word is on another XCD
+    # and the L2s are not coherent with each other. So every poll is a memory
+    # transaction, and with the loop as tight as the hardware will run it,
+    # 128 workgroups are issuing them continuously against one cache line.
+    #
+    # The rendezvous is 2.65 us of a 5.52 us stage boundary, 0.68 of the
+    # 3.68 ms a token takes, and a single uncached read does not cost 2.65 us.
+    # `s_sleep n` idles the wave for n*64 clocks -- 30 ns a unit at 2.1 GHz --
+    # which is small against one poll's latency and large against the interval
+    # between polls, so it trades detection latency the loop was not using for
+    # traffic on the line everyone is watching.
+    #
+    # It buys 0.8%, and that is the useful part of the result. Swept at 128
+    # workers, minimum of two runs a point, the two runs of a point never
+    # more than 0.31% apart:
+    #
+    #   sleep      0       1       2       4       8      16
+    #   vs 0    0.00%  +0.56%  +0.26%  -0.11%  -0.67%  -0.80%
+    #
+    # If the rendezvous were 128 workgroups queueing behind one cache line,
+    # cutting the traffic by a factor of sixteen would not be worth 0.8%. So
+    # it is not congestion, it is **latency**: the interval between the last
+    # worker's release landing and a poller's next read seeing it, which no
+    # amount of polling harder can shorten. 16 is kept because it is free and
+    # measured, but the way to spend 0.68 ms/token of rendezvous is to have
+    # fewer of them, not to poll them better.
+    spin_wait = "" if not spin_sleep else f"            rocdl.s.sleep {spin_sleep}\n"
 
     # Emitted before every event signal once the workgroup is more than one
     # wave; see the note at the signal site.
@@ -2572,18 +2618,80 @@ module {{
         #
         # Level 3 is indistinguishable from no pad at all, which is what says
         # the pieces account for the whole boundary rather than most of it.
-        sig_block = (
-            ""
-            if strip >= 3
-            else f"""          scf.if %isLead {{
-            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %pcount{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
+        # Two counters a die, or one word holding both.
+        #
+        # The die's workers have to agree on two things before the last of
+        # them can fire the event: how many pieces the die did, and how many
+        # workers have arrived. Kept apart, that is an add to each and then --
+        # for whoever turns out to be last -- an acquire load to read the sum
+        # back, three memory operations on the boundary's critical path.
+        #
+        # Packed, the arrival count lives in the top 32 bits of the same word
+        # the piece count is accumulated in, so adding `(1 << 32) + pieces`
+        # does both at once and the value the atomic gives back carries the
+        # answer to both questions: the top half says how many arrived before
+        # me, and the bottom half plus my own pieces is the die's total. Nobody
+        # will add after the last arriver, so that total is final and the load
+        # is not needed. Three memory operations become one.
+        #
+        # The counts cannot collide: pieces a die does are bounded by `tasks`
+        # and arrivals by the workers on a die, so neither half carries into
+        # the other. The release stays where it was, on the one atomic, which
+        # is stronger than before -- the count and the arrival now become
+        # visible together rather than in that order.
+        #
+        # Same bytes as the two i32 arrays it replaces: `slots` 8-byte words
+        # over the [0, 8*slots) the two of them had, so the flush word and the
+        # timers keep their offsets. Every term of the offset is a multiple of
+        # 8, which the i64 atomic needs.
+        # Where the die's counter lives. Packed, it is one 8-byte word where
+        # the two 4-byte ones were, so the step stride doubles -- %steploc
+        # counts i32 words' worth of bytes -- and the second array goes away.
+        locptrs = (
+            f"""          %lw{l}_{stage} = arith.constant {8 * slot * maxdies} : i64
+          %myd{l}_{stage} = arith.index_cast %mydie : index to i64
+          %myd8{l}_{stage} = arith.muli %myd{l}_{stage}, %eightL : i64
+          %lb{l}_{stage} = arith.addi %lw{l}_{stage}, %myd8{l}_{stage} : i64
+          %sl2{l}_{stage} = arith.addi %steploc, %steploc : i64
+          %lo{l}_{stage} = arith.addi %lb{l}_{stage}, %sl2{l}_{stage} : i64
+          %pkP{l}_{stage} = llvm.getelementptr %locp[%lo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8"""
+            if pack_arrival
+            else f"""          %lw{l}_{stage} = arith.constant {4 * slot * maxdies} : i64
+          %myd{l}_{stage} = arith.index_cast %mydie : index to i64
+          %myd4{l}_{stage} = arith.muli %myd{l}_{stage}, %fourL : i64
+          %lb{l}_{stage} = arith.addi %lw{l}_{stage}, %myd4{l}_{stage} : i64
+          %lo{l}_{stage} = arith.addi %lb{l}_{stage}, %steploc : i64
+          %locP{l}_{stage} = llvm.getelementptr %locp[%lo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+          %aw{l}_{stage} = arith.constant {4 * slots} : i64
+          %ao{l}_{stage} = arith.addi %aw{l}_{stage}, %lo{l}_{stage} : i64
+          %arrP{l}_{stage} = llvm.getelementptr %locp[%ao{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8"""
+        )
+        packed = (
+            f"""            %pk{l}_{stage} = arith.extui %pcount{l}_{stage} : i32 to i64
+            %pv{l}_{stage} = arith.addi %pk{l}_{stage}, %arrbit : i64
+            %old{l}_{stage} = llvm.atomicrmw add %pkP{l}_{stage}, %pv{l}_{stage} syncscope("agent") release : !llvm.ptr, i64
+            %arh{l}_{stage} = arith.shrui %old{l}_{stage}, %c32L : i64
+            %ar{l}_{stage} = arith.trunci %arh{l}_{stage} : i64 to i32
+            %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
+            %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
+            scf.if %amLast{l}_{stage} {{
+              %pre{l}_{stage} = arith.trunci %old{l}_{stage} : i64 to i32
+              %tot{l}_{stage} = arith.addi %pre{l}_{stage}, %pcount{l}_{stage} : i32"""
+            if pack_arrival
+            else f"""            %la{l}_{stage} = llvm.atomicrmw add %locP{l}_{stage}, %pcount{l}_{stage} syncscope("agent") monotonic : !llvm.ptr, i32
             // Release on the arrival so the accumulate above is visible to
             // whoever turns out to be last.
             %ar{l}_{stage} = llvm.atomicrmw add %arrP{l}_{stage}, %one_s syncscope("agent") release : !llvm.ptr, i32
             %last{l}_{stage} = arith.subi %mycnt_i, %one_s : i32
             %amLast{l}_{stage} = arith.cmpi eq, %ar{l}_{stage}, %last{l}_{stage} : i32
             scf.if %amLast{l}_{stage} {{
-              %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32
+              %tot{l}_{stage} = llvm.load %locP{l}_{stage} atomic syncscope("agent") acquire {{alignment = 4 : i64}} : !llvm.ptr -> i32"""
+        )
+        sig_block = (
+            ""
+            if strip >= 3
+            else f"""          scf.if %isLead {{
+{packed}
               %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
               %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
             }}
@@ -2604,7 +2712,7 @@ module {{
             %notYet = arith.cmpi ult, %seen, {total_const} : i32
             scf.condition(%notYet)
           }} do {{
-            scf.yield
+{spin_wait}            scf.yield
           }}
 {spin_close_nf if strip == 1 else spin_close}
 {spin_end_nf if (strip == 1 and spin_end) else spin_end}"""
@@ -2620,15 +2728,7 @@ module {{
           // last worker on the die flush the die's whole share once. The
           // instructions are the same as signalling per worker; what changes is
           // how many times the device-scope one runs.
-          %lw{l}_{stage} = arith.constant {4 * slot * maxdies} : i64
-          %myd{l}_{stage} = arith.index_cast %mydie : index to i64
-          %myd4{l}_{stage} = arith.muli %myd{l}_{stage}, %fourL : i64
-          %lb{l}_{stage} = arith.addi %lw{l}_{stage}, %myd4{l}_{stage} : i64
-          %lo{l}_{stage} = arith.addi %lb{l}_{stage}, %steploc : i64
-          %locP{l}_{stage} = llvm.getelementptr %locp[%lo{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-          %aw{l}_{stage} = arith.constant {4 * slots} : i64
-          %ao{l}_{stage} = arith.addi %aw{l}_{stage}, %lo{l}_{stage} : i64
-          %arrP{l}_{stage} = llvm.getelementptr %locp[%ao{l}_{stage}] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+{locptrs}
           // Signalling is the lead thread's job alone -- one arrival per
           // workgroup is the whole premise of the reduction. Within a wave the
           // release covers what the other lanes stored, because vmcnt counts
@@ -2704,7 +2804,7 @@ module {{
             %notYet = arith.cmpi ult, %seen, %n1_s : i32
             scf.condition(%notYet)
           }} do {{
-            scf.yield
+{spin_wait}            scf.yield
           }}
 {spin_close}
 {spin_end}
@@ -3689,6 +3789,25 @@ def main() -> int:
         "number. Pair it with --pad-strip to price the pieces",
     )
     ap.add_argument(
+        "--pack-arrival",
+        action="store_true",
+        help="keep a die's piece count and its arrival count in the two "
+        "halves of one 64-bit word, so signalling is a single atomic whose "
+        "return value answers both questions, instead of an add to each and "
+        "an acquire load to read the sum back. The atomics are 2.09 us of a "
+        "5.52 us stage boundary",
+    )
+    ap.add_argument(
+        "--spin-sleep",
+        type=int,
+        default=16,
+        help="idle the waiting wave for this many units of 64 clocks between "
+        "polls of the event word; 0 is the tightest loop the hardware will "
+        "run. Swept 0/1/2/4/8/16 on Qwen3-0.6B at 128 workers: 1 and 2 are "
+        "worse, 4 breaks even, 8 and 16 are 0.7-0.8%% better and flattening. "
+        "Small, and the size is the point -- see the note at spin_wait",
+    )
+    ap.add_argument(
         "--acquire-per-wave",
         action="store_true",
         help="take the post-rendezvous acquire fence in every wave after the "
@@ -3802,6 +3921,8 @@ def main() -> int:
             a.pad_stages,
             a.pad_strip,
             not a.acquire_per_wave,
+            a.spin_sleep,
+            a.pack_arrival,
             a.acquire_agent,
         )
     )
