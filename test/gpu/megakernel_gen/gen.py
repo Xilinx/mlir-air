@@ -360,44 +360,41 @@ def emit(
     slice_dw = dim // tasks_d
     slice_i = inter // tasks
     slice_2i = (2 * inter) // tasks
-    # Why the fused gate_up keeps `tasks` pieces and does not take the
-    # dim-wide matmuls' halved count, even though its strip has the same
-    # shape of problem theirs did.
+    # The SwiGLU fusion, twice attempted and twice refused, and what it
+    # actually points at.
     #
-    # A fused piece owns `inter/tasks` gate columns and the matching up
-    # columns: at 128 tasks that is a 24-column strip of the weights, 48
-    # bytes against a 64-byte line, where the split stage owned 48 columns
-    # and 96 bytes. Measured, the fusion removed the 5.52 us boundary -- worth
-    # 92 736 ticks a launch -- and the narrower strip cost 85 647 of it back,
-    # so the pair came out 7 088 ticks ahead and the launch 0.63% behind.
+    # A stage boundary costs 5.15 us whatever the stage computes and swiglu
+    # costs 6.6 us an instance, so nearly all of swiglu is the fact of being
+    # a stage. Two ways to make it not one, both built and both measured
+    # against the split form beside them in the same job:
     #
-    # Halving the count to `tasks_d` restores the 96-byte strip exactly, and
-    # is **10.4% worse**: 2 369 096 ticks against 2 145 564. o_proj and down
-    # can afford it because they are `dim` wide and 128 pieces leaves them 8
-    # columns each, 16 bytes of a line, which is severe enough that losing
-    # half the workgroups is the cheaper problem. gate_up is three times as
-    # wide and is the largest stage in the layer, so halving the workgroups
-    # that have any of it to do costs far more than the line does.
+    #   into gate_up, the producer   0.63% slower
+    #   into down, the consumer     34.7% slower
     #
-    # The obvious repair was to interleave the gate and up halves of Wgu so
-    # column j's pair is adjacent, giving a piece that owns 24 pairs one run
-    # of 96 bytes again at `tasks` pieces. **That was built and it does not
-    # work.** The whole layout was changed -- weights.py, the synthetic weight
-    # generator, the per-column scale, the host reference's matmul and its
-    # SwiGLU, and the device SwiGLU stage -- every one of them passed, the
-    # suite 21/21 on both paths and every shape token-exact, and the fused
-    # build was still 0.73% slower than the split one measured beside it in
-    # the same job: 2 171 276 against 2 155 608. Reverted.
+    # The producer version gives a piece two 24-column weight strips where
+    # the split stage read one of 48, and 24 bf16 is 48 bytes of a 64-byte
+    # line. Interleaving the gate and up halves of Wgu so the pair is
+    # adjacent was supposed to fix that; it was built across all five readers
+    # of the matrix, it is correct, and it changed nothing (0.73% slower
+    # still). Reverted.
     #
-    # So the cache-line story above is not the explanation, or not all of it.
-    # The two forms move the same weight bytes; what differs is that a fused
-    # piece runs its two reductions one after the other, so the row it wants
-    # both columns of is streamed past twice with an entire reduction in
-    # between, and adjacency buys nothing if the line is long gone by the time
-    # the second loop asks for it. The only form where adjacency could pay is
-    # one reduction that takes both columns per row into two accumulators --
-    # a dot_loop over a 2-wide column block. Until someone tries that, the
-    # fusion is off and its cost is unexplained.
+    # The consumer version is the one Fleet does -- silu_mul_linear computes
+    # silu(gate)*up @ weight^T with gate = input[:, :K], up = input[:, K:]
+    # (silu_mul_linear_mi300.cuh:39-40,114-115) -- and it leaves the weight
+    # reads completely alone, so the strip argument cannot apply. It is worse
+    # anyway, and this time the reason is exact: `down` reduces over `inter`
+    # for each of `dim` output columns, and in this generator every lane
+    # loads its own activation, so the SwiGLU is recomputed once per output
+    # column. 3 072 transcendentals a layer become 3 145 728. Measured,
+    # down's body goes 353 504 ticks to 809 024.
+    #
+    # Fleet does not pay that because its matmul stages the activation
+    # through LDS and applies the SwiGLU once as it writes it there
+    # (silu_mul_linear_mi300.cuh:34, 190-192). **That is the difference worth
+    # having, and it is not the fusion.** Every lane here reads the whole
+    # reduction out of global memory on its own; staging it once per
+    # workgroup would cut the activation traffic by the number of columns a
+    # lane group covers and make this fusion free rather than expensive.
     slice_q = qkvo // tasks
     # The vocabulary is the one width that does not have to divide: Qwen3's is
     # 151936 = 2^7 * 1187, so requiring it to capped `tasks` at 128 -- and the
@@ -2914,8 +2911,23 @@ module {{
         jname,
         tag,
         indent,
+        lhs_silu=None,
     ):
         """The dot product one lane owns, with `unroll` loads in flight.
+
+        `lhs_silu` makes the reduction build its own left-hand side: element
+        k is `silu(lhs[k]) * lhs[k + lhs_silu]` rather than `lhs[k]`. That is
+        the whole of the SwiGLU fusion, and the reason it is on this side.
+        The weights are not touched -- the strip each piece reads and the
+        order it reads it in are exactly what they were -- and the only thing
+        that changes is that the activation arrives as a pair to be combined
+        instead of as a value some earlier stage combined.
+
+        Fleet fuses on this side too. `silu_mul_linear` computes
+        `silu(gate) * up @ weight^T`, taking `gate = input[:, :K]` and
+        `up = input[:, K:]` (silu_mul_linear_mi300.cuh:39-40, 114-115): the
+        consumer of the activation, with the gate and up halves left end to
+        end, which is also why there is nothing to gain by interleaving them.
 
         Rolled, this loop asks for one weight and waits for it. The arithmetic
         says that is the whole story of the matmuls: at 128 workers gate_up
@@ -2941,18 +2953,43 @@ module {{
         if unroll > 1 and step_num > 0 and red_num % step_num == 0:
             while u * 2 <= unroll and red_num % (step_num * u * 2) == 0:
                 u *= 2
-        if u == 1:
+
+        # One element of the left-hand side, as a load or as a pair of loads
+        # and a SwiGLU over them.
+        def lhsval(idx, sfx):
+            if lhs_silu is None:
+                return f"{pad}  %lv{tag}{sfx} = memref.load {lhs}[%m, {idx}] : {lhsty}"
             return (
-                f"{pad}{dst} = scf.for %i{tag} = {start} to {red_c} step {step_c}\n"
-                f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{\n"
-                f"{pad}  %lv{tag} = memref.load {lhs}[%m, %i{tag}] : {lhsty}\n"
-                f"{pad}  %wb{tag} = memref.load {wmat}[%L{l}, %i{tag}, {jname}]{ntw} : {wty}\n"
-                f"{pad}  %wv{tag} = arith.extf %wb{tag} : bf16 to f32\n"
-                f"{pad}  %mp{tag} = arith.mulf %lv{tag}, %wv{tag} : f32\n"
-                f"{pad}  %s2{tag} = arith.addf %sacc{tag}, %mp{tag} : f32\n"
-                f"{pad}  scf.yield %s2{tag} : f32\n"
-                f"{pad}}}"
+                f"{pad}  %lg{tag}{sfx} = memref.load {lhs}[%m, {idx}] : {lhsty}\n"
+                f"{pad}  %ui{tag}{sfx} = arith.addi {idx}, {lhs_silu} : index\n"
+                f"{pad}  %lu{tag}{sfx} = memref.load {lhs}[%m, %ui{tag}{sfx}] : {lhsty}"
             )
+
+        def lhscomb(sfx):
+            if lhs_silu is None:
+                return []
+            return [
+                f"{pad}  %ng{tag}{sfx} = arith.negf %lg{tag}{sfx} : f32",
+                f"{pad}  %eg{tag}{sfx} = math.exp %ng{tag}{sfx} : f32",
+                f"{pad}  %de{tag}{sfx} = arith.addf %fone_s, %eg{tag}{sfx} : f32",
+                f"{pad}  %si{tag}{sfx} = arith.divf %lg{tag}{sfx}, %de{tag}{sfx} : f32",
+                f"{pad}  %lv{tag}{sfx} = arith.mulf %si{tag}{sfx}, %lu{tag}{sfx} : f32",
+            ]
+
+        if u == 1:
+            body = [
+                f"{pad}{dst} = scf.for %i{tag} = {start} to {red_c} step {step_c}",
+                f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{",
+                lhsval(f"%i{tag}", ""),
+                *lhscomb(""),
+                f"{pad}  %wb{tag} = memref.load {wmat}[%L{l}, %i{tag}, {jname}]{ntw} : {wty}",
+                f"{pad}  %wv{tag} = arith.extf %wb{tag} : bf16 to f32",
+                f"{pad}  %mp{tag} = arith.mulf %lv{tag}, %wv{tag} : f32",
+                f"{pad}  %s2{tag} = arith.addf %sacc{tag}, %mp{tag} : f32",
+                f"{pad}  scf.yield %s2{tag} : f32",
+                f"{pad}}}",
+            ]
+            return "\n".join(body)
         out = [f"{pad}%cSU{tag} = arith.constant {step_num * u} : index"]
         for k in range(1, u):
             out.append(f"{pad}%cO{tag}_{k} = arith.constant {step_num * k} : index")
@@ -2969,9 +3006,15 @@ module {{
             out.append(
                 f"{pad}  %wb{tag}_{k} = memref.load {wmat}[%L{l}, {idx}, {jname}]{ntw} : {wty}"
             )
+        # Then every left-hand side load, for the same reason: what is being
+        # bought here is loads in flight, and with the SwiGLU fused that is
+        # two an element rather than one. The combining waits until all of
+        # them have been asked for.
         for k in range(u):
             idx = f"%i{tag}" if k == 0 else f"%ik{tag}_{k}"
-            out.append(f"{pad}  %lv{tag}_{k} = memref.load {lhs}[%m, {idx}] : {lhsty}")
+            out.append(lhsval(idx, f"_{k}"))
+        for k in range(u):
+            out.extend(lhscomb(f"_{k}"))
         prev = f"%sacc{tag}"
         for k in range(u):
             out.append(
@@ -3000,71 +3043,27 @@ module {{
         residual=None,
         count_c="%ctasks",
         total_c="%ntasks_t",
-        pair_off=None,
+        lhs_silu=None,
     ):
-        # `pair_off` makes one piece own two columns at a time -- j and
-        # j + pair_off -- reduced in the same pass and combined before the
-        # store. It exists for gate_up: a SwiGLU needs gate column j and up
-        # column j + inter together, and when one piece holds both, the
-        # elementwise step that needs them is arithmetic inside this stage
-        # rather than a stage of its own waiting on this one. A boundary is
-        # 5.52 us whatever it separates.
-        #
-        # Nothing else about the stage changes. The lanes still split the
-        # columns and the waves still split the reduction, the weight reads
-        # are still coalesced -- the second column is a second strip of the
-        # same rows -- and the lhs is read once for both, which is the one
-        # thing the split stages could not do.
-        pairing = pair_off is not None
-        # Names carry the stage, because these live in the same region as the
-        # workgroup's buffers rather than in a stage of their own: plain %av
-        # is already the attention values, and MLIR takes the redefinition as
-        # a parse error rather than a shadow.
-        combine = f"""
-                      %ng{l}_{stage} = arith.negf %a : f32
-                      %eg{l}_{stage} = math.exp %ng{l}_{stage} : f32
-                      %de{l}_{stage} = arith.addf %fone_s, %eg{l}_{stage} : f32
-                      %si{l}_{stage} = arith.divf %a, %de{l}_{stage} : f32
-                      %sw{l}_{stage} = arith.mulf %si{l}_{stage}, %aB : f32"""
         store = (
-            f"""{combine.replace("                      ", "                  ")}
-                  memref.store %sw{l}_{stage}, {out}[%m, %j] : {outty}"""
-            if pairing
-            else (
-                f"""
+            f"""
                   %rv = memref.load {residual}[%m, %j] : {outty}
                   %a2 = arith.addf %rv, %a : f32
                   memref.store %a2, {out}[%m, %j] : {outty}"""
-                if residual
-                else f"""
+            if residual
+            else f"""
                   memref.store %a, {out}[%m, %j] : {outty}"""
-            )
         )
         # Same store, but on the unclamped column, and indented for the
         # extra scf.if the multi-wave path wraps it in.
         store_blk = (
-            f"""{combine}
-                      memref.store %sw{l}_{stage}, {out}[%m, %j2] : {outty}"""
-            if pairing
-            else (
-                f"""
+            f"""
                       %rv = memref.load {residual}[%m, %j2] : {outty}
                       %a2 = arith.addf %rv, %a : f32
                       memref.store %a2, {out}[%m, %j2] : {outty}"""
-                if residual
-                else f"""
-                      memref.store %a, {out}[%m, %j2] : {outty}"""
-            )
-        )
-        # The paired column, where there is one: the same reduction over the
-        # same lhs against the strip `pair_off` further along the weights.
-        pair1 = (
-            ""
-            if not pairing
+            if residual
             else f"""
-                  %jB = arith.addi %j, {pair_off} : index
-{dot_loop("%aB", "%c0_s", red_c, red_num, "%c1_s", 1, lhs, lhsty, wmat, wty,
-          l, "%jB", f"w1B_{l}_{stage}", 18)}"""
+                      memref.store %a, {out}[%m, %j2] : {outty}"""
         )
         # A lane per output column. Splitting the columns rather than the
         # reduction needs no cross-lane anything -- the columns are
@@ -3084,7 +3083,7 @@ module {{
                 scf.for %jj = %tx_s to {slice_c} step %nlane {{
                   %j = arith.addi %j0, %jj : index
 {dot_loop("%a", "%c0_s", red_c, red_num, "%c1_s", 1, lhs, lhsty, wmat, wty,
-          l, "%j", f"w1_{l}_{stage}", 18)}{pair1}{store}
+          l, "%j", f"w1_{l}_{stage}", 18, lhs_silu=lhs_silu)}{store}
                 }}""",
                 lanes=True,
             )
@@ -3107,48 +3106,6 @@ module {{
         klanes = wave // cols
         ksteps = klanes.bit_length() - 1
         nblk = (slice_num + cols - 1) // cols
-        # The same three additions on the multi-wave path: a second reduction
-        # into a second accumulator, a second LDS slot for its partial, and a
-        # second walk of those slots in wave 0. The paired partials live in
-        # the top half of @air_red, so both columns cross LDS on one pair of
-        # barriers rather than two.
-        pairm = (
-            ""
-            if not pairing
-            else f"""
-                  %jB = arith.addi %j, {pair_off} : index
-{dot_loop("%partB0", f"%ksl{l}_{stage}", red_c, red_num,
-          f"%cKS{l}_{stage}", waves * klanes, lhs, lhsty, wmat, wty,
-          l, "%jB", f"wmB_{l}_{stage}", 18)}
-                  %partB = arith.addf %partB0, %fzero_s : f32"""
-        )
-        pairstore = (
-            ""
-            if not pairing
-            else f"""                  %txB{l}_{stage} = arith.addi %tx_s, %nthr : index
-                  memref.store %partB, %ldsr[%txB{l}_{stage}] : {RT}
-"""
-        )
-        pairred = (
-            ""
-            if not pairing
-            else f"""
-                      %aB = scf.for %blwB = %c0_s to %cwaves step %c1_s
-                          iter_args(%blaccB = %fzero_s) -> (f32) {{
-                        %bloB = arith.muli %blwB, %nlane : index
-                        %binB = scf.for %blkB = %c0_s to %cKL{l}_{stage} step %c1_s
-                            iter_args(%bkaccB = %blaccB) -> (f32) {{
-                          %bkoB = arith.muli %blkB, %cC{l}_{stage} : index
-                          %bkbB = arith.addi %bloB, %bkoB : index
-                          %bliB0 = arith.addi %bkbB, %lid : index
-                          %bliB = arith.addi %bliB0, %nthr : index
-                          %blvB = memref.load %ldsr[%bliB] : {RT}
-                          %blnB = arith.addf %bkaccB, %blvB : f32
-                          scf.yield %blnB : f32
-                        }}
-                        scf.yield %binB : f32
-                      }}"""
-        )
         # A slice is `width / tasks` columns -- 8 for anything dim-wide at 128
         # tasks -- so a lane per column left 56 of 64 lanes idle and used 32 of
         # every 128-byte line. Splitting the lanes two ways, `cols` across the
@@ -3181,14 +3138,14 @@ module {{
                   %j = arith.addi %j0, %jcl : index
 {dot_loop("%part0", f"%ksl{l}_{stage}", red_c, red_num,
           f"%cKS{l}_{stage}", waves * klanes, lhs, lhsty, wmat, wty,
-          l, "%j", f"wm_{l}_{stage}", 18)}
-                  %part = arith.addf %part0, %fzero_s : f32{pairm}
+          l, "%j", f"wm_{l}_{stage}", 18, lhs_silu=lhs_silu)}
+                  %part = arith.addf %part0, %fzero_s : f32
                   // The wave partials for one column live at the same lane of
                   // every wave, so the slot is just the thread id and wave 0
                   // walks them with a fixed stride.
                   gpu.barrier
                   memref.store %part, %ldsr[%tx_s] : {RT}
-{pairstore}                  gpu.barrier
+                  gpu.barrier
                   scf.if %isW0 {{
                     // Lane c of wave 0 finishes column c: the butterfly left
                     // every lane sharing a column holding that column's wave
@@ -3208,7 +3165,7 @@ module {{
                           scf.yield %bln : f32
                         }}
                         scf.yield %bin : f32
-                      }}{pairred}
+                      }}
                       scf.if %jok {{
                         %j2 = arith.addi %j0, %jj : index{store_blk}
                       }}
@@ -3585,17 +3542,16 @@ module {{
                 l,
                 6,
                 base + 6,
-                "%sact" if fuse_swiglu else "%sgu",
-                IT if fuse_swiglu else GT,
+                "%sgu",
+                GT,
                 "%sr",
                 AT,
                 "%swgu",
                 WGTB,
-                "%csliceI" if fuse_swiglu else "%cslice2I",
+                "%cslice2I",
                 "%cdim_s",
                 dim,
-                slice_i if fuse_swiglu else slice_2i,
-                pair_off="%cinter_s" if fuse_swiglu else None,
+                slice_2i,
             )
         )
 
@@ -3636,8 +3592,8 @@ module {{
                 base + down_stage,
                 "%sx",
                 AT,
-                "%sact",
-                IT,
+                "%sgu" if fuse_swiglu else "%sact",
+                GT if fuse_swiglu else IT,
                 "%swd",
                 WDTB,
                 "%csliceDW",
@@ -3647,6 +3603,7 @@ module {{
                 residual="%sxa",
                 count_c="%ctasksD",
                 total_c="%ntasksD_t",
+                lhs_silu="%cinter_s" if fuse_swiglu else None,
             )
         )
 
@@ -3961,13 +3918,15 @@ def main() -> int:
     ap.add_argument(
         "--fuse-swiglu",
         action="store_true",
-        help="compute a gate column and its matching up column in the same "
-        "gate_up piece and apply the SwiGLU there, so swiglu is not a stage "
-        "and a layer has eight rather than nine. Correct -- suite 21/21 and "
-        "every shape token-exact -- but 0.63%% slower, and not explained: it "
-        "gives back about what the boundary saves, and interleaving the gate "
-        "and up halves of Wgu, which was supposed to be the reason, does not "
-        "recover it. See the note next to slice_i",
+        help="apply the SwiGLU inside `down`, on the activation as it is "
+        "read, so swiglu is not a stage and a layer has eight rather than "
+        "nine -- which is the fusion Fleet does. Correct, and **34.7%% "
+        "slower**, because AIR's matmul has every lane load the activation "
+        "from global memory: the SwiGLU is then recomputed once per output "
+        "column, 3.1M transcendentals a layer instead of 3072. Fleet's "
+        "version stages the activation through LDS and applies the SwiGLU "
+        "once on the way in. Kept because the missing piece it points at -- "
+        "LDS staging of the left-hand side -- is worth more than the fusion",
     )
     ap.add_argument(
         "--split-arrival",
