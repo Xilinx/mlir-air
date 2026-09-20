@@ -51,7 +51,18 @@ MODEL_ID = "lerobot/smolvla_base"
 # Resolved against THIS FILE, not the cwd: VisionRuntime is imported into
 # lerobot's process, so where it finds its ELFs must not depend on who called
 # it. Under build/ so that `make clean` is `rm -rf build/` and nothing else.
-VISION_CACHE_DIR = str(_HERE / "build" / "vision_kernel_cache")
+#
+# The ELFs bake in the LayerNorm implementation and the loop tilings, so those are part
+# of the directory name: a cache built with other settings is never reused. The default
+# for each setting that the original code had keeps the original name.
+from smolvla_fuse import LN_EXT, LNQKV_TILING, OFFN_TILING  # noqa: E402
+
+_CACHE_SUFFIX = (
+    ("_ln" if LN_EXT else "")
+    + ("" if OFFN_TILING == [2, 2] else "_o" + "x".join(map(str, OFFN_TILING)))
+    + ("" if LNQKV_TILING == [2, 2] else "_q" + "x".join(map(str, LNQKV_TILING)))
+)
+VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")
 VISION_SEQ_LEN = 1024
 # SmolVLA feeds 3 camera images per step, and every op except attention is
 # row-independent, so all 3 run stacked along rows through the two fused ELFs.

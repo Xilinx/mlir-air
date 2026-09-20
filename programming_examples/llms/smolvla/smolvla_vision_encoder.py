@@ -46,6 +46,7 @@ _LLMS_DIR = str(Path(__file__).resolve().parent.parent)
 if _LLMS_DIR not in sys.path:
     sys.path.insert(0, _LLMS_DIR)
 
+from smolvla_fuse import LN_EXT, LN_ROWS, LNQKV_TILING, OFFN_TILING
 from smolvla_vision_weights import SigLIPVisionConfig
 from smolvla_cpu_helpers import im2col_patch_embed
 from shared.infra.cache import KernelCache, Profiler  # noqa: F401 (re-exported)
@@ -121,7 +122,7 @@ def _vit_ln_qkv_backend():
         "omit_while_true_loop": False,
         "output_format": "elf",
         "instance_name": "vit_ln_qkv",
-        "runtime_loop_tiling_sizes": [2, 2],
+        "runtime_loop_tiling_sizes": list(LNQKV_TILING),
     }
 
 
@@ -130,7 +131,7 @@ def _vit_o_ffn_backend():
         "omit_while_true_loop": False,
         "output_format": "elf",
         "instance_name": "vit_o_ffn",
-        "runtime_loop_tiling_sizes": [2, 2],
+        "runtime_loop_tiling_sizes": list(OFFN_TILING),
     }
 
 
@@ -308,6 +309,13 @@ def _compile_fused_kernels(
     )
     from smolvla_vision_builders import build_vit_ln_qkv_module, build_vit_o_ffn_module
 
+    if LN_EXT:
+        # Linked by every ELF that has a LayerNorm launch; it must exist before
+        # compile_and_cache stages the CWD's .o files into air_project/.
+        from shared.infra.external_kernels import compile_layer_norm_rows
+
+        compile_layer_norm_rows(config.emb_dim, LN_ROWS)
+
     emb_dim = config.emb_dim
     hidden_dim = config.hidden_dim
     n_heads = config.n_heads
@@ -366,7 +374,9 @@ def _compile_fused_kernels(
     print(f"  Compiling layer_norm: {seq_len}x{emb_dim} affine (post_ln, herd_x=8)")
     cache.compile_and_cache(
         "layer_norm",
-        build_layer_norm(seq_len, emb_dim, bfloat16, herd_x=8),
+        build_layer_norm(
+            seq_len, emb_dim, bfloat16, herd_x=8, ext=LN_EXT, rows=LN_ROWS
+        ),
         {"verbose": cache.verbose, **_ln_backend()},
     )
 

@@ -87,6 +87,26 @@ from shared.builders.gemm_builder import (
 from shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
 from shared.builders.o_ffn_multi import _build_add_2d_to_2d
 from layer_norm.layer_norm import build_module as build_layer_norm
+from smolvla_fuse import LN_EXT, LN_ROWS
+
+
+def _layer_norm_ir(seq_len, emb_dim):
+    """The affine LayerNorm launch as text: the C++ row kernel when LN_EXT, else the
+    air.api loop. Either way it is already a launch, which `_wrap_ir_in_launch`
+    leaves as is."""
+    return _wrap_ir_in_launch(
+        str(
+            build_layer_norm(
+                seq_len, emb_dim, bfloat16, 16, herd_x=8, ext=LN_EXT, rows=LN_ROWS
+            )
+        )
+    )
+
+
+def _ln_externs():
+    """Symbols an LN slice links from outside (never prefix-renamed)."""
+    return {"@zero_vectorized_bf16"} | ({"@ln_rows_bf16"} if LN_EXT else set())
+
 
 # GELU-tanh constants (match the gelu/gelu.py registry kernel).
 _GELU_BETA = 0.044715
@@ -269,9 +289,7 @@ def build_vit_ln_qkv_module(
     spec = _force_tile_n_suffix(spec)
 
     print("  [ln_qkv 1/2] LN1 (affine)...")
-    ln_ir = _wrap_ir_in_launch(
-        str(build_layer_norm(seq_len, emb_dim, bfloat16, 16, herd_x=8))
-    )
+    ln_ir = _layer_norm_ir(seq_len, emb_dim)
 
     kw, tm, tk2, tk1, tn = _gemm_tiles(spec)
     qkv_dim = 3 * emb_dim
@@ -305,9 +323,7 @@ def build_vit_ln_qkv_module(
     ]
 
     slices = [
-        KernelSlice(
-            ln_ir, "ln", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}
-        ),
+        KernelSlice(ln_ir, "ln", {0: 0, 1: 1, 2: 2}, extern_syms=_ln_externs()),
         KernelSlice(
             qkv_ir, "qkv", {0: 2, 1: 3, 2: 4}, extern_syms=_gemm_externs(spec, True)
         ),
@@ -384,9 +400,7 @@ def build_vit_o_ffn_module(
     print("  [o_ffn 2/6] residual add (o_b + x_res)...")
     res1_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
     print("  [o_ffn 3/6] LN2 (affine)...")
-    ln2_ir = _wrap_ir_in_launch(
-        str(build_layer_norm(seq_len, emb_dim, bfloat16, 16, herd_x=8))
-    )
+    ln2_ir = _layer_norm_ir(seq_len, emb_dim)
     print(f"  [o_ffn 4/6] fc1 GEMM (drain tn={gtn}, bias+GELU fused)...")
     fc1_ir = str(
         _build_gemm_module(
@@ -459,8 +473,10 @@ def build_vit_o_ffn_module(
             ln2_ir,
             "ln2",
             {0: 4, 1: 5, 2: 6},
-            extern_syms={"@zero_vectorized_bf16"},
-            private_from=False,
+            extern_syms=_ln_externs(),
+            # The C++ kernel's declaration is not among the GEMM slices', so this
+            # slice has to bring it (the air.api version's externs are already in).
+            private_from=LN_EXT,
         ),
         KernelSlice(
             fc1_ir,
