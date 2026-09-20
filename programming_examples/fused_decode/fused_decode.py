@@ -94,25 +94,19 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import (
-    ArrayAttr,
     BF16Type,
     F32Type,
-    FlatSymbolRefAttr,
     IndexType,
     InsertionPoint,
     IntegerType,
     IntegerAttr,
     MemRefType,
-    UnitAttr,
 )
 from air.dialects.air import (
-    ChannelGet,
     ChannelPut,
     MemorySpace,
     T,
 )
-from air.dialects.func import CallOp
-from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects import arith
 from air.dialects.scf import for_, yield_, index_switch, ParallelOp, ReduceOp, IfOp
 from air.backend.xrt import XRTBackend
@@ -124,6 +118,7 @@ from air.backend.xrt import XRTBackend
 # coming out byte-identical -- see ~/air_tools/decode_ir_gate.py.
 from air import api as air_api
 from air.api import types as api_types
+from air.api._index import coerce_index as _cidx
 
 # An AIE2/AIE2P lock counter is 6 bits (AIETargetModel getMaxLockValue() == 0x3F),
 # and the refeed count below becomes a lock init that nothing range-checks -- a
@@ -1631,9 +1626,7 @@ def build_module():
         # ---- kernels ----
         # air.extern(signature=...) declares eagerly, in source order, and places
         # the private func.func at module scope ahead of the channels -- the same
-        # layout the raw FuncOp calls produced. `.decl` is the FuncOp underneath,
-        # which the raw CallOp sites still take; those move to calling the
-        # ExternKernel directly as their regions convert.
+        # layout the raw FuncOp calls produced.
         # emit_c_interface=False: these are AIE core calls, not host entry
         # points, and the wrapper llvm.emit_c_interface asks for is dead weight
         # in the core ELF. The raw declarations never carried it.
@@ -2410,13 +2403,12 @@ def build_module():
                     # convergence stays balanced with omtb producing no o-proj here.
                     # drain logits (natural order): rms LM branch
                     # forwards VOCAB_RNDS x PAYLOAD via layerOut; ONE 2D-strided get.
-                    ChannelGet(
-                        "layerOut",
-                        Y,
-                        indices=[idx(0)],
-                        offsets=[_vyb],
-                        sizes=[VOCAB_RNDS, PAYLOAD],
-                        strides=[PAYLOAD, 1],
+                    _yo = _cidx(_vyb)
+                    _CH["layerOut"].get(
+                        y_t[_yo : _yo + VOCAB_RNDS * PAYLOAD].reshape(
+                            VOCAB_RNDS, PAYLOAD
+                        ),
+                        indices=[0],
                     )
                     yield_([])
 
@@ -2540,21 +2532,21 @@ def build_module():
                         # each, CU-order); the nd write places group gi at its
                         # region slot (ATTN_L-1)*REGION_W. outer dim=NGRP at
                         # REGION_STRIDE, inner REGION_W contiguous.
-                        _apkG = ChannelGet(
-                            "appendK",
-                            KVC,
-                            indices=[idx(0)],
-                            offsets=[_loi_slot(_kbase, 0)],
-                            sizes=[idx(NGRP), idx(REGION_W)],
-                            strides=[idx(REGION_STRIDE), idx(1)],
-                        )
-                        _apvG = ChannelGet(
-                            "appendV",
-                            KVC,
-                            indices=[idx(0)],
-                            offsets=[_loi_slot(_kbase, _vreg_off(0))],
-                            sizes=[idx(NGRP), idx(REGION_W)],
-                            strides=[idx(REGION_STRIDE), idx(1)],
+                        def _slot_row(_off):
+                            """This token's REGION_W slot in each of the NGRP regions.
+
+                            The view spans the full region pitch so the reshape
+                            can carry REGION_STRIDE; only the leading REGION_W of
+                            each row is transferred.
+                            """
+                            _o = _cidx(_off)
+                            return kvc_t[_o : _o + NGRP * REGION_STRIDE].reshape(
+                                NGRP, REGION_STRIDE
+                            )[:, 0:REGION_W]
+
+                        _CH["appendK"].get(_slot_row(_loi_slot(_kbase, 0)), indices=[0])
+                        _CH["appendV"].get(
+                            _slot_row(_loi_slot(_kbase, _vreg_off(0))), indices=[0]
                         )
 
                     def _emit_readback(_kbase=_kbase):
@@ -2611,6 +2603,14 @@ def build_module():
                         # transfer, no D0", 1,056,768 B. Same bytes, same addresses,
                         # same order; only the descriptor shape differs.
                         _KV1D = 0
+                        if DYNSEQ_RB:
+                            # An air.api slice extent is compile-time, so the
+                            # runtime block count (_rt_blocks) has no spelling
+                            # here -- fail loudly rather than emit a static BD.
+                            raise SystemExit(
+                                "DYNSEQ_RB wants a runtime readback block count, "
+                                "which air.api cannot express as a slice extent."
+                            )
                         if DYNSEQ and (_NRB != 1 or _KV1D):
                             raise SystemExit(
                                 "DECODE_DYNSEQ needs the single whole-region "
@@ -2623,64 +2623,22 @@ def build_module():
                         while _ci < _nb:
                             _cb = min(_cbk, _nb - _ci)
                             _coff = _ci * 16 * REGION_W
-                            # DYNSEQ: the outer block count is the runtime
-                            # ceil(L/16), so the BD moves this token's context
-                            # rather than the padded ATTN_MAXL. Called at each
-                            # use, not hoisted, so the static path's constant
-                            # emission order -- and thus its IR -- is unchanged.
-                            _cbv = _rt_blocks if DYNSEQ_RB else (lambda: idx(_cb))
                             # Contiguous either way; _KV1D just states it as 1-D.
-                            # Spelled inline (not hoisted) so the default path's
-                            # constant emission order -- and thus the emitted IR --
-                            # is byte-identical to before this flag existed.
+                            _cw = _cb * 16 * REGION_W
+
+                            def _kv_region(_off):
+                                _o = _cidx(_off)
+                                _r = kvc_t[_o : _o + _cw]
+                                return _r if _KV1D else _r.reshape(_cb, 16, REGION_W)
+
                             for gi in range(NGRP):
-                                ChannelPut(
-                                    "inKV_K",
-                                    KVC,
-                                    indices=[idx(gi)],
-                                    offsets=[_loi(_kbase, _kreg_off(gi) + _coff)],
-                                    sizes=(
-                                        [idx(_cb * 16 * REGION_W)]
-                                        if _KV1D
-                                        else [
-                                            _cbv(),
-                                            idx(16),
-                                            idx(REGION_W),
-                                        ]
-                                    ),
-                                    strides=(
-                                        [idx(1)]
-                                        if _KV1D
-                                        else [
-                                            idx(16 * REGION_W),
-                                            idx(REGION_W),
-                                            idx(1),
-                                        ]
-                                    ),
+                                _CH["inKV_K"].put(
+                                    _kv_region(_loi(_kbase, _kreg_off(gi) + _coff)),
+                                    indices=[gi],
                                 )
-                                ChannelPut(
-                                    "inKV_V",
-                                    KVC,
-                                    indices=[idx(gi)],
-                                    offsets=[_loi(_kbase, _vreg_off(gi) + _coff)],
-                                    sizes=(
-                                        [idx(_cb * 16 * REGION_W)]
-                                        if _KV1D
-                                        else [
-                                            _cbv(),
-                                            idx(16),
-                                            idx(REGION_W),
-                                        ]
-                                    ),
-                                    strides=(
-                                        [idx(1)]
-                                        if _KV1D
-                                        else [
-                                            idx(16 * REGION_W),
-                                            idx(REGION_W),
-                                            idx(1),
-                                        ]
-                                    ),
+                                _CH["inKV_V"].put(
+                                    _kv_region(_loi(_kbase, _vreg_off(gi) + _coff)),
+                                    indices=[gi],
                                 )
                             _ci += _cb
                         return
@@ -3495,32 +3453,21 @@ def build_module():
                             column=5,
                             split=False,
                         )
-                        ChannelGet("ropeQ", qmtb.value, indices=[idx(0)])
+                        _CH["ropeQ"].get(qmtb, indices=[0])
                         for c in range(N_ATTN_CU):
-                            ChannelPut(
-                                "toAttnQ",
-                                qmtb.value,
-                                # pack_q (reference mem_5_1): natural [qh, dh] -> the
-                                # kernel's [dc, qh, de] mmul layout, dh = dc*8 + de.
-                                # CU c reads its Q_HEADS_PER_CU heads starting at head
-                                # c*Q_HEADS_PER_CU (stride DH) -> linear base
-                                # c*Q_HEADS_PER_CU*DH = c*DQ_PER_CU. dc stride 8, de 1.
-                                indices=[idx(c)],
-                                # rope emits PADDED Q (each CU's block is
-                                # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
-                                # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU.
-                                # llama pad=0 -> ==Q_HEADS_PER_CU (byte-identical).
-                                offsets=[
-                                    idx(0),
-                                    idx(c * Q_HEADS_PADDED_PER_CU),
-                                    idx(0),
-                                ],
-                                sizes=[
-                                    idx(DH // 8),
-                                    idx(Q_HEADS_PADDED_PER_CU),
-                                    idx(8),
-                                ],
-                                strides=[idx(8), idx(DH), idx(1)],
+                            # pack_q (reference mem_5_1): natural [qh, dh] -> the
+                            # kernel's [dc, qh, de] mmul layout, dh = dc*8 + de.
+                            # rope emits PADDED Q (each CU's block is
+                            # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
+                            # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU,
+                            # i.e. element c*Q_HEADS_PADDED_PER_CU*DH.
+                            # llama pad=0 -> ==Q_HEADS_PER_CU (byte-identical).
+                            _qh0 = c * Q_HEADS_PADDED_PER_CU
+                            _CH["toAttnQ"].put(
+                                qmtb.reshape(DQ_PADDED // DH, DH // 8, 8).transpose(
+                                    1, 0, 2
+                                )[:, _qh0 : _qh0 + Q_HEADS_PADDED_PER_CU, :],
+                                indices=[c],
                             )
                         air_api.dealloc(qmtb)
 
