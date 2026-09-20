@@ -57,8 +57,14 @@ from air.backend.xrt_runner import XRTRunner
 EPS = 1e-5
 
 
-def build_launch(M, N, dtype=bf16, vector=16, herd_x=1):
-    """The launch; `build_module` wraps this and returns the module."""
+def build_launch(M, N, dtype=bf16, vector=16, herd_x=1, ext=False, rows=4):
+    """The launch; `build_module` wraps this and returns the module.
+
+    ext=True normalizes ``rows`` rows per DMA with the C++ kernel ln_rows_bf16
+    (layer_norm_rows.cc, ~1.6x faster than the loop below, same accuracy) instead
+    of one row per iteration in the DSL. The kernel object must be compiled with
+    the same N and ``rows`` and linked (compile_layer_norm_rows).
+    """
     if vector and N % vector:
         raise ValueError(f"N ({N}) must be divisible by the vector width ({vector})")
     if M % herd_x:
@@ -67,6 +73,15 @@ def build_launch(M, N, dtype=bf16, vector=16, herd_x=1):
             "the same number of rows, and there is no remainder path."
         )
     rows_per_tile = M // herd_x
+    if ext:
+        if N % 32:
+            raise ValueError(f"ext=True needs N ({N}) divisible by 32")
+        if rows_per_tile % rows:
+            raise ValueError(
+                f"ext=True needs the rows per tile ({rows_per_tile}) divisible by "
+                f"rows ({rows})"
+            )
+        ln_rows = air.extern("ln_rows_bf16", link_with="layer_norm_rows.o")
 
     X = air.tensor([M, N], dtype)
     # weight || bias, one DMA rather than two.
@@ -77,10 +92,27 @@ def build_launch(M, N, dtype=bf16, vector=16, herd_x=1):
 
         @launch.body
         def _():
-            with air.herd([range(herd_x)], name="herd_0", shape=(herd_x,)) as herd:
+            with air.herd(
+                [range(herd_x)],
+                name="herd_0",
+                shape=(herd_x,),
+                **({"link_with": "layer_norm_rows.o"} if ext else {}),
+            ) as herd:
 
                 @herd.body
                 def _(tx):
+                    if ext:
+                        rowb = air.alloc([rows, N], dtype, scope=herd.private())
+                        outb = air.alloc([rows, N], dtype, scope=herd.private())
+                        param = air.alloc([2 * N], dtype, scope=herd.private())
+                        ops.load(param, PARAM[:])
+                        for it in air.sequential(0, rows_per_tile, rows):
+                            r = it + tx * rows_per_tile
+                            ops.load(rowb, X[r : r + rows, :])
+                            ln_rows(rowb, param, outb)
+                            ops.store(outb, Y[r : r + rows, :])
+                        return
+
                     row = air.alloc([1, N], dtype, scope=herd.private(), vector=vector)
                     out = air.alloc([1, N], dtype, scope=herd.private(), vector=vector)
                     # Shared by every row of this tile, so it is fetched once,
@@ -118,15 +150,25 @@ def build_launch(M, N, dtype=bf16, vector=16, herd_x=1):
     return launch
 
 
-def build_module(M, N, np_dtype=bfloat16, vector_size=16, herd_x=1, target="npu2"):
-    """The MLIR module. Signature and return type are smolvla's contract."""
+def build_module(
+    M,
+    N,
+    np_dtype=bfloat16,
+    vector_size=16,
+    herd_x=1,
+    target="npu2",
+    ext=False,
+    rows=4,
+):
+    """The MLIR module. Signature and return type are smolvla's contract; ``ext``
+    and ``rows`` are optional (see build_launch) and default to the DSL loop."""
     if np_dtype is not bfloat16:
         raise NotImplementedError(
             f"layer_norm is bf16 only, got {np_dtype!r}: the epilogue runs in "
             "bf16 vectors because the AIE vector unit does not legalize f32 "
             "vector elementwise ops."
         )
-    return build_launch(M, N, bf16, vector_size, herd_x).build(target=target)
+    return build_launch(M, N, bf16, vector_size, herd_x, ext, rows).build(target=target)
 
 
 def layer_norm_reference(x, weight, bias, eps=EPS):
@@ -174,6 +216,18 @@ if __name__ == "__main__":
         "print Latency in addition to the correctness check",
     )
     parser.add_argument(
+        "--ext",
+        action="store_true",
+        help="Use the C++ row kernel (layer_norm_rows.cc) instead of the DSL loop; "
+        "compiles layer_norm_rows.o into the current directory",
+    )
+    parser.add_argument(
+        "--rows",
+        type=int,
+        default=4,
+        help="Rows per DMA / kernel call with --ext (default: 4, the best point)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -193,8 +247,26 @@ if __name__ == "__main__":
     herd_x = args.herd_x
     print(f"LayerNorm (affine): M={M}, N={N}, herd=[{herd_x},1]")
 
+    if args.ext:
+        import os
+        import sys
+
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "llms")
+        )
+        from shared.infra.external_kernels import compile_layer_norm_rows
+
+        compile_layer_norm_rows(N, args.rows)
+
     mlir_module = build_module(
-        M, N, bfloat16, args.vector_size, herd_x=herd_x, target=args.target
+        M,
+        N,
+        bfloat16,
+        args.vector_size,
+        herd_x=herd_x,
+        target=args.target,
+        ext=args.ext,
+        rows=args.rows,
     )
     if args.print_module_only:
         print(mlir_module)
