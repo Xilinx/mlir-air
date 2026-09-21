@@ -1715,6 +1715,17 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
                                   SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
+    // Unroll-by-2 rotates the producer through 2 buffers, but an odd trip count
+    // peels a remainder that allocates a third. AIRToAIE chains one BD per
+    // static put site, so the consumer round-robins 3 slots against a producer
+    // alternating 2, and every third transfer carries a buffer the core did not
+    // write this trip. Locks still balance, so nothing deadlocks or warns.
+    //
+    // Same predicate the unroller uses to decide its remainder loop is dead, so
+    // the two cannot disagree on "even". Unprovable parity rejects: the failure
+    // is silent wrong data.
+    if (!air::isTripCountDivisibleByFactor(forOp, 2))
+      return false;
     // Labeling a loop unrolls its body by 2, which duplicates a nested loop
     // and everything that loop allocates per trip. So an unsafe loop anywhere
     // in the region tree disqualifies the enclosing candidate, exactly as the
