@@ -35,7 +35,7 @@ fi
 [ -n "$GFX_TARGET" ] || { echo "ERROR: set GFX_TARGET, e.g. GFX_TARGET=gfx942 $0" >&2; exit 1; }
 echo "GFX_TARGET=$GFX_TARGET LAYERS=$LAYERS DIM=$DIM TASKS=$TASKS WORKERS=$WORKERS REPEAT=$REPEAT TOKENS=$TOKENS STEPS=$STEPS PROMPT_LEN=$PROMPT_LEN"
 
-python3 "$SCRIPT_DIR/gen.py" --layers "$LAYERS" --dim "$DIM" --tasks "$TASKS" --workers "$WORKERS" --repeat "$REPEAT" --tokens "$TOKENS" --steps "$STEPS" --prompt-len "$PROMPT_LEN" --waves "${WAVES:-1}" ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} > "$TMPDIR/chain.mlir"
+python3 "$SCRIPT_DIR/gen.py" --layers "$LAYERS" --dim "$DIM" --tasks "$TASKS" --workers "$WORKERS" --repeat "$REPEAT" --tokens "$TOKENS" --steps "$STEPS" --prompt-len "$PROMPT_LEN" --waves "${WAVES:-1}" ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
 mlir-opt "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), gpu-kernel-outlining)" \

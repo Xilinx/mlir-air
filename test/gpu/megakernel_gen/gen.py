@@ -194,6 +194,7 @@ def emit(
     spin_sleep: int = 16,
     pack_arrival: bool = True,
     fuse_swiglu: bool = False,
+    stage_lhs: bool = False,
     acquire_agent: bool = False,
 ) -> str:
     inter = inter or 2 * dim
@@ -224,8 +225,33 @@ def emit(
     # gate_up reduces a gate column and its matching up column in the same
     # pass, so it needs two partials a thread rather than one; 2 KB more
     # LDS out of 64, and nothing else in here cares how wide it is.
-    redwords = nthreads * (2 if fuse_swiglu else 1)
+    redwords = nthreads
     RT = f"memref<{redwords}xf32, 3>"
+    # Scratch for the reduction operand, staged once per workgroup.
+    #
+    # Every lane of a matmul reduces over the whole of its input, so a column
+    # group of `cols` lanes loads the same activation `cols` times -- 16 or 32
+    # here. Counted over a layer that is more traffic than the weights are:
+    # 54.5 MB against 31.5, and half of every lane's loads. Fleet's matmuls
+    # stage both operands, so reading it once per workgroup instead looked
+    # like the thing AIR was missing.
+    #
+    # **It is 14.7% slower**, and that is the useful part. The activation is
+    # 4 to 12 KB and is read by every workgroup, so it lives in L2 and every
+    # one of those redundant loads was already a hit; replacing a cached load
+    # with an LDS read and two barriers a piece costs more than it saves. The
+    # traffic argument is dead -- what makes Fleet's staging pay is not the
+    # traffic but what it lets Fleet do with the operand once it is there.
+    #
+    # It is kept because the SwiGLU fusion needs it: staged, the SwiGLU is
+    # applied once per element on the way into LDS rather than once per
+    # output column, the emitted math.exp count goes back to the split
+    # build's exactly (255 -> 59), and the fusion is 3.4% faster on top of
+    # staging where it was 34.7% slower without it. The fusion mechanism
+    # works; it is sitting on a foundation that does not pay yet.
+    lhswords = max(2 * dim, inter, heads * (head_dim or dim // heads))
+    lhswords = lhswords if stage_lhs else 0
+    LT = f"memref<{lhswords}xf32, 3>"
     # 16 waves -- a 1024-thread workgroup -- does not finish. A four-layer
     # config that takes half a minute at 8 was still running after four, on
     # hardware that has the registers for it (92 VGPRs, so 20 wave slots a CU
@@ -241,6 +267,7 @@ def emit(
         else (
             f'  memref.global "private" @air_bcast : memref<4xi32, 3>\n'
             f'  memref.global "private" @air_red : {RT}'
+            + (f'\n  memref.global "private" @air_lhs : {LT}' if stage_lhs else "")
         )
     )
     lds_handles = (
@@ -249,6 +276,11 @@ def emit(
         else (
             "        %bcast = memref.get_global @air_bcast : memref<4xi32, 3>\n"
             f"        %ldsr = memref.get_global @air_red : {RT}"
+            + (
+                f"\n        %ldsl = memref.get_global @air_lhs : {LT}"
+                if stage_lhs
+                else ""
+            )
         )
     )
 
@@ -2912,6 +2944,8 @@ module {{
         tag,
         indent,
         lhs_silu=None,
+        staged=False,
+        ltype=None,
     ):
         """The dot product one lane owns, with `unroll` loads in flight.
 
@@ -2954,9 +2988,13 @@ module {{
             while u * 2 <= unroll and red_num % (step_num * u * 2) == 0:
                 u *= 2
 
-        # One element of the left-hand side, as a load or as a pair of loads
-        # and a SwiGLU over them.
+        # One element of the left-hand side. Staged, that is an LDS read and
+        # the SwiGLU -- if there is one -- has already been applied on the way
+        # in, so it is one read either way and the transcendental is paid once
+        # per element rather than once per output column.
         def lhsval(idx, sfx):
+            if staged:
+                return f"{pad}  %lv{tag}{sfx} = memref.load %ldsl[{idx}] : {ltype}"
             if lhs_silu is None:
                 return f"{pad}  %lv{tag}{sfx} = memref.load {lhs}[%m, {idx}] : {lhsty}"
             return (
@@ -2966,7 +3004,7 @@ module {{
             )
 
         def lhscomb(sfx):
-            if lhs_silu is None:
+            if staged or lhs_silu is None:
                 return []
             return [
                 f"{pad}  %ng{tag}{sfx} = arith.negf %lg{tag}{sfx} : f32",
@@ -3045,6 +3083,46 @@ module {{
         total_c="%ntasks_t",
         lhs_silu=None,
     ):
+        # Read the reduction operand into LDS once, then let every lane read
+        # it from there. The copy is `red_num` elements over all the threads
+        # of the workgroup -- 2 elements a thread for a 1024-wide reduction --
+        # against the `cols` full passes over it that the lanes were each
+        # making out of global memory.
+        #
+        # A SwiGLU, if this stage has one, is applied here: once per element
+        # on the way in, rather than once per element per output column. That
+        # is the whole reason Fleet can fuse it for free
+        # (silu_mul_linear_mi300.cuh:34, 190-192) and this generator could
+        # not.
+        #
+        # Barriers on both sides: the buffer is reused by every stage and by
+        # every piece a workgroup claims, so the copy must not start until the
+        # last reader has finished and must not be read until it is done.
+        staged = stage_lhs
+        if staged and lhs_silu is not None:
+            copy_body = f"""                  %sg = memref.load {lhs}[%m, %sj] : {lhsty}
+                  %sui = arith.addi %sj, {lhs_silu} : index
+                  %su = memref.load {lhs}[%m, %sui] : {lhsty}
+                  %sng = arith.negf %sg : f32
+                  %seg = math.exp %sng : f32
+                  %sde = arith.addf %fone_s, %seg : f32
+                  %ssi = arith.divf %sg, %sde : f32
+                  %sv = arith.mulf %ssi, %su : f32"""
+        else:
+            copy_body = (
+                f"""                  %sv = memref.load {lhs}[%m, %sj] : {lhsty}"""
+            )
+        stage_copy = (
+            ""
+            if not staged
+            else f"""                gpu.barrier
+                scf.for %sj = %tx_s to {red_c} step %nthr {{
+{copy_body}
+                  memref.store %sv, %ldsl[%sj] : {LT}
+                }}
+                gpu.barrier
+"""
+        )
         store = (
             f"""
                   %rv = memref.load {residual}[%m, %j] : {outty}
@@ -3079,11 +3157,12 @@ module {{
                 ev,
                 count_c,
                 total_c,
-                f"""                %j0 = arith.muli %ix, {slice_c} : index
+                f"""{stage_copy}                %j0 = arith.muli %ix, {slice_c} : index
                 scf.for %jj = %tx_s to {slice_c} step %nlane {{
                   %j = arith.addi %j0, %jj : index
 {dot_loop("%a", "%c0_s", red_c, red_num, "%c1_s", 1, lhs, lhsty, wmat, wty,
-          l, "%j", f"w1_{l}_{stage}", 18, lhs_silu=lhs_silu)}{store}
+          l, "%j", f"w1_{l}_{stage}", 18, lhs_silu=lhs_silu,
+          staged=staged, ltype=LT)}{store}
                 }}""",
                 lanes=True,
             )
@@ -3120,7 +3199,7 @@ module {{
             ev,
             count_c,
             total_c,
-            f"""                %j0 = arith.muli %ix, {slice_c} : index
+            f"""{stage_copy}                %j0 = arith.muli %ix, {slice_c} : index
                 %cC{l}_{stage} = arith.constant {cols} : index
                 %cKS{l}_{stage} = arith.constant {waves * klanes} : index
                 %cKL{l}_{stage} = arith.constant {klanes} : index
@@ -3138,7 +3217,8 @@ module {{
                   %j = arith.addi %j0, %jcl : index
 {dot_loop("%part0", f"%ksl{l}_{stage}", red_c, red_num,
           f"%cKS{l}_{stage}", waves * klanes, lhs, lhsty, wmat, wty,
-          l, "%j", f"wm_{l}_{stage}", 18, lhs_silu=lhs_silu)}
+          l, "%j", f"wm_{l}_{stage}", 18, lhs_silu=lhs_silu,
+          staged=staged, ltype=LT)}
                   %part = arith.addf %part0, %fzero_s : f32
                   // The wave partials for one column live at the same lane of
                   // every wave, so the slot is just the thread id and wave 0
@@ -3916,6 +3996,17 @@ def main() -> int:
         "number. Pair it with --pad-strip to price the pieces",
     )
     ap.add_argument(
+        "--stage-lhs",
+        action="store_true",
+        help="read a matmul's reduction operand into LDS once per workgroup "
+        "and let every lane read it from there, instead of each lane "
+        "streaming the whole of it out of global memory. **14.7%% slower**, "
+        "which is what says the redundant reads were never expensive: the "
+        "activation is 4 to 12 KB and every one of those loads was an L2 "
+        "hit. Keep it for --fuse-swiglu, which needs it and is 3.4%% faster "
+        "on top of it, and for the record that the traffic argument is dead",
+    )
+    ap.add_argument(
         "--fuse-swiglu",
         action="store_true",
         help="apply the SwiGLU inside `down`, on the activation as it is "
@@ -4065,6 +4156,7 @@ def main() -> int:
             a.spin_sleep,
             not a.split_arrival,
             a.fuse_swiglu,
+            a.stage_lhs,
             a.acquire_agent,
         )
     )
