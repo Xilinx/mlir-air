@@ -47,8 +47,7 @@ void air_load_weights(float *dst, int64_t offset, int64_t count) {
   }
   size_t got = fread(dst, sizeof(float), (size_t)count, blob);
   if (got != (size_t)count) {
-    fprintf(stderr,
-            "air_load_weights: wanted %lld floats at %lld, got %zu\n",
+    fprintf(stderr, "air_load_weights: wanted %lld floats at %lld, got %zu\n",
             (long long)count, (long long)offset, got);
     exit(1);
   }

@@ -42,6 +42,31 @@ decomposition collapses to the index arithmetic this generator used before
     ./gen.py --layers 4 --dim 128 > chain.mlir
     ./gen.py --layers 2 --dim 128 --tokens 4 > prefill.mlir
 
+Picking this up
+---------------
+
+Read this docstring and nothing else first; it is kept current on purpose and
+every number in it was measured rather than estimated. Then:
+
+  * The defaults are the fast configuration. A run that passes no flag is the
+    run the headline figure comes from. Every flag either restores something
+    slower, or is an instrument that costs something.
+  * `run_qwen.sh` is the only thing that needs a checkpoint, and its header
+    lists every environment knob grouped by what kind of thing it is.
+  * The long comments in this file are the record of what was tried. Where
+    one says a change was measured and lost, it means built, verified against
+    the numpy reference, and run beside a control in the same job -- not
+    guessed at. Those are the expensive findings; re-deriving them costs a
+    day each.
+  * `workspace/FLEET-BASELINE.md` on the `erwei/air-gpu-notes` branch is the
+    long form: how to build and run Fleet itself, its own per-task
+    instrumentation, and the round-by-round history.
+
+Two standing rules that the numbers here depend on. A timing from a run that
+did not print PASS is not a measurement. And the launch clock is bimodal --
+about a third of launches come in 35% slow, all of it inside `gate_up`'s body
+and undiagnosed -- so take the minimum of repeated runs, never the mean.
+
 Running the real model
 ----------------------
 
@@ -74,7 +99,12 @@ worth being able to withdraw:
     --lds-klanes        a column's lane partials meet entirely in LDS rather
                         than folding by shuffle first.      3.2% slower.
     --round-robin-claim chiplet d takes the pieces congruent to d rather than
-                        a contiguous block of them.         3.2% slower.
+                        a contiguous block of them. 3.2% slower when the
+                        weights were [reduction][output], 0.6% now that a
+                        lane walks a row and no weight read straddles a
+                        cache line. The mechanism predicting most of its own
+                        obsolescence is the best evidence it was the right
+                        mechanism.
     --split-arrival     a die's piece count and arrival count in two words
                         rather than the halves of one.      1.027x slower.
     --reduce-unroll 1   one weight load in flight per lane at a time.
@@ -83,12 +113,22 @@ worth being able to withdraw:
     --spin-sleep 0      poll the event word as tight as the hardware will
                         run; 16 is the default and worth 0.8%.
 
-`--fuse-swiglu` is the one flag that is off without being slower on purpose:
-it removes a stage and is 0.63% slower anyway, for a reason worth reading
-before trying it again -- see the note next to `slice_i`.
+Two more that are off because they were built, are correct, and lose anyway.
+Read the reasons before rebuilding either; both are long-standing ideas that
+look obviously right:
+
+    --fuse-swiglu       swiglu inside gate_up, eight stages a layer instead
+                        of nine. Deletes 28 of the 257 boundaries, which the
+                        ladder prices at 4.9%, and the model is 1.3% slower
+                        anyway -- see the note next to `slice_i`.
+    --stage-lhs         the reduction operand read into LDS once per
+                        workgroup instead of by every lane. 14.7% slower:
+                        the activation is 4 to 12 KB and every one of those
+                        "redundant" reads was an L2 hit.
 
 Then the flags that only exist to measure -- `--timers`,
-`--timers-total-only`, `--pad-stages`, `--pad-strip`. See "Measuring it".
+`--timers-total-only`, `--pad-stages`, `--pad-strip`, `--count-flushes`.
+See "Measuring it".
 
 Where the 2.94 ms goes
 ----------------------
@@ -121,7 +161,7 @@ And the spin is propagation, not backoff granularity. `--spin-sleep` is flat
 from 16 to 32 and costs 2.2% at 0 and 0.4% at 64, so there is no polling
 schedule that helps.
 
-Both of the changes that made the boundary 12.28 us into 5.15 came out of that
+Both of the changes that made the boundary 12.28 us into 5.04 came out of that
 ladder. The acquire fence was 7.42 us of the 12.28 until it stopped being
 taken once per wave -- 1.48x on the whole model -- and signalling was three
 memory operations until a die's piece count and arrival count moved into the
@@ -146,9 +186,14 @@ that combines the partials of the lanes sharing an output column, divided by
 the weights a lane loads between two of them. Three other explanations were
 built and measured first and none of them ordered these five:
 
-  * cross-XCD cache-line duplication got the order backwards. --blocked-claim
-    is 3.2% and it is alignment, not duplication -- gate_up's 48-column piece
-    is the one width here that does not divide a 128-byte line.
+  * cross-XCD cache-line duplication got the order backwards. Blocking the
+    claim was worth 3.2%, and for alignment rather than duplication --
+    gate_up's 48-column piece is the one width here that does not divide a
+    128-byte line. Most of that 3.2% has since been given back by the layout
+    change, which removed line coverage as a mechanism: a lane walks a row
+    now, so no weight read straddles. `--round-robin-claim` is 0.6% on this
+    build rather than 3.2%, and it lost all three paired reps, so the sign is
+    real and the size is what is left once straddling is gone.
   * cache-line coverage got the order right and the size wrong by seven
     times. Flipping the weights to [output][reduction] is 5.7%.
   * bytes in flight was already satisfied. The emitted gfx950 assembly has
@@ -160,6 +205,43 @@ And the redundant activation reads, which looked like more traffic than the
 weights, are all L2 hits -- staging them in LDS is 14.7% slower. See
 --stage-lhs.
 
+What to try next
+----------------
+
+The body is 1.64 ms and the boundary is 1.30. Per boundary AIR is at 11.4 us
+all in, against Fleet's roughly 10.5 -- 2.421 ms over about 230 dependency
+resolutions a token -- so the per-stage cost is within 8%, and AIR has 257 of
+them to Fleet's 230, which is 12% more. **The gap is now mostly stage count
+and per-boundary cost.** The body is no longer the interesting part.
+
+That makes the ranked list short:
+
+  1. The rendezvous, 2.40 us of every boundary. Fleet does not have 128
+     workgroups spinning on one counter: its 240 workers poll private queues
+     that 8 scheduler blocks fill, so its fan-in is 8 aggregators. That is
+     the seventh Fleet mechanism and this generator does not have it. Whether
+     it helps at batch 1, where the task graph is a strict chain and no
+     worker has other work to overlap, is genuinely open -- Fleet's own
+     `[TIMING]` counters say its workers spend 39% polling and 48% waiting on
+     dependencies, so it is not obviously winning there either.
+  2. Why `--fuse-swiglu` loses. It deletes 4.9% of boundary and comes out
+     1.3% slower, so the fused body costs about 6% more, and both
+     explanations anyone has offered are now dead. A per-class table of the
+     fused build against the split one, which has not been taken, would say
+     which class pays.
+  3. The bimodal launch clock. About a third of launches come in 35% slow,
+     entirely inside `gate_up`'s body, undiagnosed since it was found. It is
+     larger than most effects being measured, which is why every number here
+     is a minimum of repeats rather than a mean.
+
+And the things not to spend a day rediscovering, each built, verified and
+measured against a control in the same job: 256 workers (+13.6%, re-tried on
+the much faster body); SwiGLU fused either into gate_up or into down; the
+activation staged in LDS; explicit vector loads of the weights; agent scope
+on the acquire fence or on the event protocol; counters in LDS; a [out][in]
+weight layout WITHOUT a matching reduction split, which starves lanes;
+unroll 4 or 16; MFMA at M=1.
+
 Measuring it
 ------------
 
@@ -167,8 +249,15 @@ Three instruments, and only the first two are worth a number:
 
   * `TIMERS=1 REPEAT=20` -- the chain reads the 100 MHz clock around the whole
     worker body and prints "WHOLE LAUNCH". The counters are zeroed per launch,
-    so REPEAT=20 reports a warm one. Reproducible to about 0.2%, and it is
-    what every figure above was taken with.
+    so REPEAT=20 reports a warm one. Reproducible to about 0.2% within one
+    job, and it is what every figure above was taken with.
+
+    Between jobs it drifts by about 1%: the same tree measured 1 762 300,
+    1 763 268, 1 776 112 and 1 791 800 across four of them. So a change is
+    only ever compared against a control run in the SAME job, preferably
+    alternating with it. A cleanup that should have been free once looked
+    like a 1.7% regression for exactly this reason, and an A/B in one job
+    showed the sign flipping between paired reps.
   * `TIMERS=1` alone also prints a per-operator table. Its windows are chained
     -- each stage ends on the read the next one starts from -- so the classes
     sum to the launch (99.9%, measured) instead of to 59% of it, which is what
@@ -284,11 +373,13 @@ def emit(
     # Scratch for the reduction operand, staged once per workgroup.
     #
     # Every lane of a matmul reduces over the whole of its input, so a column
-    # group of `cols` lanes loads the same activation `cols` times -- 16 or 32
-    # here. Counted over a layer that is more traffic than the weights are:
-    # 54.5 MB against 31.5, and half of every lane's loads. Fleet's matmuls
-    # stage both operands, so reading it once per workgroup instead looked
-    # like the thing AIR was missing.
+    # group of `cols` lanes loads the same activation `cols` times -- 8 or 32
+    # here. Counted over a layer that is twice the traffic the weights are:
+    # one f32 activation load per (output column, reduction index) pair is
+    # 4096*1024 + 1024*2048 + 6144*1024 + 1024*3072 = 15.7M loads at 4 bytes,
+    # so 62.9 MB against the weights' 31.5, and half of every lane's loads.
+    # Fleet's matmuls stage both operands, so reading it once per workgroup
+    # instead looked like the thing AIR was missing.
     #
     # **It is 14.7% slower**, and that is the useful part. The activation is
     # 4 to 12 KB and is read by every workgroup, so it lives in L2 and every
@@ -302,7 +393,9 @@ def emit(
     # output column, the emitted math.exp count goes back to the split
     # build's exactly (255 -> 59), and the fusion is 3.4% faster on top of
     # staging where it was 34.7% slower without it. The fusion mechanism
-    # works; it is sitting on a foundation that does not pay yet.
+    # works; it is sitting on a foundation that does not pay. Net, staged and
+    # fused together are still 10.8% worse than neither, so this is a
+    # dead end to know about rather than a lead to pick up.
     lhswords = max(2 * dim, inter, heads * (head_dim or dim // heads))
     lhswords = lhswords if stage_lhs else 0
     LT = f"memref<{lhswords}xf32, 3>"
@@ -457,38 +550,48 @@ def emit(
     # The SwiGLU fusion, twice attempted and twice refused, and what it
     # actually points at.
     #
-    # A stage boundary costs 5.15 us whatever the stage computes and swiglu
-    # costs 6.6 us an instance, so nearly all of swiglu is the fact of being
-    # a stage. Two ways to make it not one, both built and both measured
-    # against the split form beside them in the same job:
+    # A stage boundary costs 5.04 us whatever the stage computes and swiglu
+    # costs about 6.6 us an instance, so nearly all of swiglu is the fact of
+    # being a stage. Two ways to make it not one, both built and both
+    # measured against the split form beside them in the same job:
     #
-    #   into gate_up, the producer   0.63% slower
-    #   into down, the consumer     34.7% slower
+    #   into gate_up, the producer    1.3% slower
+    #   into down, the consumer      34.7% slower
     #
-    # The producer version gives a piece two 24-column weight strips where
-    # the split stage read one of 48, and 24 bf16 is 48 bytes of a 64-byte
-    # line. Interleaving the gate and up halves of Wgu so the pair is
-    # adjacent was supposed to fix that; it was built across all five readers
-    # of the matrix, it is correct, and it changed nothing (0.73% slower
-    # still). Reverted.
+    # The producer version is the live puzzle. It deletes 28 of the 257 stage
+    # boundaries a step, which the pad ladder prices at 0.14 ms or 4.9%, and
+    # the whole model still comes out 1.3% slower -- so the fused gate_up
+    # body costs about 6% more than gate_up and swiglu separately. Why is
+    # open. Two explanations have been offered and both are dead:
+    #
+    #   * that a fused piece reads two 24-column weight strips where the
+    #     split stage read one of 48, and 24 bf16 is 48 bytes of a 64-byte
+    #     line. Interleaving the gate and up halves of Wgu so the pair is
+    #     adjacent was built across all five readers of the matrix, is
+    #     correct, and changed nothing (0.73% slower still). Reverted. And
+    #     the [output][reduction] layout has since removed line coverage as
+    #     a mechanism altogether -- a lane walks a row now -- and the fusion
+    #     is still slower, so the argument cannot be rescued.
+    #   * that it is the activation traffic. It is not; see --stage-lhs.
     #
     # The consumer version is the one Fleet does -- silu_mul_linear computes
     # silu(gate)*up @ weight^T with gate = input[:, :K], up = input[:, K:]
-    # (silu_mul_linear_mi300.cuh:39-40,114-115) -- and it leaves the weight
-    # reads completely alone, so the strip argument cannot apply. It is worse
-    # anyway, and this time the reason is exact: `down` reduces over `inter`
-    # for each of `dim` output columns, and in this generator every lane
-    # loads its own activation, so the SwiGLU is recomputed once per output
-    # column. 3 072 transcendentals a layer become 3 145 728. Measured,
+    # (silu_mul_linear_mi300.cuh:39-40,114-115). It is worse, and this time
+    # the reason is exact: `down` reduces over `inter` for each of `dim`
+    # output columns, and every lane here loads its own activation, so the
+    # SwiGLU is recomputed once per output column. 3 072 transcendentals a
+    # layer become 3 145 728, the emitted math.exp count goes 59 to 255, and
     # down's body goes 353 504 ticks to 809 024.
     #
     # Fleet does not pay that because its matmul stages the activation
-    # through LDS and applies the SwiGLU once as it writes it there
-    # (silu_mul_linear_mi300.cuh:34, 190-192). **That is the difference worth
-    # having, and it is not the fusion.** Every lane here reads the whole
-    # reduction out of global memory on its own; staging it once per
-    # workgroup would cut the activation traffic by the number of columns a
-    # lane group covers and make this fusion free rather than expensive.
+    # through LDS and applies the SwiGLU once on the way in
+    # (silu_mul_linear_mi300.cuh:34, 190-192). That was tried here and is
+    # **not** the answer: --stage-lhs is 14.7% slower on its own, because the
+    # activation is 4 to 12 KB and every one of those "redundant" reads was
+    # an L2 hit. Fusing on top of staging is 3.4% faster than staging alone
+    # and the math.exp count returns to 59 -- the mechanism is right and the
+    # foundation is not -- but staged-and-fused is still 10.8% worse than
+    # neither. Do not rebuild this.
     slice_q = qkvo // tasks
     # The vocabulary is the one width that does not have to divide: Qwen3's is
     # 151936 = 2^7 * 1187, so requiring it to capped `tasks` at 128 -- and the
@@ -514,9 +617,12 @@ def emit(
     # for no information at all. The device reads the bf16 copies below and
     # widens each value with a single shift; f32 stays on the host, where the
     # synthetic generator and its centring pass write to it.
-    # The f32 arrivals keep the layout weights.py wrote, [reduction][output].
-    # The bf16 copies the device actually reads may be either way round, and
-    # which one they are is the whole of --weights-out-major.
+    # The f32 arrivals keep the layout weights.py wrote, [reduction][output],
+    # because the host-side reference reduces over the leading axis. The bf16
+    # copies the device actually reads may be either way round, and which one
+    # they are is the whole of --weights-reduction-major. The default is
+    # [output][reduction], so a weight is transposed twice between the
+    # checkpoint and the device; see the note over the narrowing loops.
     #
     # [reduction][output] puts a piece's columns next to each other, so a
     # wave's lanes coalesce across the columns -- but a lane walking its own
@@ -607,7 +713,7 @@ def emit(
     # to price the boundary with an instrument other than the one that found
     # it: the chained per-class table charges every stage the same several
     # microseconds whatever it computes, and a table cannot check itself.
-    # Here the answer is a slope on the launch clock, and it is 5.52 us.
+    # Here the answer is a slope on the launch clock, and it is 5.04 us.
     # Eight stages a layer when swiglu rides along in gate_up, nine when it
     # is a stage of its own, plus however many empty ones were asked for.
     layer_stages = (8 if fuse_swiglu else 9) + pad_stages
@@ -1329,10 +1435,20 @@ module {{
             w(load(buf, mtype, name, count))
 
     w(f"""
-    // Narrow the weights to the precision they arrived in. Every one of these
-    // came from a bf16 checkpoint and was widened by weights.py, so the
-    // truncation is exact -- and it halves what the device has to read, which
-    // is what the decode is actually waiting on.
+    // Narrow the weights to the precision they arrived in, and transpose
+    // them while doing it. Every one of these came from a bf16 checkpoint
+    // and was widened by weights.py, so the truncation is exact -- and it
+    // halves what the device has to read, which is what the decode is
+    // actually waiting on.
+    //
+    // The transpose is the other half. weights.py writes [reduction][output]
+    // because the host-side reference reduces over the leading axis; the
+    // device wants [output][reduction] so a lane walks its slice of the
+    // reduction contiguously, which is worth 5.7%. So a weight is
+    // transposed twice between the checkpoint and the device and the two
+    // cancel. See the note by `wtype` for why the device wants it this way,
+    // and weights.py's header for why the blob is not simply written that
+    // way to begin with.
     %WqkvB = memref.alloc() : {WQTB}
     scf.for %l = %c0 to %clayers step %c1 {{
       scf.for %i = %c0 to %cdim step %c1 {{
@@ -2259,6 +2375,8 @@ module {{
     # that waited take it inside the `scf.if` it waited in, before the barrier
     # that releases the other seven. Whole model, 28 layers, 128 workers, six
     # steps, minimum of two runs: 3 265 096 launch ticks to 2 209 060, **1.48x**.
+    # On the build that is 2.94 ms a token the fence is down to 0.79 us of a
+    # 5.04 us boundary; --acquire-per-wave still restores the old form.
     #
     # That is sound because every wave of a workgroup is on one CU and one XCD,
     # so one wave's `buffer_inv sc0 sc1` empties the vector cache and the L2
@@ -2312,9 +2430,9 @@ module {{
     # transaction, and with the loop as tight as the hardware will run it,
     # 128 workgroups are issuing them continuously against one cache line.
     #
-    # The rendezvous is 2.65 us of a 5.52 us stage boundary, 0.68 of the
-    # 3.68 ms a token then took, and a single uncached read does not cost
-    # 2.65 us.
+    # The rendezvous is 2.40 us of a 5.04 us stage boundary, 0.62 of the
+    # 2.94 ms a token takes, and a single uncached read does not cost
+    # 2.40 us.
     # `s_sleep n` idles the wave for n*64 clocks -- 30 ns a unit at 2.1 GHz --
     # which is small against one poll's latency and large against the interval
     # between polls, so it trades detection latency the loop was not using for
@@ -2326,6 +2444,11 @@ module {{
     #
     #   sleep      0       1       2       4       8      16
     #   vs 0    0.00%  +0.56%  +0.26%  -0.11%  -0.67%  -0.80%
+    #
+    # Re-swept on the 2.94 ms build, where the boundary is 44% of the launch
+    # rather than a third of it, and the shape is the same: 0 is +2.2%, 4 is
+    # +1.4%, 16 and 32 agree to 0.1%, 64 is +0.4%. There is a broad flat
+    # optimum and no polling schedule that helps.
     #
     # If the rendezvous were 128 workgroups queueing behind one cache line,
     # cutting the traffic by a factor of sixteen would not be worth 0.8%. So
@@ -2712,9 +2835,13 @@ module {{
           // the partition is disjoint and complete by arithmetic rather than
           // by a protocol.
           //
-          // Which choice is the whole of {claim_name}, and it is worth 3.2%
-          // for nothing: same instruction stream, same partition, two
-          // multiplies with their operands swapped.
+          // Which choice is the whole of {claim_name}: same instruction
+          // stream, same partition, two multiplies with their operands
+          // swapped.
+          //
+          // It was worth 3.2% when it was made, and it is worth nothing now.
+          // Both of those are the same fact, and the second is the more
+          // useful one -- see below.
           //
           // A piece is a strip of adjacent output columns and the weight's
           // fastest axis is the column, so a piece is `slice * 2` adjacent
@@ -2729,9 +2856,19 @@ module {{
           //
           // What moved was gate_up, 13.2%, and gate_up is the one stage in
           // this model whose piece -- 48 columns, 96 bytes -- does not divide
-          // a line, so three pieces in four straddle one. Blocking makes a
+          // a line, so three pieces in four straddled one. Blocking made a
           // die's range 16 * 96 = 1536 bytes, twelve whole lines, and the
           // straddles internal to it. Alignment, not duplication.
+          //
+          // And that is why most of the 3.2% is gone: under the default
+          // [output][reduction] layout a lane walks a row of the weight, so
+          // a piece is not a strip of any line and no weight read straddles.
+          // --round-robin-claim is 0.6% here, not 3.2% -- it lost all three
+          // paired reps, so the remainder is real, and it is whatever
+          // locality a die's contiguous column range still buys on the
+          // activation and the output rather than on the weights. The
+          // mechanism predicting most of its own obsolescence is the best
+          // evidence that this time the mechanism was right.
           //
           // What it gives up is stealing: a die the dispatcher put no
           // workgroups on keeps its pieces, nobody computes them, the stage's
@@ -2824,12 +2961,12 @@ module {{
                 14,
             ),
         )
-        # A stage boundary costs 5.52 us -- the slope of the launch clock
-        # against --pad-stages, measured when a token took 3.68 ms, of which
-        # it was 1.42. Still the largest single thing in the program, so it
-        # is worth knowing which part of it is which -- and worth re-running
-        # this ladder, because two of the three pieces it found have been cut
-        # since and the shares below are from before that.
+        # A stage boundary costs 5.04 us -- the slope of the launch clock
+        # against --pad-stages. Re-priced on the build that is 2.94 ms a
+        # token, where it is 1.30 of that -- 44%, the largest single thing in
+        # the program by a distance. It came in within 2% of what it was two
+        # builds and half a millisecond ago, which is what a cost that does
+        # not depend on the body should do.
         #
         # `strip` takes the boundary apart. It is only ever used on a pad
         # stage, and a pad stage is exactly the right place for it: its body is
@@ -2843,14 +2980,28 @@ module {{
         # pads, minimum of two runs per point:
         #
         #   level  a pad stage contains          us/inst  the piece removed
-        #     0    the whole boundary               5.52
-        #     1    no acquire fence                 4.65   the fence     0.87
-        #     2    and no spin, no release barrier  1.99   spin+barrier  2.65
-        #     3    and no atomics                  -0.09   four atomics  2.09
-        #     4    and no claim                            the claim     free
+        #     0    the whole boundary               5.04
+        #     1    no acquire fence                 4.25   the fence     0.79
+        #     2    and no spin, no release barrier  1.85   spin+barrier  2.40
+        #     3    and no atomics                   0.14   the atomics   1.71
+        #     4    and no claim                            the claim     0.14
         #
-        # Level 3 is indistinguishable from no pad at all, which is what says
-        # the pieces account for the whole boundary rather than most of it.
+        # Level 3 is very nearly no pad at all, which is what says the pieces
+        # account for the whole boundary rather than most of it. One pad a
+        # layer gives 5.09 us against three pads' 5.04, so the slope is
+        # linear and not an artefact of the pad count.
+        #
+        # The atomics tier is not the atomic operations. --count-flushes adds
+        # one more device-scope atomic per die per stage, 2056 a step, and
+        # the launch clock does not move -- it is `monotonic` and carries no
+        # fence. What the 1.71 us is made of is the release ordering on the
+        # two that do carry one: the per-workgroup agent-scope release below,
+        # an `s_waitcnt vmcnt(0)` draining the stage's stores, and the die
+        # leader's device-scope release, a `buffer_wbl2`. Cutting contention
+        # or counting arrivals more cleverly is aimed at the wrong thing.
+        #
+        # And the spin is propagation rather than backoff granularity:
+        # --spin-sleep is flat from 16 to 32 and costs 2.2% at 0.
         # Two counters a die, or one word holding both.
         #
         # The die's workers have to agree on two things before the last of
@@ -3092,20 +3243,25 @@ module {{
         consumer of the activation, with the gate and up halves left end to
         end, which is also why there is nothing to gain by interleaving them.
 
-        Rolled, this loop asks for one weight and waits for it. The arithmetic
-        says that is the whole story of the matmuls: at 128 workers gate_up
-        gives each thread 2688 weights over 28 layers and takes 2.13 ms/token,
-        which is about 1660 cycles a weight against fourteen instructions of
-        work -- one full memory latency per iteration, overlapped with nothing.
-        A wave has 128 bytes outstanding where it would need tens of kilobytes
-        to hold the machine's bandwidth open.
+        Rolled, this loop asks for one weight and waits for it, which was
+        worth 1.61x when `unroll` was added: gate_up then gave each thread
+        2688 weights over 28 layers and took 2.13 ms/token, about 1660 cycles
+        a weight against fourteen instructions of work -- one full memory
+        latency an iteration, overlapped with nothing. (Those are the numbers
+        from that build. gate_up is under 0.3 ms/token now.)
 
         `unroll` loads before the first `extf` forces that many to be in
         flight: the wave issues them back to back and only then takes the
-        `s_waitcnt`, which is the one lever here that does not need more
-        workgroups. The accumulate stays a single chain in the original order,
-        so the result is bit for bit what the rolled loop produced and a
-        difference in the output is a bug rather than a rounding change.
+        `s_waitcnt`. The accumulate stays a single chain in the original
+        order, so for a fixed weight layout the result is bit for bit what
+        the rolled loop produced and a difference in the output is a bug
+        rather than a rounding change.
+
+        8 is a real minimum and not a ceiling imposed by spills: 4 is 17.5%
+        worse and 16 is 48% worse. And do not reach for more bytes in flight
+        here -- that argument is settled. Under the default layout these `u`
+        loads are `u` adjacent bf16 and the backend already merges them into
+        one `global_load_dwordx4`; see the note over the load loop below.
 
         Falls back to rolled whenever the trip count does not divide, which is
         checked here rather than assumed: a remainder loop would double the
@@ -3325,13 +3481,21 @@ module {{
         ksteps = klanes.bit_length() - 1
         nblk = (slice_num + cols - 1) // cols
         # A slice is `width / tasks` columns -- 8 for anything dim-wide at 128
-        # tasks -- so a lane per column left 56 of 64 lanes idle and used 32 of
-        # every 128-byte line. Splitting the lanes two ways, `cols` across the
-        # columns and the remaining `klanes` across the reduction, keeps all 64
-        # busy whatever the slice is; the lanes sharing a column differ only in
-        # the bits above log2(cols), so an xor butterfly over those bits folds
-        # their partials together. Across the four matmuls that is 3.7x of
+        # tasks -- so a lane per column left 56 of 64 lanes idle. Splitting
+        # the lanes two ways, `cols` across the columns and the remaining
+        # `klanes` across the reduction, keeps all 64 busy whatever the slice
+        # is; the lanes sharing a column differ only in the bits above
+        # log2(cols), so an xor butterfly over those bits folds their
+        # partials together. Across the four matmuls that is 3.7x of
         # arithmetic that was being thrown away.
+        #
+        # This used to be argued partly on cache lines too -- a lane per
+        # column used 32 bytes of every 128-byte line. That argument no
+        # longer applies under the default [output][reduction] layout, where
+        # a lane walks a row and the slice width does not touch coverage at
+        # all. The occupancy argument above is the one that still stands, and
+        # it is why --half-dim-tasks, which buys width at the price of
+        # workgroups, is 6.0% slower.
         #
         # How a lane's share of the reduction is laid out follows the weight
         # layout and has to, or the layout buys nothing. Strided -- lane k
@@ -3385,20 +3549,19 @@ module {{
         # registers and leave one partial a wave to go through LDS. The chain
         # becomes `waves` long whatever `klanes` is, and only the `cols` lanes
         # of each wave that hold the fold need store.
-        kfold = "".join(
-            f"""                  %kx{l}_{stage}_{k} = arith.constant {cols << k} : i32
-                  %kw{l}_{stage}_{k} = arith.constant {wave} : i32
-                  %kv{l}_{stage}_{k}, %kp{l}_{stage}_{k} = gpu.shuffle xor %kacc{l}_{stage}_{k}, %kx{l}_{stage}_{k}, %kw{l}_{stage}_{k} : f32
-                  %kacc{l}_{stage}_{k + 1} = arith.addf %kacc{l}_{stage}_{k}, %kv{l}_{stage}_{k} : f32
-""" for k in range(ksteps)
-        )
+        # lane_reduce is exactly this butterfly and carries the argument for
+        # why it is sound; `ksteps` is how many bits of the lane id separate
+        # the lanes sharing a column. At ksteps == 0 -- klanes 1, which is any
+        # stage wide enough to give every lane its own column -- it degenerates
+        # to the same copy the LDS form makes, so there is one path and not two.
         kfold = (
-            f"                  %kacc{l}_{stage}_0 = arith.addf %part0, %fzero_s : f32\n"
-            + kfold
-            + f"                  %part = arith.addf %kacc{l}_{stage}_{ksteps}, %fzero_s : f32\n"
+            lane_reduce(
+                "%part0", "%part", "arith.addf", f"k{l}_{stage}", 18, cols, ksteps
+            )
+            + "\n"
+            if fold_klanes
+            else "                  %part = arith.addf %part0, %fzero_s : f32\n"
         )
-        if not fold_klanes:
-            kfold = "                  %part = arith.addf %part0, %fzero_s : f32\n"
         # Slot w*cols + c, so wave 0 reads `waves` of them at stride `cols`.
         kstore = f"""                  %kin{l}_{stage} = arith.cmpi ult, %lid, %cC{l}_{stage} : index
                   scf.if %kin{l}_{stage} {{
@@ -3840,7 +4003,9 @@ module {{
         # writes `act` directly and stage 7 is not emitted. Split, the piece
         # is a slice of 2*inter and the two halves land in different pieces,
         # so the elementwise step has to be a stage, and a stage is a
-        # boundary, and a boundary is 5.52 us.
+        # boundary, and a boundary is 5.04 us. That trade has been measured
+        # both ways and the split form still wins; see the note by `slice_i`
+        # for what is and is not known about why.
         w(
             matmul_stage(
                 l,
@@ -4215,7 +4380,7 @@ def main() -> int:
         "and wait like any other stage and compute nothing, so the tokens are "
         "unchanged and the launch grows by the cost of a stage boundary times "
         "the number added. The slope of the launch clock against this is how "
-        "a boundary was priced at 5.52 us, with the per-stage timers off, so "
+        "a boundary was priced at 5.04 us, with the per-stage timers off, so "
         "it does not depend on the instrument that first suggested the "
         "number. Pair it with --pad-strip to price the pieces",
     )

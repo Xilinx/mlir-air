@@ -12,6 +12,14 @@
 #
 #   LAYERS=8 ./run.sh
 #
+# The weights here are synthetic, so this checks that a shape compiles, runs
+# and agrees with the host reference -- it is not where performance is
+# measured. Every figure in gen.py's header comes from run_qwen.sh against a
+# real checkpoint; a synthetic model has the wrong widths and therefore the
+# wrong piece sizes, lane splits and stage count.
+#
+# The same environment knobs as run_qwen.sh, documented in its header.
+#
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMPDIR="${TMPDIR:-/tmp/air_megakernel_gen}"

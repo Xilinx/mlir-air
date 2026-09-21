@@ -11,9 +11,19 @@ only dtype in a Qwen3 checkpoint is bfloat16, which widens to float32 by
 shifting left 16 bits. That avoids needing torch or the safetensors package on
 a machine where neither is installed.
 
-The layouts are the ones the chain indexes with, which are the transposes of
-what Hugging Face stores: HF keeps a linear layer as [out, in] and every matmul
-in the chain reduces over the leading axis.
+The float32 blob is written transposed from what Hugging Face stores: HF keeps
+a linear layer as [out, in] and this writes [in, out], because the chain's
+host-side reference reduces over the leading axis.
+
+Note that the device does NOT read this order. gen.py narrows every weight to
+bf16 at startup and transposes it back to [out, in] on the way, because that
+is the layout a lane can walk contiguously -- see --weights-reduction-major
+and the note by `wtype` in gen.py. So a weight is transposed twice between
+the checkpoint and the device, which costs one host-side pass at startup and
+nothing at all on the device. Writing [out, in] here and making that pass a
+straight narrowing would save the startup pass; it has not been done because
+the converted blob is cached in <QWEN_DIR>/air and shared between jobs, so
+changing its layout invalidates a cache other runs are reading.
 
     ./weights.py /shared/erweiw/qwen3-0.6b /shared/erweiw/qwen3-0.6b/air
 """

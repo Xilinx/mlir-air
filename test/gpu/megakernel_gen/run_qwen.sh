@@ -25,7 +25,7 @@
 #
 # and to see the clock rather than just the tokens, add TIMERS=1 REPEAT=20.
 # No flag is needed to make it fast; gen.py's defaults are the fast ones, and
-# gen.py's module header says where the 3.57 ms goes and how it was measured.
+# gen.py's module header says where the 2.94 ms goes and how it was measured.
 #
 # The two sides being compared are: the chain (device, plus the host reference
 # in the same program) and qwen3_ref.py, which reads the Hugging Face files
@@ -56,7 +56,8 @@ LAYERS="${LAYERS:-0}"        # 0 means every layer in the checkpoint
 # The last row is the shape of the cost: a workgroup with no piece left to
 # claim does not go away, it spins on every event for the rest of the launch,
 # so over-provisioning workers is worse than not provisioning them. Keep the
-# two equal. 128/128 is still what the 3.57 ms/token figure is measured at.
+# two equal. 128/128 is still what the 2.94 ms/token figure is measured at,
+# and 256/256 was re-tried on the much faster body and is still 13.6% worse.
 #
 # 128 is the ceiling for this checkpoint, not a tuned optimum: gen.py requires
 # tasks to divide the width of every stage it splits, and the vocabulary is
@@ -86,24 +87,41 @@ REPEAT="${REPEAT:-1}"
 # the launch, so it is cheap enough to leave on while ranking two builds.
 # Take the launch figure, not the sum of the table, and see gen.py's header.
 TIMERS="${TIMERS:-}"
-# The rest are for measurement and for withdrawing an assumption; all of them
-# are off by default and the defaults are the fast ones. See gen.py --help.
+# The rest are for measurement and for withdrawing an assumption. Every one
+# of them is off by default and the defaults are the fast ones, so a run that
+# sets none of these is the run the headline figure was taken from.
+# See gen.py --help for why each is not the default.
 #
-#   ACQPERWAVE=1  the acquire fence in every wave        1.48x slower
-#   DYNAMIC=1     pieces from queues, not by rank        1.60x slower
-#   SPLITARR=1    two counter words, not one packed      1.027x slower
-#   UNROLL=n      weight loads in flight per lane        default 8
-#   SLEEP=n       clocks/64 the waiter idles per poll    default 16
-#   COUNTFLUSH=1  count device-scope event flushes and print the total
-#   ACQAGENT=1    agent scope on the acquire fence       measures as nothing
-#   FUSESWIGLU=1  swiglu inside gate_up, eight stages a layer
+# The slow forms, each restoring something that was measured and replaced.
+# The percentage is what turning it back on costs, on the build that is
+# 2.94 ms a token:
+#
+#   ACQPERWAVE=1  the acquire fence in every wave           1.48x slower
+#   DYNAMIC=1     pieces from queues, not by rank           1.60x slower
+#   HALFDIM=1     o_proj and down on half the workgroups     6.0% slower
+#   REDMAJOR=1    weights as [reduction][output]             5.7% slower
+#   LDSK=1        a column's lane partials meet in LDS       3.2% slower
+#   SPLITARR=1    two counter words, not one packed          2.7% slower
+#   RRCLAIM=1     pieces congruent to the die, not a block   0.6% slower
+#                 (was 3.2% before the weights changed layout)
+#   UNROLL=n      weight loads in flight per lane      default 8; 4 is
+#                                                      +17.5%, 16 is +48%
+#   SLEEP=n       clocks/64 the waiter idles per poll  default 16; 0 is
+#                                                      +2.2%, 32 ties, 64
+#                                                      is +0.4%
+#
+# Built, correct, and slower for reasons worth reading before rebuilding:
+#
+#   FUSESWIGLU=1  swiglu inside gate_up, eight stages a layer  +1.3%
+#   STAGELHS=1    the reduction operand staged in LDS         +14.7%
+#   ACQAGENT=1    agent scope on the acquire fence    measures as nothing
+#
+# Instruments, which cost something and are therefore off:
+#
 #   TOTALONLY=1   the launch clock and no per-stage reads
 #   PAD=n         n empty stages a layer, to price a boundary
 #   PADSTRIP=k    leave piece k and beyond out of those empty stages
-#   RRCLAIM=1     pieces congruent to the die, not a block 3.2% slower
-#   REDMAJOR=1    weights as [reduction][output]           5.7% slower
-#   LDSK=1        a column's lane partials meet in LDS       3.2% slower
-#   HALFDIM=1     o_proj and down on half the workgroups     6.0% slower
+#   COUNTFLUSH=1  count device-scope event flushes and print the total
 #
 # "The capital of France is"
 PROMPT="${PROMPT:-785,6722,315,9625,374}"
