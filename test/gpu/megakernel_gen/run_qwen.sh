@@ -99,6 +99,8 @@ TIMERS="${TIMERS:-}"
 #   TOTALONLY=1   the launch clock and no per-stage reads
 #   PAD=n         n empty stages a layer, to price a boundary
 #   PADSTRIP=k    leave piece k and beyond out of those empty stages
+#   RRCLAIM=1     pieces congruent to the die, not a block  3.2% slower
+#   OUTMAJOR=1    weights as [output][reduction], Fleet's layout
 #
 # "The capital of France is"
 PROMPT="${PROMPT:-785,6722,315,9625,374}"
@@ -137,7 +139,7 @@ clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loade
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
   --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 --waves "$WAVES" \
   ${TIMERS:+--timers} \
-  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} \
+  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} ${RRCLAIM:+--round-robin-claim} ${OUTMAJOR:+--weights-out-major} \
   --steps "$STEPS" --repeat "$REPEAT" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"

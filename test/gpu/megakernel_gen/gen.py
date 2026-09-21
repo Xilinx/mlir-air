@@ -196,6 +196,8 @@ def emit(
     fuse_swiglu: bool = False,
     stage_lhs: bool = False,
     acquire_agent: bool = False,
+    blocked_claim: bool = True,
+    out_major: bool = False,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -446,19 +448,43 @@ def emit(
     GT = f"memref<{tokens}x{2 * inter}xf32>"
     QT = f"memref<{tokens}x{qkvo}xf32>"
     SCT = f"memref<{tokens}x{heads}x{total}xf32>"
+
     # The weights arrive as bf16 -- that is the only dtype in a Qwen3
     # checkpoint -- and weights.py widens them to f32, which doubles the bytes
     # for no information at all. The device reads the bf16 copies below and
     # widens each value with a single shift; f32 stays on the host, where the
     # synthetic generator and its centring pass write to it.
-    WQT = f"memref<{layers}x{dim}x{qkvo}xf32>"
-    WQTB = f"memref<{layers}x{dim}x{qkvo}xbf16>"
-    WT = f"memref<{layers}x{qw}x{dim}xf32>"
-    WTB = f"memref<{layers}x{qw}x{dim}xbf16>"
-    WGT = f"memref<{layers}x{dim}x{2 * inter}xf32>"
-    WGTB = f"memref<{layers}x{dim}x{2 * inter}xbf16>"
-    WDT = f"memref<{layers}x{inter}x{dim}xf32>"
-    WDTB = f"memref<{layers}x{inter}x{dim}xbf16>"
+    # The f32 arrivals keep the layout weights.py wrote, [reduction][output].
+    # The bf16 copies the device actually reads may be either way round, and
+    # which one they are is the whole of --weights-out-major.
+    #
+    # [reduction][output] puts a piece's columns next to each other, so a
+    # wave's lanes coalesce across the columns -- but a lane walking its own
+    # reduction strides by the full width, one 2-byte load per line, and a
+    # wave covers only `cols * 2` bytes of every 128-byte line it touches.
+    # That is 16 bytes for anything dim-wide at 128 tasks.
+    #
+    # [output][reduction] is what Fleet stores (linear_ck_mi300.cuh:406-408,
+    # strides (REDUCTION_SIZE, 1)) and what this program already gives the lm
+    # head alone -- which is the one class in it that runs above a terabyte a
+    # second, 3.5x `down`, on the same dot_loop and the same unroll.
+    def wtype(l, red, out, ty="bf16"):
+        a, b = (out, red) if (out_major and ty == "bf16") else (red, out)
+        return f"memref<{l}x{a}x{b}x{ty}>"
+
+    WQT = wtype(layers, dim, qkvo, "f32")
+    WQTB = wtype(layers, dim, qkvo)
+    WT = wtype(layers, qw, dim, "f32")
+    WTB = wtype(layers, qw, dim)
+    WGT = wtype(layers, dim, 2 * inter, "f32")
+    WGTB = wtype(layers, dim, 2 * inter)
+    WDT = wtype(layers, inter, dim, "f32")
+    WDTB = wtype(layers, inter, dim)
+
+    # `[%L, red, out]` or `[%L, out, red]`, for every site that reads one.
+    def wix(red, out):
+        return f"{out}, {red}" if out_major else f"{red}, {out}"
+
     KVT = f"memref<{layers}x{total}x{kv_heads}x{hd}xf32>"
     NT = f"memref<{layers}x{dim}xf32>"
     QKNT = f"memref<{layers}x{2 * hd}xf32>"
@@ -1230,7 +1256,7 @@ module {{
         scf.for %j = %c0 to %cqkvo step %c1 {{
           %v = memref.load %Wqkv[%l, %i, %j] : {WQT}
           %b = arith.truncf %v : f32 to bf16
-          memref.store %b, %WqkvB[%l, %i, %j] : {WQTB}
+          memref.store %b, %WqkvB[%l, {wix("%i", "%j")}] : {WQTB}
         }}
       }}
     }}
@@ -1240,7 +1266,7 @@ module {{
         scf.for %j = %c0 to %cdim step %c1 {{
           %v = memref.load %Wo[%l, %i, %j] : {WT}
           %b = arith.truncf %v : f32 to bf16
-          memref.store %b, %WoB[%l, %i, %j] : {WTB}
+          memref.store %b, %WoB[%l, {wix("%i", "%j")}] : {WTB}
         }}
       }}
     }}
@@ -1250,7 +1276,7 @@ module {{
         scf.for %j = %c0 to %c2inter step %c1 {{
           %v = memref.load %Wgu[%l, %i, %j] : {WGT}
           %b = arith.truncf %v : f32 to bf16
-          memref.store %b, %WguB[%l, %i, %j] : {WGTB}
+          memref.store %b, %WguB[%l, {wix("%i", "%j")}] : {WGTB}
         }}
       }}
     }}
@@ -1260,7 +1286,7 @@ module {{
         scf.for %j = %c0 to %cdim step %c1 {{
           %v = memref.load %Wd[%l, %i, %j] : {WDT}
           %b = arith.truncf %v : f32 to bf16
-          memref.store %b, %WdB[%l, %i, %j] : {WDTB}
+          memref.store %b, %WdB[%l, {wix("%i", "%j")}] : {WDTB}
         }}
       }}
     }}
@@ -1346,7 +1372,7 @@ module {{
          %acc = scf.for %i = %c0 to %cdim step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %rv = memref.load %Rv[%m, %i] : {AT}
-           %wb = memref.load %WqkvB[%l, %i, %n] : {WQTB}
+           %wb = memref.load %WqkvB[%l, {wix("%i", "%n")}] : {WQTB}
            %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %rv, %wv : f32
            %s2 = arith.addf %s, %mu : f32
@@ -1516,7 +1542,7 @@ module {{
          %acc = scf.for %i = %c0 to %cqw step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %av = memref.load %ra[%i] : memref<{qw}xf32>
-           %wb = memref.load %WoB[%l, %i, %j] : {WTB}
+           %wb = memref.load %WoB[%l, {wix("%i", "%j")}] : {WTB}
            %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %av, %wv : f32
            %s2 = arith.addf %s, %mu : f32
@@ -1552,7 +1578,7 @@ module {{
          %acc = scf.for %i = %c0 to %cdim step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %xv = memref.load %rxa[%i] : memref<{dim}xf32>
-           %wb = memref.load %WguB[%l, %i, %p] : {WGTB}
+           %wb = memref.load %WguB[%l, {wix("%i", "%p")}] : {WGTB}
            %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %xv, %wv : f32
            %s2 = arith.addf %s, %mu : f32
@@ -1577,7 +1603,7 @@ module {{
          %acc = scf.for %p = %c0 to %cinter step %c1
              iter_args(%s = %fzero) -> (f32) {{
            %av = memref.load %ract[%p] : memref<{inter}xf32>
-           %wb = memref.load %WdB[%l, %p, %j] : {WDTB}
+           %wb = memref.load %WdB[%l, {wix("%p", "%j")}] : {WDTB}
            %wv = arith.extf %wb : bf16 to f32
            %mu = arith.mulf %av, %wv : f32
            %s2 = arith.addf %s, %mu : f32
@@ -2605,10 +2631,31 @@ module {{
           // None of that is needed to decide which piece is whose. The chiplet
           // reporting protocol already told this workgroup its rank among the
           // workgroups sharing its chiplet and how many there are, both
-          // workgroup uniform and both already paid for, and the pieces of die
-          // d are exactly the indices congruent to d mod maxdies. So rank r
-          // takes every mycnt-th of those, and the partition is disjoint and
-          // complete by arithmetic rather than by a protocol.
+          // workgroup uniform and both already paid for, so which pieces are
+          // die d's is a choice this makes rather than a fact it is told, and
+          // the partition is disjoint and complete by arithmetic rather than
+          // by a protocol.
+          //
+          // Which choice is the whole of {claim_name}, and it is worth 3.2%
+          // for nothing: same instruction stream, same partition, two
+          // multiplies with their operands swapped.
+          //
+          // A piece is a strip of adjacent output columns and the weight's
+          // fastest axis is the column, so a piece is `slice * 2` adjacent
+          // bytes of every row it reads, against a 128-byte line. Giving die
+          // d a contiguous block of pieces rather than those congruent to d
+          // was meant to stop the eight pieces that share a line landing on
+          // eight XCDs with eight private L2s. That prediction was wrong and
+          // the measurement says so: it made `down` and `o_proj`, the two
+          // stages with 16 bytes a piece a row and therefore the whole of
+          // that eightfold duplication, 1.8% faster and 0.3% slower. The
+          // MALL absorbs cross-XCD duplication.
+          //
+          // What moved was gate_up, 13.2%, and gate_up is the one stage in
+          // this model whose piece -- 48 columns, 96 bytes -- does not divide
+          // a line, so three pieces in four straddle one. Blocking makes a
+          // die's range 16 * 96 = 1536 bytes, twelve whole lines, and the
+          // straddles internal to it. Alignment, not duplication.
           //
           // What it gives up is stealing: a die the dispatcher put no
           // workgroups on keeps its pieces, nobody computes them, the stage's
@@ -2623,8 +2670,7 @@ module {{
           %nper{l}_{stage} = arith.divui %ndie{l}_{stage}, %cmaxdies : index
           %tst{l}_{stage} = scf.for %kn = %myrank2 to %nper{l}_{stage} step %mycnt
               iter_args(%accs = %zero_s) -> (i32) {{
-            %kstride = arith.muli %kn, %cmaxdies : index
-            %ix = arith.addi %mydie, %kstride : index
+{claim_ix}
             %has = arith.cmpi ult, %ix, {count_expr} : index
             %accn = scf.if %has -> i32 {{
               %a2 = scf.for %m = %c0_s to %nat step %c1_s
@@ -2682,6 +2728,14 @@ module {{
             lc=lc,
             QUT=QUT,
             count_expr=count_expr,
+            claim_name="--blocked-claim" if blocked_claim else "--round-robin-claim",
+            claim_ix=(
+                f"            %kstride = arith.muli %mydie, %nper{l}_{stage} : index\n"
+                f"            %ix = arith.addi %kn, %kstride : index"
+                if blocked_claim
+                else "            %kstride = arith.muli %kn, %cmaxdies : index\n"
+                "            %ix = arith.addi %mydie, %kstride : index"
+            ),
             body=body,
             open_body=open_body,
             close_body=close_body,
@@ -3020,7 +3074,7 @@ module {{
                 f"{pad}    iter_args(%sacc{tag} = %fzero_s) -> (f32) {{",
                 lhsval(f"%i{tag}", ""),
                 *lhscomb(""),
-                f"{pad}  %wb{tag} = memref.load {wmat}[%L{l}, %i{tag}, {jname}]{ntw} : {wty}",
+                f"{pad}  %wb{tag} = memref.load {wmat}[%L{l}, {wix(f'%i{tag}', jname)}]{ntw} : {wty}",
                 f"{pad}  %wv{tag} = arith.extf %wb{tag} : bf16 to f32",
                 f"{pad}  %mp{tag} = arith.mulf %lv{tag}, %wv{tag} : f32",
                 f"{pad}  %s2{tag} = arith.addf %sacc{tag}, %mp{tag} : f32",
@@ -3042,7 +3096,7 @@ module {{
             if k:
                 out.append(f"{pad}  {idx} = arith.addi %i{tag}, %cO{tag}_{k} : index")
             out.append(
-                f"{pad}  %wb{tag}_{k} = memref.load {wmat}[%L{l}, {idx}, {jname}]{ntw} : {wty}"
+                f"{pad}  %wb{tag}_{k} = memref.load {wmat}[%L{l}, {wix(idx, jname)}]{ntw} : {wty}"
             )
         # Then every left-hand side load, for the same reason: what is being
         # bought here is loads in flight, and with the SwiGLU fused that is
@@ -3193,6 +3247,36 @@ module {{
         # the bits above log2(cols), so an xor butterfly over those bits folds
         # their partials together. Across the four matmuls that is 3.7x of
         # arithmetic that was being thrown away.
+        #
+        # How a lane's share of the reduction is laid out follows the weight
+        # layout and has to, or the layout buys nothing. Strided -- lane k
+        # takes k, k + waves*klanes, ... -- is right for [reduction][output],
+        # where consecutive reduction indices are a full width apart anyway
+        # and the coalescing that matters is across the lanes of a column
+        # group. Under [output][reduction] the reduction is the contiguous
+        # axis, so a lane wants a contiguous block of it: lane k takes
+        # [k*chunk, (k+1)*chunk) and its `unroll` loads in flight are `unroll`
+        # adjacent bf16 of one line rather than `unroll` separate lines. That
+        # is the lm head's access pattern, which is the fast one.
+        #
+        # It only works when the split divides the reduction; when it does
+        # not, fall back to strided rather than emit a remainder loop, and say
+        # so at generation time rather than quietly computing a wrong sum.
+        kways = waves * klanes
+        chunked = out_major and red_num % kways == 0
+        kslice = (
+            f"""                %cKC{l}_{stage} = arith.constant {red_num // kways} : index
+                %kbeg{l}_{stage} = arith.muli %ksl{l}_{stage}, %cKC{l}_{stage} : index
+                %kend{l}_{stage} = arith.addi %kbeg{l}_{stage}, %cKC{l}_{stage} : index
+"""
+            if chunked
+            else ""
+        )
+        red_start = f"%kbeg{l}_{stage}" if chunked else f"%ksl{l}_{stage}"
+        red_end = f"%kend{l}_{stage}" if chunked else red_c
+        red_step = "%c1_s" if chunked else f"%cKS{l}_{stage}"
+        red_trip = (red_num // kways) if chunked else red_num
+        red_stepn = 1 if chunked else kways
         return strided_stage(
             l,
             stage,
@@ -3209,14 +3293,14 @@ module {{
                 %kln{l}_{stage} = arith.divui %lid, %cC{l}_{stage} : index
                 %kwo{l}_{stage} = arith.muli %wid, %cKL{l}_{stage} : index
                 %ksl{l}_{stage} = arith.addi %kwo{l}_{stage}, %kln{l}_{stage} : index
-                scf.for %jb = %c0_s to %cnblk{l}_{stage} step %c1_s {{
+{kslice}                scf.for %jb = %c0_s to %cnblk{l}_{stage} step %c1_s {{
                   %jbo = arith.muli %jb, %cC{l}_{stage} : index
                   %jj = arith.addi %jbo, %col{l}_{stage} : index
                   %jok = arith.cmpi ult, %jj, {slice_c} : index
                   %jcl = arith.minsi %jj, %cslast{l}_{stage} : index
                   %j = arith.addi %j0, %jcl : index
-{dot_loop("%part0", f"%ksl{l}_{stage}", red_c, red_num,
-          f"%cKS{l}_{stage}", waves * klanes, lhs, lhsty, wmat, wty,
+{dot_loop("%part0", red_start, red_end, red_trip,
+          red_step, red_stepn, lhs, lhsty, wmat, wty,
           l, "%j", f"wm_{l}_{stage}", 18, lhs_silu=lhs_silu,
           staged=staged, ltype=LT)}
                   %part = arith.addf %part0, %fzero_s : f32
@@ -4059,6 +4143,35 @@ def main() -> int:
         "not worth re-measuring",
     )
     ap.add_argument(
+        "--round-robin-claim",
+        action="store_true",
+        help="give chiplet d the pieces congruent to d rather than a "
+        "contiguous block of them. **3.2%% slower**, and not for the reason "
+        "the blocked mapping was written for: it was meant to stop eight "
+        "XCDs each filling the same 128-byte line to use an eighth of it, "
+        "which predicted that down and o_proj would move most. They did not "
+        "move at all -- gate_up did, by 13.2%%, and gate_up is the one stage "
+        "whose piece is 48 columns, 96 bytes, the one width in this model "
+        "that is not a divisor of a line. Blocking makes a die's range 12 "
+        "whole lines and the straddles internal. The MALL absorbs the "
+        "cross-XCD duplication; misalignment it cannot",
+    )
+    ap.add_argument(
+        "--weights-out-major",
+        action="store_true",
+        help="store the bf16 weights the device reads as [output][reduction] "
+        "rather than [reduction][output], and give each lane a contiguous "
+        "slice of the reduction rather than a strided one. This is Fleet's "
+        "layout (linear_ck_mi300.cuh:406-408) and it is the layout this "
+        "program already gives the lm head, which is the one class in it "
+        "that runs above a terabyte a second. Under the other layout a lane "
+        "strides by the full width and a wave covers `cols * 2` bytes of "
+        "every 128-byte line it touches -- 16 for anything dim-wide at 128 "
+        "tasks. Changes the order the reduction is summed in, so the result "
+        "is not bit for bit the other build's; the token check is what says "
+        "it is right",
+    )
+    ap.add_argument(
         "--pad-strip",
         type=int,
         default=0,
@@ -4158,6 +4271,8 @@ def main() -> int:
             a.fuse_swiglu,
             a.stage_lhs,
             a.acquire_agent,
+            not a.round_robin_claim,
+            a.weights_out_major,
         )
     )
     return 0
