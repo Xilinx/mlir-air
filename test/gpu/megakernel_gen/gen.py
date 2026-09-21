@@ -197,7 +197,7 @@ def emit(
     stage_lhs: bool = False,
     acquire_agent: bool = False,
     blocked_claim: bool = True,
-    out_major: bool = False,
+    out_major: bool = True,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -4157,19 +4157,20 @@ def main() -> int:
         "cross-XCD duplication; misalignment it cannot",
     )
     ap.add_argument(
-        "--weights-out-major",
+        "--weights-reduction-major",
         action="store_true",
-        help="store the bf16 weights the device reads as [output][reduction] "
-        "rather than [reduction][output], and give each lane a contiguous "
-        "slice of the reduction rather than a strided one. This is Fleet's "
-        "layout (linear_ck_mi300.cuh:406-408) and it is the layout this "
-        "program already gives the lm head, which is the one class in it "
-        "that runs above a terabyte a second. Under the other layout a lane "
-        "strides by the full width and a wave covers `cols * 2` bytes of "
-        "every 128-byte line it touches -- 16 for anything dim-wide at 128 "
-        "tasks. Changes the order the reduction is summed in, so the result "
-        "is not bit for bit the other build's; the token check is what says "
-        "it is right",
+        help="store the bf16 weights the device reads as [reduction][output] "
+        "rather than [output][reduction], and give each lane a strided slice "
+        "of the reduction rather than a contiguous one. **5.7%% slower.** "
+        "Under it a lane walking its own reduction strides by the full "
+        "width, so its `unroll` loads in flight are `unroll` separate cache "
+        "lines with two bytes taken from each, and a wave covers `cols * 2` "
+        "bytes of every line it touches -- 16 for anything dim-wide at 128 "
+        "tasks. The default is Fleet's layout "
+        "(linear_ck_mi300.cuh:406-408), which is also the one this program "
+        "already gave the lm head alone. The two orders sum the reduction "
+        "differently, so their results are not bit for bit each other's; "
+        "what says both are right is the token check",
     )
     ap.add_argument(
         "--pad-strip",
@@ -4272,7 +4273,7 @@ def main() -> int:
             a.stage_lhs,
             a.acquire_agent,
             not a.round_robin_claim,
-            a.weights_out_major,
+            not a.weights_reduction_major,
         )
     )
     return 0
