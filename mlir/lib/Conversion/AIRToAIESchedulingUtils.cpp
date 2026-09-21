@@ -515,60 +515,9 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
 // for the semantic description.
 // ----------------------------------------------------------------------
 
-// Endpoint identity for a channel memcpy: (channel symbol, constant indices).
-// Returns nullopt if any bundle index is non-constant — such endpoints cannot
-// be proven equal, so they must NOT be deduped (collapsing distinct dynamic
-// endpoints would undercount writers/readers and mis-size the chain).
-using ChainEndpointKey = std::pair<StringRef, SmallVector<int64_t, 4>>;
-static std::optional<ChainEndpointKey>
-getChainEndpointKey(air::ChannelInterface chan) {
-  SmallVector<int64_t, 4> idx;
-  for (auto v : chan.getIndices()) {
-    auto c = getConstantIntValue(v);
-    if (!c)
-      return std::nullopt;
-    idx.push_back(*c);
-  }
-  return ChainEndpointKey{chan.getChanName(), idx};
-}
-
-// Ordered list of one representative memcpy op per chain stage on `buf`, in
-// use-list order, filtered to one direction (writers = buffer is the DST/S2MM;
-// readers = buffer is the SRC/MM2S). Channel endpoints sharing the same
-// (symbol, constant-indices) key collapse to one stage (dedupes scf.for unroll
-// / ping-pong duplication that would otherwise inflate the fan-in/out counts).
-// Endpoints without a provable key — non-channel memcpy (legacy
-// air.dma_memcpy_nd) or a channel with any dynamic index — are each their own
-// stage. Single source of truth: the stage count is the list size and a memcpy
-// op's stage index is its representative's position.
-static SmallVector<Operation *> getOrderedChainEndpoints(AIE::BufferOp buf,
-                                                         bool writers) {
-  SmallVector<Operation *> stages;
-  llvm::SetVector<ChainEndpointKey> seenKeys;
-  for (auto user : buf.getResult().getUsers()) {
-    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
-    if (!memcpyOp)
-      continue;
-    bool isWriter = (buf.getResult() == memcpyOp.getDstMemref());
-    bool isReader = (buf.getResult() == memcpyOp.getSrcMemref());
-    if ((writers && !isWriter) || (!writers && !isReader))
-      continue;
-    std::optional<ChainEndpointKey> key;
-    if (auto chan = dyn_cast<air::ChannelInterface>(user))
-      key = getChainEndpointKey(chan);
-    // Dedupe only provably-equal keyed endpoints; everything else is its own
-    // stage.
-    if (!key || seenKeys.insert(*key))
-      stages.push_back(user);
-  }
-  return stages;
-}
-
-static void countChainBufferRoles(AIE::BufferOp buf, int &numWriters,
-                                  int &numReaders) {
-  numWriters = getOrderedChainEndpoints(buf, /*writers=*/true).size();
-  numReaders = getOrderedChainEndpoints(buf, /*writers=*/false).size();
-}
+// Stage identity, ordering and counting live in air/Util, on a plain memref
+// Value, so the ping-pong labeller predicts the chain from exactly the code
+// that builds it. The buffer-typed entry points below just unwrap getResult().
 
 // Eligibility guard shared by the memtile-specific lock predicates: only a
 // non-null L2 (memtile) buffer qualifies.
@@ -585,7 +534,7 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   if (!isL2MemtileBuffer(buf))
     return false;
   int nW = 0, nR = 0;
-  countChainBufferRoles(buf, nW, nR);
+  air::classifyChainBuffer(buf.getResult(), nW, nR);
   // Fan-in: N writers (N>1) + 1 reader. The chain-lock is required here to
   // prevent write-side corruption, so the opt-out below is NOT honored.
   if (nW > 1 && nR == 1)
@@ -626,7 +575,53 @@ static bool isConsumerlessMemtileDrain(AIE::BufferOp buf) {
 
 void air::classifyChainBuffer(AIE::BufferOp buf, int &numWriters,
                               int &numReaders) {
-  countChainBufferRoles(buf, numWriters, numReaders);
+  classifyChainBuffer(buf.getResult(), numWriters, numReaders);
+}
+
+LogicalResult air::verifyChainLockProducers(Operation *scope) {
+  // Collect chain buffers from the memcpys themselves rather than from allocs:
+  // the Value a memcpy names is the air.execute result while that wrapper is
+  // still around, and the alloc inside it has no memcpy users of its own.
+  llvm::SetVector<Value> chainBufs;
+  scope->walk([&](air::MemcpyInterface memcpyOp) {
+    for (Value v : {memcpyOp.getDstMemref(), memcpyOp.getSrcMemref()})
+      if (v && air::isSerializedChainBuffer(v))
+        chainBufs.insert(v);
+  });
+  if (chainBufs.empty())
+    return success();
+
+  // Same walk the labeller used to decide what to decline, so a disagreement
+  // here is about the chain, not about reachability.
+  auto producers = air::getHerdsFeedingBuffers(
+      scope, [&](Value buf) { return chainBufs.contains(buf); });
+
+  LogicalResult result = success();
+  for (auto &[producerOp, reached] : producers) {
+    auto herd = cast<air::HerdOp>(producerOp);
+    if (!herd->hasAttr(air::attrs::PingPong))
+      continue;
+    auto name = herd.getSymName();
+    auto diag =
+        herd->emitOpError()
+        << "herd" << (name ? (" @" + name->str()) : "")
+        << " feeds a serialized chain lock but runs ping-pong, so it can "
+           "present a round the chain cannot accept yet; the parked packet "
+           "holds a switchbox arbiter and can deadlock an earlier stage of "
+           "the same chain. Attach air.disable_ping_pong to the loop, or "
+           "check why air-label-scf-for-to-ping-pong did not decline it";
+    // Only the chains this herd actually reaches: with several independent
+    // chains in one module, naming all of them points the remedy at buffers
+    // that have nothing to do with this herd.
+    for (Value buf : reached) {
+      bool isFanIn = false;
+      air::isSerializedChainBuffer(buf, &isFanIn);
+      diag.attachNote(buf.getLoc())
+          << "serialized " << (isFanIn ? "fan-in" : "fan-out") << " chain here";
+    }
+    result = failure();
+  }
+  return result;
 }
 
 int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
@@ -634,20 +629,14 @@ int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
   if (!mc || !buf)
     return -1;
   bool isWriter = (buf.getResult() == mc.getDstMemref());
-  auto stages = getOrderedChainEndpoints(buf, /*writers=*/isWriter);
-  auto myChan = dyn_cast<air::ChannelInterface>(memcpyOp);
-  std::optional<ChainEndpointKey> myKey =
-      myChan ? getChainEndpointKey(myChan) : std::nullopt;
+  auto stages =
+      air::getOrderedChainEndpoints(buf.getResult(), /*writers=*/isWriter);
   for (auto [i, rep] : llvm::enumerate(stages)) {
-    if (myKey) {
-      // Identically-keyed ops (scf.for unroll / ping-pong duplication) share a
-      // stage, so match on the endpoint key rather than op identity.
-      auto repChan = dyn_cast<air::ChannelInterface>(rep);
-      auto repKey = repChan ? getChainEndpointKey(repChan) : std::nullopt;
-      if (repKey && *repKey == *myKey)
-        return static_cast<int>(i);
-    } else if (rep == memcpyOp)
-      // Unkeyed (non-channel or dynamic-index): match by op identity.
+    // Identically-keyed ops (scf.for unroll / ping-pong duplication) share a
+    // stage, so match on the endpoint key first; an unkeyed endpoint (non-
+    // channel, or a channel with a dynamic index) is its own stage and matches
+    // only itself.
+    if (air::chainEndpointsShareStage(rep, memcpyOp) || rep == memcpyOp)
       return static_cast<int>(i);
   }
   return -1;

@@ -18,6 +18,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 
 using namespace mlir;
 
@@ -211,6 +212,49 @@ std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
 std::vector<air::ChannelInterface>
 getTheOtherChannelOpThroughSymbol(air::ChannelInterface op);
 FailureOr<StringRef> getChannelType(air::MemcpyInterface chanIfOp);
+
+// What the v2 chain lock counts as a stage. A memcpy writes the buffer it names
+// as destination and reads the one it names as source; endpoints sharing a
+// (channel symbol, constant indices) key are one stage, anything without a
+// provable key is its own.
+//
+// On a plain memref Value because both sides of conversion need the same
+// answer: AIRToAIE sizes the chain from it, and the ping-pong labeller predicts
+// that decision beforehand. Two copies would drift, and drift here is a silent
+// hang rather than a diagnostic.
+//
+// Representatives come back in use-list order, so a stage index is its
+// position.
+SmallVector<Operation *> getOrderedChainEndpoints(Value memref, bool writers);
+void classifyChainBuffer(Value memref, int &numWriters, int &numReaders);
+// Do two endpoints occupy the same chain stage? Only provably-equal keys share
+// one, so an unkeyed endpoint never shares a stage with anything but itself.
+bool chainEndpointsShareStage(Operation *a, Operation *b);
+
+// Will the v2 chain lock serialize this buffer's endpoints? Mirrors
+// isChainLockCandidate on pre-conversion IR: fan-in is N>1 writers and one
+// reader, fan-out is one writer and N>1 readers, and fan-out honors the
+// air.no_chain_lock opt-out. `isFanIn`, if non-null, receives which shape
+// matched.
+bool isSerializedChainBuffer(Value memref, bool *isFanIn = nullptr);
+
+// Herds whose output data transitively reaches a buffer `isTarget` accepts,
+// each mapped to the targets it reaches. Callers that only need the herds can
+// use the keys; the targets are what lets a diagnostic name the right buffer
+// instead of every one in the module.
+//
+// A channel put reaches every get on the same symbol; any other memcpy names
+// its destination directly. Staging hops are followed at every memory space,
+// since AIR permits cross-space channel hops and an L1 or L3 buffer on the way
+// is still a path.
+//
+// Shared by the labeller (which declines these herds) and AIRToAIE (which
+// verifies none was ping-ponged anyway), so the two cannot disagree. Puts match
+// gets by symbol, not endpoint -- inside a herd the bundle index is an
+// expression in the induction variables -- so it over-approximates.
+llvm::MapVector<Operation *, SmallVector<Value>>
+getHerdsFeedingBuffers(Operation *scope,
+                       llvm::function_ref<bool(Value)> isTarget);
 // Get integer index to metadataArray, from channel bundle indices.
 std::optional<int>
 getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);

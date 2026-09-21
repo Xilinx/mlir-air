@@ -976,7 +976,9 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
     Option<"clOmitMemorySpace", "omit-memory-space", "std::string", /*default=*/"\"\"",
             "Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).">,
     Option<"clDevice", "device", "std::string", /*default=*/"\"\"",
-            "Target AIE device. When given, a candidate whose duplicated L1 buffers would exceed the tile's local memory is declined. Empty string skips the check.">
+            "Target AIE device. When given, a candidate whose duplicated L1 buffers would exceed the tile's local memory is declined. Empty string skips the check.">,
+    Option<"clChainLockV2", "chain-lock-v2", "bool", /*default=*/"false",
+            "Mirror air-to-aie's use-lock-race-condition-fix-v2. When set, a candidate inside a herd whose output feeds a serialized fan-in chain is declined: the chain orders its writers, so the run-ahead ping-pong buys can park a packet on a shared switchbox arbiter and deadlock an earlier writer.">
   ];
 }
 
