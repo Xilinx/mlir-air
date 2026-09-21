@@ -93,18 +93,21 @@ Then the flags that only exist to measure -- `--timers`,
 Where the 2.94 ms goes
 ----------------------
 
-A stage boundary -- claim, signal, rendezvous, acquire -- costs 5.15 us
-whatever the stage computes, and a decode step has 257 of them, so 1.32 ms is
-boundary: it was a third of the launch and is now nearly half of it, because
-everything around it got faster and it did not.
+A stage boundary -- claim, signal, rendezvous, acquire -- costs 5.04 us
+whatever the stage computes, and a decode step has 257 of them, so 1.30 ms is
+boundary. That is 44% of the launch, up from a third, because everything
+around it got faster and it did not: re-priced on this build it came in
+within 2% of what it was two builds and 0.5 ms/token ago, which is what a
+cost independent of the body should do.
 
-Priced by `--pad-strip`, which removes one piece of the boundary at a time
-from a stage that computes nothing:
+Priced by `--pad-stages` and `--pad-strip`, which add empty stages and then
+remove one piece of the boundary at a time from them. The slope is linear --
+one pad a layer gives 5.09 us and three give 5.04:
 
-    the spin and its barrier      2.53 us      49%
-    the atomics                   1.86 us      36%
-    the acquire fence             0.69 us      13%
-    the claim                     free
+    the spin and its barrier      2.40 us      48%
+    the atomics                   1.71 us      34%
+    the acquire fence             0.79 us      16%
+    the claim                     0.14 us       3%
 
 Both of the changes that made the boundary 12.28 us into 5.15 came out of that
 ladder. The acquire fence was 7.42 us of the 12.28 until it stopped being
@@ -113,11 +116,16 @@ memory operations until a die's piece count and arrival count moved into the
 two halves of one word, which was 2.7%.
 
 What is left is half rendezvous, and the rendezvous is latency rather than
-congestion -- backing the poll off by a factor of sixteen is worth 0.8%. So it
-is spent by having fewer stages, not by polling them better. The one fusion
-tried so far removes a stage, is correct, and does not pay; why it does not is
-open, and the two explanations offered so far were both tested and one of them
-was wrong.
+congestion -- backing the poll off by a factor of sixteen is worth 0.8%. So
+it would be spent by having fewer stages, except that the one fusion
+available does not pay. `--fuse-swiglu` deletes 28 of the 257 boundaries,
+which the ladder says is 0.14 ms or 4.9%, and the whole model still comes out
+1.3% slower -- so the fused gate_up body costs about 6% more than gate_up and
+swiglu separately. The explanation on offer used to be cache-line coverage,
+that a fused piece reads two 24-column weight strips where the split stage
+read one of 48; the layout change removed coverage as a mechanism entirely
+and the fusion is still slower, so that explanation is gone and there is no
+replacement.
 
 What is left of the body is the four matmuls, and what sets their speed is
 neither the traffic nor the arithmetic. Achieved bandwidth across the five
@@ -229,6 +237,7 @@ def emit(
     out_major: bool = True,
     fold_klanes: bool = True,
     full_dim_tasks: bool = True,
+    count_flushes: bool = False,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -634,6 +643,11 @@ def emit(
     QUT = f"memref<{steps}x{layers}x{qslots}xi32>"
     slots = steps * per_step * maxdies
     flushword = 2 * slots
+    # A device-scope atomic per die per stage, 2056 of them a step, whose only
+    # reader is a host-side print. It is an instrument, not part of the
+    # protocol -- which is why it is off unless asked for. Priced at 0.3% of
+    # the launch, which is also a price for one device-scope atomic per die
+    # per boundary and so is worth knowing on its own.
     # One i32 accumulator per stage class for --timers. Qwen is a pile of
     # operators, and the only honest way to say which one costs what is to time
     # each on the device -- not to infer it by subtracting deliberately-broken
@@ -641,6 +655,12 @@ def emit(
     # not sum to the total when the stages meet at a rendezvous.
     nclass = 2 * (stages + extras)  # body and rendezvous wait, per class
     timerbase = flushword + 1
+    flush_count = (
+        "              %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s "
+        'syncscope("") monotonic : !llvm.ptr, i32\n'
+        if count_flushes
+        else ""
+    )
     locwords = timerbase + (nclass + 1 if timers else 0)
     # One workgroup owns the clock. Timing from all of them and summing would
     # overflow i32 and would also count the same wall-clock window `workers`
@@ -723,6 +743,18 @@ def emit(
     # embed, lm head and the partial argmax are split by piece too; the final
     # norm and the argmax reduce are single-task.
     naive = workers * (strided_stages * layers + 3) * steps
+    flush_report = (
+        f"""
+    %cflush = arith.constant {flushword} : index
+    %flushes = memref.load %Loc[%cflush] : memref<{locwords}xi32>
+    vector.print str "device-scope event flushes = "
+    vector.print %flushes : i32
+    %cnaive = arith.constant {naive} : i32
+    vector.print str "what signalling per worker would have been = "
+    vector.print %cnaive : i32"""
+        if count_flushes
+        else ""
+    )
 
     s_qkv = _scale(MOD_QKV, dim)
     s_o = _scale(MOD_O, dim)
@@ -1926,14 +1958,7 @@ module {{
     %nh = arith.constant {heads} : i32
     vector.print %nh : i32
     gpu.memcpy %Loc, %dLoc : memref<{locwords}xi32>, memref<{locwords}xi32>
-    %cflush = arith.constant {flushword} : index
-    %flushes = memref.load %Loc[%cflush] : memref<{locwords}xi32>
-{timer_report}
-    vector.print str "device-scope event flushes = "
-    vector.print %flushes : i32
-    %cnaive = arith.constant {naive} : i32
-    vector.print str "what signalling per worker would have been = "
-    vector.print %cnaive : i32
+{timer_report}{flush_report}
     vector.print str "output elements differing from the reference = "
     vector.print %bad : i32
     // The token check is exact, not a tolerance: argmax turns the whole chain
@@ -2889,8 +2914,7 @@ module {{
             else f"""          scf.if %isLead {{
 {packed}
               %sig{l}_{stage} = llvm.atomicrmw add %p{l}_{stage}, %tot{l}_{stage} syncscope("") release : !llvm.ptr, i32
-              %cnt{l}_{stage} = llvm.atomicrmw add %flushP, %one_s syncscope("") monotonic : !llvm.ptr, i32
-            }}
+{flush_count.format(l=l, stage=stage)}            }}
           }}"""
         )
         spin_block = (
@@ -4302,6 +4326,15 @@ def main() -> int:
         "width",
     )
     ap.add_argument(
+        "--count-flushes",
+        action="store_true",
+        help="count the device-scope event flushes and print the total next "
+        "to what signalling per worker would have cost. One extra "
+        "device-scope atomic per die per stage, 2056 a step, read by nothing "
+        "but that print -- an instrument, not part of the protocol, so it is "
+        "off by default",
+    )
+    ap.add_argument(
         "--pad-strip",
         type=int,
         default=0,
@@ -4367,44 +4400,50 @@ def main() -> int:
         )
     prompt = [int(x) for x in a.prompt.split(",")] if a.prompt else None
     sys.stdout.write(
+        # By keyword, all of them. This was positional and a flag added in
+        # the middle of the signature silently took the value of the one
+        # after it -- the generator ran, the tests passed, and the flag was
+        # on when it was asked to be off. Thirty-eight arguments is past
+        # where a reader can check an order by eye.
         emit(
-            a.layers,
-            a.dim,
-            a.tasks,
-            a.workers,
-            a.repeat,
-            a.cache,
-            a.tokens,
-            a.inter,
-            a.heads,
-            a.kv_heads,
-            a.steps,
-            a.vocab,
-            a.head_dim,
-            a.rope_theta,
-            W,
-            prompt,
-            a.prompt_len,
-            a.wave,
-            a.waves,
-            a.nt,
-            a.timers,
-            a.dies,
-            a.reduce_unroll,
-            not a.timers_total_only,
-            not a.dynamic_claim,
-            a.pad_stages,
-            a.pad_strip,
-            not a.acquire_per_wave,
-            a.spin_sleep,
-            not a.split_arrival,
-            a.fuse_swiglu,
-            a.stage_lhs,
-            a.acquire_agent,
-            not a.round_robin_claim,
-            not a.weights_reduction_major,
-            not a.lds_klanes,
-            not a.half_dim_tasks,
+            layers=a.layers,
+            dim=a.dim,
+            tasks=a.tasks,
+            workers=a.workers,
+            repeat=a.repeat,
+            cache=a.cache,
+            tokens=a.tokens,
+            inter=a.inter,
+            heads=a.heads,
+            kv_heads=a.kv_heads,
+            steps=a.steps,
+            vocab=a.vocab,
+            head_dim=a.head_dim,
+            rope_theta=a.rope_theta,
+            W=W,
+            prompt=prompt,
+            prompt_len=a.prompt_len,
+            wave=a.wave,
+            waves=a.waves,
+            nt_weights=a.nt,
+            timers=a.timers,
+            dies=a.dies,
+            unroll=a.reduce_unroll,
+            stage_timers=not a.timers_total_only,
+            static_claim=not a.dynamic_claim,
+            pad_stages=a.pad_stages,
+            pad_strip=a.pad_strip,
+            acquire_once=not a.acquire_per_wave,
+            spin_sleep=a.spin_sleep,
+            pack_arrival=not a.split_arrival,
+            fuse_swiglu=a.fuse_swiglu,
+            stage_lhs=a.stage_lhs,
+            acquire_agent=a.acquire_agent,
+            blocked_claim=not a.round_robin_claim,
+            out_major=not a.weights_reduction_major,
+            fold_klanes=not a.lds_klanes,
+            full_dim_tasks=not a.half_dim_tasks,
+            count_flushes=a.count_flushes,
         )
     )
     return 0

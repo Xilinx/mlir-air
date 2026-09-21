@@ -94,6 +94,7 @@ TIMERS="${TIMERS:-}"
 #   SPLITARR=1    two counter words, not one packed      1.027x slower
 #   UNROLL=n      weight loads in flight per lane        default 8
 #   SLEEP=n       clocks/64 the waiter idles per poll    default 16
+#   COUNTFLUSH=1  count device-scope event flushes and print the total
 #   ACQAGENT=1    agent scope on the acquire fence       measures as nothing
 #   FUSESWIGLU=1  swiglu inside gate_up, eight stages a layer
 #   TOTALONLY=1   the launch clock and no per-stage reads
@@ -141,7 +142,7 @@ clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loade
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
   --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 --waves "$WAVES" \
   ${TIMERS:+--timers} \
-  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} ${RRCLAIM:+--round-robin-claim} ${REDMAJOR:+--weights-reduction-major} ${LDSK:+--lds-klanes} ${HALFDIM:+--half-dim-tasks} \
+  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} ${RRCLAIM:+--round-robin-claim} ${REDMAJOR:+--weights-reduction-major} ${LDSK:+--lds-klanes} ${HALFDIM:+--half-dim-tasks} ${COUNTFLUSH:+--count-flushes} \
   --steps "$STEPS" --repeat "$REPEAT" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
