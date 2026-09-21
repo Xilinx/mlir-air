@@ -963,6 +963,142 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 }
 
 // Get channel type from air.channel_interface ops.
+// Endpoint identity for a chain-buffer memcpy: (channel symbol, constant
+// indices). Returns nullopt if the op is not a channel endpoint, or if any
+// bundle index is non-constant -- such endpoints cannot be proven equal to any
+// other, so they must NOT be deduped. Collapsing distinct endpoints would
+// undercount writers/readers and mis-size the chain.
+using ChainEndpointKey = std::pair<StringRef, SmallVector<int64_t, 4>>;
+static std::optional<ChainEndpointKey>
+getChainEndpointKey(Operation *memcpyOp) {
+  auto chan = dyn_cast_if_present<air::ChannelInterface>(memcpyOp);
+  if (!chan)
+    return std::nullopt;
+  SmallVector<int64_t, 4> idx;
+  for (auto v : chan.getIndices()) {
+    auto c = getConstantIntValue(v);
+    if (!c)
+      return std::nullopt;
+    idx.push_back(*c);
+  }
+  return ChainEndpointKey{chan.getChanName(), idx};
+}
+
+SmallVector<Operation *> air::getOrderedChainEndpoints(Value memref,
+                                                       bool writers) {
+  SmallVector<Operation *> stages;
+  llvm::SetVector<ChainEndpointKey> seenKeys;
+  if (!memref)
+    return stages;
+  for (auto user : memref.getUsers()) {
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    bool isWriter = (memref == memcpyOp.getDstMemref());
+    bool isReader = (memref == memcpyOp.getSrcMemref());
+    if ((writers && !isWriter) || (!writers && !isReader))
+      continue;
+    auto key = getChainEndpointKey(user);
+    // Dedupe only provably-equal keyed endpoints; everything else is its own
+    // stage. Dedup absorbs the scf.for unroll / ping-pong duplication that
+    // would otherwise inflate the fan-in/out counts.
+    if (!key || seenKeys.insert(*key))
+      stages.push_back(user);
+  }
+  return stages;
+}
+
+void air::classifyChainBuffer(Value memref, int &numWriters, int &numReaders) {
+  numWriters = getOrderedChainEndpoints(memref, /*writers=*/true).size();
+  numReaders = getOrderedChainEndpoints(memref, /*writers=*/false).size();
+}
+
+bool air::chainEndpointsShareStage(Operation *a, Operation *b) {
+  auto ka = getChainEndpointKey(a);
+  auto kb = getChainEndpointKey(b);
+  return ka && kb && *ka == *kb;
+}
+
+bool air::isSerializedChainBuffer(Value memref, bool *isFanIn) {
+  auto ty = memref ? llvm::dyn_cast<MemRefType>(memref.getType()) : nullptr;
+  if (!ty || !air::isL2(ty))
+    return false;
+  int numWriters = 0, numReaders = 0;
+  classifyChainBuffer(memref, numWriters, numReaders);
+  if (numWriters > 1 && numReaders == 1) {
+    if (isFanIn)
+      *isFanIn = true;
+    return true;
+  }
+  if (numWriters == 1 && numReaders > 1) {
+    // The opt-out rides on the memref.alloc. Which op defines this Value
+    // depends on the pipeline stage: before air.execute is lowered away the
+    // memcpys name the execute's result, and the alloc is inside it.
+    Operation *def = memref.getDefiningOp();
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+      for (auto alloc : exec.getOps<memref::AllocOp>())
+        def = alloc.getOperation();
+    if (def && def->hasAttr(air::attrs::NoChainLock))
+      return false;
+    if (isFanIn)
+      *isFanIn = false;
+    return true;
+  }
+  return false;
+}
+
+llvm::MapVector<Operation *, SmallVector<Value>>
+air::getHerdsFeedingBuffers(Operation *scope,
+                            llvm::function_ref<bool(Value)> isTarget) {
+  llvm::StringMap<SmallVector<air::ChannelGetOp>> getsBySymbol;
+  scope->walk([&](air::ChannelGetOp get) {
+    getsBySymbol[get.getChanName()].push_back(get);
+  });
+
+  llvm::MapVector<Operation *, SmallVector<Value>> found;
+  scope->walk([&](air::HerdOp herd) {
+    // Worklist of buffers the herd's data can reach. `visited` bounds the walk:
+    // the scope holds finitely many memrefs.
+    llvm::DenseSet<Value> visited;
+    SmallVector<Value> worklist;
+    auto pushDestinations = [&](air::MemcpyInterface memcpyOp) {
+      auto push = [&](Value v) {
+        if (v && visited.insert(v).second)
+          worklist.push_back(v);
+      };
+      if (auto put = dyn_cast<air::ChannelPutOp>(memcpyOp.getOperation())) {
+        auto it = getsBySymbol.find(put.getChanName());
+        if (it != getsBySymbol.end())
+          for (auto get : it->second)
+            push(get.getMemref());
+        return;
+      }
+      push(memcpyOp.getDstMemref());
+    };
+
+    // Seed with the herd's outgoing edges. A channel get is inbound -- its
+    // destination is a buffer inside the herd -- so it is not one.
+    herd.walk([&](air::MemcpyInterface memcpyOp) {
+      if (!isa<air::ChannelGetOp>(memcpyOp.getOperation()))
+        pushDestinations(memcpyOp);
+    });
+
+    while (!worklist.empty()) {
+      Value buf = worklist.pop_back_val();
+      // Keep walking past a target: a herd can feed several, and a diagnostic
+      // that names only the first would point at an arbitrary one.
+      if (isTarget(buf))
+        found[herd.getOperation()].push_back(buf);
+      for (auto *user : buf.getUsers()) {
+        auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+        if (memcpyOp && memcpyOp.getSrcMemref() == buf)
+          pushDestinations(memcpyOp);
+      }
+    }
+  });
+  return found;
+}
+
 FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   if (!memcpyIfOp)
     return failure();

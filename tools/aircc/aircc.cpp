@@ -966,9 +966,15 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   // Ping-pong transform
   if (omitPingpong.getValue().empty() || omitPingpong.getValue() == "L1" ||
       omitPingpong.getValue() == "L2") {
-    // Pass the device so the labeller can decline a candidate whose duplicated
-    // L1 buffers would not fit the tile.
+    // The device lets the labeller decline a candidate whose duplicated L1
+    // buffers would not fit the tile; the chain-lock flag lets it decline one
+    // whose run-ahead would feed a serialized fan-in. Both are facts the
+    // labeller cannot derive on its own, and the second must agree with what
+    // air-to-aie is told below or the two disagree about whether a chain
+    // exists.
     std::string labelOpts = "device=" + deviceName.getValue();
+    labelOpts += " chain-lock-v2=";
+    labelOpts += useLockRaceConditionFixV2 ? "true" : "false";
     std::string ppOpts;
     if (omitPingpong.getValue() == "L1" || omitPingpong.getValue() == "L2") {
       labelOpts += " omit-memory-space=" + omitPingpong.getValue();
