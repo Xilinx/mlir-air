@@ -288,6 +288,24 @@ def compile_attn_npu2(
         shutil.copy2("attn_npu2.o", "attn.o")
 
 
+def compile_layer_norm_rows(n=768, rows=4, force=True):
+    """Compile layer_norm_rows.o, the C++ row kernel behind layer_norm.py's
+    ``ext=True`` path.
+
+    ``n`` is the row length (LN_N, a multiple of 32) and ``rows`` the rows one
+    call normalizes (LN_ROWS); both are baked in and must match the ``rows`` the
+    builder was given. ``rows`` doubles as the group of rows processed together:
+    4 is the best point (see layer_norm_rows.cc).
+    """
+    src = _PROJ_ROOT / "layer_norm" / "layer_norm_rows.cc"
+    _compile_kernel(
+        src,
+        "layer_norm_rows.o",
+        extra_flags=[f"-DLN_N={n}", f"-DLN_ROWS={rows}", f"-DLN_GROUP={rows}"],
+        force=force,
+    )
+
+
 def compile_mv(tile_m=8):
     """Compile mv.o (standard GEMV kernel) from source."""
     src = _PROJ_ROOT / "matrix_vector_multiplication" / "bf16" / "mv.cc"
