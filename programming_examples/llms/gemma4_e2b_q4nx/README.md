@@ -202,44 +202,55 @@ carries are wired up:
 - `run_npu2_prefill_sweep.lit` -- TTFT vs padded prompt length. Measured here:
   512 -> 1184 ms (432 tok/s), 1024 -> 2177 ms (470 tok/s), 2048 -> 4719 ms
   (434 tok/s), first-token gate passing at every length.
-- `run_npu2_sweep.lit` -- decode tok/s vs KV depth, all 35 layers. Measured
-  here: 18.21 / 16.27 / 13.39 / 9.91 / 6.52 / 3.87 / 2.14 tok/s at
-  1k / 2k / 4k / 8k / 16k / 32k / 64k; 128k is out of reach.
+- `run_npu2_sweep.lit` -- decode tok/s vs KV depth, all 35 layers, 1k through
+  128k. Whether the top two depths are reachable depends on how much host
+  memory XRT will pin for the KV BO, so they are expected-fail; the nightly
+  runner reaches both. The numbers are on the benchmark page, measured fresh
+  each night rather than copied here.
 
-The decode sweep's points are all marked expected-fail, which is temporary and
-is the subject of the section below -- it publishes those numbers on a host that
-can produce them, and does not redden a nightly on one that cannot.
+The decode sweep's points are no longer expected-fail except at 65536 and
+131072, which turn on how much host memory XRT will pin for the KV BO and so
+are a property of the machine rather than of this model.
 
-`run_npu2_profile.lit` runs `profile-prefill`, so the published row carries a
-real TTFT and a null decode tok/s. That is the same #1984 constraint, NOT a
+`run_npu2_profile.lit` still runs `profile-prefill`, so the published row
+carries a real TTFT and a null decode tok/s. That is no longer forced -- see the
+section below -- but pointing it back at `profile` is a separate change, NOT a
 missing driver: `make profile` measures both halves, and does so with
 `--ignore-eos`, because this model answers the Paris prompt in two tokens and a
 run that honours the stop reports per-call setup rather than decode.
 
-## The decode dispatch hang (#1984)
+## The decode dispatch hang (#1984, fixed)
 
-`_compile_decode_build` builds exactly what the sweep wants (the full 35-wave
-decode, not the layer gate's single wave), and on a development box every
-context dispatches cleanly. On the benchmark runner the same binaries hang
-nondeterministically: ERT_CMD_STATE_TIMEOUT on ~40% of attempts at 4-5 waves,
-which compounds to near-certain failure at 35.
+`_compile_decode_build` builds exactly what the sweep wants: the full 35-wave
+decode, not the layer gate's single wave. That dispatch used to hang
+nondeterministically on the benchmark runner -- ERT_CMD_STATE_TIMEOUT on ~40% of
+attempts at 4-5 waves, compounding to near-certain failure at 35 -- while a
+development box ran it clean.
 
-The only measured difference between the two hosts is amdxdna/XRT 2.21.0 on the
-runner against 2.23.0 on the development box; firmware, Peano and power mode
-match. That is why `run_npu2_sweep.lit` marks every context expected-fail rather
-than being held out of the tree: the build is still exercised and the numbers
-are still published wherever the dispatch works. Drop `--expect-fail` once this
-is fixed.
+The issue recorded amdxdna/XRT 2.21.0 on the runner against 2.23.0 on the
+development box as the only measured difference, firmware, Peano and power mode
+matching. That was a red herring. The cause was a chain-lock deadlock, fixed in
+#2008: a serialized memtile fan-in whose producers ran ahead under ping-pong and
+parked a packet on a switchbox arbiter the router had shared with an earlier
+stage of the same chain. That is a compile-time property of the design, so it
+was never specific to a host -- the runner simply lost the race more often, and
+the development box reproduces it too at `default` power mode.
 
-**This, not a missing driver, is why the token gate has no lit.** `make run` is
-a real gate and passes locally, but every one of its dispatches is a 35-wave
-decode. A lit around it would not go red on this runner, it would TIME OUT and
-block the nightly, which `--expect-fail` cannot express. So the decode gate is
-local-only, `run_npu2_profile.lit` measures TTFT through `profile-prefill`, and
-CI's on-device decode coverage stays the per-layer gate (one wave, reliable).
-When #1984 is fixed, three things land together: `--expect-fail` comes off the
-sweep, the profile lit goes back to `make profile` with `--n-tokens 64`, and a
-`run_npu2_verify_decode.lit` around `make run` becomes possible.
+A sweep-only dispatch of the nightly benchmark on its own runner took gemma4
+from 8/8 contexts hanging to 8/8 measured. `--expect-fail` is gone from
+`run_npu2_sweep.lit` accordingly, except at 65536 and 131072, which turn on how
+much host memory XRT will pin for the KV BO and are a property of the machine
+rather than of this defect. The sibling sweeps carry the same two.
+
+**The token gate still has no lit, but that is now work not yet done rather
+than a blocker.** `make run` is a real gate and passes locally, and every one of
+its dispatches is a 35-wave decode -- which used to mean a lit around it would
+not go red on this runner, it would TIME OUT and block the nightly, something
+`--expect-fail` cannot express. With the dispatch reliable, two follow-ups are
+unblocked: pointing `run_npu2_profile.lit` back at `make profile` with
+`--n-tokens 64` so the published row carries a real decode tok/s instead of
+null, and adding a `run_npu2_verify_decode.lit` around `make run`. Until those
+land, CI's on-device decode coverage stays the per-layer gate (one wave).
 
 Reproduce with:
 

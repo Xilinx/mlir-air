@@ -12,13 +12,15 @@
 //
 // NOT because the driver is missing -- gemma4_e2b_q4nx_inference.py exists and
 // `make profile` measures both halves, which is why this test deliberately runs
-// `profile-prefill` instead. It is #1984: the full-depth 35-wave decode dispatch
-// hangs on THIS RUNNER (amdxdna 2.21.0) while being clean on a development box
-// (2.23.0), the same defect that puts every point of run_npu2_sweep.lit in
-// --expect-fail. Measuring decode here would redden a nightly for a defect that
-// is not in this model's code. WHEN #1984 IS FIXED, point the RUN line back at
-// `profile`, pass --n-tokens 64 to extract_perf.py, and add a CHECK on a parsed
-// decode_tokens_per_sec.
+// `profile-prefill` instead. It was #1984: the full-depth 35-wave decode
+// dispatch hung on this runner, which also put every point of
+// run_npu2_sweep.lit in --expect-fail. That hang is fixed (#2008), and the
+// sweep now expects failure only at 65536 and 131072 -- an unrelated limit on
+// how much host memory XRT will pin for the KV BO, not this defect. Pointing
+// this RUN line back at `profile`, passing --n-tokens 64 to extract_perf.py and
+// adding a CHECK on a parsed decode_tokens_per_sec is the remaining step,
+// deliberately left to its own change so a nightly regression in it is
+// attributable.
 //
 // The nightly derives its per-model row from <model>.perf.json, and for a model
 // that ran verify but produced no perf.json it synthesizes an all-null row whose
