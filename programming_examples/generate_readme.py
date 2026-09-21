@@ -1038,7 +1038,7 @@ def render_llm_benchmark(
     # obsolete: render_llm_sweep emits a row for every record it is given, with
     # a marker per failed cell, so such a model does appear. What the guard
     # actually produced was the opposite problem -- gemma4_e2b_q4nx, whose every
-    # context is an expected failure under #1984, was listed THREE times: once
+    # context was then an expected failure under #1984, was listed THREE times: once
     # here with a null decode, once in the sweep table, and once in the prefill
     # sweep table.
     #
