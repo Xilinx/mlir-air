@@ -4239,6 +4239,7 @@ for subsequent hoisting, and an attribute added to the scf.for with an unroll fa
 <h4 id="options_11">Options<a class="headerlink" href="#options_11" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>-omit-memory-space : Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).
 <a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>-device            : Target AIE device. When given, a candidate whose duplicated L1 buffers would exceed the tile's local memory is declined. Empty string skips the check.
+<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>-chain-lock-v2     : Mirror air-to-aie's use-lock-race-condition-fix-v2. When set, a candidate inside a herd whose output feeds a serialized fan-in chain is declined: the chain orders its writers, so the run-ahead ping-pong buys can park a packet on a shared switchbox arbiter and deadlock an earlier writer.
 </code></pre></div>
 <h3 id="-air-linalg-codegen"><code>-air-linalg-codegen</code><a class="headerlink" href="#-air-linalg-codegen" title="Permanent link">&para;</a></h3>
 <p><em>AIR codegen strategies for linalg</em></p>
