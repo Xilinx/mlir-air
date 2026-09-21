@@ -31,6 +31,7 @@ NPU kernels driven (all validated at these exact shapes in A3-1..A3-4, registry)
                    tile_m16/tn80, herd 4x4 — the registry's per-shape override)
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -90,6 +91,12 @@ def _gelu_backend():
         # nothing rather than failing.
         "target_device": "npu2",
     }
+
+
+# SMOLVLA_FA_QSEG=1 runs the FlashAttention q-block loop inside the segment instead of
+# as a launch-grid axis: the same design and microkernels (bit-identical output), but
+# head_groups * n_images sequential waves instead of q_blocks * head_groups * n_images.
+_FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "0") == "1"
 
 
 def _attn_backend(n_images=1):
@@ -225,9 +232,12 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         num_heads_per_unroll=num_heads_per_unroll,
         fused_qkv=fused_qkv,
         n_images=n_images,
+        q_in_segment=_FA_Q_IN_SEGMENT,
     )
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
-    print(f"    (FA microkernel BFP16={fa_bfp16})")
+    print(
+        f"    (FA microkernel BFP16={fa_bfp16}, q loop in segment={_FA_Q_IN_SEGMENT})"
+    )
     cache.compile_and_cache(
         "flash_attn",
         attn_mod,

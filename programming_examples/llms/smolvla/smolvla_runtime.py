@@ -61,6 +61,8 @@ _CACHE_SUFFIX = (
     ("_ln" if LN_EXT else "")
     + ("" if OFFN_TILING == [2, 2] else "_o" + "x".join(map(str, OFFN_TILING)))
     + ("" if LNQKV_TILING == [2, 2] else "_q" + "x".join(map(str, LNQKV_TILING)))
+    # ...and so is the FlashAttention schedule (q loop inside the segment).
+    + ("_qseg" if os.environ.get("SMOLVLA_FA_QSEG", "0") == "1" else "")
 )
 VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")
 VISION_SEQ_LEN = 1024
