@@ -109,6 +109,18 @@ one pad a layer gives 5.09 us and three give 5.04:
     the acquire fence             0.79 us      16%
     the claim                     0.14 us       3%
 
+The "atomics" tier is not the atomic operations. Adding one more
+device-scope atomic per die per stage -- 2056 a step, which is what
+`--count-flushes` does -- measures as nothing, because it is `monotonic` and
+carries no fence. What the tier is made of is the release ordering on the two
+that do carry one: the per-workgroup agent-scope release on the die counter,
+which is an `s_waitcnt vmcnt(0)` draining the stage's stores, and the die
+leader's device-scope release, which is a `buffer_wbl2`.
+
+And the spin is propagation, not backoff granularity. `--spin-sleep` is flat
+from 16 to 32 and costs 2.2% at 0 and 0.4% at 64, so there is no polling
+schedule that helps.
+
 Both of the changes that made the boundary 12.28 us into 5.15 came out of that
 ladder. The acquire fence was 7.42 us of the 12.28 until it stopped being
 taken once per wave -- 1.48x on the whole model -- and signalling was three
