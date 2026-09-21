@@ -51,10 +51,10 @@ Qwen3-0.6B checkpoint, six decode steps, 28 layers.
     QWEN_DIR=/path/to/qwen3-0.6b TASKS=128 WORKERS=128 WAVES=8 STEPS=6 \\
         run_qwen.sh
 
-That is the configuration that runs at **3.57 ms a token**, against Fleet's
-mirage_mpk at 2.452 and a memory-bandwidth floor of 0.14. It prints the
-tokens, the host reference's tokens, and an independent numpy Qwen3's, and
-says PASS only when all three agree.
+That is the configuration that runs at **2.94 ms a token**, against Fleet's
+mirage_mpk at 2.421 measured on the same node and a memory-bandwidth floor of
+0.14. It prints the tokens, the host reference's tokens, and an independent
+numpy Qwen3's, and says PASS only when all three agree.
 
 Nothing here needs a flag to be fast; the defaults are the fast ones. The
 flags that exist are the slow forms, kept because each rests on an assumption
@@ -65,11 +65,21 @@ worth being able to withdraw:
                         the barrier.                        1.48x slower.
     --dynamic-claim     hand pieces out from per-chiplet queues rather than
                         partitioning them by chiplet rank.  1.60x slower.
+    --weights-reduction-major
+                        the bf16 weights as [reduction][output], so a lane
+                        walking its reduction strides by the whole width.
+                        5.7% slower.
+    --half-dim-tasks    o_proj and down on half the workgroups in pieces
+                        twice as wide.                      6.0% slower.
+    --lds-klanes        a column's lane partials meet entirely in LDS rather
+                        than folding by shuffle first.      3.2% slower.
+    --round-robin-claim chiplet d takes the pieces congruent to d rather than
+                        a contiguous block of them.         3.2% slower.
     --split-arrival     a die's piece count and arrival count in two words
                         rather than the halves of one.      1.027x slower.
     --reduce-unroll 1   one weight load in flight per lane at a time.
-                        1.61x slower at --reduce-unroll 1; 8 is the default
-                        and 16 gives the registers back to spills.
+                        1.61x slower at 1, 17.5% at 4, 48% at 16; 8 is the
+                        default and is a real minimum, not a ceiling.
     --spin-sleep 0      poll the event word as tight as the hardware will
                         run; 16 is the default and worth 0.8%.
 
@@ -80,15 +90,13 @@ before trying it again -- see the note next to `slice_i`.
 Then the flags that only exist to measure -- `--timers`,
 `--timers-total-only`, `--pad-stages`, `--pad-strip`. See "Measuring it".
 
-Where the 3.57 ms goes
+Where the 2.94 ms goes
 ----------------------
 
-Two thirds of it is the program and one third is the stages meeting. A stage
-boundary -- claim, signal, rendezvous, acquire -- costs 5.15 us whatever the
-stage computes, and a decode step has 257 of them, so 1.32 of the 3.58 is
-boundary. The rest is every weight load, every FMA, the attention and
-the argmax, which is already inside Fleet's 2.452 for the whole model. The
-arithmetic and the traffic are not the gap; the way the stages meet is.
+A stage boundary -- claim, signal, rendezvous, acquire -- costs 5.15 us
+whatever the stage computes, and a decode step has 257 of them, so 1.32 ms is
+boundary: it was a third of the launch and is now nearly half of it, because
+everything around it got faster and it did not.
 
 Priced by `--pad-strip`, which removes one piece of the boundary at a time
 from a stage that computes nothing:
@@ -110,6 +118,27 @@ is spent by having fewer stages, not by polling them better. The one fusion
 tried so far removes a stage, is correct, and does not pay; why it does not is
 open, and the two explanations offered so far were both tested and one of them
 was wrong.
+
+What is left of the body is the four matmuls, and what sets their speed is
+neither the traffic nor the arithmetic. Achieved bandwidth across the five
+matmul classes is ordered by one thing: the length of the dependent chain
+that combines the partials of the lanes sharing an output column, divided by
+the weights a lane loads between two of them. Three other explanations were
+built and measured first and none of them ordered these five:
+
+  * cross-XCD cache-line duplication got the order backwards. --blocked-claim
+    is 3.2% and it is alignment, not duplication -- gate_up's 48-column piece
+    is the one width here that does not divide a 128-byte line.
+  * cache-line coverage got the order right and the size wrong by seven
+    times. Flipping the weights to [output][reduction] is 5.7%.
+  * bytes in flight was already satisfied. The emitted gfx950 assembly has
+    206 `global_load_dwordx4` and one `global_load_ushort`; writing the
+    vector load out by hand gives identical assembly and a clock 0.17%
+    apart, which is noise.
+
+And the redundant activation reads, which looked like more traffic than the
+weights, are all L2 hits -- staging them in LDS is 14.7% slower. See
+--stage-lhs.
 
 Measuring it
 ------------
