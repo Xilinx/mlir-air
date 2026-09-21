@@ -198,6 +198,8 @@ def emit(
     acquire_agent: bool = False,
     blocked_claim: bool = True,
     out_major: bool = True,
+    fold_klanes: bool = True,
+    full_dim_tasks: bool = True,
 ) -> str:
     inter = inter or 2 * dim
     assert heads % kv_heads == 0, "heads must be a multiple of kv-heads"
@@ -383,7 +385,15 @@ def emit(
     # 128 workgroups' work. Two pieces of 594 columns instead of one of 1187 is
     # the same bytes and one more loop. Left at `tasks`, with the measurement
     # written down so the row is not read that way again.
-    tasks_d = max(dies, tasks // 2)
+    # o_proj and down are only `dim` wide, so splitting them `tasks` ways
+    # leaves each piece 8 columns at 128 tasks. Halving the split doubles the
+    # piece to 16 and idles half the workgroups, and that used to be the
+    # better trade because under [reduction][output] the piece width WAS the
+    # cache-line coverage: 8 columns is 16 bytes of a 128-byte line, 16 is 32.
+    # Under [output][reduction] a lane walks a row and the piece width no
+    # longer touches coverage at all, so the trade is now only workgroups
+    # against per-lane work and it is worth asking again.
+    tasks_d = max(dies, tasks if full_dim_tasks else tasks // 2)
     tasks_v = tasks
     for n, v in (("dim", dim), ("inter", inter)):
         assert v % tasks_d == 0, (
@@ -3091,6 +3101,16 @@ module {{
         )
         # Every load first, so the wave has all of them outstanding before the
         # first extf makes it wait.
+        #
+        # Under [output][reduction] with a contiguous slice these `u` loads
+        # are `u` adjacent bf16, and there is nothing to do about that here:
+        # the backend already merges them. Checked in the ISA -- the emitted
+        # gfx950 assembly for this model has 206 `global_load_dwordx4` and one
+        # `global_load_ushort`, and writing them as an explicit `vector.load`
+        # of `vector<8xbf16>` produces assembly with exactly the same counts
+        # and a launch clock 0.17% apart, which is noise. So Little's law,
+        # which wanted sixteen bytes outstanding a lane rather than two, was
+        # already satisfied by the layout change; it is not what is left.
         for k in range(u):
             idx = f"%i{tag}" if k == 0 else f"%ik{tag}_{k}"
             if k:
@@ -3277,6 +3297,77 @@ module {{
         red_step = "%c1_s" if chunked else f"%cKS{l}_{stage}"
         red_trip = (red_num // kways) if chunked else red_num
         red_stepn = 1 if chunked else kways
+        # How the `waves * klanes` partials of one column meet.
+        #
+        # They were meeting entirely in LDS: every thread stored its partial
+        # and lane c of wave 0 walked all `waves * klanes` of column c in a
+        # single `iter_args` chain -- 64 dependent LDS loads for anything
+        # dim-wide at 128 tasks, once per column block. That chain, not the
+        # weight traffic, is what set the spread in achieved bandwidth across
+        # these four stages: dividing its length by the weights a lane loads
+        # in the same block orders all five matmul classes correctly, over a
+        # 31x range, where line coverage and bytes in flight did not.
+        #
+        #   class    epilogue  weights/lane  ratio   GB/s
+        #   lm_head       152          2432  0.062   1078
+        #   gate_up        32           128  0.250    734
+        #   qkv            16            64  0.250    678
+        #   down           64            48  1.333    363
+        #   o_proj         64            32  2.000    316
+        #
+        # The lanes sharing a column differ only in the bits above
+        # log2(cols), so `ksteps` xor exchanges fold their partials in
+        # registers and leave one partial a wave to go through LDS. The chain
+        # becomes `waves` long whatever `klanes` is, and only the `cols` lanes
+        # of each wave that hold the fold need store.
+        kfold = "".join(
+            f"""                  %kx{l}_{stage}_{k} = arith.constant {cols << k} : i32
+                  %kw{l}_{stage}_{k} = arith.constant {wave} : i32
+                  %kv{l}_{stage}_{k}, %kp{l}_{stage}_{k} = gpu.shuffle xor %kacc{l}_{stage}_{k}, %kx{l}_{stage}_{k}, %kw{l}_{stage}_{k} : f32
+                  %kacc{l}_{stage}_{k + 1} = arith.addf %kacc{l}_{stage}_{k}, %kv{l}_{stage}_{k} : f32
+""" for k in range(ksteps)
+        )
+        kfold = (
+            f"                  %kacc{l}_{stage}_0 = arith.addf %part0, %fzero_s : f32\n"
+            + kfold
+            + f"                  %part = arith.addf %kacc{l}_{stage}_{ksteps}, %fzero_s : f32\n"
+        )
+        if not fold_klanes:
+            kfold = "                  %part = arith.addf %part0, %fzero_s : f32\n"
+        # Slot w*cols + c, so wave 0 reads `waves` of them at stride `cols`.
+        kstore = f"""                  %kin{l}_{stage} = arith.cmpi ult, %lid, %cC{l}_{stage} : index
+                  scf.if %kin{l}_{stage} {{
+                    %kwo2{l}_{stage} = arith.muli %wid, %cC{l}_{stage} : index
+                    %ksi{l}_{stage} = arith.addi %kwo2{l}_{stage}, %lid : index
+                    memref.store %part, %ldsr[%ksi{l}_{stage}] : {RT}
+                  }}
+"""
+        kread = f"""                      %a = scf.for %blw = %c0_s to %cwaves step %c1_s
+                          iter_args(%blacc = %fzero_s) -> (f32) {{
+                        %blo = arith.muli %blw, %cC{l}_{stage} : index
+                        %bli = arith.addi %blo, %lid : index
+                        %blv = memref.load %ldsr[%bli] : {RT}
+                        %bln = arith.addf %blacc, %blv : f32
+                        scf.yield %bln : f32
+                      }}
+"""
+        if not fold_klanes:
+            kstore = f"                  memref.store %part, %ldsr[%tx_s] : {RT}\n"
+            kread = f"""                      %a = scf.for %blw = %c0_s to %cwaves step %c1_s
+                          iter_args(%blacc = %fzero_s) -> (f32) {{
+                        %blo = arith.muli %blw, %nlane : index
+                        %bin = scf.for %blk = %c0_s to %cKL{l}_{stage} step %c1_s
+                            iter_args(%bkacc = %blacc) -> (f32) {{
+                          %bko = arith.muli %blk, %cC{l}_{stage} : index
+                          %bkb = arith.addi %blo, %bko : index
+                          %bli = arith.addi %bkb, %lid : index
+                          %blv = memref.load %ldsr[%bli] : {RT}
+                          %bln = arith.addf %bkacc, %blv : f32
+                          scf.yield %bln : f32
+                        }}
+                        scf.yield %bin : f32
+                      }}
+"""
         return strided_stage(
             l,
             stage,
@@ -3303,34 +3394,18 @@ module {{
           red_step, red_stepn, lhs, lhsty, wmat, wty,
           l, "%j", f"wm_{l}_{stage}", 18, lhs_silu=lhs_silu,
           staged=staged, ltype=LT)}
-                  %part = arith.addf %part0, %fzero_s : f32
-                  // The wave partials for one column live at the same lane of
+{kfold}                  // The wave partials for one column live at the same lane of
                   // every wave, so the slot is just the thread id and wave 0
                   // walks them with a fixed stride.
                   gpu.barrier
-                  memref.store %part, %ldsr[%tx_s] : {RT}
-                  gpu.barrier
+{kstore}                  gpu.barrier
                   scf.if %isW0 {{
                     // Lane c of wave 0 finishes column c: the butterfly left
                     // every lane sharing a column holding that column's wave
                     // total, so slot w*wave + c is wave w's share of column c.
                     %inC{l}_{stage} = arith.cmpi ult, %lid, %cC{l}_{stage} : index
                     scf.if %inC{l}_{stage} {{
-                      %a = scf.for %blw = %c0_s to %cwaves step %c1_s
-                          iter_args(%blacc = %fzero_s) -> (f32) {{
-                        %blo = arith.muli %blw, %nlane : index
-                        %bin = scf.for %blk = %c0_s to %cKL{l}_{stage} step %c1_s
-                            iter_args(%bkacc = %blacc) -> (f32) {{
-                          %bko = arith.muli %blk, %cC{l}_{stage} : index
-                          %bkb = arith.addi %blo, %bko : index
-                          %bli = arith.addi %bkb, %lid : index
-                          %blv = memref.load %ldsr[%bli] : {RT}
-                          %bln = arith.addf %bkacc, %blv : f32
-                          scf.yield %bln : f32
-                        }}
-                        scf.yield %bin : f32
-                      }}
-                      scf.if %jok {{
+{kread}                      scf.if %jok {{
                         %j2 = arith.addi %j0, %jj : index{store_blk}
                       }}
                     }}
@@ -4173,6 +4248,31 @@ def main() -> int:
         "what says both are right is the token check",
     )
     ap.add_argument(
+        "--lds-klanes",
+        action="store_true",
+        help="send the partials of all `waves * klanes` lanes that share an "
+        "output column through LDS, for lane c of wave 0 to walk in one "
+        "dependent chain, rather than folding the lanes with an xor "
+        "butterfly first and sending one partial a wave. **3.2%% slower**, "
+        "and 5.8%% on the two stages whose chain it lengthens most. The "
+        "chain is what set the spread in achieved bandwidth across the "
+        "matmuls: its length over the weights a lane loads in the same "
+        "column block orders all five classes, where cache-line coverage "
+        "and bytes in flight did not",
+    )
+    ap.add_argument(
+        "--half-dim-tasks",
+        action="store_true",
+        help="split o_proj and down `tasks // 2` ways into pieces twice as "
+        "wide, idling half the workgroups, rather than `tasks` ways like "
+        "every other stage. **6.0%% slower.** It was the better trade under "
+        "[reduction][output], where the piece width was also the cache-line "
+        "coverage -- 8 columns is 16 bytes of a 128-byte line and 16 columns "
+        "is 32. Under [output][reduction] a lane walks a row, the width does "
+        "not touch coverage, and the workgroups are worth more than the "
+        "width",
+    )
+    ap.add_argument(
         "--pad-strip",
         type=int,
         default=0,
@@ -4274,6 +4374,8 @@ def main() -> int:
             a.acquire_agent,
             not a.round_robin_claim,
             not a.weights_reduction_major,
+            not a.lds_klanes,
+            not a.half_dim_tasks,
         )
     )
     return 0

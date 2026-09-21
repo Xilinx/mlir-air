@@ -18,8 +18,8 @@
 # Hugging Face. The first run converts the checkpoint into the flat float32
 # blob the chain reads and leaves it in <QWEN_DIR>/air.
 #
-# The shape that runs Qwen3-0.6B at 3.25 ms a token on one MI350X, which is
-# 1.34x Fleet's mirage_mpk and 23x the memory-bandwidth floor:
+# The shape that runs Qwen3-0.6B at 2.94 ms a token on one MI350X, which is
+# 1.21x Fleet's mirage_mpk and 21x the memory-bandwidth floor:
 #
 #   QWEN_DIR=... TASKS=128 WORKERS=128 WAVES=8 STEPS=6 run_qwen.sh
 #
@@ -101,6 +101,8 @@ TIMERS="${TIMERS:-}"
 #   PADSTRIP=k    leave piece k and beyond out of those empty stages
 #   RRCLAIM=1     pieces congruent to the die, not a block 3.2% slower
 #   REDMAJOR=1    weights as [reduction][output]           5.7% slower
+#   LDSK=1        a column's lane partials meet in LDS       3.2% slower
+#   HALFDIM=1     o_proj and down on half the workgroups     6.0% slower
 #
 # "The capital of France is"
 PROMPT="${PROMPT:-785,6722,315,9625,374}"
@@ -139,7 +141,7 @@ clang -O2 -shared -fPIC -o "$TMPDIR/libairweights.so" "$SCRIPT_DIR/weights_loade
 "$PY" "$SCRIPT_DIR/gen.py" --weights "$QWEN_DIR/air" --layers "$LAYERS" \
   --tasks "$TASKS" --workers "$WORKERS" --tokens "$WIN" --cache 0 --waves "$WAVES" \
   ${TIMERS:+--timers} \
-  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} ${RRCLAIM:+--round-robin-claim} ${REDMAJOR:+--weights-reduction-major} \
+  ${UNROLL:+--reduce-unroll "$UNROLL"} ${DYNAMIC:+--dynamic-claim} ${TOTALONLY:+--timers-total-only} ${PAD:+--pad-stages "$PAD"} ${PADSTRIP:+--pad-strip "$PADSTRIP"} ${ACQPERWAVE:+--acquire-per-wave} ${ACQAGENT:+--acquire-agent} ${SLEEP:+--spin-sleep "$SLEEP"} ${SPLITARR:+--split-arrival} ${FUSESWIGLU:+--fuse-swiglu} ${STAGELHS:+--stage-lhs} ${RRCLAIM:+--round-robin-claim} ${REDMAJOR:+--weights-reduction-major} ${LDSK:+--lds-klanes} ${HALFDIM:+--half-dim-tasks} \
   --steps "$STEPS" --repeat "$REPEAT" --prompt "$PROMPT" > "$TMPDIR/chain.mlir"
 air-opt "$TMPDIR/chain.mlir" -air-to-rocdl -o "$TMPDIR/s1.mlir"
 air-opt "$TMPDIR/s1.mlir" -air-gpu-outlining -o "$TMPDIR/s2.mlir"
