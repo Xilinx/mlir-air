@@ -546,9 +546,10 @@ class KernelCache:
             ref, name = cls._contexts.popitem(last=False)[1]
             cache = ref()
             if cache is None:
-                # The owning cache was collected, taking its backends and their
-                # contexts with it. That is room too, so keep the caller's
-                # retry alive rather than reporting nothing was released.
+                # A collected cache normally purges its own entries through the
+                # weakref callback; this covers the case where that has not run
+                # yet. Its backends went with it, so this is room freed -- say
+                # so, or a caller's retry gives up with room available.
                 freed = True
                 continue
             backend = cache._loaded.pop(name, None)
@@ -614,7 +615,17 @@ class KernelCache:
                     KernelCache._reported_load_failure = True
                 self._release_lru_context()
         self._loaded[name] = backend
-        KernelCache._contexts[(self._uid, name)] = (weakref.ref(self), name)
+        # Drop the entry as soon as the cache dies, so a stale key never
+        # inflates the count the cap is compared against. The callback binds
+        # the key and the map, not self, and must survive interpreter shutdown
+        # rebinding KernelCache to None.
+        key = (self._uid, name)
+        KernelCache._contexts[key] = (
+            weakref.ref(
+                self, lambda _r, k=key, m=KernelCache._contexts: m.pop(k, None)
+            ),
+            name,
+        )
         self._log(f"Loaded {name} ({len(KernelCache._contexts)} contexts open)")
 
     def load_and_run(

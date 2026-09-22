@@ -979,6 +979,9 @@ class XRTBackend(AirBackend):
         # dangling handle. Linux XRT tolerates that; Windows XRT faults.
         # A borrowed device is only dereferenced here, not closed -- its owner
         # keeps it, and with it any BO a caller allocated against it.
+        # self.borrowed_device deliberately survives: it is constructor state,
+        # and load() may be called again. Clearing it would silently open a
+        # private device on the second load.
         self.bo_instr = None
         self.instr_v = None
         self.kernel = None
