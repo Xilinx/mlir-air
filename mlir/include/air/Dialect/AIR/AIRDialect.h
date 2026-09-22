@@ -97,6 +97,9 @@ constexpr StringLiteral NoChainLock = "air.no_chain_lock";
 // request: the "unroll" attribute that drove it is stripped before AIRToAIE,
 // which reads this to verify no chain-lock producer can run a round ahead.
 constexpr StringLiteral PingPong = "air.pingpong";
+// Set by air-label-scf-for-to-ping-pong (unit attr) on an air.herd whose BD
+// rings only stay in step because of the unroll, so it was not declined.
+constexpr StringLiteral PingPongRequired = "air.pingpong_required";
 // Opt-out (unit attr) on a shared-L2 memref.alloc (or its enclosing
 // air.execute): leave this L2 buffer intact instead of partitioning it. Used by
 // hand-written aggregator patterns where splitting would multiply the

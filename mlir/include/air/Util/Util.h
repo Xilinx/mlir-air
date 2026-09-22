@@ -255,6 +255,17 @@ bool isSerializedChainBuffer(Value memref, bool *isFanIn = nullptr);
 llvm::MapVector<Operation *, SmallVector<Value>>
 getHerdsFeedingBuffers(Operation *scope,
                        llvm::function_ref<bool(Value)> isTarget);
+
+// Loops whose ping-pong unroll is what keeps a BD ring in step with its core,
+// so declining them would move the wrong buffer. A sibling group only realigns
+// if every member is unrolled, hence isCandidate.
+llvm::DenseSet<Operation *>
+getLoadBearingPingPongLoops(Operation *herd,
+                            llvm::function_ref<bool(scf::ForOp)> isCandidate);
+
+// Does this herd hold any such group? Asked post-unroll, where the labeller's
+// notion of a candidate no longer applies.
+bool pingPongIsLoadBearing(Operation *herd);
 // Get integer index to metadataArray, from channel bundle indices.
 std::optional<int>
 getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);
