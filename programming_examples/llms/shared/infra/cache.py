@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import time
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 
@@ -323,7 +324,9 @@ class KernelCache:
     # Hardware contexts are a device-wide resource, but a process commonly
     # holds several caches (prefill and decode), so recency spans all of them:
     # a cache with nothing loaded must still be able to make room. Keyed by
-    # (cache uid, kernel name), least-recently-used first.
+    # (cache uid, kernel name), least-recently-used first. The cache is held
+    # weakly: this map outlives any one of them, and a caller that discards a
+    # cache should not keep it, and its buffers, alive through this.
     _contexts = OrderedDict()
     _next_uid = 0
     # Running at the limit means a failed load on every miss, so the note that
@@ -346,7 +349,17 @@ class KernelCache:
         self._uid = KernelCache._next_uid
         KernelCache._next_uid += 1
         if max_contexts is None:
-            max_contexts = int(os.environ.get("AIR_MAX_HW_CONTEXTS", "0"))
+            env = os.environ.get("AIR_MAX_HW_CONTEXTS", "").strip()
+            try:
+                max_contexts = int(env) if env else 0
+            except ValueError:
+                raise ValueError(
+                    f"AIR_MAX_HW_CONTEXTS must be a non-negative integer, got {env!r}"
+                ) from None
+        if not isinstance(max_contexts, int) or max_contexts < 0:
+            raise ValueError(
+                f"max_contexts must be a non-negative integer, got {max_contexts!r}"
+            )
         # 0 leaves the count to the device: hold contexts until one fails to
         # open, then evict to make room. A positive value caps them up front,
         # for a device that signals exhaustion some way other than by raising.
@@ -518,7 +531,7 @@ class KernelCache:
     def _release_lru_context(cls):
         """Unload the least-recently-used kernel in the process.
 
-        False if none is loaded. Only the hardware context goes; the buffers in
+        False if there was nothing to release. Only the context goes; buffers in
         _cached_bos belong to the shared device, not to the context, so they
         stay valid and a later call reloads the kernel without rewriting its
         weights.
@@ -528,12 +541,23 @@ class KernelCache:
         the backend itself, keeps a kernel this nulls out -- so nothing may
         hold either across a load_and_run call that could evict.
         """
-        if not cls._contexts:
-            return False
-        cache, name = cls._contexts.popitem(last=False)[1]
-        cache._loaded.pop(name).unload()
-        cache._log(f"Unloaded {name} to free a hardware context")
-        return True
+        freed = False
+        while cls._contexts:
+            ref, name = cls._contexts.popitem(last=False)[1]
+            cache = ref()
+            if cache is None:
+                # The owning cache was collected, taking its backends and their
+                # contexts with it. That is room too, so keep the caller's
+                # retry alive rather than reporting nothing was released.
+                freed = True
+                continue
+            backend = cache._loaded.pop(name, None)
+            if backend is None:
+                continue
+            backend.unload()
+            cache._log(f"Unloaded {name} to free a hardware context")
+            return True
+        return freed
 
     def _load_backend(self, name, backend_kwargs):
         """Open a hardware context for `name`, evicting others if need be."""
@@ -546,7 +570,8 @@ class KernelCache:
         if "device" not in kwargs:
             kwargs["device"] = get_shared_device()
         while self.max_contexts and len(KernelCache._contexts) >= self.max_contexts:
-            self._release_lru_context()
+            if not self._release_lru_context():
+                break
         while True:
             backend = XRTBackend(**kwargs)
             try:
@@ -589,7 +614,7 @@ class KernelCache:
                     KernelCache._reported_load_failure = True
                 self._release_lru_context()
         self._loaded[name] = backend
-        KernelCache._contexts[(self._uid, name)] = (self, name)
+        KernelCache._contexts[(self._uid, name)] = (weakref.ref(self), name)
         self._log(f"Loaded {name} ({len(KernelCache._contexts)} contexts open)")
 
     def load_and_run(
