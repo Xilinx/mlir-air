@@ -103,12 +103,9 @@ DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
 # Makefile, so without this in the stamp a llama-3.2-1b table edit would leave
 # its warm templates in place while the host imported the new values.
 MODEL_CFG_QUERY = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
-# Computed on first use, then cached by overwriting this definition with the
-# result. Only targets that build a template need the stamp, and the query
-# starts a Python that imports air -- `make bench-decode-exe` is a g++ compile
-# that must not need either. Every variable that reaches this one has to stay
-# recursive (`=`), or it is queried while the makefile is read, for whichever
-# target was asked for.
+# Expanded on first use, then cached. Keep the variables that reach it
+# recursive (`=`): one `:=` runs the query, which imports air, while the
+# makefile is read -- for every target, including the g++-only ones.
 MODEL_CFG = $(eval MODEL_CFG := $(MODEL_CFG_QUERY))$(MODEL_CFG)
 DECODE_FLAGS        = $(MODEL_CFG) PROJ_RC_CACHE=$(PROJ_RC_CACHE)
 
