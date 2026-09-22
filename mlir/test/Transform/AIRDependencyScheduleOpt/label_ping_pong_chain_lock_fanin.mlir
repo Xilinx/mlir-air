@@ -46,6 +46,9 @@ module {
   air.channel @dmaFan [2]
   air.channel @l1StageA [1]
   air.channel @l1StageB [2]
+  air.channel @sibLoad [1]
+  air.channel @sibOut [2]
+  air.channel @sibDrain [1]
 
   func.func @fanin_denies() {
     %c1 = arith.constant 1 : index
@@ -336,6 +339,80 @@ module {
             air.execute_terminator %alloc : memref<32x32xbf16, 2>
           }
           %4 = air.channel.put async [%3, %tok_o] @l1StageA[%c0_h] (%out[] [] []) : (memref<32x32xbf16, 2>)
+        }
+      }
+    }
+    return
+  }
+
+// =============================================================================
+// Case 6: the herd feeds a fan-in, so the guard above would decline it -- but
+// its two @sibLoad endpoints sit in sibling loops, which share one BD ring
+// under one lock pair. Only the unroll makes the core walk that ring in order,
+// so declining would hand each loop a stale slot. Kept, and marked.
+// =============================================================================
+
+// GUARD-LABEL: func.func @load_bearing_pingpong_kept
+// GUARD:       air.pingpong_required
+// GUARD:       } {unroll = 2 : i32}
+// GUARD:       } {unroll = 2 : i32}
+// GUARD:       return
+
+// OFF-LABEL: func.func @load_bearing_pingpong_kept
+// OFF-NOT:   air.pingpong_required
+// OFF:       } {unroll = 2 : i32}
+// OFF:       } {unroll = 2 : i32}
+// OFF:       return
+
+  func.func @load_bearing_pingpong_kept() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 1 : i32} {
+      %1 = air.segment async {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %tok_f, %fanin = air.execute -> (memref<64x32xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x32xbf16, 1>
+          air.execute_terminator %alloc : memref<64x32xbf16, 1>
+        }
+        %w0 = air.channel.get async [%tok_f] @sibOut[%c0] (%fanin[%c0, %c0] [%c1_s, %c1_s] [%c1_s, %c1_s]) : (memref<64x32xbf16, 1>)
+        %w1 = air.channel.get async [%tok_f] @sibOut[%c1_s] (%fanin[%c0, %c0] [%c1_s, %c1_s] [%c1_s, %c1_s]) : (memref<64x32xbf16, 1>)
+        %r0 = air.channel.put async [%w0, %w1] @sibDrain[] (%fanin[] [] []) : (memref<64x32xbf16, 1>)
+        %2 = air.herd @herd_siblings async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
+          %c0_h = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c64 = arith.constant 64 : index
+          %c512 = arith.constant 512 : index
+          %tok0 = air.wait_all async
+          // Row-block 0: runs to completion before row-block 1 starts.
+          %3 = scf.for %arg10 = %c0_h to %c512 step %c64 iter_args(%arg11 = %tok0) -> (!air.async.token) {
+            %tok_a, %buf = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%tok_a] @sibLoad[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %tok_d = air.execute [%fill] {
+              memref.dealloc %buf : memref<32x32xbf16, 2>
+            }
+            scf.yield %tok_d : !air.async.token
+          }
+          // Row-block 1: second endpoint on the same channel, different loop.
+          %5 = scf.for %arg10 = %c0_h to %c512 step %c64 iter_args(%arg11 = %3) -> (!air.async.token) {
+            %tok_a, %buf = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%tok_a] @sibLoad[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %tok_d = air.execute [%fill] {
+              memref.dealloc %buf : memref<32x32xbf16, 2>
+            }
+            scf.yield %tok_d : !air.async.token
+          }
+          %tok_o, %out = air.execute -> (memref<32x32xbf16, 2>) {
+            %alloc = memref.alloc() : memref<32x32xbf16, 2>
+            air.execute_terminator %alloc : memref<32x32xbf16, 2>
+          }
+          %4 = air.channel.put async [%5, %tok_o] @sibOut[%arg21] (%out[] [] []) : (memref<32x32xbf16, 2>)
         }
       }
     }

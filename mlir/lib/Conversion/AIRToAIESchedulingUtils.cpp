@@ -602,6 +602,18 @@ LogicalResult air::verifyChainLockProducers(Operation *scope) {
     if (!herd->hasAttr(air::attrs::PingPong))
       continue;
     auto name = herd.getSymName();
+    // The labeller kept this run-ahead deliberately: declining delivers the
+    // wrong buffer, so refusing would only make a working design unbuildable.
+    if (herd->hasAttr(air::attrs::PingPongRequired)) {
+      herd->emitWarning()
+          << "herd" << (name ? (" @" + name->str()) : "")
+          << " feeds a serialized chain lock and runs ping-pong, which risks a "
+             "switchbox-arbiter deadlock, but its BD rings only stay in step "
+             "because of the unroll. Emitted as-is; give each channel endpoint "
+             "its own channel, or hoist them into one loop body, to let "
+             "air-label-scf-for-to-ping-pong decline it safely";
+      continue;
+    }
     auto diag =
         herd->emitOpError()
         << "herd" << (name ? (" @" + name->str()) : "")

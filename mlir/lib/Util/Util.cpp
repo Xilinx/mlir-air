@@ -33,6 +33,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -1097,6 +1098,28 @@ air::getHerdsFeedingBuffers(Operation *scope,
     }
   });
   return found;
+}
+
+bool air::pingPongIsLoadBearing(Operation *herd) {
+  if (!herd)
+    return false;
+  // One BD ring per (tile, channel): a symbol's endpoints share ring and lock.
+  llvm::StringMap<SmallVector<scf::ForOp>> innermostLoopBySymbol;
+  herd->walk([&](air::ChannelGetOp get) {
+    innermostLoopBySymbol[get.getChanName()].push_back(
+        get->getParentOfType<scf::ForOp>());
+  });
+
+  for (auto &entry : innermostLoopBySymbol) {
+    auto &loops = entry.second;
+    if (loops.size() < 2)
+      continue;
+    // One loop visits the endpoints in ring order; sibling loops each pin to a
+    // single slot while the ring advances past them.
+    if (!llvm::all_equal(loops))
+      return true;
+  }
+  return false;
 }
 
 FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {

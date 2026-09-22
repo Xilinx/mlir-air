@@ -4156,7 +4156,34 @@ public:
     // repeat it for every candidate loop.
     llvm::DenseSet<Operation *> deniedHerds;
     if (clChainLockV2)
-      deniedHerds = findHerdsFeedingSerializedFanIn(funcOp);
+      for (Operation *herd : findHerdsFeedingSerializedFanIn(funcOp)) {
+        // Declining is only free where ping-pong is an optimization; where the
+        // unroll keeps the BD rings in step it trades a hang for wrong data.
+        // Only a herd that would actually have been ping-ponged has a conflict.
+        bool wouldPingPong = false;
+        herd->walk([&](scf::ForOp f) {
+          if (LabelScfForLoopForPingPongPattern::isPingPongCandidate(
+                  f, clOmitMemorySpace, l1Budget, /*deniedHerds=*/nullptr,
+                  /*allocsOut=*/nullptr)) {
+            wouldPingPong = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        if (wouldPingPong && air::pingPongIsLoadBearing(herd)) {
+          herd->setAttr(air::attrs::PingPongRequired, UnitAttr::get(ctx));
+          herd->emitWarning()
+              << "herd feeds a serialized chain lock, where ping-pong "
+                 "run-ahead can deadlock against a shared switchbox arbiter, "
+                 "but its channel endpoints sit in sibling loops whose BD ring "
+                 "only stays in step because of the unroll. Keeping ping-pong: "
+                 "declining it here would silently deliver the wrong buffer. "
+                 "Give each endpoint its own channel, or hoist them into one "
+                 "loop body, to make declining safe";
+          continue;
+        }
+        deniedHerds.insert(herd);
+      }
     patterns.insert<LabelScfForLoopForPingPongPattern>(ctx, clOmitMemorySpace,
                                                        l1Budget, &deniedHerds);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));

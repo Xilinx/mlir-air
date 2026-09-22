@@ -255,6 +255,10 @@ bool isSerializedChainBuffer(Value memref, bool *isFanIn = nullptr);
 llvm::MapVector<Operation *, SmallVector<Value>>
 getHerdsFeedingBuffers(Operation *scope,
                        llvm::function_ref<bool(Value)> isTarget);
+
+// True when this herd's BD rings only stay in step with their cores because of
+// the ping-pong unroll, so declining it would deliver the wrong buffer.
+bool pingPongIsLoadBearing(Operation *herd);
 // Get integer index to metadataArray, from channel bundle indices.
 std::optional<int>
 getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);
