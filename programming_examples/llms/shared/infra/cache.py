@@ -321,16 +321,14 @@ class KernelCache:
     # Manifest file stores artifact metadata for --run-only mode
     MANIFEST_FILE = "manifest.json"
 
-    # Hardware contexts are a device-wide resource, but a process commonly
-    # holds several caches (prefill and decode), so recency spans all of them:
-    # a cache with nothing loaded must still be able to make room. Keyed by
-    # (cache uid, kernel name), least-recently-used first. The cache is held
-    # weakly: this map outlives any one of them, and a caller that discards a
-    # cache should not keep it, and its buffers, alive through this.
+    # (cache uid, kernel name) -> (weak cache, name), least-recently-used
+    # first. Shared across caches because the contexts are: a process holding a
+    # prefill and a decode cache must be able to evict from either. Weak so a
+    # discarded cache, and its buffers, are not pinned here.
     _contexts = OrderedDict()
     _next_uid = 0
-    # Running at the limit means a failed load on every miss, so the note that
-    # explains the evictions is worth one line per process, not per miss.
+    # At the limit every miss fails a load first, so the note explaining the
+    # evictions is worth one line per process rather than one per miss.
     _reported_load_failure = False
 
     def __init__(self, cache_dir=None, verbose=False, profiler=None, max_contexts=None):
@@ -341,11 +339,10 @@ class KernelCache:
         self.verbose = verbose
         self.profiler = profiler or Profiler()
         self.artifacts = {}  # name -> XRTCompileArtifact
-        # Each entry holds a hardware context, of which a device has a small
-        # fixed number that varies with the device and its driver -- a model
-        # with more distinct kernels than that cannot keep them all loaded, so
-        # entries are evicted least-recently-used (see _contexts).
-        self._loaded = {}  # name -> backend
+        # name -> backend, holding one hardware context each. A device
+        # allows only a few, so a model with more kernels than that cannot
+        # hold them all; _contexts orders them for eviction.
+        self._loaded = {}
         self._uid = KernelCache._next_uid
         KernelCache._next_uid += 1
         if max_contexts is None:
@@ -360,9 +357,9 @@ class KernelCache:
             raise ValueError(
                 f"max_contexts must be a non-negative integer, got {max_contexts!r}"
             )
-        # 0 leaves the count to the device: hold contexts until one fails to
-        # open, then evict to make room. A positive value caps them up front,
-        # for a device that signals exhaustion some way other than by raising.
+        # 0 lets the device decide: hold contexts until one fails to open,
+        # then evict. A positive value caps them up front, for a device that
+        # signals exhaustion some way other than by raising.
         self.max_contexts = max_contexts
         self._cached_bos = {}  # name -> list of xrt.bo for BO reuse
         # Pool of BOs shared across bo_keys (see shared_nonstatic in
@@ -531,25 +528,23 @@ class KernelCache:
     def _release_lru_context(cls):
         """Unload the least-recently-used kernel in the process.
 
-        False if there was nothing to release. Only the context goes; buffers in
-        _cached_bos belong to the shared device, not to the context, so they
-        stay valid and a later call reloads the kernel without rewriting its
-        weights.
+        False if there was nothing to release. Buffers in _cached_bos belong to
+        the shared device rather than to the context, so they outlive this and
+        the kernel reloads without rewriting its weights.
 
-        This is safe only because load_and_run re-reads backend.kernel on every
-        call. A caller holding the invoker that XRTBackend.load() returned, or
-        the backend itself, keeps a kernel this nulls out -- so nothing may
-        hold either across a load_and_run call that could evict.
+        Only safe because load_and_run re-reads backend.kernel per call: this
+        nulls out the kernel that XRTBackend.load()'s invoker captured, so
+        neither that invoker nor the backend may be held across a call that can
+        evict.
         """
         freed = False
         while cls._contexts:
             ref, name = cls._contexts.popitem(last=False)[1]
             cache = ref()
             if cache is None:
-                # A collected cache normally purges its own entries through the
-                # weakref callback; this covers the case where that has not run
-                # yet. Its backends went with it, so this is room freed -- say
-                # so, or a caller's retry gives up with room available.
+                # Reached only if the callback below has not run yet. The
+                # cache took its backends with it, so count it as room freed
+                # or the caller's retry gives up with room available.
                 freed = True
                 continue
             backend = cache._loaded.pop(name, None)
@@ -584,27 +579,26 @@ class KernelCache:
                 # on separate files so the layers compose cleanly.
                 with filelock.FileLock("/tmp/npu.lock"):
                     backend.load(artifact)
-                    # Per context, not per bo_key: a reload builds a fresh
-                    # instruction BO. None in ELF mode.
+                    # Per context rather than per bo_key, since a reload
+                    # builds a fresh one. None in ELF mode.
                     if backend.bo_instr is not None:
                         backend.bo_instr.sync(
                             xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
                         )
                 break
             except Exception as e:
-                # A device out of contexts and a broken artifact fail the same
-                # way here -- the driver's exhaustion error is its own, and
-                # matching on it would not port. So retry after evicting and
-                # let the error through once there is nothing left to evict.
-                # Report the first one: a broken artifact drains every context
-                # before it surfaces, which is otherwise silent.
+                # Exhaustion and a broken artifact are indistinguishable
+                # here: each driver words exhaustion differently, so matching
+                # the text would not port. Evict and retry, and raise once
+                # nothing is left. Reported because a broken artifact drains
+                # every context on the way to surfacing.
                 backend.unload()
                 if not KernelCache._contexts:
                     raise
                 if not KernelCache._reported_load_failure:
-                    # The root cause, not the wrapper: XRTBackend.load() turns
-                    # any ELF-path failure into "ensure this is a valid ELF",
-                    # which reads as a corrupt binary when it is exhaustion.
+                    # XRTBackend.load() reports any ELF-path failure as
+                    # "ensure this is a valid ELF", which misdescribes
+                    # exhaustion. Unwrap to what the driver said.
                     why = e
                     while why.__cause__ is not None:
                         why = why.__cause__
@@ -615,10 +609,10 @@ class KernelCache:
                     KernelCache._reported_load_failure = True
                 self._release_lru_context()
         self._loaded[name] = backend
-        # Drop the entry as soon as the cache dies, so a stale key never
-        # inflates the count the cap is compared against. The callback binds
-        # the key and the map, not self, and must survive interpreter shutdown
-        # rebinding KernelCache to None.
+        # Purge on collection, or a stale key inflates the count
+        # max_contexts is compared against. The callback binds the key and the
+        # map by default argument: binding self would defeat the weakref, and
+        # binding KernelCache would break once shutdown rebinds it to None.
         key = (self._uid, name)
         KernelCache._contexts[key] = (
             weakref.ref(
