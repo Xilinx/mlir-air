@@ -7,6 +7,8 @@ import json
 import os
 import shutil
 import time
+import weakref
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -319,7 +321,19 @@ class KernelCache:
     # Manifest file stores artifact metadata for --run-only mode
     MANIFEST_FILE = "manifest.json"
 
-    def __init__(self, cache_dir=None, verbose=False, profiler=None):
+    # Hardware contexts are a device-wide resource, but a process commonly
+    # holds several caches (prefill and decode), so recency spans all of them:
+    # a cache with nothing loaded must still be able to make room. Keyed by
+    # (cache uid, kernel name), least-recently-used first. The cache is held
+    # weakly: this map outlives any one of them, and a caller that discards a
+    # cache should not keep it, and its buffers, alive through this.
+    _contexts = OrderedDict()
+    _next_uid = 0
+    # Running at the limit means a failed load on every miss, so the note that
+    # explains the evictions is worth one line per process, not per miss.
+    _reported_load_failure = False
+
+    def __init__(self, cache_dir=None, verbose=False, profiler=None, max_contexts=None):
         if cache_dir is None:
             cache_dir = Path(__file__).resolve().parent / "kernel_cache"
         self.cache_dir = Path(cache_dir)
@@ -327,7 +341,29 @@ class KernelCache:
         self.verbose = verbose
         self.profiler = profiler or Profiler()
         self.artifacts = {}  # name -> XRTCompileArtifact
-        self._loaded = {}  # name -> (backend, invoker) for XRT context reuse
+        # Each entry holds a hardware context, of which a device has a small
+        # fixed number that varies with the device and its driver -- a model
+        # with more distinct kernels than that cannot keep them all loaded, so
+        # entries are evicted least-recently-used (see _contexts).
+        self._loaded = {}  # name -> backend
+        self._uid = KernelCache._next_uid
+        KernelCache._next_uid += 1
+        if max_contexts is None:
+            env = os.environ.get("AIR_MAX_HW_CONTEXTS", "").strip()
+            try:
+                max_contexts = int(env) if env else 0
+            except ValueError:
+                raise ValueError(
+                    f"AIR_MAX_HW_CONTEXTS must be a non-negative integer, got {env!r}"
+                ) from None
+        if not isinstance(max_contexts, int) or max_contexts < 0:
+            raise ValueError(
+                f"max_contexts must be a non-negative integer, got {max_contexts!r}"
+            )
+        # 0 leaves the count to the device: hold contexts until one fails to
+        # open, then evict to make room. A positive value caps them up front,
+        # for a device that signals exhaustion some way other than by raising.
+        self.max_contexts = max_contexts
         self._cached_bos = {}  # name -> list of xrt.bo for BO reuse
         # Pool of BOs shared across bo_keys (see shared_nonstatic in
         # load_and_run). Keyed by (name, arg_index, size_bytes) so every
@@ -491,6 +527,107 @@ class KernelCache:
 
         print(f"  Compiled {name}: {compile_time:.1f}s -> {cached_binary.name}")
 
+    @classmethod
+    def _release_lru_context(cls):
+        """Unload the least-recently-used kernel in the process.
+
+        False if there was nothing to release. Only the context goes; buffers in
+        _cached_bos belong to the shared device, not to the context, so they
+        stay valid and a later call reloads the kernel without rewriting its
+        weights.
+
+        This is safe only because load_and_run re-reads backend.kernel on every
+        call. A caller holding the invoker that XRTBackend.load() returned, or
+        the backend itself, keeps a kernel this nulls out -- so nothing may
+        hold either across a load_and_run call that could evict.
+        """
+        freed = False
+        while cls._contexts:
+            ref, name = cls._contexts.popitem(last=False)[1]
+            cache = ref()
+            if cache is None:
+                # A collected cache normally purges its own entries through the
+                # weakref callback; this covers the case where that has not run
+                # yet. Its backends went with it, so this is room freed -- say
+                # so, or a caller's retry gives up with room available.
+                freed = True
+                continue
+            backend = cache._loaded.pop(name, None)
+            if backend is None:
+                continue
+            backend.unload()
+            cache._log(f"Unloaded {name} to free a hardware context")
+            return True
+        return freed
+
+    def _load_backend(self, name, backend_kwargs):
+        """Open a hardware context for `name`, evicting others if need be."""
+        import filelock
+        import pyxrt as xrt
+        from air.backend.xrt import XRTBackend, get_shared_device
+
+        artifact = self.artifacts[name]
+        kwargs = dict(backend_kwargs)
+        if "device" not in kwargs:
+            kwargs["device"] = get_shared_device()
+        while self.max_contexts and len(KernelCache._contexts) >= self.max_contexts:
+            if not self._release_lru_context():
+                break
+        while True:
+            backend = XRTBackend(**kwargs)
+            try:
+                # Lock path note: this is intentionally distinct from the
+                # /tmp/mlir-air-npu.lock file used by the project's outer
+                # `flock` convention. Both layers use BSD flock(2), so on the
+                # same inode the inner Python lock would self-deadlock against
+                # an outer `flock /tmp/mlir-air-npu.lock make run`. Keep them
+                # on separate files so the layers compose cleanly.
+                with filelock.FileLock("/tmp/npu.lock"):
+                    backend.load(artifact)
+                    # Per context, not per bo_key: a reload builds a fresh
+                    # instruction BO. None in ELF mode.
+                    if backend.bo_instr is not None:
+                        backend.bo_instr.sync(
+                            xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
+                        )
+                break
+            except Exception as e:
+                # A device out of contexts and a broken artifact fail the same
+                # way here -- the driver's exhaustion error is its own, and
+                # matching on it would not port. So retry after evicting and
+                # let the error through once there is nothing left to evict.
+                # Report the first one: a broken artifact drains every context
+                # before it surfaces, which is otherwise silent.
+                backend.unload()
+                if not KernelCache._contexts:
+                    raise
+                if not KernelCache._reported_load_failure:
+                    # The root cause, not the wrapper: XRTBackend.load() turns
+                    # any ELF-path failure into "ensure this is a valid ELF",
+                    # which reads as a corrupt binary when it is exhaustion.
+                    why = e
+                    while why.__cause__ is not None:
+                        why = why.__cause__
+                    print(
+                        f"  [KernelCache] {name} failed to load, evicting to make "
+                        f"room (said once per process). Cause: {str(why).strip()}"
+                    )
+                    KernelCache._reported_load_failure = True
+                self._release_lru_context()
+        self._loaded[name] = backend
+        # Drop the entry as soon as the cache dies, so a stale key never
+        # inflates the count the cap is compared against. The callback binds
+        # the key and the map, not self, and must survive interpreter shutdown
+        # rebinding KernelCache to None.
+        key = (self._uid, name)
+        KernelCache._contexts[key] = (
+            weakref.ref(
+                self, lambda _r, k=key, m=KernelCache._contexts: m.pop(k, None)
+            ),
+            name,
+        )
+        self._log(f"Loaded {name} ({len(KernelCache._contexts)} contexts open)")
+
     def load_and_run(
         self,
         name,
@@ -506,9 +643,11 @@ class KernelCache:
         """Load cached kernel and execute with BO reuse.
 
         Three levels of caching to minimize per-invocation overhead:
-        1. XRT context (device, xclbin, kernel) -- cached per kernel name
-        2. Buffer Objects -- cached per kernel name, reused across calls
-        3. Instruction BO sync -- done once on first call
+        1. XRT context (device, xclbin, kernel) -- cached per kernel name, and
+           evicted least-recently-used once the device runs out of contexts
+        2. Buffer Objects -- cached per kernel name, reused across calls, and
+           unaffected by eviction
+        3. Instruction BO sync -- done once per context
 
         Args:
             name: Kernel name (must have been compiled first)
@@ -564,7 +703,6 @@ class KernelCache:
         """
         import filelock
         import pyxrt as xrt
-        from air.backend.xrt import XRTBackend
 
         if name not in self.artifacts:
             raise RuntimeError(
@@ -601,21 +739,12 @@ class KernelCache:
                 )
 
         # Level 1: Load backend on first call (XRT context reuse)
-        # Lock path note: this is intentionally distinct from the
-        # /tmp/mlir-air-npu.lock file used by the project's outer `flock`
-        # convention. Both layers use BSD flock(2), so on the same inode
-        # the inner Python lock would self-deadlock against an outer
-        # `flock /tmp/mlir-air-npu.lock make run`. Keep them on separate
-        # files so the layers compose cleanly.
-        if name not in self._loaded:
-            artifact = self.artifacts[name]
-            backend = XRTBackend(**backend_kwargs)
-            with filelock.FileLock("/tmp/npu.lock"):
-                invoker = backend.load(artifact)
-            self._loaded[name] = (backend, invoker)
-            self._log(f"Loaded {name} (XRT context cached)")
+        if name in self._loaded:
+            KernelCache._contexts.move_to_end((self._uid, name))
+        else:
+            self._load_backend(name, backend_kwargs)
 
-        backend, _ = self._loaded[name]
+        backend = self._loaded[name]
 
         # Level 2: Allocate BOs on first call, reuse on subsequent calls
         # bo_key allows separate BO sets for the same kernel (e.g., per-layer weights)
@@ -656,9 +785,6 @@ class KernelCache:
                 else:
                     bos.append(_alloc_bo(i, s))
             self._cached_bos[_bo_key] = bos
-            # Sync instruction BO once (only needed for xclbin mode)
-            if not is_elf and backend.bo_instr is not None:
-                backend.bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
             self._log(f"Allocated {len(bos)} BOs for {_bo_key}")
 
         bos = self._cached_bos[_bo_key]
