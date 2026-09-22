@@ -49,6 +49,13 @@ module {
   air.channel @sibLoad [1]
   air.channel @sibOut [2]
   air.channel @sibDrain [1]
+  air.channel @sibPut [1]
+  air.channel @feedA [1]
+  air.channel @feedB [1]
+  air.channel @sibPutSink [1]
+  air.channel @oddLoad [1]
+  air.channel @oddOut [2]
+  air.channel @oddDrain [1]
 
   func.func @fanin_denies() {
     %c1 = arith.constant 1 : index
@@ -413,6 +420,143 @@ module {
             air.execute_terminator %alloc : memref<32x32xbf16, 2>
           }
           %4 = air.channel.put async [%5, %tok_o] @sibOut[%arg21] (%out[] [] []) : (memref<32x32xbf16, 2>)
+        }
+      }
+    }
+    return
+  }
+
+// =============================================================================
+// Case 7: same shape on the producer side. The two loops get from different
+// symbols, so only their shared @sibPut spans both -- one MM2S ring that only
+// the unroll walks in order.
+// =============================================================================
+
+// GUARD-LABEL: func.func @load_bearing_put_kept
+// GUARD:       air.pingpong_required
+// GUARD:       } {unroll = 2 : i32}
+// GUARD:       } {unroll = 2 : i32}
+// GUARD:       return
+
+  func.func @load_bearing_put_kept() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 7 : i32} {
+      %1 = air.segment async {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %tok_f, %fanin = air.execute -> (memref<64x32xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x32xbf16, 1>
+          air.execute_terminator %alloc : memref<64x32xbf16, 1>
+        }
+        %w0 = air.channel.get async [%tok_f] @sibOut[%c0] (%fanin[%c0, %c0] [%c1_s, %c1_s] [%c1_s, %c1_s]) : (memref<64x32xbf16, 1>)
+        %w1 = air.channel.get async [%tok_f] @sibOut[%c1_s] (%fanin[%c0, %c0] [%c1_s, %c1_s] [%c1_s, %c1_s]) : (memref<64x32xbf16, 1>)
+        %r0 = air.channel.put async [%w0, %w1] @sibDrain[] (%fanin[] [] []) : (memref<64x32xbf16, 1>)
+        %tok_k, %sink = air.execute -> (memref<32x32xbf16, 1>) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 1>
+          air.execute_terminator %alloc : memref<32x32xbf16, 1>
+        }
+        %k0 = air.channel.get async [%tok_k] @sibPut[] (%sink[] [] []) : (memref<32x32xbf16, 1>)
+        %2 = air.herd @herd_put_siblings async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
+          %c0_h = arith.constant 0 : index
+          %c64 = arith.constant 64 : index
+          %c512 = arith.constant 512 : index
+          %tok0 = air.wait_all async
+          %3 = scf.for %arg10 = %c0_h to %c512 step %c64 iter_args(%arg11 = %tok0) -> (!air.async.token) {
+            %tok_a, %buf = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%tok_a] @feedA[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %snd = air.channel.put async [%fill] @sibPut[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %tok_d = air.execute [%snd] {
+              memref.dealloc %buf : memref<32x32xbf16, 2>
+            }
+            scf.yield %tok_d : !air.async.token
+          }
+          %5 = scf.for %arg10 = %c0_h to %c512 step %c64 iter_args(%arg11 = %3) -> (!air.async.token) {
+            %tok_a, %buf = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%tok_a] @feedB[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %snd = air.channel.put async [%fill] @sibPut[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %tok_d = air.execute [%snd] {
+              memref.dealloc %buf : memref<32x32xbf16, 2>
+            }
+            scf.yield %tok_d : !air.async.token
+          }
+          %tok_o, %out = air.execute -> (memref<32x32xbf16, 2>) {
+            %alloc = memref.alloc() : memref<32x32xbf16, 2>
+            air.execute_terminator %alloc : memref<32x32xbf16, 2>
+          }
+          %4 = air.channel.put async [%5, %tok_o] @sibOut[%arg21] (%out[] [] []) : (memref<32x32xbf16, 2>)
+        }
+      }
+    }
+    return
+  }
+
+// =============================================================================
+// Case 8: sibling endpoints again, but one loop has an odd trip count, so the
+// unroll would never reach it and the ring stays broken either way. Nothing to
+// preserve, so the herd is declined as before -- no mark, no exemption.
+// =============================================================================
+
+// GUARD-LABEL: func.func @odd_sibling_not_load_bearing
+// GUARD-NOT:   air.pingpong_required
+// GUARD-NOT:   } {unroll
+// GUARD:       return
+
+  func.func @odd_sibling_not_load_bearing() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg4) in (%arg6=%c1) attributes {id = 8 : i32} {
+      %1 = air.segment async {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %tok_f, %fanin = air.execute -> (memref<64x32xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x32xbf16, 1>
+          air.execute_terminator %alloc : memref<64x32xbf16, 1>
+        }
+        %w0 = air.channel.get async [%tok_f] @oddOut[%c0] (%fanin[%c0, %c0] [%c1_s, %c1_s] [%c1_s, %c1_s]) : (memref<64x32xbf16, 1>)
+        %w1 = air.channel.get async [%tok_f] @oddOut[%c1_s] (%fanin[%c0, %c0] [%c1_s, %c1_s] [%c1_s, %c1_s]) : (memref<64x32xbf16, 1>)
+        %r0 = air.channel.put async [%w0, %w1] @oddDrain[] (%fanin[] [] []) : (memref<64x32xbf16, 1>)
+        %2 = air.herd @herd_odd_siblings async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
+          %c0_h = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c7 = arith.constant 7 : index
+          %c64 = arith.constant 64 : index
+          %c512 = arith.constant 512 : index
+          %tok0 = air.wait_all async
+          %3 = scf.for %arg10 = %c0_h to %c512 step %c64 iter_args(%arg11 = %tok0) -> (!air.async.token) {
+            %tok_a, %buf = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%tok_a] @oddLoad[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %tok_d = air.execute [%fill] {
+              memref.dealloc %buf : memref<32x32xbf16, 2>
+            }
+            scf.yield %tok_d : !air.async.token
+          }
+          // Odd trip count: #2000's guard rejects this one.
+          %5 = scf.for %arg10 = %c0_h to %c7 step %c1_h iter_args(%arg11 = %3) -> (!air.async.token) {
+            %tok_a, %buf = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
+              %alloc = memref.alloc() : memref<32x32xbf16, 2>
+              air.execute_terminator %alloc : memref<32x32xbf16, 2>
+            }
+            %fill = air.channel.get async [%tok_a] @oddLoad[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+            %tok_d = air.execute [%fill] {
+              memref.dealloc %buf : memref<32x32xbf16, 2>
+            }
+            scf.yield %tok_d : !air.async.token
+          }
+          %tok_o, %out = air.execute -> (memref<32x32xbf16, 2>) {
+            %alloc = memref.alloc() : memref<32x32xbf16, 2>
+            air.execute_terminator %alloc : memref<32x32xbf16, 2>
+          }
+          %4 = air.channel.put async [%5, %tok_o] @oddOut[%arg21] (%out[] [] []) : (memref<32x32xbf16, 2>)
         }
       }
     }

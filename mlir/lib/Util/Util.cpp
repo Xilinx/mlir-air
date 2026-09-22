@@ -1100,26 +1100,44 @@ air::getHerdsFeedingBuffers(Operation *scope,
   return found;
 }
 
-bool air::pingPongIsLoadBearing(Operation *herd) {
+llvm::DenseSet<Operation *>
+air::getLoadBearingPingPongLoops(Operation *herd,
+                                 llvm::function_ref<bool(scf::ForOp)> isCand) {
+  llvm::DenseSet<Operation *> loadBearing;
   if (!herd)
-    return false;
-  // One BD ring per (tile, channel): a symbol's endpoints share ring and lock.
-  llvm::StringMap<SmallVector<scf::ForOp>> innermostLoopBySymbol;
-  herd->walk([&](air::ChannelGetOp get) {
-    innermostLoopBySymbol[get.getChanName()].push_back(
-        get->getParentOfType<scf::ForOp>());
+    return loadBearing;
+  // One BD ring per (tile, channel, direction), so endpoints share a ring only
+  // with same-direction endpoints of their symbol. Puts advance an MM2S ring
+  // the same way gets advance an S2MM one.
+  llvm::StringMap<SmallVector<scf::ForOp>> loopsByRing;
+  herd->walk([&](air::ChannelInterface chan) {
+    bool isPut = isa<air::ChannelPutOp>(chan.getOperation());
+    loopsByRing[(isPut ? "put:" : "get:") + chan.getChanName().str()].push_back(
+        chan->getParentOfType<scf::ForOp>());
   });
 
-  for (auto &entry : innermostLoopBySymbol) {
+  for (auto &entry : loopsByRing) {
     auto &loops = entry.second;
-    if (loops.size() < 2)
-      continue;
     // One loop visits the endpoints in ring order; sibling loops each pin to a
     // single slot while the ring advances past them.
-    if (!llvm::all_equal(loops))
-      return true;
+    if (loops.size() < 2 || llvm::all_equal(loops))
+      continue;
+    // Unrolling only realigns the ring if it reaches every endpoint, so an
+    // endpoint outside any loop, or in one that would not be labeled, means
+    // ping-pong cannot rescue this ring and keeping it buys nothing.
+    llvm::DenseSet<Operation *> group;
+    if (llvm::all_of(loops, [&](scf::ForOp f) { return f && isCand(f); }))
+      for (auto f : loops)
+        group.insert(f.getOperation());
+    loadBearing.insert(group.begin(), group.end());
   }
-  return false;
+  return loadBearing;
+}
+
+bool air::pingPongIsLoadBearing(Operation *herd) {
+  return !getLoadBearingPingPongLoops(herd, [](scf::ForOp) {
+            return true;
+          }).empty();
 }
 
 FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {

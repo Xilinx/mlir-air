@@ -604,7 +604,11 @@ LogicalResult air::verifyChainLockProducers(Operation *scope) {
     auto name = herd.getSymName();
     // The labeller kept this run-ahead deliberately: declining delivers the
     // wrong buffer, so refusing would only make a working design unbuildable.
-    if (herd->hasAttr(air::attrs::PingPongRequired)) {
+    // Re-asked rather than trusted, because specializeL2MemrefsIntoMemtiles can
+    // drop an endpoint after the mark and leave it claiming a ring that is
+    // gone.
+    if (herd->hasAttr(air::attrs::PingPongRequired) &&
+        air::pingPongIsLoadBearing(herd.getOperation())) {
       herd->emitWarning()
           << "herd" << (name ? (" @" + name->str()) : "")
           << " feeds a serialized chain lock and runs ping-pong, which risks a "

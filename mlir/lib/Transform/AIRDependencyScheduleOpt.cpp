@@ -1647,9 +1647,11 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
   LabelScfForLoopForPingPongPattern(
       MLIRContext *ctx, std::string omitMemorySpace, uint64_t l1Budget = 0,
-      const llvm::DenseSet<Operation *> *deniedHerds = nullptr)
+      const llvm::DenseSet<Operation *> *deniedHerds = nullptr,
+      const llvm::DenseSet<Operation *> *exemptLoops = nullptr)
       : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace),
-        l1Budget(l1Budget), deniedHerds(deniedHerds) {}
+        l1Budget(l1Budget), deniedHerds(deniedHerds), exemptLoops(exemptLoops) {
+  }
 
   // Shared predicate for the rewriter and the nested-loop suppression check.
   // Rejects loops whose candidate alloc receives >1 channel.get per outer
@@ -1755,15 +1757,19 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   isPingPongCandidate(scf::ForOp forOp, StringRef omitMemorySpace,
                       uint64_t l1Budget,
                       const llvm::DenseSet<Operation *> *deniedHerds,
+                      const llvm::DenseSet<Operation *> *exemptLoops,
                       SmallVectorImpl<Operation *> *allocsOut) {
     if (forOp->hasAttr("unroll"))
       return false;
     // Run-ahead into a serialized fan-in chain can deadlock against a shared
     // switchbox arbiter -- see findHerdsFeedingSerializedFanIn. Empty unless
     // the v2 chain lock is on, so this is inert for every other design.
+    // Exempt only the loops whose unroll holds a ring together; a loop that
+    // merely shares their herd is declined as usual.
     if (deniedHerds && !deniedHerds->empty())
       if (auto herd = forOp->getParentOfType<air::HerdOp>())
-        if (deniedHerds->count(herd.getOperation()))
+        if (deniedHerds->count(herd.getOperation()) &&
+            !(exemptLoops && exemptLoops->count(forOp.getOperation())))
           return false;
     // Unroll-by-2 rotates the producer through 2 buffers, but an odd trip count
     // peels a remainder that allocates a third. AIRToAIE chains one BD per
@@ -1932,7 +1938,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     SmallVector<Operation *> alloc_ops;
     if (!isPingPongCandidate(for_op, omitMemorySpace, l1Budget, deniedHerds,
-                             &alloc_ops))
+                             exemptLoops, &alloc_ops))
       return failure();
 
     // Skip outer loop if any nested scf.for in the same async scope is itself
@@ -1955,7 +1961,8 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
             return WalkResult::advance();
           if (innerFor->hasAttr("unroll") ||
               isPingPongCandidate(innerFor, omitMemorySpace, l1Budget,
-                                  deniedHerds, /*allocsOut=*/nullptr)) {
+                                  deniedHerds, exemptLoops,
+                                  /*allocsOut=*/nullptr)) {
             hasLabelableNestedFor = true;
             return WalkResult::interrupt();
           }
@@ -1980,6 +1987,7 @@ private:
   uint64_t l1Budget = 0;
   // Owned by the pass; null or empty means the guard is off.
   const llvm::DenseSet<Operation *> *deniedHerds = nullptr;
+  const llvm::DenseSet<Operation *> *exemptLoops = nullptr;
 };
 
 struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
@@ -4154,38 +4162,35 @@ public:
     // Computed once per function rather than per pattern application: the
     // analysis walks the whole module, and the greedy driver would otherwise
     // repeat it for every candidate loop.
-    llvm::DenseSet<Operation *> deniedHerds;
+    llvm::DenseSet<Operation *> deniedHerds, exemptLoops;
     if (clChainLockV2)
       for (Operation *herd : findHerdsFeedingSerializedFanIn(funcOp)) {
-        // Declining is only free where ping-pong is an optimization; where the
-        // unroll keeps the BD rings in step it trades a hang for wrong data.
-        // Only a herd that would actually have been ping-ponged has a conflict.
-        bool wouldPingPong = false;
-        herd->walk([&](scf::ForOp f) {
-          if (LabelScfForLoopForPingPongPattern::isPingPongCandidate(
-                  f, clOmitMemorySpace, l1Budget, /*deniedHerds=*/nullptr,
-                  /*allocsOut=*/nullptr)) {
-            wouldPingPong = true;
-            return WalkResult::interrupt();
-          }
-          return WalkResult::advance();
-        });
-        if (wouldPingPong && air::pingPongIsLoadBearing(herd)) {
-          herd->setAttr(air::attrs::PingPongRequired, UnitAttr::get(ctx));
-          herd->emitWarning()
-              << "herd feeds a serialized chain lock, where ping-pong "
-                 "run-ahead can deadlock against a shared switchbox arbiter, "
-                 "but its channel endpoints sit in sibling loops whose BD ring "
-                 "only stays in step because of the unroll. Keeping ping-pong: "
-                 "declining it here would silently deliver the wrong buffer. "
-                 "Give each endpoint its own channel, or hoist them into one "
-                 "loop body, to make declining safe";
-          continue;
-        }
         deniedHerds.insert(herd);
+        // Declining is only free where ping-pong is an optimization; where the
+        // unroll keeps a BD ring in step it trades a hang for wrong data. Only
+        // the loops holding such a ring are spared.
+        auto loadBearing =
+            air::getLoadBearingPingPongLoops(herd, [&](scf::ForOp f) {
+              return LabelScfForLoopForPingPongPattern::isPingPongCandidate(
+                  f, clOmitMemorySpace, l1Budget, /*deniedHerds=*/nullptr,
+                  /*exemptLoops=*/nullptr, /*allocsOut=*/nullptr);
+            });
+        if (loadBearing.empty())
+          continue;
+        exemptLoops.insert(loadBearing.begin(), loadBearing.end());
+        herd->setAttr(air::attrs::PingPongRequired, UnitAttr::get(ctx));
+        herd->emitWarning()
+            << "herd feeds a serialized chain lock, where ping-pong run-ahead "
+               "can deadlock against a shared switchbox arbiter, but "
+            << loadBearing.size()
+            << " of its loops hold channel endpoints whose BD ring only stays "
+               "in step because of the unroll. Keeping ping-pong on those: "
+               "declining them would silently move the wrong buffer. Give each "
+               "endpoint its own channel, or hoist them into one loop body, to "
+               "make declining safe";
       }
-    patterns.insert<LabelScfForLoopForPingPongPattern>(ctx, clOmitMemorySpace,
-                                                       l1Budget, &deniedHerds);
+    patterns.insert<LabelScfForLoopForPingPongPattern>(
+        ctx, clOmitMemorySpace, l1Budget, &deniedHerds, &exemptLoops);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
