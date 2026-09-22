@@ -1933,26 +1933,23 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     return true;
   }
 
-  LogicalResult matchAndRewrite(scf::ForOp for_op,
-                                PatternRewriter &rewriter) const override {
-
-    SmallVector<Operation *> alloc_ops;
-    if (!isPingPongCandidate(for_op, omitMemorySpace, l1Budget, deniedHerds,
-                             exemptLoops, &alloc_ops))
-      return failure();
-
-    // Skip outer loop if any nested scf.for in the same async scope is itself
-    // a labeling candidate (or already labeled). This avoids cascading
-    // pingpong unrolls, e.g. matvec-add where the outer M-loop has a per-iter
-    // partial alloc and the inner K-loop has per-iter A/B allocs: labeling
-    // both would expand the inner body 2x for the outer pingpong AND 2x for
-    // the inner pingpong, producing 4 buffer instances for A/B instead of 2.
-    // Only the deepest qualifying loop in any nest gets labeled. Sibling fors
-    // at the same depth are labeled independently. Nested loops inside an
-    // air.herd / air.segment / air.launch are in a different scope and do not
-    // count, so the walk stops at those boundaries.
-    bool hasLabelableNestedFor = false;
-    for_op.getBody()->walk<WalkOrder::PreOrder>(
+  // Skip outer loop if any nested scf.for in the same async scope is itself
+  // a labeling candidate (or already labeled). This avoids cascading pingpong
+  // unrolls, e.g. matvec-add where the outer M-loop has a per-iter partial
+  // alloc and the inner K-loop has per-iter A/B allocs: labeling both would
+  // expand the inner body 2x for the outer pingpong AND 2x for the inner one,
+  // producing 4 buffer instances for A/B instead of 2. Only the deepest
+  // qualifying loop in any nest gets labeled. Sibling fors at the same depth
+  // are labeled independently. Nested loops inside an air.herd / air.segment /
+  // air.launch are in a different scope and do not count, so the walk stops at
+  // those boundaries.
+  static bool
+  hasLabelableNestedFor(scf::ForOp forOp, StringRef omitMemorySpace,
+                        uint64_t l1Budget,
+                        const llvm::DenseSet<Operation *> *deniedHerds,
+                        const llvm::DenseSet<Operation *> *exemptLoops) {
+    bool found = false;
+    forOp.getBody()->walk<WalkOrder::PreOrder>(
         [&](Operation *op) -> WalkResult {
           if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(op))
             return WalkResult::skip();
@@ -1963,12 +1960,35 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
               isPingPongCandidate(innerFor, omitMemorySpace, l1Budget,
                                   deniedHerds, exemptLoops,
                                   /*allocsOut=*/nullptr)) {
-            hasLabelableNestedFor = true;
+            found = true;
             return WalkResult::interrupt();
           }
           return WalkResult::advance();
         });
-    if (hasLabelableNestedFor)
+    return found;
+  }
+
+  // What the rewrite actually does, so a caller predicting it cannot disagree.
+  static bool willBeLabeled(scf::ForOp forOp, StringRef omitMemorySpace,
+                            uint64_t l1Budget,
+                            const llvm::DenseSet<Operation *> *deniedHerds,
+                            const llvm::DenseSet<Operation *> *exemptLoops) {
+    return isPingPongCandidate(forOp, omitMemorySpace, l1Budget, deniedHerds,
+                               exemptLoops, /*allocsOut=*/nullptr) &&
+           !hasLabelableNestedFor(forOp, omitMemorySpace, l1Budget, deniedHerds,
+                                  exemptLoops);
+  }
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Operation *> alloc_ops;
+    if (!isPingPongCandidate(for_op, omitMemorySpace, l1Budget, deniedHerds,
+                             exemptLoops, &alloc_ops))
+      return failure();
+
+    if (hasLabelableNestedFor(for_op, omitMemorySpace, l1Budget, deniedHerds,
+                              exemptLoops))
       return failure();
 
     // Label the scf.for loop and all its child memref.allocs

@@ -1106,30 +1106,65 @@ air::getLoadBearingPingPongLoops(Operation *herd,
   llvm::DenseSet<Operation *> loadBearing;
   if (!herd)
     return loadBearing;
-  // One BD ring per (tile, channel, direction), so endpoints share a ring only
-  // with same-direction endpoints of their symbol. Puts advance an MM2S ring
-  // the same way gets advance an S2MM one.
-  llvm::StringMap<SmallVector<scf::ForOp>> loopsByRing;
+  // A ring is per (tile, direction, logical flow), and a logical flow is the
+  // channel declaration plus its bundle indices -- the same notion AIRToAIE
+  // sizes chains with. Bucket by declaration and direction first; puts advance
+  // an MM2S ring the way gets advance an S2MM one.
+  llvm::MapVector<std::pair<Operation *, int>,
+                  SmallVector<air::ChannelInterface>>
+      byFlow;
   herd->walk([&](air::ChannelInterface chan) {
-    bool isPut = isa<air::ChannelPutOp>(chan.getOperation());
-    loopsByRing[(isPut ? "put:" : "get:") + chan.getChanName().str()].push_back(
-        chan->getParentOfType<scf::ForOp>());
+    auto *decl = air::getChannelDeclarationThroughSymbol(chan).getOperation();
+    int dir = isa<air::ChannelPutOp>(chan.getOperation()) ? 1 : 0;
+    byFlow[{decl, dir}].push_back(chan);
   });
 
-  for (auto &entry : loopsByRing) {
-    auto &loops = entry.second;
-    // One loop visits the endpoints in ring order; sibling loops each pin to a
-    // single slot while the ring advances past them.
-    if (loops.size() < 2 || llvm::all_equal(loops))
-      continue;
-    // Unrolling only realigns the ring if it reaches every endpoint, so an
-    // endpoint outside any loop, or in one that would not be labeled, means
-    // ping-pong cannot rescue this ring and keeping it buys nothing.
-    llvm::DenseSet<Operation *> group;
-    if (llvm::all_of(loops, [&](scf::ForOp f) { return f && isCand(f); }))
+  for (auto &entry : byFlow) {
+    // Split a bucket by bundle index only where every index is provably
+    // constant. An index we cannot evaluate is pooled with the rest instead of
+    // being called distinct: over-grouping keeps a ping-pong that was not
+    // needed, under-grouping drops one that was, and only the latter is silent.
+    llvm::MapVector<SmallVector<int64_t>, SmallVector<scf::ForOp>> rings;
+    SmallVector<int64_t> pooled{std::numeric_limits<int64_t>::min()};
+    for (auto chan : entry.second) {
+      SmallVector<int64_t> key;
+      for (auto v : chan.getIndices()) {
+        auto c = getConstantIntValue(v);
+        if (!c) {
+          key = pooled;
+          break;
+        }
+        key.push_back(*c);
+      }
+      rings[key].push_back(chan->getParentOfType<scf::ForOp>());
+    }
+    if (rings.count(pooled) && rings.size() > 1) {
+      for (auto &r : rings)
+        if (r.first != pooled)
+          llvm::append_range(rings[pooled], r.second);
+      rings.remove_if([&](auto &r) { return r.first != pooled; });
+    }
+
+    for (auto &ring : rings) {
+      auto &loops = ring.second;
+      // One loop visits the endpoints in ring order; sibling loops each pin to
+      // a single slot while the ring advances past them.
+      if (loops.size() < 2 || llvm::all_equal(loops))
+        continue;
+      // Unrolling only realigns a ring it reaches in full: an endpoint outside
+      // any loop, or in one that will not be labeled, leaves the ring broken
+      // either way. Nested loops are not siblings -- unrolling an ancestor
+      // does not interleave it with its descendant -- so they do not qualify.
+      bool rescuable = llvm::all_of(loops, [&](scf::ForOp f) {
+        return f && isCand(f) && llvm::none_of(loops, [&](scf::ForOp g) {
+                 return g && g != f && g->isAncestor(f.getOperation());
+               });
+      });
+      if (!rescuable)
+        continue;
       for (auto f : loops)
-        group.insert(f.getOperation());
-    loadBearing.insert(group.begin(), group.end());
+        loadBearing.insert(f.getOperation());
+    }
   }
   return loadBearing;
 }
