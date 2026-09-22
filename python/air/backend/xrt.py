@@ -165,6 +165,26 @@ def _find_peano_install_dir():
     return ""
 
 
+_shared_devices = {}
+
+
+def get_shared_device(index: int = 0):
+    """A process-wide pyxrt.device for the given index, opened on first use.
+
+    A buffer object belongs to the device it was allocated against, not to the
+    hardware context, so a caller that releases a context to stay under the
+    device's context limit keeps its buffers only while that device is alive.
+    Pass this to XRTBackend(device=...) so the device outlives any one backend.
+    """
+    import pyxrt as xrt
+
+    device = _shared_devices.get(index)
+    if device is None:
+        device = xrt.device(index)
+        _shared_devices[index] = device
+    return device
+
+
 class XRTCompileArtifact:
     """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
 
@@ -258,6 +278,7 @@ class XRTBackend(AirBackend):
         stack_size: int = 2048,
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
+        device=None,
     ):
         """Constructor for XRTBackend
 
@@ -300,6 +321,11 @@ class XRTBackend(AirBackend):
                 kernel invocation + wait is timed (buffer sync is excluded). Default 0
                 disables timing, preserving the original single-shot behavior.
             n_warmup_iters: warmup iterations excluded from timing when n_perf_iters > 0.
+            device: an existing pyxrt.device to load onto. Default opens one per
+                backend. Pass air.backend.xrt.get_shared_device() when several
+                backends must coexist: unload() then releases only this
+                backend's hardware context, leaving buffers allocated against
+                the shared device valid for the backends still loaded.
         """
         super().__init__()
         self.verbose = verbose
@@ -342,6 +368,7 @@ class XRTBackend(AirBackend):
             raise ValueError("`n_warmup_iters` must be a non-negative integer")
         self.n_perf_iters = n_perf_iters
         self.n_warmup_iters = n_warmup_iters
+        self.borrowed_device = device
         self.last_latency_us = None
         if not isinstance(stack_size, int) or stack_size <= 0:
             raise ValueError("`stack_size` must be a positive integer")
@@ -749,7 +776,9 @@ class XRTBackend(AirBackend):
         is_elf = artifact.output_binary.endswith(".elf")
 
         # create the device
-        self.device = xrt.device(0)
+        self.device = (
+            self.borrowed_device if self.borrowed_device is not None else xrt.device(0)
+        )
 
         if is_elf:
             # ELF loading path - uses experimental APIs
@@ -948,6 +977,8 @@ class XRTBackend(AirBackend):
         # Release in reverse dependency order: every BO is allocated against
         # the device, so dropping the device first leaves bo_instr holding a
         # dangling handle. Linux XRT tolerates that; Windows XRT faults.
+        # A borrowed device is only dereferenced here, not closed -- its owner
+        # keeps it, and with it any BO a caller allocated against it.
         self.bo_instr = None
         self.instr_v = None
         self.kernel = None
