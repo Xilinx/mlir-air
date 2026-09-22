@@ -102,7 +102,14 @@ DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
 # engine, not from here. llama32_1b_q4nx delegates its decode build to this
 # Makefile, so without this in the stamp a llama-3.2-1b table edit would leave
 # its warm templates in place while the host imported the new values.
-MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+MODEL_CFG_QUERY = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
+# Computed on first use, then cached by overwriting this definition with the
+# result. Only targets that build a template need the stamp, and the query
+# starts a Python that imports air -- `make bench-decode-exe` is a g++ compile
+# that must not need either. Every variable that reaches this one has to stay
+# recursive (`=`), or it is queried while the makefile is read, for whichever
+# target was asked for.
+MODEL_CFG = $(eval MODEL_CFG := $(MODEL_CFG_QUERY))$(MODEL_CFG)
 DECODE_FLAGS        = $(MODEL_CFG) PROJ_RC_CACHE=$(PROJ_RC_CACHE)
 
 compile-decode:
@@ -189,7 +196,7 @@ preflight-llvm-link: preflight-peano
 ## reason a static TXN cannot hold a runtime loop bound; the cores keep the
 ## compile-time block count and skip masked blocks, exactly as today.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 
 ## Idempotent like the xclbin target: skip when all three artifacts are present
 ## AND were built with the current flags. The stamp is keyed on LBUILD too,
