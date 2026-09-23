@@ -199,7 +199,7 @@ def K_DOWN(w):
 
 K_PLE_GEMM = "ple_gemm"  # (seq, D) -> (seq, PLI_D); the per-layer inp_gate
 K_PLE_MP = "ple_mp_all"  # (seq, D) -> (seq, PLE_MP_N); ALL layers' model_proj
-K_PLE_GELU = "gelu_mul_ple"  # gelu_tanh(g) * pli at PLI_D
+K_PLE_GELU = "gelu_mul_ple"  # gate * pli at PLI_D; the GELU is in ple_gate
 K_PLE_PROJ = "ple_proj"  # (seq, PLI_D) -> D, norm, + residual
 K_LM = "lm_head_gemv"
 
@@ -930,9 +930,9 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     # --- PLE. One set of ELFs for all 35 layers: the branch is PLI_D-wide
     # regardless of attention class or FFN width.
-    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM; the per-layer inp_gate) ---")
+    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM + GELU; the per-layer inp_gate) ---")
     mod, scratch[K_PLE_GEMM] = _build_single_gemm_elf(
-        K_PLE_GEMM, "pg", seq_len, D, PLI_D
+        K_PLE_GEMM, "pg", seq_len, D, PLI_D, epilogue_gelu=True
     )
     cache.compile_and_cache(K_PLE_GEMM, mod, _elf_backend(K_PLE_GEMM))
 
@@ -942,9 +942,9 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     )
     cache.compile_and_cache(K_PLE_MP, mod, _elf_backend(K_PLE_MP))
 
-    print(f"\n--- {K_PLE_GELU} (gelu_tanh(gate) * per-layer input, {PLI_D}) ---")
+    print(f"\n--- {K_PLE_GELU} (gate * per-layer input, {PLI_D}) ---")
     cache.compile_and_cache(
-        K_PLE_GELU, build_gelu_mul_module(seq_len, PLI_D), _gelu_backend(K_PLE_GELU)
+        K_PLE_GELU, build_mul_module(seq_len, PLI_D), _mul_backend(K_PLE_GELU)
     )
 
     print(f"\n--- {K_PLE_PROJ} (PLI_D -> D + post_layernorm + residual) ---")
@@ -1034,7 +1034,7 @@ def resolve_scratch(seq_len):
         sc[K_GATE(w)] = _alloc([gemm_spec(seq_len, D, inter, force_method="drain")], 3)
         sc[K_UP(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
         sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
-    sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D)], 3)
+    sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D, force_method="drain")], 3)
     sc[K_PLE_MP] = _alloc([gemm_spec(seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2)], 3)
     sc[K_PLE_PROJ] = _alloc([gemm_spec(seq_len, PLI_D, D)], 7)
     return sc
@@ -1532,7 +1532,7 @@ class Gemma4Q4nxPrefill:
                 {0: _A_ACT, 5: _A_RES1},
             )
             self._call_ple_gemm(k, z_d, pw["inp_gate"], "gate")
-            self._call_gelu_mul(K_PLE_GELU, k, PLI_D, z_p, z_p, None)
+            self._call_mul(K_PLE_GELU, k, PLI_D, z_p, z_p, None)
             self._call_gemm_norm_add(
                 K_PLE_PROJ,
                 k,
@@ -1685,7 +1685,7 @@ class Gemma4Q4nxPrefill:
             tag="ple_gate",
         )[2].reshape(seq, PLI_D)
         gated = self._dev(
-            self._call_gelu_mul, K_PLE_GELU, k, PLI_D, g, pli, None, tag="ple_gelu"
+            self._call_mul, K_PLE_GELU, k, PLI_D, g, pli, None, tag="ple_gelu"
         )[2].reshape(seq, PLI_D)
         o3 = self._dev(
             self._call_gemm_norm_add,
