@@ -197,10 +197,19 @@ def K_DOWN(w):
     return f"down_{w}"
 
 
-K_PLE_GEMM = "ple_gemm"  # (seq, D) -> (seq, PLI_D); used by BOTH PLE GEMMs
+K_PLE_GEMM = "ple_gemm"  # (seq, D) -> (seq, PLI_D); the per-layer inp_gate
+K_PLE_MP = "ple_mp_all"  # (seq, D) -> (seq, PLE_MP_N); ALL layers' model_proj
 K_PLE_GELU = "gelu_mul_ple"  # gelu_tanh(g) * pli at PLI_D
 K_PLE_PROJ = "ple_proj"  # (seq, PLI_D) -> D, norm, + residual
 K_LM = "lm_head_gemv"
+
+# The model_proj branch projects the SAME token embeddings through every
+# layer's matrix, so FastFlowLM's `pli_down_proj` is one GEMM of width
+# num_hidden_layers * PLI_D (gemma4e_prefill.cpp, pre_pass) rather than
+# NUM_LAYERS narrow ones. N must be a multiple of tile_n * herd_n = 512, so the
+# concatenation is padded by one layer's worth and the tail is discarded.
+PLE_MP_N = -(-NUM_LAYERS * PLI_D // 512) * 512
+PLE_MP_TK_L2 = 64
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +254,7 @@ class _rms_eps:
 # ---------------------------------------------------------------------------
 
 
-def gemm_spec(m, k, n, precision="high", force_method=None):
+def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
     """Per-GEMM build recipe for one Gemma4 shape.
 
     `force_method` overrides the size rule. The gate GEMM uses it to take the
@@ -264,7 +273,11 @@ def gemm_spec(m, k, n, precision="high", force_method=None):
     # that fits. Applied where it is OBSERVED to bite, not from the formula:
     # n=6144 at tile_k_l2=256 exceeds the same arithmetic and compiles anyway,
     # because the emitted BD factors differently there.
-    tile_k_l2 = 64 if n >= 12288 else min(256, k)
+    # n=9216 (the batched model_proj) blows it too, hence the explicit override
+    # -- a measured sweep puts the whole knob inside 4%, so lowering it where a
+    # width needs it costs nothing worth protecting.
+    if tile_k_l2 is None:
+        tile_k_l2 = 64 if n >= 12288 else min(256, k)
     return _spec_with_tiles(
         method,
         dict(
@@ -624,7 +637,15 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
 
 
 def _build_single_gemm_elf(
-    name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4, epilogue_gelu=False
+    name,
+    sym,
+    seq_len,
+    k_dim,
+    n_dim,
+    herd_m=8,
+    herd_n=4,
+    epilogue_gelu=False,
+    tile_k_l2=None,
 ):
     """Standalone single-GEMM ELF: arg0 in, arg1 weight, arg2 out.
 
@@ -642,7 +663,11 @@ def _build_single_gemm_elf(
     )
 
     g_spec = gemm_spec(
-        seq_len, k_dim, n_dim, force_method="drain" if epilogue_gelu else None
+        seq_len,
+        k_dim,
+        n_dim,
+        force_method="drain" if epilogue_gelu else None,
+        tile_k_l2=tile_k_l2,
     )
     print(
         f"  [{name}] GEMM ({g_spec['method']}) {seq_len}x{k_dim}x{n_dim} "
@@ -830,7 +855,7 @@ _NEEDED = (
     + [K_UP(w) for w in _WID]
     + [K_MUL(w) for w in _WID]
     + [K_DOWN(w) for w in _WID]
-    + [K_PLE_GEMM, K_PLE_GELU, K_PLE_PROJ, K_LM]
+    + [K_PLE_GEMM, K_PLE_MP, K_PLE_GELU, K_PLE_PROJ, K_LM]
 )
 
 
@@ -905,11 +930,17 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     # --- PLE. One set of ELFs for all 35 layers: the branch is PLI_D-wide
     # regardless of attention class or FFN width.
-    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM; inp_gate AND model_proj) ---")
+    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM; the per-layer inp_gate) ---")
     mod, scratch[K_PLE_GEMM] = _build_single_gemm_elf(
         K_PLE_GEMM, "pg", seq_len, D, PLI_D
     )
     cache.compile_and_cache(K_PLE_GEMM, mod, _elf_backend(K_PLE_GEMM))
+
+    print(f"\n--- {K_PLE_MP} (D -> {PLE_MP_N}; all layers' model_proj at once) ---")
+    mod, scratch[K_PLE_MP] = _build_single_gemm_elf(
+        K_PLE_MP, "pm", seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2
+    )
+    cache.compile_and_cache(K_PLE_MP, mod, _elf_backend(K_PLE_MP))
 
     print(f"\n--- {K_PLE_GELU} (gelu_tanh(gate) * per-layer input, {PLI_D}) ---")
     cache.compile_and_cache(
@@ -1004,6 +1035,7 @@ def resolve_scratch(seq_len):
         sc[K_UP(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
         sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
     sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D)], 3)
+    sc[K_PLE_MP] = _alloc([gemm_spec(seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2)], 3)
     sc[K_PLE_PROJ] = _alloc([gemm_spec(seq_len, PLI_D, D)], 7)
     return sc
 
@@ -1072,6 +1104,7 @@ class Gemma4Q4nxPrefill:
         self._w = None
         self._nm = None
         self._ple = None
+        self._mp_w = None
         self._embed = None
         self._g = None
         self._luts = None
@@ -1396,6 +1429,38 @@ class Gemma4Q4nxPrefill:
             shared_alias=alias,
         )
 
+    def _ple_mp_weight(self):
+        """Every layer's model_proj side by side: (D, PLE_MP_N), built once."""
+        if getattr(self, "_mp_w", None) is None:
+            w = np.zeros((D, PLE_MP_N), bfloat16)
+            for L in range(self.n_layers):
+                w[:, L * PLI_D : (L + 1) * PLI_D] = self._ple[L]["model_proj"]
+            self._mp_w = w
+        return self._mp_w
+
+    def _call_ple_mp_all(self, x):
+        seq = self.seq
+        args = [
+            np.asarray(x, bfloat16).reshape(seq, D),
+            self._ple_mp_weight(),
+            np.zeros((seq, PLE_MP_N), bfloat16),
+        ]
+        idx = {2}
+        for sc in self.scratch[K_PLE_MP]:
+            if sc is not None:
+                args.append(np.zeros((seq, PLE_MP_N), np.float32))
+                idx.add(sc)
+        return self.cache.load_and_run(
+            K_PLE_MP,
+            _elf_backend(K_PLE_MP),
+            *args,
+            output_indices=[2],
+            static_input_indices={1},
+            intermediate_indices=idx,
+            bo_key="ple_mp_all",
+            shared_nonstatic=True,
+        )
+
     def _call_ple_gemm(self, k, x, w, tag):
         """The (seq, D) -> (seq, PLI_D) GEMM, shared by the two PLE projections.
 
@@ -1467,7 +1532,6 @@ class Gemma4Q4nxPrefill:
                 {0: _A_ACT, 5: _A_RES1},
             )
             self._call_ple_gemm(k, z_d, pw["inp_gate"], "gate")
-            self._call_ple_gemm(k, z_d, pw["model_proj"], "mp")
             self._call_gelu_mul(K_PLE_GELU, k, PLI_D, z_p, z_p, None)
             self._call_gemm_norm_add(
                 K_PLE_PROJ,
@@ -1532,15 +1596,11 @@ class Gemma4Q4nxPrefill:
         emb = np.zeros((seq, D), bfloat16)
         emb[: len(ids)] = np.asarray(embeds, bfloat16)
         out = np.zeros((seq, NUM_LAYERS, PLI_D), np.float32)
+        allp = self._dev(self._call_ple_mp_all, emb, tag="ple_mp")[2].reshape(
+            seq, PLE_MP_N
+        )
         for L in range(self.n_layers):
-            proj = self._dev(
-                self._call_ple_gemm,
-                L,
-                emb,
-                self._ple[L]["model_proj"],
-                "mp",
-                tag="ple_mp",
-            )[2].reshape(seq, PLI_D)
+            proj = allp[:, L * PLI_D : (L + 1) * PLI_D]
             proj = _rmsnorm(np.asarray(proj, np.float32) * PLE_MODEL_PROJ_SCALE, norm_w)
             out[: len(ids), L, :] = (proj[: len(ids)] + tbl[:, L, :]) * PLE_INPUT_SCALE
         return out
