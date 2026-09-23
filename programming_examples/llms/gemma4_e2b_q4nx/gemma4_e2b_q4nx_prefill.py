@@ -137,6 +137,16 @@ def _elf_backend(instance_name, tiling=(2, 2)):
     }
 
 
+def _mul_backend(name):
+    # The plain-multiply ELF's instance name is the eltwise_mul launch's own.
+    return {
+        "verbose": False,
+        "omit_while_true_loop": False,
+        "output_format": "elf",
+        "instance_name": "eltwise_mul",
+    }
+
+
 def _gelu_backend(name):
     # The GELU ELF's instance name must match the top func name in build_module_2d.
     return {
@@ -178,8 +188,9 @@ def K_UP(w):
     return f"up_{w}"
 
 
-def K_GELU(w):
-    return f"gelu_mul_{w}"
+def K_MUL(w):
+    """The FFN's gate*up multiply. GELU lives in the gate GEMM's epilogue."""
+    return f"mul_{w}"
 
 
 def K_DOWN(w):
@@ -234,11 +245,17 @@ class _rms_eps:
 # ---------------------------------------------------------------------------
 
 
-def gemm_spec(m, k, n, precision="high"):
-    """Per-GEMM build recipe for one Gemma4 shape."""
+def gemm_spec(m, k, n, precision="high", force_method=None):
+    """Per-GEMM build recipe for one Gemma4 shape.
+
+    `force_method` overrides the size rule. The gate GEMM uses it to take the
+    DRAIN path: that is the only one whose cast runs inside the GEMM's own herd
+    (32 cores), which is where FastFlowLM puts its GELU -- fused-cast's separate
+    cast launch is capped at 8 columns by the shim budget.
+    """
     from shared.builders.gemm_builder import _spec_with_tiles
 
-    method = "fused-cast" if m * k * n >= 4e9 else "drain"
+    method = force_method or ("fused-cast" if m * k * n >= 4e9 else "drain")
     tile_m = 64 if method == "fused-cast" else 32
     # The weight walk emits tile_k_l2 * n as its K-tile DMA stride, and NPU2
     # caps a BD stride at 1048576. The double-wide FFN (n=12288) blows that at
@@ -271,7 +288,7 @@ def gemm_herd_n(n, tile_n):
     return max(1, min(4, n // tile_n))
 
 
-def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None):
+def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None, epilogue_gelu=False):
     from shared.builders.gemm_builder import _build_gemm_module
 
     if herd_n is None:
@@ -287,19 +304,23 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None):
             spec["tile_n"],
             herd_m,
             herd_n,
+            epilogue_gelu=epilogue_gelu,
             **dict(spec["build_kwargs"]),
         )
     )
 
 
-def _gemm_externs(spec):
+def _gemm_externs(spec, epilogue_gelu=False):
     sfx = spec["sym_suffix"]
-    return {
+    syms = {
         "@matmul_bf16",
         "@op_has_no_registered_library_name" + sfx,
         "@zero_f32_mn" + sfx,
         "@f32_to_bf16_mn" + sfx,
     }
+    if epilogue_gelu:
+        syms.add("@f32_to_bf16_gelu_mn" + sfx)
+    return syms
 
 
 def _wT(w, k_dim, n_dim):
@@ -602,8 +623,17 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
     return module, scratch_for
 
 
-def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4):
-    """Standalone single-GEMM ELF: arg0 in, arg1 weight, arg2 out."""
+def _build_single_gemm_elf(
+    name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4, epilogue_gelu=False
+):
+    """Standalone single-GEMM ELF: arg0 in, arg1 weight, arg2 out.
+
+    `epilogue_gelu` applies GELU-tanh in the GEMM's own cast launch, which is
+    FastFlowLM's `Gemm::GeLU` output mode: the activation is a pointwise
+    function of an accumulator that launch already holds, so it costs no
+    operand and no DMA, and the GeGLU pass left behind is a plain multiply --
+    which the registry measures at 55.7 GB/s against gelu-and-mul's 13.1.
+    """
     from shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
@@ -611,12 +641,16 @@ def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4)
         alloc_gemm_scratch,
     )
 
-    g_spec = gemm_spec(seq_len, k_dim, n_dim)
+    g_spec = gemm_spec(
+        seq_len, k_dim, n_dim, force_method="drain" if epilogue_gelu else None
+    )
     print(
         f"  [{name}] GEMM ({g_spec['method']}) {seq_len}x{k_dim}x{n_dim} "
         f"(tk_l2={g_spec['tile_k_l2']}, tn={g_spec['tile_n']})..."
     )
-    gemm_ir = _build_gemm_ir(seq_len, k_dim, n_dim, g_spec, herd_m)
+    gemm_ir = _build_gemm_ir(
+        seq_len, k_dim, n_dim, g_spec, herd_m, epilogue_gelu=epilogue_gelu
+    )
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{k_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{k_dim}x{n_dim}xbf16>"),
@@ -628,7 +662,7 @@ def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4)
             gemm_ir,
             sym,
             _gemm_amap(0, 1, 2, scratch_for[0]),
-            extern_syms=_gemm_externs(g_spec),
+            extern_syms=_gemm_externs(g_spec, epilogue_gelu),
         )
     ]
     module = stitch_elf(name, base_args, slices, scratch_args=scratch_args)
@@ -656,6 +690,27 @@ def build_gelu_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     print(f"  [gelu_mul] GELU-tanh GLU {seq_len}x{hidden_dim} (tile_n={tile_n})...")
     module = build_gelu(seq_len, hidden_dim, tile_n, bfloat16, herd_x, herd_y)
     print(f"  gelu_mul module: {len(str(module).splitlines())} lines, parsed OK")
+    return module
+
+
+def build_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
+    """Standalone NPU elementwise multiply ELF: gate * up -> (seq, hidden_dim).
+
+    What replaced the GeGLU pass once the gate GEMM grew a GELU epilogue. The
+    split is FastFlowLM's: its gate GEMM carries the activation as an RTP output
+    mode and `mlp_block` does only the multiply. Worth doing rather than leaving
+    the fused kernel in place -- the kernel registry measures gelu-and-mul at
+    13.1 GB/s and a plain multiply at 55.7, both on the 8 tiles the 3-stream
+    shim budget allows, so the tanh was the whole difference.
+    """
+    from eltwise_mul.eltwise_mul import build_eltwise_mul
+
+    tile = _gelu_tile_n(seq_len, hidden_dim, herd_x)
+    print(f"  [mul] {seq_len}x{hidden_dim} (tile={tile})...")
+    module = build_eltwise_mul(
+        [seq_len * hidden_dim], tile=tile, herd_shape=(herd_x * herd_y,)
+    ).build(target="npu2")
+    print(f"  mul module: {len(str(module).splitlines())} lines, parsed OK")
     return module
 
 
@@ -773,7 +828,7 @@ _NEEDED = (
     + [K_FA(c) for c in _CLS]
     + [K_GATE(w) for w in _WID]
     + [K_UP(w) for w in _WID]
-    + [K_GELU(w) for w in _WID]
+    + [K_MUL(w) for w in _WID]
     + [K_DOWN(w) for w in _WID]
     + [K_PLE_GEMM, K_PLE_GELU, K_PLE_PROJ, K_LM]
 )
@@ -827,7 +882,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         inter = wid_inter(w)
         print(f"\n--- {K_GATE(w)} (Gate GEMM, INTER={inter}) ---")
         mod, scratch[K_GATE(w)] = _build_single_gemm_elf(
-            K_GATE(w), "gg", seq_len, D, inter
+            K_GATE(w), "gg", seq_len, D, inter, epilogue_gelu=True
         )
         cache.compile_and_cache(K_GATE(w), mod, _elf_backend(K_GATE(w)))
 
@@ -835,11 +890,11 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         mod, scratch[K_UP(w)] = _build_single_gemm_elf(K_UP(w), "ug", seq_len, D, inter)
         cache.compile_and_cache(K_UP(w), mod, _elf_backend(K_UP(w)))
 
-        print(f"\n--- {K_GELU(w)} (GELU-tanh GLU, INTER={inter}) ---")
+        print(f"\n--- {K_MUL(w)} (gate*up multiply, INTER={inter}) ---")
         cache.compile_and_cache(
-            K_GELU(w),
-            build_gelu_mul_module(seq_len, inter),
-            _gelu_backend(K_GELU(w)),
+            K_MUL(w),
+            build_mul_module(seq_len, inter),
+            _mul_backend(K_MUL(w)),
         )
 
         print(f"\n--- {K_DOWN(w)} (Down + post-FFN norm + residual) ---")
@@ -870,12 +925,18 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     # --- Attention. One ELF per class: the sliding layers carry the window
     # mask AND head_dim=256, the full layers plain causal at head_dim=512.
     from shared.infra.fa_headfirst import compile_headfirst_fa
+    from shared.infra.fa_headspatial import compile_headspatial_fa, supports
 
     for c in _CLS:
         dh = cls_dims(c)[0]
         win = SLIDING_WINDOW if c == "swa" else None
-        print(f"\n--- {K_FA(c)} (head-first FA, head_dim={dh}, window={win}) ---")
-        compile_headfirst_fa(
+        # Head-spatial where it fits: under MQA one K/V broadcast serves four
+        # resident heads, so K and V cross L3 twice per layer instead of eight
+        # times.
+        hs = supports(dh, N_KV_HEADS)
+        kind = "head-spatial" if hs else "head-first"
+        print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
+        (compile_headspatial_fa if hs else compile_headfirst_fa)(
             cache,
             seq_len,
             N_Q_HEADS,
@@ -935,7 +996,11 @@ def resolve_scratch(seq_len):
         sc[K_ONORM(c)] = _alloc([gemm_spec(seq_len, dq, D)], 9)
     for w in _WID:
         inter = wid_inter(w)
-        sc[K_GATE(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
+        # The gate GEMM is forced to the drain method (its GELU epilogue runs
+        # in the GEMM's own herd), and drain needs no f32 scratch -- so this
+        # must use the SAME spec the builder did or the call passes an argument
+        # the ELF does not have.
+        sc[K_GATE(w)] = _alloc([gemm_spec(seq_len, D, inter, force_method="drain")], 3)
         sc[K_UP(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
         sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
     sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D)], 3)
@@ -1266,6 +1331,22 @@ class Gemma4Q4nxPrefill:
             shared_alias={0: _A_NORMED2, 2: out_alias},
         )
 
+    def _call_mul(self, name, k, hidden, a, b, alias):
+        """gate * up, flat: the ELF's interface is 1-D."""
+        seq = self.seq
+        return self.cache.load_and_run(
+            name,
+            _mul_backend(name),
+            np.asarray(a, bfloat16).reshape(seq * hidden),
+            np.asarray(b, bfloat16).reshape(seq * hidden),
+            np.zeros(seq * hidden, bfloat16),
+            output_indices=[2],
+            intermediate_indices={2} | {i for i in (0, 1) if (alias or {}).get(i)},
+            bo_key=f"{name}_L{k}",
+            shared_nonstatic=True,
+            shared_alias=alias,
+        )
+
     def _call_gelu_mul(self, name, k, hidden, a, b, alias):
         seq = self.seq
         return self.cache.load_and_run(
@@ -1366,8 +1447,8 @@ class Gemma4Q4nxPrefill:
             self._call_o_norm(k, z_q, z_d)
             self._call_ffn_gemm(K_GATE(_wid(k)), k, "gate", z_d, _A_GATE)
             self._call_ffn_gemm(K_UP(_wid(k)), k, "up", z_d, _A_UP)
-            self._call_gelu_mul(
-                K_GELU(_wid(k)),
+            self._call_mul(
+                K_MUL(_wid(k)),
                 k,
                 inter,
                 z_i,
@@ -1467,6 +1548,7 @@ class Gemma4Q4nxPrefill:
     def _run_layer(self, x, k, pli):
         """One Gemma4 decoder layer on device: attention, FFN, then the PLE tail."""
         from shared.infra.fa_headfirst import npu_fa_headfirst
+        from shared.infra.fa_headspatial import npu_fa_headspatial, supports
 
         seq = self.seq
         dh, dq, dkv = dims(k)
@@ -1484,7 +1566,7 @@ class Gemma4Q4nxPrefill:
         src = kv_source_layer(k)
 
         attn_out = self._dev(
-            npu_fa_headfirst,
+            npu_fa_headspatial if supports(dh, N_KV_HEADS) else npu_fa_headfirst,
             self.cache,
             np.ascontiguousarray(q_roped),
             np.ascontiguousarray(self.kv_k[src]),
@@ -1509,8 +1591,8 @@ class Gemma4Q4nxPrefill:
             2
         ].reshape(seq, inter)
         act = self._dev(
-            self._call_gelu_mul,
-            K_GELU(w),
+            self._call_mul,
+            K_MUL(w),
             k,
             inter,
             gate,

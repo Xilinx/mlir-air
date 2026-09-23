@@ -213,7 +213,14 @@ def _build_gemm_module(
     sym_suffix / link_with_name disambiguate the mm.o variant (_m64 fused / _m32
     drain) so both can co-link in one fused ELF.
     """
+    # epilogue_gelu only reaches the DRAIN path: the activation belongs in the
+    # GEMM's own herd (FastFlowLM's copy_float_to_bfloat16_*_with_nonlinear),
+    # not in fused-cast's separate 8-column cast launch.
     if external_fused_cast:
+        assert not epilogue_gelu, (
+            "epilogue_gelu needs the drain method (external_bf16_out); "
+            "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
+        )
         from matrix_multiplication.bf16_in_bf16_out.run import build_module_gemm_cast
 
         return build_module_gemm_cast(

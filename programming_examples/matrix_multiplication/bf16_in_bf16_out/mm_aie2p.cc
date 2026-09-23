@@ -395,4 +395,48 @@ void SYM(f32_to_bf16_n)(float *src, bfloat16 *dst, int n) {
   }
 }
 
+// GELU-tanh + narrowing in the GEMM's OWN drain, no bias. This is where
+// FastFlowLM puts its activation: its compute tile ends in
+// copy_float_to_bfloat16_lock_aware_with_nonlinear
+// (mm_888_function_mega_down.h), so the nonlinearity runs on all 32 GEMM cores
+// as part of the copy-out and there is no separate cast pass at all. Same math
+// as f32_to_bf16_bias_gelu_mn; every multiply stays in bf16 because AIE2P has
+// no vector f32 multiply, so an f32 x^3 would emit scalar libcalls, and the f32
+// narrowing goes through an accumulator because a per-element cast loop is
+// scalar and costs more than the tanh it feeds.
+void SYM(f32_to_bf16_gelu_mn)(float *src, bfloat16 *dst) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+  constexpr unsigned VW = 16;
+  constexpr unsigned NTOT = DIM_M * DIM_N;
+  static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 16");
+  const aie::vector<bfloat16, VW> half_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.5f);
+  const aie::vector<bfloat16, VW> one_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)1.0f);
+  const aie::vector<bfloat16, VW> c_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.7978845608f);
+  const aie::vector<bfloat16, VW> beta_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.044715f);
+  for (unsigned i = 0; i < NTOT; i += VW)
+    chess_prepare_for_pipelining chess_loop_range(16, ) {
+      aie::vector<float, VW> f = aie::load_v<VW>(src + i);
+      aie::accum<accfloat, VW> facc;
+      facc.from_vector(f);
+      aie::vector<bfloat16, VW> g = facc.template to_vector<bfloat16>();
+      aie::vector<bfloat16, VW> g2 = aie::mul(g, g);
+      aie::vector<bfloat16, VW> g3 = aie::mul(g2, g);
+      aie::vector<bfloat16, VW> beta_g3 = aie::mul(beta_v, g3);
+      aie::vector<bfloat16, VW> poly = aie::add(g, beta_g3);
+      aie::vector<bfloat16, VW> inner = aie::mul(c_v, poly);
+      aie::accum<accfloat, VW> tanh_in;
+      tanh_in.from_vector(inner);
+      aie::vector<bfloat16, VW> tv =
+          aie::tanh<bfloat16>(tanh_in.template to_vector<float>());
+      aie::vector<bfloat16, VW> gh = aie::mul(half_v, g);
+      aie::vector<bfloat16, VW> opt = aie::add(one_v, tv);
+      aie::vector<bfloat16, VW> out = aie::mul(gh, opt);
+      aie::store_v(dst + i, out);
+    }
+}
+
 } // extern "C"

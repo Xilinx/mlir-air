@@ -374,9 +374,11 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
   SET_ROUNDING();
   // u = np.maximum(u, up)
   // Buffer shape:
-  // up: [lqp, 1] = [32, 1]
-  // u: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 32;
+  // up: [lqp, 1]
+  // u: [lqp, 1]
+  // A [lqp,1] column is exactly lqp elements, so the vector must BE lqp --
+  // a fixed 32 reads past the buffer at lqp<32 and zero-trips the loop.
+  constexpr int VecLen = lqp;
   constexpr int num_elems = lqp;
   bfloat16 *__restrict pu = u;
   for (int i = 0; i < num_elems; i += VecLen) {
@@ -571,10 +573,10 @@ void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
   SET_ROUNDING();
   // s += sp * r
   // Buffer shape:
-  // sp: [lqp, 1] = [32, 1]
-  // r: [lqp, 1] = [32, 1]
-  // s: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 32;
+  // sp: [lqp, 1]
+  // r: [lqp, 1]
+  // s: [lqp, 1]
+  constexpr int VecLen = lqp; // see maximum_up_u_bf16
   constexpr int num_elems = lqp;
   bfloat16 *__restrict pr = r;
   bfloat16 *__restrict ps = s;
@@ -584,7 +586,7 @@ void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
     aie::vector<bfloat16, VecLen> spTemp = aie::load_v<VecLen>(psp);
     aie::accum<accfloat, VecLen> accTemp = aie::mul(rTemp, spTemp);
     accTemp = aie::add(accTemp, aie::load_v<VecLen>(ps));
-    aie::vector<bfloat16, VecLen> sTemp = to_v32bfloat16(accTemp);
+    aie::vector<bfloat16, VecLen> sTemp = accTemp.to_vector<bfloat16>();
     aie::store_v(ps, sTemp);
     pr += VecLen;
     ps += VecLen;
@@ -594,7 +596,7 @@ void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
 
 void vector_copy_32elems(const int offset, const bfloat16 *__restrict inputs,
                          bfloat16 *__restrict outputs) {
-  constexpr int VecLen = 32;
+  constexpr int VecLen = lqp; // see maximum_up_u_bf16
   constexpr int num_elems = lqp;
   const bfloat16 *__restrict pIn = inputs;
   bfloat16 *__restrict pOut = outputs + offset;

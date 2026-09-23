@@ -291,7 +291,13 @@ def build_module(
                 # f32_to_bf16_mn(float* src, bfloat16* dst): single full-tile cast.
                 # GELU is a pointwise function of the accumulator, so folding it
                 # into the drain costs no operand, no DMA and no extra port.
-                _drain_sym = "f32_to_bf16_mn"
+                # FastFlowLM applies its activation right here -- its compute
+                # tile ends in copy_float_to_bfloat16_lock_aware_with_nonlinear,
+                # so the nonlinearity runs on all 32 GEMM cores as part of the
+                # copy-out and no separate cast pass exists.
+                _drain_sym = (
+                    "f32_to_bf16_gelu_mn" if epilogue_gelu else "f32_to_bf16_mn"
+                )
                 if b_pad_rows:
                     _drain_sym = (
                         "f32_to_bf16_bias_gelu_mn"
