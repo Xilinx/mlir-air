@@ -247,6 +247,45 @@ def _gemm_tiles(spec):
     )
 
 
+def _gemm_grid_extents(m, n, spec, herd_m, herd_n):
+    """(grid_m, grid_n): how many launch-grid iterations a drain GEMM at this
+    shape/tiling needs. A `runtime_loop_tiling_sizes` request >= this per-axis
+    fully unrolls the GEMM's control stream, matching AIRDependencyScheduleOpt's
+    findLargestFactor(trip_count, requested) -- which saturates at trip_count
+    once requested >= trip_count, leaving no runtime loop and so no BD IDs to
+    recycle."""
+    return m // (spec["tile_m"] * herd_m), n // (spec["tile_n"] * herd_n)
+
+
+def vit_ln_qkv_runtime_tiling(seq_len, emb_dim, herd_m=8, herd_n=4, registry_seq_len=None):
+    """`runtime_loop_tiling_sizes` that fully unrolls vit_ln_qkv's one GEMM
+    launch -- its own (M, N) grid extents. `seq_len` is the BATCHED length
+    (n_images * per-image seq); `registry_seq_len`, if given, is the per-image
+    length the registry was measured at (see build_vit_ln_qkv_module)."""
+    reg_len = registry_seq_len or seq_len
+    spec = gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high")
+    return list(_gemm_grid_extents(seq_len, 3 * emb_dim, spec, herd_m, herd_n))
+
+
+def vit_o_ffn_runtime_tiling(
+    seq_len, emb_dim, hidden_dim, herd_m=8, herd_n=4, registry_seq_len=None
+):
+    """`runtime_loop_tiling_sizes` that fully unrolls vit_o_ffn's three GEMM
+    launches (O/fc1/fc2) -- the elementwise max of their (M, N) grid extents,
+    since one tiling vector is shared by the whole stitched ELF and each
+    launch's own loop clips to its own trip count (see _gemm_grid_extents)."""
+    reg_len = registry_seq_len or seq_len
+    o_spec = gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high")
+    g_spec = gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high")
+    d_spec = gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high")
+    grids = [
+        _gemm_grid_extents(seq_len, emb_dim, o_spec, herd_m, herd_n),
+        _gemm_grid_extents(seq_len, hidden_dim, g_spec, herd_m, herd_n),
+        _gemm_grid_extents(seq_len, emb_dim, d_spec, herd_m, herd_n),
+    ]
+    return [max(g[0] for g in grids), max(g[1] for g in grids)]
+
+
 # ===========================================================================
 # Group A: vit_ln_qkv — LN1 + one fused [Q|K|V] GEMM (2 launches)
 # ===========================================================================

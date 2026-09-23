@@ -47,7 +47,13 @@ _LLMS_DIR = str(Path(__file__).resolve().parent.parent)
 if _LLMS_DIR not in sys.path:
     sys.path.insert(0, _LLMS_DIR)
 
-from smolvla_fuse import LN_EXT, LN_ROWS, LNQKV_TILING, OFFN_TILING
+from smolvla_fuse import (
+    LN_EXT,
+    LN_ROWS,
+    LNQKV_TILING_OVERRIDE,
+    OFFN_TILING_OVERRIDE,
+    FA_Q_IN_SEGMENT,
+)
 from smolvla_vision_weights import SigLIPVisionConfig
 from smolvla_cpu_helpers import im2col_patch_embed
 from shared.infra.cache import KernelCache, Profiler  # noqa: F401 (re-exported)
@@ -96,7 +102,9 @@ def _gelu_backend():
 # SMOLVLA_FA_QSEG=1 runs the FlashAttention q-block loop inside the segment instead of
 # as a launch-grid axis: the same design and microkernels (bit-identical output), but
 # head_groups * n_images sequential waves instead of q_blocks * head_groups * n_images.
-_FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "0") == "1"
+# Read once in smolvla_fuse.py so the compile path here and the cache-dir naming in
+# smolvla_runtime.py can never disagree on which schedule is baked into the ELF.
+_FA_Q_IN_SEGMENT = FA_Q_IN_SEGMENT
 
 
 def _attn_backend(n_images=1):
@@ -120,25 +128,43 @@ _ATTN_BACKEND_KWARGS = _attn_backend()
 
 # --- A3-6b fused-ELF backends (Lever 2 + Lever 3) ---
 # Both fused ViT ELFs (vit_ln_qkv, vit_o_ffn) are stitched from drain GEMMs +
-# affine LN + on-device bias-adds + residual adds + GELU. Drain herds need
-# runtime_loop_tiling_sizes=[2,2] for BD-ID recycling (same as the backbone o_ffn).
+# affine LN + on-device bias-adds + residual adds + GELU. A drain herd's runtime
+# loop needs BD-ID recycling ONLY when it does not fully unroll -- the backbone
+# o_ffn's runtime_loop_tiling_sizes=[2,2] is smaller than its own GEMM grid
+# extents, so its runtime loop is real and BD IDs must be recycled across
+# iterations. Here runtime_loop_tiling_sizes is instead computed to be >= every
+# GEMM's own grid extent (vit_ln_qkv_runtime_tiling / vit_o_ffn_runtime_tiling),
+# which collapses each runtime loop to its full trip count at compile time --
+# no runtime loop survives, so there is nothing left to recycle. Both are
+# bit-identical in model output; the computed value is just faster (smaller
+# control stream, see smolvla_fuse.py).
 
 
-def _vit_ln_qkv_backend():
+def _vit_ln_qkv_backend(seq_len, emb_dim, registry_seq_len=None):
+    from smolvla_vision_builders import vit_ln_qkv_runtime_tiling
+
+    tiling = LNQKV_TILING_OVERRIDE or vit_ln_qkv_runtime_tiling(
+        seq_len, emb_dim, registry_seq_len=registry_seq_len
+    )
     return {
         "omit_while_true_loop": False,
         "output_format": "elf",
         "instance_name": "vit_ln_qkv",
-        "runtime_loop_tiling_sizes": list(LNQKV_TILING),
+        "runtime_loop_tiling_sizes": list(tiling),
     }
 
 
-def _vit_o_ffn_backend():
+def _vit_o_ffn_backend(seq_len, emb_dim, hidden_dim, registry_seq_len=None):
+    from smolvla_vision_builders import vit_o_ffn_runtime_tiling
+
+    tiling = OFFN_TILING_OVERRIDE or vit_o_ffn_runtime_tiling(
+        seq_len, emb_dim, hidden_dim, registry_seq_len=registry_seq_len
+    )
     return {
         "omit_while_true_loop": False,
         "output_format": "elf",
         "instance_name": "vit_o_ffn",
-        "runtime_loop_tiling_sizes": list(OFFN_TILING),
+        "runtime_loop_tiling_sizes": list(tiling),
     }
 
 
@@ -364,7 +390,10 @@ def _compile_fused_kernels(
         build_vit_ln_qkv_module(
             batch_len, emb_dim, n_heads, head_dim, registry_seq_len=seq_len
         ),
-        {"verbose": cache.verbose, **_vit_ln_qkv_backend()},
+        {
+            "verbose": cache.verbose,
+            **_vit_ln_qkv_backend(batch_len, emb_dim, registry_seq_len=seq_len),
+        },
     )
 
     print(f"  Compiling vit_o_ffn (6-launch fused ELF, M={batch_len})...")
@@ -373,7 +402,12 @@ def _compile_fused_kernels(
         build_vit_o_ffn_module(
             batch_len, emb_dim, hidden_dim, registry_seq_len=seq_len
         ),
-        {"verbose": cache.verbose, **_vit_o_ffn_backend()},
+        {
+            "verbose": cache.verbose,
+            **_vit_o_ffn_backend(
+                batch_len, emb_dim, hidden_dim, registry_seq_len=seq_len
+            ),
+        },
     )
 
     # Standalone affine LayerNorm ELF — used ONCE at the end of the stack for
@@ -796,7 +830,7 @@ def run_vit_block_fused(
     ln_args[0] = np.ascontiguousarray(np.asarray(x_bf16, dtype=bfloat16)).reshape(-1)
     res = cache.load_and_run(
         "vit_ln_qkv",
-        _vit_ln_qkv_backend(),
+        _vit_ln_qkv_backend(seq_len, emb, registry_seq_len=reg_len),
         *ln_args,
         output_indices=[4],
         static_input_indices={1, 3},  # LN param + bias-packed weights
@@ -870,7 +904,7 @@ def run_vit_block_fused(
     offn_args[3] = np.ascontiguousarray(np.asarray(x_bf16, dtype=bfloat16)).reshape(-1)
     res = cache.load_and_run(
         "vit_o_ffn",
-        _vit_o_ffn_backend(),
+        _vit_o_ffn_backend(seq_len, emb, hidden, registry_seq_len=reg_len),
         *offn_args,
         output_indices=[11],
         static_input_indices={1, 5, 7, 9},  # bias-packed weights + LN2 param

@@ -48,23 +48,6 @@ from shared.infra.cache import KernelCache, Profiler  # noqa: E402
 
 MODEL_ID = "lerobot/smolvla_base"
 
-# Resolved against THIS FILE, not the cwd: VisionRuntime is imported into
-# lerobot's process, so where it finds its ELFs must not depend on who called
-# it. Under build/ so that `make clean` is `rm -rf build/` and nothing else.
-#
-# The ELFs bake in the LayerNorm implementation and the loop tilings, so those are part
-# of the directory name: a cache built with other settings is never reused. The default
-# for each setting that the original code had keeps the original name.
-from smolvla_fuse import LN_EXT, LNQKV_TILING, OFFN_TILING  # noqa: E402
-
-_CACHE_SUFFIX = (
-    ("_ln" if LN_EXT else "")
-    + ("" if OFFN_TILING == [2, 2] else "_o" + "x".join(map(str, OFFN_TILING)))
-    + ("" if LNQKV_TILING == [2, 2] else "_q" + "x".join(map(str, LNQKV_TILING)))
-    # ...and so is the FlashAttention schedule (q loop inside the segment).
-    + ("_qseg" if os.environ.get("SMOLVLA_FA_QSEG", "0") == "1" else "")
-)
-VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")
 VISION_SEQ_LEN = 1024
 # SmolVLA feeds 3 camera images per step, and every op except attention is
 # row-independent, so all 3 run stacked along rows through the two fused ELFs.
@@ -74,6 +57,51 @@ VISION_SEQ_LEN = 1024
 # patch embedding and discarding the extra rows; more than this many images
 # asserts, because it would need a differently-sized ELF.
 VISION_N_IMAGES = 3
+
+# Resolved against THIS FILE, not the cwd: VisionRuntime is imported into
+# lerobot's process, so where it finds its ELFs must not depend on who called
+# it. Under build/ so that `make clean` is `rm -rf build/` and nothing else.
+#
+# The ELFs bake in the LayerNorm implementation, LN_ROWS, the loop tilings, and
+# the FlashAttention schedule, so all four are part of the directory name: a
+# cache built with other settings is never reused. LNQKV/OFFN tiling is
+# computed the same way the compile path computes it (vit_*_runtime_tiling),
+# so a config change that shifts the computed value also shifts the cache dir
+# instead of silently reusing an ELF built for the old value.
+from smolvla_fuse import (  # noqa: E402
+    LN_EXT,
+    LN_ROWS,
+    LNQKV_TILING_OVERRIDE,
+    OFFN_TILING_OVERRIDE,
+    FA_Q_IN_SEGMENT,
+)
+from smolvla_vision_weights import SigLIPVisionConfig  # noqa: E402
+from smolvla_vision_builders import (  # noqa: E402
+    vit_ln_qkv_runtime_tiling,
+    vit_o_ffn_runtime_tiling,
+)
+
+_cfg = SigLIPVisionConfig()
+_LNQKV_TILING = LNQKV_TILING_OVERRIDE or vit_ln_qkv_runtime_tiling(
+    VISION_SEQ_LEN * VISION_N_IMAGES, _cfg.emb_dim, registry_seq_len=VISION_SEQ_LEN
+)
+_OFFN_TILING = OFFN_TILING_OVERRIDE or vit_o_ffn_runtime_tiling(
+    VISION_SEQ_LEN * VISION_N_IMAGES,
+    _cfg.emb_dim,
+    _cfg.hidden_dim,
+    registry_seq_len=VISION_SEQ_LEN,
+)
+
+_CACHE_SUFFIX = (
+    ("_ln" if LN_EXT else "")
+    + (f"_r{LN_ROWS}" if LN_EXT else "")
+    + "_o"
+    + "x".join(map(str, _OFFN_TILING))
+    + "_q"
+    + "x".join(map(str, _LNQKV_TILING))
+    + ("_qseg" if FA_Q_IN_SEGMENT else "")
+)
+VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")
 VISION_KERNELS = {
     "vit_ln_qkv",
     "vit_o_ffn",
