@@ -257,7 +257,9 @@ def _gemm_grid_extents(m, n, spec, herd_m, herd_n):
     return m // (spec["tile_m"] * herd_m), n // (spec["tile_n"] * herd_n)
 
 
-def vit_ln_qkv_runtime_tiling(seq_len, emb_dim, herd_m=8, herd_n=4, registry_seq_len=None):
+def vit_ln_qkv_runtime_tiling(
+    seq_len, emb_dim, herd_m=8, herd_n=4, registry_seq_len=None
+):
     """`runtime_loop_tiling_sizes` that fully unrolls vit_ln_qkv's one GEMM
     launch -- its own (M, N) grid extents. `seq_len` is the BATCHED length
     (n_images * per-image seq); `registry_seq_len`, if given, is the per-image

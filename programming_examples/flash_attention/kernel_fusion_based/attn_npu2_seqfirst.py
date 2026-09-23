@@ -162,7 +162,9 @@ def _declare_flash_channels(NS, H, NQ):
     return qk2l1, qkin, v2l1, vin, cascade_gp, cascade_up, cascade_sp, gp2l2, gpout
 
 
-def _declare_flash_tensors(lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images):
+def _declare_flash_tensors(
+    lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images
+):
     """Q/K/V/GP L3 tensors + head-column bases, shared by every schedule.
 
     Sequence-first: heads are interleaved along the feature axis, so a head is
