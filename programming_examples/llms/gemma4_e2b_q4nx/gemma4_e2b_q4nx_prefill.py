@@ -203,6 +203,11 @@ K_PLE_GELU = "gelu_mul_ple"  # gate * pli at PLI_D; the GELU is in ple_gate
 K_PLE_PROJ = "ple_proj"  # (seq, PLI_D) -> D, norm, + residual
 K_LM = "lm_head_gemv"
 
+# Round-groups for the full-attention layers' causal K/V staircase. Measured at
+# seq=2048: 1 group 17.22 ms/dispatch, 2 -> 14.14, 4 -> 13.56, and each extra
+# launch costs ~0.7 ms, so 8 loses more than the 128 blocks it saves.
+_FA_CAUSAL_GROUPS = 4
+
 # The model_proj branch projects the SAME token embeddings through every
 # layer's matrix, so FastFlowLM's `pli_down_proj` is one GEMM of width
 # num_hidden_layers * PLI_D (gemma4e_prefill.cpp, pre_pass) rather than
@@ -967,6 +972,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         hs = supports(dh, N_KV_HEADS)
         kind = "head-spatial" if hs else "head-first"
         print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
+        extra = {"causal_groups": _FA_CAUSAL_GROUPS} if hs and win is None else {}
         (compile_headspatial_fa if hs else compile_headfirst_fa)(
             cache,
             seq_len,
@@ -977,6 +983,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
             window=win,
             name=K_FA(c),
             causal_skip=True,
+            **extra,
         )
 
     print(f"\n--- {K_LM} ({_LM_N_PARTITIONS} x {_LM_N_PART}, K={D}) ---")

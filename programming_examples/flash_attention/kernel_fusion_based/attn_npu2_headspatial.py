@@ -110,6 +110,9 @@ def build_launch(
     window=None,
     dv_tile=128,
     causal_skip=False,
+    rounds=None,
+    q_round_base=0,
+    kv_blocks=None,
 ):
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
@@ -175,6 +178,17 @@ def build_launch(
     num_lq_iters = lq // lqp
     num_chunks = lk // lkp
 
+    # One GROUP of the causal staircase. Plain causal streams every K/V block
+    # on every round, but round lx only needs the first NQT*(lx+1) of them, and
+    # a growing extent cannot be a single launch (air.api needs the size
+    # static). So the round axis is cut into groups, each a launch of its own
+    # with a constant, larger-than-it-needs extent, and the groups are stitched
+    # into one ELF -- one dispatch, so the per-dispatch cost is paid once.
+    n_rounds = num_lq_iters if rounds is None else rounds
+    assert q_round_base + n_rounds <= num_lq_iters, (q_round_base, n_rounds)
+    if q_round_base or rounds is not None or kv_blocks is not None:
+        assert causal and window is None, "grouping is for the plain-causal path"
+
     # Window truncation of the K/V DMA, which is FLM's gen_swa_engine_seq: per
     # round it computes kv_begin = max(0, Lq_current - window) and issues that
     # round's K/V BDs over kv_length rows only, not the whole sequence
@@ -203,6 +217,9 @@ def build_launch(
             f"table={kv_win_table}, num_chunks={num_chunks}"
         )
     kv_stream_blocks = kv_win_blocks if kv_win_table is not None else num_chunks
+    if kv_blocks is not None:
+        assert NQT * (q_round_base + n_rounds) <= kv_blocks <= num_chunks, kv_blocks
+        kv_stream_blocks = kv_blocks
 
     g_flat = tile_size_q * lkp
     # One interleaved L3 record per K chunk: the K tile, then that chunk's V
@@ -279,11 +296,11 @@ def build_launch(
 
     rows_per_relay = HY * tile_size_q
 
-    with air.launch([range(num_lq_iters)], name="attention_bf16") as launch:
+    with air.launch([range(n_rounds)], name="attention_bf16") as launch:
 
         @launch.body
         def _(lx):
-            q_launch_off = lx * (lqp * dk)
+            q_launch_off = (q_round_base + lx) * (lqp * dk)
 
             # Q: one send per (head, core column), pre-split into per-core tiles
             # so the memtile can forward a [tile_size_q, dk] block per put.
@@ -478,7 +495,11 @@ def build_launch(
                                 for chunk in air.sequential(0, kv_stream_blocks):
                                     # The core's q block within the sequence:
                                     # the relay column contributes HY blocks.
-                                    q_block = ctr[0] + tx * HY + ty if causal else None
+                                    q_block = (
+                                        q_round_base * NQT + ctr[0] + tx * HY + ty
+                                        if causal
+                                        else None
+                                    )
                                     # The mask indexes the SEQUENCE, but a
                                     # truncated stream delivers the window's
                                     # blocks starting at zero, so shift by the
@@ -554,9 +575,7 @@ def build_launch(
                                     # Same idiom as the sibling's head counter
                                     # ("head_next >= num_head_groups").
                                     adv = ctr[0:1] + NQT
-                                    ctr[0:1] = ops.select(
-                                        adv >= num_lq_iters * NQT, 0, adv
-                                    )
+                                    ctr[0:1] = ops.select(adv >= n_rounds * NQT, 0, adv)
 
                     for h_i in range(NH):
                         one_head(h_i)
@@ -590,7 +609,7 @@ def build_launch(
 
             for h_i in range(NH):
                 for c in range(HX):
-                    row0 = lx * lqp + c * rows_per_relay
+                    row0 = (q_round_base + lx) * lqp + c * rows_per_relay
                     gpout.get(
                         GP[
                             h_i * dv_chunks : (h_i + 1) * dv_chunks,

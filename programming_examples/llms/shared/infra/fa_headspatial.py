@@ -87,8 +87,18 @@ def compile_headspatial_fa(
     window=None,
     name="flash_attn_hs",
     causal_skip=False,
+    causal_groups=1,
 ):
-    """Compile the head-spatial FlashAttention ELF into `cache` under `name`."""
+    """Compile the head-spatial FlashAttention ELF into `cache` under `name`.
+
+    `causal_groups` cuts the round axis into G launches stitched into ONE ELF.
+    Plain causal streams all of K and V on every round; round lx only needs the
+    first num_q_tiles*(lx+1) blocks, but a growing extent cannot be one launch
+    (air.api needs the size static). Each group gets a constant extent sized for
+    its LAST round, so the traffic falls without the per-dispatch cost being
+    paid G times. Ignored for the windowed (sliding) layers, which are already
+    truncated.
+    """
     from shared.infra.external_kernels import compile_attn_npu2
 
     lkp, lqp, num_q_tiles, cu_cols, heads_spatial, dv_tile = hs_tiling(head_dim)
@@ -113,6 +123,24 @@ def compile_headspatial_fa(
         force=True,
     )
 
+    if window is None and causal_groups > 1:
+        cache.compile_and_cache(
+            name,
+            _build_staircase_module(
+                seq_len,
+                lkp,
+                lqp,
+                head_dim,
+                num_q_tiles,
+                heads_spatial,
+                cu_cols,
+                dv_tile,
+                causal_groups,
+            ),
+            _fa_backend_kwargs(verbose),
+        )
+        return
+
     from flash_attention.kernel_fusion_based.attn_npu2_headspatial import build_module
 
     mod = build_module(
@@ -132,6 +160,76 @@ def compile_headspatial_fa(
         causal_skip=causal_skip,
     )
     cache.compile_and_cache(name, mod, _fa_backend_kwargs(verbose))
+
+
+_FA_EXTERNS = {
+    "@zero_fill_g_bf16",
+    "@zero_fill_gp_bf16",
+    "@zero_fill_sp_bf16",
+    "@neg_inf_fill_up_bf16",
+    "@matmul_a_b_bf16",
+    "@matmul_g_b_bf16",
+    "@fused_softmax",
+    "@mul_r_gp",
+    "@accum_sp_r_s",
+    "@vector_copy_32elems",
+    "@div_gp_sp",
+    "@apply_causal_mask",
+}
+
+
+def _build_staircase_module(
+    seq_len, lkp, lqp, dh, num_q_tiles, heads_spatial, cu_cols, dv_tile, groups
+):
+    """G causal round-groups, stitched into one ELF over shared Q/KV/out args."""
+    from flash_attention.kernel_fusion_based.attn_npu2_headspatial import build_launch
+    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
+
+    n_rounds = seq_len // lqp
+    if n_rounds % groups:
+        raise ValueError(f"{n_rounds} rounds not divisible by {groups} groups")
+    per = n_rounds // groups
+    dv_chunks = dh // dv_tile
+    kv_rec = lkp * dh + dv_chunks * lkp * dv_tile
+
+    slices = []
+    for g in range(groups):
+        ir = str(
+            build_launch(
+                lk=seq_len,
+                lkp=lkp,
+                lq=seq_len,
+                lqp=lqp,
+                dk=dh,
+                dv=dh,
+                num_q_tiles=num_q_tiles,
+                num_heads=heads_spatial,
+                cu_cols=cu_cols,
+                num_kv_heads=1,
+                causal=True,
+                window=None,
+                dv_tile=dv_tile,
+                rounds=per,
+                q_round_base=g * per,
+                # sized for this group's LAST round
+                kv_blocks=num_q_tiles * per * (g + 1),
+            ).build(target="npu2")
+        )
+        slices.append(
+            KernelSlice(ir, f"s{g}", {0: 0, 1: 1, 2: 2}, extern_syms=_FA_EXTERNS)
+        )
+
+    base_args = [
+        FuncArg("%arg0", f"memref<{heads_spatial}x{seq_len}x{dh}xbf16>"),
+        FuncArg("%arg1", f"memref<{(seq_len // lkp) * kv_rec}xbf16>"),
+        FuncArg(
+            "%arg2",
+            f"memref<{heads_spatial * dv_chunks}x{seq_len}x{dv_tile}xbf16>",
+        ),
+    ]
+    # The func symbol must be the instance name the backend loads, not the
+    # cache key -- _fa_backend_kwargs pins "attention_bf16" for both paths.
+    return stitch_elf("attention_bf16", base_args, slices)
 
 
 def pack_kv(k, v, lkp, dv_tile):
