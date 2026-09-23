@@ -287,12 +287,13 @@ def build_launch(
     gpout = air.channel("GpOut", size=[NH, HX])
 
     # ---------------------------------------------------------------- tensors
-    Q = air.tensor([num_heads, lq, dk], bf16)
+    # SEQ-FIRST at L3, the layout the model already carries: [seq, heads*dh].
+    # Q used to be [heads, seq, dk] and the output [heads*dv_chunks, seq,
+    # dv_tile], so the host had to transpose into and out of them on every
+    # dispatch -- 97 ms per prefill, measured. As BD strides both are free.
+    Q = air.tensor([lq, num_heads * dk], bf16)
     KV = air.tensor([num_chunks * kv_rec], bf16)
-    GP = air.tensor([num_heads * dv_chunks, lq, dv_tile], bf16)
-
-    q_flat = Q.reshape(num_heads * lq * dk)
-    gp_flat = GP.reshape(num_heads * dv_chunks * lq * dv_tile)
+    GP = air.tensor([lq, num_heads * dv], bf16)
 
     rows_per_relay = HY * tile_size_q
 
@@ -300,17 +301,17 @@ def build_launch(
 
         @launch.body
         def _(lx):
-            q_launch_off = (q_round_base + lx) * (lqp * dk)
-
-            # Q: one send per (head, core column), pre-split into per-core tiles
-            # so the memtile can forward a [tile_size_q, dk] block per put.
+            # Q: one send per (head, core column). The head is a COLUMN range of
+            # the seq-first tensor, so the relay's rows come out strided -- one
+            # 2-D BD, same bytes, no host transpose.
             for h_i in range(NH):
                 for c in range(HX):
-                    q_off = h_i * (lq * dk) + q_launch_off + c * (rows_per_relay * dk)
+                    q_row0 = (q_round_base + lx) * lqp + c * rows_per_relay
                     qin.put(
-                        q_flat[q_off : q_off + rows_per_relay * dk].reshape(
-                            HY, tile_size_q, dk
-                        ),
+                        Q[
+                            q_row0 : q_row0 + rows_per_relay,
+                            h_i * dk : (h_i + 1) * dk,
+                        ],
                         indices=[h_i, c],
                     )
 
@@ -598,24 +599,16 @@ def build_launch(
                                         ],
                                         indices=[r],
                                     )
-                            # Out in dv-chunk-major order, which is the layout
-                            # L3 wants: [head*dv_chunks + z, seq, dv_tile].
-                            gpout.put(
-                                gp_l2[h_i][c]
-                                .reshape(rows_per_relay, dv_chunks, dv_tile)
-                                .transpose(1, 0, 2),
-                                indices=[h_i, c],
-                            )
+                            # gp_l2 is already [rows, head_dim] in natural order;
+                            # the seq-first L3 tensor wants exactly that, so the
+                            # dv-chunk-major shuffle is gone from both sides.
+                            gpout.put(gp_l2[h_i][c], indices=[h_i, c])
 
             for h_i in range(NH):
                 for c in range(HX):
                     row0 = (q_round_base + lx) * lqp + c * rows_per_relay
                     gpout.get(
-                        GP[
-                            h_i * dv_chunks : (h_i + 1) * dv_chunks,
-                            row0 : row0 + rows_per_relay,
-                            :,
-                        ],
+                        GP[row0 : row0 + rows_per_relay, h_i * dv : (h_i + 1) * dv],
                         indices=[h_i, c],
                     )
 
@@ -695,7 +688,9 @@ if __name__ == "__main__":
     dv_chunks = dv // dvt
 
     rng = np.random.default_rng(42)
-    input_q = rng.uniform(0, 4.0, (nh, lq, dk)).astype(bfloat16)
+    input_q_hf = rng.uniform(0, 4.0, (nh, lq, dk)).astype(bfloat16)
+    # seq-first at L3: [seq, heads*dk]
+    input_q = np.ascontiguousarray(input_q_hf.transpose(1, 0, 2)).reshape(lq, nh * dk)
     input_k = rng.uniform(0, 4.0, (lk, dk)).astype(bfloat16)
     input_v_orig = rng.uniform(0, 4.0, (lk, dv)).astype(bfloat16)
     input_v = input_v_orig.reshape(lk, dv_chunks, dvt).transpose(1, 0, 2).copy()
@@ -707,7 +702,7 @@ if __name__ == "__main__":
     kf = input_k.astype(np.float64)
     vf = input_v_orig.astype(np.float64)
     for head in range(nh):
-        scores = input_q[head].astype(np.float64) @ kf.T * inv_sqrt_dk
+        scores = input_q_hf[head].astype(np.float64) @ kf.T * inv_sqrt_dk
         mask = np.zeros(scores.shape, dtype=bool)
         if not args.no_causal:
             mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
@@ -720,12 +715,8 @@ if __name__ == "__main__":
         pr = pr / np.sum(pr, axis=-1, keepdims=True)
         out[head] = (pr @ vf).astype(bfloat16)
 
-    expected = (
-        out.reshape(nh, lq, dv_chunks, dvt)
-        .transpose(0, 2, 1, 3)
-        .reshape(nh * dv_chunks, lq, dvt)
-        .copy()
-    )
+    # seq-first at L3: [seq, heads*dv]
+    expected = np.ascontiguousarray(out.transpose(1, 0, 2)).reshape(lq, nh * dv)
 
     runner = XRTRunner(
         omit_while_true_loop=False,

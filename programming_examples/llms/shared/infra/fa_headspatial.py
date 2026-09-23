@@ -21,9 +21,12 @@ an 8-head model runs two dispatches per layer and K/V crosses L3 twice instead
 of eight times.
 
 L3 layouts this kernel expects (dv_chunks = head_dim // dv_tile):
-  Q   L3: [heads_spatial, seq, head_dim]
+  Q   L3: [seq, heads_spatial * head_dim]
   KV  L3: flat, seq/lkp records of [K tile | V tile per dv chunk]
-  out L3: [heads_spatial * dv_chunks, seq, dv_tile]
+  out L3: [seq, heads_spatial * head_dim]
+
+Q and out are SEQ-FIRST, i.e. what the model already holds: the head and dv
+chunk shuffles are BD strides, not host transposes.
 
 MQA ONLY. With more than one kv head the single broadcast would feed every head
 the wrong K, so `supports()` returns False and the caller keeps head-first.
@@ -220,12 +223,9 @@ def _build_staircase_module(
         )
 
     base_args = [
-        FuncArg("%arg0", f"memref<{heads_spatial}x{seq_len}x{dh}xbf16>"),
+        FuncArg("%arg0", f"memref<{seq_len}x{heads_spatial * dh}xbf16>"),
         FuncArg("%arg1", f"memref<{(seq_len // lkp) * kv_rec}xbf16>"),
-        FuncArg(
-            "%arg2",
-            f"memref<{heads_spatial * dv_chunks}x{seq_len}x{dv_tile}xbf16>",
-        ),
+        FuncArg("%arg2", f"memref<{seq_len}x{heads_spatial * dh}xbf16>"),
     ]
     # The func symbol must be the instance name the backend loads, not the
     # cache key -- _fa_backend_kwargs pins "attention_bf16" for both paths.
@@ -277,27 +277,26 @@ def npu_fa_headspatial(
     [seq, n_heads*head_dim]. `n_kv_heads` must be 1.
     """
     lkp, _, _, _, heads_spatial, dv_tile = hs_tiling(head_dim)
-    dv_chunks = head_dim // dv_tile
     q_dim = n_heads * head_dim
+    hs_dim = heads_spatial * head_dim
 
-    q = np.asarray(q_roped, dtype=bfloat16).reshape(seq_len, n_heads, head_dim)
+    q = np.asarray(q_roped, dtype=bfloat16).reshape(seq_len, q_dim)
     k = np.asarray(k_roped, dtype=bfloat16).reshape(seq_len, head_dim)
     v = np.asarray(v, dtype=bfloat16).reshape(seq_len, head_dim)
 
     # K and V cross L3 once per dispatch, not once per head.
     kv = pack_kv(k, v, lkp, dv_tile)
 
-    attn_out = np.empty((seq_len, n_heads, head_dim), dtype=bfloat16)
+    # Both sides are seq-first now, so a dispatch's head group is a contiguous
+    # COLUMN BLOCK at either end -- one strided copy each way, where this used
+    # to be a full [seq, heads, dh] permute in and a 4-D permute out.
+    attn_out = np.empty((seq_len, q_dim), dtype=bfloat16)
     kw = _fa_backend_kwargs(verbose)
     for p in range(n_heads // heads_spatial):
-        lo = p * heads_spatial
-        q_hs = np.ascontiguousarray(q[:, lo : lo + heads_spatial, :].transpose(1, 0, 2))
-        out_hs = np.zeros((heads_spatial * dv_chunks, seq_len, dv_tile), dtype=bfloat16)
+        lo = p * hs_dim
+        q_hs = np.ascontiguousarray(q[:, lo : lo + hs_dim])
+        out_hs = np.zeros((seq_len, hs_dim), dtype=bfloat16)
         results = cache.load_and_run(name, kw, q_hs, kv, out_hs)
-        gp = results[-1].reshape(heads_spatial, dv_chunks, seq_len, dv_tile)
-        # [heads, dv_chunks, seq, dv_tile] -> [seq, heads, head_dim]
-        attn_out[:, lo : lo + heads_spatial, :] = gp.transpose(2, 0, 1, 3).reshape(
-            seq_len, heads_spatial, head_dim
-        )
+        attn_out[:, lo : lo + hs_dim] = results[-1].reshape(seq_len, hs_dim)
 
-    return np.ascontiguousarray(attn_out.reshape(seq_len, q_dim)).astype(bfloat16)
+    return attn_out
