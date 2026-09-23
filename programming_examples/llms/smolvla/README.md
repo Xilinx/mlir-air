@@ -125,6 +125,7 @@ are on the NPU.
 |---|---|
 | `smolvla_vision_weights.py` | SigLIP config + weight loading from the checkpoint |
 | `smolvla_vision_builders.py` | the two fused multi-launch ELF builders (`vit_ln_qkv`, `vit_o_ffn`) |
+| `smolvla_fuse.py` | build-time choices read from the environment: the LayerNorm implementation (`SMOLVLA_LN_EXT`, C++ kernel by default) and the loop tilings of the two fused ELFs (`SMOLVLA_OFFN_TILING`, `SMOLVLA_LNQKV_TILING`, `12,6` by default) |
 | `smolvla_vision_encoder.py` | the NPU driver: compiles the kernels, runs the 12 layers |
 | `smolvla_dataset.py` | real observations from a LeRobot dataset, for `INPUT=real` |
 | `smolvla_cpu_helpers.py` | fp32 numpy reference for every vision operation |
