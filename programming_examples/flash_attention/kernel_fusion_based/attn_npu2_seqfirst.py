@@ -97,6 +97,154 @@ M = 8  # mmul_m = mmul_k = mmul_n, the AIE2P mmul<8,8,8>
 K_MMUL = 8
 
 
+# ---------------------------------------------------------------------------
+# Pieces shared byte-for-byte between build_launch and _build_launch_q_in_segment
+# -- the kernel/channel/tensor declarations and the cascade-merge compute do not
+# depend on where the q-block loop lives, only the loop nesting around them does
+# (see _build_launch_q_in_segment's docstring). Each returns the same locals the
+# two callers used to declare inline, in the same order, so every existing call
+# site below is an unpack rather than a rewrite.
+# ---------------------------------------------------------------------------
+
+
+def _declare_flash_kernels(causal=False):
+    """The attn_npu2.o externs every schedule links (16th only under causal)."""
+    return (
+        air.extern("zero_fill_g_bf16", link_with=KERNEL),
+        air.extern("zero_fill_gp_bf16", link_with=KERNEL),
+        air.extern("zero_fill_sp_bf16", link_with=KERNEL),
+        air.extern("neg_inf_fill_up_bf16", link_with=KERNEL),
+        air.extern("matmul_a_b_bf16", link_with=KERNEL),
+        air.extern("matmul_g_b_bf16", link_with=KERNEL),
+        air.extern("fused_softmax", link_with=KERNEL),
+        air.extern("maximum_up_u_bf16", link_with=KERNEL),
+        air.extern("exp_up_minus_u", link_with=KERNEL),
+        air.extern("mul_r_gp", link_with=KERNEL),
+        air.extern("accum_sp_r_s", link_with=KERNEL),
+        air.extern("vector_copy_32elems", link_with=KERNEL, scalars=[i32]),
+        air.extern("copy_tile", link_with=KERNEL),
+        air.extern("div_gp_sp", link_with=KERNEL),
+        air.extern("add_gp_g", link_with=KERNEL),
+        (
+            air.extern("apply_causal_mask", link_with=KERNEL, scalars=[i32, i32])
+            if causal
+            else None
+        ),
+    )
+
+
+def _declare_flash_channels(NS, H, NQ):
+    """The memtile-relay, cascade and output-gather channels every schedule
+    declares in the order the predecessor declares them (the order they print
+    in)."""
+    qk2l1, qkin, v2l1, vin = [], [], [], []
+    for s in range(NS):
+        qk2l1.append(
+            air.channel(f"QK2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
+        )
+        qkin.append(air.channel(f"QKIn_{s}", size=[H]))
+    for s in range(NS):
+        v2l1.append(
+            air.channel(f"V2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
+        )
+        vin.append(air.channel(f"VIn_{s}", size=[H]))
+    cascade_gp = air.channel(
+        "cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    cascade_up = air.channel(
+        "cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    cascade_sp = air.channel(
+        "cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    gp2l2 = air.channel("Gp2L2", size=[NQ, 1])
+    gpout = air.channel("GpOut", size=[H])
+    return qk2l1, qkin, v2l1, vin, cascade_gp, cascade_up, cascade_sp, gp2l2, gpout
+
+
+def _declare_flash_tensors(lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images):
+    """Q/K/V/GP L3 tensors + head-column bases, shared by every schedule.
+
+    Sequence-first: heads are interleaved along the feature axis, so a head is
+    a column range rather than a leading index.
+
+    fused_qkv: Q|K|V arrive column-concatenated in ONE tensor, because the
+    projection that produces them is a single wide GEMM -- three launches of
+    the same shape cost three device reconfigurations, and each head is a
+    column range either way, so attention reads its blocks straight out of the
+    wide buffer instead of three copied-apart ones.
+    """
+    emb_q = num_heads * dk
+    emb_k = num_kv_heads * dk
+    emb_v = num_kv_heads * dv
+    emb_out = num_heads * dv
+    if fused_qkv:
+        assert lk == lq, "fused_qkv needs self-attention (K/V rows == Q rows)"
+        qkv_cols = emb_q + emb_k + emb_v
+        Q = K = V = air.tensor([n_images * lq, qkv_cols], bf16)
+        q_base, k_base, v_base = 0, emb_q, emb_q + emb_k
+    else:
+        Q = air.tensor([n_images * lq, emb_q], bf16)
+        K = air.tensor([n_images * lk, emb_k], bf16)
+        V = air.tensor([n_images * lk, emb_v], bf16)
+        q_base = k_base = v_base = 0
+    GP = air.tensor([n_images * lq, emb_out], bf16)
+    return Q, K, V, GP, q_base, k_base, v_base
+
+
+def _make_cascade_merge(
+    h,
+    tx,
+    ty,
+    tile_size_q,
+    dv_tile,
+    gp,
+    up,
+    sp,
+    cascade_gp,
+    cascade_up,
+    cascade_sp,
+    vector_copy,
+    maximum_up_u,
+    exp_up_minus_u,
+    mul_r_gp,
+    add_gp_g,
+    accum_sp_r_s,
+    zero_fill_sp,
+):
+    """Fold the neighbour cascade stage's partials into ours -- identical for
+    every schedule, since the cascade is private to one segment instance
+    regardless of what loop drives it. Returns a closure producing the buffers
+    holding the merged result; the caller either forwards them north or
+    normalises and drains them south."""
+
+    def merge():
+        gp_c = air.alloc([tile_size_q, dv_tile], bf16, scope=h.private())
+        up_c = air.alloc([tile_size_q, 1], bf16, scope=h.private())
+        sp_c = air.alloc([tile_size_q, 1], bf16, scope=h.private())
+        cascade_gp.get(gp_c, indices=[tx, ty])
+        cascade_up.get(up_c, indices=[tx, ty])
+        cascade_sp.get(sp_c, indices=[tx, ty])
+        up_s = air.alloc([tile_size_q, 1], bf16, scope=h.private())
+        vector_copy(0, up, up_s)
+        maximum_up_u(up_c, up)
+        rc = air.alloc([tile_size_q, 1], bf16, scope=h.private())
+        exp_up_minus_u(up_c, up, rc)
+        rl = air.alloc([tile_size_q, 1], bf16, scope=h.private())
+        exp_up_minus_u(up_s, up, rl)
+        mul_r_gp(rc, gp_c)
+        mul_r_gp(rl, gp)
+        add_gp_g(gp, gp_c)
+        st = air.alloc([tile_size_q, 1], bf16, scope=h.private())
+        zero_fill_sp(st)
+        accum_sp_r_s(sp_c, rc, st)
+        accum_sp_r_s(sp, rl, st)
+        vector_copy(0, st, sp_c)
+        return gp_c, sp_c
+
+    return merge
+
+
 def build_launch(
     lk=512,
     lkp=64,
@@ -186,77 +334,42 @@ def build_launch(
     g_flat = tile_size_q * lkp
 
     # ---------------------------------------------------------------- kernels
-    zero_fill_g = air.extern("zero_fill_g_bf16", link_with=KERNEL)
-    zero_fill_gp = air.extern("zero_fill_gp_bf16", link_with=KERNEL)
-    zero_fill_sp = air.extern("zero_fill_sp_bf16", link_with=KERNEL)
-    neg_inf_fill_up = air.extern("neg_inf_fill_up_bf16", link_with=KERNEL)
-    matmul_a_b = air.extern("matmul_a_b_bf16", link_with=KERNEL)
-    matmul_g_b = air.extern("matmul_g_b_bf16", link_with=KERNEL)
-    fused_softmax = air.extern("fused_softmax", link_with=KERNEL)
-    maximum_up_u = air.extern("maximum_up_u_bf16", link_with=KERNEL)
-    exp_up_minus_u = air.extern("exp_up_minus_u", link_with=KERNEL)
-    mul_r_gp = air.extern("mul_r_gp", link_with=KERNEL)
-    accum_sp_r_s = air.extern("accum_sp_r_s", link_with=KERNEL)
-    vector_copy = air.extern("vector_copy_32elems", link_with=KERNEL, scalars=[i32])
-    copy_tile = air.extern("copy_tile", link_with=KERNEL)
-    div_gp_sp = air.extern("div_gp_sp", link_with=KERNEL)
-    add_gp_g = air.extern("add_gp_g", link_with=KERNEL)
-    apply_mask = (
-        air.extern("apply_causal_mask", link_with=KERNEL, scalars=[i32, i32])
-        if causal
-        else None
-    )
+    (
+        zero_fill_g,
+        zero_fill_gp,
+        zero_fill_sp,
+        neg_inf_fill_up,
+        matmul_a_b,
+        matmul_g_b,
+        fused_softmax,
+        maximum_up_u,
+        exp_up_minus_u,
+        mul_r_gp,
+        accum_sp_r_s,
+        vector_copy,
+        copy_tile,
+        div_gp_sp,
+        add_gp_g,
+        apply_mask,
+    ) = _declare_flash_kernels(causal)
 
     # --------------------------------------------------------------- channels
-    # Declared in the order the predecessor declares them, which is the order
-    # they are printed in.
-    qk2l1, qkin, v2l1, vin = [], [], [], []
-    for s in range(NS):
-        qk2l1.append(
-            air.channel(f"QK2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
-        )
-        qkin.append(air.channel(f"QKIn_{s}", size=[H]))
-    for s in range(NS):
-        v2l1.append(
-            air.channel(f"V2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
-        )
-        vin.append(air.channel(f"VIn_{s}", size=[H]))
-    cascade_gp = air.channel(
-        "cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    cascade_up = air.channel(
-        "cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    cascade_sp = air.channel(
-        "cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    gp2l2 = air.channel("Gp2L2", size=[NQ, 1])
-    gpout = air.channel("GpOut", size=[H])
+    (
+        qk2l1,
+        qkin,
+        v2l1,
+        vin,
+        cascade_gp,
+        cascade_up,
+        cascade_sp,
+        gp2l2,
+        gpout,
+    ) = _declare_flash_channels(NS, H, NQ)
 
     # ---------------------------------------------------------------- tensors
-    # Sequence-first: heads are interleaved along the feature axis, so a head is
-    # a column range rather than a leading index.
-    emb_q = num_heads * dk
-    emb_k = num_kv_heads * dk
-    emb_v = num_kv_heads * dv
-    emb_out = num_heads * dv
-
-    # fused_qkv: Q|K|V arrive column-concatenated in ONE tensor, because the
-    # projection that produces them is a single wide GEMM -- three launches of
-    # the same shape cost three device reconfigurations, and each head is a
-    # column range either way, so attention reads its blocks straight out of the
-    # wide buffer instead of three copied-apart ones.
-    if fused_qkv:
-        assert lk == lq, "fused_qkv needs self-attention (K/V rows == Q rows)"
-        qkv_cols = emb_q + emb_k + emb_v
-        Q = K = V = air.tensor([n_images * lq, qkv_cols], bf16)
-        q_base, k_base, v_base = 0, emb_q, emb_q + emb_k
-    else:
-        Q = air.tensor([n_images * lq, emb_q], bf16)
-        K = air.tensor([n_images * lk, emb_k], bf16)
-        V = air.tensor([n_images * lk, emb_v], bf16)
-        q_base = k_base = v_base = 0
-    GP = air.tensor([n_images * lq, emb_out], bf16)
+    Q, K, V, GP, q_base, k_base, v_base = _declare_flash_tensors(
+        lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images
+    )
 
     # Independent self-attention problems stacked along ROWS -- SmolVLA attends
     # over three camera images. They share the value-chunk axis because reload
@@ -512,50 +625,26 @@ def build_launch(
                                 cascade_sp.put(sp, indices=[tx, ty - 1])
 
                             with north.otherwise():
-
-                                def merge():
-                                    """Fold the neighbour's partials into ours.
-
-                                    Returns the buffers holding the merged
-                                    result, which the caller either forwards or
-                                    normalises and drains.
-                                    """
-                                    gp_c = air.alloc(
-                                        [tile_size_q, dv_tile], bf16, scope=h.private()
-                                    )
-                                    up_c = air.alloc(
-                                        [tile_size_q, 1], bf16, scope=h.private()
-                                    )
-                                    sp_c = air.alloc(
-                                        [tile_size_q, 1], bf16, scope=h.private()
-                                    )
-                                    cascade_gp.get(gp_c, indices=[tx, ty])
-                                    cascade_up.get(up_c, indices=[tx, ty])
-                                    cascade_sp.get(sp_c, indices=[tx, ty])
-                                    up_s = air.alloc(
-                                        [tile_size_q, 1], bf16, scope=h.private()
-                                    )
-                                    vector_copy(0, up, up_s)
-                                    maximum_up_u(up_c, up)
-                                    rc = air.alloc(
-                                        [tile_size_q, 1], bf16, scope=h.private()
-                                    )
-                                    exp_up_minus_u(up_c, up, rc)
-                                    rl = air.alloc(
-                                        [tile_size_q, 1], bf16, scope=h.private()
-                                    )
-                                    exp_up_minus_u(up_s, up, rl)
-                                    mul_r_gp(rc, gp_c)
-                                    mul_r_gp(rl, gp)
-                                    add_gp_g(gp, gp_c)
-                                    st = air.alloc(
-                                        [tile_size_q, 1], bf16, scope=h.private()
-                                    )
-                                    zero_fill_sp(st)
-                                    accum_sp_r_s(sp_c, rc, st)
-                                    accum_sp_r_s(sp, rl, st)
-                                    vector_copy(0, st, sp_c)
-                                    return gp_c, sp_c
+                                merge = _make_cascade_merge(
+                                    h,
+                                    tx,
+                                    ty,
+                                    tile_size_q,
+                                    dv_tile,
+                                    gp,
+                                    up,
+                                    sp,
+                                    cascade_gp,
+                                    cascade_up,
+                                    cascade_sp,
+                                    vector_copy,
+                                    maximum_up_u,
+                                    exp_up_minus_u,
+                                    mul_r_gp,
+                                    add_gp_g,
+                                    accum_sp_r_s,
+                                    zero_fill_sp,
+                                )
 
                                 with ops.branch(ty == 0) as south:
                                     # Southernmost: normalise and drain.
@@ -683,60 +772,40 @@ def _build_launch_q_in_segment(
     lk_per_stage = lkp * chunks_per_stage
     g_flat = tile_size_q * lkp
 
-    zero_fill_g = air.extern("zero_fill_g_bf16", link_with=KERNEL)
-    zero_fill_gp = air.extern("zero_fill_gp_bf16", link_with=KERNEL)
-    zero_fill_sp = air.extern("zero_fill_sp_bf16", link_with=KERNEL)
-    neg_inf_fill_up = air.extern("neg_inf_fill_up_bf16", link_with=KERNEL)
-    matmul_a_b = air.extern("matmul_a_b_bf16", link_with=KERNEL)
-    matmul_g_b = air.extern("matmul_g_b_bf16", link_with=KERNEL)
-    fused_softmax = air.extern("fused_softmax", link_with=KERNEL)
-    maximum_up_u = air.extern("maximum_up_u_bf16", link_with=KERNEL)
-    exp_up_minus_u = air.extern("exp_up_minus_u", link_with=KERNEL)
-    mul_r_gp = air.extern("mul_r_gp", link_with=KERNEL)
-    accum_sp_r_s = air.extern("accum_sp_r_s", link_with=KERNEL)
-    vector_copy = air.extern("vector_copy_32elems", link_with=KERNEL, scalars=[i32])
-    copy_tile = air.extern("copy_tile", link_with=KERNEL)
-    div_gp_sp = air.extern("div_gp_sp", link_with=KERNEL)
-    add_gp_g = air.extern("add_gp_g", link_with=KERNEL)
+    (
+        zero_fill_g,
+        zero_fill_gp,
+        zero_fill_sp,
+        neg_inf_fill_up,
+        matmul_a_b,
+        matmul_g_b,
+        fused_softmax,
+        maximum_up_u,
+        exp_up_minus_u,
+        mul_r_gp,
+        accum_sp_r_s,
+        vector_copy,
+        copy_tile,
+        div_gp_sp,
+        add_gp_g,
+        _apply_mask,  # unused: causal is asserted False above
+    ) = _declare_flash_kernels(causal=False)
 
-    qk2l1, qkin, v2l1, vin = [], [], [], []
-    for s in range(NS):
-        qk2l1.append(
-            air.channel(f"QK2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
-        )
-        qkin.append(air.channel(f"QKIn_{s}", size=[H]))
-    for s in range(NS):
-        v2l1.append(
-            air.channel(f"V2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
-        )
-        vin.append(air.channel(f"VIn_{s}", size=[H]))
-    cascade_gp = air.channel(
-        "cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    cascade_up = air.channel(
-        "cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    cascade_sp = air.channel(
-        "cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    gp2l2 = air.channel("Gp2L2", size=[NQ, 1])
-    gpout = air.channel("GpOut", size=[H])
+    (
+        qk2l1,
+        qkin,
+        v2l1,
+        vin,
+        cascade_gp,
+        cascade_up,
+        cascade_sp,
+        gp2l2,
+        gpout,
+    ) = _declare_flash_channels(NS, H, NQ)
 
-    emb_q = num_heads * dk
-    emb_k = num_kv_heads * dk
-    emb_v = num_kv_heads * dv
-    emb_out = num_heads * dv
-    if fused_qkv:
-        assert lk == lq, "fused_qkv needs self-attention (K/V rows == Q rows)"
-        qkv_cols = emb_q + emb_k + emb_v
-        Q = K = V = air.tensor([n_images * lq, qkv_cols], bf16)
-        q_base, k_base, v_base = 0, emb_q, emb_q + emb_k
-    else:
-        Q = air.tensor([n_images * lq, emb_q], bf16)
-        K = air.tensor([n_images * lk, emb_k], bf16)
-        V = air.tensor([n_images * lk, emb_v], bf16)
-        q_base = k_base = v_base = 0
-    GP = air.tensor([n_images * lq, emb_out], bf16)
+    Q, K, V, GP, q_base, k_base, v_base = _declare_flash_tensors(
+        lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images
+    )
 
     grid = [range(1), range(num_head_groups)]
     if n_images > 1:
@@ -876,44 +945,26 @@ def _build_launch_q_in_segment(
                                     cascade_sp.put(sp, indices=[tx, ty - 1])
 
                                 with north.otherwise():
-
-                                    def merge():
-                                        gp_c = air.alloc(
-                                            [tile_size_q, dv], bf16, scope=h.private()
-                                        )
-                                        up_c = air.alloc(
-                                            [tile_size_q, 1], bf16, scope=h.private()
-                                        )
-                                        sp_c = air.alloc(
-                                            [tile_size_q, 1], bf16, scope=h.private()
-                                        )
-                                        cascade_gp.get(gp_c, indices=[tx, ty])
-                                        cascade_up.get(up_c, indices=[tx, ty])
-                                        cascade_sp.get(sp_c, indices=[tx, ty])
-                                        up_s = air.alloc(
-                                            [tile_size_q, 1], bf16, scope=h.private()
-                                        )
-                                        vector_copy(0, up, up_s)
-                                        maximum_up_u(up_c, up)
-                                        rc = air.alloc(
-                                            [tile_size_q, 1], bf16, scope=h.private()
-                                        )
-                                        exp_up_minus_u(up_c, up, rc)
-                                        rl = air.alloc(
-                                            [tile_size_q, 1], bf16, scope=h.private()
-                                        )
-                                        exp_up_minus_u(up_s, up, rl)
-                                        mul_r_gp(rc, gp_c)
-                                        mul_r_gp(rl, gp)
-                                        add_gp_g(gp, gp_c)
-                                        st = air.alloc(
-                                            [tile_size_q, 1], bf16, scope=h.private()
-                                        )
-                                        zero_fill_sp(st)
-                                        accum_sp_r_s(sp_c, rc, st)
-                                        accum_sp_r_s(sp, rl, st)
-                                        vector_copy(0, st, sp_c)
-                                        return gp_c, sp_c
+                                    merge = _make_cascade_merge(
+                                        h,
+                                        tx,
+                                        ty,
+                                        tile_size_q,
+                                        dv,  # q_in_segment asserts dv == lkp, i.e. dv IS dv_tile
+                                        gp,
+                                        up,
+                                        sp,
+                                        cascade_gp,
+                                        cascade_up,
+                                        cascade_sp,
+                                        vector_copy,
+                                        maximum_up_u,
+                                        exp_up_minus_u,
+                                        mul_r_gp,
+                                        add_gp_g,
+                                        accum_sp_r_s,
+                                        zero_fill_sp,
+                                    )
 
                                     with ops.branch(ty == 0) as south:
                                         gp_c, sp_c = merge()
