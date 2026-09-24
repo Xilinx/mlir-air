@@ -199,6 +199,8 @@ def _build_gemm_module(
     link_with_name="mm.o",
     b_pad_rows=0,
     epilogue_gelu=False,
+    n_out=None,
+    n_out_offset=0,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -217,6 +219,10 @@ def _build_gemm_module(
     # GEMM's own herd (FastFlowLM's copy_float_to_bfloat16_*_with_nonlinear),
     # not in fused-cast's separate 8-column cast launch.
     if external_fused_cast:
+        assert n_out is None and not n_out_offset, (
+            "n_out only reaches the drain method; fused-cast's bf16 comes from a "
+            "cast launch that collapses [m,n] to 1D, which a column window breaks"
+        )
         assert not epilogue_gelu, (
             "epilogue_gelu needs the drain method (external_bf16_out); "
             "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
@@ -261,6 +267,8 @@ def _build_gemm_module(
             link_with_name=link_with_name,
             b_pad_rows=b_pad_rows,
             epilogue_gelu=epilogue_gelu,
+            n_out=n_out,
+            n_out_offset=n_out_offset,
         )
 
     raise ValueError(

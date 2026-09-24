@@ -180,12 +180,56 @@ def K_FA(c):
     return f"flash_attn_{c}"
 
 
-def K_GATE(w):
-    return f"gate_{w}"
+# The wide GATE GEMM (n=12288) runs as two n=6144 halves writing into one
+# contiguous output. Only the halves reach tile_k_l2=256: at n=12288 the BD
+# stride cap (1048576, in 32-bit WORDS, so bf16 doubles the element limit to
+# 2097152) pins tile_k_l2 to <=170, and 128 measures as noise while 256 is
+# worth 0.65-0.81x. Interleaved A/B on the model, n=4: gate 485.5 -> 441 ms.
+#
+# UP IS NOT SPLIT. n_out only reaches the drain method (fused-cast's bf16 comes
+# from a cast launch that collapses [m,n] to 1D), and up is fused-cast at this
+# shape -- trading that for 2x drain@256 measured exactly flat (440.5 -> 443).
+# The gate is already drain-forced by its GELU epilogue, so there it is free.
+#
+# One GEMM per ELF, never two slices -- see the miscompile note above.
 
 
-def K_UP(w):
-    return f"up_{w}"
+def _ffn_halves(w, kind):
+    """Column windows for one FFN GEMM: [(n, n_out, offset, tag)]."""
+    inter = wid_inter(w)
+    if w != "w" or kind != "gate":
+        return [(inter, None, 0, "")]
+    half = inter // 2
+    return [(half, inter, 0, "_lo"), (half, inter, half, "_hi")]
+
+
+def _ffn_weights(w, wid):
+    """gate/up as the (K, N) operands their GEMMs want, split when wide.
+
+    A split layer stores ONLY the halves: each must be its own contiguous array
+    (a column slice keeps the 12288 row stride, which is the whole thing the
+    split exists to get under), and keeping the full copies too would cost
+    ~37 MB per matrix per layer.
+    """
+    inter = wid_inter(wid)
+    out = {}
+    for key in ("gate", "up"):
+        full = _wT(w[key], D, inter)
+        halves = _ffn_halves(wid, key)
+        if len(halves) == 1:
+            out[key] = full
+            continue
+        for n_h, _n_out, off, tag in halves:
+            out[key + tag] = np.ascontiguousarray(full[:, off : off + n_h])
+    return out
+
+
+def K_GATE(w, tag=""):
+    return f"gate_{w}{tag}"
+
+
+def K_UP(w, tag=""):
+    return f"up_{w}{tag}"
 
 
 def K_MUL(w):
@@ -306,7 +350,17 @@ def gemm_herd_n(n, tile_n):
     return max(1, min(4, n // tile_n))
 
 
-def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None, epilogue_gelu=False):
+def _build_gemm_ir(
+    m,
+    k,
+    n,
+    spec,
+    herd_m=8,
+    herd_n=None,
+    epilogue_gelu=False,
+    n_out=None,
+    n_out_offset=0,
+):
     from shared.builders.gemm_builder import _build_gemm_module
 
     if herd_n is None:
@@ -323,6 +377,8 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None, epilogue_gelu=False):
             herd_m,
             herd_n,
             epilogue_gelu=epilogue_gelu,
+            n_out=n_out,
+            n_out_offset=n_out_offset,
             **dict(spec["build_kwargs"]),
         )
     )
@@ -651,6 +707,8 @@ def _build_single_gemm_elf(
     herd_n=4,
     epilogue_gelu=False,
     tile_k_l2=None,
+    n_out=None,
+    n_out_offset=0,
 ):
     """Standalone single-GEMM ELF: arg0 in, arg1 weight, arg2 out.
 
@@ -667,11 +725,15 @@ def _build_single_gemm_elf(
         alloc_gemm_scratch,
     )
 
+    # n_out: this GEMM writes its n_dim columns into an n_out-wide output at
+    # n_out_offset, so a wide FFN can run as narrower halves that still land
+    # contiguous. Only the drain method can do it (fused-cast's bf16 comes from
+    # a cast launch that collapses [m,n] to 1D).
     g_spec = gemm_spec(
         seq_len,
         k_dim,
         n_dim,
-        force_method="drain" if epilogue_gelu else None,
+        force_method="drain" if (epilogue_gelu or n_out) else None,
         tile_k_l2=tile_k_l2,
     )
     print(
@@ -679,12 +741,19 @@ def _build_single_gemm_elf(
         f"(tk_l2={g_spec['tile_k_l2']}, tn={g_spec['tile_n']})..."
     )
     gemm_ir = _build_gemm_ir(
-        seq_len, k_dim, n_dim, g_spec, herd_m, epilogue_gelu=epilogue_gelu
+        seq_len,
+        k_dim,
+        n_dim,
+        g_spec,
+        herd_m,
+        epilogue_gelu=epilogue_gelu,
+        n_out=n_out,
+        n_out_offset=n_out_offset,
     )
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{k_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{k_dim}x{n_dim}xbf16>"),
-        FuncArg("%arg2", f"memref<{seq_len}x{n_dim}xbf16>"),
+        FuncArg("%arg2", f"memref<{seq_len}x{n_out or n_dim}xbf16>"),
     ]
     scratch_args, scratch_for = alloc_gemm_scratch([(g_spec, seq_len, n_dim)], 3)
     slices = [
@@ -856,7 +925,7 @@ _NEEDED = (
     + [K_V(c) for c in _CLS]
     + [K_ONORM(c) for c in _CLS]
     + [K_FA(c) for c in _CLS]
-    + [K_GATE(w) for w in _WID]
+    + [K_GATE(w, t) for w in _WID for *_, t in _ffn_halves(w, "gate")]
     + [K_UP(w) for w in _WID]
     + [K_MUL(w) for w in _WID]
     + [K_DOWN(w) for w in _WID]
@@ -910,11 +979,20 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     for w in _WID:
         inter = wid_inter(w)
-        print(f"\n--- {K_GATE(w)} (Gate GEMM, INTER={inter}) ---")
-        mod, scratch[K_GATE(w)] = _build_single_gemm_elf(
-            K_GATE(w), "gg", seq_len, D, inter, epilogue_gelu=True
-        )
-        cache.compile_and_cache(K_GATE(w), mod, _elf_backend(K_GATE(w)))
+        for n_h, n_out, off, tag in _ffn_halves(w, "gate"):
+            nm = K_GATE(w, tag)
+            print(f"\n--- {nm} (Gate GEMM, INTER={inter}, n={n_h}@{off}) ---")
+            mod, scratch[nm] = _build_single_gemm_elf(
+                nm,
+                "gg",
+                seq_len,
+                D,
+                n_h,
+                epilogue_gelu=True,
+                n_out=n_out,
+                n_out_offset=off,
+            )
+            cache.compile_and_cache(nm, mod, _elf_backend(nm))
 
         print(f"\n--- {K_UP(w)} (Up GEMM, INTER={inter}) ---")
         mod, scratch[K_UP(w)] = _build_single_gemm_elf(K_UP(w), "ug", seq_len, D, inter)
@@ -1038,7 +1116,10 @@ def resolve_scratch(seq_len):
         # in the GEMM's own herd), and drain needs no f32 scratch -- so this
         # must use the SAME spec the builder did or the call passes an argument
         # the ELF does not have.
-        sc[K_GATE(w)] = _alloc([gemm_spec(seq_len, D, inter, force_method="drain")], 3)
+        for n_h, _n_out, _off, tag in _ffn_halves(w, "gate"):
+            sc[K_GATE(w, tag)] = _alloc(
+                [gemm_spec(seq_len, D, n_h, force_method="drain")], 3
+            )
         sc[K_UP(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
         sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
     sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D, force_method="drain")], 3)
@@ -1162,8 +1243,7 @@ class Gemma4Q4nxPrefill:
         out = {
             "q": _wT(w["q"], D, dq),
             "o": _wT(w["o"], dq, D),
-            "gate": _wT(w["gate"], D, inter),
-            "up": _wT(w["up"], D, inter),
+            **_ffn_weights(w, _wid(k)),
             "down": _wT(w["down"], inter, D),
         }
         if owns_kv(k):
@@ -1517,7 +1597,8 @@ class Gemma4Q4nxPrefill:
                 self._call_k(k, z_d)
                 self._call_v(k, z_d)
             self._call_o_norm(k, z_q, z_d)
-            self._call_ffn_gemm(K_GATE(_wid(k)), k, "gate", z_d, _A_GATE)
+            for *_, tag in _ffn_halves(_wid(k), "gate"):
+                self._call_ffn_gemm(K_GATE(_wid(k), tag), k, "gate" + tag, z_d, _A_GATE)
             self._call_ffn_gemm(K_UP(_wid(k)), k, "up", z_d, _A_UP)
             self._call_mul(
                 K_MUL(_wid(k)),
@@ -1651,9 +1732,16 @@ class Gemma4Q4nxPrefill:
         res1 = ores[6].reshape(seq, D)
         normed2 = ores[8].reshape(seq, D)
 
-        gate = self._dev(
-            self._call_ffn_gemm, K_GATE(w), k, "gate", normed2, _A_GATE, tag="gate"
-        )[2].reshape(seq, inter)
+        for *_, tg in _ffn_halves(w, "gate"):
+            gate = self._dev(
+                self._call_ffn_gemm,
+                K_GATE(w, tg),
+                k,
+                "gate" + tg,
+                normed2,
+                _A_GATE,
+                tag="gate",
+            )[2].reshape(seq, inter)
         up = self._dev(self._call_ffn_gemm, K_UP(w), k, "up", normed2, _A_UP, tag="up")[
             2
         ].reshape(seq, inter)

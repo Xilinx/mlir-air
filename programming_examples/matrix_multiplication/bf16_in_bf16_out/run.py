@@ -60,6 +60,8 @@ def build_module(
     link_with_name="mm.o",
     b_pad_rows=0,
     epilogue_gelu=False,
+    n_out=None,
+    n_out_offset=0,
 ):
     assert m % (tile_m * herd_m) == 0, (m, tile_m, herd_m)
     assert k % tile_k_l2 == 0
@@ -104,9 +106,15 @@ def build_module(
         )
     tile_k_l1_pad = tile_k_l1 + b_pad_rows
     tile_k_l2_pad = (tile_k_l2 // tile_k_l1) * tile_k_l1_pad
+    # n_out/n_out_offset let this GEMM write its n columns into a WIDER L3 output
+    # at a column offset, so a wide GEMM can be split into narrower ones that
+    # still produce one contiguous result. Only C is affected; A and B keep their
+    # own extents. Defaults reproduce the unsplit layout exactly.
+    n_out_eff = n if n_out is None else n_out
+    assert n_out_offset + n <= n_out_eff, (n_out_offset, n, n_out_eff)
     a_size = [m, k]
     b_size = [(k // tile_k_l1) * tile_k_l1_pad, n]
-    c_size = [m, n]
+    c_size = [m, n_out_eff]
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
     # L1/L2 C ACCUMULATOR element type. In the external f32-accumulate path this is
@@ -435,6 +443,27 @@ def build_module(
                 )
                 launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
                 launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                # C's column offset is shifted by n_out_offset; B's is not (B is
+                # its own [k, n] array, C is a window into an n_out-wide one).
+                if n_out_offset:
+                    launch_offset_y_c = affine_apply(
+                        AffineMap.get(
+                            0,
+                            1,
+                            [
+                                AffineExpr.get_add(
+                                    AffineExpr.get_mul(
+                                        AffineSymbolExpr.get(0),
+                                        AffineConstantExpr.get(tile_n * herd_n),
+                                    ),
+                                    AffineConstantExpr.get(n_out_offset),
+                                )
+                            ],
+                        ),
+                        [launch_ivy_s],
+                    )
+                else:
+                    launch_offset_y_c = launch_offset_y
 
                 @herd(
                     name="herd_0",
@@ -761,9 +790,9 @@ def build_module(
                 dma_memcpy_nd(
                     l3_c_data_s,
                     l2_c_data,
-                    dst_offsets=[launch_offset_x, launch_offset_y],
+                    dst_offsets=[launch_offset_x, launch_offset_y_c],
                     dst_sizes=[herd_m * tile_m, herd_n * tile_n],
-                    dst_strides=[n, 1],
+                    dst_strides=[n_out_eff, 1],
                     src_offsets=[0, 0, 0, 0],
                     src_sizes=[herd_m, tile_m, herd_n, tile_n],
                     src_strides=[tile_m * herd_n * tile_n, tile_n, tile_m * tile_n, 1],
