@@ -302,6 +302,30 @@ class _rms_eps:
 # ---------------------------------------------------------------------------
 
 
+# The GELU-epilogue GEMMs are pinned to drain (the activation belongs on the
+# GEMM's own 32 cores, not the 8-column cast launch), and drain defaults to
+# tile_m=32 -- which costs 1.13x, because inbound bytes per MAC go as
+# (tile_m+tile_n)/(tile_m*tile_n). tile_m=64 needs tile_n<=96 to fit L1
+# (at 128 it is 72 KB and the chunked drain that exists for exactly this
+# overruns the memtile's 48 BD blocks). Measured at the gate half shape WITH
+# gelu and n_out: 0.9319x, cosine unchanged at 0.999908.
+_DRAIN_WIDE_TILE = {"tile_m": 64, "tile_n": 96}
+
+
+def _wide_drain(spec):
+    """Re-point a drain spec at tile_m=64/tile_n=96 and its own mm.o.
+
+    DIM_M and DIM_N are compile-time in mm.o, so this variant cannot share
+    "_m32"/mm_m32.o with the tile_m=32 drain.
+    """
+    tag = f"_m{_DRAIN_WIDE_TILE['tile_m']}n{_DRAIN_WIDE_TILE['tile_n']}"
+    spec = dict(spec, sym_suffix=tag, obj=f"mm{tag}.o", **_DRAIN_WIDE_TILE)
+    spec["build_kwargs"] = dict(
+        spec["build_kwargs"], sym_suffix=tag, link_with_name=f"mm{tag}.o"
+    )
+    return spec
+
+
 def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
     """Per-GEMM build recipe for one Gemma4 shape.
 
@@ -326,7 +350,7 @@ def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
     # width needs it costs nothing worth protecting.
     if tile_k_l2 is None:
         tile_k_l2 = 64 if n >= 12288 else min(256, k)
-    return _spec_with_tiles(
+    spec = _spec_with_tiles(
         method,
         dict(
             tile_m=tile_m,
@@ -342,6 +366,10 @@ def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
             tile_n=128,
         ),
     )
+    # n % (tile_n * herd_n) must stay exact, so only widths divisible by 384.
+    if method == "drain" and force_method == "drain" and n % 384 == 0:
+        spec = _wide_drain(spec)
+    return spec
 
 
 def gemm_herd_n(n, tile_n):
@@ -951,6 +979,15 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     )
     compile_gemm_mm(
         tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    )
+    _wt = _DRAIN_WIDE_TILE
+    _wtag = f"_m{_wt['tile_m']}n{_wt['tile_n']}"
+    compile_gemm_mm(
+        tile_m=_wt["tile_m"],
+        tile_n=_wt["tile_n"],
+        tile_k_l1=32,
+        sym_suffix=_wtag,
+        out_name=f"mm{_wtag}.o",
     )
     compile_rope()  # rope_halfsplit.cc; head_dim is a runtime arg
     compile_gelu_and_mul()
