@@ -313,15 +313,12 @@ _MODELS = {
         I2P=[12, 3, 48, 3],
         J2P=[3, 8, 3, 24],
         DEST=["rope", "rms", "glu", "rms"],
-        # X-broadcast memtile column; see XMT_PCOL. Gemma's per-column egress
-        # lands the assemble hub on col 2, so leaving the X broadcast there too
-        # puts nine masters on that column's switchboxes against six arbiters --
-        # every north port of shim (2,0) in use. The packet-flow router then has
-        # to share arbiters, and an arbiter holds its grant to end of packet, so
-        # the projection gather can close a cycle on itself and the dispatch
-        # stops making progress. Col 3 splits the two roles and takes the column
-        # back under the arbiter count, at no measured cost to decode latency.
-        # Col 1 cannot route at all and col 5 hangs, so this is not a free choice.
+        # X-broadcast memtile column; see XMT_PCOL. The per-column egress lands
+        # the assemble hub on col 2, so the X broadcast there too puts nine
+        # masters on that column against six arbiters. The packet flows then
+        # share arbiters, and since an arbiter holds its grant to end of packet
+        # the projection gather can close a cycle on itself. Col 1 cannot route
+        # and col 5 hangs, so this is not a free choice.
         XMT_PCOL=3,
         GQA_SEG=4,  # 4 q heads per CU against its copy of the kv head
         PAIR_ROWS=1,  # NON-PAIRED egress (K=1536 -> 3 blocks/tile, odd in pairs)
@@ -937,15 +934,9 @@ RMS_PCOL = 2  # rms producer core column
 # route the one-hop rms->X xnorm packet flow tile_2_2 DMA1 -> mem_2_1 DMA0), because
 # col 2 would carry the shim feeds, both cores, AND a 16-way broadcast hub.
 # A model whose floorplan cannot live with that default carries its own column
-# in _MODELS; gemma4 does. Still overridable so the floorplan move can be
-# A/B-tested independently of the channel split (XMT_PCOL=1 with W_DUAL_CHAN=0
-# isolates the placement effect), but no caller is expected to set it -- the
-# column is a property of the model, not of the run.
-XMT_PCOL = int(
-    _os.environ.get(
-        "XMT_PCOL", MODEL.get("XMT_PCOL", MAIN_PCOL if W_DUAL_CHAN else RMS_PCOL)
-    )
-)
+# in _MODELS; gemma4 does. A property of the model, not of the run, so it is
+# taken from the table rather than settable from outside.
+XMT_PCOL = MODEL.get("XMT_PCOL", MAIN_PCOL if W_DUAL_CHAN else RMS_PCOL)
 # Column of the glu-down memtile, the third producer converging on @xnorm (the
 # other two are the o-proj memtile on col 5 and the rms core itself). Distinct
 # from col 5 either way, so the convergence never merges o+down onto one MM2S
