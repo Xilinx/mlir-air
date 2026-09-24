@@ -186,18 +186,17 @@ def K_FA(c):
 # 2097152) pins tile_k_l2 to <=170, and 128 measures as noise while 256 is
 # worth 0.65-0.81x. Interleaved A/B on the model, n=4: gate 485.5 -> 441 ms.
 #
-# UP IS NOT SPLIT. n_out only reaches the drain method (fused-cast's bf16 comes
-# from a cast launch that collapses [m,n] to 1D), and up is fused-cast at this
-# shape -- trading that for 2x drain@256 measured exactly flat (440.5 -> 443).
-# The gate is already drain-forced by its GELU epilogue, so there it is free.
+# Up splits too, now that the cast launch can write a column window: forcing
+# the halves onto drain instead measured 1.11x, which is what made the earlier
+# split of up look flat.
 #
 # One GEMM per ELF, never two slices -- see the miscompile note above.
 
 
-def _ffn_halves(w, kind):
+def _ffn_halves(w):
     """Column windows for one FFN GEMM: [(n, n_out, offset, tag)]."""
     inter = wid_inter(w)
-    if w != "w" or kind != "gate":
+    if w != "w":
         return [(inter, None, 0, "")]
     half = inter // 2
     return [(half, inter, 0, "_lo"), (half, inter, half, "_hi")]
@@ -215,7 +214,7 @@ def _ffn_weights(w, wid):
     out = {}
     for key in ("gate", "up"):
         full = _wT(w[key], D, inter)
-        halves = _ffn_halves(wid, key)
+        halves = _ffn_halves(wid)
         if len(halves) == 1:
             out[key] = full
             continue
@@ -727,13 +726,12 @@ def _build_single_gemm_elf(
 
     # n_out: this GEMM writes its n_dim columns into an n_out-wide output at
     # n_out_offset, so a wide FFN can run as narrower halves that still land
-    # contiguous. Only the drain method can do it (fused-cast's bf16 comes from
-    # a cast launch that collapses [m,n] to 1D).
+    # contiguous. Both methods can do it -- forcing drain for it cost 1.11x.
     g_spec = gemm_spec(
         seq_len,
         k_dim,
         n_dim,
-        force_method="drain" if (epilogue_gelu or n_out) else None,
+        force_method="drain" if epilogue_gelu else None,
         tile_k_l2=tile_k_l2,
     )
     print(
@@ -925,8 +923,8 @@ _NEEDED = (
     + [K_V(c) for c in _CLS]
     + [K_ONORM(c) for c in _CLS]
     + [K_FA(c) for c in _CLS]
-    + [K_GATE(w, t) for w in _WID for *_, t in _ffn_halves(w, "gate")]
-    + [K_UP(w) for w in _WID]
+    + [K_GATE(w, t) for w in _WID for *_, t in _ffn_halves(w)]
+    + [K_UP(w, t) for w in _WID for *_, t in _ffn_halves(w)]
     + [K_MUL(w) for w in _WID]
     + [K_DOWN(w) for w in _WID]
     + [K_PLE_GEMM, K_PLE_MP, K_PLE_GELU, K_PLE_PROJ, K_LM]
@@ -979,7 +977,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     for w in _WID:
         inter = wid_inter(w)
-        for n_h, n_out, off, tag in _ffn_halves(w, "gate"):
+        for n_h, n_out, off, tag in _ffn_halves(w):
             nm = K_GATE(w, tag)
             print(f"\n--- {nm} (Gate GEMM, INTER={inter}, n={n_h}@{off}) ---")
             mod, scratch[nm] = _build_single_gemm_elf(
@@ -994,9 +992,13 @@ def compile_all_kernels(cache, seq_len, verbose=False):
             )
             cache.compile_and_cache(nm, mod, _elf_backend(nm))
 
-        print(f"\n--- {K_UP(w)} (Up GEMM, INTER={inter}) ---")
-        mod, scratch[K_UP(w)] = _build_single_gemm_elf(K_UP(w), "ug", seq_len, D, inter)
-        cache.compile_and_cache(K_UP(w), mod, _elf_backend(K_UP(w)))
+        for n_h, n_out, off, tag in _ffn_halves(w):
+            nm = K_UP(w, tag)
+            print(f"\n--- {nm} (Up GEMM, INTER={inter}, n={n_h}@{off}) ---")
+            mod, scratch[nm] = _build_single_gemm_elf(
+                nm, "ug", seq_len, D, n_h, n_out=n_out, n_out_offset=off
+            )
+            cache.compile_and_cache(nm, mod, _elf_backend(nm))
 
         print(f"\n--- {K_MUL(w)} (gate*up multiply, INTER={inter}) ---")
         cache.compile_and_cache(
@@ -1116,11 +1118,12 @@ def resolve_scratch(seq_len):
         # in the GEMM's own herd), and drain needs no f32 scratch -- so this
         # must use the SAME spec the builder did or the call passes an argument
         # the ELF does not have.
-        for n_h, _n_out, _off, tag in _ffn_halves(w, "gate"):
+        for n_h, _n_out, _off, tag in _ffn_halves(w):
             sc[K_GATE(w, tag)] = _alloc(
                 [gemm_spec(seq_len, D, n_h, force_method="drain")], 3
             )
-        sc[K_UP(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
+        for n_h, _n_out, _off, tag in _ffn_halves(w):
+            sc[K_UP(w, tag)] = _alloc([gemm_spec(seq_len, D, n_h)], 3)
         sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
     sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D, force_method="drain")], 3)
     sc[K_PLE_MP] = _alloc([gemm_spec(seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2)], 3)
@@ -1426,7 +1429,7 @@ class Gemma4Q4nxPrefill:
             shared_nonstatic=True,
         )
 
-    def _call_ffn_gemm(self, name, k, wkey, normed2, out_alias):
+    def _call_ffn_gemm(self, name, k, wkey, normed2, out_alias, n_h=None):
         seq = self.seq
         inter = wid_inter(_wid(k))
         args = [
@@ -1435,9 +1438,11 @@ class Gemma4Q4nxPrefill:
             np.zeros((seq, inter), bfloat16),
         ]
         idx = {0, 2}
+        # A split half accumulates only its own n columns, so the f32 scratch
+        # is narrower than the shared bf16 output it writes into.
         for sc in self.scratch[name]:
             if sc is not None:
-                args.append(np.zeros((seq, inter), np.float32))
+                args.append(np.zeros((seq, n_h or inter), np.float32))
                 idx.add(sc)
         return self.cache.load_and_run(
             name,
@@ -1597,9 +1602,12 @@ class Gemma4Q4nxPrefill:
                 self._call_k(k, z_d)
                 self._call_v(k, z_d)
             self._call_o_norm(k, z_q, z_d)
-            for *_, tag in _ffn_halves(_wid(k), "gate"):
+            for *_, tag in _ffn_halves(_wid(k)):
                 self._call_ffn_gemm(K_GATE(_wid(k), tag), k, "gate" + tag, z_d, _A_GATE)
-            self._call_ffn_gemm(K_UP(_wid(k)), k, "up", z_d, _A_UP)
+            for n_h, _no, _of, tag in _ffn_halves(_wid(k)):
+                self._call_ffn_gemm(
+                    K_UP(_wid(k), tag), k, "up" + tag, z_d, _A_UP, n_h=n_h
+                )
             self._call_mul(
                 K_MUL(_wid(k)),
                 k,
@@ -1732,7 +1740,7 @@ class Gemma4Q4nxPrefill:
         res1 = ores[6].reshape(seq, D)
         normed2 = ores[8].reshape(seq, D)
 
-        for *_, tg in _ffn_halves(w, "gate"):
+        for *_, tg in _ffn_halves(w):
             gate = self._dev(
                 self._call_ffn_gemm,
                 K_GATE(w, tg),
@@ -1742,9 +1750,17 @@ class Gemma4Q4nxPrefill:
                 _A_GATE,
                 tag="gate",
             )[2].reshape(seq, inter)
-        up = self._dev(self._call_ffn_gemm, K_UP(w), k, "up", normed2, _A_UP, tag="up")[
-            2
-        ].reshape(seq, inter)
+        for n_h, _no, _of, tg in _ffn_halves(w):
+            up = self._dev(
+                self._call_ffn_gemm,
+                K_UP(w, tg),
+                k,
+                "up" + tg,
+                normed2,
+                _A_UP,
+                n_h,
+                tag="up",
+            )[2].reshape(seq, inter)
         act = self._dev(
             self._call_mul,
             K_MUL(w),
