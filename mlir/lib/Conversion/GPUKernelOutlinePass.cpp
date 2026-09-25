@@ -473,9 +473,32 @@ struct ConvertGPUKernelOutlinePass
         SymbolTable gpuModuleSymbolTable(gpuModule);
         // insert the GPUFuncOp into GPUModuleOp.
         gpuModuleSymbolTable.insert(outlinedFunc);
+        cloneReferencedGlobalsInto(outlinedFunc, gpuModuleSymbolTable,
+                                   symbolTable);
         convertToLaunchFuncOp(launchOp, outlinedFunc,
                               filteredOperands.getArrayRef());
       });
+    });
+  }
+
+  /// Copy every memref.global the kernel body refers to into the gpu.module.
+  ///
+  /// gpu.module is its own symbol table, so a memref.get_global that resolved
+  /// fine at module scope dangles once the body is moved inside: the verifier
+  /// reports "does not reference a valid global memref". Kernel-side globals
+  /// are how a device-scope scratch buffer is expressed (the chiplet rank
+  /// counters, for one), so carry the definitions across with the body.
+  void cloneReferencedGlobalsInto(gpu::GPUFuncOp outlinedFunc,
+                                  SymbolTable &gpuModuleSymbolTable,
+                                  SymbolTable &moduleSymbolTable) {
+    outlinedFunc.walk([&](memref::GetGlobalOp getGlobal) {
+      StringRef name = getGlobal.getName();
+      if (gpuModuleSymbolTable.lookup(name))
+        return; // already carried across by an earlier kernel op
+      auto global = moduleSymbolTable.lookup<memref::GlobalOp>(name);
+      if (!global)
+        return; // unresolved at module scope too; the verifier will say so
+      gpuModuleSymbolTable.insert(global->clone());
     });
   }
 
