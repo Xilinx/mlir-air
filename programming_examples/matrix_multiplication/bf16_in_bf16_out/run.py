@@ -60,6 +60,8 @@ def build_module(
     link_with_name="mm.o",
     b_pad_rows=0,
     epilogue_gelu=False,
+    n_out=None,
+    n_out_offset=0,
 ):
     assert m % (tile_m * herd_m) == 0, (m, tile_m, herd_m)
     assert k % tile_k_l2 == 0
@@ -104,9 +106,15 @@ def build_module(
         )
     tile_k_l1_pad = tile_k_l1 + b_pad_rows
     tile_k_l2_pad = (tile_k_l2 // tile_k_l1) * tile_k_l1_pad
+    # n_out/n_out_offset let this GEMM write its n columns into a WIDER L3 output
+    # at a column offset, so a wide GEMM can be split into narrower ones that
+    # still produce one contiguous result. Only C is affected; A and B keep their
+    # own extents. Defaults reproduce the unsplit layout exactly.
+    n_out_eff = n if n_out is None else n_out
+    assert n_out_offset + n <= n_out_eff, (n_out_offset, n, n_out_eff)
     a_size = [m, k]
     b_size = [(k // tile_k_l1) * tile_k_l1_pad, n]
-    c_size = [m, n]
+    c_size = [m, n_out_eff]
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
     # L1/L2 C ACCUMULATOR element type. In the external f32-accumulate path this is
@@ -291,7 +299,13 @@ def build_module(
                 # f32_to_bf16_mn(float* src, bfloat16* dst): single full-tile cast.
                 # GELU is a pointwise function of the accumulator, so folding it
                 # into the drain costs no operand, no DMA and no extra port.
-                _drain_sym = "f32_to_bf16_mn"
+                # FastFlowLM applies its activation right here -- its compute
+                # tile ends in copy_float_to_bfloat16_lock_aware_with_nonlinear,
+                # so the nonlinearity runs on all 32 GEMM cores as part of the
+                # copy-out and no separate cast pass exists.
+                _drain_sym = (
+                    "f32_to_bf16_gelu_mn" if epilogue_gelu else "f32_to_bf16_mn"
+                )
                 if b_pad_rows:
                     _drain_sym = (
                         "f32_to_bf16_bias_gelu_mn"
@@ -429,6 +443,27 @@ def build_module(
                 )
                 launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
                 launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                # C's column offset is shifted by n_out_offset; B's is not (B is
+                # its own [k, n] array, C is a window into an n_out-wide one).
+                if n_out_offset:
+                    launch_offset_y_c = affine_apply(
+                        AffineMap.get(
+                            0,
+                            1,
+                            [
+                                AffineExpr.get_add(
+                                    AffineExpr.get_mul(
+                                        AffineSymbolExpr.get(0),
+                                        AffineConstantExpr.get(tile_n * herd_n),
+                                    ),
+                                    AffineConstantExpr.get(n_out_offset),
+                                )
+                            ],
+                        ),
+                        [launch_ivy_s],
+                    )
+                else:
+                    launch_offset_y_c = launch_offset_y
 
                 @herd(
                     name="herd_0",
@@ -755,9 +790,9 @@ def build_module(
                 dma_memcpy_nd(
                     l3_c_data_s,
                     l2_c_data,
-                    dst_offsets=[launch_offset_x, launch_offset_y],
+                    dst_offsets=[launch_offset_x, launch_offset_y_c],
                     dst_sizes=[herd_m * tile_m, herd_n * tile_n],
-                    dst_strides=[n, 1],
+                    dst_strides=[n_out_eff, 1],
                     src_offsets=[0, 0, 0, 0],
                     src_sizes=[herd_m, tile_m, herd_n, tile_n],
                     src_strides=[tile_m * herd_n * tile_n, tile_n, tile_m * tile_n, 1],
@@ -843,10 +878,18 @@ def _stitch_fix_args(text, prefix, arg_map):
 
 
 @module_builder
-def _build_cast_module(m, n, np_dtype_in, tile_n=2048, herd_x=8, herd_y=1):
+def _build_cast_module(
+    m, n, np_dtype_in, tile_n=2048, herd_x=8, herd_y=1, n_out=None, n_out_offset=0
+):
     """Standalone f32->bf16 cast: 2D in/out, collapse to 1D, contiguous-chunk
     partition (1-level DMA descriptor), vectorized truncf in L1. herd_x*herd_y
-    tiles, each owns a contiguous chunk. Mirrors llama o_ffn's _build_cast_2d."""
+    tiles, each owns a contiguous chunk. Mirrors llama o_ffn's _build_cast_2d.
+
+    n_out/n_out_offset widen the DESTINATION to [m, n_out] and shift it by a
+    column offset, so a wide GEMM can run as narrower halves that still land
+    contiguous. The source partition is unchanged; only the store offset is
+    re-derived as (row, col) instead of a flat index, which needs every tile to
+    stay inside one row (asserted below)."""
     from air.dialects.memref import collapse_shape as memref_collapse_shape
     from air.dialects.vector import transfer_read, transfer_write
     from air.dialects import arith as _arith
@@ -858,10 +901,22 @@ def _build_cast_module(m, n, np_dtype_in, tile_n=2048, herd_x=8, herd_y=1):
     assert nelem % total_tiles == 0, (nelem, total_tiles)
     chunk_size = nelem // total_tiles
     assert chunk_size % tile_n == 0, (nelem, total_tiles, tile_n)
+    n_out_eff = n if n_out is None else n_out
+    assert n_out_offset + n <= n_out_eff, (n_out_offset, n, n_out_eff)
+    windowed = n_out_eff != n or n_out_offset
+    if windowed:
+        # ONE ROW PER TILE, always. A sub-row tile makes the destination offset
+        # jump at every row boundary, and AIR folds this loop into a
+        # constant-stride BD -- which silently keeps only the first tile of
+        # each row.
+        assert chunk_size % n == 0, (chunk_size, n)
+        assert n * 6 <= 60 * 1024, f"one f32+bf16 row of n={n} does not fit L1"
+        tile_n = n
+    nelem_out = m * n_out_eff
     l3_in_2d = MemRefType.get([m, n], f32)
     l3_in_1d = MemRefType.get([nelem], f32)
-    l3_out_2d = MemRefType.get([m, n], bf16)
-    l3_out_1d = MemRefType.get([nelem], bf16)
+    l3_out_2d = MemRefType.get([m, n_out_eff], bf16)
+    l3_out_1d = MemRefType.get([nelem_out], bf16)
     l1_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L1)
     l1_f32 = MemRefType.get([tile_n], f32, memory_space=l1_space)
     l1_bf16 = MemRefType.get([tile_n], bf16, memory_space=l1_space)
@@ -903,8 +958,48 @@ def _build_cast_module(m, n, np_dtype_in, tile_n=2048, herd_x=8, herd_y=1):
                             )
                         ],
                     )
+                    if windowed:
+                        # Same tile, re-addressed as (row, col) in the wide
+                        # destination: row = tile_base_row + iv/n, col = iv%n.
+                        _tile = AffineExpr.get_add(
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(1),
+                                AffineConstantExpr.get(herd_y),
+                            ),
+                            AffineSymbolExpr.get(2),
+                        )
+                        _row = AffineExpr.get_add(
+                            AffineExpr.get_mul(
+                                _tile, AffineConstantExpr.get(chunk_size // n)
+                            ),
+                            AffineExpr.get_floor_div(
+                                AffineSymbolExpr.get(0), AffineConstantExpr.get(n)
+                            ),
+                        )
+                        outmap = AffineMap.get(
+                            0,
+                            3,
+                            [
+                                AffineExpr.get_add(
+                                    AffineExpr.get_add(
+                                        AffineExpr.get_mul(
+                                            _row,
+                                            AffineConstantExpr.get(n_out_eff),
+                                        ),
+                                        AffineExpr.get_mod(
+                                            AffineSymbolExpr.get(0),
+                                            AffineConstantExpr.get(n),
+                                        ),
+                                    ),
+                                    AffineConstantExpr.get(n_out_offset),
+                                )
+                            ],
+                        )
                     for iv in range_(0, chunk_size, tile_n):
                         off = affine_apply(offmap, [iv, _tx, _ty])
+                        off_out = (
+                            affine_apply(outmap, [iv, _tx, _ty]) if windowed else off
+                        )
                         dma_memcpy_nd(
                             li,
                             h_in,
@@ -922,7 +1017,7 @@ def _build_cast_module(m, n, np_dtype_in, tile_n=2048, herd_x=8, herd_y=1):
                         dma_memcpy_nd(
                             h_out,
                             lo,
-                            dst_offsets=[off],
+                            dst_offsets=[off_out],
                             dst_sizes=[tile_n],
                             dst_strides=[1],
                         )
@@ -945,6 +1040,8 @@ def build_module_gemm_cast(
     cast_tile_n=2048,
     sym_suffix="",
     link_with_name="mm.o",
+    n_out=None,
+    n_out_offset=0,
 ):
     """Strategy 2: external GEMM (f32-out, full tile_m) + cast launch → bf16, in
     one module. func args: (A_bf16, B_bf16, C_f32_scratch, C_bf16_out).
@@ -974,7 +1071,16 @@ def build_module_gemm_cast(
             link_with_name=link_with_name,
         )
     )
-    cast_ir = str(_build_cast_module(m, n, np.float32, tile_n=cast_tile_n))
+    cast_ir = str(
+        _build_cast_module(
+            m,
+            n,
+            np.float32,
+            tile_n=cast_tile_n,
+            n_out=n_out,
+            n_out_offset=n_out_offset,
+        )
+    )
 
     # mm.o symbols the GEMM links — preserve across renaming (with suffix).
     externs = {
@@ -1008,7 +1114,7 @@ module {{
     %arg0: memref<{m}x{k}xbf16>,
     %arg1: memref<{k}x{n}xbf16>,
     %arg2: memref<{m}x{n}xf32>,
-    %arg3: memref<{m}x{n}xbf16>
+    %arg3: memref<{m}x{n_out or n}xbf16>
   ) {{
 {bodies[0]}
 {bodies[1]}

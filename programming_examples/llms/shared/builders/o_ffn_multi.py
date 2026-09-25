@@ -229,7 +229,12 @@ def _build_o_ffn(
     resolve to fused-cast (external mm.o GEMM with an f32 C scratch + a separate
     on-chip cast launch each = @gemm_cast_bf16, 2 launches/GEMM). The 4 f32 scratch
     buffers are func args 15..18. GPU-standard 9.3e-3 precision. Needs mm_m64.o +
-    runtime_loop_tiling_sizes=[2,2] (BD-ID recycling).
+    runtime_loop_tiling_sizes=[2,2]: smaller than the GEMMs' own grid extents, so a
+    real runtime loop survives and its BD IDs must be recycled across iterations.
+    (A tiling request >= a GEMM's own extent instead fully unrolls it at compile
+    time, leaving no runtime loop and so nothing to recycle -- see SmolVLA's
+    vit_o_ffn / vit_ln_qkv, which use exactly that to go faster at the same
+    bit-identical output.)
     """
     from shared.builders.gemm_builder import (
         _build_gemm_module,
@@ -548,7 +553,8 @@ if __name__ == "__main__":
         print(module)
         sys.exit(0)
 
-    # fused-cast GEMM herds need BD-ID recycling.
+    # [2,2] is smaller than these fused-cast GEMM herds' own grid extents, so their
+    # runtime loop survives and needs BD-ID recycling (see _build_o_ffn's docstring).
     extra_backend = {"runtime_loop_tiling_sizes": [2, 2]}
 
     if args.compile_mode == "compile-only":

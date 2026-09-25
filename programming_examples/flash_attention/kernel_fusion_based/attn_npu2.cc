@@ -177,6 +177,12 @@ static_assert(dk_full == 64 || dk_full == 128 || dk_full == 256 ||
 
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
 
+// The per-row replica tables are filled in 32-row halves but read in 4-row
+// groups, so a q tile past 32 that is not a multiple of it reads rows nothing
+// wrote. Below 32 has its own path.
+static_assert(lqp < 32 || lqp % 32 == 0,
+              "lqp must be < 32 or a multiple of 32");
+
 __attribute__((always_inline)) v8bfloat16 getExpBf16(v8bfloat16 x) {
 
   constexpr int VecLen = 8;
@@ -374,9 +380,11 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
   SET_ROUNDING();
   // u = np.maximum(u, up)
   // Buffer shape:
-  // up: [lqp, 1] = [32, 1]
-  // u: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 32;
+  // up: [lqp, 1]
+  // u: [lqp, 1]
+  // A [lqp,1] column is exactly lqp elements, so the vector must BE lqp --
+  // a fixed 32 reads past the buffer at lqp<32 and zero-trips the loop.
+  constexpr int VecLen = lqp;
   constexpr int num_elems = lqp;
   bfloat16 *__restrict pu = u;
   for (int i = 0; i < num_elems; i += VecLen) {
@@ -401,7 +409,6 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
   // keeps the live vectors (and the stack) bounded instead of spilling. The
   // group loop stays rolled: unrolling it too overflows the 16 KB program
   // memory.
-  static_assert(lqp % 32 == 0, "exp_g_minus_u loads u 32 rows at a time");
   constexpr int col_blocks = lkp / 8;
   constexpr int col_chunk = exp_col_chunk(col_blocks);
   constexpr int col_chunks = col_blocks / col_chunk;
@@ -415,24 +422,32 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
   aie::vector<bfloat16, 16> log2e_vec16 =
       aie::broadcast<bfloat16, 16>((bfloat16)log2e);
   V lowest_vec = aie::broadcast<bfloat16, 32>(lowest_val);
-  for (int rh = 0; rh < row_halves; rh++) {
-    V uv = aie::load_v<32>(u + rh * 32);
-    auto z1 = aie::interleave_zip(uv, uv, 1);
-    auto z2a = aie::interleave_zip(z1.first, z1.first, 2);
-    auto z2b = aie::interleave_zip(z1.second, z1.second, 2);
-    auto z3a = aie::interleave_zip(z2a.first, z2a.first, 4);
-    auto z3b = aie::interleave_zip(z2a.second, z2a.second, 4);
-    auto z3c = aie::interleave_zip(z2b.first, z2b.first, 4);
-    auto z3d = aie::interleave_zip(z2b.second, z2b.second, 4);
-    bfloat16 *t = u_rep + rh * 256;
-    aie::store_v(t + 0, z3a.first);
-    aie::store_v(t + 32, z3a.second);
-    aie::store_v(t + 64, z3b.first);
-    aie::store_v(t + 96, z3b.second);
-    aie::store_v(t + 128, z3c.first);
-    aie::store_v(t + 160, z3c.second);
-    aie::store_v(t + 192, z3d.first);
-    aie::store_v(t + 224, z3d.second);
+  if constexpr (lqp < 32) {
+    // The zip chain below reads u 32 rows at a time, so a shorter q tile
+    // replicates a row at a time instead. Broadcast+store, never a scalar
+    // store loop -- Peano drops lanes vectorizing those.
+    for (int i = 0; i < lqp; i++)
+      aie::store_v(u_rep + i * 8, aie::broadcast<bfloat16, 8>(u[i]));
+  } else {
+    for (int rh = 0; rh < row_halves; rh++) {
+      V uv = aie::load_v<32>(u + rh * 32);
+      auto z1 = aie::interleave_zip(uv, uv, 1);
+      auto z2a = aie::interleave_zip(z1.first, z1.first, 2);
+      auto z2b = aie::interleave_zip(z1.second, z1.second, 2);
+      auto z3a = aie::interleave_zip(z2a.first, z2a.first, 4);
+      auto z3b = aie::interleave_zip(z2a.second, z2a.second, 4);
+      auto z3c = aie::interleave_zip(z2b.first, z2b.first, 4);
+      auto z3d = aie::interleave_zip(z2b.second, z2b.second, 4);
+      bfloat16 *t = u_rep + rh * 256;
+      aie::store_v(t + 0, z3a.first);
+      aie::store_v(t + 32, z3a.second);
+      aie::store_v(t + 64, z3b.first);
+      aie::store_v(t + 96, z3b.second);
+      aie::store_v(t + 128, z3c.first);
+      aie::store_v(t + 160, z3c.second);
+      aie::store_v(t + 192, z3d.first);
+      aie::store_v(t + 224, z3d.second);
+    }
   }
   for (int gi = 0; gi < row_groups; gi++) {
     V uvec = aie::load_v<32>(u_rep + gi * 32);
@@ -493,12 +508,29 @@ void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
   // group; (2) each group's column-block vectors are loaded, multiplied and
   // stored as separate unrolled batches so the vmul.f latency overlaps across
   // vectors instead of being paid per vector.
-  static_assert(lqp % 32 == 0, "mul_r_gp loads r 32 rows at a time");
   constexpr int VecLen = 32;
   constexpr int col_blocks = dv / 8;
   constexpr int row_halves = lqp / 32;
   constexpr int block_stride = lqp * 8;
   using V = aie::vector<bfloat16, VecLen>;
+  if constexpr (lqp < 32) {
+    // Same reason as exp_g_minus_u: r cannot be loaded a row-half at a time.
+    // A group is still 4 rows x 8 cols, so only the table build changes.
+    alignas(64) bfloat16 r_rep[lqp * 8];
+    for (int i = 0; i < lqp; i++)
+      aie::store_v(r_rep + i * 8, aie::broadcast<bfloat16, 8>(r[i]));
+    for (int gi = 0; gi < lqp / 4; gi++) {
+      V rvec = aie::load_v<VecLen>(r_rep + gi * VecLen);
+      bfloat16 *__restrict p = gp + gi * VecLen;
+#pragma clang loop unroll(full)
+      for (int cb = 0; cb < col_blocks; cb++) {
+        V v = aie::load_v<VecLen>(p + cb * block_stride);
+        aie::store_v(p + cb * block_stride,
+                     aie::mul(v, rvec).template to_vector<bfloat16>());
+      }
+    }
+    return;
+  }
   for (int rh = 0; rh < row_halves; rh++) {
     V rv = aie::load_v<VecLen>(r + rh * VecLen);
     auto z1 = aie::interleave_zip(rv, rv, 1);
@@ -571,10 +603,10 @@ void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
   SET_ROUNDING();
   // s += sp * r
   // Buffer shape:
-  // sp: [lqp, 1] = [32, 1]
-  // r: [lqp, 1] = [32, 1]
-  // s: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 32;
+  // sp: [lqp, 1]
+  // r: [lqp, 1]
+  // s: [lqp, 1]
+  constexpr int VecLen = lqp; // see maximum_up_u_bf16
   constexpr int num_elems = lqp;
   bfloat16 *__restrict pr = r;
   bfloat16 *__restrict ps = s;
@@ -584,7 +616,7 @@ void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
     aie::vector<bfloat16, VecLen> spTemp = aie::load_v<VecLen>(psp);
     aie::accum<accfloat, VecLen> accTemp = aie::mul(rTemp, spTemp);
     accTemp = aie::add(accTemp, aie::load_v<VecLen>(ps));
-    aie::vector<bfloat16, VecLen> sTemp = to_v32bfloat16(accTemp);
+    aie::vector<bfloat16, VecLen> sTemp = accTemp.to_vector<bfloat16>();
     aie::store_v(ps, sTemp);
     pr += VecLen;
     ps += VecLen;
@@ -594,7 +626,7 @@ void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
 
 void vector_copy_32elems(const int offset, const bfloat16 *__restrict inputs,
                          bfloat16 *__restrict outputs) {
-  constexpr int VecLen = 32;
+  constexpr int VecLen = lqp; // see maximum_up_u_bf16
   constexpr int num_elems = lqp;
   const bfloat16 *__restrict pIn = inputs;
   bfloat16 *__restrict pOut = outputs + offset;

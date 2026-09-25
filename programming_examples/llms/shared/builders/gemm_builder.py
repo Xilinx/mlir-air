@@ -199,6 +199,8 @@ def _build_gemm_module(
     link_with_name="mm.o",
     b_pad_rows=0,
     epilogue_gelu=False,
+    n_out=None,
+    n_out_offset=0,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -213,7 +215,14 @@ def _build_gemm_module(
     sym_suffix / link_with_name disambiguate the mm.o variant (_m64 fused / _m32
     drain) so both can co-link in one fused ELF.
     """
+    # epilogue_gelu only reaches the DRAIN path: the activation belongs in the
+    # GEMM's own herd (FastFlowLM's copy_float_to_bfloat16_*_with_nonlinear),
+    # not in fused-cast's separate 8-column cast launch.
     if external_fused_cast:
+        assert not epilogue_gelu, (
+            "epilogue_gelu needs the drain method (external_bf16_out); "
+            "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
+        )
         from matrix_multiplication.bf16_in_bf16_out.run import build_module_gemm_cast
 
         return build_module_gemm_cast(
@@ -229,6 +238,8 @@ def _build_gemm_module(
             arch="aie2p",
             sym_suffix=sym_suffix,
             link_with_name=link_with_name,
+            n_out=n_out,
+            n_out_offset=n_out_offset,
         )
 
     if external_bf16_out:
@@ -254,6 +265,8 @@ def _build_gemm_module(
             link_with_name=link_with_name,
             b_pad_rows=b_pad_rows,
             epilogue_gelu=epilogue_gelu,
+            n_out=n_out,
+            n_out_offset=n_out_offset,
         )
 
     raise ValueError(
