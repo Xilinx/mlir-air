@@ -275,6 +275,16 @@ def npu_fa_headspatial(
     [seq, n_heads*head_dim]. `n_kv_heads` must be 1.
     """
     lkp, _, _, _, heads_spatial, dv_tile = hs_tiling(head_dim)
+    # Same contract compile_headspatial_fa enforces. Unchecked here, a head
+    # count that is not a multiple would run the dispatch loop too few times
+    # and return the tail head columns of an np.empty buffer.
+    if not supports(head_dim, n_kv_heads):
+        raise ValueError(f"head-spatial FA is MQA-only; got n_kv_heads={n_kv_heads}")
+    if n_heads % heads_spatial:
+        raise ValueError(
+            f"n_heads ({n_heads}) must be a multiple of the {heads_spatial} "
+            f"heads resident per dispatch"
+        )
     q_dim = n_heads * head_dim
     hs_dim = heads_spatial * head_dim
 
