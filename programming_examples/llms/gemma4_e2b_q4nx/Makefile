@@ -75,6 +75,14 @@ LREF ?= $(shell expr $(LBUILD) - 1)
 # passed explicitly here rather than left to the default.
 SWEEP_UNI_DEC ?= 35
 
+# Which slab each decode wave attends. Layers at or past FIRST_KV_SHARED_LAYER
+# project no K/V and read their kv_source_layer(). Without DECODE_KV_SRC the
+# template is identity mapped and nothing writes their current row, so they
+# attend a zero key at their own position. seed_kv fans the prompt's rows out,
+# so only generation degrades. Derived, not written out: a wrong map builds
+# fine and decodes to garbage. Recursive (=) to keep the import off `make help`.
+SWEEP_KV_SRC = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(','.join(str(gw.kv_source_layer(i)) for i in range($(SWEEP_UNI_DEC))))")
+
 # ATTN_MAXL the TOKEN driver's template is built for, i.e. the session context
 # cap of `make run` / `ask` / `profile`. Separate from LBUILD, which is the layer
 # gate's (16, one token attending a 16-slot cache). 128 covers the Paris gate and
@@ -177,9 +185,9 @@ compile-prefill:
 	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --compile-only
 
 ## The FULL-DEPTH decode template the token driver dispatches: all 35 decoder
-## layers, at RUN_LBUILD. Distinct from `compile-decode`, which builds the layer
-## GATE's template -- that one is a ONE-layer build left in the engine directory
-## and cannot produce a token.
+## layers, at RUN_LBUILD, under the KV sharing map (SWEEP_KV_SRC). Distinct from
+## `compile-decode`, which builds the layer GATE's template -- that one is a
+## ONE-layer build left in the engine directory and cannot produce a token.
 compile-decode-full:
 	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build \
 	  LBUILD=$(RUN_LBUILD) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
@@ -238,10 +246,15 @@ profile-prefill:
 ## skipped rebuild benches the previous context's binary and reports its number
 ## under the new context's label. sweep_decode.py also md5s the result and
 ## rejects a repeat, which is the backstop for exactly this.
+##
+## An empty KV_SRC is silently the identity map, so a failed derivation would
+## rebuild the bug rather than fail. Refuse it; the engine asserts the length.
 _compile_decode_build:
+	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
 	@set -e; for L in $(LBUILD) $(LREF); do \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
-	    UNI_DEC=$(SWEEP_UNI_DEC) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
+	    UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
+	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
 	  mv -f $(DEC)/decode.xclbin    $(srcdir)/decode_L$$L.xclbin; \
 	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$$L.insts.bin; \
 	done
