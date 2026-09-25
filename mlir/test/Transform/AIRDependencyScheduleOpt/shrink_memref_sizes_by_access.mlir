@@ -127,4 +127,44 @@ module {
     }
     return
   }
+
+  // A runtime-valued access size has no constant to derive a bound from, so the
+  // memref keeps its declared shape. It used to be dereferenced as a constant,
+  // and the pass asserted.
+  // CHECK-LABEL: func.func @func3
+  // CHECK: memref.alloc() : memref<1024xi32, 1 : i32>
+  air.channel @channel_3 [1, 1]
+  func.func @func3(%n : index) {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) args(%arg2=%n) : index {
+      air.segment @segment_3 args(%arg3=%arg2) : index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %alloc = memref.alloc() : memref<1024xi32, 1 : i32>
+        air.channel.put @channel_3[] (%alloc[%c0] [%arg3] [%c1_0]) {id = 1 : i32} : (memref<1024xi32, 1 : i32>)
+        memref.dealloc %alloc : memref<1024xi32, 1 : i32>
+      }
+    }
+    return
+  }
+
+  // Same for a runtime-valued STRIDE: no constant to divide by, so no bound.
+  // CHECK-LABEL: func.func @func4
+  // CHECK: memref.alloc() : memref<4x64xi32, 1 : i32>
+  air.channel @channel_4 [1, 1]
+  func.func @func4(%s : index) {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) args(%arg2=%s) : index {
+      air.segment @segment_4 args(%arg3=%arg2) : index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c64 = arith.constant 64 : index
+        %alloc = memref.alloc() : memref<4x64xi32, 1 : i32>
+        air.channel.put @channel_4[] (%alloc[%c0, %c0] [%c2, %c64] [%arg3, %c1_0]) {id = 1 : i32} : (memref<4x64xi32, 1 : i32>)
+        memref.dealloc %alloc : memref<4x64xi32, 1 : i32>
+      }
+    }
+    return
+  }
 }
