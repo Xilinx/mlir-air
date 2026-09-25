@@ -629,13 +629,47 @@ def _detok(ids, model=MODEL_DEFAULT):
         return f"(no detok: {e}) ids={ids}"
 
 
+def _flat_ids(encoded) -> list:
+    """Normalize tokenizer output to a flat list of ints. apply_chat_template may
+    return a BatchEncoding (a Mapping, not a dict subclass) and/or batch-nested ids."""
+    from collections.abc import Mapping
+
+    import numpy as np
+
+    if hasattr(encoded, "input_ids"):  # BatchEncoding
+        encoded = encoded.input_ids
+    elif isinstance(encoded, Mapping):
+        encoded = encoded["input_ids"]
+    return [int(t) for t in np.asarray(encoded).reshape(-1)]
+
+
+def format_prompt(tokenizer, prompt: str, model_variant: str) -> list:
+    """Instruct variants get the chat template; base variants get raw text."""
+    if model_variant == "instruct" and getattr(tokenizer, "chat_template", None):
+        return _flat_ids(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+    return _flat_ids(tokenizer(prompt)["input_ids"])
+
+
 def main():
     ap = argparse.ArgumentParser(description="gemma4_e2b_q4nx full inference")
     ap.add_argument("--prompt", type=str, default=None, help="prompt text")
     ap.add_argument("--prompt-ids", type=str, default=None, help="comma-separated ids")
     ap.add_argument("--n-tokens", type=int, default=9, help="tokens to generate")
     ap.add_argument(
-        "--model", type=str, default=MODEL_DEFAULT, help="model.q4nx dir/path"
+        "--model", type=str, choices=["base", "instruct"], default="instruct"
+    )
+    ap.add_argument(
+        "--model-source",
+        dest="model_source",
+        type=str,
+        default=MODEL_DEFAULT,
+        help="model.q4nx dir/path",
     )
     ap.add_argument(
         "--numpy-prefill",
@@ -663,8 +697,13 @@ def main():
     elif args.prompt:
         from transformers import AutoTokenizer
 
-        # <bos> by hand: this tokenizer does not add it.
-        prompt = [2] + AutoTokenizer.from_pretrained(args.model).encode(args.prompt)
+        # An -IT bundle wants its turn markers: an instruction handed over as
+        # raw text is out of distribution and decodes to list scaffolding with
+        # no content. The template carries <bos>; the base path prepends it.
+        tk = AutoTokenizer.from_pretrained(args.model_source)
+        prompt = format_prompt(tk, args.prompt, args.model)
+        if args.model != "instruct":
+            prompt = [2] + prompt
     else:
         prompt = PARIS_PROMPT
     print(f"[inference] prompt = {len(prompt)} tokens: {prompt}", flush=True)
@@ -672,13 +711,13 @@ def main():
     gen_ids, stop = generate(
         prompt,
         args.n_tokens,
-        model=args.model,
+        model=args.model_source,
         numpy_prefill=args.numpy_prefill,
         ignore_eos=args.ignore_eos,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")
-    print(f"[inference] TEXT: {_detok(gen_ids, args.model)!r}")
+    print(f"[inference] TEXT: {_detok(gen_ids, args.model_source)!r}")
     ok = True
     # --ignore-eos deliberately runs past the stop, so the recorded continuation
     # no longer describes the run and the verdict would be a false MISS.
