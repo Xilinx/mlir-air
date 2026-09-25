@@ -28,10 +28,10 @@ Down K=11008 -> tile_k_l2=256). Every GEMM is driven straight from
 gemm_registry_config, with the Down-launch-0 split layered on top.
 
 Registry-selected methods (seq=2048):
-    Q/O    (2048x2048)   -> fused-cast (mm_m64.o, tile_n=128) — needs f32 scratch
-    K/V    (2048x256)    -> drain      (mm_m32.o, tile_n=64)
+    Q/O    (2048x2048)   -> fused-cast (tile_m=64, tile_n=128) — needs f32 scratch
+    K/V    (2048x256)    -> drain      (tile_m=32, tile_n=64)
     Gate/Up(2048x11008)  -> direct (low-precision, tile_n=64, tile_k_l2=128)
-    Down   (11008x2048)  -> fused-cast (mm_m64.o, tile_n=128, launch 0)
+    Down   (11008x2048)  -> fused-cast (tile_m=64, tile_n=128, launch 0)
 
 Attention uses the CPU fallback (cpu_attn=True). head_dim=128 -> FA hang risk,
 so prefill never uses NPU FlashAttention (mirrors qwen3_0_6b).
@@ -87,7 +87,19 @@ def _gemm_spec(m, k, n, precision):
             "sym_suffix": "",
             "build_kwargs": {},
         }
-    return gemm_registry_config(m, k, n, "bf16", "high")
+    spec = gemm_registry_config(m, k, n, "bf16", "high")
+    # Q/O and K/V can both use drain with different tile_n at short lengths.
+    # The external object bakes in all three tile dimensions, so its symbols
+    # and filename must distinguish those recipes even inside one fused ELF.
+    suffix = f"_m{spec['tile_m']}_n{spec['tile_n']}_k{spec['tile_k_l1']}"
+    spec["sym_suffix"] = suffix
+    spec["obj"] = f"mm{suffix}.o"
+    spec["build_kwargs"] = {
+        **spec["build_kwargs"],
+        "sym_suffix": suffix,
+        "link_with_name": spec["obj"],
+    }
+    return spec
 
 
 def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
@@ -247,7 +259,7 @@ def build_o_res_norm_module(seq_len, emb_dim, o_herd_m=8, o_herd_n=4):
     )
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
-    o_spec = _gemm_spec(seq_len, emb_dim, emb_dim, "high")  # fused-cast _m64
+    o_spec = _gemm_spec(seq_len, emb_dim, emb_dim, "high")
     print(f"  [o_res_norm] O GEMM method={o_spec['method']} (tn={o_spec['tile_n']})")
 
     print(f"  [1/3] O GEMM ({o_spec['method']})  {seq_len}x{emb_dim}x{emb_dim}...")
@@ -486,7 +498,7 @@ def build_down_add_module(seq_len, emb_dim, hidden_dim, down_herd_m=8, down_herd
     )
 
     n_total = seq_len * emb_dim
-    d_spec = _gemm_spec(seq_len, hidden_dim, emb_dim, "high")  # fused-cast _m64
+    d_spec = _gemm_spec(seq_len, hidden_dim, emb_dim, "high")
     print(
         f"  [down_add] Down GEMM ({d_spec['method']}) {seq_len}x{hidden_dim}x{emb_dim} "
         f"(tn={d_spec['tile_n']})..."
@@ -602,19 +614,15 @@ def _down_add_backend(verbose=False):
 # Compilation
 # ---------------------------------------------------------------------------
 
-# Set by compile_all_kernels so the block runner knows scratch-arg indices.
-# Gate/Up are direct-codegen (bf16-out, no f32 scratch), so each is its own ELF
-# with no scratch args.
-_FUSED_SCRATCH_FOR = None  # rms_qkv_bias_rope (Q/K/V): Q fused-cast → [19, None, None]
-_ORES_SCRATCH_FOR = None  # o_res_norm (O): fused-cast → [7]
-_DOWN_SCRATCH_FOR = None  # down_add (Down): fused-cast → [5]
 
+def _resolve_scratch_for(seq_len, config):
+    """Derive the runtime ABI from the same shapes used to compile the ELFs.
 
-def _resolve_scratch_for():
-    """Recompute scratch_for lists from the registry (for --run-only path)."""
-    global _FUSED_SCRATCH_FOR, _ORES_SCRATCH_FOR, _DOWN_SCRATCH_FOR
-    cfg = LlamaConfig()
-    seq = 2048
+    This also applies when loading cached ELFs, and must not depend on which
+    sequence length happened to compile most recently in this process.
+    """
+    cfg = config
+    seq = seq_len
     q_dim = cfg.n_heads * cfg.head_dim
     kv_dim = cfg.n_kv_heads * cfg.head_dim
 
@@ -629,7 +637,7 @@ def _resolve_scratch_for():
                 out.append(None)
         return out
 
-    _FUSED_SCRATCH_FOR = _alloc(
+    fused_scratch = _alloc(
         [
             _gemm_spec(seq, cfg.emb_dim, q_dim, "high"),
             _gemm_spec(seq, cfg.emb_dim, kv_dim, "high"),
@@ -637,23 +645,22 @@ def _resolve_scratch_for():
         ],
         19,
     )
-    _ORES_SCRATCH_FOR = _alloc(
+    ores_scratch = _alloc(
         [
             _gemm_spec(seq, cfg.emb_dim, cfg.emb_dim, "high"),
         ],
         7,
     )
-    _DOWN_SCRATCH_FOR = _alloc(
+    down_scratch = _alloc(
         [
             _gemm_spec(seq, cfg.hidden_dim, cfg.emb_dim, "high"),
         ],
         5,
     )
-    return _ORES_SCRATCH_FOR, _DOWN_SCRATCH_FOR
+    return fused_scratch, ores_scratch, down_scratch
 
 
 def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
-    global _FUSED_SCRATCH_FOR, _ORES_SCRATCH_FOR, _DOWN_SCRATCH_FOR
     emb_dim = config.emb_dim
     n_heads = config.n_heads
     n_kv_heads = config.n_kv_heads
@@ -668,31 +675,39 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 
     from shared.infra.external_kernels import compile_gemm_mm, compile_rope
 
-    # mm.o variants for the external GEMMs:
-    #   _m32 drain    tile_n=64  (K/V projections)
-    #   _m64 fused    tile_n=128 (Q, O, Down projections)
-    # Gate/Up direct-codegen needs NO external .o. rope.o for head_dim=128.
-    compile_gemm_mm(
-        tile_m=32, tile_n=64, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
-    )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
-    )
+    # Compile exactly the external recipes selected for this length. Q/O and
+    # K/V can use different drain widths; Gate/Up use direct codegen.
+    compiled = set()
+    for k, n in (
+        (emb_dim, q_dim),
+        (emb_dim, kv_dim),
+        (emb_dim, emb_dim),
+        (hidden_dim, emb_dim),
+    ):
+        spec = _gemm_spec(seq_len, k, n, "high")
+        if spec["obj"] in compiled:
+            continue
+        compiled.add(spec["obj"])
+        compile_gemm_mm(
+            tile_m=spec["tile_m"],
+            tile_n=spec["tile_n"],
+            tile_k_l1=spec["tile_k_l1"],
+            sym_suffix=spec["sym_suffix"],
+            out_name=spec["obj"],
+        )
     compile_rope()
     from shared.infra.external_kernels import compile_silu_and_mul
 
     compile_silu_and_mul()  # silu_and_mul.o for the standalone NPU SwiGLU ELF
 
     print("\n--- rms_qkv_bias_rope (FUSED: RMSNorm+QKV+bias+RoPE) ---")
-    fused_mod, fused_scratch = build_rms_qkv_bias_rope_module(seq_len, config)
-    _FUSED_SCRATCH_FOR = fused_scratch
+    fused_mod, _ = build_rms_qkv_bias_rope_module(seq_len, config)
     cache.compile_and_cache(
         "rms_qkv_bias_rope", fused_mod, _rms_qkv_bias_rope_backend(verbose)
     )
 
     print("\n--- o_res_norm (O proj + Residual + FFN RMSNorm) ---")
-    ores_mod, ores_scratch = build_o_res_norm_module(seq_len, emb_dim)
-    _ORES_SCRATCH_FOR = ores_scratch
+    ores_mod, _ = build_o_res_norm_module(seq_len, emb_dim)
     cache.compile_and_cache("o_res_norm", ores_mod, _o_res_norm_backend(verbose))
 
     print("\n--- gate (Gate GEMM, direct) ---")
@@ -711,8 +726,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     )
 
     print("\n--- down_add (Down GEMM [launch 0] + FFN Add) ---")
-    down_mod, down_scratch = build_down_add_module(seq_len, emb_dim, hidden_dim)
-    _DOWN_SCRATCH_FOR = down_scratch
+    down_mod, _ = build_down_add_module(seq_len, emb_dim, hidden_dim)
     cache.compile_and_cache("down_add", down_mod, _down_add_backend(verbose))
 
     # Flash Attention (head-first, head_dim=128). Skip if using CPU fallback.
@@ -739,8 +753,8 @@ def _fused_bias_rope_call(
     """Issue one rms_qkv_bias_rope ELF call (fused prefill attention-input).
 
     Used by BOTH preload_prefill_weights (warmup, x_in zeroed) and the block
-    runner. Single owner of the fused arg layout. NO N-padding. Q is fused-cast
-    (f32 C-scratch tail, tracked by _FUSED_SCRATCH_FOR). output_indices=
+    runner. Single owner of the fused arg layout. NO N-padding. The registry
+    selects whether Q needs a fused-cast f32 C-scratch tail. output_indices=
     [14,17,18] -> v_b, q_roped, k_roped.
     """
     emb_dim = config.emb_dim
@@ -773,7 +787,8 @@ def _fused_bias_rope_call(
     ]
     inter = {2, 4, 6, 8, 12, 13, 14, 17, 18}
     nxt = 19
-    for sc, cols in zip(_FUSED_SCRATCH_FOR or [], (q_dim, kv_dim, kv_dim)):
+    fused_scratch, _, _ = _resolve_scratch_for(seq_len, config)
+    for sc, cols in zip(fused_scratch, (q_dim, kv_dim, kv_dim)):
         if sc is not None:
             args.append(np.zeros((seq_len, cols), dtype=np.float32))
             inter.add(nxt)
@@ -811,10 +826,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
     kv_dim = n_kv_heads * head_dim
     n_total = seq_len * emb_dim
 
-    ores_scratch = _ORES_SCRATCH_FOR
-    down_scratch = _DOWN_SCRATCH_FOR
-    if ores_scratch is None or down_scratch is None or _FUSED_SCRATCH_FOR is None:
-        ores_scratch, down_scratch = _resolve_scratch_for()
+    _, ores_scratch, down_scratch = _resolve_scratch_for(seq_len, config)
 
     print("Pre-loading prefill block weights (per-layer BOs)...")
     profiler_enabled = cache.profiler.enabled
@@ -1033,10 +1045,7 @@ def run_transformer_block_qwen25(
     inter["attn_out"] = attn_out
 
     # ---- Stage E: O proj + Residual + FFN ----
-    ores_scratch = _ORES_SCRATCH_FOR
-    down_scratch = _DOWN_SCRATCH_FOR
-    if ores_scratch is None or down_scratch is None:
-        ores_scratch, down_scratch = _resolve_scratch_for()
+    _, ores_scratch, down_scratch = _resolve_scratch_for(seq_len, config)
 
     # ELF A1: o_res_norm → res1 (arg4) + normed2 (arg6).
     ores_args = [

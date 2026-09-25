@@ -43,6 +43,12 @@ run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) --M $(M) --N $(N) --herd-x $(HERD_X)
 
+# Same as `run`, with the C++ row kernel (layer_norm_rows.cc) instead of the DSL
+# loop. This is what SmolVLA uses; needs PEANO_INSTALL_DIR to compile the kernel.
+run_ext:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/layer_norm.py $(OUTPUT_FORMAT_FLAG) --M $(M) --N $(N) --herd-x $(HERD_X) --ext
+
 # Original single-tile baseline (herd_x=1)
 run_single_tile:
 	mkdir -p $(BUILD_DIR)

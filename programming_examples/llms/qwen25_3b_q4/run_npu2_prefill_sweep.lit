@@ -21,24 +21,16 @@
 // Leaving --bench-env off does not corrupt the published TTFT -- the prefill
 // pads to the engine length, so feeding 2048 ids to a 4096 engine costs the
 // same 4096-engine time (measured: 10312 ms without it, 10274 ms with, 0.4%).
-// It is still wrong to leave off, for two reasons. The driver's own
-// "[bench] L=..." line then reports the wrong length and a tok/s off by the
-// ratio (L=2048, 199 tok/s for what is a 4096 point at 399). And BENCH_L stays
-// pinned at its 2048 default, so the day the stitcher below is fixed, the 512
-// and 1024 points would stop failing at build and start failing on the
-// driver's `assert N <= self.seq` instead -- a fresh failure for an unrelated
-// reason, at the exact moment the real one was fixed.
+// --bench-env also makes the driver's reported length/tok/s accurate and
+// prevents feeding the default 2048 ids to a shorter prefill engine.
 //
-// 512 and 1024 are expected-fail with a named status: stitcher_mixed_tile_m.
-// This model runs the bf16 qwen25_3b prefill (only its decode is q4), so it
-// inherits that example's limitation -- the registry's best method for the
-// square Q/O proj flips from fused-cast (tile_m=64) at 2048 to drain
-// (tile_m=32) at 512/1024, and the fused stitcher assumes one tile_m across the
-// GEMMs it merges. Not a registry problem; both rows are measured and correct.
+// Short lengths exercise drain GEMMs with different Q and K/V tile widths.
+// Their object/symbol recipes and cached scratch ABI are also covered by
+// python/test/api/qwen25_prefill_shapes.py, without requiring an NPU.
 //
 // Latency only, never a correctness gate (run_npu2_verify.lit is that). The
 // per-length first-token argmax the driver prints is recorded with each point;
-// both measured lengths passed when this file was written.
+// correctness is checked separately by run_npu2_verify.lit.
 //
 // Measured on a Ryzen AI 9 HX 370: 4807 ms at 2048, 9695 ms at 4096.
 //
@@ -46,12 +38,18 @@
 //
 // RUN: mkdir -p test_peano_prefill_sweep
 // RUN: cd test_peano_prefill_sweep
-// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen25_3b_q4 --makefile %S/Makefile --lengths 512,1024,2048,4096 --expect-fail 512,1024 --seq-env SEQ_LEN --bench-env BENCH_L --peano-dir %PEANO_INSTALL_DIR --out qwen25_3b_q4.prefill_sweep.json
+// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen25_3b_q4 --makefile %S/Makefile --lengths 512,1024,2048,4096 --seq-env SEQ_LEN --bench-env BENCH_L --peano-dir %PEANO_INSTALL_DIR --out qwen25_3b_q4.prefill_sweep.json
 // RUN: FileCheck %s < qwen25_3b_q4.prefill_sweep.json
 // CHECK: "model": "qwen25_3b_q4"
 // CHECK: "axis": "prefill_len"
-// A parsed number at the reference length, not just a well-formed file: if the
+// A parsed number at every length, not just a well-formed file: if the
 // driver's TTFT line drifts out of sweep_prefill.py's regex every point goes
 // null and the published curve silently empties while the test stays green.
+// CHECK: "prefill_len": 512
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}
+// CHECK: "prefill_len": 1024
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}
 // CHECK: "prefill_len": 2048
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}
+// CHECK: "prefill_len": 4096
 // CHECK-NEXT: "ttft_ms": {{[0-9]}}

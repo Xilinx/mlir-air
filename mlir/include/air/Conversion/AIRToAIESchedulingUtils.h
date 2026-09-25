@@ -101,6 +101,25 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
 // option.
 bool isChainLockCandidate(AIE::BufferOp buf);
 
+// Refuse a design whose serialized chain lock has a ping-ponged producer.
+//
+// The chain orders its stages, so a producer running a round ahead parks a
+// packet holding a switchbox arbiter; if the router shared that arbiter with an
+// earlier stage -- routine, a column can have more masters than arbiters --
+// that stage never reaches its port and the chain deadlocks.
+//
+// air-label-scf-for-to-ping-pong already declines these herds. This is the
+// backstop, and it must run after specializeL2MemrefsIntoMemtiles: the
+// labeller predicts the chain many passes earlier, and partitioning an L2
+// buffer can turn a MIMO shape into a fan-in that no earlier check would see.
+// It also covers fan-out, which the labeller leaves alone. It does NOT catch a
+// producer the shared walk misses, since both use that walk.
+//
+// Emitting such a design is worse than refusing it -- the failure is an
+// intermittent hang, not a wrong answer a test can see. Caller gates on
+// use_lock_race_condition_fix_v2.
+mlir::LogicalResult verifyChainLockProducers(mlir::Operation *scope);
+
 // Classify a chain-lock buffer's access shape. Counts distinct memcpy
 // users (channel puts/gets) on the buffer's underlying memref result.
 // Writes/reads from the buffer's perspective:

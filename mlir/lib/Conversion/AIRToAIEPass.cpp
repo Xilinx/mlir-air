@@ -8434,6 +8434,17 @@ public:
       // after DMA/channel lowering consumed their users.
       removeDeadGlobalOps(device);
     }
+
+    // After every device, because specializeL2MemrefsIntoMemtiles partitions an
+    // L2 buffer that exceeds the memtile channel limits and rewires its
+    // endpoints: a buffer that was MIMO before can come out of that as a
+    // fan-in, and only then is the chain shape final. air.herd survives this
+    // far, so the producer marks are still readable.
+    if (clUseLockRaceConditionFixV2 &&
+        failed(air::verifyChainLockProducers(module))) {
+      signalPassFailure();
+      return;
+    }
   }
 
   // Packet-flow id tracking.

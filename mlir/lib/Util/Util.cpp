@@ -33,6 +33,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -963,6 +964,217 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 }
 
 // Get channel type from air.channel_interface ops.
+// Endpoint identity for a chain-buffer memcpy: (channel symbol, constant
+// indices). Returns nullopt if the op is not a channel endpoint, or if any
+// bundle index is non-constant -- such endpoints cannot be proven equal to any
+// other, so they must NOT be deduped. Collapsing distinct endpoints would
+// undercount writers/readers and mis-size the chain.
+using ChainEndpointKey = std::pair<StringRef, SmallVector<int64_t, 4>>;
+static std::optional<ChainEndpointKey>
+getChainEndpointKey(Operation *memcpyOp) {
+  auto chan = dyn_cast_if_present<air::ChannelInterface>(memcpyOp);
+  if (!chan)
+    return std::nullopt;
+  SmallVector<int64_t, 4> idx;
+  for (auto v : chan.getIndices()) {
+    auto c = getConstantIntValue(v);
+    if (!c)
+      return std::nullopt;
+    idx.push_back(*c);
+  }
+  return ChainEndpointKey{chan.getChanName(), idx};
+}
+
+SmallVector<Operation *> air::getOrderedChainEndpoints(Value memref,
+                                                       bool writers) {
+  SmallVector<Operation *> stages;
+  llvm::SetVector<ChainEndpointKey> seenKeys;
+  if (!memref)
+    return stages;
+  for (auto user : memref.getUsers()) {
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    bool isWriter = (memref == memcpyOp.getDstMemref());
+    bool isReader = (memref == memcpyOp.getSrcMemref());
+    if ((writers && !isWriter) || (!writers && !isReader))
+      continue;
+    auto key = getChainEndpointKey(user);
+    // Dedupe only provably-equal keyed endpoints; everything else is its own
+    // stage. Dedup absorbs the scf.for unroll / ping-pong duplication that
+    // would otherwise inflate the fan-in/out counts.
+    if (!key || seenKeys.insert(*key))
+      stages.push_back(user);
+  }
+  return stages;
+}
+
+void air::classifyChainBuffer(Value memref, int &numWriters, int &numReaders) {
+  numWriters = getOrderedChainEndpoints(memref, /*writers=*/true).size();
+  numReaders = getOrderedChainEndpoints(memref, /*writers=*/false).size();
+}
+
+bool air::chainEndpointsShareStage(Operation *a, Operation *b) {
+  auto ka = getChainEndpointKey(a);
+  auto kb = getChainEndpointKey(b);
+  return ka && kb && *ka == *kb;
+}
+
+bool air::isSerializedChainBuffer(Value memref, bool *isFanIn) {
+  auto ty = memref ? llvm::dyn_cast<MemRefType>(memref.getType()) : nullptr;
+  if (!ty || !air::isL2(ty))
+    return false;
+  int numWriters = 0, numReaders = 0;
+  classifyChainBuffer(memref, numWriters, numReaders);
+  if (numWriters > 1 && numReaders == 1) {
+    if (isFanIn)
+      *isFanIn = true;
+    return true;
+  }
+  if (numWriters == 1 && numReaders > 1) {
+    // The opt-out rides on the memref.alloc. Which op defines this Value
+    // depends on the pipeline stage: before air.execute is lowered away the
+    // memcpys name the execute's result, and the alloc is inside it.
+    Operation *def = memref.getDefiningOp();
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+      for (auto alloc : exec.getOps<memref::AllocOp>())
+        def = alloc.getOperation();
+    if (def && def->hasAttr(air::attrs::NoChainLock))
+      return false;
+    if (isFanIn)
+      *isFanIn = false;
+    return true;
+  }
+  return false;
+}
+
+llvm::MapVector<Operation *, SmallVector<Value>>
+air::getHerdsFeedingBuffers(Operation *scope,
+                            llvm::function_ref<bool(Value)> isTarget) {
+  llvm::StringMap<SmallVector<air::ChannelGetOp>> getsBySymbol;
+  scope->walk([&](air::ChannelGetOp get) {
+    getsBySymbol[get.getChanName()].push_back(get);
+  });
+
+  llvm::MapVector<Operation *, SmallVector<Value>> found;
+  scope->walk([&](air::HerdOp herd) {
+    // Worklist of buffers the herd's data can reach. `visited` bounds the walk:
+    // the scope holds finitely many memrefs.
+    llvm::DenseSet<Value> visited;
+    SmallVector<Value> worklist;
+    auto pushDestinations = [&](air::MemcpyInterface memcpyOp) {
+      auto push = [&](Value v) {
+        if (v && visited.insert(v).second)
+          worklist.push_back(v);
+      };
+      if (auto put = dyn_cast<air::ChannelPutOp>(memcpyOp.getOperation())) {
+        auto it = getsBySymbol.find(put.getChanName());
+        if (it != getsBySymbol.end())
+          for (auto get : it->second)
+            push(get.getMemref());
+        return;
+      }
+      push(memcpyOp.getDstMemref());
+    };
+
+    // Seed with the herd's outgoing edges. A channel get is inbound -- its
+    // destination is a buffer inside the herd -- so it is not one.
+    herd.walk([&](air::MemcpyInterface memcpyOp) {
+      if (!isa<air::ChannelGetOp>(memcpyOp.getOperation()))
+        pushDestinations(memcpyOp);
+    });
+
+    while (!worklist.empty()) {
+      Value buf = worklist.pop_back_val();
+      // Keep walking past a target: a herd can feed several, and a diagnostic
+      // that names only the first would point at an arbitrary one.
+      if (isTarget(buf))
+        found[herd.getOperation()].push_back(buf);
+      for (auto *user : buf.getUsers()) {
+        auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+        if (memcpyOp && memcpyOp.getSrcMemref() == buf)
+          pushDestinations(memcpyOp);
+      }
+    }
+  });
+  return found;
+}
+
+llvm::DenseSet<Operation *>
+air::getLoadBearingPingPongLoops(Operation *herd,
+                                 llvm::function_ref<bool(scf::ForOp)> isCand) {
+  llvm::DenseSet<Operation *> loadBearing;
+  if (!herd)
+    return loadBearing;
+  // A ring is per (tile, direction, logical flow), and a logical flow is the
+  // channel declaration plus its bundle indices -- the same notion AIRToAIE
+  // sizes chains with. Bucket by declaration and direction first; puts advance
+  // an MM2S ring the way gets advance an S2MM one.
+  llvm::MapVector<std::pair<Operation *, int>,
+                  SmallVector<air::ChannelInterface>>
+      byFlow;
+  herd->walk([&](air::ChannelInterface chan) {
+    auto *decl = air::getChannelDeclarationThroughSymbol(chan).getOperation();
+    int dir = isa<air::ChannelPutOp>(chan.getOperation()) ? 1 : 0;
+    byFlow[{decl, dir}].push_back(chan);
+  });
+
+  for (auto &entry : byFlow) {
+    // Split a bucket by bundle index only where every index is provably
+    // constant. An index we cannot evaluate is pooled with the rest instead of
+    // being called distinct: over-grouping keeps a ping-pong that was not
+    // needed, under-grouping drops one that was, and only the latter is silent.
+    llvm::MapVector<SmallVector<int64_t>, SmallVector<scf::ForOp>> rings;
+    SmallVector<int64_t> pooled{std::numeric_limits<int64_t>::min()};
+    for (auto chan : entry.second) {
+      SmallVector<int64_t> key;
+      for (auto v : chan.getIndices()) {
+        auto c = getConstantIntValue(v);
+        if (!c) {
+          key = pooled;
+          break;
+        }
+        key.push_back(*c);
+      }
+      rings[key].push_back(chan->getParentOfType<scf::ForOp>());
+    }
+    if (rings.count(pooled) && rings.size() > 1) {
+      for (auto &r : rings)
+        if (r.first != pooled)
+          llvm::append_range(rings[pooled], r.second);
+      rings.remove_if([&](auto &r) { return r.first != pooled; });
+    }
+
+    for (auto &ring : rings) {
+      auto &loops = ring.second;
+      // One loop visits the endpoints in ring order; sibling loops each pin to
+      // a single slot while the ring advances past them.
+      if (loops.size() < 2 || llvm::all_equal(loops))
+        continue;
+      // Unrolling only realigns a ring it reaches in full: an endpoint outside
+      // any loop, or in one that will not be labeled, leaves the ring broken
+      // either way. Nested loops are not siblings -- unrolling an ancestor
+      // does not interleave it with its descendant -- so they do not qualify.
+      bool rescuable = llvm::all_of(loops, [&](scf::ForOp f) {
+        return f && isCand(f) && llvm::none_of(loops, [&](scf::ForOp g) {
+                 return g && g != f && g->isAncestor(f.getOperation());
+               });
+      });
+      if (!rescuable)
+        continue;
+      for (auto f : loops)
+        loadBearing.insert(f.getOperation());
+    }
+  }
+  return loadBearing;
+}
+
+bool air::pingPongIsLoadBearing(Operation *herd) {
+  return !getLoadBearingPingPongLoops(herd, [](scf::ForOp) {
+            return true;
+          }).empty();
+}
+
 FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   if (!memcpyIfOp)
     return failure();
