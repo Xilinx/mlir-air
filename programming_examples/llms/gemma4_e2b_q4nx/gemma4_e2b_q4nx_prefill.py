@@ -251,6 +251,13 @@ K_LM = "lm_head_gemv"
 # launch costs ~0.7 ms, so 8 loses more than the 128 blocks it saves.
 _FA_CAUSAL_GROUPS = 4
 
+# Artifact NAMES are stable across implementation changes (the FA went
+# head-first -> head-spatial, the GELU moved into the GEMM drain), and the cache
+# validates names, not semantics -- so a cache from an older revision would be
+# reused with a runtime that now feeds it differently. Bump on any change to a
+# kernel's layout or meaning.
+_KERNEL_REV = 1
+
 # The model_proj branch projects the SAME token embeddings through every
 # layer's matrix, so FastFlowLM's `pli_down_proj` is one GEMM of width
 # num_hidden_layers * PLI_D (gemma4e_prefill.cpp, pre_pass) rather than
@@ -1078,7 +1085,11 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     # --- Attention. One ELF per class: the sliding layers carry the window
     # mask AND head_dim=256, the full layers plain causal at head_dim=512.
     from shared.infra.fa_headfirst import compile_headfirst_fa
-    from shared.infra.fa_headspatial import compile_headspatial_fa, supports
+    from shared.infra.fa_headspatial import (
+        compile_headspatial_fa,
+        hs_tiling,
+        supports,
+    )
 
     for c in _CLS:
         dh = cls_dims(c)[0]
@@ -1089,7 +1100,15 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         hs = supports(dh, N_KV_HEADS)
         kind = "head-spatial" if hs else "head-first"
         print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
-        extra = {"causal_groups": _FA_CAUSAL_GROUPS} if hs and win is None else {}
+        # The staircase splits the round axis, so the group count has to divide
+        # it; fall back to the largest divisor that does rather than refusing
+        # the build at a seq_len whose rounds are not a multiple of 4.
+        extra = {}
+        if hs and win is None:
+            n_rounds = seq_len // hs_tiling(dh)[1]
+            extra["causal_groups"] = next(
+                g for g in range(_FA_CAUSAL_GROUPS, 0, -1) if n_rounds % g == 0
+            )
         # causal_skip is the head-first path's per-block elision; the
         # head-spatial one skips in the DMA instead and has no such knob.
         if not hs:
@@ -1202,12 +1221,13 @@ class Gemma4Q4nxPrefill:
         self._verbose = verbose
 
         force = os.environ.get("Q4NX_FORCE_COMPILE") == "1"
+        stamp = f"{seq_len}/rev{_KERNEL_REV}"
         if self._seq_stamp.is_file():
             was = self._seq_stamp.read_text().strip()
-            if was != str(seq_len):
+            if was != stamp:
                 raise SystemExit(
-                    f"cache {cache_dir} was built for seq_len={was}, not "
-                    f"{seq_len}. Point --cache-dir elsewhere or remove it."
+                    f"cache {cache_dir} was built for {was}, not {stamp}. "
+                    f"Point --cache-dir elsewhere or remove it."
                 )
         if not force:
             self.cache.load_manifest()
@@ -1218,7 +1238,7 @@ class Gemma4Q4nxPrefill:
             print("[g4_prefill] using cached prefill ELFs (skip compile)", flush=True)
             self.scratch = resolve_scratch(seq_len)
         self._seq_stamp.parent.mkdir(parents=True, exist_ok=True)
-        self._seq_stamp.write_text(str(seq_len))
+        self._seq_stamp.write_text(stamp)
 
         from shared.infra.backend_presets import LM_GEMV_BACKEND
 

@@ -177,6 +177,13 @@ static_assert(dk_full == 64 || dk_full == 128 || dk_full == 256 ||
 
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
 
+// exp_g_minus_u / mul_r_gp build their per-row replica table in 32-row halves
+// (row_halves = lqp / 32) but consume it in 4-row groups (lqp / 4), so an lqp
+// above 32 that is NOT a multiple of 32 would read rows the table never filled.
+// lqp < 32 has its own row-at-a-time path below.
+static_assert(lqp < 32 || lqp % 32 == 0,
+              "lqp must be < 32 or a multiple of 32");
+
 __attribute__((always_inline)) v8bfloat16 getExpBf16(v8bfloat16 x) {
 
   constexpr int VecLen = 8;
