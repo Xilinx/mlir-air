@@ -1090,6 +1090,10 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         kind = "head-spatial" if hs else "head-first"
         print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
         extra = {"causal_groups": _FA_CAUSAL_GROUPS} if hs and win is None else {}
+        # causal_skip is the head-first path's per-block elision; the
+        # head-spatial one skips in the DMA instead and has no such knob.
+        if not hs:
+            extra["causal_skip"] = True
         (compile_headspatial_fa if hs else compile_headfirst_fa)(
             cache,
             seq_len,
@@ -1099,7 +1103,6 @@ def compile_all_kernels(cache, seq_len, verbose=False):
             verbose,
             window=win,
             name=K_FA(c),
-            causal_skip=True,
             **extra,
         )
 

@@ -109,7 +109,6 @@ def build_launch(
     causal=True,
     window=None,
     dv_tile=128,
-    causal_skip=False,
     rounds=None,
     q_round_base=0,
     kv_blocks=None,
@@ -151,13 +150,9 @@ def build_launch(
             f"tile_size_q={tile_size_q}, lkp={lkp}"
         )
 
-    # causal_skip is accepted and IGNORED, as in attn_npu2_temporal_causal
-    # ("this design has no cascade, and the causal skip is in the DMA rather
-    # than a choice"). Guarding the per-block arithmetic on (q_block, kv_block)
-    # hangs at this shape -- correctness is unaffected, since apply_causal_mask
-    # / apply_window_mask still zero the dead blocks; only the wasted
-    # arithmetic stays, and the real cure is truncating the K/V DMA itself.
-    del causal_skip
+    # There is no per-block causal skip here, and no flag for one: guarding the
+    # arithmetic on (q_block, kv_block) hangs at this shape. The skip that does
+    # work is in the DMA -- kv_win_table / kv_blocks truncate the K/V stream.
     window_blocks = None
     if window is not None:
         assert causal, "window requires causal=True"
@@ -656,7 +651,6 @@ if __name__ == "__main__":
     p.add_argument("--cu-cols", type=int, default=2, dest="cu_cols")
     p.add_argument("--dv-tile", type=int, default=128, dest="dv_tile")
     p.add_argument("--window", type=int, default=None)
-    p.add_argument("--causal-skip", action="store_true", dest="causal_skip")
     p.add_argument("--no-causal", action="store_true", dest="no_causal")
     p.add_argument("-p", "--print-module-only", action="store_true")
     args = p.parse_args()
@@ -675,7 +669,6 @@ if __name__ == "__main__":
         causal=not args.no_causal,
         window=args.window,
         dv_tile=args.dv_tile,
-        causal_skip=args.causal_skip,
     )
     if args.print_module_only:
         print(mod)

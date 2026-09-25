@@ -89,7 +89,6 @@ def compile_headspatial_fa(
     verbose=False,
     window=None,
     name="flash_attn_hs",
-    causal_skip=False,
     causal_groups=1,
 ):
     """Compile the head-spatial FlashAttention ELF into `cache` under `name`.
@@ -160,7 +159,6 @@ def compile_headspatial_fa(
         causal=True,
         window=window,
         dv_tile=dv_tile,
-        causal_skip=causal_skip,
     )
     cache.compile_and_cache(name, mod, _fa_backend_kwargs(verbose))
 
