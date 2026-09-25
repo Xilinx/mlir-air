@@ -137,6 +137,16 @@ def _elf_backend(instance_name, tiling=(2, 2)):
     }
 
 
+def _mul_backend(name):
+    # The plain-multiply ELF's instance name is the eltwise_mul launch's own.
+    return {
+        "verbose": False,
+        "omit_while_true_loop": False,
+        "output_format": "elf",
+        "instance_name": "eltwise_mul",
+    }
+
+
 def _gelu_backend(name):
     # The GELU ELF's instance name must match the top func name in build_module_2d.
     return {
@@ -170,26 +180,87 @@ def K_FA(c):
     return f"flash_attn_{c}"
 
 
-def K_GATE(w):
-    return f"gate_{w}"
+# The wide GATE GEMM (n=12288) runs as two n=6144 halves writing into one
+# contiguous output. Only the halves reach tile_k_l2=256: at n=12288 the BD
+# stride cap (1048576, in 32-bit WORDS, so bf16 doubles the element limit to
+# 2097152) pins tile_k_l2 to <=170, and the wider tile is what pays.
+#
+# Up splits too, now that the cast launch can write a column window. Both
+# halves want the fused-cast path; forcing them onto drain is slower, which is
+# what made an earlier split of up look flat.
+#
+# One GEMM per ELF, never two slices -- see the miscompile note above.
 
 
-def K_UP(w):
-    return f"up_{w}"
+def _ffn_halves(w):
+    """Column windows for one FFN GEMM: [(n, n_out, offset, tag)]."""
+    inter = wid_inter(w)
+    if w != "w":
+        return [(inter, None, 0, "")]
+    half = inter // 2
+    return [(half, inter, 0, "_lo"), (half, inter, half, "_hi")]
 
 
-def K_GELU(w):
-    return f"gelu_mul_{w}"
+def _ffn_weights(w, wid):
+    """gate/up as the (K, N) operands their GEMMs want, split when wide.
+
+    A split layer stores ONLY the halves: each must be its own contiguous array
+    (a column slice keeps the 12288 row stride, which is the whole thing the
+    split exists to get under), and keeping the full copies too would cost
+    ~37 MB per matrix per layer.
+    """
+    inter = wid_inter(wid)
+    out = {}
+    for key in ("gate", "up"):
+        full = _wT(w[key], D, inter)
+        halves = _ffn_halves(wid)
+        if len(halves) == 1:
+            out[key] = full
+            continue
+        for n_h, _n_out, off, tag in halves:
+            out[key + tag] = np.ascontiguousarray(full[:, off : off + n_h])
+    return out
+
+
+def K_GATE(w, tag=""):
+    return f"gate_{w}{tag}"
+
+
+def K_UP(w, tag=""):
+    return f"up_{w}{tag}"
+
+
+def K_MUL(w):
+    """The FFN's gate*up multiply. GELU lives in the gate GEMM's epilogue."""
+    return f"mul_{w}"
 
 
 def K_DOWN(w):
     return f"down_{w}"
 
 
-K_PLE_GEMM = "ple_gemm"  # (seq, D) -> (seq, PLI_D); used by BOTH PLE GEMMs
-K_PLE_GELU = "gelu_mul_ple"  # gelu_tanh(g) * pli at PLI_D
+K_PLE_GEMM = "ple_gemm"  # (seq, D) -> (seq, PLI_D); the per-layer inp_gate
+K_PLE_MP = "ple_mp_all"  # (seq, D) -> (seq, PLE_MP_N); ALL layers' model_proj
+K_PLE_GELU = "gelu_mul_ple"  # gate * pli at PLI_D; the GELU is in ple_gate
 K_PLE_PROJ = "ple_proj"  # (seq, PLI_D) -> D, norm, + residual
 K_LM = "lm_head_gemv"
+
+# Round-groups for the full-attention layers' causal K/V staircase. More groups
+# skip more of the upper triangle but each costs a launch; past four the launch
+# overhead outweighs the blocks saved.
+_FA_CAUSAL_GROUPS = 4
+
+# The cache keys on artifact NAME and validates only the toolchain, so a kernel
+# whose layout or meaning changed is reused under its old name. Bump this.
+_KERNEL_REV = 1
+
+# The model_proj branch projects the SAME token embeddings through every
+# layer's matrix, so FastFlowLM's `pli_down_proj` is one GEMM of width
+# num_hidden_layers * PLI_D (gemma4e_prefill.cpp, pre_pass) rather than
+# NUM_LAYERS narrow ones. N must be a multiple of tile_n * herd_n = 512, so the
+# concatenation is padded by one layer's worth and the tail is discarded.
+PLE_MP_N = -(-NUM_LAYERS * PLI_D // 512) * 512
+PLE_MP_TK_L2 = 64
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +305,40 @@ class _rms_eps:
 # ---------------------------------------------------------------------------
 
 
-def gemm_spec(m, k, n, precision="high"):
-    """Per-GEMM build recipe for one Gemma4 shape."""
+# The GELU-epilogue GEMMs are pinned to drain (the activation belongs on the
+# GEMM's own 32 cores, not the 8-column cast launch), and drain defaults to
+# tile_m=32 -- which is slower, because inbound bytes per MAC go as
+# (tile_m+tile_n)/(tile_m*tile_n). tile_m=64 needs tile_n<=96 to fit L1
+# (at 128 it is 72 KB and the chunked drain that exists for exactly this
+# overruns the memtile's 48 BD blocks).
+_DRAIN_WIDE_TILE = {"tile_m": 64, "tile_n": 96}
+
+
+def _wide_drain(spec):
+    """Re-point a drain spec at tile_m=64/tile_n=96 and its own mm.o.
+
+    DIM_M and DIM_N are compile-time in mm.o, so this variant cannot share
+    "_m32"/mm_m32.o with the tile_m=32 drain.
+    """
+    tag = f"_m{_DRAIN_WIDE_TILE['tile_m']}n{_DRAIN_WIDE_TILE['tile_n']}"
+    spec = dict(spec, sym_suffix=tag, obj=f"mm{tag}.o", **_DRAIN_WIDE_TILE)
+    spec["build_kwargs"] = dict(
+        spec["build_kwargs"], sym_suffix=tag, link_with_name=f"mm{tag}.o"
+    )
+    return spec
+
+
+def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
+    """Per-GEMM build recipe for one Gemma4 shape.
+
+    `force_method` overrides the size rule. The gate GEMM uses it to take the
+    DRAIN path: that is the only one whose cast runs inside the GEMM's own herd
+    (32 cores), which is where FastFlowLM puts its GELU -- fused-cast's separate
+    cast launch is capped at 8 columns by the shim budget.
+    """
     from shared.builders.gemm_builder import _spec_with_tiles
 
-    method = "fused-cast" if m * k * n >= 4e9 else "drain"
+    method = force_method or ("fused-cast" if m * k * n >= 4e9 else "drain")
     tile_m = 64 if method == "fused-cast" else 32
     # The weight walk emits tile_k_l2 * n as its K-tile DMA stride, and NPU2
     # caps a BD stride at 1048576. The double-wide FFN (n=12288) blows that at
@@ -247,8 +347,12 @@ def gemm_spec(m, k, n, precision="high"):
     # that fits. Applied where it is OBSERVED to bite, not from the formula:
     # n=6144 at tile_k_l2=256 exceeds the same arithmetic and compiles anyway,
     # because the emitted BD factors differently there.
-    tile_k_l2 = 64 if n >= 12288 else min(256, k)
-    return _spec_with_tiles(
+    # n=9216 (the batched model_proj) blows it too, hence the explicit override
+    # -- the knob barely moves the dispatch, so lowering it where a width needs
+    # it costs nothing worth protecting.
+    if tile_k_l2 is None:
+        tile_k_l2 = 64 if n >= 12288 else min(256, k)
+    spec = _spec_with_tiles(
         method,
         dict(
             tile_m=tile_m,
@@ -264,6 +368,10 @@ def gemm_spec(m, k, n, precision="high"):
             tile_n=128,
         ),
     )
+    # n % (tile_n * herd_n) must stay exact, so only widths divisible by 384.
+    if method == "drain" and force_method == "drain" and n % 384 == 0:
+        spec = _wide_drain(spec)
+    return spec
 
 
 def gemm_herd_n(n, tile_n):
@@ -271,7 +379,17 @@ def gemm_herd_n(n, tile_n):
     return max(1, min(4, n // tile_n))
 
 
-def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None):
+def _build_gemm_ir(
+    m,
+    k,
+    n,
+    spec,
+    herd_m=8,
+    herd_n=None,
+    epilogue_gelu=False,
+    n_out=None,
+    n_out_offset=0,
+):
     from shared.builders.gemm_builder import _build_gemm_module
 
     if herd_n is None:
@@ -287,19 +405,25 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=None):
             spec["tile_n"],
             herd_m,
             herd_n,
+            epilogue_gelu=epilogue_gelu,
+            n_out=n_out,
+            n_out_offset=n_out_offset,
             **dict(spec["build_kwargs"]),
         )
     )
 
 
-def _gemm_externs(spec):
+def _gemm_externs(spec, epilogue_gelu=False):
     sfx = spec["sym_suffix"]
-    return {
+    syms = {
         "@matmul_bf16",
         "@op_has_no_registered_library_name" + sfx,
         "@zero_f32_mn" + sfx,
         "@f32_to_bf16_mn" + sfx,
     }
+    if epilogue_gelu:
+        syms.add("@f32_to_bf16_gelu_mn" + sfx)
+    return syms
 
 
 def _wT(w, k_dim, n_dim):
@@ -602,8 +726,27 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
     return module, scratch_for
 
 
-def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4):
-    """Standalone single-GEMM ELF: arg0 in, arg1 weight, arg2 out."""
+def _build_single_gemm_elf(
+    name,
+    sym,
+    seq_len,
+    k_dim,
+    n_dim,
+    herd_m=8,
+    herd_n=4,
+    epilogue_gelu=False,
+    tile_k_l2=None,
+    n_out=None,
+    n_out_offset=0,
+):
+    """Standalone single-GEMM ELF: arg0 in, arg1 weight, arg2 out.
+
+    `epilogue_gelu` applies GELU-tanh in the GEMM's own cast launch, which is
+    FastFlowLM's `Gemm::GeLU` output mode: the activation is a pointwise
+    function of an accumulator that launch already holds, so it costs no
+    operand and no DMA, and the GeGLU pass left behind is a plain multiply --
+    which the registry measures at 55.7 GB/s against gelu-and-mul's 13.1.
+    """
     from shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
@@ -611,16 +754,34 @@ def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4)
         alloc_gemm_scratch,
     )
 
-    g_spec = gemm_spec(seq_len, k_dim, n_dim)
+    # n_out: this GEMM writes its n_dim columns into an n_out-wide output at
+    # n_out_offset, so a wide FFN can run as narrower halves that still land
+    # contiguous. Both methods can do it; the fused cast is the faster one.
+    g_spec = gemm_spec(
+        seq_len,
+        k_dim,
+        n_dim,
+        force_method="drain" if epilogue_gelu else None,
+        tile_k_l2=tile_k_l2,
+    )
     print(
         f"  [{name}] GEMM ({g_spec['method']}) {seq_len}x{k_dim}x{n_dim} "
         f"(tk_l2={g_spec['tile_k_l2']}, tn={g_spec['tile_n']})..."
     )
-    gemm_ir = _build_gemm_ir(seq_len, k_dim, n_dim, g_spec, herd_m)
+    gemm_ir = _build_gemm_ir(
+        seq_len,
+        k_dim,
+        n_dim,
+        g_spec,
+        herd_m,
+        epilogue_gelu=epilogue_gelu,
+        n_out=n_out,
+        n_out_offset=n_out_offset,
+    )
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{k_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{k_dim}x{n_dim}xbf16>"),
-        FuncArg("%arg2", f"memref<{seq_len}x{n_dim}xbf16>"),
+        FuncArg("%arg2", f"memref<{seq_len}x{n_out or n_dim}xbf16>"),
     ]
     scratch_args, scratch_for = alloc_gemm_scratch([(g_spec, seq_len, n_dim)], 3)
     slices = [
@@ -628,7 +789,7 @@ def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4)
             gemm_ir,
             sym,
             _gemm_amap(0, 1, 2, scratch_for[0]),
-            extern_syms=_gemm_externs(g_spec),
+            extern_syms=_gemm_externs(g_spec, epilogue_gelu),
         )
     ]
     module = stitch_elf(name, base_args, slices, scratch_args=scratch_args)
@@ -656,6 +817,27 @@ def build_gelu_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     print(f"  [gelu_mul] GELU-tanh GLU {seq_len}x{hidden_dim} (tile_n={tile_n})...")
     module = build_gelu(seq_len, hidden_dim, tile_n, bfloat16, herd_x, herd_y)
     print(f"  gelu_mul module: {len(str(module).splitlines())} lines, parsed OK")
+    return module
+
+
+def build_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
+    """Standalone NPU elementwise multiply ELF: gate * up -> (seq, hidden_dim).
+
+    What replaced the GeGLU pass once the gate GEMM grew a GELU epilogue. The
+    split is FastFlowLM's: its gate GEMM carries the activation as an RTP output
+    mode and `mlp_block` does only the multiply. Worth doing rather than leaving
+    the fused kernel in place -- the kernel registry measures gelu-and-mul at
+    13.1 GB/s and a plain multiply at 55.7, both on the 8 tiles the 3-stream
+    shim budget allows, so the tanh was the whole difference.
+    """
+    from eltwise_mul.eltwise_mul import build_eltwise_mul
+
+    tile = _gelu_tile_n(seq_len, hidden_dim, herd_x)
+    print(f"  [mul] {seq_len}x{hidden_dim} (tile={tile})...")
+    module = build_eltwise_mul(
+        [seq_len * hidden_dim], tile=tile, herd_shape=(herd_x * herd_y,)
+    ).build(target="npu2")
+    print(f"  mul module: {len(str(module).splitlines())} lines, parsed OK")
     return module
 
 
@@ -771,11 +953,11 @@ _NEEDED = (
     + [K_V(c) for c in _CLS]
     + [K_ONORM(c) for c in _CLS]
     + [K_FA(c) for c in _CLS]
-    + [K_GATE(w) for w in _WID]
-    + [K_UP(w) for w in _WID]
-    + [K_GELU(w) for w in _WID]
+    + [K_GATE(w, t) for w in _WID for *_, t in _ffn_halves(w)]
+    + [K_UP(w, t) for w in _WID for *_, t in _ffn_halves(w)]
+    + [K_MUL(w) for w in _WID]
     + [K_DOWN(w) for w in _WID]
-    + [K_PLE_GEMM, K_PLE_GELU, K_PLE_PROJ, K_LM]
+    + [K_PLE_GEMM, K_PLE_MP, K_PLE_GELU, K_PLE_PROJ, K_LM]
 )
 
 
@@ -799,6 +981,15 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     )
     compile_gemm_mm(
         tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    )
+    _wt = _DRAIN_WIDE_TILE
+    _wtag = f"_m{_wt['tile_m']}n{_wt['tile_n']}"
+    compile_gemm_mm(
+        tile_m=_wt["tile_m"],
+        tile_n=_wt["tile_n"],
+        tile_k_l1=32,
+        sym_suffix=_wtag,
+        out_name=f"mm{_wtag}.o",
     )
     compile_rope()  # rope_halfsplit.cc; head_dim is a runtime arg
     compile_gelu_and_mul()
@@ -825,21 +1016,34 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     for w in _WID:
         inter = wid_inter(w)
-        print(f"\n--- {K_GATE(w)} (Gate GEMM, INTER={inter}) ---")
-        mod, scratch[K_GATE(w)] = _build_single_gemm_elf(
-            K_GATE(w), "gg", seq_len, D, inter
-        )
-        cache.compile_and_cache(K_GATE(w), mod, _elf_backend(K_GATE(w)))
+        for n_h, n_out, off, tag in _ffn_halves(w):
+            nm = K_GATE(w, tag)
+            print(f"\n--- {nm} (Gate GEMM, INTER={inter}, n={n_h}@{off}) ---")
+            mod, scratch[nm] = _build_single_gemm_elf(
+                nm,
+                "gg",
+                seq_len,
+                D,
+                n_h,
+                epilogue_gelu=True,
+                n_out=n_out,
+                n_out_offset=off,
+            )
+            cache.compile_and_cache(nm, mod, _elf_backend(nm))
 
-        print(f"\n--- {K_UP(w)} (Up GEMM, INTER={inter}) ---")
-        mod, scratch[K_UP(w)] = _build_single_gemm_elf(K_UP(w), "ug", seq_len, D, inter)
-        cache.compile_and_cache(K_UP(w), mod, _elf_backend(K_UP(w)))
+        for n_h, n_out, off, tag in _ffn_halves(w):
+            nm = K_UP(w, tag)
+            print(f"\n--- {nm} (Up GEMM, INTER={inter}, n={n_h}@{off}) ---")
+            mod, scratch[nm] = _build_single_gemm_elf(
+                nm, "ug", seq_len, D, n_h, n_out=n_out, n_out_offset=off
+            )
+            cache.compile_and_cache(nm, mod, _elf_backend(nm))
 
-        print(f"\n--- {K_GELU(w)} (GELU-tanh GLU, INTER={inter}) ---")
+        print(f"\n--- {K_MUL(w)} (gate*up multiply, INTER={inter}) ---")
         cache.compile_and_cache(
-            K_GELU(w),
-            build_gelu_mul_module(seq_len, inter),
-            _gelu_backend(K_GELU(w)),
+            K_MUL(w),
+            build_mul_module(seq_len, inter),
+            _mul_backend(K_MUL(w)),
         )
 
         print(f"\n--- {K_DOWN(w)} (Down + post-FFN norm + residual) ---")
@@ -850,15 +1054,21 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     # --- PLE. One set of ELFs for all 35 layers: the branch is PLI_D-wide
     # regardless of attention class or FFN width.
-    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM; inp_gate AND model_proj) ---")
+    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM + GELU; the per-layer inp_gate) ---")
     mod, scratch[K_PLE_GEMM] = _build_single_gemm_elf(
-        K_PLE_GEMM, "pg", seq_len, D, PLI_D
+        K_PLE_GEMM, "pg", seq_len, D, PLI_D, epilogue_gelu=True
     )
     cache.compile_and_cache(K_PLE_GEMM, mod, _elf_backend(K_PLE_GEMM))
 
-    print(f"\n--- {K_PLE_GELU} (gelu_tanh(gate) * per-layer input, {PLI_D}) ---")
+    print(f"\n--- {K_PLE_MP} (D -> {PLE_MP_N}; all layers' model_proj at once) ---")
+    mod, scratch[K_PLE_MP] = _build_single_gemm_elf(
+        K_PLE_MP, "pm", seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2
+    )
+    cache.compile_and_cache(K_PLE_MP, mod, _elf_backend(K_PLE_MP))
+
+    print(f"\n--- {K_PLE_GELU} (gate * per-layer input, {PLI_D}) ---")
     cache.compile_and_cache(
-        K_PLE_GELU, build_gelu_mul_module(seq_len, PLI_D), _gelu_backend(K_PLE_GELU)
+        K_PLE_GELU, build_mul_module(seq_len, PLI_D), _mul_backend(K_PLE_GELU)
     )
 
     print(f"\n--- {K_PLE_PROJ} (PLI_D -> D + post_layernorm + residual) ---")
@@ -870,12 +1080,34 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     # --- Attention. One ELF per class: the sliding layers carry the window
     # mask AND head_dim=256, the full layers plain causal at head_dim=512.
     from shared.infra.fa_headfirst import compile_headfirst_fa
+    from shared.infra.fa_headspatial import (
+        compile_headspatial_fa,
+        hs_tiling,
+        supports,
+    )
 
     for c in _CLS:
         dh = cls_dims(c)[0]
         win = SLIDING_WINDOW if c == "swa" else None
-        print(f"\n--- {K_FA(c)} (head-first FA, head_dim={dh}, window={win}) ---")
-        compile_headfirst_fa(
+        # Head-spatial where it fits: under MQA one K/V broadcast serves four
+        # resident heads, so K and V cross L3 twice per layer instead of eight
+        # times.
+        hs = supports(dh, N_KV_HEADS)
+        kind = "head-spatial" if hs else "head-first"
+        print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
+        # The staircase splits the round axis, so the group count has to
+        # divide it; take the largest divisor rather than refuse the build.
+        extra = {}
+        if hs and win is None:
+            n_rounds = seq_len // hs_tiling(dh)[1]
+            extra["causal_groups"] = next(
+                g for g in range(_FA_CAUSAL_GROUPS, 0, -1) if n_rounds % g == 0
+            )
+        # causal_skip is the head-first path's per-block elision; the
+        # head-spatial one skips in the DMA instead and has no such knob.
+        if not hs:
+            extra["causal_skip"] = True
+        (compile_headspatial_fa if hs else compile_headfirst_fa)(
             cache,
             seq_len,
             N_Q_HEADS,
@@ -884,7 +1116,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
             verbose,
             window=win,
             name=K_FA(c),
-            causal_skip=True,
+            **extra,
         )
 
     print(f"\n--- {K_LM} ({_LM_N_PARTITIONS} x {_LM_N_PART}, K={D}) ---")
@@ -935,10 +1167,19 @@ def resolve_scratch(seq_len):
         sc[K_ONORM(c)] = _alloc([gemm_spec(seq_len, dq, D)], 9)
     for w in _WID:
         inter = wid_inter(w)
-        sc[K_GATE(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
-        sc[K_UP(w)] = _alloc([gemm_spec(seq_len, D, inter)], 3)
+        # The gate GEMM is forced to the drain method (its GELU epilogue runs
+        # in the GEMM's own herd), and drain needs no f32 scratch -- so this
+        # must use the SAME spec the builder did or the call passes an argument
+        # the ELF does not have.
+        for n_h, _n_out, _off, tag in _ffn_halves(w):
+            sc[K_GATE(w, tag)] = _alloc(
+                [gemm_spec(seq_len, D, n_h, force_method="drain")], 3
+            )
+        for n_h, _n_out, _off, tag in _ffn_halves(w):
+            sc[K_UP(w, tag)] = _alloc([gemm_spec(seq_len, D, n_h)], 3)
         sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
-    sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D)], 3)
+    sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D, force_method="drain")], 3)
+    sc[K_PLE_MP] = _alloc([gemm_spec(seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2)], 3)
     sc[K_PLE_PROJ] = _alloc([gemm_spec(seq_len, PLI_D, D)], 7)
     return sc
 
@@ -974,12 +1215,13 @@ class Gemma4Q4nxPrefill:
         self._verbose = verbose
 
         force = os.environ.get("Q4NX_FORCE_COMPILE") == "1"
+        stamp = f"{seq_len}/rev{_KERNEL_REV}"
         if self._seq_stamp.is_file():
             was = self._seq_stamp.read_text().strip()
-            if was != str(seq_len):
+            if was != stamp:
                 raise SystemExit(
-                    f"cache {cache_dir} was built for seq_len={was}, not "
-                    f"{seq_len}. Point --cache-dir elsewhere or remove it."
+                    f"cache {cache_dir} was built for {was}, not {stamp}. "
+                    f"Point --cache-dir elsewhere or remove it."
                 )
         if not force:
             self.cache.load_manifest()
@@ -990,7 +1232,7 @@ class Gemma4Q4nxPrefill:
             print("[g4_prefill] using cached prefill ELFs (skip compile)", flush=True)
             self.scratch = resolve_scratch(seq_len)
         self._seq_stamp.parent.mkdir(parents=True, exist_ok=True)
-        self._seq_stamp.write_text(str(seq_len))
+        self._seq_stamp.write_text(stamp)
 
         from shared.infra.backend_presets import LM_GEMV_BACKEND
 
@@ -1007,6 +1249,7 @@ class Gemma4Q4nxPrefill:
         self._w = None
         self._nm = None
         self._ple = None
+        self._mp_w = None
         self._embed = None
         self._g = None
         self._luts = None
@@ -1057,8 +1300,7 @@ class Gemma4Q4nxPrefill:
         out = {
             "q": _wT(w["q"], D, dq),
             "o": _wT(w["o"], dq, D),
-            "gate": _wT(w["gate"], D, inter),
-            "up": _wT(w["up"], D, inter),
+            **_ffn_weights(w, _wid(k)),
             "down": _wT(w["down"], inter, D),
         }
         if owns_kv(k):
@@ -1241,7 +1483,7 @@ class Gemma4Q4nxPrefill:
             shared_nonstatic=True,
         )
 
-    def _call_ffn_gemm(self, name, k, wkey, normed2, out_alias):
+    def _call_ffn_gemm(self, name, k, wkey, normed2, out_alias, n_h=None):
         seq = self.seq
         inter = wid_inter(_wid(k))
         args = [
@@ -1250,9 +1492,11 @@ class Gemma4Q4nxPrefill:
             np.zeros((seq, inter), bfloat16),
         ]
         idx = {0, 2}
+        # A split half accumulates only its own n columns, so the f32 scratch
+        # is narrower than the shared bf16 output it writes into.
         for sc in self.scratch[name]:
             if sc is not None:
-                args.append(np.zeros((seq, inter), np.float32))
+                args.append(np.zeros((seq, n_h or inter), np.float32))
                 idx.add(sc)
         return self.cache.load_and_run(
             name,
@@ -1264,6 +1508,22 @@ class Gemma4Q4nxPrefill:
             bo_key=f"{name}_L{k}",
             shared_nonstatic=True,
             shared_alias={0: _A_NORMED2, 2: out_alias},
+        )
+
+    def _call_mul(self, name, k, hidden, a, b, alias):
+        """gate * up, flat: the ELF's interface is 1-D."""
+        seq = self.seq
+        return self.cache.load_and_run(
+            name,
+            _mul_backend(name),
+            np.asarray(a, bfloat16).reshape(seq * hidden),
+            np.asarray(b, bfloat16).reshape(seq * hidden),
+            np.zeros(seq * hidden, bfloat16),
+            output_indices=[2],
+            intermediate_indices={2} | {i for i in (0, 1) if (alias or {}).get(i)},
+            bo_key=f"{name}_L{k}",
+            shared_nonstatic=True,
+            shared_alias=alias,
         )
 
     def _call_gelu_mul(self, name, k, hidden, a, b, alias):
@@ -1315,6 +1575,38 @@ class Gemma4Q4nxPrefill:
             shared_alias=alias,
         )
 
+    def _ple_mp_weight(self):
+        """Every layer's model_proj side by side: (D, PLE_MP_N), built once."""
+        if getattr(self, "_mp_w", None) is None:
+            w = np.zeros((D, PLE_MP_N), bfloat16)
+            for L in range(self.n_layers):
+                w[:, L * PLI_D : (L + 1) * PLI_D] = self._ple[L]["model_proj"]
+            self._mp_w = w
+        return self._mp_w
+
+    def _call_ple_mp_all(self, x):
+        seq = self.seq
+        args = [
+            np.asarray(x, bfloat16).reshape(seq, D),
+            self._ple_mp_weight(),
+            np.zeros((seq, PLE_MP_N), bfloat16),
+        ]
+        idx = {2}
+        for sc in self.scratch[K_PLE_MP]:
+            if sc is not None:
+                args.append(np.zeros((seq, PLE_MP_N), np.float32))
+                idx.add(sc)
+        return self.cache.load_and_run(
+            K_PLE_MP,
+            _elf_backend(K_PLE_MP),
+            *args,
+            output_indices=[2],
+            static_input_indices={1},
+            intermediate_indices=idx,
+            bo_key="ple_mp_all",
+            shared_nonstatic=True,
+        )
+
     def _call_ple_gemm(self, k, x, w, tag):
         """The (seq, D) -> (seq, PLI_D) GEMM, shared by the two PLE projections.
 
@@ -1364,10 +1656,14 @@ class Gemma4Q4nxPrefill:
                 self._call_k(k, z_d)
                 self._call_v(k, z_d)
             self._call_o_norm(k, z_q, z_d)
-            self._call_ffn_gemm(K_GATE(_wid(k)), k, "gate", z_d, _A_GATE)
-            self._call_ffn_gemm(K_UP(_wid(k)), k, "up", z_d, _A_UP)
-            self._call_gelu_mul(
-                K_GELU(_wid(k)),
+            for *_, tag in _ffn_halves(_wid(k)):
+                self._call_ffn_gemm(K_GATE(_wid(k), tag), k, "gate" + tag, z_d, _A_GATE)
+            for n_h, _no, _of, tag in _ffn_halves(_wid(k)):
+                self._call_ffn_gemm(
+                    K_UP(_wid(k), tag), k, "up" + tag, z_d, _A_UP, n_h=n_h
+                )
+            self._call_mul(
+                K_MUL(_wid(k)),
                 k,
                 inter,
                 z_i,
@@ -1386,8 +1682,7 @@ class Gemma4Q4nxPrefill:
                 {0: _A_ACT, 5: _A_RES1},
             )
             self._call_ple_gemm(k, z_d, pw["inp_gate"], "gate")
-            self._call_ple_gemm(k, z_d, pw["model_proj"], "mp")
-            self._call_gelu_mul(K_PLE_GELU, k, PLI_D, z_p, z_p, None)
+            self._call_mul(K_PLE_GELU, k, PLI_D, z_p, z_p, None)
             self._call_gemm_norm_add(
                 K_PLE_PROJ,
                 k,
@@ -1451,15 +1746,11 @@ class Gemma4Q4nxPrefill:
         emb = np.zeros((seq, D), bfloat16)
         emb[: len(ids)] = np.asarray(embeds, bfloat16)
         out = np.zeros((seq, NUM_LAYERS, PLI_D), np.float32)
+        allp = self._dev(self._call_ple_mp_all, emb, tag="ple_mp")[2].reshape(
+            seq, PLE_MP_N
+        )
         for L in range(self.n_layers):
-            proj = self._dev(
-                self._call_ple_gemm,
-                L,
-                emb,
-                self._ple[L]["model_proj"],
-                "mp",
-                tag="ple_mp",
-            )[2].reshape(seq, PLI_D)
+            proj = allp[:, L * PLI_D : (L + 1) * PLI_D]
             proj = _rmsnorm(np.asarray(proj, np.float32) * PLE_MODEL_PROJ_SCALE, norm_w)
             out[: len(ids), L, :] = (proj[: len(ids)] + tbl[:, L, :]) * PLE_INPUT_SCALE
         return out
@@ -1467,6 +1758,7 @@ class Gemma4Q4nxPrefill:
     def _run_layer(self, x, k, pli):
         """One Gemma4 decoder layer on device: attention, FFN, then the PLE tail."""
         from shared.infra.fa_headfirst import npu_fa_headfirst
+        from shared.infra.fa_headspatial import npu_fa_headspatial, supports
 
         seq = self.seq
         dh, dq, dkv = dims(k)
@@ -1484,7 +1776,7 @@ class Gemma4Q4nxPrefill:
         src = kv_source_layer(k)
 
         attn_out = self._dev(
-            npu_fa_headfirst,
+            npu_fa_headspatial if supports(dh, N_KV_HEADS) else npu_fa_headfirst,
             self.cache,
             np.ascontiguousarray(q_roped),
             np.ascontiguousarray(self.kv_k[src]),
@@ -1502,15 +1794,30 @@ class Gemma4Q4nxPrefill:
         res1 = ores[6].reshape(seq, D)
         normed2 = ores[8].reshape(seq, D)
 
-        gate = self._dev(
-            self._call_ffn_gemm, K_GATE(w), k, "gate", normed2, _A_GATE, tag="gate"
-        )[2].reshape(seq, inter)
-        up = self._dev(self._call_ffn_gemm, K_UP(w), k, "up", normed2, _A_UP, tag="up")[
-            2
-        ].reshape(seq, inter)
+        for *_, tg in _ffn_halves(w):
+            gate = self._dev(
+                self._call_ffn_gemm,
+                K_GATE(w, tg),
+                k,
+                "gate" + tg,
+                normed2,
+                _A_GATE,
+                tag="gate",
+            )[2].reshape(seq, inter)
+        for n_h, _no, _of, tg in _ffn_halves(w):
+            up = self._dev(
+                self._call_ffn_gemm,
+                K_UP(w, tg),
+                k,
+                "up" + tg,
+                normed2,
+                _A_UP,
+                n_h,
+                tag="up",
+            )[2].reshape(seq, inter)
         act = self._dev(
-            self._call_gelu_mul,
-            K_GELU(w),
+            self._call_mul,
+            K_MUL(w),
             k,
             inter,
             gate,
@@ -1543,7 +1850,7 @@ class Gemma4Q4nxPrefill:
             tag="ple_gate",
         )[2].reshape(seq, PLI_D)
         gated = self._dev(
-            self._call_gelu_mul, K_PLE_GELU, k, PLI_D, g, pli, None, tag="ple_gelu"
+            self._call_mul, K_PLE_GELU, k, PLI_D, g, pli, None, tag="ple_gelu"
         )[2].reshape(seq, PLI_D)
         o3 = self._dev(
             self._call_gemm_norm_add,
