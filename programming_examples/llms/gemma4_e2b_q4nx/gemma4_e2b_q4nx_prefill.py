@@ -246,16 +246,13 @@ K_PLE_GELU = "gelu_mul_ple"  # gate * pli at PLI_D; the GELU is in ple_gate
 K_PLE_PROJ = "ple_proj"  # (seq, PLI_D) -> D, norm, + residual
 K_LM = "lm_head_gemv"
 
-# Round-groups for the full-attention layers' causal K/V staircase. Measured at
-# seq=2048: 1 group 17.22 ms/dispatch, 2 -> 14.14, 4 -> 13.56, and each extra
-# launch costs ~0.7 ms, so 8 loses more than the 128 blocks it saves.
+# Round-groups for the full-attention layers' causal K/V staircase. More groups
+# skip more of the upper triangle but each costs a launch; past four the launch
+# overhead outweighs the blocks saved.
 _FA_CAUSAL_GROUPS = 4
 
-# Artifact NAMES are stable across implementation changes (the FA went
-# head-first -> head-spatial, the GELU moved into the GEMM drain), and the cache
-# validates names, not semantics -- so a cache from an older revision would be
-# reused with a runtime that now feeds it differently. Bump on any change to a
-# kernel's layout or meaning.
+# The cache keys on artifact NAME and validates only the toolchain, so a kernel
+# whose layout or meaning changed is reused under its old name. Bump this.
 _KERNEL_REV = 1
 
 # The model_proj branch projects the SAME token embeddings through every
@@ -314,8 +311,7 @@ class _rms_eps:
 # tile_m=32 -- which costs 1.13x, because inbound bytes per MAC go as
 # (tile_m+tile_n)/(tile_m*tile_n). tile_m=64 needs tile_n<=96 to fit L1
 # (at 128 it is 72 KB and the chunked drain that exists for exactly this
-# overruns the memtile's 48 BD blocks). Measured at the gate half shape WITH
-# gelu and n_out: 0.9319x, cosine unchanged at 0.999908.
+# overruns the memtile's 48 BD blocks).
 _DRAIN_WIDE_TILE = {"tile_m": 64, "tile_n": 96}
 
 
@@ -1100,9 +1096,8 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         hs = supports(dh, N_KV_HEADS)
         kind = "head-spatial" if hs else "head-first"
         print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
-        # The staircase splits the round axis, so the group count has to divide
-        # it; fall back to the largest divisor that does rather than refusing
-        # the build at a seq_len whose rounds are not a multiple of 4.
+        # The staircase splits the round axis, so the group count has to
+        # divide it; take the largest divisor rather than refuse the build.
         extra = {}
         if hs and win is None:
             n_rounds = seq_len // hs_tiling(dh)[1]

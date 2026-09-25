@@ -177,10 +177,9 @@ static_assert(dk_full == 64 || dk_full == 128 || dk_full == 256 ||
 
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
 
-// exp_g_minus_u / mul_r_gp build their per-row replica table in 32-row halves
-// (row_halves = lqp / 32) but consume it in 4-row groups (lqp / 4), so an lqp
-// above 32 that is NOT a multiple of 32 would read rows the table never filled.
-// lqp < 32 has its own row-at-a-time path below.
+// The per-row replica tables are filled in 32-row halves but read in 4-row
+// groups, so a q tile past 32 that is not a multiple of it reads rows nothing
+// wrote. Below 32 has its own path.
 static_assert(lqp < 32 || lqp % 32 == 0,
               "lqp must be < 32 or a multiple of 32");
 
@@ -424,10 +423,9 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
       aie::broadcast<bfloat16, 16>((bfloat16)log2e);
   V lowest_vec = aie::broadcast<bfloat16, 32>(lowest_val);
   if constexpr (lqp < 32) {
-    // The zip chain below reads u 32 rows at a time; a shorter q tile (Gemma4's
-    // head_dim=512 class runs lqp=16) replicates a row at a time instead. An
-    // explicit broadcast+store, never a scalar store loop -- Peano drops lanes
-    // vectorizing those.
+    // The zip chain below reads u 32 rows at a time, so a shorter q tile
+    // replicates a row at a time instead. Broadcast+store, never a scalar
+    // store loop -- Peano drops lanes vectorizing those.
     for (int i = 0; i < lqp; i++)
       aie::store_v(u_rep + i * 8, aie::broadcast<bfloat16, 8>(u[i]));
   } else {

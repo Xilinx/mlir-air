@@ -125,12 +125,10 @@ def build_launch(
         num_heads * cu_cols <= 8
     ), f"a herd per head, {cu_cols} columns wide, needs {num_heads * cu_cols} <= 8"
 
-    # d is NEVER split, as in attn_npu2_temporal_causal: the microkernel is
-    # compiled with dk_tile = head_dim, so a builder that chunks d disagrees
-    # with the kernel it calls. Capacity at head_dim > lkp comes from a smaller
-    # lkp (tile_size_q must stay == lkp), not from d. Verified the hard way:
-    # dk_chunks=16 gave a degenerate softmax (uniform output, corr 0.006) while
-    # the identical dataflow at dk_chunks=1 passes at 0.9977.
+    # d is NEVER split: the microkernel is compiled with dk_tile = head_dim, so
+    # a builder that chunks d disagrees with the kernel it calls, and the
+    # softmax degenerates. Capacity at head_dim > lkp comes from a smaller lkp
+    # (tile_size_q must stay == lkp), not from d.
     if dv_tile is None:
         dv_tile = lkp
     assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile ({dv_tile})"
@@ -283,9 +281,8 @@ def build_launch(
 
     # ---------------------------------------------------------------- tensors
     # SEQ-FIRST at L3, the layout the model already carries: [seq, heads*dh].
-    # Q used to be [heads, seq, dk] and the output [heads*dv_chunks, seq,
-    # dv_tile], so the host had to transpose into and out of them on every
-    # dispatch -- 97 ms per prefill, measured. As BD strides both are free.
+    # A head-first tensor would cost the host a transpose in and out on every
+    # dispatch; as BD strides the same shuffles are free.
     Q = air.tensor([lq, num_heads * dk], bf16)
     KV = air.tensor([num_chunks * kv_rec], bf16)
     GP = air.tensor([lq, num_heads * dv], bf16)
