@@ -423,25 +423,26 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
     // vectorizing those.
     for (int i = 0; i < lqp; i++)
       aie::store_v(u_rep + i * 8, aie::broadcast<bfloat16, 8>(u[i]));
-  } else
-  for (int rh = 0; rh < row_halves; rh++) {
-    V uv = aie::load_v<32>(u + rh * 32);
-    auto z1 = aie::interleave_zip(uv, uv, 1);
-    auto z2a = aie::interleave_zip(z1.first, z1.first, 2);
-    auto z2b = aie::interleave_zip(z1.second, z1.second, 2);
-    auto z3a = aie::interleave_zip(z2a.first, z2a.first, 4);
-    auto z3b = aie::interleave_zip(z2a.second, z2a.second, 4);
-    auto z3c = aie::interleave_zip(z2b.first, z2b.first, 4);
-    auto z3d = aie::interleave_zip(z2b.second, z2b.second, 4);
-    bfloat16 *t = u_rep + rh * 256;
-    aie::store_v(t + 0, z3a.first);
-    aie::store_v(t + 32, z3a.second);
-    aie::store_v(t + 64, z3b.first);
-    aie::store_v(t + 96, z3b.second);
-    aie::store_v(t + 128, z3c.first);
-    aie::store_v(t + 160, z3c.second);
-    aie::store_v(t + 192, z3d.first);
-    aie::store_v(t + 224, z3d.second);
+  } else {
+    for (int rh = 0; rh < row_halves; rh++) {
+      V uv = aie::load_v<32>(u + rh * 32);
+      auto z1 = aie::interleave_zip(uv, uv, 1);
+      auto z2a = aie::interleave_zip(z1.first, z1.first, 2);
+      auto z2b = aie::interleave_zip(z1.second, z1.second, 2);
+      auto z3a = aie::interleave_zip(z2a.first, z2a.first, 4);
+      auto z3b = aie::interleave_zip(z2a.second, z2a.second, 4);
+      auto z3c = aie::interleave_zip(z2b.first, z2b.first, 4);
+      auto z3d = aie::interleave_zip(z2b.second, z2b.second, 4);
+      bfloat16 *t = u_rep + rh * 256;
+      aie::store_v(t + 0, z3a.first);
+      aie::store_v(t + 32, z3a.second);
+      aie::store_v(t + 64, z3b.first);
+      aie::store_v(t + 96, z3b.second);
+      aie::store_v(t + 128, z3c.first);
+      aie::store_v(t + 160, z3c.second);
+      aie::store_v(t + 192, z3d.first);
+      aie::store_v(t + 224, z3d.second);
+    }
   }
   for (int gi = 0; gi < row_groups; gi++) {
     V uvec = aie::load_v<32>(u_rep + gi * 32);
