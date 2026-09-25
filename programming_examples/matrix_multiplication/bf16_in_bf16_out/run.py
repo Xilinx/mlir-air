@@ -908,7 +908,7 @@ def _build_cast_module(
         # ONE ROW PER TILE, always. A sub-row tile makes the destination offset
         # jump at every row boundary, and AIR folds this loop into a
         # constant-stride BD -- which silently keeps only the first tile of
-        # each row (cosine 0.33 at n/tile_n = 3).
+        # each row.
         assert chunk_size % n == 0, (chunk_size, n)
         assert n * 6 <= 60 * 1024, f"one f32+bf16 row of n={n} does not fit L1"
         tile_n = n

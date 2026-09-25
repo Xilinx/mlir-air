@@ -183,12 +183,11 @@ def K_FA(c):
 # The wide GATE GEMM (n=12288) runs as two n=6144 halves writing into one
 # contiguous output. Only the halves reach tile_k_l2=256: at n=12288 the BD
 # stride cap (1048576, in 32-bit WORDS, so bf16 doubles the element limit to
-# 2097152) pins tile_k_l2 to <=170, and 128 measures as noise while 256 is
-# worth 0.65-0.81x. Interleaved A/B on the model, n=4: gate 485.5 -> 441 ms.
+# 2097152) pins tile_k_l2 to <=170, and the wider tile is what pays.
 #
-# Up splits too, now that the cast launch can write a column window: forcing
-# the halves onto drain instead measured 1.11x, which is what made the earlier
-# split of up look flat.
+# Up splits too, now that the cast launch can write a column window. Both
+# halves want the fused-cast path; forcing them onto drain is slower, which is
+# what made an earlier split of up look flat.
 #
 # One GEMM per ELF, never two slices -- see the miscompile note above.
 
@@ -308,7 +307,7 @@ class _rms_eps:
 
 # The GELU-epilogue GEMMs are pinned to drain (the activation belongs on the
 # GEMM's own 32 cores, not the 8-column cast launch), and drain defaults to
-# tile_m=32 -- which costs 1.13x, because inbound bytes per MAC go as
+# tile_m=32 -- which is slower, because inbound bytes per MAC go as
 # (tile_m+tile_n)/(tile_m*tile_n). tile_m=64 needs tile_n<=96 to fit L1
 # (at 128 it is 72 KB and the chunked drain that exists for exactly this
 # overruns the memtile's 48 BD blocks).
@@ -349,8 +348,8 @@ def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
     # n=6144 at tile_k_l2=256 exceeds the same arithmetic and compiles anyway,
     # because the emitted BD factors differently there.
     # n=9216 (the batched model_proj) blows it too, hence the explicit override
-    # -- a measured sweep puts the whole knob inside 4%, so lowering it where a
-    # width needs it costs nothing worth protecting.
+    # -- the knob barely moves the dispatch, so lowering it where a width needs
+    # it costs nothing worth protecting.
     if tile_k_l2 is None:
         tile_k_l2 = 64 if n >= 12288 else min(256, k)
     spec = _spec_with_tiles(
@@ -757,7 +756,7 @@ def _build_single_gemm_elf(
 
     # n_out: this GEMM writes its n_dim columns into an n_out-wide output at
     # n_out_offset, so a wide FFN can run as narrower halves that still land
-    # contiguous. Both methods can do it -- forcing drain for it cost 1.11x.
+    # contiguous. Both methods can do it; the fused cast is the faster one.
     g_spec = gemm_spec(
         seq_len,
         k_dim,
