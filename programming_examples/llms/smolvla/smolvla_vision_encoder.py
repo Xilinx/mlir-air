@@ -99,8 +99,8 @@ def _gelu_backend():
     }
 
 
-# SMOLVLA_FA_QSEG=1 runs the FlashAttention q-block loop inside the segment instead of
-# as a launch-grid axis: the same design and microkernels (bit-identical output), but
+# SMOLVLA_FA_QSEG (default 1; 0 = launch-grid axis) runs the FlashAttention q-block loop
+# inside the segment instead of as a launch-grid axis: the same design and microkernels (bit-identical output), but
 # head_groups * n_images sequential waves instead of q_blocks * head_groups * n_images.
 # Read once in smolvla_fuse.py so the compile path here and the cache-dir naming in
 # smolvla_runtime.py can never disagree on which schedule is baked into the ELF.
