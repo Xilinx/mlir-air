@@ -294,10 +294,9 @@ void SYM(f32_to_bf16_bias_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
     bfloat16 *pd = dst + jb * MB * (T * T);
     for (unsigned e = 0; e < MB * T * T; e += VW) {
       aie::vector<float, VW> v = aie::add(aie::load_v<VW>(ps + e), vb);
-      aie::vector<bfloat16, VW> o;
-      for (unsigned q = 0; q < VW; q++)
-        o[q] = (bfloat16)v[q];
-      aie::store_v(pd + e, o);
+      aie::accum<accfloat, VW> oacc;
+      oacc.from_vector(v);
+      aie::store_v(pd + e, oacc.template to_vector<bfloat16>());
     }
   }
 }
@@ -329,9 +328,9 @@ void SYM(f32_to_bf16_bias_gelu_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
     bfloat16 *pd = dst + jb * MB * (T * T);
     for (unsigned e = 0; e < MB * T * T; e += VW) {
       aie::vector<float, VW> f = aie::add(aie::load_v<VW>(ps + e), vb);
-      aie::vector<bfloat16, VW> g;
-      for (unsigned q = 0; q < VW; q++)
-        g[q] = (bfloat16)f[q];
+      aie::accum<accfloat, VW> facc;
+      facc.from_vector(f);
+      aie::vector<bfloat16, VW> g = facc.template to_vector<bfloat16>();
       aie::vector<bfloat16, VW> g2 = aie::mul(g, g);
       aie::vector<bfloat16, VW> g3 = aie::mul(g2, g);
       aie::vector<bfloat16, VW> beta_g3 = aie::mul(beta_v, g3);
