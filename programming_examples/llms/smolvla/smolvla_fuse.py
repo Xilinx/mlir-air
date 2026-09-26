@@ -29,6 +29,15 @@ SMOLVLA_B_STATIONARY (default 1)
     from (M/256) x N-iterations to N-iterations. Output is bit-identical to 0. fc2 (K=3072,
     B block > one memtile) is unchanged.
 
+SMOLVLA_ZERO_COPY (default 1)
+    Chains the three ELFs of every vision layer (and layer to layer) through shared device
+    buffers instead of copying each intermediate to the host and back: Q|K|V, the attention
+    output and the layer output stay resident (KernelCache `shared_alias` pools), so only the
+    first layer's input is written and the last layer's output read. Host-only change: the
+    ELFs and the output are identical, so it is not part of the ELF cache name. Off when
+    per-layer hidden states are requested (`return_per_layer`) or with the CPU attention
+    diagnostic. 0 restores the per-ELF host round trips.
+
 SMOLVLA_FA_QSEG (default 1)
     Runs the FlashAttention q-block loop inside the segment instead of as a launch-grid
     axis: the same design and microkernels (bit-identical output), but head_groups *
@@ -53,3 +62,4 @@ OFFN_TILING_OVERRIDE = _sizes_override("SMOLVLA_OFFN_TILING")
 LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
 FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
 B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
+ZERO_COPY = os.environ.get("SMOLVLA_ZERO_COPY", "1") == "1"

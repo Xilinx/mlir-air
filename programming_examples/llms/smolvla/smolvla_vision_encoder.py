@@ -53,6 +53,7 @@ from smolvla_fuse import (
     LNQKV_TILING_OVERRIDE,
     OFFN_TILING_OVERRIDE,
     FA_Q_IN_SEGMENT,
+    ZERO_COPY,
 )
 from smolvla_vision_weights import SigLIPVisionConfig
 from smolvla_cpu_helpers import im2col_patch_embed
@@ -701,18 +702,34 @@ def _run_connector(cache, post_ln, connector_w, config, bo_key="gemm_connector")
 
 
 def _run_flash_attention_fused(
-    cache, qkv, config, seq_len, bo_key="flash_attn", n_images=1
+    cache, qkv, config, seq_len, bo_key="flash_attn", n_images=1, chain=False
 ):
     """Non-causal MHA on NPU via FlashAttention, reading Q|K|V as column blocks
     of ONE (n_images*seq, 3*emb) buffer -- vit_ln_qkv's fused output, uploaded
     as a single BO. Head h of Q occupies columns [h*hd:(h+1)*hd], K and V the
     same within their block. `seq_len` is PER IMAGE; the images occupy
     successive row blocks and are attended independently. Returns
-    (n_images*seq, emb)."""
+    (n_images*seq, emb). With `chain` the Q|K|V input already sits in the shared
+    "vit_qkv" device buffer (vit_ln_qkv's output) and the output stays resident in
+    "vit_attn" (vit_o_ffn's input): `qkv` is only a size placeholder and nothing is
+    copied to or from the host; returns None."""
     n_heads = config.n_heads
     head_dim = config.head_dim
     rows = n_images * seq_len
     out = np.zeros((rows, n_heads * head_dim), dtype=bfloat16)
+    if chain:
+        cache.load_and_run(
+            "flash_attn",
+            _attn_backend(n_images),
+            qkv,
+            out,
+            output_indices=[],
+            intermediate_indices={0, 1},
+            shared_alias={0: "vit_qkv", 1: "vit_attn"},
+            resident_alias=True,
+            bo_key=bo_key,
+        )
+        return None
     res = cache.load_and_run(
         "flash_attn",
         _attn_backend(n_images),
@@ -762,6 +779,7 @@ def run_vit_block_fused(
     verbose=False,
     attn_mode="flash",
     n_images=1,
+    chain=None,
 ):
     """Execute one SigLIP encoder layer via the two fused ELFs + FA (A3-6b).
 
@@ -773,9 +791,23 @@ def run_vit_block_fused(
     host f32 glue. Mirrors the per-layer runner the sibling LLM ports use.
 
     attn_mode: "flash" (default) = FlashAttention ELF. "cpu" = host MHA (diag).
+
+    chain: None (default) copies every intermediate to the host and back. A
+    `(first, last)` tuple chains the layer through shared device buffers
+    (SMOLVLA_ZERO_COPY): Q|K|V, the attention output and the layer output never
+    visit the host. The layer input lives in pool `vit_x{layer % 2}` and the output
+    in the other one, so consecutive layers ping-pong. Only the `first` layer writes
+    its input and only the `last` returns the output; every other layer returns a
+    placeholder that carries just the shape. Needs attn_mode="flash".
     """
     seq_len = x_bf16.shape[0]
     assert seq_len % n_images == 0, (seq_len, n_images)
+    zc = chain is not None
+    if zc:
+        assert attn_mode == "flash", "chained layers need the FlashAttention ELF"
+        chain_first, chain_last = chain
+        pool_in = f"vit_x{layer_idx % 2}"
+        pool_out = f"vit_x{(layer_idx + 1) % 2}"
     reg_len = seq_len // n_images
     emb = config.emb_dim
     hidden = config.hidden_dim
@@ -792,6 +824,14 @@ def run_vit_block_fused(
 
     def z2(cols):
         return np.zeros((seq_len, cols), dtype=bfloat16)
+
+    def placeholder(cols):
+        """Size-only stand-in for a chained buffer; never uploaded, so one shared zero
+        array per shape is enough."""
+        k = ("placeholder", seq_len, cols)
+        if k not in _cache:
+            _cache[k] = z2(cols)
+        return _cache[k]
 
     # ---- 1. vit_ln_qkv: LN1 + Q/K/V GEMM (bias fused) -> q_b, k_b, v_b ----
     # The Q/K/V bias rides the weight stream, so there are no bias args and no
@@ -828,16 +868,32 @@ def run_vit_block_fused(
         ]
     ln_args = _cache[ln_key]
     ln_args[0] = np.ascontiguousarray(np.asarray(x_bf16, dtype=bfloat16)).reshape(-1)
-    res = cache.load_and_run(
-        "vit_ln_qkv",
-        _vit_ln_qkv_backend(seq_len, emb, registry_seq_len=reg_len),
-        *ln_args,
-        output_indices=[4],
-        static_input_indices={1, 3},  # LN param + bias-packed weights
-        intermediate_indices={2, 4},  # scratch + output
-        bo_key=ln_key,
-    )
-    qkv = res[4].reshape(seq_len, 3 * emb)
+    if zc:
+        res = cache.load_and_run(
+            "vit_ln_qkv",
+            _vit_ln_qkv_backend(seq_len, emb, registry_seq_len=reg_len),
+            *ln_args,
+            output_indices=[],  # Q|K|V stays on the device for flash_attn
+            static_input_indices={1, 3},
+            # Only the first layer's input comes from the host; later layers read the
+            # previous layer's output, already resident in pool_in.
+            intermediate_indices={2, 4} | (set() if chain_first else {0}),
+            shared_alias={0: pool_in, 4: "vit_qkv"},
+            resident_alias=True,
+            bo_key=ln_key,
+        )
+        qkv = placeholder(3 * emb)
+    else:
+        res = cache.load_and_run(
+            "vit_ln_qkv",
+            _vit_ln_qkv_backend(seq_len, emb, registry_seq_len=reg_len),
+            *ln_args,
+            output_indices=[4],
+            static_input_indices={1, 3},  # LN param + bias-packed weights
+            intermediate_indices={2, 4},  # scratch + output
+            bo_key=ln_key,
+        )
+        qkv = res[4].reshape(seq_len, 3 * emb)
 
     # ---- 2. Attention ----
     if attn_mode == "cpu":
@@ -856,8 +912,10 @@ def run_vit_block_fused(
         # ride a third launch axis inside ONE dispatch rather than a dispatch
         # each -- FA's per-launch cost is ~776 us, its per-iteration cost ~74.
         attn = _run_flash_attention_fused(
-            cache, qkv, config, reg_len, n_images=n_images
+            cache, qkv, config, reg_len, n_images=n_images, chain=zc
         )
+        if zc:
+            attn = placeholder(emb)  # resident in "vit_attn"
 
     # ---- 3. vit_o_ffn: O + residual + LN2 + fc1 + GELU + fc2 + residual ----
     # O/fc1/fc2 each carry their bias on the weight stream, so the three
@@ -901,6 +959,25 @@ def run_vit_block_fused(
         ]
     offn_args = _cache[offn_key]
     offn_args[0] = np.ascontiguousarray(np.asarray(attn, dtype=bfloat16)).reshape(-1)
+    if zc:
+        # arg0 (attention) and arg3 (block input, the residual) are already resident;
+        # the output lands in the other x pool for the next layer.
+        offn_args[3] = placeholder(emb).reshape(-1)
+        res = cache.load_and_run(
+            "vit_o_ffn",
+            _vit_o_ffn_backend(seq_len, emb, hidden, registry_seq_len=reg_len),
+            *offn_args,
+            output_indices=[11] if chain_last else [],
+            static_input_indices={1, 5, 7, 9},
+            intermediate_indices={0, 2, 3, 4, 6, 8, 10, 11},
+            shared_alias={0: "vit_attn", 3: pool_in, 11: pool_out},
+            resident_alias=True,
+            bo_key=offn_key,
+        )
+        if not chain_last:
+            return placeholder(emb)
+        # Copy: the view aliases a pooled BO that the next encode overwrites.
+        return np.array(res[11].reshape(seq_len, emb))
     offn_args[3] = np.ascontiguousarray(np.asarray(x_bf16, dtype=bfloat16)).reshape(-1)
     res = cache.load_and_run(
         "vit_o_ffn",
@@ -1061,10 +1138,16 @@ def run_vit_encoder(
 
     _block = run_vit_block_fused if fused else run_vit_block
     per_layer = []
+    # Chain the layers through shared device buffers (SMOLVLA_ZERO_COPY) unless a
+    # caller needs every layer's hidden state on the host or attention runs on the CPU.
+    chain_layers = fused and ZERO_COPY and attn_mode == "flash" and not return_per_layer
+    n_layers = len(weights.layers)
     for layer_idx, lw in enumerate(weights.layers):
         if verbose:
-            print(f"\n--- ViT layer {layer_idx}/{len(weights.layers) - 1} ---")
+            print(f"\n--- ViT layer {layer_idx}/{n_layers - 1} ---")
         kw = {"n_images": n_images} if fused else {}
+        if chain_layers:
+            kw["chain"] = (layer_idx == 0, layer_idx == n_layers - 1)
         x_bf16 = _block(
             x_bf16,
             lw,
