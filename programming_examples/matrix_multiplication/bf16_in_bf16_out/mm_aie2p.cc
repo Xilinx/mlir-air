@@ -369,11 +369,12 @@ void SYM(f32_to_bf16_mn)(float *src, bfloat16 *dst) {
   constexpr unsigned NTOT = DIM_M * DIM_N;
   static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 16");
   for (unsigned i = 0; i < NTOT; i += VW) {
+    // Vectorized narrowing (accfloat -> bf16). A per-lane scalar convert loop here
+    // costs ~7 cycles/element (~21k cycles for a 32x96 tile) per drain.
     aie::vector<float, VW> v = aie::load_v<VW>(src + i);
-    aie::vector<bfloat16, VW> vb;
-    for (unsigned j = 0; j < VW; j++)
-      vb[j] = (bfloat16)v[j];
-    aie::store_v(dst + i, vb);
+    aie::accum<accfloat, VW> acc;
+    acc.from_vector(v);
+    aie::store_v(dst + i, acc.template to_vector<bfloat16>());
   }
 }
 
@@ -388,10 +389,9 @@ void SYM(f32_to_bf16_n)(float *src, bfloat16 *dst, int n) {
   constexpr unsigned VW = 16;
   for (int i = 0; i < n; i += VW) {
     aie::vector<float, VW> v = aie::load_v<VW>(src + i);
-    aie::vector<bfloat16, VW> vb;
-    for (unsigned j = 0; j < VW; j++)
-      vb[j] = (bfloat16)v[j];
-    aie::store_v(dst + i, vb);
+    aie::accum<accfloat, VW> acc;
+    acc.from_vector(v);
+    aie::store_v(dst + i, acc.template to_vector<bfloat16>());
   }
 }
 
