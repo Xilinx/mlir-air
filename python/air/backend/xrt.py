@@ -171,10 +171,10 @@ _shared_devices = {}
 def get_shared_device(index: int = 0):
     """A process-wide pyxrt.device for the given index, opened on first use.
 
-    A buffer object belongs to the device it was allocated against, not to the
-    hardware context, so a caller that releases a context to stay under the
-    device's context limit keeps its buffers only while that device is alive.
-    Pass this to XRTBackend(device=...) so the device outlives any one backend.
+    A buffer object belongs to the device it was allocated against rather than
+    to the hardware context, so releasing a context to stay under the device's
+    limit keeps the buffers only while that device lives. Pass this to
+    XRTBackend(device=...) to give it a lifetime longer than one backend.
     """
     import pyxrt as xrt
 
@@ -323,9 +323,9 @@ class XRTBackend(AirBackend):
             n_warmup_iters: warmup iterations excluded from timing when n_perf_iters > 0.
             device: an existing pyxrt.device to load onto. Default opens one per
                 backend. Pass air.backend.xrt.get_shared_device() when several
-                backends must coexist: unload() then releases only this
-                backend's hardware context, leaving buffers allocated against
-                the shared device valid for the backends still loaded.
+                backends must coexist, so unload() releases only this backend's
+                hardware context and leaves buffers allocated against the
+                shared device valid.
         """
         super().__init__()
         self.verbose = verbose
@@ -977,11 +977,10 @@ class XRTBackend(AirBackend):
         # Release in reverse dependency order: every BO is allocated against
         # the device, so dropping the device first leaves bo_instr holding a
         # dangling handle. Linux XRT tolerates that; Windows XRT faults.
-        # A borrowed device is only dereferenced here, not closed -- its owner
-        # keeps it, and with it any BO a caller allocated against it.
-        # self.borrowed_device deliberately survives: it is constructor state,
-        # and load() may be called again. Clearing it would silently open a
-        # private device on the second load.
+        # A borrowed device is dereferenced here, never closed: its owner
+        # keeps it, and with it any BO allocated against it. borrowed_device
+        # itself survives because load() may run again, and clearing it would
+        # quietly open a private device the second time.
         self.bo_instr = None
         self.instr_v = None
         self.kernel = None
