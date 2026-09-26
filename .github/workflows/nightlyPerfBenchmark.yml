@@ -159,7 +159,7 @@ jobs:
           # upstream. The earlier 21.x pin worked around what turned out to be
           # AIR's own core stack size, not a compiler bug -- see
           # AIRToAIEPass.cpp's stack_size default.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026090201+a36c62b9" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026091401+a5d028e8" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       # The fused-decode inline-attn merge (programming_examples/fused_decode, used
       # by llama32_1b_q4nx) shells out to an `llvm-link` resolved from PATH, and it

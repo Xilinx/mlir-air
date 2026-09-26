@@ -850,8 +850,7 @@ GRP_PCOL = (
 # Main/assemble memtile column. Llama: col 1 (a proj col; paired egress leaves room).
 # Gemma (per-column egress): the proj col memtiles each need 6 S2MM (inW on 4/5 +
 # 4 separate per-lead egress on 0-3, mirroring FLM mem_C_1 -- NO packet-merge), so the
-# hub must NOT sit on a proj col. Put it on col 2, the X-broadcast memtile (5 free S2MM)
-# -- exactly FLM, whose hub mem_1_1 IS its X-broadcast memtile.
+# hub must NOT sit on a proj col, nor on the X broadcast's column -- see MAIN_PCOL.
 # W_DUAL_CHAN=1: drive each proj column's weight stream on BOTH of its shim MM2S
 # channels (@inW0c{cx} and @inW1c{cx}) instead of ch0 only. Decode at batch 1 is
 # ~92% weight streaming, and the reference feeds 2 MM2S per weight column while we
@@ -884,7 +883,12 @@ def _wname(ci, cx):
     return f"inW{ci}c{cx}" if W_DUAL_CHAN else "inW"
 
 
-MAIN_PCOL = 2 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
+# Main/assemble memtile column. The non-paired egress keeps it off column 2,
+# which already carries the rms/rope cores and their shim feeds: a switchbox with
+# more masters than arbiters forces packet flows to share one, an arbiter holds
+# its grant to end of packet, and two flows sharing one can then deadlock.
+# Column 4 carries only the attention tiles.
+MAIN_PCOL = 4 if MODEL["PAIR_ROWS"] == 1 else 1  # phys col of the main memtile
 # Faithful X-feed (reproducer core_2_2): the rms producer core
 # (tile_2_2, col2) normalizes raw X once and re-feeds it via an output-lock release
 # of N (= REFEED) into a 512 x_buffer that broadcasts 256-blocks to the 16 proj
@@ -900,9 +904,10 @@ RMS_PCOL = 2  # rms producer core column
 # also doubling the weight flows makes the pathfinder fail outright (it cannot even
 # route the one-hop rms->X xnorm packet flow tile_2_2 DMA1 -> mem_2_1 DMA0), because
 # col 2 would carry the shim feeds, both cores, AND a 16-way broadcast hub.
-# Overridable so the floorplan move can be A/B-tested independently of the
-# channel split (XMT_PCOL=1 with W_DUAL_CHAN=0 isolates the placement effect).
-XMT_PCOL = int(_os.environ.get("XMT_PCOL", MAIN_PCOL if W_DUAL_CHAN else RMS_PCOL))
+# The non-paired egress keeps this off MAIN_PCOL as well: the two on one column
+# re-create that oversubscription, and a memtile can target a given DMA only
+# once, so both on col 4 does not build. Derived, not settable.
+XMT_PCOL = 3 if MODEL["PAIR_ROWS"] == 1 else (MAIN_PCOL if W_DUAL_CHAN else RMS_PCOL)
 # Column of the glu-down memtile, the third producer converging on @xnorm (the
 # other two are the o-proj memtile on col 5 and the rms core itself). Distinct
 # from col 5 either way, so the convergence never merges o+down onto one MM2S
