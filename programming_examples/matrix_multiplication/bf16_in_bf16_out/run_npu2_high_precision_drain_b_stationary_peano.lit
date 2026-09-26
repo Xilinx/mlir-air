@@ -1,0 +1,12 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// B-stationary drain GEMM: one K slab (TILE_K_L2 == K), N stays a launch dimension,
+// the weight tile is filled once per launch and the M tiles loop inside the segment.
+// RUN: mkdir -p test_npu2_high_precision_drain_b_stationary_peano
+// RUN: cd test_npu2_high_precision_drain_b_stationary_peano
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run HIGH_PRECISION=true METHOD=drain B_STATIONARY=true M=1024 K=768 N=768 TILE_M=32 TILE_K_L2=768 TILE_K_L1=64 TILE_N=96 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR AIE_TARGET=aie2p | FileCheck %s
+// CHECK: PASS!
