@@ -21,12 +21,13 @@ SMOLVLA_OFFN_TILING, SMOLVLA_LNQKV_TILING (default: computed)
     smolvla_vision_encoder.py). The model output is bit-identical to the recycled 2,2.
     These env vars force a specific value instead, e.g. to reproduce 2,2 for comparison.
 
-SMOLVLA_FA_QSEG (default 0)
+SMOLVLA_FA_QSEG (default 1)
     Runs the FlashAttention q-block loop inside the segment instead of as a launch-grid
     axis: the same design and microkernels (bit-identical output), but head_groups *
-    n_images sequential waves instead of q_blocks * head_groups * n_images. Read here,
-    once, rather than separately in the encoder (compile) and the runtime (cache-dir
-    naming), so the two can never disagree on which schedule is baked into the ELF.
+    n_images sequential waves instead of q_blocks * head_groups * n_images. 0 restores
+    the launch-grid axis. Read here, once, rather than separately in the encoder
+    (compile) and the runtime (cache-dir naming), so the two can never disagree on which
+    schedule is baked into the ELF.
 """
 
 import os
@@ -42,4 +43,4 @@ LN_EXT = os.environ.get("SMOLVLA_LN_EXT", "1") == "1"
 LN_ROWS = 4
 OFFN_TILING_OVERRIDE = _sizes_override("SMOLVLA_OFFN_TILING")
 LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
-FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "0") == "1"
+FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
