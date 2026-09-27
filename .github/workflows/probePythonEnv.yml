@@ -1,0 +1,92 @@
+# Reproduce the nightly's Python environment and report where `bottleneck`
+# comes from, without building mlir-air or touching the NPU.
+#
+# smolvla's CPU reference dies in `import pandas` with "Can't determine version
+# for bottleneck", i.e. a module named bottleneck imports but has no
+# __version__. Nothing in this repo's dependency closure declares bottleneck,
+# and a stock bottleneck wheel carries a hard-coded __version__, so the useful
+# question is which file is being imported -- not which version resolved.
+#
+# Everything here is copied from nightlyPerfBenchmark.yml's Python-install
+# steps in order; the CMake build, the AIE toolchains and the model runs are
+# dropped because none of them touch site-packages.
+
+name: Probe Python Environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: amdryzenai5pro340
+    timeout-minutes: 60
+
+    steps:
+
+      - uses: actions/checkout@v3
+        with:
+          submodules: "true"
+
+      - name: Pre-existing bottleneck outside the venv
+        run: |
+          echo "::group::system python"
+          python3.12 -c "import bottleneck as b; print('sys bottleneck:', b.__file__, getattr(b, '__version__', 'NO __version__'))" \
+            || echo "sys bottleneck: not importable"
+          echo "::endgroup::"
+          echo "::group::anything named bottleneck in the workspace"
+          find "$GITHUB_WORKSPACE" -maxdepth 4 -iname 'bottleneck*' -print || true
+          echo "::endgroup::"
+          echo "PYTHONPATH=$PYTHONPATH"
+
+      - name: Setup environment
+        run: |
+          python3.12 -m venv air-venv
+          source air-venv/bin/activate
+          pip cache purge
+          pip install --upgrade pip
+          pip install lit cmake joblib
+          pip install --pre torch-mlir torchvision \
+            --index-url https://download.pytorch.org/whl/nightly/cpu \
+            -f https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels
+
+      - name: Probe after venv setup
+        run: |
+          source air-venv/bin/activate
+          ./utils/probe-bottleneck.sh "after venv setup"
+
+      - name: Get mlir-aie requirements
+        run: |
+          utils/clone-mlir-aie.sh
+          source air-venv/bin/activate
+          pushd mlir-aie
+          pip install -r python/requirements.txt
+          pip install -r python/requirements_ml.txt
+          pip install "torchvision==0.27.1+cpu" --index-url https://download.pytorch.org/whl/cpu
+          pip install -r python/requirements_dev.txt
+          popd
+
+      - name: Probe after mlir-aie requirements
+        run: |
+          source air-venv/bin/activate
+          ./utils/probe-bottleneck.sh "after mlir-aie requirements"
+
+      - name: Install every model's requirements
+        run: |
+          source air-venv/bin/activate
+          # Not -q, unlike the nightly: the whole point is to see what resolved.
+          for req in programming_examples/llms/*/requirements.txt; do
+            echo "::group::pip install -r $req"
+            pip install -r "$req"
+            echo "::endgroup::"
+          done
+
+      - name: Probe after model requirements
+        run: |
+          source air-venv/bin/activate
+          ./utils/probe-bottleneck.sh "after model requirements"
+          echo "::group::pip freeze"
+          pip freeze
+          echo "::endgroup::"
+          echo "::group::the failing import"
+          python -c "import pandas; print('pandas ok', pandas.__version__)" || true
+          echo "::endgroup::"
