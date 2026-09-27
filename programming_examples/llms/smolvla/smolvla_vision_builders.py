@@ -33,10 +33,8 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-# smolvla/ -> programming_examples (for kernel example imports: layer_norm, etc.)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 # smolvla/ -> llms (for shared.infra / shared.builders)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 
 from air.ir import (
     MemRefType,
@@ -68,26 +66,41 @@ from air.backend.xrt_runner import type_mapper
 
 from air import api as air
 from air.api import ops
-from shared.builders.rms_gemms_rope_multi import _api_dtype
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.builders.rms_gemms_rope_multi import _api_dtype
 from air.dialects.arith import ConstantOp
 
-from shared.infra.stitching import (
+from air_examples.llms.shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
     KernelSlice,
     FuncArg,
 )
-from shared.builders.gemm_builder import (
+from air_examples.llms.shared.builders.gemm_builder import (
     _build_gemm_module,
     BIAS_PAD_ROWS,
     packed_k,
     gemm_registry_config,
     disambiguate_by_tile_n,
 )
-from shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
-from shared.builders.o_ffn_multi import _build_add_2d_to_2d
-from layer_norm.layer_norm import build_module as build_layer_norm
+from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
+from air_examples.llms.shared.builders.o_ffn_multi import _build_add_2d_to_2d
+from air_examples.layer_norm.layer_norm import build_module as build_layer_norm
 from smolvla_fuse import B_STATIONARY, LN_EXT, LN_ROWS
+
+import types
+from pathlib import Path
 
 
 def _layer_norm_ir(seq_len, emb_dim):

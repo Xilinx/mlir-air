@@ -38,14 +38,7 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-# Add parent directory to path for kernel imports (programming_examples/).
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-# Also add llms/ for sibling LLM packages (shared.infra, shared.builders).
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
+# llms/ for the sibling LLM packages (shared.infra, shared.builders).
 
 from smolvla_fuse import (
     LN_EXT,
@@ -56,7 +49,23 @@ from smolvla_fuse import (
 )
 from smolvla_vision_weights import SigLIPVisionConfig
 from smolvla_cpu_helpers import im2col_patch_embed
-from shared.infra.cache import KernelCache, Profiler  # noqa: F401 (re-exported)
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import (
+    KernelCache,
+    Profiler,
+)  # noqa: F401 (re-exported)
+
+import types
 
 # ---------------------------------------------------------------------------
 # Per-kernel backend presets (match each kernel's own standalone example)
@@ -227,10 +236,10 @@ _PIXEL_SHUFFLE_FACTOR = 4
 
 def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_images=1):
     """Compile the non-causal FlashAttention ELF (shared by fused + unfused)."""
-    from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+    from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as build_attn,
     )
-    from shared.infra.external_kernels import compile_attn_npu2
+    from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
     n_heads = config.n_heads
     n_kv_heads = config.n_heads  # MHA
@@ -279,8 +288,10 @@ def _compile_connector_gemm(cache):
     produces its (64, 12288) input is a pure host reshape (no arithmetic), so
     the connector's only math — the projection — runs on NPU.
     """
-    from shared.infra.external_kernels import compile_gemm_mm
-    from matrix_multiplication.bf16_in_bf16_out.run import build_module as build_gemm
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+        build_module as build_gemm,
+    )
 
     s = _CONNECTOR_GEMM
     print(
@@ -337,8 +348,8 @@ def _compile_fused_kernels(
     qkvo/o/fc2, mm_m32_n128 for fc1); compile every distinct one first so both
     ELFs link the correctly-baked objects (see smolvla_vision_builders._force_tile_n_suffix).
     """
-    from shared.infra.external_kernels import compile_gemm_mm
-    from shared.builders.gemm_builder import (
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.llms.shared.builders.gemm_builder import (
         gemm_registry_config,
         disambiguate_by_tile_n,
         BIAS_PAD_ROWS,
@@ -348,7 +359,9 @@ def _compile_fused_kernels(
     if LN_EXT:
         # Linked by every ELF that has a LayerNorm launch; it must exist before
         # compile_and_cache stages the CWD's .o files into air_project/.
-        from shared.infra.external_kernels import compile_layer_norm_rows
+        from air_examples.llms.shared.infra.external_kernels import (
+            compile_layer_norm_rows,
+        )
 
         compile_layer_norm_rows(config.emb_dim, LN_ROWS)
 
@@ -413,7 +426,7 @@ def _compile_fused_kernels(
     # Standalone affine LayerNorm ELF — used ONCE at the end of the stack for
     # post_layernorm (kept on NPU, identical to the unfused path so post_ln
     # cosine vs oracle is unchanged). Not in the per-layer hot loop.
-    from layer_norm.layer_norm import build_module as build_layer_norm
+    from air_examples.layer_norm.layer_norm import build_module as build_layer_norm
 
     print(f"  Compiling layer_norm: {seq_len}x{emb_dim} affine (post_ln, herd_x=8)")
     cache.compile_and_cache(
@@ -476,11 +489,13 @@ def compile_all_kernels(
     GELU / FA ELFs don't link mm.o (a stale copy staged into their air_project
     is harmless).
     """
-    from shared.infra.external_kernels import compile_gemm_mm
-    from matrix_multiplication.bf16_in_bf16_out.run import build_module as build_gemm
-    from layer_norm.layer_norm import build_module as build_layer_norm
-    from gelu.gelu import build_gelu
-    from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+        build_module as build_gemm,
+    )
+    from air_examples.layer_norm.layer_norm import build_module as build_layer_norm
+    from air_examples.gelu.gelu import build_gelu
+    from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as build_attn,
     )
 
@@ -591,7 +606,7 @@ def compile_all_kernels(
     # which rebuilds attn_npu2.o only if absent (force=False) — so this force=True
     # build wins and its .o is the one linked into the FA ELF. fa_bfp16=False gives
     # the native aie2p bf16 mmul (no systematic block-float attention bias).
-    from shared.infra.external_kernels import compile_attn_npu2
+    from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
     compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
     print(f"    (FA microkernel BFP16={fa_bfp16})")
@@ -798,7 +813,7 @@ def run_vit_block_fused(
     # separate bias-add launches; the drain herd folds it into the epilogue cast.
     ln_key = f"vit_ln_qkv_L{layer_idx}"
     if ln_key not in _cache:
-        from shared.builders.gemm_builder import (
+        from air_examples.llms.shared.builders.gemm_builder import (
             gemm_registry_config,
             repack_gemm_b_with_bias,
         )
@@ -864,7 +879,7 @@ def run_vit_block_fused(
     # bias-add launches and their *_raw intermediates are gone.
     offn_key = f"vit_o_ffn_L{layer_idx}"
     if offn_key not in _cache:
-        from shared.builders.gemm_builder import (
+        from air_examples.llms.shared.builders.gemm_builder import (
             disambiguate_by_tile_n,
             gemm_registry_config,
             repack_gemm_b_with_bias,

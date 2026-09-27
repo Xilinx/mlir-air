@@ -11,6 +11,18 @@ transform lives there (a single definition per dtype, reused via
 
 from ml_dtypes import bfloat16
 
+import types
+from pathlib import Path
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 # External-bf16 high-precision methods (both = f32 accumulate + single epilogue
 # cast = 9.3e-3). They differ only in HOW the cast is done, which fixes tile_m:
 #   - fused-cast: external GEMM (f32 scratch) + separate cast launch, tile_m=64.
@@ -69,7 +81,7 @@ def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
                                      method spec — drain=32 / fused-cast=64)
       method                       : the registry-selected method name
     """
-    from kernel_registry.registry_lookup import gemm_config
+    from air_examples.kernel_registry.registry_lookup import gemm_config
 
     cfg = gemm_config(m, k, n, output_dtype, precision)
     return _spec_with_tiles(cfg["method"], cfg["tile"])
@@ -224,7 +236,9 @@ def _build_gemm_module(
             "epilogue_gelu needs the drain method (external_bf16_out); "
             "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
         )
-        from matrix_multiplication.bf16_in_bf16_out.run import build_module_gemm_cast
+        from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+            build_module_gemm_cast,
+        )
 
         return build_module_gemm_cast(
             m,
@@ -244,7 +258,7 @@ def _build_gemm_module(
         )
 
     if external_bf16_out:
-        from matrix_multiplication.bf16_in_bf16_out.run import (
+        from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
             build_module as build_gemm_bf16_ext,
         )
 

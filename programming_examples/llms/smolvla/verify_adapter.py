@@ -43,9 +43,6 @@ import numpy as np
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
-_LLMS_DIR = _HERE.parent
-if str(_LLMS_DIR) not in sys.path:
-    sys.path.insert(0, str(_LLMS_DIR))
 
 from smolvla_inference import (  # noqa: E402
     DEFAULT_MODEL,
@@ -56,7 +53,20 @@ from smolvla_inference import (  # noqa: E402
     run_hybrid_forward,
     warmup_npu,
 )
-from verify.comparators import regression_gate  # noqa: E402
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.verify.comparators import regression_gate  # noqa: E402
+
+import types
 
 # Thresholds locked from the measured clean run: median per-position
 # action-chunk cosine 0.9984 against the pure-CPU baseline, normalized MSE

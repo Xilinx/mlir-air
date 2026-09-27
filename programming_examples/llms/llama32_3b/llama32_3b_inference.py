@@ -31,25 +31,35 @@ from ml_dtypes import bfloat16
 
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
-_PROG = _LLMS_DIR.parent
 _LLAMA1B = _LLMS_DIR / "llama32_1b"
-for _p in (str(_PROG), str(_LLMS_DIR), str(_LLAMA1B), str(_THIS_DIR)):
+for _p in (str(_LLAMA1B), str(_THIS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from llama32_3b_weights import LlamaConfig, load_weights, generate_rope_lut
 from llama32_3b_cpu_helpers import rms_norm
-from shared.infra.cache import KernelCache, Profiler
-from shared.infra.decode_bench import (  # noqa: E402
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler
+from air_examples.llms.shared.infra.decode_bench import (  # noqa: E402
     bench_contexts as _bench_contexts,
     bench_rope_len as _bench_rope_len,
     bench_decode as _bench_decode,
 )
-from shared.infra.prefill_bench import (  # noqa: E402
+from air_examples.llms.shared.infra.prefill_bench import (  # noqa: E402
     bench_prefill as _bench_prefill,
 )
-from shared.infra.external_kernels import compile_all_external_kernels
-from shared.infra.backend_presets import LM_GEMV_BACKEND, RGR_BACKEND
+from air_examples.llms.shared.infra.external_kernels import compile_all_external_kernels
+from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND, RGR_BACKEND
 
 # Prefill is bit-for-bit llama32_1b (config-driven). Reuse verbatim.
 from llama32_3b_prefill import (
@@ -59,6 +69,8 @@ from llama32_3b_prefill import (
 )
 from llama32_3b_decode import compile_decode_kernels, run_decode_block
 import llama32_3b_decode as _decode_mod
+
+import types
 
 MODEL_CHOICES = {
     "base": "meta-llama/Llama-3.2-3B",

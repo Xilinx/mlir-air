@@ -28,10 +28,14 @@ happens long before the module is worth looking at.
 """
 
 import sys
+import types
 
-sys.path[:0] = [
-    sys.argv[1] + "/programming_examples",
-    sys.argv[1] + "/programming_examples/llms",
+# The examples and llms/shared are reached as air_examples.*; neither
+# programming_examples/ nor llms/ goes on sys.path, where their directories
+# would become top-level module names. Only each model's own directory is
+# added below, the way running its script does.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    sys.argv[1] + "/programming_examples"
 ]
 
 import air.ir

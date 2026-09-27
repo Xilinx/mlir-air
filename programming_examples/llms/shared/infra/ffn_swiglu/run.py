@@ -25,14 +25,22 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from air.ir import *
 from air.dialects.air import *
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
+
+import types
+from pathlib import Path
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[4])
+]
 
 # ---------------------------------------------------------------------------
 # MLIR text stitching utilities
@@ -127,7 +135,7 @@ def build_ffn_module(
     Args:
         print_kernels: If True, print each sub-kernel's MLIR before stitching.
     """
-    from shared.builders.gemm_builder import _build_gemm_module
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
 
     # Import silu_and_mul from the standalone kernel example
     # (programming_examples/silu_and_mul/), which this FFN test reuses.

@@ -34,7 +34,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _PROG = _LLMS_DIR.parent
 _FUSED = _PROG / "fused_decode"
-for _p in (str(_PROG), str(_LLMS_DIR), str(_FUSED), str(_THIS_DIR)):
+for _p in (str(_FUSED), str(_THIS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

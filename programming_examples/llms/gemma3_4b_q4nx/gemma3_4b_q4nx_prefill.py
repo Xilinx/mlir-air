@@ -39,11 +39,8 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-_PROG = str(_HERE.parent.parent)  # programming_examples
-_LLMS = str(_HERE.parent)  # llms
-for _p in (_PROG, _LLMS, str(_HERE)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 from gemma3_4b_q4nx_weights import (  # noqa: E402
     D,
@@ -63,6 +60,15 @@ from gemma3_4b_q4nx_weights import (  # noqa: E402
     _bf,
     is_global_layer,
 )
+
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 
 MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma3-4B-NPU2")
 
@@ -119,7 +125,7 @@ class _rms_eps:
         self.eps = eps
 
     def __enter__(self):
-        import weighted_rms_norm.weighted_rms_norm as wrn
+        import air_examples.weighted_rms_norm.weighted_rms_norm as wrn
 
         self._wrn = wrn
         self._saved = wrn.EPS
@@ -135,13 +141,13 @@ def gemm_spec(m, k, n, precision="high"):
 
     All seven Gemma prefill shapes at M=2048 resolve to high-precision
     fused-cast (see kernel_registry/details/GEMM_bf16_in_bf16_out.json)."""
-    from shared.builders.gemm_builder import gemm_registry_config
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
 
     return gemm_registry_config(m, k, n, "bf16", precision)
 
 
 def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
-    from shared.builders.gemm_builder import _build_gemm_module
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
 
     return str(
         _build_gemm_module(
@@ -196,7 +202,7 @@ def build_o_norm_res_norm_module(seq_len, herd_m=8, herd_n=4):
       %arg8 normed2     (seq, D)       OUTPUT (feeds gate/up)
       [+ f32 C-scratch tail for the fused-cast O GEMM]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
@@ -204,7 +210,9 @@ def build_o_norm_res_norm_module(seq_len, herd_m=8, herd_n=4):
         alloc_gemm_scratch,
         build_residual_add_2d_ir,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     o_spec = gemm_spec(seq_len, DQ, D)
     print(f"  [1/4] O GEMM ({o_spec['method']}) {seq_len}x{DQ}x{D} (DECOUPLED)...")
@@ -258,7 +266,7 @@ def build_o_norm_res_norm_module(seq_len, herd_m=8, herd_n=4):
 
 def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4):
     """Standalone single-GEMM ELF (Gate or Up): arg0 in, arg1 weight, arg2 out."""
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -304,7 +312,7 @@ def _gelu_tile_n(seq_len, hidden_dim, herd_x=8):
 
 def build_gelu_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     """Standalone NPU GeGLU ELF: gelu_tanh(gate) * up -> (seq, hidden)."""
-    from gelu_and_mul.gelu_and_mul import build_module_2d as build_gelu
+    from air_examples.gelu_and_mul.gelu_and_mul import build_module_2d as build_gelu
 
     tile_n = _gelu_tile_n(seq_len, hidden_dim, herd_x)
     print(
@@ -328,7 +336,7 @@ def build_down_norm_add_module(seq_len, herd_m=8, herd_n=4):
     %arg6 output      (seq*D,)       OUTPUT (1D)
     [+ f32 C-scratch tail for the fused-cast Down GEMM]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
@@ -336,7 +344,9 @@ def build_down_norm_add_module(seq_len, herd_m=8, herd_n=4):
         alloc_gemm_scratch,
         build_add_2d_to_1d_ir,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     n_total = seq_len * D
     d_spec = gemm_spec(seq_len, INTER, D)
@@ -385,7 +395,7 @@ def build_down_norm_add_module(seq_len, herd_m=8, herd_n=4):
 
 def build_rms_qkv_qknorm_rope(seq_len):
     """The shared 8-launch attention-input ELF at Gemma's shapes and eps."""
-    from shared.builders.rms_qkv_qknorm_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
         build_rms_qkv_qknorm_rope_module as _build,
     )
 
@@ -437,7 +447,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         f"\n{'='*60}\nCompiling Gemma3-4B prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from shared.infra.external_kernels import (
+    from air_examples.llms.shared.infra.external_kernels import (
         compile_gemm_mm,
         compile_rope,
         compile_gelu_and_mul,
@@ -482,7 +492,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     cache.compile_and_cache("down_norm_add", mod, _DOWN_BACKEND)
 
     # Two attention ELFs: Gemma alternates 5 sliding-window layers to 1 global.
-    from shared.infra.fa_headfirst import compile_headfirst_fa
+    from air_examples.llms.shared.infra.fa_headfirst import compile_headfirst_fa
 
     print(f"\n--- {_FA_GLOBAL} (head-first FA, head_dim={DH}, causal) ---")
     compile_headfirst_fa(
@@ -511,8 +521,10 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     )
 
     print(f"\n--- lm_head_gemv ({_LM_N_PARTITIONS} x {_LM_N_PART}, K={D}) ---")
-    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
-    from shared.infra.backend_presets import LM_GEMV_BACKEND
+    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+        build_lm_head_gemv_module,
+    )
+    from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
 
     cache.compile_and_cache(
         "lm_head_gemv",
@@ -578,7 +590,7 @@ class GemmaQ4nxPrefill:
     def __init__(
         self, seq_len=2048, n_layers=NUM_LAYERS, cache_dir=None, verbose=False
     ):
-        from shared.infra.cache import KernelCache
+        from air_examples.llms.shared.infra.cache import KernelCache
 
         self.seq = seq_len
         self.n_layers = n_layers
@@ -616,7 +628,7 @@ class GemmaQ4nxPrefill:
             )
             self.scratch = resolve_scratch(seq_len)
 
-        from shared.infra.backend_presets import LM_GEMV_BACKEND
+        from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
 
         self._lm_backend = dict(LM_GEMV_BACKEND)
 
@@ -874,7 +886,7 @@ class GemmaQ4nxPrefill:
 
     def _run_layer(self, x, k, N):
         """One Gemma decoder layer fully on-device. Captures roped-K + raw-V."""
-        from shared.infra.fa_headfirst import npu_fa_headfirst
+        from air_examples.llms.shared.infra.fa_headfirst import npu_fa_headfirst
 
         seq = self.seq
         res = self._dev(self._call_rms_qkv, k, x, tag="rms_qkv")

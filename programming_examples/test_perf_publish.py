@@ -29,7 +29,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 APPEND = HERE / "llms" / "bench" / "append_history.py"
 
-sys.path.insert(0, str(HERE))
 from generate_readme import (  # noqa: E402
     load_llm_history,
     load_llm_sweep_history,

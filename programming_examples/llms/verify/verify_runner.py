@@ -46,8 +46,6 @@ from typing import Optional
 import numpy as np
 
 HERE = Path(__file__).parent
-_PROG_EXAMPLES = HERE.parent
-sys.path.insert(0, str(_PROG_EXAMPLES))
 sys.path.insert(0, str(HERE))
 
 from comparators import (  # noqa: E402

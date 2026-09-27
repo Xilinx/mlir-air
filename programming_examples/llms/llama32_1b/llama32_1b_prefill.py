@@ -35,23 +35,29 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-# Add parent directory to path for kernel imports
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-# Also add llms/ for sibling LLM packages (shared.infra).
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
+# llms/ for the sibling LLM packages (shared.infra).
 
 from llama32_1b_weights import LlamaConfig, load_weights, generate_rope_lut
 from llama32_1b_cpu_helpers import attention_reference
-from shared.infra.cache import KernelCache, Profiler
-from shared.infra.backend_presets import (
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler
+from air_examples.llms.shared.infra.backend_presets import (
     SIMPLE_BACKEND,
     RMS_GEMMS_ROPE_BACKEND,
     O_FFN_BACKEND,
 )
+
+import types
 
 # ---------------------------------------------------------------------------
 # Kernel compilation definitions
@@ -65,13 +71,15 @@ from shared.infra.backend_presets import (
 
 
 def _o_ffn_run_backend():
-    from shared.infra.backend_presets import O_FFN_BACKEND as _base
+    from air_examples.llms.shared.infra.backend_presets import O_FFN_BACKEND as _base
 
     return {**_base, "runtime_loop_tiling_sizes": [2, 2]}
 
 
 def _rms_gemms_rope_run_backend():
-    from shared.infra.backend_presets import RMS_GEMMS_ROPE_BACKEND as _base
+    from air_examples.llms.shared.infra.backend_presets import (
+        RMS_GEMMS_ROPE_BACKEND as _base,
+    )
 
     return {**_base, "runtime_loop_tiling_sizes": [2, 2]}
 
@@ -88,7 +96,7 @@ def _rms_scratch_specs(seq_len, emb_dim, kv_dim):
     to Q,K,V (arg13,14,15). Hardcoding "Q only" was the GQA assumption that
     produced zero K/V at kv_dim==emb_dim.
     """
-    from shared.builders.gemm_builder import gemm_registry_config
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
 
     q_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     k_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
@@ -119,7 +127,7 @@ def _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim):
     declares two scratch args instead of four, and the hardcoded list overran
     it by two (`set_arg(16) >= size 16`).
     """
-    from shared.builders.gemm_builder import gemm_registry_config
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
 
     o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
@@ -172,7 +180,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     # them). The per-GEMM-method builders reference SUFFIXED symbols + filenames so
     # drain (_m32 / mm_m32.o, tile_m=32) and fused-cast (_m64 / mm_m64.o, tile_m=64)
     # can co-link in ONE ELF (rms mixes them; o_ffn is all-fused).
-    from shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
 
     compile_gemm_mm(
         tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
@@ -193,7 +201,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     gemm_herd_m = next(h for h in (8, 4, 2, 1) if seq_len % (64 * h) == 0)
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
-    from shared.builders.rms_gemms_rope_multi import (
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
         build_rms_gemms_rope_module,
     )
 
@@ -212,7 +220,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     )
 
     # 3. O GEMM + Residual Add + FFN (registry-driven fused-cast GEMMs).
-    from shared.builders.o_ffn_multi import build_o_ffn_module
+    from air_examples.llms.shared.builders.o_ffn_multi import build_o_ffn_module
 
     o_ffn_backend = {
         "verbose": cache.verbose,
@@ -243,7 +251,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
             # Lever A: causal DMA-triangle skip (round lx streams only its
             # (lx+1)*NQ K-block prefix), reference-faithful in-core temporal reduction
             # with double-buffered output.
-            from flash_attention.kernel_fusion_based.attn_npu2_temporal_causal import (
+            from air_examples.flash_attention.kernel_fusion_based.attn_npu2_temporal_causal import (
                 build_module as build_attn,
             )
 
@@ -265,7 +273,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
                 causal_skip=False,
             )
         else:
-            from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+            from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
                 build_module as build_attn,
             )
 

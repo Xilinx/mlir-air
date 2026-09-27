@@ -58,14 +58,26 @@ _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _PROG = _LLMS_DIR.parent
 _LLAMA1B = _LLMS_DIR / "llama32_1b"
-for _p in (str(_PROG), str(_LLMS_DIR), str(_LLAMA1B), str(_THIS_DIR)):
+for _p in (str(_LLAMA1B), str(_THIS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from shared.infra.backend_presets import RGR_BACKEND, LM_GEMV_BACKEND
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.backend_presets import RGR_BACKEND, LM_GEMV_BACKEND
 
 # Reuse the CPU decode attention from llama32_1b verbatim (head_dim agnostic).
 from llama32_1b_decode import decode_attention_cpu  # noqa: F401
+
+import types
 
 # Down proj GEMV on NPU. The Down GEMV (M=emb=3072, K=hidden=8192) compiles +
 # runs as a STANDALONE matvec (A staged in L2, B streamed L3→L1; verified
@@ -112,7 +124,11 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv", link_with="m
     if _mv_dir not in sys.path:
         sys.path.insert(0, _mv_dir)
     from matvec import build_module as build_gemv
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
+    from air_examples.llms.shared.infra.stitching import (
+        stitch_elf,
+        KernelSlice,
+        FuncArg,
+    )
 
     gemv_ir = str(
         build_gemv(
@@ -140,7 +156,9 @@ def compile_decode_kernels(cache, config):
     rms_gemv_rope (Q/K/V + RoPE) and lm_head_gemv. The fused o_gemv_ffn is
     intentionally NOT compiled (its SwiGLU stage overflows the BD limit at
     K=3072); that stage runs on CPU in run_decode_block."""
-    from shared.infra.external_kernels import compile_all_external_kernels
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_all_external_kernels,
+    )
 
     compile_all_external_kernels(head_dim=config.head_dim)
 
@@ -157,7 +175,9 @@ def compile_decode_kernels(cache, config):
     )
     print(f"{'='*60}\n")
 
-    from shared.builders.rms_gemv_rope_multi import build_rms_gemv_rope_module
+    from air_examples.llms.shared.builders.rms_gemv_rope_multi import (
+        build_rms_gemv_rope_module,
+    )
 
     cache.compile_and_cache(
         "rms_gemv_rope",
@@ -165,7 +185,9 @@ def compile_decode_kernels(cache, config):
         {"verbose": cache.verbose, **RGR_BACKEND},
     )
 
-    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+        build_lm_head_gemv_module,
+    )
 
     cache.compile_and_cache(
         "lm_head_gemv",
@@ -178,7 +200,7 @@ def compile_decode_kernels(cache, config):
 
     # O proj GEMV (M=emb=3072, K=q_dim=3072). tile_m=8 -> shared mv.o
     # (DIM_M_OUTPUT=8) works; no dedicated .o needed.
-    from shared.infra.external_kernels import compile_mv
+    from air_examples.llms.shared.infra.external_kernels import compile_mv
 
     compile_mv()  # ensure shared mv.o is DIM_M_OUTPUT=8
     print(f"\n--- o_gemv (O proj GEMV, {emb_dim}x{q_dim}) ---")

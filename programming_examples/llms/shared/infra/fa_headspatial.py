@@ -37,6 +37,18 @@ from __future__ import annotations
 import numpy as np
 from ml_dtypes import bfloat16
 
+import types
+from pathlib import Path
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 # head_dim -> (lkp, lqp, num_q_tiles, cu_cols, heads_spatial, dv_tile).
 #
 # One herd per head, cu_cols wide, so heads_spatial * cu_cols <= 8 physical
@@ -101,7 +113,7 @@ def compile_headspatial_fa(
     paid G times. Ignored for the windowed (sliding) layers, which are already
     truncated.
     """
-    from shared.infra.external_kernels import compile_attn_npu2
+    from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
     lkp, lqp, num_q_tiles, cu_cols, heads_spatial, dv_tile = hs_tiling(head_dim)
     if not supports(head_dim, n_kv_heads):
@@ -143,7 +155,9 @@ def compile_headspatial_fa(
         )
         return
 
-    from flash_attention.kernel_fusion_based.attn_npu2_headspatial import build_module
+    from air_examples.flash_attention.kernel_fusion_based.attn_npu2_headspatial import (
+        build_module,
+    )
 
     mod = build_module(
         lk=seq_len,
@@ -183,8 +197,14 @@ def _build_staircase_module(
     seq_len, lkp, lqp, dh, num_q_tiles, heads_spatial, cu_cols, dv_tile, groups
 ):
     """G causal round-groups, stitched into one ELF over shared Q/KV/out args."""
-    from flash_attention.kernel_fusion_based.attn_npu2_headspatial import build_launch
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
+    from air_examples.flash_attention.kernel_fusion_based.attn_npu2_headspatial import (
+        build_launch,
+    )
+    from air_examples.llms.shared.infra.stitching import (
+        stitch_elf,
+        KernelSlice,
+        FuncArg,
+    )
 
     n_rounds = seq_len // lqp
     if n_rounds % groups:

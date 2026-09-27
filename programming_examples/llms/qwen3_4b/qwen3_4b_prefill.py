@@ -59,16 +59,23 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 # Add programming_examples/ and llms/ to path for shared.* + registry imports.
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
 
 from qwen3_4b_weights import LlamaConfig
-from shared.builders.o_ffn_multi import build_named_add
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.builders.o_ffn_multi import build_named_add
 from qwen3_4b_cpu_helpers import attention_reference
+
+import types
 
 # ---------------------------------------------------------------------------
 # GEMM method/tile spec — REGISTRY-DRIVEN. Every qwen3_4b prefill GEMM now
@@ -94,7 +101,7 @@ def gemm_spec(m, k, n, precision="high"):
 
     `precision` is forwarded to the registry ("high" for all qwen3_4b GEMMs;
     every shape resolves to high-precision fused-cast)."""
-    from shared.builders.gemm_builder import gemm_registry_config
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
 
     return gemm_registry_config(m, k, n, "bf16", precision)
 
@@ -111,7 +118,9 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
         spec["tile_n"],
     )
     if spec["method"] == "direct":
-        from matrix_multiplication.bf16_in_bf16_out.run import build_module_lowered
+        from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+            build_module_lowered,
+        )
 
         return str(
             build_module_lowered(
@@ -129,7 +138,7 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
                 arch="aie2p",
             )
         )
-    from shared.builders.gemm_builder import _build_gemm_module
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
 
     return str(
         _build_gemm_module(
@@ -162,7 +171,7 @@ def _gemm_externs(spec):
 
 
 def build_rms_qkv_qknorm_rope_module(seq_len, config):
-    from shared.builders.rms_qkv_qknorm_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
         build_rms_qkv_qknorm_rope_module as _build,
     )
 
@@ -241,14 +250,16 @@ def build_o_res_norm_module(seq_len, emb_dim, q_dim, o_herd_m=8, o_herd_n=4):
       %arg5 ffn_norm (emb,)       %arg6 normed2 (seq,emb) <- OUTPUT (feeds gate/up)
       [+ f32 C-scratch tail for the fused-cast O GEMM]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
         FuncArg,
         alloc_gemm_scratch,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     o_spec = gemm_spec(seq_len, q_dim, emb_dim, "high")  # fused-cast _m64
     print(
@@ -307,7 +318,7 @@ def _build_single_gemm_elf(name, sym, seq_len, k_dim, n_dim, herd_m=8, herd_n=4)
     needs an f32 C-scratch func arg + the external mm_m64.o symbols. Returns
     (module, scratch_for_index) where scratch_for_index is the f32-scratch combined
     arg index (or None for a direct/drain method that needs no scratch)."""
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -372,7 +383,7 @@ def _swiglu_tile_n(seq_len, hidden_dim, herd_x=8):
 
 def build_swiglu_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     """Standalone NPU SwiGLU ELF: silu(gate)*up -> swiglu (seq x hidden)."""
-    from silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
+    from air_examples.silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
 
     tile_n = _swiglu_tile_n(seq_len, hidden_dim, herd_x)
     print(
@@ -424,7 +435,7 @@ def build_down_add_module(seq_len, emb_dim, hidden_dim, down_herd_m=8, down_herd
       %arg3 res1 (seq,emb)    %arg4 output (seq*emb,)
       [+ f32 C-scratch tail for the fused-cast Down]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -623,7 +634,10 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
         f"\n{'='*60}\nCompiling Qwen3-4B prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from shared.infra.external_kernels import compile_gemm_mm, compile_rope
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_gemm_mm,
+        compile_rope,
+    )
 
     # mm.o variants for the external (fused-cast) GEMMs; Gate/Up direct-codegen
     # needs NO external .o. rope.o for head_dim=128.
@@ -634,7 +648,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
         tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
     )
     compile_rope()
-    from shared.infra.external_kernels import compile_silu_and_mul
+    from air_examples.llms.shared.infra.external_kernels import compile_silu_and_mul
 
     compile_silu_and_mul()  # silu_and_mul.o for the standalone NPU SwiGLU ELF
 
@@ -673,7 +687,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     # Flash Attention (head-first, head_dim=128). Skip if using CPU fallback.
     if not cpu_attn:
         print("\n--- flash_attn (head-first FA, head_dim=128) ---")
-        from shared.infra.fa_headfirst import compile_headfirst_fa
+        from air_examples.llms.shared.infra.fa_headfirst import compile_headfirst_fa
 
         compile_headfirst_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, verbose)
     else:
@@ -985,7 +999,7 @@ def run_transformer_block_qwen3(
         # wrapper returns [seq, n_heads*head_dim=4096], which feeds the
         # decoupled O proj (4096 -> emb_dim=2560). q_roped/k_roped are
         # post-QK-norm post-RoPE seq-first; v is the raw projection seq-first.
-        from shared.infra.fa_headfirst import npu_fa_headfirst
+        from air_examples.llms.shared.infra.fa_headfirst import npu_fa_headfirst
 
         attn_out = npu_fa_headfirst(
             cache,

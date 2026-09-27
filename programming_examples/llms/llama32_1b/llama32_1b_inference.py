@@ -30,25 +30,35 @@ from typing import Any, Callable, Optional
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from llama32_1b_weights import (
     LlamaConfig,
     load_weights,
     generate_rope_lut,
 )
-from shared.infra.cache import KernelCache, Profiler
-from shared.infra.decode_bench import (  # noqa: E402
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler
+from air_examples.llms.shared.infra.decode_bench import (  # noqa: E402
     bench_contexts as _bench_contexts,
     bench_rope_len as _bench_rope_len,
     bench_decode as _bench_decode,
 )
-from shared.infra.prefill_bench import (  # noqa: E402
+from air_examples.llms.shared.infra.prefill_bench import (  # noqa: E402
     bench_prefill as _bench_prefill,
 )
-from shared.infra.external_kernels import compile_all_external_kernels
-from shared.infra.backend_presets import (
+from air_examples.llms.shared.infra.external_kernels import compile_all_external_kernels
+from air_examples.llms.shared.infra.backend_presets import (
     LM_GEMV_BACKEND,
     RGR_BACKEND,
     OGF_BACKEND,
@@ -62,6 +72,9 @@ from llama32_1b_decode import (
     compile_decode_kernels,
     run_decode_block,
 )
+
+import types
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Streaming-decode helpers (BPE-safe incremental output)

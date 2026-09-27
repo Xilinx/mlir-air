@@ -31,7 +31,7 @@ _HERE = Path(__file__).resolve().parent
 _LLMS = _HERE.parent
 _LLAMA1B_Q4NX = _LLMS / "llama32_1b_q4nx"
 _LLAMA3B = _LLMS / "llama32_3b"
-for _p in (str(_LLMS), str(_LLAMA1B_Q4NX), str(_LLAMA3B), str(_HERE)):
+for _p in (str(_LLAMA1B_Q4NX), str(_LLAMA3B), str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

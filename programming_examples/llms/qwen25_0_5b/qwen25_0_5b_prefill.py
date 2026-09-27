@@ -38,16 +38,26 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 # Add programming_examples/ and llms/ to path for shared.* + registry imports.
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
 
 from qwen25_0_5b_weights import LlamaConfig
-from shared.builders.o_ffn_multi import build_named_add, build_padded_add
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.builders.o_ffn_multi import (
+    build_named_add,
+    build_padded_add,
+)
 from qwen25_0_5b_cpu_helpers import attention_reference
+
+import types
 
 # ---------------------------------------------------------------------------
 # Generic per-GEMM slice builder. Supports the three bf16-out methods the
@@ -59,12 +69,15 @@ from qwen25_0_5b_cpu_helpers import attention_reference
 
 def _gemm_spec(m, k, n, precision):
     """Registry config for one GEMM. precision: 'high' or 'low'."""
-    from shared.builders.gemm_builder import gemm_registry_config, gemm_method_spec
+    from air_examples.llms.shared.builders.gemm_builder import (
+        gemm_registry_config,
+        gemm_method_spec,
+    )
 
     if precision == "low":
         # 'low' best is 'direct' for the Gate/Up shape; synthesize a spec since
         # gemm_method_spec only knows the high-prec external methods.
-        from kernel_registry.registry_lookup import gemm_config
+        from air_examples.kernel_registry.registry_lookup import gemm_config
 
         cfg = gemm_config(m, k, n, "bf16", "low")
         assert (
@@ -96,7 +109,9 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
         spec["tile_n"],
     )
     if method == "direct":
-        from matrix_multiplication.bf16_in_bf16_out.run import build_module_lowered
+        from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+            build_module_lowered,
+        )
 
         return str(
             build_module_lowered(
@@ -114,7 +129,7 @@ def _build_gemm_ir(m, k, n, spec, herd_m=8, herd_n=4):
                 arch="aie2p",
             )
         )
-    from shared.builders.gemm_builder import _build_gemm_module
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
 
     return str(
         _build_gemm_module(
@@ -167,7 +182,7 @@ def _padded_qkv_dims(q_dim, kv_dim):
 
 
 def build_rms_qkv_bias_rope_module(seq_len, config):
-    from shared.builders.rms_qkv_bias_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import (
         build_rms_qkv_bias_rope_module as _build,
     )
 
@@ -303,15 +318,17 @@ def build_o_ffn_head_module(
       [+ f32 C-scratch tail for any fused-cast GEMM — none here: O=drain,
        Gate/Up=direct]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
         FuncArg,
         alloc_gemm_scratch,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
-    from silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
+    from air_examples.silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
 
     # O GEMM N is padded to 1024 (same tile_n=32-broken reason as Down): proj is
     # (seq, n_pad); the residual add reads only the first emb columns.
@@ -480,7 +497,7 @@ def build_down_add_module(seq_len, emb_dim, hidden_dim, down_herd_m=8, down_herd
       %arg3 res1 (seq,emb)    %arg4 output (seq*emb,)
       [+ f32 C-scratch tail for the fused-cast Down]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -657,7 +674,10 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=True):
         f"\n{'='*60}\nCompiling Qwen2.5 prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from shared.infra.external_kernels import compile_gemm_mm, compile_rope
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_gemm_mm,
+        compile_rope,
+    )
 
     # mm.o variants for the external GEMMs (drain _m32, fused-cast _m64).
     # Gate/Up direct-codegen needs NO external .o. rope.o for head_dim=64.
@@ -690,10 +710,10 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=True):
     # directly, no FA-hang risk. Skipped when cpu_attn=True (CPU fallback).
     if not cpu_attn:
         print("\n--- flash_attn (seq-first NPU FlashAttention, head_dim=64) ---")
-        from shared.infra.external_kernels import compile_attn_npu2
+        from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
         compile_attn_npu2(head_dim=head_dim)
-        from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+        from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
             build_module as build_attn,
         )
 

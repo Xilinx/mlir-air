@@ -37,20 +37,27 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
 
 from qwen3_1_7b_weights import LlamaConfig
-from shared.infra.cache import KernelCache
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache
+
+import types
 
 
 def build_rms_qkv_qknorm_rope_gemv_module(config):
     """Fused decode ELF: RMSNorm + Q/K/V GEMV + per-head QK-norm + RoPE (M=1)."""
-    from shared.builders.rms_qkv_qknorm_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
         build_rms_qkv_qknorm_rope_gemv_module as _build,
     )
 
@@ -103,7 +110,7 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
     """
     # Import o_gemv_ffn_multi first: its module-level sys.path.insert adds the
     # matvec_2tile_add / matvec_swiglu_rms source dirs to the path.
-    from shared.builders.o_gemv_ffn_multi import (
+    from air_examples.llms.shared.builders.o_gemv_ffn_multi import (
         _STAGE2_TILE_M,
         _STAGE2_M_INPUT,
         _STAGE2_HERD_COLS,
@@ -112,7 +119,11 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
     )
     from matvec_2tile_add import build_module as build_2tile_add
     from matvec_swiglu_rms import build_module as build_swiglu_rms
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
+    from air_examples.llms.shared.infra.stitching import (
+        stitch_elf,
+        KernelSlice,
+        FuncArg,
+    )
 
     # Stage 1: O GEMV is M=emb_dim (output), K=q_dim (input). DECOUPLED.
     stage1 = build_2tile_add(emb_dim, q_dim, m=8, k=512, n_cores=8)
@@ -187,7 +198,9 @@ def build_o_gemv_ffn_qwen_module(emb_dim, q_dim, hidden_dim):
 
 
 def build_lm_head_gemv_qwen_module(emb_dim):
-    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+        build_lm_head_gemv_module,
+    )
 
     return build_lm_head_gemv_module(
         emb_dim=emb_dim,
@@ -230,7 +243,7 @@ def _lm_gemv_backend(verbose=False):
 
 def compile_decode_kernels(cache, config, verbose=False):
     """Compile the Qwen3 decode kernels."""
-    from shared.infra.external_kernels import (
+    from air_examples.llms.shared.infra.external_kernels import (
         compile_mv,
         compile_mv_bf16,
         compile_rope,

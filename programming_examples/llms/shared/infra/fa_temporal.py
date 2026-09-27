@@ -18,6 +18,18 @@ rows, one q-seq-tile per core, so lqp = num_q_tiles * tile_size_q =
 import numpy as np
 from ml_dtypes import bfloat16
 
+import types
+from pathlib import Path
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 # tile_size_q is pinned to 32 at head_dim=128: the kernel's mandatory Q-pair
 # staging (2 * tile_size_q * dk * 2 B) cannot alias the K/V slab, so tsq=64
 # needs 107 KB of the 64 KB L1.
@@ -59,7 +71,7 @@ def compile_temporal_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, verbose=F
         f"temporal-causal FA does not support seq_len={seq_len} "
         f"n_heads={n_heads} n_kv_heads={n_kv_heads} head_dim={head_dim}"
     )
-    from shared.infra.external_kernels import compile_attn_npu2
+    from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
     # This kernel keeps d WHOLE (one transfer per head), so the d tile is the
     # full head_dim, not lkp. force=True because the same CWD may hold a
@@ -73,7 +85,7 @@ def compile_temporal_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, verbose=F
         force=True,
     )
 
-    from flash_attention.kernel_fusion_based.attn_npu2_temporal_causal import (
+    from air_examples.flash_attention.kernel_fusion_based.attn_npu2_temporal_causal import (
         build_module,
     )
 

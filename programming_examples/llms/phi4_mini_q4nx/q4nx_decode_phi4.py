@@ -20,7 +20,7 @@ _LLMS = _HERE.parent
 _PROG = _LLMS.parent
 _DEC = _PROG / "fused_decode"
 _1B = _LLMS / "llama32_1b_q4nx"
-for _p in (str(_PROG), str(_LLMS), str(_DEC), str(_1B), str(_HERE)):
+for _p in (str(_DEC), str(_1B), str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

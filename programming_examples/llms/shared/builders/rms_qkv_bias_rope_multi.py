@@ -67,7 +67,25 @@ from air.backend.xrt_runner import type_mapper
 
 from air import api as air
 from air.api import ops
-from shared.builders.rms_gemms_rope_multi import _api_dtype
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import sys
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.builders.rms_gemms_rope_multi import _api_dtype
+
+import types
+from pathlib import Path
+
+import sys
 
 # ---------------------------------------------------------------------------
 # Per-channel broadcast bias-add, 2D in/out (prefill, M=seq).
@@ -286,16 +304,21 @@ def build_rms_qkv_bias_rope_module(
 
     Returns (module, scratch_for).
     """
-    from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
-    from shared.builders.rms_gemms_rope_multi import _build_rope_2d
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.builders.gemm_builder import (
+        _build_gemm_module,
+        gemm_registry_config,
+    )
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import _build_rope_2d
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
         FuncArg,
         alloc_gemm_scratch,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     if q_pad is None:
         q_pad = q_dim
@@ -552,8 +575,12 @@ def build_rms_qkv_bias_rope_gemv_module(
     %arg17 q_roped  (q_dim,)            final RoPE Q
     %arg18 k_roped  (kv_dim,)           final RoPE K
     """
-    import shared.builders.rms_gemv_rope_multi as rgr
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
+    import air_examples.llms.shared.builders.rms_gemv_rope_multi as rgr
+    from air_examples.llms.shared.infra.stitching import (
+        stitch_elf,
+        KernelSlice,
+        FuncArg,
+    )
     from matvec import build_module as build_gemv
 
     assert q_dim == n_heads * head_dim

@@ -29,9 +29,8 @@ from ml_dtypes import bfloat16
 
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
-_PROG_EXAMPLES = _LLMS_DIR.parent
 _LLAMA_REF = _LLMS_DIR / "llama32_1b"
-for _p in (str(_PROG_EXAMPLES), str(_LLMS_DIR), str(_LLAMA_REF), str(_THIS_DIR)):
+for _p in (str(_LLAMA_REF), str(_THIS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -41,7 +40,18 @@ from smollm2_1_7b_weights import (  # noqa: E402
     load_weights,
     generate_rope_lut,
 )
-from shared.infra.cache import KernelCache, Profiler  # noqa: E402
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler  # noqa: E402
 from llama32_1b_prefill import compile_all_kernels  # noqa: E402
 from llama32_1b_decode import compile_decode_kernels  # noqa: E402
 
@@ -57,6 +67,8 @@ from llama32_1b_inference import (  # noqa: E402
     repl_loop,
     _print_one_shot_output,
 )
+
+import types
 
 MODEL_CHOICES = {
     "base": "HuggingFaceTB/SmolLM2-1.7B",

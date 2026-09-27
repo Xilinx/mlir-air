@@ -49,6 +49,15 @@ if str(_HERE) not in sys.path:
 # stays importable for --compile-only.
 from smolvla_runtime import VISION_CACHE_DIR  # noqa: E402
 
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
 DEFAULT_MODEL = "lerobot/smolvla_base"
 DEFAULT_PROMPT = "pick up the cube"
 
@@ -303,7 +312,7 @@ def compile_only(cache_dir: str = VISION_CACHE_DIR) -> int:
     # import time, so it has to come before anything under `shared.`.
     from smolvla_vision_encoder import compile_all_kernels
     from smolvla_vision_weights import SigLIPVisionConfig
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
     from smolvla_runtime import VISION_N_IMAGES
 
     cfg = SigLIPVisionConfig()

@@ -13,8 +13,6 @@ prefill LM Head (which uses GEMM with M=seq_len).
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(
     0,
     os.path.join(
@@ -27,11 +25,25 @@ sys.path.insert(
     ),
 )
 
-from shared.infra.stitching import (
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.infra.stitching import (
     stitch_elf,
     KernelSlice,
     FuncArg,
 )
+
+import types
+from pathlib import Path
 
 _EXTERN_FUNCS = {"@matvec_vectorized_bf16_bf16", "@linalg_fill_bf16"}
 

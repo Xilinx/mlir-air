@@ -39,17 +39,27 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _THIS_DIR = Path(__file__).resolve().parent
-_PROG_EXAMPLES = str(_THIS_DIR.parent)
 _LLAMA_BF16 = str(_THIS_DIR.parent / "llama32_1b")
-for p in (_PROG_EXAMPLES, _LLAMA_BF16, str(_THIS_DIR)):
+for p in (_LLAMA_BF16, str(_THIS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 from llama32_1b_weights import LlamaConfig, generate_rope_lut
 from llama32_1b_cpu_helpers import rms_norm, attention_reference
-from shared.infra import cache as _cache_mod
-from shared.infra.cache import KernelCache, Profiler
-from shared.infra.external_kernels import (
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra import cache as _cache_mod
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler
+from air_examples.llms.shared.infra.external_kernels import (
     _compile_kernel,
     _PROJ_ROOT,
     compile_rope,
@@ -74,6 +84,8 @@ from awq_pack import load_awq_weights
 
 
 import shutil
+
+import types
 
 
 def _compile_mv_int4_bf16_matmul(tile_m=16, tile_n=16, k_chunk=128, gs=128):
@@ -1152,7 +1164,7 @@ def main():
             # bf16 prefill: dequantized AWQ weights through the bf16 stitchers
             # (~3-6x faster compute per layer; see bisection findings).
             sys.path.insert(0, _LLAMA_BF16)
-            from shared.infra.backend_presets import (
+            from air_examples.llms.shared.infra.backend_presets import (
                 RMS_GEMMS_ROPE_BACKEND,
                 O_FFN_BACKEND,
             )
@@ -1162,7 +1174,7 @@ def main():
             # Build them before caching so prepare_air_project stages them into
             # air_project/ (mirrors llama32_1b_prefill.compile_all_kernels); the
             # int4/bfp16 branches use their own kernels and don't need these.
-            from shared.infra.external_kernels import compile_gemm_mm
+            from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
 
             compile_gemm_mm(
                 tile_m=32,
@@ -1181,7 +1193,7 @@ def main():
 
             if _need("rms_gemms_rope"):
                 print("\nCompiling rms_gemms_rope (bf16)...")
-                from shared.builders.rms_gemms_rope_multi import (
+                from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
                     build_rms_gemms_rope_module,
                 )
 
@@ -1199,7 +1211,9 @@ def main():
                 )
             if _need("o_ffn"):
                 print("Compiling o_ffn (bf16)...")
-                from shared.builders.o_ffn_multi import build_o_ffn_module
+                from air_examples.llms.shared.builders.o_ffn_multi import (
+                    build_o_ffn_module,
+                )
 
                 cache.compile_and_cache(
                     "o_ffn",
@@ -1210,7 +1224,7 @@ def main():
         if not args.cpu_attn and _need("flash_attn", kernel_sym="attention_bf16"):
             print("Compiling flash_attn (bf16 ELF)...")
             sys.path.insert(0, str(_PROJ_ROOT))
-            from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+            from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
                 build_module as build_attn,
             )
 

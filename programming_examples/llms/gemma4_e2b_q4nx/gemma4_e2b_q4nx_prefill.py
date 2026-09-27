@@ -43,11 +43,8 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-_PROG = str(_HERE.parent.parent)  # programming_examples
-_LLMS = str(_HERE.parent)  # llms
-for _p in (_PROG, _LLMS, str(_HERE)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 from gemma4_e2b_q4nx_weights import (  # noqa: E402
     ATTN_SCALE,
@@ -76,6 +73,15 @@ from gemma4_e2b_q4nx_weights import (  # noqa: E402
     kv_source_layer,
     owns_kv,
 )
+
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 
 MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
 
@@ -276,7 +282,7 @@ class _rms_eps:
         self.eps = eps
 
     def __enter__(self):
-        import weighted_rms_norm.weighted_rms_norm as wrn
+        import air_examples.weighted_rms_norm.weighted_rms_norm as wrn
 
         self._wrn = wrn
         self._saved = wrn.EPS
@@ -336,7 +342,7 @@ def gemm_spec(m, k, n, precision="high", force_method=None, tile_k_l2=None):
     (32 cores), which is where FastFlowLM puts its GELU -- fused-cast's separate
     cast launch is capped at 8 columns by the shim budget.
     """
-    from shared.builders.gemm_builder import _spec_with_tiles
+    from air_examples.llms.shared.builders.gemm_builder import _spec_with_tiles
 
     method = force_method or ("fused-cast" if m * k * n >= 4e9 else "drain")
     tile_m = 64 if method == "fused-cast" else 32
@@ -390,7 +396,7 @@ def _build_gemm_ir(
     n_out=None,
     n_out_offset=0,
 ):
-    from shared.builders.gemm_builder import _build_gemm_module
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
 
     if herd_n is None:
         herd_n = gemm_herd_n(n, spec["tile_n"])
@@ -472,8 +478,10 @@ def _gemm_amap(inp, w, out, sc):
 
 
 def _rms_q_kv_slices(seq_len, cls):
-    from shared.builders.rms_qkv_qknorm_rope_multi import _build_qknorm_2d
-    from shared.builders.rms_gemms_rope_multi import _build_rope_2d
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
+        _build_qknorm_2d,
+    )
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import _build_rope_2d
 
     return _build_qknorm_2d, _build_rope_2d
 
@@ -492,14 +500,16 @@ def build_rms_q(seq_len, cls, herd_m=8, herd_n=4):
     %arg8 q_roped (seq, dq)  OUTPUT
     [+ f32 C-scratch tail for the fused-cast Q GEMM]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
         FuncArg,
         alloc_gemm_scratch,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     qknorm_2d, rope_2d = _rms_q_kv_slices(seq_len, cls)
     dh, dq, _dkv = cls_dims(cls)
@@ -557,7 +567,7 @@ def build_k(seq_len, cls, herd_m=8, herd_n=4):
     %arg6 k_roped  (seq, dkv)  OUTPUT
     [+ f32 C-scratch tail]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -611,7 +621,7 @@ def build_v(seq_len, cls, herd_m=8, herd_n=4):
     %arg4 v_n     (seq, dkv) OUTPUT
     [+ f32 C-scratch tail]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -671,7 +681,7 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
       %arg8 normed2     (seq, D)    OUTPUT (feeds gate/up)
       [+ f32 C-scratch tail for the fused-cast O GEMM]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
@@ -679,7 +689,9 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
         alloc_gemm_scratch,
         build_residual_add_2d_ir,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     _dh, dq, _dkv = cls_dims(cls)
     o_spec = gemm_spec(seq_len, dq, D)
@@ -747,7 +759,7 @@ def _build_single_gemm_elf(
     operand and no DMA, and the GeGLU pass left behind is a plain multiply --
     which the registry measures at 55.7 GB/s against gelu-and-mul's 13.1.
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
@@ -811,7 +823,7 @@ def _gelu_tile_n(seq_len, hidden_dim, herd_x=8):
 
 def build_gelu_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     """Standalone NPU GeGLU ELF: gelu_tanh(a) * b -> (seq, hidden_dim)."""
-    from gelu_and_mul.gelu_and_mul import build_module_2d as build_gelu
+    from air_examples.gelu_and_mul.gelu_and_mul import build_module_2d as build_gelu
 
     tile_n = _gelu_tile_n(seq_len, hidden_dim, herd_x)
     print(f"  [gelu_mul] GELU-tanh GLU {seq_len}x{hidden_dim} (tile_n={tile_n})...")
@@ -830,7 +842,7 @@ def build_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     13.1 GB/s and a plain multiply at 55.7, both on the 8 tiles the 3-stream
     shim budget allows, so the tanh was the whole difference.
     """
-    from eltwise_mul.eltwise_mul import build_eltwise_mul
+    from air_examples.eltwise_mul.eltwise_mul import build_eltwise_mul
 
     tile = _gelu_tile_n(seq_len, hidden_dim, herd_x)
     print(f"  [mul] {seq_len}x{hidden_dim} (tile={tile})...")
@@ -858,7 +870,7 @@ def build_gemm_norm_add_module(name, seq_len, k_dim, out_1d, herd_m=8, herd_n=4)
     %arg6 output  (seq*D,) if out_1d else (seq, D)   OUTPUT
     [+ f32 C-scratch tail for the fused-cast GEMM]
     """
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
@@ -867,7 +879,9 @@ def build_gemm_norm_add_module(name, seq_len, k_dim, out_1d, herd_m=8, herd_n=4)
         build_add_2d_to_1d_ir,
         build_residual_add_2d_ir,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     d_spec = gemm_spec(seq_len, k_dim, D)
     print(f"  [1/3] {name} GEMM ({d_spec['method']}) {seq_len}x{k_dim}x{D}...")
@@ -968,7 +982,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         f"{len(_NEEDED)} ELFs)...\n{'='*60}\n"
     )
 
-    from shared.infra.external_kernels import (
+    from air_examples.llms.shared.infra.external_kernels import (
         compile_gemm_mm,
         compile_rope,
         compile_gelu_and_mul,
@@ -1079,8 +1093,8 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 
     # --- Attention. One ELF per class: the sliding layers carry the window
     # mask AND head_dim=256, the full layers plain causal at head_dim=512.
-    from shared.infra.fa_headfirst import compile_headfirst_fa
-    from shared.infra.fa_headspatial import (
+    from air_examples.llms.shared.infra.fa_headfirst import compile_headfirst_fa
+    from air_examples.llms.shared.infra.fa_headspatial import (
         compile_headspatial_fa,
         hs_tiling,
         supports,
@@ -1120,8 +1134,10 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         )
 
     print(f"\n--- {K_LM} ({_LM_N_PARTITIONS} x {_LM_N_PART}, K={D}) ---")
-    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
-    from shared.infra.backend_presets import LM_GEMV_BACKEND
+    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+        build_lm_head_gemv_module,
+    )
+    from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
 
     cache.compile_and_cache(
         K_LM,
@@ -1195,7 +1211,7 @@ class Gemma4Q4nxPrefill:
     def __init__(
         self, seq_len=2048, n_layers=NUM_LAYERS, cache_dir=None, verbose=False
     ):
-        from shared.infra.cache import KernelCache
+        from air_examples.llms.shared.infra.cache import KernelCache
 
         self.seq = seq_len
         self.n_layers = n_layers
@@ -1234,7 +1250,7 @@ class Gemma4Q4nxPrefill:
         self._seq_stamp.parent.mkdir(parents=True, exist_ok=True)
         self._seq_stamp.write_text(stamp)
 
-        from shared.infra.backend_presets import LM_GEMV_BACKEND
+        from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
 
         self._lm_backend = dict(LM_GEMV_BACKEND)
 
@@ -1757,8 +1773,11 @@ class Gemma4Q4nxPrefill:
 
     def _run_layer(self, x, k, pli):
         """One Gemma4 decoder layer on device: attention, FFN, then the PLE tail."""
-        from shared.infra.fa_headfirst import npu_fa_headfirst
-        from shared.infra.fa_headspatial import npu_fa_headspatial, supports
+        from air_examples.llms.shared.infra.fa_headfirst import npu_fa_headfirst
+        from air_examples.llms.shared.infra.fa_headspatial import (
+            npu_fa_headspatial,
+            supports,
+        )
 
         seq = self.seq
         dh, dq, dkv = dims(k)

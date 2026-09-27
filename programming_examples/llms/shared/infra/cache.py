@@ -14,6 +14,17 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
+import types
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 
 def prepare_air_project(quant: str = "bf16"):
     """Clean and prepare the air_project/ directory for a fresh compilation.
@@ -33,7 +44,9 @@ def prepare_air_project(quant: str = "bf16"):
     air_proj.mkdir(parents=True, exist_ok=True)
 
     # Compile external kernels from source (not stale .o copies)
-    from shared.infra.external_kernels import compile_all_external_kernels
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_all_external_kernels,
+    )
 
     compile_all_external_kernels(quant=quant)
 

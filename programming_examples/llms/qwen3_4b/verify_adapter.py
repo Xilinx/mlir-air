@@ -23,12 +23,22 @@ from ml_dtypes import bfloat16
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _VERIFY = _LLMS_DIR / "verify"
-for _p in (str(_LLMS_DIR), str(_VERIFY), str(_THIS_DIR)):
+for _p in (str(_VERIFY), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
-from shared.infra.cache import KernelCache  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
 from qwen3_4b_prefill import (  # noqa: E402
     compile_all_kernels as compile_prefill_kernels,
     run_transformer_block_qwen3 as run_prefill_block,
@@ -46,6 +56,8 @@ from qwen3_4b_weights import (  # noqa: E402
 )
 from qwen3_4b_cpu_helpers import rms_norm  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
+
+import types
 
 # Qwen3 unifies base + instruct in one checkpoint.
 MODEL_CHOICES = {
