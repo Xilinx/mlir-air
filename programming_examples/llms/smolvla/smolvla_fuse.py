@@ -21,6 +21,14 @@ SMOLVLA_OFFN_TILING, SMOLVLA_LNQKV_TILING (default: computed)
     smolvla_vision_encoder.py). The model output is bit-identical to the recycled 2,2.
     These env vars force a specific value instead, e.g. to reproduce 2,2 for comparison.
 
+SMOLVLA_B_STATIONARY (default 1)
+    Builds the K=768 vision GEMMs (fused QKV, O, fc1) B-stationary: N stays a launch
+    dimension and each launch fills the weight tile once into L2 (tile_k_l2 = K), then
+    loops over the M tiles inside the segment streaming only A. The weights are read from
+    DRAM once per N block instead of once per (M, N) tile, and the launch grid shrinks
+    from (M/256) x N-iterations to N-iterations. Output is bit-identical to 0. fc2 (K=3072,
+    B block > one memtile) is unchanged.
+
 SMOLVLA_FA_QSEG (default 0)
     Runs the FlashAttention q-block loop inside the segment instead of as a launch-grid
     axis: the same design and microkernels (bit-identical output), but head_groups *
@@ -43,3 +51,4 @@ LN_ROWS = 4
 OFFN_TILING_OVERRIDE = _sizes_override("SMOLVLA_OFFN_TILING")
 LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
 FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "0") == "1"
+B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
