@@ -29,6 +29,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Category, human-readable name, directory path (relative to
 # programming_examples/), and datatype are manually specified here
 # because they cannot be reliably auto-detected from LIT files.
+#
+# The llms designs put programming_examples/ on sys.path so they can import
+# each other's builders, which makes every directory here a top-level module
+# name. Do not name one after a PyPI package: a library that probes for that
+# package as an optional dependency will import the example directory instead.
 
 EXAMPLES = [
     {
@@ -395,7 +400,7 @@ EXAMPLES = [
     {
         "category": "CNN",
         "name": "Bottleneck",
-        "path": "bottleneck",
+        "path": "bottleneck_block",
         "datatypes": "bf16",
     },
     {
