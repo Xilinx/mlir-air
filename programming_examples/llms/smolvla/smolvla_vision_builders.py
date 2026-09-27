@@ -87,7 +87,7 @@ from shared.builders.gemm_builder import (
 from shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
 from shared.builders.o_ffn_multi import _build_add_2d_to_2d
 from layer_norm.layer_norm import build_module as build_layer_norm
-from smolvla_fuse import LN_EXT, LN_ROWS
+from smolvla_fuse import B_STATIONARY, LN_EXT, LN_ROWS
 
 
 def _layer_norm_ir(seq_len, emb_dim):
@@ -247,6 +247,16 @@ def _gemm_tiles(spec):
     )
 
 
+def _bstat_kwargs(k, tk2, tk1):
+    """(tile_k_l2, extra build kwargs) for a K-slab GEMM that keeps B stationary in L2
+    (SMOLVLA_B_STATIONARY): one K slab (tile_k_l2 = K) and `b_stationary=True`. The packed
+    weight layout depends only on tile_k_l1, so the same weights serve both builds."""
+    if not B_STATIONARY:
+        return tk2, {}
+    assert k % tk1 == 0, (k, tk1)
+    return k, {"b_stationary": True}
+
+
 def _gemm_grid_extents(m, n, spec, herd_m, herd_n):
     """(grid_m, grid_n): how many launch-grid iterations a drain GEMM at this
     shape/tiling needs. A `runtime_loop_tiling_sizes` request >= this per-axis
@@ -339,6 +349,7 @@ def build_vit_ln_qkv_module(
         f"  [ln_qkv 2/2] fused QKV GEMM ({spec['method']} tile_n={tn}, "
         f"N={qkv_dim}, bias fused)..."
     )
+    tk2, bst = _bstat_kwargs(emb_dim, tk2, tk1)
     qkv_ir = str(
         _build_gemm_module(
             seq_len,
@@ -351,6 +362,7 @@ def build_vit_ln_qkv_module(
             herd_m,
             herd_n,
             b_pad_rows=BIAS_PAD_ROWS,
+            **bst,
             **kw,
         )
     )
@@ -423,6 +435,7 @@ def build_vit_o_ffn_module(
     dk, dtm, dk2, dk1, dtn = _gemm_tiles(d_spec)
 
     print(f"  [o_ffn 1/6] O GEMM (drain tn={otn}, bias fused)...")
+    ok2, o_bst = _bstat_kwargs(emb_dim, ok2, ok1)
     o_ir = str(
         _build_gemm_module(
             seq_len,
@@ -435,6 +448,7 @@ def build_vit_o_ffn_module(
             herd_m,
             herd_n,
             b_pad_rows=BIAS_PAD_ROWS,
+            **o_bst,
             **ok,
         )
     )
@@ -443,6 +457,7 @@ def build_vit_o_ffn_module(
     print("  [o_ffn 3/6] LN2 (affine)...")
     ln2_ir = _layer_norm_ir(seq_len, emb_dim)
     print(f"  [o_ffn 4/6] fc1 GEMM (drain tn={gtn}, bias+GELU fused)...")
+    gk2, g_bst = _bstat_kwargs(emb_dim, gk2, gk1)
     fc1_ir = str(
         _build_gemm_module(
             seq_len,
@@ -456,6 +471,7 @@ def build_vit_o_ffn_module(
             herd_n,
             b_pad_rows=BIAS_PAD_ROWS,
             epilogue_gelu=True,
+            **g_bst,
             **gk,
         )
     )

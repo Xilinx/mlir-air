@@ -62,11 +62,23 @@ def build_module(
     epilogue_gelu=False,
     n_out=None,
     n_out_offset=0,
+    b_stationary=False,
 ):
+    # b_stationary: keep the weight tile stationary in L2 (external drain path, one K slab).
+    # N stays a launch dimension; each launch fills B once (K x tile_n per herd column) and
+    # loops over the M tiles inside the segment, streaming only A. B is then read from DRAM
+    # once per N block instead of once per (M, N) tile. Needs tile_k_l2 == k and the B block
+    # ((k / tile_k_l1) * (tile_k_l1 + b_pad_rows) x tile_n) to fit a memtile. The shim BD
+    # count grows with the M trip count, so it is meant for a moderate m // (tile_m * herd_m).
     assert m % (tile_m * herd_m) == 0, (m, tile_m, herd_m)
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
     assert n % (tile_n * herd_n) == 0, (n, tile_n, herd_n)
+    assert not b_stationary or k == tile_k_l2, (
+        "b_stationary needs one K slab",
+        k,
+        tile_k_l2,
+    )
     if emit_external_call:
         # Manual-CallOp external-mm.o path (also usable inside a fused multi-launch
         # ELF, where the whole-module air-linalg-to-func pass can't run). The L1 C
@@ -345,7 +357,10 @@ def build_module(
     @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyOut)
     def matmul_bf16(arg0, arg1, arg2):
 
-        launch_size = [m // tile_m // herd_m, n // tile_n // herd_n]
+        launch_size = [
+            1 if b_stationary else m // tile_m // herd_m,
+            n // tile_n // herd_n,
+        ]
 
         @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
         def launch_body(
@@ -441,8 +456,22 @@ def build_module(
                         )
                     ],
                 )
-                launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
-                launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                if b_stationary:
+                    launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
+                    # B tile: filled once per launch, stays resident in L2 for the whole M loop.
+                    dma_memcpy_nd(
+                        l2_b_data,
+                        l3_b_data_s,
+                        src_offsets=[0, 0, 0, launch_offset_y],
+                        src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
+                        src_strides=[n * tile_k_l2_pad, tile_n, n, 1],
+                    )
+                    _m_loop = range_(0, m // tile_m // herd_m)
+                    launch_ivx_s = next(_m_loop)
+                    launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
+                else:
+                    launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
+                    launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
                 # C's column offset is shifted by n_out_offset; B's is not (B is
                 # its own [k, n] array, C is a window into an n_out-wide one).
                 if n_out_offset:
@@ -535,7 +564,8 @@ def build_module(
                         src_sizes=[herd_m, 1, tile_m, tile_k_l2],
                         src_strides=[k * tile_m, tile_k_l2, k, 1],
                     )
-                    dma_memcpy_nd(
+                    _fill_b = (lambda *a, **kw: None) if b_stationary else dma_memcpy_nd
+                    _fill_b(
                         l2_b_data,
                         l3_b_data_s,
                         src_offsets=[0, 0, reduction_offset_b, launch_offset_y],
@@ -797,6 +827,10 @@ def build_module(
                     src_sizes=[herd_m, tile_m, herd_n, tile_n],
                     src_strides=[tile_m * herd_n * tile_n, tile_n, tile_m * tile_n, 1],
                 )
+
+                if b_stationary:
+                    yield_([])
+                    next(_m_loop, None)
 
                 DeallocOp(l2_a_data)
                 DeallocOp(l2_b_data)
@@ -1361,6 +1395,13 @@ if __name__ == "__main__":
         help="(method=drain advanced) split the f32->bf16 drain into N tile_n segments.",
     )
     parser.add_argument(
+        "--b-stationary",
+        action="store_true",
+        dest="b_stationary",
+        help="(method=drain) keep the weight tile stationary in L2: one K slab "
+        "(--tile-k-l2 == --k), N stays a launch dim, M loops inside the segment.",
+    )
+    parser.add_argument(
         "--cast-tile-n",
         type=int,
         default=2048,
@@ -1388,6 +1429,9 @@ if __name__ == "__main__":
         and method == "fused-cast"
         and args.compile_mode != "compile-and-xclbin"
     )
+
+    if args.b_stationary and (args.high_precision != "true" or method != "drain"):
+        parser.error("--b-stationary needs --high-precision true --method drain")
 
     if args.high_precision == "false":
         # direct-codegen bf16 (low-precision tier).
@@ -1443,6 +1487,7 @@ if __name__ == "__main__":
             arch=args.arch,
             emit_external_call=True,
             drain_chunks=args.drain_chunks,
+            b_stationary=args.b_stationary,
         )
         instance, n_inputs = "matmul_bf16", 2
 
