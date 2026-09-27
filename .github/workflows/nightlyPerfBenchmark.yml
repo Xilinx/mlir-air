@@ -349,6 +349,23 @@ jobs:
             pip install -q -r "$req"
           done
 
+          # Record what that resolved to. The loop is -q, which suppresses pip's
+          # "Successfully installed", so none of these versions reach the log and
+          # two nightlies cannot be diffed after the fact -- a comparison turns up
+          # only the packages installed noisily in the steps above.
+          echo "::group::resolved python environment"
+          pip freeze
+          echo "::endgroup::"
+
+          # pandas imports bottleneck when it is present and raises "Can't
+          # determine version for bottleneck" if it has no __version__, which
+          # takes SmolVLA's CPU reference down before the policy loads. Nothing
+          # in this repo's dependency closure declares bottleneck, so print where
+          # it came from rather than inferring it.
+          python -c "import bottleneck as b; print('bottleneck:', b.__file__, getattr(b, '__version__', 'NO __version__'))" \
+            || echo "bottleneck: not importable"
+          pip show bottleneck 2>/dev/null || echo "bottleneck: not installed by pip"
+
           # Run all models through the maintained lit/ninja targets (lit injects
           # the AIE tool env from the CMake build). lit runs every model even if
           # one fails, so a run reports each model's status; ninja returns
