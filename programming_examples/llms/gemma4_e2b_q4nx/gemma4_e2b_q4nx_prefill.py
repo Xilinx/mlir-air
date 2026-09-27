@@ -1690,7 +1690,19 @@ class Gemma4Q4nxPrefill:
             for i, (_n, _no, _of, t) in enumerate(halves):
                 vals[ix[key][i]] = self._w[k][tag + t]
         static = {ix["down_w"], ix["norm_w"]} | set(ix["gate_w"]) | set(ix["up_w"])
-        inter_idx = {ix["gate"], ix["up"], ix["act"], ix["proj"], ix["proj_n"]}
+        # normed2/resid are zero-copy views into the very BOs shared_alias binds
+        # below, and out is fully overwritten -- writing any of them is a copy
+        # of a buffer onto itself.
+        inter_idx = {
+            ix["gate"],
+            ix["up"],
+            ix["act"],
+            ix["proj"],
+            ix["proj_n"],
+            ix["normed2"],
+            ix["resid"],
+            ix["out"],
+        }
         # A split half accumulates only its own columns, so its f32 scratch is
         # narrower than the shared bf16 buffer it writes into.
         n_h = halves[0][0]
@@ -1764,7 +1776,7 @@ class Gemma4Q4nxPrefill:
             ix["proj_n"]: np.zeros((seq, D), bfloat16),
             ix["out"]: np.zeros((seq, D), bfloat16),
         }
-        inter_idx = {ix["g"], ix["gated"], ix["proj"], ix["proj_n"]}
+        inter_idx = {ix["g"], ix["gated"], ix["proj"], ix["proj_n"], ix["out"]}
         for sc, cols in zip(scratch_for, (PLI_D, D)):
             if sc is not None:
                 vals[sc] = np.zeros((seq, cols), np.float32)
