@@ -24,6 +24,7 @@ N ?= 2048
 
 HIGH_PRECISION ?= true
 METHOD ?= auto
+B_STATIONARY ?= false
 AIE_TARGET ?= aie2p
 COMPILE_MODE ?= compile-and-run
 PERF_ITERS ?= 20
@@ -62,7 +63,8 @@ run: compile-kernel
 		--high-precision $(HIGH_PRECISION) --method $(METHOD) \
 		--m $(M) --k $(K) --n $(N) \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) \
-		--herd-m $(HERD_M) --herd-n $(HERD_N) --compile-mode $(COMPILE_MODE) --perf-iters $(PERF_ITERS)
+		--herd-m $(HERD_M) --herd-n $(HERD_N) --compile-mode $(COMPILE_MODE) --perf-iters $(PERF_ITERS) \
+		$(if $(filter true,$(B_STATIONARY)),--b-stationary)
 
 clean:
 	rm -rf build_peano build_chess
