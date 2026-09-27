@@ -372,6 +372,17 @@ static void zero_mn_f32_impl(float *__restrict c) {
 
 // f32 → bf16 narrowing for the final L1 C drain. Run after the host's K-loop
 // completes; one call per (m_tile × n_tile) tile.
+// f32 -> bf16 narrowing of one vector through an accumulator (SRS). It rounds
+// by the core's rounding-mode register, whose power-up default is FLOOR, so the
+// caller sets conv_even before it narrows.
+template <unsigned VW>
+static inline aie::vector<bfloat16, VW>
+narrow_f32_to_bf16(const aie::vector<float, VW> &v) {
+  aie::accum<accfloat, VW> acc;
+  acc.from_vector(v);
+  return acc.template to_vector<bfloat16>();
+}
+
 template <unsigned m_tile, unsigned n_tile>
 static void f32_to_bf16_mn_impl(const float *__restrict src,
                                 bfloat16 *__restrict dst) {
@@ -380,11 +391,7 @@ static void f32_to_bf16_mn_impl(const float *__restrict src,
   constexpr unsigned NTOT = m_tile * n_tile;
   static_assert(NTOT % VW == 0, "m_tile*n_tile must be a multiple of VW");
   for (unsigned i = 0; i < NTOT; i += VW) {
-    aie::vector<float, VW> v = aie::load_v<VW>(src + i);
-    aie::vector<bfloat16, VW> vb;
-    for (unsigned j = 0; j < VW; j++)
-      vb[j] = (bfloat16)v[j];
-    aie::store_v(dst + i, vb);
+    aie::store_v(dst + i, narrow_f32_to_bf16<VW>(aie::load_v<VW>(src + i)));
   }
 }
 
