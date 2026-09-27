@@ -147,16 +147,6 @@ def _mul_backend(name):
     }
 
 
-def _gelu_backend(name):
-    # The GELU ELF's instance name must match the top func name in build_module_2d.
-    return {
-        "verbose": False,
-        "omit_while_true_loop": False,
-        "output_format": "elf",
-        "instance_name": "gelu_and_mul_2d",
-    }
-
-
 # Kernel cache keys. One per (stage, class-or-width) so a layer never picks up
 # an ELF compiled for the other class -- which would be silent: the shapes of
 # the wrong-class ELF are self-consistent, it just computes a different model.
@@ -222,27 +212,18 @@ def _ffn_weights(w, wid):
     return out
 
 
-def K_GATE(w, tag=""):
-    return f"gate_{w}{tag}"
+def K_FFN(w):
+    """The whole FFN branch in one ELF: gate, up, multiply, down, norm, add.
+
+    One air.launch is one PDI, and launches sharing a func have their PDI loads
+    CHAINED, so this costs one XRT run instead of six. Measured: a chained
+    launch is 0.332 ms against 0.487 for a standalone run.
+    """
+    return f"ffn_{w}"
 
 
-def K_UP(w, tag=""):
-    return f"up_{w}{tag}"
-
-
-def K_MUL(w):
-    """The FFN's gate*up multiply. GELU lives in the gate GEMM's epilogue."""
-    return f"mul_{w}"
-
-
-def K_DOWN(w):
-    return f"down_{w}"
-
-
-K_PLE_GEMM = "ple_gemm"  # (seq, D) -> (seq, PLI_D); the per-layer inp_gate
+K_PLE = "ple"  # the whole per-layer-embedding branch, one ELF like K_FFN
 K_PLE_MP = "ple_mp_all"  # (seq, D) -> (seq, PLE_MP_N); ALL layers' model_proj
-K_PLE_GELU = "gelu_mul_ple"  # gate * pli at PLI_D; the GELU is in ple_gate
-K_PLE_PROJ = "ple_proj"  # (seq, PLI_D) -> D, norm, + residual
 K_LM = "lm_head_gemv"
 
 # Round-groups for the full-attention layers' causal K/V staircase. More groups
@@ -252,7 +233,10 @@ _FA_CAUSAL_GROUPS = 4
 
 # The cache keys on artifact NAME and validates only the toolchain, so a kernel
 # whose layout or meaning changed is reused under its old name. Bump this.
-_KERNEL_REV = 1
+# rev 2: the FFN's six ELFs became one ffn_<wid>.
+# rev 3: the PLE's three became one ple. A rev-2 cache would keep its three
+# orphans alongside the new ELF rather than being rejected.
+_KERNEL_REV = 3
 
 # The model_proj branch projects the SAME token embeddings through every
 # layer's matrix, so FastFlowLM's `pli_down_proj` is one GEMM of width
@@ -321,7 +305,20 @@ def _wide_drain(spec):
     "_m32"/mm_m32.o with the tile_m=32 drain.
     """
     tag = f"_m{_DRAIN_WIDE_TILE['tile_m']}n{_DRAIN_WIDE_TILE['tile_n']}"
-    spec = dict(spec, sym_suffix=tag, obj=f"mm{tag}.o", **_DRAIN_WIDE_TILE)
+    return _retag(dict(spec, **_DRAIN_WIDE_TILE), tag)
+
+
+# Suffix for the PLE projection's copy of the tile_m=32 drain kernel. Two GEMMs
+# in one ELF cannot share a symbol unless their herd_n matches: herd_n sets the
+# outer stride of the f32 accumulator subview, which is part of the extern's
+# type. The PLE's gate is 2 columns wide and its projection 4, so the shared
+# "_m32" decl would be emitted twice with different types.
+_PLE_PROJ_TAG = "_m32c4"
+
+
+def _retag(spec, tag):
+    """Point a spec at its own symbol suffix and mm.o, tiling unchanged."""
+    spec = dict(spec, sym_suffix=tag, obj=f"mm{tag}.o")
     spec["build_kwargs"] = dict(
         spec["build_kwargs"], sym_suffix=tag, link_with_name=f"mm{tag}.o"
     )
@@ -809,17 +806,6 @@ def _gelu_tile_n(seq_len, hidden_dim, herd_x=8):
     raise RuntimeError(f"No GELU tile_n for seq={seq_len} hidden={hidden_dim}")
 
 
-def build_gelu_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
-    """Standalone NPU GeGLU ELF: gelu_tanh(a) * b -> (seq, hidden_dim)."""
-    from gelu_and_mul.gelu_and_mul import build_module_2d as build_gelu
-
-    tile_n = _gelu_tile_n(seq_len, hidden_dim, herd_x)
-    print(f"  [gelu_mul] GELU-tanh GLU {seq_len}x{hidden_dim} (tile_n={tile_n})...")
-    module = build_gelu(seq_len, hidden_dim, tile_n, bfloat16, herd_x, herd_y)
-    print(f"  gelu_mul module: {len(str(module).splitlines())} lines, parsed OK")
-    return module
-
-
 def build_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     """Standalone NPU elementwise multiply ELF: gate * up -> (seq, hidden_dim).
 
@@ -841,71 +827,312 @@ def build_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     return module
 
 
-def build_gemm_norm_add_module(name, seq_len, k_dim, out_1d, herd_m=8, herd_n=4):
-    """GEMM + RMSNorm + residual add -- the tail shared by the FFN and the PLE.
+def ffn_specs(seq_len, wid):
+    """(gate spec, up spec, down spec) for one FFN width.
 
-    Gemma4 ends both its FFN and its per-layer-embedding branch the same way:
-    project back to D, normalize the projection, then add the residual. The only
-    differences are k_dim (INTER vs PLI_D) and whether the consumer wants the
-    result flat.
+    The gate is forced to drain because its GELU rides in that method's own
+    cast; the up GEMM keeps whatever the size rule picks, which above the
+    cross-over is fused-cast and therefore needs an f32 scratch arg.
+    """
+    n_h = _ffn_halves(wid)[0][0]
+    return (
+        gemm_spec(seq_len, D, n_h, force_method="drain"),
+        gemm_spec(seq_len, D, n_h),
+        gemm_spec(seq_len, wid_inter(wid), D),
+    )
 
-    %arg0 act     (seq, k_dim)   the branch's activation
-    %arg1 w       (k_dim, D)     static
-    %arg2 proj    (seq, D)
-    %arg3 norm_w  (D,)           static
-    %arg4 proj_n  (seq, D)
-    %arg5 resid   (seq, D)
-    %arg6 output  (seq*D,) if out_1d else (seq, D)   OUTPUT
-    [+ f32 C-scratch tail for the fused-cast GEMM]
+
+def ffn_args(seq_len, wid):
+    """The K_FFN signature: (base args, scratch args, index map, scratch map).
+
+    Shared by the builder and the dispatch so the two cannot drift. Arg order
+    follows the dataflow -- normed2 -> gate/up -> act -> proj -> proj_n -> out
+    -- with the fused-cast f32 scratch on the tail, as everywhere else.
+    """
+    from shared.infra.stitching import FuncArg, alloc_gemm_scratch
+
+    inter = wid_inter(wid)
+    halves = _ffn_halves(wid)
+    g_spec, u_spec, d_spec = ffn_specs(seq_len, wid)
+    args = [FuncArg("%arg0", f"memref<{seq_len}x{D}xbf16>")]
+    idx = {"normed2": 0, "gate_w": [], "up_w": []}
+    for key in ("gate_w", "up_w"):
+        for n_h, *_ in halves:
+            idx[key].append(len(args))
+            args.append(FuncArg(f"%arg{len(args)}", f"memref<{D}x{n_h}xbf16>"))
+    for nm, ty in (
+        ("gate", f"memref<{seq_len}x{inter}xbf16>"),
+        ("up", f"memref<{seq_len}x{inter}xbf16>"),
+        ("act", f"memref<{seq_len * inter}xbf16>"),
+        ("down_w", f"memref<{inter}x{D}xbf16>"),
+        ("proj", f"memref<{seq_len}x{D}xbf16>"),
+        ("norm_w", f"memref<{D}xbf16>"),
+        ("proj_n", f"memref<{seq_len}x{D}xbf16>"),
+        ("resid", f"memref<{seq_len}x{D}xbf16>"),
+        ("out", f"memref<{seq_len * D}xbf16>"),
+    ):
+        idx[nm] = len(args)
+        args.append(FuncArg(f"%arg{len(args)}", ty))
+    # Same order as the slices below: gate halves, up halves, down.
+    n_h = halves[0][0]
+    scratch_args, scratch_for = alloc_gemm_scratch(
+        [(g_spec, seq_len, n_h)] * len(halves)
+        + [(u_spec, seq_len, n_h)] * len(halves)
+        + [(d_spec, seq_len, D)],
+        len(args),
+    )
+    return args, scratch_args, idx, scratch_for
+
+
+def build_ffn_module(seq_len, wid, herd_m=8):
+    """Gemma4's whole FFN branch as ONE ELF: the six dispatches it replaces are
+    six air.launches whose PDI loads the compiler chains.
+
+    gate (GELU epilogue) -> up -> multiply -> down -> post-FFN norm -> residual.
+    The wide layers run gate and up as two column halves writing one buffer, so
+    a wide ELF carries eight launches and a narrow one six.
     """
     from shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
-        FuncArg,
-        alloc_gemm_scratch,
         build_add_2d_to_1d_ir,
+    )
+    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+
+    inter = wid_inter(wid)
+    halves = _ffn_halves(wid)
+    args, scratch_args, ix, scratch_for = ffn_args(seq_len, wid)
+    g_spec, u_spec, d_spec = ffn_specs(seq_len, wid)
+    name = K_FFN(wid)
+
+    print(
+        f"  [1/4] {name} gate ({g_spec['method']}) + up ({u_spec['method']}) "
+        f"{seq_len}x{D}x{inter} as {len(halves)} half/halves..."
+    )
+    slices, s_at = [], 0
+    for tgt, spec, gelu, wkey in (
+        ("gate", g_spec, True, "gate_w"),
+        ("up", u_spec, False, "up_w"),
+    ):
+        for i, (n_h, n_out, off, _tag) in enumerate(halves):
+            ir = _build_gemm_ir(
+                seq_len,
+                D,
+                n_h,
+                spec,
+                herd_m,
+                epilogue_gelu=gelu,
+                n_out=n_out,
+                n_out_offset=off,
+            )
+            slices.append(
+                KernelSlice(
+                    ir,
+                    f"{tgt}{i}",
+                    _gemm_amap(ix["normed2"], ix[wkey][i], ix[tgt], scratch_for[s_at]),
+                    extern_syms=_gemm_externs(spec, gelu),
+                    # Every GEMM slice contributes its private decls: the gate
+                    # declares the GELU cast and the up the plain one, and
+                    # stitch_elf unions them (identical text collapses, a
+                    # genuine type clash fails loudly).
+                    private_from=True,
+                )
+            )
+            s_at += 1
+
+    print(f"  [2/4] gate*up multiply {seq_len}x{inter}...")
+    slices.append(
+        KernelSlice(
+            str(build_mul_module(seq_len, inter)),
+            "ml",
+            {2: ix["act"]},
+            arg_aliases={0: "%gate_flat", 1: "%up_flat"},
+        )
+    )
+
+    print(f"  [3/4] down GEMM ({d_spec['method']}) {seq_len}x{inter}x{D}...")
+    d_map = _gemm_amap(0, ix["down_w"], ix["proj"], scratch_for[s_at])
+    d_map.pop(0)  # the activation comes from the prelude view, not an arg
+    slices.append(
+        KernelSlice(
+            _build_gemm_ir(seq_len, inter, D, d_spec, herd_m),
+            "dg",
+            d_map,
+            arg_aliases={0: "%act_2d"},
+            extern_syms=_gemm_externs(d_spec),
+        )
+    )
+
+    with _rms_eps():
+        print(f"  [4/4] post-FFN RMSNorm (eps={RMS_EPS:g}) + residual...")
+        post_ir = _wrap_ir_in_launch(str(build_rms(seq_len, D, bfloat16, 16, herd_x=8)))
+    slices.append(
+        KernelSlice(post_ir, "pn", {0: ix["proj"], 1: ix["norm_w"], 2: ix["proj_n"]})
+    )
+    slices.append(
+        KernelSlice(
+            build_add_2d_to_1d_ir(seq_len, D),
+            "ad",
+            {0: ix["proj_n"], 1: ix["resid"], 2: ix["out"]},
+        )
+    )
+
+    # The GEMMs write [seq, inter] and the multiply reads [seq*inter]; a view
+    # in the prelude joins them without retiling either kernel. It has to be
+    # reinterpret_cast: the DMA lowering accepts subview/view/cast/
+    # reinterpret_cast rooted at a block argument and rejects collapse_shape
+    # and expand_shape outright.
+    flat = f"memref<{seq_len * inter}xbf16>"
+    two_d = f"memref<{seq_len}x{inter}xbf16>"
+    prelude = "\n".join(
+        [
+            f"    %{nm} = memref.reinterpret_cast %arg{ix[src]} to offset: [0], "
+            f"sizes: {sizes}, strides: {strides} : {frm} to {to}"
+            for nm, src, sizes, strides, frm, to in (
+                ("gate_flat", "gate", f"[{seq_len * inter}]", "[1]", two_d, flat),
+                ("up_flat", "up", f"[{seq_len * inter}]", "[1]", two_d, flat),
+                (
+                    "act_2d",
+                    "act",
+                    f"[{seq_len}, {inter}]",
+                    f"[{inter}, 1]",
+                    flat,
+                    two_d,
+                ),
+            )
+        ]
+    )
+    module = stitch_elf(name, args, slices, scratch_args=scratch_args, prelude=prelude)
+    print(
+        f"  {name} module: {len(str(module).splitlines())} lines, "
+        f"{len(args) + len(scratch_args)} args, {len(slices)} slices, parsed OK"
+    )
+    return module, scratch_for
+
+
+def _ple_specs(seq_len):
+    """(gate, projection) GEMM specs for the PLE branch, shared by the two
+    callers so the projection's retag cannot drift between them."""
+    return (
+        gemm_spec(seq_len, D, PLI_D, force_method="drain"),
+        _retag(gemm_spec(seq_len, PLI_D, D), _PLE_PROJ_TAG),
+    )
+
+
+def ple_args(seq_len):
+    """The K_PLE signature: (base args, scratch args, index map, scratch map).
+
+    `x` is both the branch input and its residual, so it appears once and two
+    slices read it.
+    """
+    from shared.infra.stitching import FuncArg, alloc_gemm_scratch
+
+    g_spec, p_spec = _ple_specs(seq_len)
+    args, idx = [], {}
+    for nm, ty in (
+        ("x", f"memref<{seq_len}x{D}xbf16>"),
+        ("gate_w", f"memref<{D}x{PLI_D}xbf16>"),
+        ("g", f"memref<{seq_len}x{PLI_D}xbf16>"),
+        ("pli", f"memref<{seq_len * PLI_D}xbf16>"),
+        ("gated", f"memref<{seq_len * PLI_D}xbf16>"),
+        ("proj_w", f"memref<{PLI_D}x{D}xbf16>"),
+        ("proj", f"memref<{seq_len}x{D}xbf16>"),
+        ("norm_w", f"memref<{D}xbf16>"),
+        ("proj_n", f"memref<{seq_len}x{D}xbf16>"),
+        ("out", f"memref<{seq_len}x{D}xbf16>"),
+    ):
+        idx[nm] = len(args)
+        args.append(FuncArg(f"%arg{len(args)}", ty))
+    scratch_args, scratch_for = alloc_gemm_scratch(
+        [(g_spec, seq_len, PLI_D), (p_spec, seq_len, D)], len(args)
+    )
+    return args, scratch_args, idx, scratch_for
+
+
+def build_ple_module(seq_len, herd_m=8):
+    """Gemma4's per-layer-embedding branch as ONE ELF.
+
+    inp_gate GEMM (GELU epilogue) -> multiply by the layer's PLE input ->
+    per_layer_projection -> post_ple norm -> residual. Kept out of K_FFN
+    because folding it in would need a third retagged copy of the drain kernel:
+    the PLE widths give a different herd_n again, and herd_n is part of the
+    cast extern's type.
+    """
+    from shared.infra.stitching import (
+        _wrap_ir_in_launch,
+        stitch_elf,
+        KernelSlice,
         build_residual_add_2d_ir,
     )
     from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
 
-    d_spec = gemm_spec(seq_len, k_dim, D)
-    print(f"  [1/3] {name} GEMM ({d_spec['method']}) {seq_len}x{k_dim}x{D}...")
-    down_ir = _build_gemm_ir(seq_len, k_dim, D, d_spec, herd_m)
-    with _rms_eps():
-        print(f"  [2/3] post RMSNorm (eps={RMS_EPS:g})...")
-        post_ir = _wrap_ir_in_launch(str(build_rms(seq_len, D, bfloat16, 16, herd_x=8)))
-    print(f"  [3/3] residual add ({'2D -> 1D' if out_1d else '2D'})...")
-    add_ir = (
-        build_add_2d_to_1d_ir(seq_len, D)
-        if out_1d
-        else build_residual_add_2d_ir(seq_len, D)
-    )
+    args, scratch_args, ix, scratch_for = ple_args(seq_len)
+    g_spec, p_spec = _ple_specs(seq_len)
 
-    scratch_args, scratch_for = alloc_gemm_scratch([(d_spec, seq_len, D)], 7)
-    out_ty = f"memref<{seq_len * D}xbf16>" if out_1d else f"memref<{seq_len}x{D}xbf16>"
-    base_args = [
-        FuncArg("%arg0", f"memref<{seq_len}x{k_dim}xbf16>"),
-        FuncArg("%arg1", f"memref<{k_dim}x{D}xbf16>"),
-        FuncArg("%arg2", f"memref<{seq_len}x{D}xbf16>"),
-        FuncArg("%arg3", f"memref<{D}xbf16>"),
-        FuncArg("%arg4", f"memref<{seq_len}x{D}xbf16>"),
-        FuncArg("%arg5", f"memref<{seq_len}x{D}xbf16>"),
-        FuncArg("%arg6", out_ty),
-    ]
+    print(f"  [1/4] inp_gate GEMM ({g_spec['method']}) {seq_len}x{D}x{PLI_D} + GELU...")
     slices = [
         KernelSlice(
-            down_ir,
-            "dg",
-            _gemm_amap(0, 1, 2, scratch_for[0]),
-            extern_syms=_gemm_externs(d_spec),
-            private_from=True,
-        ),
-        KernelSlice(post_ir, "pn", {0: 2, 1: 3, 2: 4}, private_from=False),
-        KernelSlice(add_ir, "ad", {0: 4, 1: 5, 2: 6}, private_from=False),
+            _build_gemm_ir(seq_len, D, PLI_D, g_spec, herd_m, epilogue_gelu=True),
+            "pg",
+            _gemm_amap(ix["x"], ix["gate_w"], ix["g"], scratch_for[0]),
+            extern_syms=_gemm_externs(g_spec, True),
+        )
     ]
-    module = stitch_elf(name, base_args, slices, scratch_args=scratch_args)
-    print(f"  {name} module: {len(str(module).splitlines())} lines, parsed OK")
+
+    print(f"  [2/4] gate * per-layer input {seq_len}x{PLI_D}...")
+    slices.append(
+        KernelSlice(
+            str(build_mul_module(seq_len, PLI_D)),
+            "ml",
+            {1: ix["pli"], 2: ix["gated"]},
+            arg_aliases={0: "%g_flat"},
+        )
+    )
+
+    print(f"  [3/4] per_layer_projection ({p_spec['method']}) {seq_len}x{PLI_D}x{D}...")
+    p_map = _gemm_amap(0, ix["proj_w"], ix["proj"], scratch_for[1])
+    p_map.pop(0)
+    slices.append(
+        KernelSlice(
+            _build_gemm_ir(seq_len, PLI_D, D, p_spec, herd_m),
+            "pp",
+            p_map,
+            arg_aliases={0: "%gated_2d"},
+            extern_syms=_gemm_externs(p_spec),
+        )
+    )
+
+    with _rms_eps():
+        print(f"  [4/4] post_ple RMSNorm (eps={RMS_EPS:g}) + residual...")
+        post_ir = _wrap_ir_in_launch(str(build_rms(seq_len, D, bfloat16, 16, herd_x=8)))
+    slices.append(
+        KernelSlice(post_ir, "pn", {0: ix["proj"], 1: ix["norm_w"], 2: ix["proj_n"]})
+    )
+    slices.append(
+        KernelSlice(
+            build_residual_add_2d_ir(seq_len, D),
+            "ad",
+            {0: ix["proj_n"], 1: ix["x"], 2: ix["out"]},
+        )
+    )
+
+    flat = f"memref<{seq_len * PLI_D}xbf16>"
+    two_d = f"memref<{seq_len}x{PLI_D}xbf16>"
+    prelude = "\n".join(
+        [
+            f"    %g_flat = memref.reinterpret_cast %arg{ix['g']} to offset: [0], "
+            f"sizes: [{seq_len * PLI_D}], strides: [1] : {two_d} to {flat}",
+            f"    %gated_2d = memref.reinterpret_cast %arg{ix['gated']} to "
+            f"offset: [0], sizes: [{seq_len}, {PLI_D}], strides: [{PLI_D}, 1] "
+            f": {flat} to {two_d}",
+        ]
+    )
+    module = stitch_elf(K_PLE, args, slices, scratch_args=scratch_args, prelude=prelude)
+    print(
+        f"  {K_PLE} module: {len(str(module).splitlines())} lines, "
+        f"{len(args) + len(scratch_args)} args, {len(slices)} slices, parsed OK"
+    )
     return module, scratch_for
 
 
@@ -953,11 +1180,8 @@ _NEEDED = (
     + [K_V(c) for c in _CLS]
     + [K_ONORM(c) for c in _CLS]
     + [K_FA(c) for c in _CLS]
-    + [K_GATE(w, t) for w in _WID for *_, t in _ffn_halves(w)]
-    + [K_UP(w, t) for w in _WID for *_, t in _ffn_halves(w)]
-    + [K_MUL(w) for w in _WID]
-    + [K_DOWN(w) for w in _WID]
-    + [K_PLE_GEMM, K_PLE_MP, K_PLE_GELU, K_PLE_PROJ, K_LM]
+    + [K_FFN(w) for w in _WID]
+    + [K_PLE, K_PLE_MP, K_LM]
 )
 
 
@@ -991,6 +1215,14 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         sym_suffix=_wtag,
         out_name=f"mm{_wtag}.o",
     )
+    # Same tiling as mm_m32.o under another name -- see _PLE_PROJ_TAG.
+    compile_gemm_mm(
+        tile_m=32,
+        tile_n=128,
+        tile_k_l1=32,
+        sym_suffix=_PLE_PROJ_TAG,
+        out_name=f"mm{_PLE_PROJ_TAG}.o",
+    )
     compile_rope()  # rope_halfsplit.cc; head_dim is a runtime arg
     compile_gelu_and_mul()
 
@@ -1015,67 +1247,24 @@ def compile_all_kernels(cache, seq_len, verbose=False):
         cache.compile_and_cache(K_ONORM(c), mod, _elf_backend(K_ONORM(c)))
 
     for w in _WID:
-        inter = wid_inter(w)
-        for n_h, n_out, off, tag in _ffn_halves(w):
-            nm = K_GATE(w, tag)
-            print(f"\n--- {nm} (Gate GEMM, INTER={inter}, n={n_h}@{off}) ---")
-            mod, scratch[nm] = _build_single_gemm_elf(
-                nm,
-                "gg",
-                seq_len,
-                D,
-                n_h,
-                epilogue_gelu=True,
-                n_out=n_out,
-                n_out_offset=off,
-            )
-            cache.compile_and_cache(nm, mod, _elf_backend(nm))
-
-        for n_h, n_out, off, tag in _ffn_halves(w):
-            nm = K_UP(w, tag)
-            print(f"\n--- {nm} (Up GEMM, INTER={inter}, n={n_h}@{off}) ---")
-            mod, scratch[nm] = _build_single_gemm_elf(
-                nm, "ug", seq_len, D, n_h, n_out=n_out, n_out_offset=off
-            )
-            cache.compile_and_cache(nm, mod, _elf_backend(nm))
-
-        print(f"\n--- {K_MUL(w)} (gate*up multiply, INTER={inter}) ---")
-        cache.compile_and_cache(
-            K_MUL(w),
-            build_mul_module(seq_len, inter),
-            _mul_backend(K_MUL(w)),
+        print(
+            f"\n--- {K_FFN(w)} (gate + up + multiply + down + norm + residual, "
+            f"INTER={wid_inter(w)}) ---"
         )
-
-        print(f"\n--- {K_DOWN(w)} (Down + post-FFN norm + residual) ---")
-        mod, scratch[K_DOWN(w)] = build_gemm_norm_add_module(
-            K_DOWN(w), seq_len, inter, out_1d=True
-        )
-        cache.compile_and_cache(K_DOWN(w), mod, _elf_backend(K_DOWN(w)))
+        mod, scratch[K_FFN(w)] = build_ffn_module(seq_len, w)
+        cache.compile_and_cache(K_FFN(w), mod, _elf_backend(K_FFN(w)))
 
     # --- PLE. One set of ELFs for all 35 layers: the branch is PLI_D-wide
     # regardless of attention class or FFN width.
-    print(f"\n--- {K_PLE_GEMM} (D -> PLI_D GEMM + GELU; the per-layer inp_gate) ---")
-    mod, scratch[K_PLE_GEMM] = _build_single_gemm_elf(
-        K_PLE_GEMM, "pg", seq_len, D, PLI_D, epilogue_gelu=True
-    )
-    cache.compile_and_cache(K_PLE_GEMM, mod, _elf_backend(K_PLE_GEMM))
+    print(f"\n--- {K_PLE} (inp_gate + multiply + projection + norm + residual) ---")
+    mod, scratch[K_PLE] = build_ple_module(seq_len)
+    cache.compile_and_cache(K_PLE, mod, _elf_backend(K_PLE))
 
     print(f"\n--- {K_PLE_MP} (D -> {PLE_MP_N}; all layers' model_proj at once) ---")
     mod, scratch[K_PLE_MP] = _build_single_gemm_elf(
         K_PLE_MP, "pm", seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2
     )
     cache.compile_and_cache(K_PLE_MP, mod, _elf_backend(K_PLE_MP))
-
-    print(f"\n--- {K_PLE_GELU} (gate * per-layer input, {PLI_D}) ---")
-    cache.compile_and_cache(
-        K_PLE_GELU, build_mul_module(seq_len, PLI_D), _mul_backend(K_PLE_GELU)
-    )
-
-    print(f"\n--- {K_PLE_PROJ} (PLI_D -> D + post_layernorm + residual) ---")
-    mod, scratch[K_PLE_PROJ] = build_gemm_norm_add_module(
-        K_PLE_PROJ, seq_len, PLI_D, out_1d=False
-    )
-    cache.compile_and_cache(K_PLE_PROJ, mod, _elf_backend(K_PLE_PROJ))
 
     # --- Attention. One ELF per class: the sliding layers carry the window
     # mask AND head_dim=256, the full layers plain causal at head_dim=512.
@@ -1138,11 +1327,10 @@ def compile_all_kernels(cache, seq_len, verbose=False):
 # that a producing ELF writes and the next consuming ELF reads in place, so the
 # value never round-trips through the host. The consumer's index must also be
 # listed as an intermediate so its host->device write is skipped.
-_A_NORMED2 = "ffn_normed2"  # o_norm -> gate, up
-_A_RES1 = "ffn_res1"  # o_norm -> down
-_A_GATE = "ffn_gate"  # gate -> gelu_mul
-_A_UP = "ffn_up"  # up -> gelu_mul
-_A_ACT = "ffn_act"  # gelu_mul -> down
+_A_NORMED2 = "ffn_normed2"  # o_norm -> ffn
+_A_RES1 = "ffn_res1"  # o_norm -> ffn
+# gate/up/act used to need names here too; they are now plain intermediates
+# INSIDE the ffn ELF, so they never cross a dispatch boundary at all.
 
 
 def resolve_scratch(seq_len):
@@ -1166,21 +1354,11 @@ def resolve_scratch(seq_len):
         sc[K_V(c)] = _alloc([gemm_spec(seq_len, D, dkv)], 5)
         sc[K_ONORM(c)] = _alloc([gemm_spec(seq_len, dq, D)], 9)
     for w in _WID:
-        inter = wid_inter(w)
-        # The gate GEMM is forced to the drain method (its GELU epilogue runs
-        # in the GEMM's own herd), and drain needs no f32 scratch -- so this
-        # must use the SAME spec the builder did or the call passes an argument
-        # the ELF does not have.
-        for n_h, _n_out, _off, tag in _ffn_halves(w):
-            sc[K_GATE(w, tag)] = _alloc(
-                [gemm_spec(seq_len, D, n_h, force_method="drain")], 3
-            )
-        for n_h, _n_out, _off, tag in _ffn_halves(w):
-            sc[K_UP(w, tag)] = _alloc([gemm_spec(seq_len, D, n_h)], 3)
-        sc[K_DOWN(w)] = _alloc([gemm_spec(seq_len, inter, D)], 7)
-    sc[K_PLE_GEMM] = _alloc([gemm_spec(seq_len, D, PLI_D, force_method="drain")], 3)
+        # ffn_args owns this numbering for both the builder and the dispatch,
+        # so the run-only path re-derives it rather than re-stating it.
+        sc[K_FFN(w)] = ffn_args(seq_len, w)[3]
+    sc[K_PLE] = ple_args(seq_len)[3]
     sc[K_PLE_MP] = _alloc([gemm_spec(seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2)], 3)
-    sc[K_PLE_PROJ] = _alloc([gemm_spec(seq_len, PLI_D, D)], 7)
     return sc
 
 
@@ -1483,96 +1661,66 @@ class Gemma4Q4nxPrefill:
             shared_nonstatic=True,
         )
 
-    def _call_ffn_gemm(self, name, k, wkey, normed2, out_alias, n_h=None):
-        seq = self.seq
-        inter = wid_inter(_wid(k))
-        args = [
-            np.asarray(normed2, bfloat16).reshape(seq, D),
-            self._w[k][wkey],
-            np.zeros((seq, inter), bfloat16),
-        ]
-        idx = {0, 2}
-        # A split half accumulates only its own n columns, so the f32 scratch
-        # is narrower than the shared bf16 output it writes into.
-        for sc in self.scratch[name]:
+    def _call_ffn(self, k, normed2, resid):
+        """The whole FFN branch in one dispatch. Returns (seq*D,) flat.
+
+        Everything between normed2 and the output -- gate, up, act, proj,
+        proj_n -- is an intermediate: the host neither writes nor reads it, and
+        the six ELFs this replaced used `shared_alias` to get the same effect
+        across dispatch boundaries.
+        """
+        seq, w = self.seq, _wid(k)
+        inter = wid_inter(w)
+        halves = _ffn_halves(w)
+        name = K_FFN(w)
+        _args, _sa, ix, scratch_for = ffn_args(seq, w)
+        vals = {
+            ix["normed2"]: np.asarray(normed2, bfloat16).reshape(seq, D),
+            ix["gate"]: np.zeros((seq, inter), bfloat16),
+            ix["up"]: np.zeros((seq, inter), bfloat16),
+            ix["act"]: np.zeros(seq * inter, bfloat16),
+            ix["down_w"]: self._w[k]["down"],
+            ix["proj"]: np.zeros((seq, D), bfloat16),
+            ix["norm_w"]: np.asarray(self._nm[k]["post_ffn"], bfloat16),
+            ix["proj_n"]: np.zeros((seq, D), bfloat16),
+            ix["resid"]: np.asarray(resid, bfloat16).reshape(seq, D),
+            ix["out"]: np.zeros(seq * D, bfloat16),
+        }
+        for key, tag in (("gate_w", "gate"), ("up_w", "up")):
+            for i, (_n, _no, _of, t) in enumerate(halves):
+                vals[ix[key][i]] = self._w[k][tag + t]
+        static = {ix["down_w"], ix["norm_w"]} | set(ix["gate_w"]) | set(ix["up_w"])
+        # normed2/resid are zero-copy views into the very BOs shared_alias binds
+        # below, and out is fully overwritten -- writing any of them is a copy
+        # of a buffer onto itself.
+        inter_idx = {
+            ix["gate"],
+            ix["up"],
+            ix["act"],
+            ix["proj"],
+            ix["proj_n"],
+            ix["normed2"],
+            ix["resid"],
+            ix["out"],
+        }
+        # A split half accumulates only its own columns, so its f32 scratch is
+        # narrower than the shared bf16 buffer it writes into.
+        n_h = halves[0][0]
+        widths = [n_h] * (2 * len(halves)) + [D]
+        for sc, wdt in zip(scratch_for, widths):
             if sc is not None:
-                args.append(np.zeros((seq, n_h or inter), np.float32))
-                idx.add(sc)
+                vals[sc] = np.zeros((seq, wdt), np.float32)
+                inter_idx.add(sc)
         return self.cache.load_and_run(
             name,
             _elf_backend(name),
-            *args,
-            output_indices=[2],
-            static_input_indices={1},
-            intermediate_indices=idx,
+            *[vals[i] for i in sorted(vals)],
+            output_indices=[ix["out"]],
+            static_input_indices=static,
+            intermediate_indices=inter_idx,
             bo_key=f"{name}_L{k}",
             shared_nonstatic=True,
-            shared_alias={0: _A_NORMED2, 2: out_alias},
-        )
-
-    def _call_mul(self, name, k, hidden, a, b, alias):
-        """gate * up, flat: the ELF's interface is 1-D."""
-        seq = self.seq
-        return self.cache.load_and_run(
-            name,
-            _mul_backend(name),
-            np.asarray(a, bfloat16).reshape(seq * hidden),
-            np.asarray(b, bfloat16).reshape(seq * hidden),
-            np.zeros(seq * hidden, bfloat16),
-            output_indices=[2],
-            intermediate_indices={2} | {i for i in (0, 1) if (alias or {}).get(i)},
-            bo_key=f"{name}_L{k}",
-            shared_nonstatic=True,
-            shared_alias=alias,
-        )
-
-    def _call_gelu_mul(self, name, k, hidden, a, b, alias):
-        seq = self.seq
-        return self.cache.load_and_run(
-            name,
-            _gelu_backend(name),
-            np.asarray(a, bfloat16).reshape(seq, hidden),
-            np.asarray(b, bfloat16).reshape(seq, hidden),
-            np.zeros((seq, hidden), bfloat16),
-            output_indices=[2],
-            # An index listed here has its host->device write SKIPPED, which is
-            # only correct when shared_alias supplies it on device. The PLE
-            # branch passes no alias (its gate comes from a GEMM and its second
-            # operand from the host), so only the output is an intermediate
-            # there -- listing the inputs made the kernel read a zero buffer.
-            intermediate_indices={2} | {i for i in (0, 1) if (alias or {}).get(i)},
-            bo_key=f"{name}_L{k}",
-            shared_nonstatic=True,
-            shared_alias=alias,
-        )
-
-    def _call_gemm_norm_add(self, name, k, k_dim, act, w, norm_w, resid, out_1d, alias):
-        seq = self.seq
-        args = [
-            np.asarray(act, bfloat16).reshape(seq, k_dim),  # 0
-            np.asarray(w, bfloat16).reshape(k_dim, D),  # 1 (already (K, N))
-            np.zeros((seq, D), bfloat16),  # 2 proj
-            np.asarray(norm_w, bfloat16).reshape(D),  # 3
-            np.zeros((seq, D), bfloat16),  # 4 proj_n
-            np.asarray(resid, bfloat16).reshape(seq, D),  # 5
-            np.zeros(seq * D if out_1d else (seq, D), bfloat16),  # 6 out
-        ]
-        # See _call_gelu_mul: only alias-supplied inputs may be intermediates.
-        idx = {2, 4, 6} | {i for i in (0, 5) if (alias or {}).get(i)}
-        for sc in self.scratch[name]:
-            if sc is not None:
-                args.append(np.zeros((seq, D), np.float32))
-                idx.add(sc)
-        return self.cache.load_and_run(
-            name,
-            _elf_backend(name),
-            *args,
-            output_indices=[6],
-            static_input_indices={1, 3},
-            intermediate_indices=idx,
-            bo_key=f"{name}_L{k}",
-            shared_nonstatic=True,
-            shared_alias=alias,
+            shared_alias={ix["normed2"]: _A_NORMED2, ix["resid"]: _A_RES1},
         )
 
     def _ple_mp_weight(self):
@@ -1607,32 +1755,40 @@ class Gemma4Q4nxPrefill:
             shared_nonstatic=True,
         )
 
-    def _call_ple_gemm(self, k, x, w, tag):
-        """The (seq, D) -> (seq, PLI_D) GEMM, shared by the two PLE projections.
+    def _call_ple(self, k, x, pli):
+        """The whole per-layer-embedding branch in one dispatch.
 
-        `tag` separates their resident weight BOs: inp_gate runs per layer during
-        prefill, model_proj runs per layer once per prompt, and they must not
-        land on the same BO.
+        `x` is both the branch input and its residual -- the ELF reads one arg
+        twice rather than being handed the same buffer as two.
         """
         seq = self.seq
-        args = [
-            np.asarray(x, bfloat16).reshape(seq, D),
-            np.asarray(w, bfloat16).reshape(D, PLI_D),
-            np.zeros((seq, PLI_D), bfloat16),
-        ]
-        idx = {2}  # arg0 is a real host input -- see _call_gelu_mul
-        for sc in self.scratch[K_PLE_GEMM]:
+        pw = self._ple[k]
+        _a, _sa, ix, scratch_for = ple_args(seq)
+        vals = {
+            ix["x"]: np.asarray(x, bfloat16).reshape(seq, D),
+            ix["gate_w"]: np.asarray(pw["inp_gate"], bfloat16).reshape(D, PLI_D),
+            ix["g"]: np.zeros((seq, PLI_D), bfloat16),
+            ix["pli"]: np.asarray(pli, bfloat16).reshape(seq * PLI_D),
+            ix["gated"]: np.zeros(seq * PLI_D, bfloat16),
+            ix["proj_w"]: pw["per_layer_projection"],
+            ix["proj"]: np.zeros((seq, D), bfloat16),
+            ix["norm_w"]: np.asarray(self._nm[k]["post_ple"], bfloat16),
+            ix["proj_n"]: np.zeros((seq, D), bfloat16),
+            ix["out"]: np.zeros((seq, D), bfloat16),
+        }
+        inter_idx = {ix["g"], ix["gated"], ix["proj"], ix["proj_n"], ix["out"]}
+        for sc, cols in zip(scratch_for, (PLI_D, D)):
             if sc is not None:
-                args.append(np.zeros((seq, PLI_D), np.float32))
-                idx.add(sc)
+                vals[sc] = np.zeros((seq, cols), np.float32)
+                inter_idx.add(sc)
         return self.cache.load_and_run(
-            K_PLE_GEMM,
-            _elf_backend(K_PLE_GEMM),
-            *args,
-            output_indices=[2],
-            static_input_indices={1},
-            intermediate_indices=idx,
-            bo_key=f"ple_{tag}_L{k}",
+            K_PLE,
+            _elf_backend(K_PLE),
+            *[vals[i] for i in sorted(vals)],
+            output_indices=[ix["out"]],
+            static_input_indices={ix["gate_w"], ix["proj_w"], ix["norm_w"]},
+            intermediate_indices=inter_idx,
+            bo_key=f"{K_PLE}_L{k}",
             shared_nonstatic=True,
         )
 
@@ -1656,44 +1812,8 @@ class Gemma4Q4nxPrefill:
                 self._call_k(k, z_d)
                 self._call_v(k, z_d)
             self._call_o_norm(k, z_q, z_d)
-            for *_, tag in _ffn_halves(_wid(k)):
-                self._call_ffn_gemm(K_GATE(_wid(k), tag), k, "gate" + tag, z_d, _A_GATE)
-            for n_h, _no, _of, tag in _ffn_halves(_wid(k)):
-                self._call_ffn_gemm(
-                    K_UP(_wid(k), tag), k, "up" + tag, z_d, _A_UP, n_h=n_h
-                )
-            self._call_mul(
-                K_MUL(_wid(k)),
-                k,
-                inter,
-                z_i,
-                z_i,
-                {0: _A_GATE, 1: _A_UP, 2: _A_ACT},
-            )
-            self._call_gemm_norm_add(
-                K_DOWN(_wid(k)),
-                k,
-                inter,
-                z_i,
-                w["down"],
-                nm["post_ffn"],
-                z_d,
-                True,
-                {0: _A_ACT, 5: _A_RES1},
-            )
-            self._call_ple_gemm(k, z_d, pw["inp_gate"], "gate")
-            self._call_mul(K_PLE_GELU, k, PLI_D, z_p, z_p, None)
-            self._call_gemm_norm_add(
-                K_PLE_PROJ,
-                k,
-                PLI_D,
-                z_p,
-                pw["per_layer_projection"],
-                nm["post_ple"],
-                z_d,
-                False,
-                None,
-            )
+            self._call_ffn(k, z_d, z_d)
+            self._call_ple(k, z_d, z_p)
         self.cache.profiler.enabled = prof
         self._preload_lm_head_gemv()
         print(f"  Pre-loaded {self.n_layers} layers", flush=True)
@@ -1794,77 +1914,14 @@ class Gemma4Q4nxPrefill:
         res1 = ores[6].reshape(seq, D)
         normed2 = ores[8].reshape(seq, D)
 
-        for *_, tg in _ffn_halves(w):
-            gate = self._dev(
-                self._call_ffn_gemm,
-                K_GATE(w, tg),
-                k,
-                "gate" + tg,
-                normed2,
-                _A_GATE,
-                tag="gate",
-            )[2].reshape(seq, inter)
-        for n_h, _no, _of, tg in _ffn_halves(w):
-            up = self._dev(
-                self._call_ffn_gemm,
-                K_UP(w, tg),
-                k,
-                "up" + tg,
-                normed2,
-                _A_UP,
-                n_h,
-                tag="up",
-            )[2].reshape(seq, inter)
-        act = self._dev(
-            self._call_mul,
-            K_MUL(w),
-            k,
-            inter,
-            gate,
-            up,
-            {0: _A_GATE, 1: _A_UP, 2: _A_ACT},
-            tag="gelu",
-        )[2].reshape(seq, inter)
-        o2 = self._dev(
-            self._call_gemm_norm_add,
-            K_DOWN(w),
-            k,
-            inter,
-            act,
-            self._w[k]["down"],
-            self._nm[k]["post_ffn"],
-            res1,
-            True,
-            {0: _A_ACT, 5: _A_RES1},
-            tag="down",
-        )[6].reshape(seq, D)
+        o2 = self._dev(self._call_ffn, k, normed2, res1, tag="ffn")[
+            ffn_args(seq, w)[2]["out"]
+        ].reshape(seq, D)
 
         # ---- per-layer embedding branch ----
-        pw = self._ple[k]
-        g = self._dev(
-            self._call_ple_gemm,
-            k,
-            o2,
-            pw["inp_gate"],
-            "gate",
-            tag="ple_gate",
-        )[2].reshape(seq, PLI_D)
-        gated = self._dev(
-            self._call_mul, K_PLE_GELU, k, PLI_D, g, pli, None, tag="ple_gelu"
-        )[2].reshape(seq, PLI_D)
-        o3 = self._dev(
-            self._call_gemm_norm_add,
-            K_PLE_PROJ,
-            k,
-            PLI_D,
-            gated,
-            pw["per_layer_projection"],
-            self._nm[k]["post_ple"],
-            o2,
-            False,
-            None,
-            tag="ple_proj",
-        )[6].reshape(seq, D)
+        o3 = self._dev(self._call_ple, k, o2, pli, tag="ple")[
+            ple_args(seq)[2]["out"]
+        ].reshape(seq, D)
 
         # layer_output_scale. A scalar on the RESIDUAL stream, so it cannot be
         # folded into the next layer's input_layernorm (RMSNorm is scale
