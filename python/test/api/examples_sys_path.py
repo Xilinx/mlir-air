@@ -25,8 +25,13 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(sys.argv[1]) / "programming_examples"
+SRC = Path(sys.argv[1])
+ROOT = SRC / "programming_examples"
 BANNED = {ROOT.resolve(), (ROOT / "llms").resolve()}
+
+# The api tests drive the example modules, so they publish the same names if
+# they set sys.path the old way.
+SCANNED = [ROOT, SRC / "python" / "test" / "api"]
 
 
 def resolve(node, env, this):
@@ -79,6 +84,44 @@ def resolve(node, env, this):
     return None
 
 
+def imported_constants(tree, f):
+    """Module-level path constants this file imports from a sibling example.
+
+    `from shared.infra.external_kernels import _PROJ_ROOT` then
+    `sys.path.insert(0, str(_PROJ_ROOT))` publishes programming_examples/ just
+    as surely as computing the path inline, but the value lives in another
+    file. One of those reached review because this only looked at local
+    assignments.
+    """
+    env = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        rel = node.module.replace("air_examples.", "").replace(".", "/")
+        for cand in (ROOT / f"{rel}.py", ROOT / "llms" / f"{rel}.py"):
+            if not cand.is_file():
+                continue
+            try:
+                sub = ast.parse(cand.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            wanted = {a.name for a in node.names}
+            subenv = {}
+            for n in ast.walk(sub):
+                if (
+                    isinstance(n, ast.Assign)
+                    and len(n.targets) == 1
+                    and isinstance(n.targets[0], ast.Name)
+                ):
+                    v = resolve(n.value, subenv, cand.resolve())
+                    if v is not None:
+                        subenv[n.targets[0].id] = v
+                        if n.targets[0].id in wanted:
+                            env[n.targets[0].id] = v
+            break
+    return env
+
+
 def offenders(f):
     """Paths this module puts on sys.path that are in BANNED."""
     try:
@@ -86,7 +129,7 @@ def offenders(f):
     except (SyntaxError, UnicodeDecodeError):
         return []
     this = f.resolve()
-    env, loops, out = {}, {}, []
+    env, loops, out = imported_constants(tree, f), {}, []
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Assign)
@@ -151,13 +194,14 @@ def registers_too_late(f):
 
 
 bad, late = [], []
-for f in sorted(ROOT.rglob("*.py")):
-    if "__pycache__" in f.parts:
-        continue
-    for p in offenders(f):
-        bad.append(f"{f.relative_to(ROOT.parent).as_posix()} -> {p.name}/")
-    if registers_too_late(f):
-        late.append(f.relative_to(ROOT.parent).as_posix())
+for scan in SCANNED:
+    for f in sorted(scan.rglob("*.py")):
+        if "__pycache__" in f.parts or f.name == "examples_sys_path.py":
+            continue
+        for p in offenders(f):
+            bad.append(f"{f.relative_to(SRC).as_posix()} -> {p.name}/")
+        if registers_too_late(f):
+            late.append(f.relative_to(SRC).as_posix())
 
 for line in bad:
     print("PUBLISHES:", line)

@@ -1223,7 +1223,6 @@ def main():
 
         if not args.cpu_attn and _need("flash_attn", kernel_sym="attention_bf16"):
             print("Compiling flash_attn (bf16 ELF)...")
-            sys.path.insert(0, str(_PROJ_ROOT))
             from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
                 build_module as build_attn,
             )

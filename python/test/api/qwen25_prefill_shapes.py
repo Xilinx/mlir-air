@@ -10,14 +10,23 @@ ELFs also reconstructed the 2048-token scratch ABI instead of their own.
 """
 
 import sys
+import types
 from pathlib import Path
 from unittest.mock import patch
 
 root = Path(sys.argv[1]) / "programming_examples"
-sys.path[:0] = [str(root / "llms/qwen25_3b"), str(root / "llms"), str(root)]
+# Only the model's own directory, the way running its script does. The shared
+# infra is reached through air_examples, so neither programming_examples/ nor
+# llms/ goes on sys.path -- and the patches below must target that module, not
+# a second copy loaded under a `shared.` path, or they intercept nothing and
+# the loop does real external compilation.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(root)
+]
+sys.path[:0] = [str(root / "llms/qwen25_3b")]
 import qwen25_3b_prefill as prefill
 from qwen25_3b_weights import LlamaConfig
-from shared.infra import external_kernels
+from air_examples.llms.shared.infra import external_kernels
 
 config = LlamaConfig()
 

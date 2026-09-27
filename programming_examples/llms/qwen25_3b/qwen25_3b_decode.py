@@ -139,10 +139,9 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv", link_with="m
     GEMV slice through stitch_elf so the public func is renamed to `name`,
     matching the per-projection instance_name in the backend kwargs.
     """
-    _mv_dir = os.path.join(_PROG_EXAMPLES, "matrix_vector_multiplication", "bf16")
-    if _mv_dir not in sys.path:
-        sys.path.insert(0, _mv_dir)
-    from matvec import build_module as build_gemv
+    from air_examples.matrix_vector_multiplication.bf16.matvec import (
+        build_module as build_gemv,
+    )
     from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
