@@ -28,10 +28,13 @@ contract, and it is short on purpose.
 """
 
 import sys
+import types
 
-sys.path[:0] = [
-    sys.argv[1] + "/programming_examples",
-    sys.argv[1] + "/programming_examples/llms",
+# The builders are reached as air_examples.*; programming_examples/ and llms/
+# stay off sys.path, where every directory under them would become a top-level
+# module name. `check` prefixes the module paths below.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    sys.argv[1] + "/programming_examples"
 ]
 
 import air.ir
@@ -113,7 +116,7 @@ BUILDERS = [
 
 
 def check(modpath, fnname, kwargs, importer):
-    mod = __import__(modpath, fromlist=[fnname])
+    mod = __import__(f"air_examples.{modpath}", fromlist=[fnname])
     built = getattr(mod, fnname)(**kwargs)
     text = str(built)
     # Every failure is reported through the status line rather than by raising

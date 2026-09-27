@@ -40,6 +40,11 @@ def resolve(node, env, this):
         return this if node.id == "__file__" else env.get(node.id)
     if isinstance(node, ast.Constant):
         return None
+    # The api tests take the source root as sys.argv[1].
+    if isinstance(node, ast.Subscript) and ast.unparse(node.value).replace(
+        " ", ""
+    ).endswith("sys.argv"):
+        return SRC
     if isinstance(node, ast.Call):
         fn = node.func
         name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
@@ -77,10 +82,15 @@ def resolve(node, env, this):
                     p = p.parent
                 return p
         return None
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+        # `SRC / "programming_examples"` and `sys.argv[1] + "/programming_examples"`
+        # are the same statement; the tests use the second form, which this
+        # missed until one of them published llms/ past the check.
         left = resolve(node.left, env, this)
         right = node.right.value if isinstance(node.right, ast.Constant) else None
-        return (left / right) if (left is not None and isinstance(right, str)) else None
+        if left is None or not isinstance(right, str):
+            return None
+        return left / right.lstrip("/\\")
     return None
 
 
