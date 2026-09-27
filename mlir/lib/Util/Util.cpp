@@ -2332,6 +2332,13 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
                                              SmallVector<Value> sizes,
                                              SmallVector<Value> strides) {
   SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
+  // A runtime-valued size or stride has no constant to divide by, so there is
+  // no access bound to compute: keep the memref at its declared shape instead
+  // of dereferencing an empty optional.
+  for (auto vals : {sizes, strides})
+    for (Value v : vals)
+      if (!getConstantIntValue(v))
+        return SmallVector<int64_t>(memref_shape.begin(), memref_shape.end());
   for (int i = sizes.size() - 1; i >= 0; i--) {
     int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
