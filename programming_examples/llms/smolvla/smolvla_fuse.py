@@ -45,6 +45,12 @@ SMOLVLA_FA_QSEG (default 1)
     the launch-grid axis. Read here, once, rather than separately in the encoder
     (compile) and the runtime (cache-dir naming), so the two can never disagree on which
     schedule is baked into the ELF.
+
+SMOLVLA_FA_QK_PRETRANSPOSE (default 1)
+    Transposes each 8x8 K block once, in place, before Q@K^T instead of re-transposing it
+    for every row-block pair inside the matmul. Bit-identical output; Q@K^T drops from
+    ~3000 to ~1650 cycles per 64x64 block at a ~340 cycle transpose pass. Part of the ELF
+    cache name (`_kt`). 0 restores the in-matmul transpose.
 """
 
 import os
@@ -61,5 +67,6 @@ LN_ROWS = 4
 OFFN_TILING_OVERRIDE = _sizes_override("SMOLVLA_OFFN_TILING")
 LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
 FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
+FA_QK_PRETRANSPOSE = os.environ.get("SMOLVLA_FA_QK_PRETRANSPOSE", "1") == "1"
 B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
 ZERO_COPY = os.environ.get("SMOLVLA_ZERO_COPY", "1") == "1"

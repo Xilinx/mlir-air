@@ -48,7 +48,7 @@
 // A and C are always column-major tiled.
 template <typename T_in, typename T_out, unsigned rowA, unsigned colA,
           unsigned colB, unsigned r, unsigned s, unsigned t,
-          bool transpose_b = true>
+          bool transpose_b = true, bool b_pretransposed = false>
 static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                                               const T_in *__restrict pB,
                                               T_out *__restrict pC) {
@@ -107,8 +107,15 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                     pB + (i * colB + j) * MMUL::size_B;
                 const T_in *__restrict pBk1 =
                     pB + (i * colB + (j + 1)) * MMUL::size_B;
-                B0 = aie::transpose(aie::load_v<MMUL::size_B>(pBk0), t, s);
-                B1 = aie::transpose(aie::load_v<MMUL::size_B>(pBk1), t, s);
+                if constexpr (b_pretransposed) {
+                  // Blocks were already transposed in place by
+                  // transpose_k_blocks_inplace (QK_PRETRANSPOSE).
+                  B0 = aie::load_v<MMUL::size_B>(pBk0);
+                  B1 = aie::load_v<MMUL::size_B>(pBk1);
+                } else {
+                  B0 = aie::transpose(aie::load_v<MMUL::size_B>(pBk0), t, s);
+                  B1 = aie::transpose(aie::load_v<MMUL::size_B>(pBk1), t, s);
+                }
               } else {
                 // V DMA inner layout is [k_in, n_in] — already correct for
                 // hardware mul_8x8_8x8T, no software transpose needed.
@@ -140,7 +147,8 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
 
 // bf16 MatMul kernel with bf16 outputs.
 // transpose_b: controls whether B blocks are software-transposed before mac.
-template <unsigned m, unsigned k, unsigned n, bool transpose_b = true>
+template <unsigned m, unsigned k, unsigned n, bool transpose_b = true,
+          bool b_pretransposed = false>
 static inline void
 matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                   const bfloat16 *__restrict pB,
@@ -153,7 +161,8 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
   static_assert(n % (2 * t) == 0); // 'n' dimension
 
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
-                                    (n / t), r, s, t, transpose_b>(pA, pB, pC);
+                                    (n / t), r, s, t, transpose_b,
+                                    b_pretransposed>(pA, pB, pC);
 }
 
 // Combined scale: log2e / sqrt(dk_full). Applies 1/sqrt(dk) inside softmax
@@ -295,8 +304,43 @@ void copy_half_tile(bfloat16 *src, bfloat16 *dst, int lc) {
   }
 }
 
+#ifdef QK_PRETRANSPOSE
+// Opt-in (-DQK_PRETRANSPOSE): transpose every 8x8 K block once, in place, then
+// run the matmul without the per-block software transpose. The default path
+// re-transposes each K block for every row-block pair of A (4x per block),
+// which makes Q@K^T take ~1.9x as long as P@V for the same MACs. In place is
+// safe only when the K buffer is re-filled by DMA before every call, so this is
+// off by default and enabled per design.
+#ifndef QK_TRANSPOSE_BATCH
+#define QK_TRANSPOSE_BATCH 4
+#endif
+static inline void transpose_k_blocks_inplace(bfloat16 *__restrict pB) {
+  constexpr unsigned nblk = (dk / 8) * (lkp / 8);
+  constexpr unsigned G = QK_TRANSPOSE_BATCH;
+  static_assert(nblk % G == 0);
+  for (unsigned b = 0; b < nblk; b += G)
+    chess_prepare_for_pipelining chess_loop_range(2, ) {
+      aie::vector<bfloat16, 64> v[G];
+      _Pragma("clang loop unroll(full)") for (unsigned g = 0; g < G; g++) {
+        v[g] = aie::load_v<64>(pB + (b + g) * 64);
+      }
+      _Pragma("clang loop unroll(full)") for (unsigned g = 0; g < G; g++) {
+        v[g] = aie::transpose(v[g], 8, 8);
+      }
+      _Pragma("clang loop unroll(full)") for (unsigned g = 0; g < G; g++) {
+        aie::store_v(pB + (b + g) * 64, v[g]);
+      }
+    }
+}
+#endif
+
 void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
   SET_ROUNDING();
+#ifdef QK_PRETRANSPOSE
+  transpose_k_blocks_inplace(b_in);
+  matmul_vectorized_8x8x8_bf16_bf16<lqp, dk, lkp, true, true>(a_in, b_in, out);
+  return;
+#endif
   // Buffer shapes:
   // A: [lqp, dk] = [32, 64]
   // B: [lkp, dk] = [96, 64]  (K row-major, aie::transpose per block)

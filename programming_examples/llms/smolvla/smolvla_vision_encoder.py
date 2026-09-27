@@ -53,6 +53,7 @@ from smolvla_fuse import (
     LNQKV_TILING_OVERRIDE,
     OFFN_TILING_OVERRIDE,
     FA_Q_IN_SEGMENT,
+    FA_QK_PRETRANSPOSE,
     ZERO_COPY,
 )
 from smolvla_vision_weights import SigLIPVisionConfig
@@ -106,6 +107,7 @@ def _gelu_backend():
 # Read once in smolvla_fuse.py so the compile path here and the cache-dir naming in
 # smolvla_runtime.py can never disagree on which schedule is baked into the ELF.
 _FA_Q_IN_SEGMENT = FA_Q_IN_SEGMENT
+_FA_QK_PRETRANSPOSE = FA_QK_PRETRANSPOSE
 
 
 def _attn_backend(n_images=1):
@@ -261,9 +263,15 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         n_images=n_images,
         q_in_segment=_FA_Q_IN_SEGMENT,
     )
-    compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
+    compile_attn_npu2(
+        head_dim=head_dim,
+        bfp16=fa_bfp16,
+        force=True,
+        pretranspose_k=_FA_QK_PRETRANSPOSE,
+    )
     print(
-        f"    (FA microkernel BFP16={fa_bfp16}, q loop in segment={_FA_Q_IN_SEGMENT})"
+        f"    (FA microkernel BFP16={fa_bfp16}, q loop in segment={_FA_Q_IN_SEGMENT}, "
+        f"K pre-transpose={_FA_QK_PRETRANSPOSE})"
     )
     cache.compile_and_cache(
         "flash_attn",
@@ -594,7 +602,12 @@ def compile_all_kernels(
     # the native aie2p bf16 mmul (no systematic block-float attention bias).
     from shared.infra.external_kernels import compile_attn_npu2
 
-    compile_attn_npu2(head_dim=head_dim, bfp16=fa_bfp16, force=True)
+    compile_attn_npu2(
+        head_dim=head_dim,
+        bfp16=fa_bfp16,
+        force=True,
+        pretranspose_k=_FA_QK_PRETRANSPOSE,
+    )
     print(f"    (FA microkernel BFP16={fa_bfp16})")
     # The unfused path builds a per-image FA, so its launch stays 2D.
     cache.compile_and_cache(
