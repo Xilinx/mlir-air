@@ -24,10 +24,13 @@ N ?= 2048
 
 HIGH_PRECISION ?= true
 METHOD ?= auto
+B_PAD_ROWS ?= 0
+EPILOGUE_GELU ?= false
 AIE_TARGET ?= aie2p
 COMPILE_MODE ?= compile-and-run
 PERF_ITERS ?= 20
 
+TILE_K_L1_PAD := $(shell echo $$(( $(TILE_K_L1) + $(B_PAD_ROWS) )))
 TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
 TILE_N_DIV_4 := $(shell echo $$(( $(TILE_N) / 4 )))
 TILE_M_DIV_8 := $(shell echo $$(( $(TILE_M) / 8 )))
@@ -54,7 +57,7 @@ compile-kernel:
 			-DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) \
 			-DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4) \
 			-DDIM_N_DIV_8=$(TILE_N_DIV_8) -DDIM_M_DIV_8=$(TILE_M_DIV_8) \
-			-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
+			-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 $(if $(filter-out 0,$(B_PAD_ROWS)),-DDIM_K_PAD=$(TILE_K_L1_PAD)); \
 	fi
 
 run: compile-kernel
@@ -62,7 +65,8 @@ run: compile-kernel
 		--high-precision $(HIGH_PRECISION) --method $(METHOD) \
 		--m $(M) --k $(K) --n $(N) \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) \
-		--herd-m $(HERD_M) --herd-n $(HERD_N) --compile-mode $(COMPILE_MODE) --perf-iters $(PERF_ITERS)
+		--herd-m $(HERD_M) --herd-n $(HERD_N) --compile-mode $(COMPILE_MODE) --perf-iters $(PERF_ITERS) \
+		--b-pad-rows $(B_PAD_ROWS) $(if $(filter true,$(EPILOGUE_GELU)),--epilogue-gelu)
 
 clean:
 	rm -rf build_peano build_chess

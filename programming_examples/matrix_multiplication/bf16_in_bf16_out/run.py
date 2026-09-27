@@ -27,6 +27,26 @@ np.random.seed(42)
 range_ = for_
 
 
+def pack_b_with_bias(w, bias, tile_k_l1, pad_rows):
+    """(K, N) weights + (N,) bias -> ((K/tile_k_l1) * (tile_k_l1 + pad_rows), N).
+
+    Every tile_k_l1 chunk of K rows is followed by pad_rows rows; the LAST chunk's
+    pad rows hold the bias (replicated), earlier ones are zero. This is the layout
+    build_module(b_pad_rows=pad_rows) reads (see llms/shared/builders/gemm_builder.py
+    repack_gemm_b_with_bias)."""
+    k, n = w.shape
+    nsub = k // tile_k_l1
+    stride = tile_k_l1 + pad_rows
+    out = np.zeros((nsub * stride, n), dtype=w.dtype)
+    for j in range(nsub):
+        out[j * stride : j * stride + tile_k_l1] = w[
+            j * tile_k_l1 : (j + 1) * tile_k_l1
+        ]
+    last = (nsub - 1) * stride + tile_k_l1
+    out[last : last + pad_rows] = bias[None, :].astype(w.dtype)
+    return out
+
+
 @linalg_structured_op()
 def block_matmul(
     A=TensorDef(linalg_lang.TV.T1, S.a, S.c, S.f, S.d, S.g, S.i),
@@ -1361,6 +1381,23 @@ if __name__ == "__main__":
         help="(method=drain advanced) split the f32->bf16 drain into N tile_n segments.",
     )
     parser.add_argument(
+        "--b-pad-rows",
+        type=int,
+        default=0,
+        dest="b_pad_rows",
+        help="(method=drain) fold a per-column bias into the GEMM through N extra K rows "
+        "per tile_k_l1 chunk of B (bias replicated down the last chunk's pad rows); the "
+        "drain herd adds it in the f32->bf16 cast (f32_to_bf16_bias_mn). Build mm.o with "
+        "-DDIM_K_PAD=<tile_k_l1 + N> (the Makefile does).",
+    )
+    parser.add_argument(
+        "--epilogue-gelu",
+        action="store_true",
+        dest="epilogue_gelu",
+        help="(method=drain) apply GELU (tanh form) in the drain cast: "
+        "f32_to_bf16_gelu_mn, or f32_to_bf16_bias_gelu_mn with --b-pad-rows.",
+    )
+    parser.add_argument(
         "--cast-tile-n",
         type=int,
         default=2048,
@@ -1388,6 +1425,13 @@ if __name__ == "__main__":
         and method == "fused-cast"
         and args.compile_mode != "compile-and-xclbin"
     )
+
+    if (args.b_pad_rows or args.epilogue_gelu) and (
+        args.high_precision != "true" or method != "drain"
+    ):
+        parser.error(
+            "--b-pad-rows / --epilogue-gelu need --high-precision true --method drain"
+        )
 
     if args.high_precision == "false":
         # direct-codegen bf16 (low-precision tier).
@@ -1443,6 +1487,8 @@ if __name__ == "__main__":
             arch=args.arch,
             emit_external_call=True,
             drain_chunks=args.drain_chunks,
+            b_pad_rows=args.b_pad_rows,
+            epilogue_gelu=args.epilogue_gelu,
         )
         instance, n_inputs = "matmul_bf16", 2
 
@@ -1453,9 +1499,19 @@ if __name__ == "__main__":
     scale = 1.0 / math.sqrt(K)
     input_a = (np.random.randn(M, K) * scale).astype(bfloat16)
     input_b = (np.random.randn(K, N) * scale).astype(bfloat16)
-    reference = (input_a.astype(np.float32) @ input_b.astype(np.float32)).astype(
-        bfloat16
-    )
+    ref_f32 = input_a.astype(np.float32) @ input_b.astype(np.float32)
+    b_in = input_b
+    if args.b_pad_rows:
+        bias = (np.random.randn(N) * scale).astype(bfloat16)
+        ref_f32 = ref_f32 + bias.astype(np.float32)
+        b_in = pack_b_with_bias(input_b, bias, tk1, args.b_pad_rows)
+    if args.epilogue_gelu:
+        ref_f32 = (
+            0.5
+            * ref_f32
+            * (1.0 + np.tanh(0.7978845608 * (ref_f32 + 0.044715 * ref_f32**3)))
+        )
+    reference = ref_f32.astype(bfloat16)
     # bf16 output tolerances, tier-aware. rtol anchors to PyTorch's bf16 standard
     # (torch.testing.assert_close: bf16 rtol=1.6e-2) for both tiers — the output
     # is bf16, so per-element relative error is bounded by bf16 rounding (~2^-8)
@@ -1470,6 +1526,14 @@ if __name__ == "__main__":
         rtol, atol = 1.6e-2, 1.5e-3
     else:
         rtol, atol = 1.6e-2, 4e-3
+    if args.b_pad_rows:
+        # The bias widens the output range (bf16 rounding error scales with magnitude), so
+        # the absolute tolerance grows with it; mean_rel_L1 stays below the plain GEMM's.
+        atol = 3e-3
+    if args.epilogue_gelu:
+        # The GELU polynomial and tanh run in bf16 on the core (AIE2P has no vector f32
+        # multiply), so the epilogue carries more error than the bare narrowing.
+        rtol, atol = 5e-2, 4e-3
 
     if args.compile_mode == "compile-and-run":
         runner = XRTRunner(
@@ -1483,7 +1547,7 @@ if __name__ == "__main__":
             output_format=("elf" if use_elf else "xclbin"),
             instance_name=instance,
         )
-        inputs = [input_a, input_b]
+        inputs = [input_a, b_in]
         if n_inputs == 3:  # fused-cast needs an f32 scratch input slot
             inputs.append(np.zeros((M, N), dtype=np.float32))
         exit(
