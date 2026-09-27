@@ -23,9 +23,13 @@ The decision was made stage by stage, by measurement.
 
 | Stage | Shape · how often | CPU | NPU | Ships on |
 |---|---|---|---|---|
-| **① SigLIP vision + connector** | seq **1024**, hidden 768 · **×3 cameras** | 544.8 ms | **453.6 ms** | **NPU — 1.20×** |
-| ② Language backbone (SmolLM2-360M) | seq 241, hidden 960 · ×1 | **78.6 ms** | 229 ms | CPU — NPU ~3× slower |
-| ③ Action expert (flow matching) | seq 50, hidden 720 · **×10 denoise steps** | **281.9 ms** | ~4× the CPU | CPU — NPU ~4× slower |
+| **① SigLIP vision + connector** | seq **1024**, hidden 768 · **×3 cameras** | ~240 ms | **~196 ms** | **NPU — ~1.22×** |
+| ② Language backbone (SmolLM2-360M) | seq 241, hidden 960 · ×1 | **~47 ms** | not shipped | CPU — NPU measured slower |
+| ③ Action expert (flow matching) | seq 50, hidden 720 · **×10 denoise steps** | **~192 ms** | not shipped | CPU — NPU measured slower |
+
+(Numbers as of 2026-09-27, AMD Ryzen AI MAX+ 395 / NPU2, `make profile` REPS=15, averaged over 3 alternating pairs —
+see [Performance](#performance) below. Earlier revisions of this table were measured on a Ryzen AI 9 HX 370 and are
+superseded.)
 
 The NPU wins when shapes are large enough to fill its 8×4 compute array and
 loses when they are not. Vision has 1024 tokens and 768/3072-wide matmuls; the
@@ -40,22 +44,27 @@ kept out to keep the contribution reviewable; they can land separately.
 
 ## Performance
 
-One action chunk, end to end. AMD Ryzen AI 9 HX 370 / NPU2 (Strix, AIE2P), CPU
-governor and EPP `performance`, NPU `pmode=Turbo`, machine idle. Reproduce with
-`make profile REPS=10` — one process, both arms warmed, CPU/NPU pairs
-interleaved, median reported.
+One action chunk, end to end. **AMD Ryzen AI MAX+ 395 / NPU2, CPU governor and
+EPP `performance`, NPU `pmode=Turbo`, machine idle** (an earlier revision of
+this section was measured on a Ryzen AI 9 HX 370 — different machine, not
+comparable). Reproduce with `make profile REPS=15` — one process, both arms
+warmed, CPU/NPU pairs interleaved, median reported. Numbers below are the
+average of 3 alternating pairs, 2026-09-27, on top of the accumulated GEMM/FA
+kernel work (#2006, #2020–#2023) and the zero-copy/CPU-thread/K-V-memo/
+FlashAttention changes in this PR.
 
 | Configuration | Action chunk | Vision stage | Speedup |
 |---|---|---|---|
-| Pure CPU (unmodified LeRobot) | 919.9 ms | 544.8 ms | 1.00× |
-| **NPU vision + connector** | **831.6 ms** | **453.6 ms** | **1.106×** |
+| Pure CPU (unmodified LeRobot) | ~492 ms | ~240 ms | 1.00× |
+| **NPU vision + connector** | **~409 ms** | **~196 ms** | **~1.20×** |
 
-Vision itself is 1.20× (151 vs 182 ms per image) but only 55% of the run, so the
-CPU backbone and expert cap the end-to-end gain at 1.84×. Fusion did most of the
-work: 121 dispatches per image at 368 ms became **38 at 141.6 ms**, mostly by
-moving bias-adds and residuals on-device and eliminating a bf16→f32→bf16 host
-round-trip per operation. Full breakdown in
-[`docs/profile.md`](docs/profile.md).
+Vision itself is ~1.22× (~80 vs ~65 ms per image) and is ~57% of the run, so the
+CPU backbone and expert (unchanged, still CPU-only) cap the end-to-end gain at
+about the same ratio. NPU device time is 56–58 ms/image across the 5 vision
+ELFs (was 136 ms/image before this line of optimization work — see
+[`docs/profile.md`](docs/profile.md) for the historical per-ELF study and
+`Vu_exp/smolvla_perf/PR_smolvla_perf.md` in the mlir-air repo for the current
+per-commit breakdown).
 
 ## Correctness
 

@@ -1,5 +1,19 @@
 # SmolVLA NPU vision encoder — complete performance breakdown
 
+> **Update, 2026-09-27 (AMD Ryzen AI MAX+ 395, different machine from §0 below):**
+> the shipping NPU vision encoder now runs **~196 ms** for 3 images (was ~465 ms
+> at the time of this study), after landing #2006/#2020–#2023 and the zero-copy
+> layer chaining, CPU thread binding, batched drain-cast, action-expert K/V
+> memo and FlashAttention Q@K^T pre-transpose changes since. NPU device time is
+> **56–58 ms/image** across the same 5 ELFs (was 136.02 ms/image; see the
+> refreshed §1 table below). The rest of this document — §2 onward — is the
+> **original per-kernel/per-tile study, dated and left as historical
+> hypothesis testing**; its H1/H2 verdicts and ratios were about the *fusion
+> and tiling* structure, which is unchanged, but its absolute µs/GFLOP-s
+> figures predate the optimizations above and are not current. Current
+> per-commit numbers are in `Vu_exp/smolvla_perf/PR_smolvla_perf.md` and
+> `Vu_exp/smolvla_expert_perf/` in the mlir-air repo.
+
 **Question.** Where does the shipping NPU vision encoder's ~465 ms (3 images)
 actually go, and what is worth optimising next?
 
@@ -82,6 +96,26 @@ reads 65.40 / 36.15 / 36.77 / 1.12 / 0.73, total **140.18 ms** against the
 136.02 above — the shape of the breakdown is unchanged, but individual ELFs
 moved by up to 10% across the rebuild, and `flash_attn` and `vit_ln_qkv` swapped
 places. Treat the absolute figures in §2–§7 as of their measurement date.
+
+**Re-measured 2026-09-27** (AMD Ryzen AI MAX+ 395, `smolvla-expert-perf` tip,
+`make profile` REPS=15, 3 alternating pairs; device/image only — the BO
+write/read/driver-total columns above need `vision_profile_run.py` re-run,
+not done this session):
+
+| ELF | calls/image | device/image (ms), 3 pairs | share of device |
+|---|---:|---:|---:|
+| `vit_o_ffn` | 4 | 28.75 / 29.44 / 29.12 | ~51% |
+| `flash_attn` | 4 | 16.23 / 16.40 / 16.93 | ~29% |
+| `vit_ln_qkv` | 4 | 9.78 / 9.78 / 10.24 | ~17% |
+| `gemm_connector` | 1 | 0.99 / 0.98 / 0.98 | ~2% |
+| `layer_norm` | 1 | 0.51 / 0.50 / 0.51 | ~1% |
+| **TOTAL** | | **56.26 / 57.11 / 57.78** | 100% |
+
+Down from 136.02 ms/image at this doc's original measurement (2.4×). `flash_attn`'s
+share grew (25% → ~29%) because the GEMM-heavy ELFs (`vit_o_ffn`, `vit_ln_qkv`)
+picked up more optimization work (B-stationary, vectorized/batched drain casts)
+than FlashAttention had at this point (only the Q@K^T pre-transpose, -3.3%
+device time, landed since).
 
 ---
 
