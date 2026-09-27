@@ -169,6 +169,17 @@ matmul_vectorized_8x8x8_bf16_f32(const bfloat16 *__restrict pA,
                                     r, s, t, (kpad / s)>(pA, pB, pC);
 }
 
+// f32 -> bf16 narrowing of one vector through an accumulator (SRS). It rounds
+// by the core's rounding-mode register, whose power-up default is FLOOR, so
+// every entry point below sets conv_even before it narrows.
+template <unsigned VW>
+static inline aie::vector<bfloat16, VW>
+narrow_f32_to_bf16(const aie::vector<float, VW> &v) {
+  aie::accum<accfloat, VW> acc;
+  acc.from_vector(v);
+  return acc.template to_vector<bfloat16>();
+}
+
 extern "C" {
 
 // If you want to compile microkernels with different inner tile sizes,
@@ -293,10 +304,8 @@ void SYM(f32_to_bf16_bias_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
     float *ps = src + jb * MB * (T * T);
     bfloat16 *pd = dst + jb * MB * (T * T);
     for (unsigned e = 0; e < MB * T * T; e += VW) {
-      aie::vector<float, VW> v = aie::add(aie::load_v<VW>(ps + e), vb);
-      aie::accum<accfloat, VW> oacc;
-      oacc.from_vector(v);
-      aie::store_v(pd + e, oacc.template to_vector<bfloat16>());
+      aie::store_v(pd + e, narrow_f32_to_bf16<VW>(
+                               aie::add(aie::load_v<VW>(ps + e), vb)));
     }
   }
 }
@@ -327,10 +336,8 @@ void SYM(f32_to_bf16_bias_gelu_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
     float *ps = src + jb * MB * (T * T);
     bfloat16 *pd = dst + jb * MB * (T * T);
     for (unsigned e = 0; e < MB * T * T; e += VW) {
-      aie::vector<float, VW> f = aie::add(aie::load_v<VW>(ps + e), vb);
-      aie::accum<accfloat, VW> facc;
-      facc.from_vector(f);
-      aie::vector<bfloat16, VW> g = facc.template to_vector<bfloat16>();
+      aie::vector<bfloat16, VW> g =
+          narrow_f32_to_bf16<VW>(aie::add(aie::load_v<VW>(ps + e), vb));
       aie::vector<bfloat16, VW> g2 = aie::mul(g, g);
       aie::vector<bfloat16, VW> g3 = aie::mul(g2, g);
       aie::vector<bfloat16, VW> beta_g3 = aie::mul(beta_v, g3);
@@ -370,10 +377,7 @@ void SYM(f32_to_bf16_mn)(float *src, bfloat16 *dst) {
   for (unsigned i = 0; i < NTOT; i += VW) {
     // Vectorized narrowing (accfloat -> bf16). A per-lane scalar convert loop
     // here costs ~7 cycles/element (~21k cycles for a 32x96 tile) per drain.
-    aie::vector<float, VW> v = aie::load_v<VW>(src + i);
-    aie::accum<accfloat, VW> acc;
-    acc.from_vector(v);
-    aie::store_v(dst + i, acc.template to_vector<bfloat16>());
+    aie::store_v(dst + i, narrow_f32_to_bf16<VW>(aie::load_v<VW>(src + i)));
   }
 }
 
@@ -387,10 +391,7 @@ void SYM(f32_to_bf16_n)(float *src, bfloat16 *dst, int n) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
   constexpr unsigned VW = 16;
   for (int i = 0; i < n; i += VW) {
-    aie::vector<float, VW> v = aie::load_v<VW>(src + i);
-    aie::accum<accfloat, VW> acc;
-    acc.from_vector(v);
-    aie::store_v(dst + i, acc.template to_vector<bfloat16>());
+    aie::store_v(dst + i, narrow_f32_to_bf16<VW>(aie::load_v<VW>(src + i)));
   }
 }
 
