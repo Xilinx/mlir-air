@@ -63,18 +63,31 @@ sys.path.insert(
     0,
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "decode_ffn_swiglu"),
 )
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from matvec_2tile_add import build_module as build_2tile_add
 from matvec_swiglu_rms import build_module as build_swiglu_rms
-from shared.infra.stitching import (
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.infra.stitching import (
     stitch_elf,
     KernelSlice,
     FuncArg,
 )
 from air.ir import Module, Context
 from air.backend.xrt import XRTBackend
+
+import types
+from pathlib import Path
 
 # Stage-2 cascade params validated at emb=2048, hidden=8192.
 _STAGE2_TILE_M = 32

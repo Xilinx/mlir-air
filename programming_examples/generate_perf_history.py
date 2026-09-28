@@ -28,10 +28,16 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 try:
     from generate_readme import LLM_HF_MODELS
 except ImportError:  # pragma: no cover - allow running from another cwd
-    import sys
+    # By file path rather than by adding SCRIPT_DIR to sys.path: that would
+    # publish every example directory here as a top-level module name.
+    import importlib.util
 
-    sys.path.insert(0, str(SCRIPT_DIR))
-    from generate_readme import LLM_HF_MODELS
+    _spec = importlib.util.spec_from_file_location(
+        "_generate_readme", SCRIPT_DIR / "generate_readme.py"
+    )
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    LLM_HF_MODELS = _mod.LLM_HF_MODELS
 
 FAIL_COLOR = "#d32f2f"
 

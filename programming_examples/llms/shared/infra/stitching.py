@@ -22,6 +22,18 @@ from dataclasses import dataclass, field
 
 import re
 
+import types
+from pathlib import Path
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 
 def _extract_between_func_and_return(mlir_text):
     """Extract func body (between func signature and return)."""
@@ -462,7 +474,7 @@ def _build_eltwise_add_ir(seq_len, emb_dim, flat_out):
     """
     from ml_dtypes import bfloat16
 
-    from shared.builders.o_ffn_multi import build_named_add
+    from air_examples.llms.shared.builders.o_ffn_multi import build_named_add
 
     # The row loop vectorizes 16-wide with fixed-size subviews, so a ragged
     # tail would read past the L1 row buffer rather than be masked off.

@@ -31,7 +31,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _LLAMA_BF16_DIR = _LLMS_DIR / "llama32_1b"
 _PROG_EXAMPLES = _LLMS_DIR.parent  # programming_examples/ (for cross-area imports)
-for p in (str(_LLMS_DIR), str(_LLAMA_BF16_DIR), str(_THIS_DIR)):
+for p in (str(_LLAMA_BF16_DIR), str(_THIS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 

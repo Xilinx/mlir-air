@@ -27,12 +27,22 @@ _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _VERIFY = _LLMS_DIR / "verify"
 _LLAMA_REF = _LLMS_DIR / "llama32_1b"
-for _p in (str(_LLMS_DIR), str(_VERIFY), str(_LLAMA_REF), str(_THIS_DIR)):
+for _p in (str(_VERIFY), str(_LLAMA_REF), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
-from shared.infra.cache import KernelCache  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
 
 # SmolLM2 is pure MHA (kv_dim == emb_dim). The shared llama32_1b_prefill
 # run_transformer_block / preload_prefill_weights are registry-driven and
@@ -56,6 +66,8 @@ from smollm2_1_7b_weights import (  # noqa: E402
 )
 from smollm2_1_7b_cpu_helpers import rms_norm  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
+
+import types
 
 # CLI --model choice -> HF id. Both Llamas use the same architecture; only
 # the weights and chat template differ.

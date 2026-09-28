@@ -43,8 +43,6 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(
     0,
     os.path.join(
@@ -56,6 +54,7 @@ sys.path.insert(
         "bf16",
     ),
 )
+
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
@@ -77,14 +76,29 @@ from air.backend.xrt import XRTBackend
 from air import api as air
 from air.api import ops
 from air.api.types import f32, i32
-from shared.builders.rms_gemms_rope_multi import _api_dtype
 
-from shared.infra.stitching import (
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.builders.rms_gemms_rope_multi import _api_dtype
+
+from air_examples.llms.shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
     KernelSlice,
     FuncArg,
 )
+
+import types
+from pathlib import Path
 
 range_ = for_
 
@@ -484,7 +498,7 @@ if __name__ == "__main__":
     wv = np.random.uniform(-0.1, 0.1, (KV_DIM, EMB_DIM)).astype(bfloat16)
 
     # RoPE LUTs (decode: single position, one row per head)
-    from rope_lut.rope_lut import generate_lut
+    from air_examples.rope_lut.rope_lut import generate_lut
 
     # For decode, LUT is just one position: (1, head_dim) repeated per head
     # But the LUT shape must match the total: n_heads * head_dim = emb_dim

@@ -28,12 +28,22 @@ _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _LLAMA_BF16 = _LLMS_DIR / "llama32_1b"
 _VERIFY = _LLMS_DIR / "verify"
-for _p in (str(_LLMS_DIR), str(_LLAMA_BF16), str(_VERIFY), str(_THIS_DIR)):
+for _p in (str(_LLAMA_BF16), str(_VERIFY), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
-from shared.infra.cache import KernelCache  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
 from llama32_1b_weights import LlamaConfig, generate_rope_lut  # noqa: E402
 from llama32_1b_cpu_helpers import rms_norm  # noqa: E402
 from llama32_1b_int4_weights import load_weights_awq  # noqa: E402
@@ -48,6 +58,8 @@ from llama32_1b_prefill import (
     compile_all_kernels as compile_prefill_kernels,
 )  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
+
+import types
 
 # Default AWQ checkpoint exposed by AMD; un-gated, no HF_TOKEN needed.
 # `build_hf_model` reuses this checkpoint's config to construct the HF

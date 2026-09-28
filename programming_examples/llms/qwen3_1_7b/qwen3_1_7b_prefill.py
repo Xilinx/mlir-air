@@ -36,16 +36,23 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 # Add programming_examples/ and llms/ to path for shared.* + registry imports.
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
 
 from qwen3_1_7b_weights import LlamaConfig
 from qwen3_1_7b_cpu_helpers import attention_reference
-from shared.infra.cache import KernelCache, Profiler
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler
+
+import types
 
 # ---------------------------------------------------------------------------
 # Builder 1 (FUSED): RMSNorm + Q/K/V GEMM + per-head QK-norm(Q,K) + RoPE(Q,K).
@@ -55,7 +62,7 @@ from shared.infra.cache import KernelCache, Profiler
 
 
 def build_rms_qkv_qknorm_rope_module(seq_len, config):
-    from shared.builders.rms_qkv_qknorm_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
         build_rms_qkv_qknorm_rope_module as _build,
     )
 
@@ -121,19 +128,24 @@ def build_o_ffn_qwen_module(
       %arg14 output    (seq*emb_dim,)
       %arg15..18  f32 C-scratch (proj[seq,emb], gate[seq,hid], up[seq,hid], down[seq,emb])
     """
-    from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
-    from shared.builders.o_ffn_multi import (
+    from air_examples.llms.shared.builders.gemm_builder import (
+        _build_gemm_module,
+        gemm_registry_config,
+    )
+    from air_examples.llms.shared.builders.o_ffn_multi import (
         _build_add_2d_to_1d,
         _build_add_2d_to_2d,
     )
-    from shared.infra.stitching import (
+    from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
         KernelSlice,
         FuncArg,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
-    from silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
+    from air_examples.silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
     from air.ir import MemRefType, IntegerAttr, AffineMap, AffineExpr
     from air.ir import AffineSymbolExpr, AffineConstantExpr, AffineMapAttr, VectorType
     from air.dialects.air import module_builder, launch, segment, herd, dma_memcpy_nd
@@ -385,7 +397,10 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
         f"\n{'='*60}\nCompiling Qwen3 prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from shared.infra.external_kernels import compile_gemm_mm, compile_rope
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_gemm_mm,
+        compile_rope,
+    )
 
     # mm.o variants for GEMM co-linking; rope.o (head_dim=128) for the rope ELFs.
     compile_gemm_mm(
@@ -413,7 +428,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     # Flash Attention (head-first, head_dim=128). Skip if using CPU fallback.
     if not cpu_attn:
         print("\n--- flash_attn (head-first FA, head_dim=128) ---")
-        from shared.infra.fa_headfirst import compile_headfirst_fa
+        from air_examples.llms.shared.infra.fa_headfirst import compile_headfirst_fa
 
         compile_headfirst_fa(cache, seq_len, n_heads, n_kv_heads, head_dim, verbose)
     else:
@@ -645,7 +660,7 @@ def run_transformer_block_qwen3(
     else:
         # NPU head-first FlashAttention (head_dim=128). q_roped/k_roped are
         # post-QK-norm post-RoPE seq-first; v is the raw projection seq-first.
-        from shared.infra.fa_headfirst import npu_fa_headfirst
+        from air_examples.llms.shared.infra.fa_headfirst import npu_fa_headfirst
 
         attn_out = npu_fa_headfirst(
             cache,

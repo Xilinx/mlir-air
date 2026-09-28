@@ -33,18 +33,33 @@ _LLAMA_BF16 = os.path.join(_PROG_EXAMPLES, "llama32_1b")
 # int4 dir's package (the bf16 sibling has a same-named one). Don't use
 # the "already present" skip — Python auto-inserts the script's dir, and
 # skipping would leave _THIS_DIR below _LLAMA_BF16.
-for _p in (_PROG_EXAMPLES, _LLAMA_BF16, _THIS_DIR):
+for _p in (_LLAMA_BF16, _THIS_DIR):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
 from llama32_1b_weights import LlamaConfig  # noqa: E402
-from shared.infra.cache import KernelCache  # noqa: E402
-from shared.infra.backend_presets import (  # noqa: E402
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
+from air_examples.llms.shared.infra.backend_presets import (  # noqa: E402
     RGR_INT4_BACKEND,
     OGF_INT4_BACKEND,
     LM_GEMV_BACKEND,
 )
+
+import types
+from pathlib import Path
 
 # Cache of dead-ABI placeholders passed to o_gemv_ffn_int4. Reallocating
 # the 32 MB hidden×emb buffer per call costs ~15 ms/token.
@@ -68,7 +83,9 @@ def _dead_buf(shape, dtype=bfloat16):
 def compile_decode_kernels(cache, config):
     """Compile the 3 int4 decode kernels (rms_qkv_int4_rope, o_gemv_ffn_int4,
     lm_head_gemv)."""
-    from shared.infra.external_kernels import compile_all_external_kernels
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_all_external_kernels,
+    )
 
     compile_all_external_kernels(head_dim=config.head_dim, quant="awq")
 
@@ -115,7 +132,9 @@ def compile_decode_kernels(cache, config):
     # int4 dirs; the shared builders package name removed that collision.)
     # LM head stays bf16 — AMD's AWQ checkpoint keeps it un-quantized, and we
     # tie to embed_table.
-    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+        build_lm_head_gemv_module,
+    )
 
     cache.compile_and_cache(
         "lm_head_gemv",

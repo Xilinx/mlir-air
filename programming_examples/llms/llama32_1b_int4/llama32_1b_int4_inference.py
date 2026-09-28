@@ -41,25 +41,37 @@ from ml_dtypes import bfloat16
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROG_EXAMPLES = os.path.dirname(_THIS_DIR)
 _LLAMA_BF16 = os.path.join(_PROG_EXAMPLES, "llama32_1b")
-for _p in (_PROG_EXAMPLES, _LLAMA_BF16, _THIS_DIR):
+for _p in (_LLAMA_BF16, _THIS_DIR):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
 from llama32_1b_weights import LlamaConfig, generate_rope_lut  # noqa: E402
-from shared.infra.cache import KernelCache, Profiler  # noqa: E402
-from shared.infra.decode_bench import (  # noqa: E402
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler  # noqa: E402
+from air_examples.llms.shared.infra.decode_bench import (  # noqa: E402
     bench_contexts as _bench_contexts,
     bench_rope_len as _bench_rope_len,
     bench_decode as _bench_decode,
 )
-from shared.infra.prefill_bench import (  # noqa: E402
+from air_examples.llms.shared.infra.prefill_bench import (  # noqa: E402
     bench_prefill as _bench_prefill,
 )
-from shared.infra.external_kernels import (  # noqa: E402
+from air_examples.llms.shared.infra.external_kernels import (  # noqa: E402
     compile_all_external_kernels,
 )
-from shared.infra.backend_presets import (  # noqa: E402
+from air_examples.llms.shared.infra.backend_presets import (  # noqa: E402
     LM_GEMV_BACKEND,
     RGR_INT4_BACKEND,
     OGF_INT4_BACKEND,
@@ -80,6 +92,9 @@ from llama32_1b_prefill import (  # noqa: E402
 )
 
 import contextlib  # noqa: E402
+
+import types
+from pathlib import Path
 
 # Decode LM Head constants
 _LM_N_PART = 16384

@@ -32,7 +32,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _VERIFY = _LLMS_DIR / "verify"
 _QWEN3B = _LLMS_DIR / "qwen25_3b"  # shared prefill builders + config
-for _p in (str(_LLMS_DIR), str(_VERIFY), str(_QWEN3B), str(_THIS_DIR)):
+for _p in (str(_VERIFY), str(_QWEN3B), str(_THIS_DIR)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)

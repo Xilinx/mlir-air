@@ -50,6 +50,14 @@ if str(_HERE) not in sys.path:
 # stays importable for --compile-only.
 from smolvla_runtime import VISION_CACHE_DIR  # noqa: E402
 
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 # CPU stages (SmolLM2 backbone, action expert). Their GEMMs are small (50 action
 # tokens against a 241-token prefix) and do not scale with threads: on this
 # 16-core / 32-thread machine the backbone plus 10 denoise steps take 273 ms at
@@ -391,7 +399,7 @@ def compile_only(cache_dir: str = VISION_CACHE_DIR) -> int:
     # import time, so it has to come before anything under `shared.`.
     from smolvla_vision_encoder import compile_all_kernels
     from smolvla_vision_weights import SigLIPVisionConfig
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
     from smolvla_runtime import VISION_N_IMAGES
 
     cfg = SigLIPVisionConfig()

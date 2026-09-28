@@ -40,11 +40,18 @@ from ml_dtypes import bfloat16
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
-_LLMS_DIR = _HERE.parent
-if str(_LLMS_DIR) not in sys.path:
-    sys.path.insert(0, str(_LLMS_DIR))
 
-from shared.infra.cache import KernelCache, Profiler  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler  # noqa: E402
 
 MODEL_ID = "lerobot/smolvla_base"
 
@@ -82,6 +89,8 @@ from smolvla_vision_builders import (  # noqa: E402
     vit_ln_qkv_runtime_tiling,
     vit_o_ffn_runtime_tiling,
 )
+
+import types
 
 _cfg = SigLIPVisionConfig()
 _LNQKV_TILING = LNQKV_TILING_OVERRIDE or vit_ln_qkv_runtime_tiling(

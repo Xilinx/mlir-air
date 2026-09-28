@@ -49,15 +49,18 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-_PROG_EXAMPLES = str(Path(__file__).resolve().parent.parent.parent)
-if _PROG_EXAMPLES not in sys.path:
-    sys.path.insert(0, _PROG_EXAMPLES)
-_LLMS_DIR = str(Path(__file__).resolve().parent.parent)
-if _LLMS_DIR not in sys.path:
-    sys.path.insert(0, _LLMS_DIR)
 
 from qwen25_0_5b_weights import LlamaConfig
 from qwen25_0_5b_cpu_helpers import rms_norm
+
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 
 # LM-head decode partitioning. vocab=151936. Per-partition GEMV broadcasts the
 # K=emb_dim input vector with a push_queue repeat_count ~= n_part/32 - 1, capped
@@ -80,7 +83,7 @@ _GEMV_DOWN = (2, 2, 8)  # 896×4864 (Down proj; K=4864 → L2-bound tile_m=2)
 
 
 def build_rms_qkv_bias_rope_gemv_module(emb_dim, q_dim, kv_dim, config, eps=1e-6):
-    from shared.builders.rms_qkv_bias_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import (
         build_rms_qkv_bias_rope_gemv_module as _build,
     )
 
@@ -118,11 +121,14 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv"):
     GEMV slice through stitch_elf so the public func is renamed to `name`,
     matching the per-projection instance_name in the backend kwargs.
     """
-    _mv_dir = os.path.join(_PROG_EXAMPLES, "matrix_vector_multiplication", "bf16")
-    if _mv_dir not in sys.path:
-        sys.path.insert(0, _mv_dir)
-    from matvec import build_module as build_gemv
-    from shared.infra.stitching import stitch_elf, KernelSlice, FuncArg
+    from air_examples.matrix_vector_multiplication.bf16.matvec import (
+        build_module as build_gemv,
+    )
+    from air_examples.llms.shared.infra.stitching import (
+        stitch_elf,
+        KernelSlice,
+        FuncArg,
+    )
 
     gemv_ir = str(build_gemv(m, k, tile_m, m_input, herd_m, bfloat16, bfloat16))
     base_args = [
@@ -148,7 +154,9 @@ def build_gemv_module(m, k, tile_m, m_input, herd_m=8, name="gemv"):
 
 
 def build_lm_head_gemv_qwen_module(emb_dim):
-    from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+        build_lm_head_gemv_module,
+    )
 
     return build_lm_head_gemv_module(
         emb_dim=emb_dim,
@@ -199,7 +207,7 @@ def _lm_gemv_backend(verbose=False):
 
 def compile_decode_kernels(cache, config, verbose=False):
     """Compile the Qwen2.5 decode kernels."""
-    from shared.infra.external_kernels import compile_mv, compile_rope
+    from air_examples.llms.shared.infra.external_kernels import compile_mv, compile_rope
 
     emb_dim = config.emb_dim
     n_heads = config.n_heads

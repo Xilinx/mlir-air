@@ -65,8 +65,6 @@ sys.path.insert(
         "decode_ffn_swiglu",
     ),
 )
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import matvec_int4_packed_add
@@ -75,7 +73,18 @@ import matvec_int4_swiglu_rms
 from matvec_int4_swiglu_rms import build_module as build_int4_swiglu_rms
 from matvec_int4_packed import pack_inputs
 
-from shared.infra.stitching import (
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -85,6 +94,9 @@ from shared.infra.stitching import (
 )
 from air.ir import Module, Context
 from air.backend.xrt import XRTBackend
+
+import types
+from pathlib import Path
 
 # All three stages share mv_int4_bf16.o — keep these symbols un-prefixed
 # across the stitched launches so all three calls resolve to the same .o

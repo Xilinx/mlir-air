@@ -41,8 +41,6 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(
     0,
@@ -73,14 +71,31 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from shared.infra.stitching import (
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
     _fix_launch_func_args,
     _rename_all_with_externs,
 )
-from shared.infra.external_kernels import compile_mv_int4_bf16, compile_rope
+from air_examples.llms.shared.infra.external_kernels import (
+    compile_mv_int4_bf16,
+    compile_rope,
+)
+
+import types
+from pathlib import Path
 
 range_ = for_
 
@@ -105,7 +120,7 @@ def _extract_air_channels(mlir_text):
 
 
 # _build_rms_1d is the shared decode RMSNorm; this was a byte-for-byte copy.
-from shared.builders.rms_gemv_rope_multi import _build_rms_1d
+from air_examples.llms.shared.builders.rms_gemv_rope_multi import _build_rms_1d
 
 # ---------------------------------------------------------------------------
 # 1D RoPE launch builder — identical to bf16 sibling
@@ -114,7 +129,7 @@ from shared.builders.rms_gemv_rope_multi import _build_rms_1d
 
 # See rms_gemms_rope_bfp16_multi.py: the local copy is gone in favour of the
 # shared builder, which emits a byte-identical air.insts.bin at these shapes.
-from shared.builders.rms_gemv_rope_multi import _build_rope_1d
+from air_examples.llms.shared.builders.rms_gemv_rope_multi import _build_rope_1d
 
 # External kernel function names preserved across stitching
 _EXTERN_FUNCS = {

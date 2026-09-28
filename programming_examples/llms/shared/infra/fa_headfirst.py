@@ -29,6 +29,18 @@ from __future__ import annotations
 import numpy as np
 from ml_dtypes import bfloat16
 
+import types
+from pathlib import Path
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 # head_dim -> (lkp, lqp, num_q_tiles, num_heads_per_unroll, dv_tile).
 #
 # Causal masking pins tile_size_q (= lqp // num_q_tiles) == lkp, and the per-core
@@ -117,7 +129,7 @@ def compile_headfirst_fa(
     kills outright. It is numerically exact and strictly faster, but it changes
     the emitted ELF, so it stays opt-in until each model has re-run its gate.
     """
-    from shared.infra.external_kernels import compile_attn_npu2
+    from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
     lkp, lqp, num_q_tiles, num_heads_per_unroll, dv_tile = fa_tiling(head_dim)
     lqp_tile = lqp // num_q_tiles  # tile_size_q == lkp under causal masking
@@ -132,7 +144,7 @@ def compile_headfirst_fa(
         head_dim=head_dim, lkp=lkp, lqp_tile=lqp_tile, dv_tile=dv_tile, force=True
     )
 
-    from flash_attention.kernel_fusion_based.attn_npu2 import build_module
+    from air_examples.flash_attention.kernel_fusion_based.attn_npu2 import build_module
 
     mod = build_module(
         lk=seq_len,

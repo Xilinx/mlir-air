@@ -27,8 +27,6 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
@@ -45,6 +43,16 @@ from air import api as air
 from air.api import ops
 from air.api.types import bf16, f32, i32
 
+import types
+from pathlib import Path
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
 
 def _api_dtype(np_dtype):
     """The air.api dtype for a numpy dtype, for builders that take np dtypes.
@@ -59,7 +67,7 @@ def _api_dtype(np_dtype):
     raise TypeError(f"no air.api dtype for {np_dtype!r}")
 
 
-from shared.infra.stitching import (
+from air_examples.llms.shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
     KernelSlice,
@@ -210,8 +218,13 @@ def build_rms_gemms_rope_module(
             %arg11: q_roped     (seq_len, emb_dim)       RoPE Q output (2D)
             %arg12: k_roped     (seq_len, kv_dim)        RoPE K output (2D)
     """
-    from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.llms.shared.builders.gemm_builder import (
+        _build_gemm_module,
+        gemm_registry_config,
+    )
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     # Per-GEMM config from the kernel_registry JSON (single source of truth): method
     # (fused-cast vs drain) AND all tiles are looked up per shape, never hardcoded.
@@ -525,7 +538,7 @@ if __name__ == "__main__":
     wv = np.random.uniform(-0.1, 0.1, (EMB_DIM, KV_DIM)).astype(bfloat16)
 
     # RoPE LUTs (seq-first: repeated per head)
-    from rope_lut.rope_lut import generate_lut
+    from air_examples.rope_lut.rope_lut import generate_lut
 
     base_lut = generate_lut(SEQ_LEN, HEAD_DIM, bfloat16)  # (SEQ_LEN, HEAD_DIM)
     lut_q = np.repeat(base_lut, N_HEADS, axis=0)  # (N_HEADS*SEQ_LEN, HEAD_DIM)

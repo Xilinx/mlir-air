@@ -54,6 +54,18 @@ from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 
+import types
+from pathlib import Path
+
+import sys
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[1])
+]
+
 EPS = 1e-5
 
 
@@ -248,13 +260,9 @@ if __name__ == "__main__":
     print(f"LayerNorm (affine): M={M}, N={N}, herd=[{herd_x},1]")
 
     if args.ext:
-        import os
-        import sys
-
-        sys.path.insert(
-            0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "llms")
+        from air_examples.llms.shared.infra.external_kernels import (
+            compile_layer_norm_rows,
         )
-        from shared.infra.external_kernels import compile_layer_norm_rows
 
         compile_layer_norm_rows(N, args.rows)
 

@@ -36,14 +36,22 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-_PROG = str(_HERE.parent.parent)  # programming_examples
-_LLMS = str(_HERE.parent)  # llms
 _QWEN = str(_HERE.parent / "qwen25_3b")  # prefill builders + block runner
-for _p in (_PROG, _LLMS, _QWEN, str(_HERE)):
+for _p in (_QWEN, str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from shared.infra.cache import KernelCache  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
 
 from qwen25_7b_q4nx_weights import (  # noqa: E402
     D,
@@ -54,6 +62,8 @@ from qwen25_7b_q4nx_weights import (  # noqa: E402
     load_q4nx_weights,
     qwen25_7b_config,
 )
+
+import types
 
 MODEL_DEFAULT = os.environ.get(
     "Q4NX_MODEL_SOURCE", os.environ.get("MODEL_SOURCE", "Qwen/Qwen2.5-7B-Instruct")
@@ -95,7 +105,7 @@ class Qwen25Q4nxPrefill:
 
         from qwen25_3b_weights import generate_rope_lut
         from qwen25_3b_prefill import compile_all_kernels
-        from shared.infra.backend_presets import LM_GEMV_BACKEND
+        from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
 
         self.config = qwen25_7b_config(n_layers=n_layers)
         # Attention on the NPU (head-first FA, head_dim=128). Q4NX_CPU_ATTN=1
@@ -136,7 +146,9 @@ class Qwen25Q4nxPrefill:
         else:
             print("[q4nx_prefill] using cached prefill ELFs (skip compile)", flush=True)
         if "lm_head_gemv" not in cached:
-            from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+            from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+                build_lm_head_gemv_module,
+            )
 
             self.cache.compile_and_cache(
                 "lm_head_gemv",

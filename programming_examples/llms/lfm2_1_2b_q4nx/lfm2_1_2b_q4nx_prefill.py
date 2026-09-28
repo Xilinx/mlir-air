@@ -65,15 +65,23 @@ from ml_dtypes import bfloat16
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
 _PROG_EXAMPLES = _LLMS_DIR.parent
-for _p in (str(_PROG_EXAMPLES), str(_LLMS_DIR), str(_THIS_DIR)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
 from lfm2_1_2b_q4nx_weights import (  # noqa: E402
     Lfm2Q4nxConfig as Lfm2Config,
     generate_rope_lut,
     load_weights,
 )
+
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 
 K_TAPS = 3
 HALO = K_TAPS - 1
@@ -156,7 +164,10 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 
     print(f"\n{'='*60}\nCompiling LFM2 prefill kernels (seq_len={seq_len})\n{'='*60}")
 
-    from shared.infra.external_kernels import compile_gemm_mm, compile_rope
+    from air_examples.llms.shared.infra.external_kernels import (
+        compile_gemm_mm,
+        compile_rope,
+    )
 
     # External microkernels FIRST — aircc picks them up from cwd.
     compile_gemm_mm(
@@ -174,7 +185,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 
     # --- ATTENTION front: RMSNorm + QKV + QK-norm + RoPE -------------------
     print("\n--- rms_qkv_qknorm_rope (RMSNorm+QKV+QK-norm+RoPE) ---")
-    from shared.builders.rms_qkv_qknorm_rope_multi import (
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
         build_rms_qkv_qknorm_rope_module,
     )
 
@@ -195,7 +206,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 
     # --- shared tail: O/out proj + residual + FFN --------------------------
     print("\n--- o_ffn (out proj + residual + FFN) — shared by BOTH block types ---")
-    from shared.builders.o_ffn_multi import build_o_ffn_module
+    from air_examples.llms.shared.builders.o_ffn_multi import build_o_ffn_module
 
     cache.compile_and_cache(
         "o_ffn",
@@ -206,7 +217,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     # --- FlashAttention (seq-first; head_dim=64 needs no host transpose) ---
     if not cpu_attn:
         print("\n--- flash_attn (seq-first FA, head_dim=64) ---")
-        from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+        from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
             build_module as build_attn,
         )
 
@@ -232,10 +243,17 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 
     # --- CONV block leaves -------------------------------------------------
     print("\n--- conv block leaves (rms_op, in_proj, gate_mul, conv1d) ---")
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
-    from shared.builders.gemm_builder import _build_gemm_module, gemm_registry_config
-    from eltwise_mul.eltwise_mul import build_eltwise_mul
-    from conv1d_depthwise.conv1d_depthwise import build_module as build_conv1d
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
+    from air_examples.llms.shared.builders.gemm_builder import (
+        _build_gemm_module,
+        gemm_registry_config,
+    )
+    from air_examples.eltwise_mul.eltwise_mul import build_eltwise_mul
+    from air_examples.conv1d_depthwise.conv1d_depthwise import (
+        build_module as build_conv1d,
+    )
 
     cache.compile_and_cache(
         "rms_op",
@@ -273,7 +291,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     # layers. That is the single largest remaining prefill win. It needs a
     # conv-operator builder in the o_ffn_multi style, which is new builder
     # work rather than a config change.
-    from shared.builders.gemm_builder import gemm_method_spec
+    from air_examples.llms.shared.builders.gemm_builder import gemm_method_spec
 
     drain = gemm_method_spec("drain")
     globals()["_IN_PROJ_SPEC"] = drain
@@ -587,7 +605,7 @@ def _o_ffn_scratch_plan(seq_len, emb_dim, hidden_dim):
     two scratch args instead of four, and the hardcoded list overran it
     (`set_arg(16) >= size 16`).
     """
-    from shared.builders.gemm_builder import gemm_registry_config
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
 
     o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
     g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
@@ -743,7 +761,7 @@ class Lfm2Q4nxPrefill:
         self.conv_state = {}
         self._ctx_len = 0
 
-        from shared.infra.cache import KernelCache
+        from air_examples.llms.shared.infra.cache import KernelCache
 
         cache_dir = (
             cache_dir

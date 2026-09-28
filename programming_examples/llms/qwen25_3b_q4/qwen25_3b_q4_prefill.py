@@ -42,14 +42,22 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-_PROG = str(_HERE.parent.parent)  # programming_examples
-_LLMS = str(_HERE.parent)  # llms
 _QWEN = str(_HERE.parent / "qwen25_3b")  # prefill builders + block runner
-for _p in (_PROG, _LLMS, _QWEN, str(_HERE)):
+for _p in (_QWEN, str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from shared.infra.cache import KernelCache  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
 
 from qwen25_3b_q4_weights import (  # noqa: E402
     D,
@@ -61,6 +69,8 @@ from qwen25_3b_q4_weights import (  # noqa: E402
     VOCAB,
     load_q4_weights,
 )
+
+import types
 
 MODEL_DEFAULT = os.environ.get(
     "Q4NX_MODEL_SOURCE",

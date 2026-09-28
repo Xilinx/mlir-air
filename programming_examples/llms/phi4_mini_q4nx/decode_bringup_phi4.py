@@ -19,7 +19,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _LLMS = _HERE.parent
 _PROG = _LLMS.parent
-for _p in (str(_PROG), str(_LLMS), str(_PROG / "fused_decode"), str(_HERE)):
+for _p in (str(_PROG / "fused_decode"), str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

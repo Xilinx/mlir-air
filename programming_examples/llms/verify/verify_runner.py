@@ -39,6 +39,7 @@ import importlib
 import json
 import os
 import sys
+import types
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -46,9 +47,16 @@ from typing import Optional
 import numpy as np
 
 HERE = Path(__file__).parent
-_PROG_EXAMPLES = HERE.parent
-sys.path.insert(0, str(_PROG_EXAMPLES))
 sys.path.insert(0, str(HERE))
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. _load_adapter
+# resolves `--runner` through this.
+_EXAMPLES_PKG = "air_examples"
+sys.modules.setdefault(_EXAMPLES_PKG, types.ModuleType(_EXAMPLES_PKG)).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 
 from comparators import (  # noqa: E402
     compare_pair,
@@ -186,10 +194,13 @@ def _strip_opt(argv, opt):
 def _load_adapter(dotted_path: str):
     """Import the model's verify_adapter module by dotted path.
 
-    Adapter modules live next to each LLM example; we make
-    `programming_examples/` importable above so `<example_dir>.verify_adapter`
-    resolves natively.
+    `--runner` names the example directory, as in `llama32_1b.verify_adapter`.
+    The examples are reachable as `air_examples.llms.*`, so the prefix is added
+    here rather than putting llms/ on sys.path, where every model directory
+    would become a top-level module name.
     """
+    if not dotted_path.startswith(f"{_EXAMPLES_PKG}."):
+        dotted_path = f"{_EXAMPLES_PKG}.llms.{dotted_path}"
     return importlib.import_module(dotted_path)
 
 

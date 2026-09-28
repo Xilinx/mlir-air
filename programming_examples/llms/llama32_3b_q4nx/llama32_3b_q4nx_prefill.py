@@ -30,15 +30,25 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-_PROG = str(_HERE.parent.parent)  # programming_examples
-_LLMS = str(_HERE.parent)  # llms
 _LLAMA3B = str(_HERE.parent / "llama32_3b")  # fused-stitcher prefill driver
 _LLAMA1B = str(_HERE.parent / "llama32_1b")  # shared stitcher internals
-for _p in (_PROG, _LLMS, _LLAMA3B, _LLAMA1B, str(_HERE)):
+for _p in (_LLAMA3B, _LLAMA1B, str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from shared.infra.cache import KernelCache  # noqa: E402
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+
+from air_examples.llms.shared.infra.cache import KernelCache  # noqa: E402
+
+import types
 
 # Default weight source: the self-contained model.q4nx bundle on the Hub. May be
 # overridden with --model / Q4NX_MODEL_SOURCE (an HF repo id, or a local dir/file).
@@ -67,7 +77,7 @@ class LlamaQ4nxPrefill:
         self.current_context_length = 0
         from llama32_3b_weights import LlamaConfig, generate_rope_lut
         from llama32_3b_prefill import compile_all_kernels, use_temporal_fa
-        from shared.infra.backend_presets import LM_GEMV_BACKEND
+        from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
 
         self.config = LlamaConfig(n_layers=n_layers)
         # seq_len-specific cache: the stitcher/flash-attn ELFs are compiled for this padded
@@ -111,7 +121,9 @@ class LlamaQ4nxPrefill:
             )
         # LM head on the NPU -- an 8-partition GEMV.
         if "lm_head_gemv" not in cached:
-            from shared.builders.lm_head_gemv_multi import build_lm_head_gemv_module
+            from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+                build_lm_head_gemv_module,
+            )
 
             self.cache.compile_and_cache(
                 "lm_head_gemv",

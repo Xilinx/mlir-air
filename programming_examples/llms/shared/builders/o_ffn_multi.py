@@ -33,8 +33,6 @@ import filelock
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
@@ -49,14 +47,29 @@ from air.backend.xrt import XRTBackend
 
 from air import api as air
 from air.api import ops
-from shared.builders.rms_gemms_rope_multi import _api_dtype
 
-from shared.infra.stitching import (
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.builders.rms_gemms_rope_multi import _api_dtype
+
+from air_examples.llms.shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
     KernelSlice,
     FuncArg,
 )
+
+import types
+from pathlib import Path
 
 range_ = for_
 
@@ -236,12 +249,14 @@ def _build_o_ffn(
     vit_o_ffn / vit_ln_qkv, which use exactly that to go faster at the same
     bit-identical output.)
     """
-    from shared.builders.gemm_builder import (
+    from air_examples.llms.shared.builders.gemm_builder import (
         _build_gemm_module,
         gemm_registry_config,
         disambiguate_by_tile_n,
     )
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     # Per-GEMM config from the kernel_registry JSON (single source of truth): method
     # (fused-cast vs drain) AND all tiles are looked up per shape — never hardcoded.
@@ -341,7 +356,7 @@ def _build_o_ffn(
 
     # L6: SwiGLU (bare herd → wrap)
     print("  [6/8] SwiGLU...")
-    from silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
+    from air_examples.silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
 
     swiglu_ir = _wrap_ir_in_launch(
         str(
@@ -408,7 +423,7 @@ def _build_o_ffn(
     # C-f32-scratch,D-bf16-out). Mirrors rms_gemms_rope_multi.py's per-GEMM
     # gemm_registry_config + alloc_gemm_scratch pattern so this builder adapts
     # to any shape instead of hardcoding "always fused-cast".
-    from shared.infra.stitching import alloc_gemm_scratch
+    from air_examples.llms.shared.infra.stitching import alloc_gemm_scratch
 
     def _gemm_extern_syms(spec):
         sfx = spec["sym_suffix"]
@@ -529,7 +544,7 @@ if __name__ == "__main__":
 
     SEQ_LEN, EMB_DIM, HIDDEN_DIM = 2048, 2048, 8192
 
-    from shared.infra.external_kernels import (
+    from air_examples.llms.shared.infra.external_kernels import (
         compile_silu_and_mul,
         compile_gemm_mm,
     )

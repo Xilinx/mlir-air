@@ -41,9 +41,8 @@ from ml_dtypes import bfloat16
 # llama32_1b/ package (we reuse its config-driven builders verbatim).
 _THIS_DIR = Path(__file__).resolve().parent
 _LLMS_DIR = _THIS_DIR.parent
-_PROG = _LLMS_DIR.parent
 _LLAMA1B = _LLMS_DIR / "llama32_1b"
-for _p in (str(_PROG), str(_LLMS_DIR), str(_LLAMA1B), str(_THIS_DIR)):
+for _p in (str(_LLAMA1B), str(_THIS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -58,6 +57,15 @@ from llama32_1b_prefill import (  # noqa: E402,F401
     _rms_scratch_specs,
 )
 from llama32_1b_cpu_helpers import attention_reference  # noqa: E402
+
+import types
+
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 
 
 def use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
@@ -75,7 +83,7 @@ def use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
     """
     if os.environ.get("TEMPORAL_CAUSAL_SKIP") == "0":
         return False
-    from shared.infra.fa_temporal import supports
+    from air_examples.llms.shared.infra.fa_temporal import supports
 
     return supports(seq_len, n_heads, n_kv_heads, head_dim)
 
@@ -99,7 +107,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     print(f"Compiling prefill kernels (seq_len={seq_len}, Llama-3.2-3B)...")
     print(f"{'='*60}\n")
 
-    from shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
 
     compile_gemm_mm(
         tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
@@ -109,7 +117,9 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     )
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).
-    from shared.builders.rms_gemms_rope_multi import build_rms_gemms_rope_module
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
+        build_rms_gemms_rope_module,
+    )
 
     cache.compile_and_cache(
         "rms_gemms_rope",
@@ -128,7 +138,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     )
 
     # 2. O GEMM + Residual Add + FFN (registry-driven fused-cast GEMMs).
-    from shared.builders.o_ffn_multi import build_o_ffn_module
+    from air_examples.llms.shared.builders.o_ffn_multi import build_o_ffn_module
 
     o_ffn_backend = {
         "verbose": cache.verbose,
@@ -145,14 +155,14 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     if not cpu_attn:
         if use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
             print("\n--- flash_attn (seq-first TEMPORAL-CAUSAL FA, head_dim=128) ---")
-            from shared.infra.fa_temporal import compile_temporal_fa
+            from air_examples.llms.shared.infra.fa_temporal import compile_temporal_fa
 
             compile_temporal_fa(
                 cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose
             )
         else:
             print("\n--- flash_attn (head-first FA, head_dim=128) ---")
-            from shared.infra.fa_headfirst import compile_headfirst_fa
+            from air_examples.llms.shared.infra.fa_headfirst import compile_headfirst_fa
 
             compile_headfirst_fa(
                 cache, seq_len, n_heads, n_kv_heads, head_dim, cache.verbose
@@ -255,9 +265,13 @@ def run_transformer_block(
         # seq-first (pure Llama: no QK-norm, no bias); v is the raw V
         # projection seq-first. Real (un-padded) dims.
         if use_temporal_fa(seq_len, n_heads, n_kv_heads, head_dim):
-            from shared.infra.fa_temporal import npu_fa_temporal as _npu_fa
+            from air_examples.llms.shared.infra.fa_temporal import (
+                npu_fa_temporal as _npu_fa,
+            )
         else:
-            from shared.infra.fa_headfirst import npu_fa_headfirst as _npu_fa
+            from air_examples.llms.shared.infra.fa_headfirst import (
+                npu_fa_headfirst as _npu_fa,
+            )
 
         attn_out = _npu_fa(
             cache,

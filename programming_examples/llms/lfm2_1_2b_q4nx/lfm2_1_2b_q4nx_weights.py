@@ -64,7 +64,7 @@ _LLMS_DIR = os.path.dirname(_THIS_DIR)
 _PROG_DIR = os.path.dirname(_LLMS_DIR)
 # The Q4_0 codec + the dependency-free safetensors reader live with the
 # fused_decode example; reuse them rather than restating the codec.
-for _p in (_LLMS_DIR, os.path.join(_PROG_DIR, "fused_decode")):
+for _p in (os.path.join(_PROG_DIR, "fused_decode"),):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

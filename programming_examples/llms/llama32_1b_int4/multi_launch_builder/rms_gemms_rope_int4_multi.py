@@ -25,8 +25,6 @@ import sys
 import numpy as np
 from ml_dtypes import bfloat16
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Shared scaffolding (shared.infra.stitching, ffn_swiglu builder,
 # weighted_rms_norm, rope_lut) currently lives under the bf16 example.
@@ -48,6 +46,7 @@ sys.path.insert(
     ),
 )
 
+
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
@@ -59,7 +58,18 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
-from shared.infra.stitching import (
+# programming_examples/ is published as the air_examples package rather than put
+# on sys.path: every directory under it would otherwise become a top-level
+# module name and shadow any installed package that shares it. Registered
+# before the first air_examples import below, which needs it.
+import types
+from pathlib import Path
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.infra.stitching import (
     _extract_between_func_and_return,
     _extract_affine_maps,
     _extract_private_funcs,
@@ -83,7 +93,10 @@ range_ = for_
 # partial-rotary branch; the shared one at its default rope_dim=None emits a
 # byte-identical air.insts.bin at every shape this file builds, so the copy is
 # a maintenance liability rather than a difference.
-from shared.builders.rms_gemms_rope_multi import _build_rope_2d
+from air_examples.llms.shared.builders.rms_gemms_rope_multi import _build_rope_2d
+
+import types
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Module builder
@@ -127,9 +140,13 @@ def build_rms_gemms_rope_int4_module(
         arg11: q_roped       (seq_len, emb_dim)               bf16
         arg12: k_roped       (seq_len, kv_dim)                bf16
     """
-    from llama32_1b_int4.gemm_builder import _build_int4_gemm_module as build_int4_gemm
+    from air_examples.llms.llama32_1b_int4.gemm_builder import (
+        _build_int4_gemm_module as build_int4_gemm,
+    )
     from matmul_int4_packed import packed_tile_bytes
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     if tile_k_l2 is None:
         tile_k_l2 = emb_dim  # single segment-K iter; matches Q-proj config
