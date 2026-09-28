@@ -55,7 +55,7 @@ export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 # utils/peano-requirements.txt) and with .github/workflows/. The earlier 21.x pin
 # worked around what turned out to be AIR's own core stack size, not a compiler
 # bug -- see AIRToAIEPass.cpp's stack_size default.
-python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026090201+a36c62b9" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026091401+a5d028e8" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 PEANO_INSTALL_DIR="$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"
 
