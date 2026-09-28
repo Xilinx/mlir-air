@@ -174,7 +174,7 @@ def get_shared_device(index: int = 0):
     A buffer object belongs to the device it was allocated against rather than
     to the hardware context, so releasing a context to stay under the device's
     limit keeps the buffers only while that device lives. Pass this to
-    XRTBackend(device=...) to give it a lifetime longer than one backend.
+    XRTBackend(device=...) so the device outlives any one backend.
     """
     import pyxrt as xrt
 

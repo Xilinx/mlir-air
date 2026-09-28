@@ -321,14 +321,15 @@ class KernelCache:
     # Manifest file stores artifact metadata for --run-only mode
     MANIFEST_FILE = "manifest.json"
 
-    # (cache uid, kernel name) -> (weak cache, name), least-recently-used
-    # first. Shared across caches because the contexts are: a process holding a
-    # prefill and a decode cache must be able to evict from either. Weak so a
-    # discarded cache, and its buffers, are not pinned here.
+    # (cache uid, kernel name) -> (weakref to cache, kernel name),
+    # least-recently-used first. Shared across caches because a hardware
+    # context is a device-wide resource: a process holding a prefill and a
+    # decode cache must be able to evict from either. Weak so a discarded
+    # cache, and its buffers, are not pinned here.
     _contexts = OrderedDict()
     _next_uid = 0
-    # At the limit every miss fails a load first, so the note explaining the
-    # evictions is worth one line per process rather than one per miss.
+    # With max_contexts=0 a miss at the device limit fails a load before it
+    # evicts, so print the note explaining the evictions once per process.
     _reported_load_failure = False
 
     def __init__(self, cache_dir=None, verbose=False, profiler=None, max_contexts=None):
@@ -528,13 +529,14 @@ class KernelCache:
     def _release_lru_context(cls):
         """Unload the least-recently-used kernel in the process.
 
-        False if there was nothing to release. Buffers in _cached_bos belong to
-        the shared device rather than to the context, so they outlive this and
-        the kernel reloads without rewriting its weights.
+        True if a context was released, False if there was nothing to release.
+        Buffers in _cached_bos belong to the shared device rather than to the
+        context, so they outlive this call and the kernel reloads without
+        rewriting its weights.
 
-        Only safe because load_and_run re-reads backend.kernel per call: this
-        nulls out the kernel that XRTBackend.load()'s invoker captured, so
-        neither that invoker nor the backend may be held across a call that can
+        Only safe because load_and_run re-reads backend.kernel per call:
+        unload() sets that attribute to None, so nothing may hold the backend,
+        or the invoker XRTBackend.load() returned, across a call that can
         evict.
         """
         freed = False
@@ -542,9 +544,9 @@ class KernelCache:
             ref, name = cls._contexts.popitem(last=False)[1]
             cache = ref()
             if cache is None:
-                # Reached only if the callback below has not run yet. The
-                # cache took its backends with it, so count it as room freed
-                # or the caller's retry gives up with room available.
+                # Reached only if the weakref callback in _load_backend has
+                # not run yet. The collected cache took its backends with it,
+                # so this counts as room freed.
                 freed = True
                 continue
             backend = cache._loaded.pop(name, None)
@@ -579,8 +581,8 @@ class KernelCache:
                 # on separate files so the layers compose cleanly.
                 with filelock.FileLock("/tmp/npu.lock"):
                     backend.load(artifact)
-                    # Per context rather than per bo_key, since a reload
-                    # builds a fresh one. None in ELF mode.
+                    # Synced per context, not per bo_key: a reload builds a
+                    # fresh instruction BO. None in ELF mode.
                     if backend.bo_instr is not None:
                         backend.bo_instr.sync(
                             xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
@@ -596,9 +598,9 @@ class KernelCache:
                 if not KernelCache._contexts:
                     raise
                 if not KernelCache._reported_load_failure:
-                    # XRTBackend.load() reports any ELF-path failure as
-                    # "ensure this is a valid ELF", which misdescribes
-                    # exhaustion. Unwrap to what the driver said.
+                    # XRTBackend.load() rewrites any ELF-path failure into a
+                    # corrupt-binary message, which misdescribes exhaustion.
+                    # Unwrap to what the driver said.
                     why = e
                     while why.__cause__ is not None:
                         why = why.__cause__
@@ -609,10 +611,10 @@ class KernelCache:
                     KernelCache._reported_load_failure = True
                 self._release_lru_context()
         self._loaded[name] = backend
-        # Purge on collection, or a stale key inflates the count
-        # max_contexts is compared against. The callback binds the key and the
-        # map by default argument: binding self would defeat the weakref, and
-        # binding KernelCache would break once shutdown rebinds it to None.
+        # Purge on collection, or a stale key inflates len(_contexts), which
+        # is what max_contexts caps. The callback binds the key and the map by
+        # default argument: binding self would defeat the weakref, and binding
+        # KernelCache would break once shutdown rebinds it to None.
         key = (self._uid, name)
         KernelCache._contexts[key] = (
             weakref.ref(
@@ -676,7 +678,7 @@ class KernelCache:
                 Combined with listing the consumer's index in
                 intermediate_indices, the value never round-trips through the
                 host: the prefill's FFN chain (o_norm -> gate/up -> gelu ->
-                down) passes 84 MB per layer this way. Only safe when the
+                down) passes its whole activation this way. Only safe when the
                 producer's dispatch is guaranteed to have completed and to have
                 written the whole buffer, which sequential load_and_run calls
                 are. Aliased pool entries are still keyed by size, so distinct
