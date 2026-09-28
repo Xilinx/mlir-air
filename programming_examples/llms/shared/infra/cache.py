@@ -652,6 +652,7 @@ class KernelCache:
         bo_key=None,
         shared_nonstatic=False,
         shared_alias=None,
+        resident_alias=False,
     ):
         """Load cached kernel and execute with BO reuse.
 
@@ -701,6 +702,12 @@ class KernelCache:
                 are. Aliased pool entries are still keyed by size, so distinct
                 names never collide. Raises ValueError on an alias that targets
                 a static index, an out-of-range index, or an empty pool name.
+                resident_alias: When True, an input that is both aliased and listed
+                in intermediate_indices is never written by the host, not even on
+                the first call for its bo_key (the default writes every non-static
+                input once on the first call). Use it when the producer's output
+                is already resident in the pool and the caller only passes a
+                size/dtype placeholder, so that first-call write would clobber it.
                 CONTRACT/FOOTGUN: returned outputs for shared (non-static) indices
                 are zero-copy views into the shared BO and are OVERWRITTEN by the
                 next load_and_run call that reuses that arg's shared buffer. Safe
@@ -814,8 +821,14 @@ class KernelCache:
             for i, a in enumerate(inputs):
                 if i in static_indices and not first_call:
                     continue  # Already written on first call
-                if i in intermediate_set and not first_call:
-                    continue  # Intermediate buffer, kernel overwrites it
+                if i in intermediate_set and (
+                    not first_call or (resident_alias and i in shared_alias)
+                ):
+                    # Intermediate buffer, kernel overwrites it. With resident_alias an
+                    # aliased intermediate input is also already resident (the producer
+                    # wrote the shared BO), and writing the caller's placeholder on the
+                    # first call would clobber it.
+                    continue
                 if a.dtype == bfloat16:
                     a = a.view(np.int16)
                 mv = bos[i].map()

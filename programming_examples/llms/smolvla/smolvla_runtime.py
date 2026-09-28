@@ -81,6 +81,7 @@ from smolvla_fuse import (  # noqa: E402
     LNQKV_TILING_OVERRIDE,
     OFFN_TILING_OVERRIDE,
     FA_Q_IN_SEGMENT,
+    FA_QK_PRETRANSPOSE,
     B_STATIONARY,
 )
 from smolvla_vision_weights import SigLIPVisionConfig  # noqa: E402
@@ -110,6 +111,7 @@ _CACHE_SUFFIX = (
     + "_q"
     + "x".join(map(str, _LNQKV_TILING))
     + ("_qseg" if FA_Q_IN_SEGMENT else "")
+    + ("_kt" if FA_QK_PRETRANSPOSE else "")
     + ("_bst" if B_STATIONARY else "")
 )
 VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")

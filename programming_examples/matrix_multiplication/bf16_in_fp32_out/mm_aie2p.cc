@@ -303,9 +303,20 @@ void SYM(f32_to_bf16_bias_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
     aie::vector<float, VW> vb = bacc.template to_vector<float>();
     float *ps = src + jb * MB * (T * T);
     bfloat16 *pd = dst + jb * MB * (T * T);
-    for (unsigned e = 0; e < MB * T * T; e += VW) {
-      aie::store_v(pd + e, narrow_f32_to_bf16<VW>(
-                               aie::add(aie::load_v<VW>(ps + e), vb)));
+    // GB vectors per iteration (all loads, then all narrowing stores) so the
+    // load latency of neighbouring vectors overlaps; same arithmetic per
+    // element.
+    constexpr unsigned GB = 4;
+    static_assert((MB * T * T) % (VW * GB) == 0,
+                  "tile must hold whole batches");
+    for (unsigned e = 0; e < MB * T * T; e += VW * GB) {
+      aie::vector<float, VW> v[GB];
+#pragma clang loop unroll(full)
+      for (unsigned q = 0; q < GB; q++)
+        v[q] = aie::add(aie::load_v<VW>(ps + e + q * VW), vb);
+#pragma clang loop unroll(full)
+      for (unsigned q = 0; q < GB; q++)
+        aie::store_v(pd + e + q * VW, narrow_f32_to_bf16<VW>(v[q]));
     }
   }
 }
@@ -335,22 +346,39 @@ void SYM(f32_to_bf16_bias_gelu_mn)(float *src, bfloat16 *b, bfloat16 *dst) {
     aie::vector<float, VW> vb = bacc.template to_vector<float>();
     float *ps = src + jb * MB * (T * T);
     bfloat16 *pd = dst + jb * MB * (T * T);
-    for (unsigned e = 0; e < MB * T * T; e += VW) {
-      aie::vector<bfloat16, VW> g =
-          narrow_f32_to_bf16<VW>(aie::add(aie::load_v<VW>(ps + e), vb));
-      aie::vector<bfloat16, VW> g2 = aie::mul(g, g);
-      aie::vector<bfloat16, VW> g3 = aie::mul(g2, g);
-      aie::vector<bfloat16, VW> beta_g3 = aie::mul(beta_v, g3);
-      aie::vector<bfloat16, VW> poly = aie::add(g, beta_g3);
-      aie::vector<bfloat16, VW> inner = aie::mul(c_v, poly);
-      aie::accum<accfloat, VW> tanh_in;
-      tanh_in.from_vector(inner);
-      aie::vector<bfloat16, VW> tv =
-          aie::tanh<bfloat16>(tanh_in.template to_vector<float>());
-      aie::vector<bfloat16, VW> gh = aie::mul(half_v, g);
-      aie::vector<bfloat16, VW> opt = aie::add(one_v, tv);
-      aie::vector<bfloat16, VW> out = aie::mul(gh, opt);
-      aie::store_v(pd + e, out);
+    // GB independent vectors per iteration, stage by stage, so the load,
+    // convert, multiply and tanh chains of neighbouring vectors overlap instead
+    // of running back to back (the per-vector chain is latency bound). Same
+    // arithmetic per element as a one-vector loop, so the result is
+    // bit-identical. GB=2 measured best (2: 2497 us, 4: 2522, 8: 2595 on fc1);
+    // GB=16 miscompiles.
+    constexpr unsigned GB = 2;
+    static_assert((MB * T * T) % (VW * GB) == 0,
+                  "tile must hold whole batches");
+    for (unsigned e = 0; e < MB * T * T; e += VW * GB) {
+      aie::vector<bfloat16, VW> g[GB], t[GB];
+#pragma clang loop unroll(full)
+      for (unsigned q = 0; q < GB; q++)
+        g[q] = narrow_f32_to_bf16<VW>(
+            aie::add(aie::load_v<VW>(ps + e + q * VW), vb));
+#pragma clang loop unroll(full)
+      for (unsigned q = 0; q < GB; q++) {
+        aie::vector<bfloat16, VW> g2 = aie::mul(g[q], g[q]);
+        aie::vector<bfloat16, VW> g3 = aie::mul(g2, g[q]);
+        aie::vector<bfloat16, VW> beta_g3 = aie::mul(beta_v, g3);
+        aie::vector<bfloat16, VW> poly = aie::add(g[q], beta_g3);
+        aie::vector<bfloat16, VW> inner = aie::mul(c_v, poly);
+        aie::accum<accfloat, VW> tanh_in;
+        tanh_in.from_vector(inner);
+        t[q] = aie::tanh<bfloat16>(tanh_in.template to_vector<float>());
+      }
+#pragma clang loop unroll(full)
+      for (unsigned q = 0; q < GB; q++) {
+        aie::vector<bfloat16, VW> gh = aie::mul(half_v, g[q]);
+        aie::vector<bfloat16, VW> opt = aie::add(one_v, t[q]);
+        aie::vector<bfloat16, VW> out = aie::mul(gh, opt);
+        aie::store_v(pd + e + q * VW, out);
+      }
     }
   }
 }

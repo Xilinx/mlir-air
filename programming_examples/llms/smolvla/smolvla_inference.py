@@ -29,6 +29,7 @@ Run standalone:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -57,6 +58,31 @@ import types
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
     str(Path(__file__).resolve().parents[2])
 ]
+# CPU stages (SmolLM2 backbone, action expert). Their GEMMs are small (50 action
+# tokens against a 241-token prefix) and do not scale with threads: on this
+# 16-core / 32-thread machine the backbone plus 10 denoise steps take 273 ms at
+# torch's default of 16 unbound threads, 240 ms with the threads bound to physical
+# cores, and 215 ms with 8 bound threads.
+#   SMOLVLA_CPU_BIND    (default 1) bind OpenMP threads to physical cores. Must be
+#                       in the environment before torch loads its OpenMP runtime,
+#                       so it is set here, at import, and skipped if torch is
+#                       already imported or the user set OMP_PROC_BIND / OMP_PLACES.
+#   SMOLVLA_CPU_THREADS (default 8) torch threads for the NPU path's CPU stages;
+#                       0 keeps torch's default. The pure-CPU comparison arm always
+#                       keeps torch's default thread count.
+CPU_THREADS = int(os.environ.get("SMOLVLA_CPU_THREADS", "8"))
+if os.environ.get("SMOLVLA_CPU_BIND", "1") == "1" and "torch" not in sys.modules:
+    os.environ.setdefault("OMP_PROC_BIND", "close")
+    os.environ.setdefault("OMP_PLACES", "cores")
+
+#   SMOLVLA_EXPERT_KV_MEMO (default 1) reuse the expert's cross-attention K/V
+#                       projections across the 10 denoise steps. Each step
+#                       re-projects the same 241-token prefix K/V through the
+#                       expert's k_proj/v_proj; the inputs are compared exactly
+#                       (torch.equal) so a changed prefix recomputes, and the
+#                       output is bit-identical. NPU path only: the pure-CPU
+#                       comparison arm stays unmodified.
+EXPERT_KV_MEMO = os.environ.get("SMOLVLA_EXPERT_KV_MEMO", "1") == "1"
 
 DEFAULT_MODEL = "lerobot/smolvla_base"
 DEFAULT_PROMPT = "pick up the cube"
@@ -284,8 +310,14 @@ def run_hybrid_forward(
         )
         return out
 
+    prev_threads = torch.get_num_threads()
+    memos = _install_expert_kv_memo(policy) if EXPERT_KV_MEMO else []
+    for m in memos:
+        m.enabled = npu_vision
     if npu_vision:
         policy.model.embed_prefix = _wrapped_embed_prefix
+        if CPU_THREADS > 0:
+            torch.set_num_threads(CPU_THREADS)
     try:
         policy.reset()
         with torch.no_grad():
@@ -293,8 +325,63 @@ def run_hybrid_forward(
     finally:
         policy.model.embed_prefix = orig_embed_prefix
         vwe.embed_image = orig_embed_image
+        torch.set_num_threads(prev_threads)
+        for m in memos:
+            m.enabled = False
+            m.clear()
 
     return chunk.detach().float().numpy()  # (1, chunk_size, action_dim)
+
+
+def _install_expert_kv_memo(policy):
+    """Wrap the expert's k_proj / v_proj in a one-entry exact-input memo.
+
+    Returns the wrappers so the caller can switch them on for the NPU path and
+    clear them afterwards. Idempotent per policy. Self-attention expert layers
+    see a different input every step, so their wrappers never hit; the cost
+    there is one shape check and a failed torch.equal.
+    """
+    import torch
+
+    class _Memo(torch.nn.Module):
+        def __init__(self, lin):
+            super().__init__()
+            self.lin = lin
+            self.enabled = False
+            self.clear()
+
+        @property
+        def weight(self):  # lerobot reads k_proj.weight.dtype
+            return self.lin.weight
+
+        def clear(self):
+            self._x = None
+            self._y = None
+
+        def forward(self, x):
+            if not self.enabled:
+                return self.lin(x)
+            if (
+                self._x is not None
+                and self._x.shape == x.shape
+                and self._x.dtype == x.dtype
+                and torch.equal(self._x, x)
+            ):
+                return self._y
+            y = self.lin(x)
+            self._x, self._y = x.clone(), y
+            return y
+
+    memos = getattr(policy, "_expert_kv_memos", None)
+    if memos is None:
+        memos = []
+        for layer in policy.model.vlm_with_expert.lm_expert.layers:
+            for name in ("k_proj", "v_proj"):
+                m = _Memo(getattr(layer.self_attn, name))
+                setattr(layer.self_attn, name, m)
+                memos.append(m)
+        policy._expert_kv_memos = memos
+    return memos
 
 
 def compile_only(cache_dir: str = VISION_CACHE_DIR) -> int:

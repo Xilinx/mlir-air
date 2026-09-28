@@ -218,6 +218,7 @@ def compile_attn_npu2(
     bfp16=True,
     dk_tile=None,
     dv_tile=None,
+    pretranspose_k=False,
 ):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
@@ -250,6 +251,10 @@ def compile_attn_npu2(
             re-streaming that axis costs). Both must match the builder.
         force: recompile even if attn_npu2.o exists (needed when the same CWD
             previously built a different-shaped .o, e.g. hd=64 then hd=128).
+        pretranspose_k: transpose each K block once, in place, before Q@K^T
+            (-DQK_PRETRANSPOSE in attn_npu2.cc) instead of inside the matmul.
+            Bit-identical, needs the K L1 buffer to be re-filled before every
+            call, so it is opt-in per design.
     """
     if lkp is None:
         lkp = head_dim
@@ -280,6 +285,8 @@ def compile_attn_npu2(
     # NPU, higher precision.
     if bfp16:
         _flags.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
+    if pretranspose_k:
+        _flags.append("-DQK_PRETRANSPOSE")
     _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)
     # Also create attn.o copy (some link_with attributes use "attn.o").
     # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile

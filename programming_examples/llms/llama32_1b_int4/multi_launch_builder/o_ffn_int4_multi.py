@@ -154,7 +154,9 @@ def build_o_ffn_int4_module(
         %arg13: down         (seq_len, emb_dim)              bf16
         %arg14: output       (seq_len*emb_dim,)              bf16 (1D)
     """
-    from air_examples.llms.llama32_1b_int4.gemm_builder import _build_int4_gemm_module as build_int4_gemm
+    from air_examples.llms.llama32_1b_int4.gemm_builder import (
+        _build_int4_gemm_module as build_int4_gemm,
+    )
     from matmul_int4_packed import packed_tile_bytes
     from air_examples.weighted_rms_norm.weighted_rms_norm import (
         build_module as build_rms,
