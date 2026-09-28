@@ -129,7 +129,7 @@ def build_rms_gemms_rope_bfp16_module(
         arg11: q_roped       (seq_len, emb_dim)               bf16
         arg12: k_roped       (seq_len, kv_dim)                bf16
     """
-    from llama32_1b_int4.bfp16_gemm_builder import (
+    from air_examples.llms.llama32_1b_int4.bfp16_gemm_builder import (
         _build_bfp16_gemm_module as build_bfp16_gemm,
     )
     from matmul_bf16_x_bfp16 import bfp_tile_bytes

@@ -203,7 +203,45 @@ def registers_too_late(f):
     return reg is None or reg > first
 
 
-bad, late = [], []
+# Directory names that only resolve as top-level modules when one of the banned
+# roots is on sys.path. Importing one is the other half of the same defect:
+# removing the inserts without rewriting these leaves a ModuleNotFoundError
+# that no module-level import mentions, so an import sweep stays green.
+PUBLISHED = {d.name for p in (ROOT, ROOT / "llms") for d in p.iterdir() if d.is_dir()}
+PUBLISHED -= {"__pycache__"}
+
+
+def stale_imports(f):
+    """Names imported from a directory that is no longer on sys.path."""
+    try:
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+    own = f.resolve().parent.name  # a model importing its own package is fine
+    out = []
+    for node in ast.walk(tree):
+        root = None
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            root = node.module.split(".")[0]
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if "." in a.name:
+                    root = a.name.split(".")[0]
+        # importlib.import_module("qwen3_1_7b.verify_adapter") and __import__:
+        # resolved from a string, so nothing above sees them.
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name in ("import_module", "__import__") and node.args:
+                a = node.args[0]
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    root = a.value.split(".")[0]
+        if root and root != own and root in PUBLISHED:
+            out.append(root)
+    return out
+
+
+bad, late, stale = [], [], []
 for scan in SCANNED:
     for f in sorted(scan.rglob("*.py")):
         if "__pycache__" in f.parts or f.name == "examples_sys_path.py":
@@ -212,6 +250,8 @@ for scan in SCANNED:
             bad.append(f"{f.relative_to(SRC).as_posix()} -> {p.name}/")
         if registers_too_late(f):
             late.append(f.relative_to(SRC).as_posix())
+        for name in stale_imports(f):
+            stale.append(f"{f.relative_to(SRC).as_posix()} imports {name}")
 
 for line in bad:
     print("PUBLISHES:", line)
@@ -222,3 +262,8 @@ for line in late:
     print("LATE:", line)
 print(f"{len(late)} files import air_examples before registering it")
 # CHECK: 0 files import air_examples before registering it
+
+for line in stale:
+    print("STALE:", line)
+print(f"{len(stale)} files import a name that needs the removed paths")
+# CHECK: 0 files import a name that needs the removed paths
