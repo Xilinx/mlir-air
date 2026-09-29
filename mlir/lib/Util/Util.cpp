@@ -2845,14 +2845,19 @@ std::optional<int64_t> air::evaluateConstantsInMap(
     if (!symbolInputs[i])
       continue;
     auto c = getAffineConstantExpr(*symbolInputs[i], ctx);
-    newmap =
-        newmap.replace(getAffineSymbolExpr(i, ctx), c, 0, map.getNumSymbols());
+    // Both counts, not one: `AffineMap::replace` builds the result with
+    // exactly the dim/symbol counts given, and substituting a symbol leaves
+    // every `dN` in the expression alive. Declaring 0 dims here asserts in
+    // `willBeValidAffineMap` as soon as the map has both kinds.
+    newmap = newmap.replace(getAffineSymbolExpr(i, ctx), c, map.getNumDims(),
+                            map.getNumSymbols());
   }
   for (unsigned i = 0; i < map.getNumDims(); i++) {
     if (!dimInputs[i])
       continue;
     auto c = getAffineConstantExpr(*dimInputs[i], ctx);
-    newmap = newmap.replace(getAffineDimExpr(i, ctx), c, map.getNumDims(), 0);
+    newmap = newmap.replace(getAffineDimExpr(i, ctx), c, map.getNumDims(),
+                            map.getNumSymbols());
   }
   output = simplifyAffineMap(newmap).getSingleConstantResult();
   return output;
