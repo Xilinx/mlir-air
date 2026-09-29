@@ -448,7 +448,7 @@ if __name__ == "__main__":
                 %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
                 %vector_contracts = transform.structured.match ops{{["vector.contract"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %result11 = transform.air.vector_type_cast %vector_contracts {{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}} : (!transform.any_op) -> !transform.any_op
+                %result11 = transform.air.vector_type_cast %vector_contracts <{{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}}> : (!transform.any_op) -> !transform.any_op
 
                 // Hoist all accumulator transfer pairs from the innermost loop
                 %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op

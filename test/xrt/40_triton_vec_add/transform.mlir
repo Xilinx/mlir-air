@@ -58,10 +58,10 @@ module attributes {transform.with_named_sequence} {
     // Step 7: Pad the operation.
     // Purpose: Ensures that the computation is aligned to tile sizes, handles boundary conditions.
     // Assumption: Padding values/types are correct for the op; nofold_flags prevent folding of padding.
-        %padded_add, %pad_add, %__ = transform.structured.pad %add_2 {padding_values=[@PAD_VAL@, @PAD_VAL@, @PAD_VAL@],
+        %padded_add, %pad_add, %__ = transform.structured.pad %add_2 <{padding_values=[@PAD_VAL@, @PAD_VAL@, @PAD_VAL@],
             padding_dimensions=[0, 1, 2],
             nofold_flags=[1, 1, 1],
-            copy_back_op="linalg.copy"} : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+            copy_back_op="linalg.copy"}> : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
     // Step 8: Rewrite in destination-passing style (DPS).
     // Purpose: Converts the op to DPS, which is required for bufferization and explicit memory management.
