@@ -1351,6 +1351,24 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (drainDmas.empty())
       return;
 
+    // Every drain below is armed at the front and retired at the terminator, so
+    // a shim channel holds all of its drains in its task queue at once. The
+    // queue is 4 deep on AIE2; a fifth start stalls the control program before
+    // it issues the inputs the first drain is waiting on. Measured on NPU2: 4
+    // drains on one S2MM channel complete, 5 hang (ERT_CMD_STATE_TIMEOUT).
+    llvm::MapVector<Attribute, unsigned> drainsPerChannel;
+    for (auto dma : drainDmas) {
+      Attribute md = dma->getAttr("metadata");
+      if (md && ++drainsPerChannel[md] == air::kShimTaskQueueDepth + 1)
+        dma->emitWarning()
+            << "more than " << air::kShimTaskQueueDepth
+            << " device-to-host drains on shim channel " << md
+            << " in one launch; all are armed up front and the channel queues "
+            << air::kShimTaskQueueDepth
+            << " tasks, so the launch will hang. Drain more of the output "
+               "per channel.get, or split the launch.";
+    }
+
     // (1) Defer the wait: strip drain tokens from every non-terminator wait_all
     // and gather them onto launch_end.
     llvm::SmallSetVector<Value, 8> drainTokens;

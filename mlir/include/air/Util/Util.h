@@ -576,6 +576,11 @@ OpT lookupBySymName(Operation *symbolTableOp, llvm::StringRef name) {
   return found;
 }
 
+// Tasks a shim DMA channel queues before the control program blocks on the next
+// push: the AIE2 shim task queue depth. Shared by the passes that bound how
+// many tasks they leave in flight on one channel.
+constexpr unsigned kShimTaskQueueDepth = 4;
+
 } // namespace air
 } // namespace xilinx
 

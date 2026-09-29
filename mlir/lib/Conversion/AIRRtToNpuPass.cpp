@@ -3555,7 +3555,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // control program blocking on the push: the AIE2 shim DMA task queue depth.
     // The measured limit is 6 (queue + an L2 ping-pong); staying at the queue
     // depth alone keeps the bound independent of what the consumer buffers.
-    constexpr unsigned burstLimit = 4;
+    constexpr unsigned burstLimit = air::kShimTaskQueueDepth;
 
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
