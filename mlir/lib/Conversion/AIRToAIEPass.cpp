@@ -239,11 +239,10 @@ struct ShimTileAllocator {
                     std::string chan_name) {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(aie_device.getBody());
-    auto logical = AIE::LogicalTileOp::create(
-        rewriter, aie_device.getLoc(), AIE::AIETileType::ShimNOCTile,
-        /*col=*/IntegerAttr(),
-        /*row=*/IntegerAttr(),
-        /*allocation_scheme=*/StringAttr());
+    auto logical = AIE::LogicalTileOp::create(rewriter, aie_device.getLoc(),
+                                              AIE::AIETileType::ShimNOCTile,
+                                              /*col=*/IntegerAttr(),
+                                              /*row=*/IntegerAttr());
     logical_shim_tiles.push_back(logical);
     chan_names.push_back(chan_name);
     return logical.getResult();
@@ -281,13 +280,22 @@ bool isMM2S(AIE::DMAChannel channel) {
 }
 
 std::string createSymbolName(Operation *symbol_table, std::string dma_name) {
+  // Scans for `sym_name` rather than using `SymbolTable::lookupSymbolIn`, for
+  // the reason given on `air::lookupBySymName`: the ops named here need not
+  // implement `SymbolOpInterface`, and lookup only finds ops that do.
+  llvm::DenseSet<StringRef> taken;
+  for (Region &region : symbol_table->getRegions())
+    for (Block &block : region)
+      for (Operation &op : block)
+        if (auto name =
+                op.getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+          taken.insert(name.getValue());
+
   std::string new_cname = dma_name;
-  std::string cname = "";
   int which_try = 0;
-  while (SymbolTable::lookupSymbolIn(symbol_table, new_cname))
+  while (taken.contains(new_cname))
     new_cname = dma_name + "_" + std::to_string(++which_try);
-  cname = new_cname;
-  return cname;
+  return new_cname;
 }
 
 // Accepts either a physical AIE::TileOp or an unplaced AIE::LogicalTileOp via
@@ -1007,8 +1015,7 @@ LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     logicalMemTiles.push_back(AIE::LogicalTileOp::create(
         builder, aie_device.getLoc(), AIE::AIETileType::MemTile,
         /*col=*/IntegerAttr(),
-        /*row=*/IntegerAttr(),
-        /*allocation_scheme=*/StringAttr()));
+        /*row=*/IntegerAttr()));
   }
 
   // Anchor each emitted memtile with a tiny L2 buffer so it isn't folded
@@ -2852,8 +2859,7 @@ void L2MemrefToMemTileMap(
     auto newLto = AIE::LogicalTileOp::create(
         builder, m.getLoc(), AIE::AIETileType::MemTile,
         /*col=*/builder.getI32IntegerAttr(col),
-        /*row=*/IntegerAttr(),
-        /*allocation_scheme=*/StringAttr());
+        /*row=*/IntegerAttr());
     AIE::TileLike tl = newLto;
     memtiles.push_back(tl);
     claimedLtos.insert(newLto.getOperation());

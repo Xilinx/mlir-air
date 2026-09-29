@@ -77,7 +77,8 @@ def LinalgToLibraryCallOp : Op<Transform_Dialect, "air.linalg_to_library_call",
                    OptionalAttr<StrAttr>:$function_name,
                    OptionalAttr<StrAttr>:$link_with);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -104,7 +105,8 @@ def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
     (ins TransformHandleTypeInterface:$target,
      DefaultValuedAttr<I64Attr, "0">:$first_dim);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -126,7 +128,8 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
     (ins TransformHandleTypeInterface:$target,
      DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -148,7 +151,8 @@ def ParToSegmentOp : Op<Transform_Dialect, "air.par_to_segment",
     (ins TransformHandleTypeInterface:$target,
      DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -209,7 +213,8 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
          DefaultValuedAttr<StrAttr, "\"horiz\"">:$direction,
          UnitAttr:$promote);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -270,7 +275,8 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
                    DefaultValuedAttr<StrAttr, "\"L1\"">:$memory_space);
   let results = (outs TransformHandleTypeInterface:$transformed);
 
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
 }
 
@@ -672,7 +678,8 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
                        DefaultValuedAttr<I64ArrayAttr, "{}">:$input_indices,
                        DefaultValuedAttr<I64ArrayAttr, "{}">:$output_indices);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
@@ -712,7 +719,8 @@ def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
                    DefaultValuedAttr<BoolAttr, "false">:$disable_multi_reduction_to_contract_patterns,
                    DefaultValuedAttr<BoolAttr, "false">:$vectorize_padding);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -1267,7 +1275,8 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
   let arguments = (ins TransformHandleTypeInterface:$target,
                        OptionalAttr<StrAttr>:$op_name);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
@@ -1471,7 +1480,8 @@ def OverrideMemRefMemorySpaceOp : Op<Transform_Dialect, "air.override_memref_mem
   let arguments = (ins TransformHandleTypeInterface:$target,
                    I32Attr:$memory_space);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // AIR_TRANSFORM_OPS

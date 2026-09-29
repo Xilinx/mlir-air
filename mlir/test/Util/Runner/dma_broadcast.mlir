@@ -27,14 +27,14 @@ module {
     %c1 = arith.constant 1 : index
     %cst = arith.constant 0.000000e+00 : bf16
     %async_token, %results = air.execute -> (memref<256x1024xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<256x1024xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<256x1024xbf16>
       air.execute_terminator %alloc : memref<256x1024xbf16>
     } {id = 1 : i32}
     %async_token_0 = air.execute [%async_token] {
       linalg.fill ins(%cst : bf16) outs(%results : memref<256x1024xbf16>)
     } {id = 2 : i32}
     %async_token_1, %results_2 = air.execute -> (memref<256x1024xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<256x1024xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<256x1024xbf16>
       air.execute_terminator %alloc : memref<256x1024xbf16>
     } {id = 3 : i32}
     %async_token_3 = air.execute [%async_token_1, %async_token_0] {

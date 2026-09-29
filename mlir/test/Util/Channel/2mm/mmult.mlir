@@ -27,9 +27,9 @@ module attributes {torch.debug_module_name = "model"} {
     %c32 = arith.constant 32 : index
     %c1 = arith.constant 1 : index
     %c0_i32 = arith.constant 0 : i32
-    %alloc = memref.alloc() {alignment = 64 : i64} : memref<32x32xi32>
+    %alloc = memref.alloc() alignment = 64 : memref<32x32xi32>
     linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<32x32xi32>)
-    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<32x32xi32>
+    %alloc_0 = memref.alloc() alignment = 64 : memref<32x32xi32>
     memref.copy %alloc, %alloc_0 : memref<32x32xi32> to memref<32x32xi32>
     %0 = memref.get_global @channel_0 : memref<1x1xi64>
     %1 = builtin.unrealized_conversion_cast %0 : memref<1x1xi64> to memref<1x1xi64>
@@ -73,7 +73,7 @@ module attributes {torch.debug_module_name = "model"} {
       async.yield
     }
     async.await %token : !async.token
-    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<32x32xi32> // result of second mm
+    %alloc_1 = memref.alloc() alignment = 64 : memref<32x32xi32> // result of second mm
     memref.copy %alloc, %alloc_1 : memref<32x32xi32> to memref<32x32xi32> // zero init
 
     // get %alloc_0 from channel_3

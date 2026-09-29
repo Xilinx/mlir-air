@@ -39,7 +39,7 @@ module attributes {transform.with_named_sequence} {
         // (e.g., air-resolve-tensor-opoperand-conflicts) have the correct
         // memory space. Func-level allocs get L2 (memory_space 1).
         %func_ms = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %func_ms_updated = transform.air.override_memref_memory_space %func_ms {memory_space = 1 : i32}
+        %func_ms_updated = transform.air.override_memref_memory_space %func_ms <{memory_space = 1 : i32}>
           : (!transform.any_op) -> !transform.any_op
 
         //===================================================================
@@ -53,8 +53,7 @@ module attributes {transform.with_named_sequence} {
         %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
 
         // Apply comprehensive canonicalization patterns:
-        transform.apply_patterns to %func0 {
-            // Simplify tiling-related patterns (e.g., empty tensor operations)
+        transform.apply_patterns to %func0 {// Simplify tiling-related patterns (e.g., empty tensor operations)
             transform.apply_patterns.linalg.tiling_canonicalization
             // Optimize SCF for loops (e.g., loop bounds, step simplification)
             transform.apply_patterns.scf.for_loop_canonicalization
@@ -63,8 +62,7 @@ module attributes {transform.with_named_sequence} {
             // CRITICAL: Remove unit dimensions and simplify tensor shapes
             // This is essential for AIE hardware which has specific shape constraints
             // and enables more efficient tiling patterns in subsequent phases
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
-        } : !transform.any_op
+            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes} : !transform.any_op
         
         // Apply Common Subexpression Elimination to remove duplicate computations
         transform.apply_cse to %func0 : !transform.any_op
@@ -97,11 +95,9 @@ module attributes {transform.with_named_sequence} {
         %transformed_reduces = transform.air.transpose_reduce %reduces : (!transform.any_op) -> !transform.any_op
 
         // Clean up IR after reduction transformation
-        transform.apply_patterns to %fused_func {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %fused_func {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %fused_func : !transform.any_op
 
         // Data-flow navigation from linalg.reduce anchors.
@@ -152,7 +148,7 @@ module attributes {transform.with_named_sequence} {
 
         // Bufferize the final operation to L2 memory (memory_space = 1)
         %generic3_output_buf, %new_generic3 = transform.structured.bufferize_to_allocation %generic3
-          {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // Tile the final operation with tile size [1] for batch dimension
         %tiled_generic_3, %forall_5 =
@@ -172,11 +168,9 @@ module attributes {transform.with_named_sequence} {
         
         // Run canonicalization after fusion
         %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func2 : !transform.any_op
         
         //===================================================================
@@ -189,7 +183,7 @@ module attributes {transform.with_named_sequence} {
         // Allocate fill operations to L1 memory for reduction accumulation
         %fills_2 = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         %fill1_buffer, %fill1_new = transform.structured.bufferize_to_allocation %fills_2
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // Split generic operations after tiling for individual L1 buffer allocation
         // Each tiled generic operation will have its output allocated in L1
@@ -203,13 +197,13 @@ module attributes {transform.with_named_sequence} {
 
         // Allocate output buffers in L1 for each tiled generic operation
         %gen1_in_buffer, %gen1_in_new = transform.structured.bufferize_to_allocation %tiled_generic1
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         
         %gen2_in_buffer, %gen2_in_new = transform.structured.bufferize_to_allocation %tiled_generic2
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         
         %gen3_in_buffer, %gen3_in_new = transform.structured.bufferize_to_allocation %tiled_generic3
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         //===================================================================
         // PHASE 6: Pre-Bufferization Canonicalization
@@ -219,11 +213,9 @@ module attributes {transform.with_named_sequence} {
         
         // Run canonicalization after L1 memory allocation
         %func5 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func5 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func5 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func5 : !transform.any_op
         
         //===================================================================
@@ -246,15 +238,11 @@ module attributes {transform.with_named_sequence} {
         
         // Run canonicalization to remove redundant memcpy operations
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         
         // Remove uninitialized copy operations that may have been introduced
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
@@ -296,25 +284,23 @@ module attributes {transform.with_named_sequence} {
 
         // Cast vector reduce to use bf16 (to map to AIE vectorized reduction intrinsic)
         %vector_reductions_in_herd = transform.structured.match ops{["vector.multi_reduction"]} in %vectorized_herd : (!transform.any_op) -> !transform.any_op
-        %result10 = transform.air.vector_type_cast %vector_reductions_in_herd {target_element_type = bf16} : (!transform.any_op) -> !transform.any_op
+        %result10 = transform.air.vector_type_cast %vector_reductions_in_herd <{target_element_type = bf16}> : (!transform.any_op) -> !transform.any_op
 
         // Cast vector exp to use bf16 (to map to AIE vectorized exp intrinsic)
         %vector_exps_in_herd = transform.structured.match ops{["math.exp"]} in %vectorized_herd : (!transform.any_op) -> !transform.any_op
-        %result11 = transform.air.vector_type_cast %vector_exps_in_herd {target_element_type = bf16} : (!transform.any_op) -> !transform.any_op
+        %result11 = transform.air.vector_type_cast %vector_exps_in_herd <{target_element_type = bf16}> : (!transform.any_op) -> !transform.any_op
 
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
 
         // Convert size-1 vectors to scalars (downstream compiler cannot handle size-1 vectors)
         %func7_transformed = transform.air.convert_size1_vector_to_scalar %func7 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func7_transformed {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func7_transformed {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
             transform.apply_patterns.vector.reorder_multi_reduction_dims lowering_strategy = "innerreduction"
             transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerreduction"
-            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"
-        } : !transform.any_op
+            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"} : !transform.any_op
         transform.apply_cse to %func7_transformed : !transform.any_op
     transform.yield
   }

@@ -54,7 +54,7 @@ transform_ir_string = """
     %l0 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
     %l1, %herd_tile_loop = transform.air.linalg_tile %l0 [0,128]
     %l3, %inner_tile_loop = transform.air.linalg_tile %l1 [32,32]
-    transform.air.linalg_promote %l3 {"operands_to_promote"=[0,1,2], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+    transform.air.linalg_promote %l3 <{"operands_to_promote"=[0,1,2], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
     %inner_tile_par = transform.loop.forall_to_parallel %inner_tile_loop  : (!transform.any_op) -> !transform.any_op
     %herd_tile_par = transform.loop.forall_to_parallel %herd_tile_loop  : (!transform.any_op) -> !transform.any_op
     %herd = transform.air.par_to_herd %herd_tile_par : (!transform.any_op) -> !transform.any_op

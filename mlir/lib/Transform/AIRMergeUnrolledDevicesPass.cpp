@@ -262,9 +262,9 @@ private:
                                 : IntegerAttr();
       IntegerAttr rowAttr =
           srcRow ? builder.getI32IntegerAttr(*srcRow) : IntegerAttr();
-      auto newLT = AIE::LogicalTileOp::create(
-          builder, logicalTile.getLoc(), logicalTile.getTileType(), colAttr,
-          rowAttr, logicalTile.getAllocationSchemeAttr());
+      auto newLT = AIE::LogicalTileOp::create(builder, logicalTile.getLoc(),
+                                              logicalTile.getTileType(),
+                                              colAttr, rowAttr);
       mapping.map(logicalTile.getResult(), newLT.getResult());
     }
 

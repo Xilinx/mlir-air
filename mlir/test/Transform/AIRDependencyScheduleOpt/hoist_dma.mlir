@@ -26,7 +26,7 @@ module {
     %c0 = arith.constant 0 : index
     %c512 = arith.constant 512 : index
     %c64 = arith.constant 64 : index
-    %0 = memref.alloc() {alignment = 128 : i64} : memref<512x512xbf16>
+    %0 = memref.alloc() alignment = 128 : memref<512x512xbf16>
     memref.copy %arg2, %0 : memref<512x512xbf16> to memref<512x512xbf16>
     scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c512, %c512) step (%c64, %c64) {
       scf.for %arg5 = %c0 to %c512 step %c64 {

@@ -163,7 +163,7 @@ module {
 // CHECK: vector.bitcast {{.*}}vector<1xi32> to vector<2xbf16>
 // CHECK: %[[OFF:.*]] = arith.constant 14 : index
 // CHECK: call @payload
-// CHECK-NEXT: vector.store {{.*}}[%[[OFF]]] {alignment = 4 : i64} : memref<80xbf16, 2 : i32>, vector<2xbf16>
+// CHECK-NEXT: vector.store {{.*}}[%[[OFF]]] alignment = 4 : memref<80xbf16, 2 : i32>, vector<2xbf16>
 // CHECK: air.channel.put{{ *}}@egress
 module {
   air.channel @egress [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header}
@@ -205,7 +205,7 @@ module {
 
 // CHECK: air.execute
 // CHECK-NEXT: call @payload
-// CHECK-NEXT: vector.store {{.*}}{alignment = 4 : i64}
+// CHECK-NEXT: vector.store {{.*}} alignment = 4
 module {
   air.channel @egress [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", keep_pkt_header}
   func.func private @payload(memref<80xbf16, 2 : i32>)

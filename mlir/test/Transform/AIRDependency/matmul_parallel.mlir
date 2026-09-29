@@ -23,8 +23,8 @@ module attributes {torch.debug_module_name = "mmult"} {
     %c128 = arith.constant 128 : index
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
-    %0 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
-    %1 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
+    %0 = memref.alloc() alignment = 128 : memref<1024x1024xf32>
+    %1 = memref.alloc() alignment = 128 : memref<1024x1024xf32>
     linalg.fill ins(%cst : f32) outs(%0 : memref<1024x1024xf32>)
     memref.copy %0, %1 : memref<1024x1024xf32> to memref<1024x1024xf32>
     scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c1024, %c1024) step (%c128, %c128) {

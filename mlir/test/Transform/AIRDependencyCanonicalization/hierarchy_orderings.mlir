@@ -33,15 +33,15 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
     %async_token, %results = air.execute -> (memref<128x128xf32>) {
-      %2 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
+      %2 = memref.alloc() alignment = 128 : memref<128x128xf32>
       air.execute_terminator %2 : memref<128x128xf32>
     } {id = 1 : i32}
     %async_token_0, %results_1 = air.execute -> (memref<128x128xf32>) {
-      %2 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
+      %2 = memref.alloc() alignment = 128 : memref<128x128xf32>
       air.execute_terminator %2 : memref<128x128xf32>
     } {id = 2 : i32}
     %async_token_2, %results_3 = air.execute -> (memref<128x128xf32>) {
-      %2 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
+      %2 = memref.alloc() alignment = 128 : memref<128x128xf32>
       air.execute_terminator %2 : memref<128x128xf32>
     } {id = 3 : i32}
     %async_token_4 = air.execute [%async_token_0] {

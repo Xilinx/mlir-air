@@ -24,7 +24,7 @@ module {
   func.func @test(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c1 = arith.constant 1 : index
     %async_token, %results = air.execute -> (memref<512x512xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<512x512xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<512x512xbf16>
       air.execute_terminator %alloc : memref<512x512xbf16>
     }
     %async_token_0 = air.execute [%async_token] {

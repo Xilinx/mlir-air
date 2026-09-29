@@ -115,7 +115,7 @@ module {
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
     %async_token, %results = air.execute -> (memref<64x64xi32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<64x64xi32>
+      %alloc = memref.alloc() alignment = 64 : memref<64x64xi32>
       air.execute_terminator %alloc : memref<64x64xi32>
     }
     %async_token_0 = air.execute [%async_token] {

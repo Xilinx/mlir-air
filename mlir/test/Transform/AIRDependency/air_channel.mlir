@@ -28,7 +28,7 @@ module {
     %c16 = arith.constant 16 : index
     %c384 = arith.constant 384 : index
     %cst = arith.constant 0.000000e+00 : bf16
-    %1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+    %1 = memref.alloc() alignment = 128 : memref<24576x1024xbf16>
     air.launch (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%1) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16> {
 
       %c0_new = arith.constant 0 : index

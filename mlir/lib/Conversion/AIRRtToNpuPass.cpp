@@ -1333,12 +1333,13 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         // just answer whether the buffer exists somewhere.
         AIE::DeviceOp owningDevice = device;
         if (device) {
-          rtpBufferExists =
-              static_cast<bool>(device.lookupSymbol<AIE::BufferOp>(name));
+          rtpBufferExists = static_cast<bool>(
+              air::lookupBySymName<AIE::BufferOp>(device, name));
         } else {
           // Fallback for IR without segment_name: search all AIE::DeviceOp's.
           module.walk([&](AIE::DeviceOp d) {
-            if (!rtpBufferExists && d.lookupSymbol<AIE::BufferOp>(name)) {
+            if (!rtpBufferExists &&
+                air::lookupBySymName<AIE::BufferOp>(d, name)) {
               rtpBufferExists = true;
               owningDevice = d;
             }
@@ -1420,7 +1421,7 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         if (!device)
           continue;
 
-        auto lockOp = device.lookupSymbol<AIE::LockOp>(lock_name);
+        auto lockOp = air::lookupBySymName<AIE::LockOp>(device, lock_name);
         if (!lockOp)
           continue;
 

@@ -32,7 +32,7 @@ module {
       %c0 = arith.constant 0 : index
       %c1024_5 = arith.constant 1024 : index
       %c32 = arith.constant 32 : index
-      %alloc_6 = memref.alloc() {alignment = 64 : i64} : memref<1x1024xbf16, 2>
+      %alloc_6 = memref.alloc() alignment = 64 : memref<1x1024xbf16, 2>
       // 2D: DMA uses both %arg8 and %arg9 for 2D indexing
       air.dma_memcpy_nd (%alloc_6[] [] [], %arg12[%arg8, %arg9, %c0] [%c1_4, %c1_4, %c1024_5] [%c1024_5, %c1024_5, %c1_4]) {id = 1 : i32} : (memref<1x1024xbf16, 2>, memref<4x4x1024xbf16, 1 : i32>)
       

@@ -107,6 +107,7 @@ def getModule(ctx: Context) -> ModuleOp:
     module_op = ModuleOp([func_op])
     return module_op
 
+
 ctx = Context()
 ctx.register_dialect(Builtin.name, lambda: Builtin)
 ctx.register_dialect(Func.name, lambda: Func)
@@ -159,7 +160,7 @@ print(module_op)
 # CHECK-NEXT:         %31 = affine.apply affine_map<()[s0] -> ((s0 * 8))> ()[%25]
 # CHECK-NEXT:         %32 = "tensor.extract_slice"(%10, %30, %31, %autogen_1_index, %autogen_1_index) <{static_offsets = array<i64: -9223372036854775808, -9223372036854775808>, static_sizes = array<i64: 8, 8>, static_strides = array<i64: -9223372036854775808, -9223372036854775808>, operandSegmentSizes = array<i32: 1, 2, 0, 2>}> : (tensor<8x8xf32>, index, index, index, index) -> tensor<8x8xf32>
 # CHECK-NEXT:         %33 = linalg.copy ins(%32 : tensor<8x8xf32>) outs(%22 : tensor<8x8xf32>) -> tensor<8x8xf32>
-# CHECK-NEXT:         %34 = linalg.add ins(%22, %23 : tensor<8x8xf32>, tensor<8x8xf32>) outs(%21 : tensor<8x8xf32>) -> tensor<8x8xf32>
+# CHECK-NEXT:         %34 = linalg.elementwise <add> ins(%22, %23 : tensor<8x8xf32>, tensor<8x8xf32>) outs(%21 : tensor<8x8xf32>) -> tensor<8x8xf32>
 # CHECK-NEXT:         %35 = "tensor.extract_slice"(%21, %autogen_0_index, %autogen_0_index, %autogen_1_index, %autogen_1_index) <{static_offsets = array<i64: -9223372036854775808, -9223372036854775808>, static_sizes = array<i64: 8, 8>, static_strides = array<i64: -9223372036854775808, -9223372036854775808>, operandSegmentSizes = array<i32: 1, 2, 0, 2>}> : (tensor<8x8xf32>, index, index, index, index) -> tensor<8x8xf32>
 # CHECK-NEXT:         %36 = linalg.copy ins(%35 : tensor<8x8xf32>) outs(%8 : tensor<8x8xf32>) -> tensor<8x8xf32>
 # CHECK-NEXT:         scf.reduce

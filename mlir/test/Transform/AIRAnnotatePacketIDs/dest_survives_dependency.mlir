@@ -24,7 +24,7 @@
 // The store is in the same region as the payload write, not beside it: were it
 // beside, an air.execute_terminator would separate the two.
 // CHECK: call @payload
-// CHECK-NEXT: vector.store {{.*}}{alignment = 4 : i64} : memref<80xbf16, 2 : i32>, vector<2xbf16>
+// CHECK-NEXT: vector.store {{.*}} alignment = 4 : memref<80xbf16, 2 : i32>, vector<2xbf16>
 // CHECK: air.channel.put
 // The operand is consumed, not left behind for later stages to trip over.
 // CHECK-NOT: dest(

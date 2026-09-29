@@ -115,7 +115,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 
                 scf.reduce(%alloc_12 : memref<32xi32, 2 : i32>) {
                 ^bb0(%a4: memref<32xi32, 2 : i32>, %a5: memref<32xi32, 2 : i32>):
-                  linalg.add ins(%a4, %a5 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%a4 : memref<32xi32, 2 : i32>)
+                  linalg.elementwise <add> ins(%a4, %a5 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%a4 : memref<32xi32, 2 : i32>)
                   scf.reduce.return %a4 : memref<32xi32, 2 : i32>
                 }
               }

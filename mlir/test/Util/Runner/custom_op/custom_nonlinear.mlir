@@ -23,7 +23,7 @@ module {
   func.func @nonlinear(%arg0: memref<32x32xi8>, %arg1: memref<32x32xi8>, %arg2: memref<32x32xi8>, %arg3: memref<32x32xi8>) -> memref<32x32xi8> {
     %c1 = arith.constant 1 : index
     %async_token_1, %results_2 = air.execute -> (memref<32x32xi8>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xi8>
+      %alloc = memref.alloc() alignment = 128 : memref<32x32xi8>
       air.execute_terminator %alloc : memref<32x32xi8>
     }
     %0 = air.launch async [%async_token_1] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) args(%arg8=%arg0, %arg9=%arg1) : memref<32x32xi8>, memref<32x32xi8> attributes {id = 7 : i32} {

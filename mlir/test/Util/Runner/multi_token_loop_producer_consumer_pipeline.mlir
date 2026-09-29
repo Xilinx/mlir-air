@@ -28,28 +28,28 @@ module attributes {torch.debug_module_name = "mmult"} {
     %c1 = arith.constant 1 : index
     %cst = arith.constant 0.000000e+00 : f32
     %async_token, %results = air.execute -> (memref<512x512xf32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<512x512xf32>
+      %alloc = memref.alloc() alignment = 64 : memref<512x512xf32>
       air.execute_terminator %alloc : memref<512x512xf32>
     } {id = 1 : i32}
     %async_token_0 = air.execute [%async_token] {
       linalg.fill ins(%cst : f32) outs(%results : memref<512x512xf32>)
     } {id = 2 : i32}
     %async_token_1, %results_2 = air.execute -> (memref<512x512xf32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<512x512xf32>
+      %alloc = memref.alloc() alignment = 64 : memref<512x512xf32>
       air.execute_terminator %alloc : memref<512x512xf32>
     } {id = 3 : i32}
     %async_token_3 = air.execute [%async_token_1, %async_token_0] {
       memref.copy %results, %results_2 : memref<512x512xf32> to memref<512x512xf32>
     } {id = 4 : i32}
     %async_token_4, %results_5 = air.execute -> (memref<512x512xf32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<512x512xf32>
+      %alloc = memref.alloc() alignment = 64 : memref<512x512xf32>
       air.execute_terminator %alloc : memref<512x512xf32>
     } {id = 5 : i32}
     %async_token_6 = air.execute [%async_token_4, %async_token_3] {
       memref.copy %results, %results_5 : memref<512x512xf32> to memref<512x512xf32>
     } {id = 6 : i32}
     %async_token_7, %results_8 = air.execute -> (memref<512x512xf32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<512x512xf32>
+      %alloc = memref.alloc() alignment = 64 : memref<512x512xf32>
       air.execute_terminator %alloc : memref<512x512xf32>
     } {id = 7 : i32}
     %async_token_9 = air.execute [%async_token_7, %async_token_6] {

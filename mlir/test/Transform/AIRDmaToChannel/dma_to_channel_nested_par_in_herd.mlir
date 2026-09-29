@@ -21,7 +21,7 @@ module {
   func.func @mmult(%arg0: memref<512x512xi32>, %arg1: memref<512x512xi32>, %arg2: memref<512x512xi32>) {
     %c2 = arith.constant 2 : index
     %async_token, %results = air.execute -> (memref<512x512xi32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<512x512xi32>
+      %alloc = memref.alloc() alignment = 64 : memref<512x512xi32>
       air.execute_terminator %alloc : memref<512x512xi32>
     }
 // CHECK: %[[EVENT0:.*]] = scf.parallel{{.*}}init

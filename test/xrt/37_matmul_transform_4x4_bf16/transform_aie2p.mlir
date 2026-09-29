@@ -30,17 +30,15 @@ module attributes {transform.with_named_sequence} {
 
         // Run canonicalization
         %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func1 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func1 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func1 : !transform.any_op
 
         // Promote the fused fill to shared memory
         %result_l2 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %result_l2_buffer, %result_t2_new = transform.structured.bufferize_to_allocation %result_l2
-            {memory_space = 1, bufferize_destination_only, mempcy = "linalg.copy", emit_dealloc} : !transform.any_op
+            <{memory_space = 1, bufferize_destination_only,  emit_dealloc}> : !transform.any_op
 
         // Second level pack the matmul.
         %generic_op = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
@@ -73,7 +71,7 @@ module attributes {transform.with_named_sequence} {
 
         // Promote the result to local memory
         %output_l1_pack_op_source_buffer, %output_l1_pack_op_new = transform.structured.bufferize_to_allocation %output_l1_pack_op
-            {memory_space = 2, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc}> : !transform.any_op
 
         // First level for loop.
         %first_level_tiled_reduction_matmul, %outer_for_loop =
@@ -88,19 +86,17 @@ module attributes {transform.with_named_sequence} {
 
         // Promote the lhs to shared memory
         %lhs_l2_pack_buffer, %lhs_l2_pack_new = transform.structured.bufferize_to_allocation %fused_lhs_l2_pack
-          {memory_space = 1, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc}> : !transform.any_op
 
         // Promote the rhs to shared memory
         %rhs_l2_pack_buffer, %rhs_l2_pack_new = transform.structured.bufferize_to_allocation %fused_rhs_l2_pack
-          {memory_space = 1, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc}> : !transform.any_op
 
         // Run canonicalization
         %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func2 : !transform.any_op
 
         // Second level tile to forall with tile_sizes.
@@ -124,19 +120,17 @@ module attributes {transform.with_named_sequence} {
 
         // Promote the LHS to local memory.
         %lhs_l1_pack_buffer, %lhs_l1_pack_new = transform.structured.bufferize_to_allocation %fused_lhs_l1_pack3
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // Promote the RHS to local memory.
         %rhs_l1_pack_buffer, %rhs_l1_pack_new = transform.structured.bufferize_to_allocation %fused_rhs_l1_pack3
-          {memory_space = 2, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc}> : !transform.any_op
 
         // Run canonicalization
         %func3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func3 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func3 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func3 : !transform.any_op
 
         // Hoist static alloc out of the loops
@@ -162,11 +156,9 @@ module attributes {transform.with_named_sequence} {
 
         // Run canonicalization
         %func5 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func5 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func5 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func5 : !transform.any_op
         
         // Bufferize
@@ -175,15 +167,11 @@ module attributes {transform.with_named_sequence} {
 
         // Run canonicalization to remove redundant memcpy (with linalg.generic form) ops created, which can be deleted by canonicalizer. We have to run it again because the memrefs are unified in CSE pass, so we can truely remove redundant memcpy.
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated : (!transform.any_op) -> !transform.any_op
 

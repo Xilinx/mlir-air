@@ -52,14 +52,14 @@ module {
     %c1 = arith.constant 1 : index
     %c0_i32 = arith.constant 0 : i32
     %async_token, %results = air.execute -> (memref<32x32xi32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<32x32xi32>
+      %alloc = memref.alloc() alignment = 64 : memref<32x32xi32>
       air.execute_terminator %alloc : memref<32x32xi32>
     }
     %async_token_0 = air.execute [%async_token] {
       linalg.fill ins(%c0_i32 : i32) outs(%results : memref<32x32xi32>)
     }
     %async_token_1, %results_2 = air.execute -> (memref<32x32xi32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<32x32xi32>
+      %alloc = memref.alloc() alignment = 64 : memref<32x32xi32>
       air.execute_terminator %alloc : memref<32x32xi32>
     }
     %async_token_3 = air.execute [%async_token_1, %async_token_0] {

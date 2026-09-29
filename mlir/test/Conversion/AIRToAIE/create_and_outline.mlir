@@ -33,9 +33,9 @@ module attributes {torch.debug_module_name = "mmult"} {
     air.segment @segment0 args(%arg0=%a0, %arg1=%a1, %arg2=%a2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c2 = arith.constant 2 : index
       %c0_i32 = arith.constant 0 : i32
-      %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32, 1>
+      %0 = memref.alloc() alignment = 128 : memref<64x64xi32, 1>
       linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<64x64xi32, 1>)
-      %1 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32, 1>
+      %1 = memref.alloc() alignment = 128 : memref<64x64xi32, 1>
       memref.copy %0, %1 : memref<64x64xi32, 1> to memref<64x64xi32, 1>
       air.herd @herd_0  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%1) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32, 1> {
         %c1 = arith.constant 1 : index

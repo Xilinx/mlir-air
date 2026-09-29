@@ -30,12 +30,10 @@ module attributes {transform.with_named_sequence} {
         //===================================================================
         %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         
-        transform.apply_patterns to %func0 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func0 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
-        } : !transform.any_op
+            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes} : !transform.any_op
         
         transform.apply_cse to %func0 : !transform.any_op
 
@@ -49,11 +47,9 @@ module attributes {transform.with_named_sequence} {
         %transformed_reduces = transform.air.transpose_reduce %reduces : (!transform.any_op) -> !transform.any_op
         %generalized_reduces = transform.structured.generalize %transformed_reduces  : (!transform.any_op) -> !transform.any_op
         
-        transform.apply_patterns to %fused_func {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %fused_func {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %fused_func : !transform.any_op
 
         %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
@@ -71,7 +67,7 @@ module attributes {transform.with_named_sequence} {
         // This creates an scf.forall with 4×4 iteration space
 
         %generic5_output_buf, %new_generic5 = transform.structured.bufferize_to_allocation %generic5
-          {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // 2D tiling: [1, 1] creates 4×4 iteration space from 4×4×1024 tensor
         %tiled_generic_5, %forall_5 =
@@ -85,11 +81,9 @@ module attributes {transform.with_named_sequence} {
         // PHASE 4: Post-Fusion Canonicalization
         //===================================================================
         %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func2 : !transform.any_op
         
         //===================================================================
@@ -97,7 +91,7 @@ module attributes {transform.with_named_sequence} {
         //===================================================================
         %fills_2 = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         %fill1_buffer, %fill1_new = transform.structured.bufferize_to_allocation %fills_2
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         %generics2 = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         %tiled_generic1, %tiled_generic2, %tiled_generic3 = transform.split_handle %generics2 : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
@@ -107,23 +101,21 @@ module attributes {transform.with_named_sequence} {
         transform.structured.promote_tensor to 2 %op0 : !transform.any_value
 
         %gen1_in_buffer, %gen1_in_new = transform.structured.bufferize_to_allocation %tiled_generic1
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         
         %gen2_in_buffer, %gen2_in_new = transform.structured.bufferize_to_allocation %tiled_generic2
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         
         %gen3_in_buffer, %gen3_in_new = transform.structured.bufferize_to_allocation %tiled_generic3
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         //===================================================================
         // PHASE 6: Pre-Bufferization Canonicalization
         //===================================================================
         %func5 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func5 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func5 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func5 : !transform.any_op
         
         //===================================================================
@@ -136,15 +128,11 @@ module attributes {transform.with_named_sequence} {
         // PHASE 8: Post-Bufferization Cleanup and Optimization
         //===================================================================
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
 
@@ -169,23 +157,21 @@ module attributes {transform.with_named_sequence} {
         %vectorized_herd = transform.air.herd_vectorize %herd : (!transform.any_op) -> !transform.any_op
 
         %vector_reductions_in_herd = transform.structured.match ops{["vector.multi_reduction"]} in %vectorized_herd : (!transform.any_op) -> !transform.any_op
-        %result10 = transform.air.vector_type_cast %vector_reductions_in_herd {target_element_type = bf16} : (!transform.any_op) -> !transform.any_op
+        %result10 = transform.air.vector_type_cast %vector_reductions_in_herd <{target_element_type = bf16}> : (!transform.any_op) -> !transform.any_op
 
         %vector_exps_in_herd = transform.structured.match ops{["math.exp"]} in %vectorized_herd : (!transform.any_op) -> !transform.any_op
-        %result11 = transform.air.vector_type_cast %vector_exps_in_herd {target_element_type = bf16} : (!transform.any_op) -> !transform.any_op
+        %result11 = transform.air.vector_type_cast %vector_exps_in_herd <{target_element_type = bf16}> : (!transform.any_op) -> !transform.any_op
 
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
 
         %func7_transformed = transform.air.convert_size1_vector_to_scalar %func7 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func7_transformed {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func7_transformed {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
             transform.apply_patterns.vector.reorder_multi_reduction_dims lowering_strategy = "innerreduction"
             transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerreduction"
-            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"
-        } : !transform.any_op
+            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"} : !transform.any_op
         transform.apply_cse to %func7_transformed : !transform.any_op
     transform.yield
   }

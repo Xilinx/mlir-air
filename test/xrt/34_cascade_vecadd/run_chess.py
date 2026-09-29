@@ -68,18 +68,18 @@ with air.ir.Context() as ctx, Location.unknown():
             affine.if #set()[%arg9] {
               %alloc_1 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
               air.channel.get  @channel_1[] (%alloc_1[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
-              linalg.add ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
+              linalg.elementwise <add> ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
               func.call @cascade_put(%alloc) : (memref<1x1x2048xi32, 2 : i32>) -> ()
             } else {
               affine.if #set1()[%arg9] {
                 %alloc_1 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
                 func.call @cascade_get(%alloc_1) : (memref<1x1x2048xi32, 2 : i32>) -> ()
-                linalg.add ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
+                linalg.elementwise <add> ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
                 func.call @cascade_put(%alloc) : (memref<1x1x2048xi32, 2 : i32>) -> ()
               } else {
                 %alloc_1 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
                 func.call @cascade_get(%alloc_1) : (memref<1x1x2048xi32, 2 : i32>) -> ()
-                linalg.add ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
+                linalg.elementwise <add> ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
                 air.channel.put  @channel_2[] (%alloc[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
               }
             }

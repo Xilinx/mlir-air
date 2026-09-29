@@ -20,9 +20,9 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
     %c8 = arith.constant 8 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
-    %0 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
-    %1 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
-    %2 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
+    %0 = memref.alloc() alignment = 128 : memref<128x128xf32>
+    %1 = memref.alloc() alignment = 128 : memref<128x128xf32>
+    %2 = memref.alloc() alignment = 128 : memref<128x128xf32>
     linalg.fill ins(%cst : f32) outs(%1 : memref<128x128xf32>)
     memref.copy %1, %2 : memref<128x128xf32> to memref<128x128xf32>
     air.herd  tile (%arg4, %arg5) in (%arg6=%c8, %arg7=%c2) args(%arg8=%arg1, %arg9=%arg2, %arg10=%2) : memref<128x128xf32>, memref<128x128xf32>, memref<128x128xf32> attributes {sym_name = "herd_0"} {

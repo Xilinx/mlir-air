@@ -8,14 +8,14 @@
 // RUN: air-opt -air-to-std %s | FileCheck %s
 
 // CHECK-LABEL: func.func @execute
-// CHECK: %[[V0:.*]] = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
+// CHECK: %[[V0:.*]] = memref.alloc() alignment = 128 : memref<64x64xi32>
 // CHECK: %[[E0:.*]] = airrt.wait_all : !airrt.event
 // CHECK: memref.dealloc %[[V0]] : memref<64x64xi32>
 // CHECK: %[[E1:.*]] = airrt.wait_all : !airrt.event
 // CHECK: airrt.wait_all %[[E1]]
 func.func @execute() {
   %0, %1 = air.execute -> (memref<64x64xi32>) {
-    %1 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
+    %1 = memref.alloc() alignment = 128 : memref<64x64xi32>
     air.execute_terminator %1 : memref<64x64xi32>
   }
   %2 = air.execute [%0] {

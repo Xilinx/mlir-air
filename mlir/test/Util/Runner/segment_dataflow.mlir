@@ -37,19 +37,19 @@ module {
   func.func @test(%arg0: memref<1024x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) -> memref<1024x1024xbf16> {
     %c1 = arith.constant 1 : index
     %async_token, %results = air.execute -> (memref<1024x1024xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<1024x1024xbf16>
       air.execute_terminator %alloc : memref<1024x1024xbf16>
     }
     %async_token_0, %results_1 = air.execute -> (memref<1024x1024xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<1024x1024xbf16>
       air.execute_terminator %alloc : memref<1024x1024xbf16>
     }
     %async_token_2, %results_3 = air.execute -> (memref<1024x1024xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<1024x1024xbf16>
       air.execute_terminator %alloc : memref<1024x1024xbf16>
     }
     %async_token_4, %results_5 = air.execute -> (memref<1024x1024xbf16>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xbf16>
+      %alloc = memref.alloc() alignment = 128 : memref<1024x1024xbf16>
       air.execute_terminator %alloc : memref<1024x1024xbf16>
     }
     %0 = air.launch async (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) args(%arg8=%arg0, %arg9=%arg1, %arg10=%results_1, %arg11=%arg2, %arg12=%arg3, %arg13=%results_3, %arg14=%results_5) : memref<1024x1024xbf16>, memref<1024x1024xbf16>, memref<1024x1024xbf16>, memref<1024x1024xbf16>, memref<1024x1024xbf16>, memref<1024x1024xbf16>, memref<1024x1024xbf16> attributes {id = 1 : i32} {

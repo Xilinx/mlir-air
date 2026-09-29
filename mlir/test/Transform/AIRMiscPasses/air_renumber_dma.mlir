@@ -38,9 +38,9 @@ module {
     %cst = arith.constant 0.000000e+00 : f32
     %c0_i64 = arith.constant 0 : i64
     %cst_0 = arith.constant -3.40282347E+38 : f32
-    %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
+    %0 = memref.alloc() alignment = 128 : memref<64x64xf32>
     linalg.fill ins(%cst : f32) outs(%0 : memref<64x64xf32>)
-    %1 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
+    %1 = memref.alloc() alignment = 128 : memref<64x64xf32>
     memref.copy %0, %1 : memref<64x64xf32> to memref<64x64xf32>
     air.herd @herd_0  tile (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%arg0, %arg9=%arg1, %arg10=%1) : memref<64x256xf32>, memref<256x64xf32>, memref<64x64xf32> {
       %c64 = arith.constant 64 : index
@@ -64,9 +64,9 @@ module {
         memref.dealloc %23 : memref<32x32xf32, 2>
       }
     }
-    %2 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
+    %2 = memref.alloc() alignment = 128 : memref<64x64xf32>
     linalg.fill ins(%cst : f32) outs(%2 : memref<64x64xf32>)
-    %3 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
+    %3 = memref.alloc() alignment = 128 : memref<64x64xf32>
     memref.copy %2, %3 : memref<64x64xf32> to memref<64x64xf32>
     air.herd @herd_1  tile (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%arg0, %arg9=%arg2, %arg10=%3) : memref<64x256xf32>, memref<256x64xf32>, memref<64x64xf32> {
       %c64 = arith.constant 64 : index
@@ -90,9 +90,9 @@ module {
         memref.dealloc %23 : memref<32x32xf32, 2>
       }
     }
-    %4 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
+    %4 = memref.alloc() alignment = 128 : memref<64x64xf32>
     linalg.fill ins(%cst : f32) outs(%4 : memref<64x64xf32>)
-    %5 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
+    %5 = memref.alloc() alignment = 128 : memref<64x64xf32>
     memref.copy %4, %5 : memref<64x64xf32> to memref<64x64xf32>
     air.herd @herd_2  tile (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%1, %arg9=%3, %arg10=%5) : memref<64x64xf32>, memref<64x64xf32>, memref<64x64xf32> {
       %c1_1 = arith.constant 1 : index
@@ -115,13 +115,13 @@ module {
         memref.dealloc %23 : memref<32x32xf32, 2>
       }
     }
-    %6 = memref.alloc() {alignment = 128 : i64} : memref<64x1xi64>
+    %6 = memref.alloc() alignment = 128 : memref<64x1xi64>
     linalg.fill ins(%c0_i64 : i64) outs(%6 : memref<64x1xi64>)
-    %7 = memref.alloc() {alignment = 128 : i64} : memref<64x1xf32>
+    %7 = memref.alloc() alignment = 128 : memref<64x1xf32>
     linalg.fill ins(%cst_0 : f32) outs(%7 : memref<64x1xf32>)
-    %8 = memref.alloc() {alignment = 128 : i64} : memref<64x1xf32>
+    %8 = memref.alloc() alignment = 128 : memref<64x1xf32>
     memref.copy %7, %8 : memref<64x1xf32> to memref<64x1xf32>
-    %9 = memref.alloc() {alignment = 128 : i64} : memref<64x1xi64>
+    %9 = memref.alloc() alignment = 128 : memref<64x1xi64>
     memref.copy %6, %9 : memref<64x1xi64> to memref<64x1xi64>
     air.herd @herd_3  tile (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) args(%arg8=%5, %arg9=%8, %arg10=%9) : memref<64x64xf32>, memref<64x1xf32>, memref<64x1xi64> {
       %c1_1 = arith.constant 1 : index

@@ -10,7 +10,7 @@
 // CHECK: %[[init_buf:.*]] = bufferization.to_buffer
 // CHECK: scf.parallel (%{{.*}}) = (%c0{{.*}}) to (%c4{{.*}}) step (%c1{{.*}}) init (%[[init_buf]]) -> memref<32xi32, 2>
 // CHECK: scf.reduce
-// CHECK: linalg.add
+// CHECK: linalg.elementwise <add>
 // CHECK: scf.reduce.return
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {

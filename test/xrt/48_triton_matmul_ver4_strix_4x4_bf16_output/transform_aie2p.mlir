@@ -57,7 +57,7 @@ module attributes {transform.with_named_sequence} {
     // memory_space = 1 corresponds to L2 (shared memory).
         %result_l2 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %result_l2_buffer, %result_t2_new = transform.structured.bufferize_to_allocation %result_l2
-            {memory_space = 1, bufferize_destination_only, mempcy = "linalg.copy", emit_dealloc} : !transform.any_op
+            <{memory_space = 1, bufferize_destination_only,  emit_dealloc}> : !transform.any_op
         
 
     //==========================================================================
@@ -100,7 +100,7 @@ module attributes {transform.with_named_sequence} {
     // Step 9: Promote the output pack operation to L1 local memory.
     // memory_space = 2 corresponds to L1 (AIE local memory).
         %output_l1_pack_op_source_buffer, %output_l1_pack_op_new = transform.structured.bufferize_to_allocation %pack_c
-            {memory_space = 2, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, memcpy_op = "linalg.copy", emit_dealloc}> : !transform.any_op
 
     //==========================================================================
     // PHASE 4: TILE REDUCTION AND FUSE PACK OPERATIONS
@@ -139,11 +139,9 @@ module attributes {transform.with_named_sequence} {
 
     // Step 14: Canonicalization and CSE after tiling.
         %func_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func_2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func_2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func_2 : !transform.any_op
 
     //==========================================================================
@@ -153,9 +151,9 @@ module attributes {transform.with_named_sequence} {
 
     // Step 15: Promote input operands (A and B tiles) to L1 local memory.
         %buffer_a, %new_a = transform.structured.bufferize_to_allocation %fused_lhs_l1_pack2
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         %buffer_b, %new_b = transform.structured.bufferize_to_allocation %fused_rhs_l1_pack2
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 16: Create tiled prologue (fill operation).
     // Generalize fill to generic, interchange dimensions, then tile with forall.
@@ -181,11 +179,9 @@ module attributes {transform.with_named_sequence} {
 
     // Step 18: Canonicalization and CSE after buffer promotion.
         %func_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func_3 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func_3 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func_3 : !transform.any_op
 
     //==========================================================================
@@ -201,15 +197,11 @@ module attributes {transform.with_named_sequence} {
     // Step 20: AIR-specific cleanup and memory optimization.
     // Removes uninitialized copies and eliminates redundant cascade memcpy patterns.
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated : (!transform.any_op) -> !transform.any_op
 
@@ -250,8 +242,8 @@ module attributes {transform.with_named_sequence} {
         %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
           transform.structured.tile_using_for %inner_most_generics tile_sizes [1, 1, 0, 0, 0, 0]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)  
-        transform.loop.unroll %vec_loops_to_unroll#1 {factor = 2} : !transform.any_op
-        transform.loop.unroll %vec_loops_to_unroll#0 {factor = 2} : !transform.any_op  
+        transform.loop.unroll %vec_loops_to_unroll#1 factor = 2 : !transform.any_op
+        transform.loop.unroll %vec_loops_to_unroll#0 factor = 2 : !transform.any_op  
 
     // Step 24: Tile linalg.generic (fill) for vectorized initialization.
         %inner_most_fills, %vec_fill_loops:2 =
@@ -286,12 +278,10 @@ module attributes {transform.with_named_sequence} {
 
     // Step 27: Canonicalization after vectorization.
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func7 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func7 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.memref.fold_memref_alias_ops
-        } : !transform.any_op
+            transform.apply_patterns.memref.fold_memref_alias_ops} : !transform.any_op
         %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
 
@@ -307,11 +297,11 @@ module attributes {transform.with_named_sequence} {
     // Step 29: Identify the matmul compute herd and innermost K-loop.
         %herd2_1 = transform.structured.match ops{["air.herd"]} attributes{compute_herd} in %arg1 : (!transform.any_op) -> !transform.any_op
         %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Step 30: Cast vector types for correct accumulation precision.
         %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
+        %result11 = transform.air.vector_type_cast %vector_contracts <{target_element_type = f32, input_indices = [2], output_indices = [0]}> : (!transform.any_op) -> !transform.any_op
 
     // Step 33: Hoist all accumulator transfer pairs from innermost K-loop.
         %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
@@ -323,7 +313,7 @@ module attributes {transform.with_named_sequence} {
 
     // Step 34: Match extf/truncf operations in the innermost loop.
         %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
         %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
         %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
         %extf_bf16_1, %extf_bf16_2, %extf_bf16_3, %extf_bf16_4 = transform.split_handle %all_extf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
@@ -356,12 +346,10 @@ module attributes {transform.with_named_sequence} {
     // Step 37: Final canonicalization pass.
     // Cleans up the final IR for AIR/AIE lowering.
         %func9 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func9 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func9 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.memref.fold_memref_alias_ops
-        } : !transform.any_op
+            transform.apply_patterns.memref.fold_memref_alias_ops} : !transform.any_op
         %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
 

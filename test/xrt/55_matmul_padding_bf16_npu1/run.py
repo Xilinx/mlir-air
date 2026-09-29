@@ -549,8 +549,8 @@ if __name__ == "__main__":
             %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
               transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
               : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-            transform.loop.unroll %vec_loops_to_unroll#1 {factor = 2} : !transform.any_op
-            transform.loop.unroll %vec_loops_to_unroll#0 {factor = 2} : !transform.any_op
+            transform.loop.unroll %vec_loops_to_unroll#1 factor = 2 : !transform.any_op
+            transform.loop.unroll %vec_loops_to_unroll#0 factor = 2 : !transform.any_op
 
             %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
             %inner_most_fills, %vec_fill_loops:2 =

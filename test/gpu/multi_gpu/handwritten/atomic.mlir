@@ -130,7 +130,7 @@ module attributes {gpu.container_module} {
         // Spin: flag == 0.
         scf.while : () -> () {
           %v = llvm.load %slot_ptr atomic syncscope("") acquire
-              {alignment = 4 : i64} : !llvm.ptr -> i32
+              <{alignment = 4 : i64}> : !llvm.ptr -> i32
           %not_ready = arith.cmpi eq, %v, %c0_i32 : i32
           scf.condition(%not_ready)
         } do {

@@ -20,7 +20,7 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Allocates the result buffer in memory space 1 (shared/L2), required for AIR/AIE memory hierarchy.
     // Assumption: The result of the fill op will be written to L2/shared memory.
         %buffer_res_shared, %new_fill = transform.structured.bufferize_to_allocation %fill
-          {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 3: Tile matmul using scf.forall with tile size [64, 64].
     // Purpose: Introduces parallelism and prepares for mapping to AIE columns.
@@ -33,11 +33,9 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Cleans up the IR after tiling, merges redundant ops, and prepares for further transforms.
     // Assumption: Canonicalization will simplify the IR and remove dead code.
         %func_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func_2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func_2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func_2 : !transform.any_op
 
     // Step 5: Fuse fill operation into the forall loop.
@@ -87,7 +85,7 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Moves result buffer to fast local memory for efficient AIE execution.
     // Assumption: The result fits in local memory and can be promoted.
         %buffer_c, %new_c = transform.structured.bufferize_to_allocation %pack_c
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 11: Tile the reduction loop.
     // Purpose: Enables vectorized reduction and efficient computation.
@@ -108,19 +106,17 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Moves input operands to fast local memory for efficient AIE execution.
     // Assumption: The operands are suitable for promotion and local memory is available.
         %buffer_a, %new_a = transform.structured.bufferize_to_allocation %fused_pack_a
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         %buffer_b, %new_b = transform.structured.bufferize_to_allocation %fused_pack_b
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 14: Run canonicalization and CSE again.
     // Purpose: Cleans up after bufferization and promotion, merges redundant allocs/copies.
     // Assumption: Canonicalization will further simplify the IR.
         %func_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func_3 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func_3 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func_3 : !transform.any_op
 
     // Step 15: One-shot bufferization of the function.
@@ -133,15 +129,11 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Removes redundant memcpy ops, eliminates cascade memcpy patterns, and canonicalizes.
     // Assumption: AIR passes will further optimize memory ops for hardware.
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated : (!transform.any_op) -> !transform.any_op
 

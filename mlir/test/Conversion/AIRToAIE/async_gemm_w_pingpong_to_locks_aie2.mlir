@@ -112,7 +112,7 @@ module {
   func.func @matmul(%arg0: memref<128x512xi32>, %arg1: memref<512x128xi32>, %arg2: memref<128x128xi32>) {
     %c2 = arith.constant 2 : index
     %async_token, %results = air.execute -> (memref<128x128xi32>) {
-      %alloc = memref.alloc() {alignment = 64 : i64} : memref<128x128xi32>
+      %alloc = memref.alloc() alignment = 64 : memref<128x128xi32>
       air.execute_terminator %alloc : memref<128x128xi32>
     }
     %async_token_0 = air.execute [%async_token] {

@@ -34,7 +34,7 @@
 gpu.module @kernels {
   gpu.func @atomic_kernel(%ptr : !llvm.ptr, %v : i32) kernel {
     %old = llvm.atomicrmw xchg %ptr, %v syncscope("") release : !llvm.ptr, i32
-    %loaded = llvm.load %ptr atomic syncscope("") acquire {alignment = 4 : i64} : !llvm.ptr -> i32
+    %loaded = llvm.load %ptr atomic syncscope("") acquire <{alignment = 4 : i64}> : !llvm.ptr -> i32
     gpu.return
   }
 }

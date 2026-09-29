@@ -315,4 +315,11 @@ def air_MemcpyInterface : OpInterface<"MemcpyInterface"> {
     >,
   ];
 }
+
+// See `AttrBasedSymbolVisibility` in AIRDialect.h. Use alongside `Symbol` and
+// `SymbolName`.
+def air_AttrBasedSymbolVisibility : NativeOpTrait<"AttrBasedSymbolVisibility"> {
+  string cppNamespace = "::xilinx::air";
+}
+
 #endif

@@ -13,7 +13,7 @@ module attributes {torch.debug_module_name = "test"} {
     air.segment @part0  args(%arg3=%arg0, %arg4=%arg1, %arg5=%arg2, %arg6=%0) : memref<10240xi32>, memref<10240xi32>, memref<10240xi32>, memref<10240xi32> {
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
-      %1 = memref.alloc() {alignment = 128 : i64} : memref<10240xi32>
+      %1 = memref.alloc() alignment = 128 : memref<10240xi32>
       // %1 = %arg1 + % arg2
       air.herd  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c1) args(%arg11=%arg4, %arg12=%arg5, %arg13=%1) : memref<10240xi32>, memref<10240xi32>, memref<10240xi32> attributes {sym_name = "herd_0", x_loc = 4 : i64, y_loc = 2 : i64} {
         %c1_0 = arith.constant 1 : index

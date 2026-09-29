@@ -617,7 +617,8 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 
 // AIR channel
 
-def air_ChannelOp : air_Op<"channel", [Symbol]>,
+def air_ChannelOp : air_Op<"channel",
+                           [Symbol, SymbolName, air_AttrBasedSymbolVisibility]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
                    DefaultValuedAttr<StrAttr, "\"npu_dma_stream\"">:$channel_type)> {
