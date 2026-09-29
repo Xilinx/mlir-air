@@ -33,7 +33,7 @@ module {
     %c512 = arith.constant 512 : index
     %c64 = arith.constant 64 : index
     %async_token, %results = air.execute -> (memref<512x512xbf16>) {
-      %1 = memref.alloc() {alignment = 128 : i64} : memref<512x512xbf16>
+      %1 = memref.alloc() alignment = 128 : memref<512x512xbf16>
       air.execute_terminator %1 : memref<512x512xbf16>
     } {id = 1 : i32}
     %async_token_0 = air.execute [%async_token] {

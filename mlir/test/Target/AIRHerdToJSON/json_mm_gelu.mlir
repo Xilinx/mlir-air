@@ -39,11 +39,11 @@ module attributes {torch.debug_module_name = "mmult"} {
     %c16 = arith.constant 16 : index
     %c48 = arith.constant 48 : index
     %cst = arith.constant 0.000000e+00 : bf16
-    %alloc = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+    %alloc = memref.alloc() alignment = 128 : memref<24576x1024xbf16>
     linalg.fill ins(%cst : bf16) outs(%alloc : memref<24576x1024xbf16>)
-    %alloc_0 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+    %alloc_0 = memref.alloc() alignment = 128 : memref<24576x1024xbf16>
     memref.copy %alloc, %alloc_0 : memref<24576x1024xbf16> to memref<24576x1024xbf16>
-    %alloc_1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+    %alloc_1 = memref.alloc() alignment = 128 : memref<24576x1024xbf16>
     air.launch @launch_0 (%arg2, %arg3) in (%arg4=%c48, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%alloc_0, %arg9=%alloc_1) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 6 : i64, size_y = 2 : i64} {
       air.segment @segment_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 3 : i64, size_y = 2 : i64} {
         %c1 = arith.constant 1 : index

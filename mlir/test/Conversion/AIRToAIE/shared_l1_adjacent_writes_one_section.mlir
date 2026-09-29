@@ -73,7 +73,7 @@ module {
           %hdr = arith.constant dense<0.0> : vector<2xbf16>
           scf.for %arg11 = %c0 to %c16_8 step %c1_7 {
             func.call @zero_vectorized_bf16(%arg10) : (memref<8xbf16, 2 : i32>) -> ()
-            vector.store %hdr, %arg10[%c0] {alignment = 4 : i64} : memref<8xbf16, 2 : i32>, vector<2xbf16>
+            vector.store %hdr, %arg10[%c0] alignment = 4 : memref<8xbf16, 2 : i32>, vector<2xbf16>
             air.channel.put  @out_chan[] (%arg10[] [] []) : (memref<8xbf16, 2 : i32>)
           }
         }

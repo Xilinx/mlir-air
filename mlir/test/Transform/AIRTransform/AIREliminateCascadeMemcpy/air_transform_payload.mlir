@@ -9,12 +9,12 @@
 
 // Test basic cascade memcpy elimination - the exact pattern from the original example
 // CHECK-LABEL: @test_basic_cascade_elimination
-// CHECK: %[[ALLOC:.*]] = memref.alloc() {alignment = 64 : i64} : memref<1024xi32>
+// CHECK: %[[ALLOC:.*]] = memref.alloc() alignment = 64 : memref<1024xi32>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_3]][] [] []) : (memref<1024xi32>, memref<2x16x8xi32, 1>)
 func.func @test_basic_cascade_elimination(%arg0: memref<2048xi32>, %arg1: memref<2048x1024xi32>) -> memref<1024xi32> {
-  %alloc = memref.alloc() {alignment = 64 : i64} : memref<1024xi32>
-  %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<2x128xi32>
+  %alloc = memref.alloc() alignment = 64 : memref<1024xi32>
+  %alloc_2 = memref.alloc() alignment = 64 : memref<2x128xi32>
   %alloc_3 = memref.alloc() : memref<2x16x8xi32, 1>
   
   // This is the cascade pattern we want to eliminate:
@@ -169,12 +169,12 @@ func.func @test_non_cascade_patterns_unaffected() -> memref<1024xi32> {
 
 // Test complex pattern from the original example with more context
 // CHECK-LABEL: @test_complex_original_pattern
-// CHECK: %[[ALLOC:.*]] = memref.alloc() {alignment = 64 : i64} : memref<1024xi32>
+// CHECK: %[[ALLOC:.*]] = memref.alloc() alignment = 64 : memref<1024xi32>
 // CHECK: %[[ALLOC_0:.*]] = memref.alloc() : memref<16x128xi32, 1>
 // CHECK: %[[ALLOC_1:.*]] = memref.alloc() : memref<2x16x128x128xi32, 1>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK: scf.forall (%[[ARG3:.*]]) in (2) {
-// CHECK-NOT: %[[ALLOC_2:.*]] = memref.alloc() {alignment = 64 : i64} : memref<2x128xi32>
+// CHECK-NOT: %[[ALLOC_2:.*]] = memref.alloc() alignment = 64 : memref<2x128xi32>
 // CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_3]][] [] [])
 func.func @test_complex_original_pattern(%arg0: memref<2048xi32>, %arg1: memref<2048x1024xi32>) -> memref<1024xi32> {
   %c2048 = arith.constant 2048 : index
@@ -190,13 +190,13 @@ func.func @test_complex_original_pattern(%arg0: memref<2048xi32>, %arg1: memref<
   %c4 = arith.constant 4 : index
   %c0 = arith.constant 0 : index
   %c0_i32 = arith.constant 0 : i32
-  %alloc = memref.alloc() {alignment = 64 : i64} : memref<1024xi32>
+  %alloc = memref.alloc() alignment = 64 : memref<1024xi32>
   scf.forall (%arg2) in (4) {
     %alloc_0 = memref.alloc() : memref<16x128xi32, 1>
     air.dma_memcpy_nd (%alloc_0[] [] [], %arg0[] [] []) : (memref<16x128xi32, 1>, memref<2048xi32>)
     %alloc_1 = memref.alloc() : memref<2x16x128x128xi32, 1>
     air.dma_memcpy_nd (%alloc_1[] [] [], %arg1[%c0, %c0, %c0, %c0] [%c2, %c16, %c128, %c128] [%c128, %c131072, %c1024, %c1]) : (memref<2x16x128x128xi32, 1>, memref<2048x1024xi32>)
-    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<2x128xi32>
+    %alloc_2 = memref.alloc() alignment = 64 : memref<2x128xi32>
     %alloc_3 = memref.alloc() : memref<2x16x8xi32, 1>
     scf.forall (%arg3) in (2) {
       %subview = memref.subview %alloc_3[%arg3, 0, 0] [1, 16, 8] [1, 1, 1] : memref<2x16x8xi32, 1> to memref<1x16x8xi32, strided<[128, 8, 1], offset: ?>, 1>

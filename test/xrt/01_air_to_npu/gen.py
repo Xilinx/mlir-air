@@ -99,19 +99,19 @@ transform_ir_string = """
         %parallal_1 = transform.loop.forall_to_parallel %loop_1  : (!transform.any_op) -> !transform.any_op
         %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %parallal_1 : (!transform.any_op, !transform.any_op) -> !transform.any_op
         %matmul_3_1 = transform.structured.match ops{["linalg.generic"]} in %parallal_1  : (!transform.any_op) -> !transform.any_op
-        transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
-        transform.air.linalg_promote %matmul_3_1 {"operands_to_promote"=[2], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
-        transform.air.linalg_promote %matmul_3_1 {"operands_to_promote"=[0,1], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %fill_2 <{"operands_to_promote"=[1], "memory_space"="L2"}> : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_3_1 <{"operands_to_promote"=[2], "memory_space"="L2"}> : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_3_1 <{"operands_to_promote"=[0,1], "memory_space"="L2"}> : (!transform.any_op) -> !transform.any_op
         // Third level tiling: air.herd
         %matmul_4, %loop_2 = transform.air.linalg_tile %matmul_3_1 [32, 32, 0]
         %parallal_2 = transform.loop.forall_to_parallel %loop_2  : (!transform.any_op) -> !transform.any_op
         %fill_3 = transform.air.fuse_into_containing_op %fill_2 into %parallal_2 : (!transform.any_op, !transform.any_op) -> !transform.any_op
         %matmul_5 = transform.structured.match ops{["linalg.generic"]} in %parallal_2  : (!transform.any_op) -> !transform.any_op
-        transform.air.linalg_promote %fill_3 {"operands_to_promote"=[1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
-        transform.air.linalg_promote %matmul_5 {"operands_to_promote"=[2], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %fill_3 <{"operands_to_promote"=[1], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_5 <{"operands_to_promote"=[2], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
         // Fourth level tiling: scf.for (reduction)
         %matmul_6, %reduction_loop = transform.air.linalg_tile %matmul_5 [0, 0, 32]
-        transform.air.linalg_promote %matmul_6 {"operands_to_promote"=[0,1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_6 <{"operands_to_promote"=[0,1], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
         %scffor = transform.loop.forall_to_for %reduction_loop  : (!transform.any_op) -> !transform.any_op
         %herd = transform.air.par_to_herd %parallal_2 : (!transform.any_op) -> !transform.any_op
         %segment = transform.air.par_to_segment %parallal_1 : (!transform.any_op) -> !transform.any_op

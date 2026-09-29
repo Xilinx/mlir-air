@@ -26,15 +26,13 @@ module attributes {transform.with_named_sequence} {
         // Run canonicalization
         // Apply initial canonicalization patterns to clean up the IR
         %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func0 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func0 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             // CRITICAL: fold_unit_extent_dims_via_reshapes is essential.
             // This pattern removes unit dimensions and simplifies tensor shapes, which is
             // crucial for subsequent tiling and bufferization passes.
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
-        } : !transform.any_op
+            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes} : !transform.any_op
         transform.apply_cse to %func0 : !transform.any_op
 
         //===================================================================
@@ -54,11 +52,9 @@ module attributes {transform.with_named_sequence} {
         // This additional canonicalization stage cleans up the IR after the transpose_reduce
         // transformation and generalization, ensuring optimal patterns before fusion
         %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func1 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func1 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func1 : !transform.any_op
 
         // Split operation handles for individual manipulation
@@ -78,7 +74,7 @@ module attributes {transform.with_named_sequence} {
         // Bufferize the final operation to L2 memory (memory_space = 1)
         // Memory space mapping: 0=L3(DDR), 1=L2(Tile), 2=L1(Core)
         %generic7_output_buf, %new_generic7 = transform.structured.bufferize_to_allocation %generic7
-          {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // Tile the final operation with tile size [1] - assumes batch dimension tiling
         %tiled_generic_7, %forall_7 =
@@ -102,11 +98,9 @@ module attributes {transform.with_named_sequence} {
         
         // Run canonicalization after fusion
         %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func2 : !transform.any_op
         
         //===================================================================
@@ -119,7 +113,7 @@ module attributes {transform.with_named_sequence} {
         // Allocate fill operations to L1 memory
         %fills_2 = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         %fill1_buffer, %fill1_new = transform.structured.bufferize_to_allocation %fills_2
-          {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // Re-split the fused generic operations for individual L1 allocation
         %generics2 = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
@@ -129,25 +123,25 @@ module attributes {transform.with_named_sequence} {
         %padded_gen1_in = transform.get_producer_of_operand %tiled_generic1[0] : (!transform.any_op) -> (!transform.any_op)
         
         %padded_gen1_in_buffer, %padded_gen1_in_new = transform.structured.bufferize_to_allocation %padded_gen1_in
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         // Allocate intermediate computation results to L1 memory
         // Assumption: These operations produce intermediate results that need
         // to be cached in L1 for subsequent operations in the softmax pipeline
         %padded_gen2_out1_buffer, %padded_gen2_out1_new = transform.structured.bufferize_to_allocation %tiled_generic2
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         %padded_gen3_out1_buffer, %padded_gen3_out1_new = transform.structured.bufferize_to_allocation %tiled_generic3
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
         
         %tiled_generic4_buffer, %tiled_generic4_new = transform.structured.bufferize_to_allocation %tiled_generic4
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         %padded_gen6_out1_buffer, %padded_gen6_out1_new = transform.structured.bufferize_to_allocation %tiled_generic6
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         %padded_gen7_out1_buffer, %padded_gen7_out1_new = transform.structured.bufferize_to_allocation %tiled_generic7
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
 
         //===================================================================
@@ -157,11 +151,9 @@ module attributes {transform.with_named_sequence} {
         
         // Run canonicalization after L1 memory allocation
         %func5 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func5 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func5 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func5 : !transform.any_op
         
         //===================================================================
@@ -185,15 +177,11 @@ module attributes {transform.with_named_sequence} {
         // which can be deleted by canonicalizer. We have to run it again because the memrefs are 
         // unified in CSE pass, so we can truly remove redundant memcpy.
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         
         // Remove uninitialized copy operations that may have been introduced
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
@@ -209,8 +197,8 @@ module attributes {transform.with_named_sequence} {
         // Assumption: exp_vec16_f32 is a vectorized exponential function
         // that operates on 16 f32 elements and is available in extern_func.o
         %math_exp = transform.structured.match ops{["math.exp"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %math_exp_linalg = transform.get_parent_op %math_exp { op_name = "linalg.generic" } : (!transform.any_op) -> !transform.any_op
-        %call = transform.air.linalg_to_library_call %math_exp_linalg { function_name = "exp_vec16_f32", link_with = "extern_func.o" } : (!transform.any_op) -> !transform.any_op
+        %math_exp_linalg = transform.get_parent_op %math_exp <{op_name = "linalg.generic"}> : (!transform.any_op) -> !transform.any_op
+        %call = transform.air.linalg_to_library_call %math_exp_linalg <{function_name = "exp_vec16_f32", link_with = "extern_func.o"}> : (!transform.any_op) -> !transform.any_op
 
         //===================================================================
         // PHASE 10: AIR Constructs Mapping

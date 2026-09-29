@@ -50,7 +50,7 @@ module {
   func.func @test(%arg0: memref<32x32xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>, %arg3: memref<1024x1024xi32>) -> memref<32x32xi32> {
     %c1 = arith.constant 1 : index
     %async_token_1, %results_2 = air.execute -> (memref<32x32xi32>) {
-      %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xi32>
+      %alloc = memref.alloc() alignment = 128 : memref<32x32xi32>
       air.execute_terminator %alloc : memref<32x32xi32>
     }
     %0 = air.launch async [%async_token_1] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) args(%arg8=%arg0, %arg9=%arg1) : memref<32x32xi32>, memref<1024x1024xi32> attributes {id = 7 : i32} {
@@ -58,32 +58,32 @@ module {
         %c4 = arith.constant 4 : index
         %c1_0 = arith.constant 1 : index
         %async_token_3, %results_4 = air.execute -> (memref<32x32xi32, 1>) {
-          %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xi32, 1>
+          %alloc = memref.alloc() alignment = 128 : memref<32x32xi32, 1>
           air.execute_terminator %alloc : memref<32x32xi32, 1>
         }
         %3 = air.channel.put async [%async_token_3]  @channel_0[] (%results_4[] [] []) : (memref<32x32xi32, 1>)
         %async_token_5, %results_6 = air.execute -> (memref<32x32xi32, 1>) {
-          %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xi32, 1>
+          %alloc = memref.alloc() alignment = 128 : memref<32x32xi32, 1>
           air.execute_terminator %alloc : memref<32x32xi32, 1>
         }
         %4 = air.channel.get async [%async_token_5]  @channel_1[] (%results_6[] [] []) : (memref<32x32xi32, 1>)
         %async_token_7, %results_8 = air.execute -> (memref<32x32xbf16, 1>) {
-          %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xbf16, 1>
+          %alloc = memref.alloc() alignment = 128 : memref<32x32xbf16, 1>
           air.execute_terminator %alloc : memref<32x32xbf16, 1>
         }
         %5 = air.channel.put async [%async_token_7]  @channel_2[] (%results_8[] [] []) : (memref<32x32xbf16, 1>)
         %async_token_9, %results_10 = air.execute -> (memref<32x32xbf16, 1>) {
-          %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xbf16, 1>
+          %alloc = memref.alloc() alignment = 128 : memref<32x32xbf16, 1>
           air.execute_terminator %alloc : memref<32x32xbf16, 1>
         }
         %6 = air.channel.get async [%async_token_9]  @channel_3[] (%results_10[] [] []) : (memref<32x32xbf16, 1>)
         %async_token_11, %results_12 = air.execute -> (memref<32x32xi8, 1>) {
-          %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xi8, 1>
+          %alloc = memref.alloc() alignment = 128 : memref<32x32xi8, 1>
           air.execute_terminator %alloc : memref<32x32xi8, 1>
         }
         %7 = air.channel.put async [%async_token_11]  @channel_4[] (%results_12[] [] []) : (memref<32x32xi8, 1>)
         %async_token_13, %results_14 = air.execute -> (memref<32x32xi8, 1>) {
-          %alloc = memref.alloc() {alignment = 128 : i64} : memref<32x32xi8, 1>
+          %alloc = memref.alloc() alignment = 128 : memref<32x32xi8, 1>
           air.execute_terminator %alloc : memref<32x32xi8, 1>
         }
         %8 = air.channel.get async [%async_token_13]  @channel_5[] (%results_14[] [] []) : (memref<32x32xi8, 1>)

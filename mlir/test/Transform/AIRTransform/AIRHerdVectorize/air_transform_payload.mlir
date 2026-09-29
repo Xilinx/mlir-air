@@ -24,8 +24,8 @@ module {
       %subview_a1 = memref.subview %a1[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32, 2 : i32> to memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>
       %subview_a2 = memref.subview %a2[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32, 2 : i32> to memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>
 
-      // This linalg.add should be vectorized by our transform op
-      linalg.add ins(%subview_a0, %subview_a1 : memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>, memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>)
+      // This linalg.elementwise <add> should be vectorized by our transform op
+      linalg.elementwise <add> ins(%subview_a0, %subview_a1 : memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>, memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>)
                  outs(%subview_a2 : memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>)
 
       air.herd_terminator

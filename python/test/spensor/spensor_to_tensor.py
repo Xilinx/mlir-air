@@ -107,6 +107,7 @@ def getModule(ctx: Context) -> ModuleOp:
     module_op = ModuleOp([func_op])
     return module_op
 
+
 ctx = Context()
 ctx.register_dialect(Builtin.name, lambda: Builtin)
 ctx.register_dialect(Func.name, lambda: Func)

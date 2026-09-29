@@ -34,7 +34,7 @@
 // CHECK-LABEL:   llvm.mlir.global external constant @__airrt_segment_descriptor() {addr_space = 0 : i32} : !llvm.struct<(i64, ptr, i64, ptr)> {
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.struct<(i64, ptr, i64, ptr)>
 // CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__airrt_string_part_0 : !llvm.ptr
-// CHECK:           %[[VAL_2:.*]] = llvm.mlir.constant(6 : i32) : i64
+// CHECK:           %[[VAL_2:.*]] = llvm.mlir.constant(6 : i64) : i64
 // CHECK:           %[[VAL_3:.*]] = llvm.getelementptr %[[VAL_1]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<6 x i8>
 // CHECK:           %[[VAL_4:.*]] = llvm.mlir.constant(2 : i64) : i64
 // CHECK:           %[[VAL_5:.*]] = llvm.mlir.addressof @__airrt_segment_herd_descriptors : !llvm.ptr

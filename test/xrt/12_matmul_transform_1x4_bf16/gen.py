@@ -86,11 +86,11 @@ transform_ir_string = """
         %generic = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         %matmul_0 = transform.structured.specialize %generic : (!transform.any_op) -> !transform.any_op
         %ps = transform.merge_handles %fill_0, %matmul_0 : !transform.any_op
-        transform.air.linalg_promote %ps {"operands_to_promote"=[1,4], "group_size"=2, "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %ps <{"operands_to_promote"=[1,4], "group_size"=2, "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
 
         %matmul_1, %loop = transform.air.linalg_tile %matmul_0 [16, 16, 16]
 
-        transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_1 <{"operands_to_promote"=[0,1], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
 
         %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         transform.apply_patterns to %f {

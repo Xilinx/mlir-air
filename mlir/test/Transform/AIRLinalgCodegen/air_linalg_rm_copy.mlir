@@ -18,7 +18,7 @@
 
 func.func @test_copy_remove(%arg0: memref<10240xf32>) -> memref<10240xf32> {
   %cst = arith.constant 0.000000e+00 : f32
-  %alloc = memref.alloc() {alignment = 64 : i64} : memref<10240xf32>
+  %alloc = memref.alloc() alignment = 64 : memref<10240xf32>
   %c2560 = arith.constant 2560 : index
   %c0 = arith.constant 0 : index
   %c10240 = arith.constant 10240 : index
@@ -58,7 +58,7 @@ func.func @test_copy_remove(%arg0: memref<10240xf32>) -> memref<10240xf32> {
 #map1 = affine_map<(d0) -> (d0 floordiv 2)>
 func.func @test_copy_reduce(%arg0: memref<10240xf32>) -> memref<10240xf32> {
   %cst = arith.constant 0.000000e+00 : f32
-  %alloc = memref.alloc() {alignment = 64 : i64} : memref<10240xf32>
+  %alloc = memref.alloc() alignment = 64 : memref<10240xf32>
   %c2560 = arith.constant 2560 : index
   %c0 = arith.constant 0 : index
   %c10240 = arith.constant 10240 : index
@@ -98,7 +98,7 @@ func.func @test_copy_reduce(%arg0: memref<10240xf32>) -> memref<10240xf32> {
 // CHECK:       memref.copy %[[A1]], %{{.*}}
 func.func @test_copy_use(%arg0: memref<10240xf32>) -> memref<10240xf32> {
   %cst = arith.constant 0.000000e+00 : f32
-  %alloc = memref.alloc() {alignment = 64 : i64} : memref<10240xf32>
+  %alloc = memref.alloc() alignment = 64 : memref<10240xf32>
   %c2560 = arith.constant 2560 : index
   %c0 = arith.constant 0 : index
   %c10240 = arith.constant 10240 : index

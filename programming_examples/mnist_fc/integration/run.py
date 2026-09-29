@@ -465,8 +465,8 @@ def build_integration_module(
             %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
               transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
               : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-            transform.loop.unroll %vec_loops_to_unroll#1 {factor = 2} : !transform.any_op
-            transform.loop.unroll %vec_loops_to_unroll#0 {factor = 2} : !transform.any_op
+            transform.loop.unroll %vec_loops_to_unroll#1 factor = 2 : !transform.any_op
+            transform.loop.unroll %vec_loops_to_unroll#0 factor = 2 : !transform.any_op
 
             %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
             %inner_most_fills, %vec_fill_loops:2 =
@@ -495,17 +495,17 @@ def build_integration_module(
             %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-            %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+            %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
             %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-            %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
+            %result11 = transform.air.vector_type_cast %vector_contracts <{target_element_type = f32, input_indices = [2], output_indices = [0]}> : (!transform.any_op) -> !transform.any_op
 
             %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
             %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
             %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
 
             %fors_to_hoist = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-            %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+            %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
             %all_extf = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
             %all_truncf = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
 

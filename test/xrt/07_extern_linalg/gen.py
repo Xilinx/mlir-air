@@ -61,7 +61,7 @@ transform_ir_string = """
     %l3, %inner_tile_loop = transform.air.linalg_tile %l1 [32,32]
     %name = transform.param.constant "add_bf16" -> !transform.any_param
     transform.annotate %l3 "library_call" = %name : !transform.any_op, !transform.any_param
-    transform.air.linalg_promote %l3 {"operands_to_promote"=[0,1,2], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+    transform.air.linalg_promote %l3 <{"operands_to_promote"=[0,1,2], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
     %inner_tile_par = transform.loop.forall_to_parallel %inner_tile_loop  : (!transform.any_op) -> !transform.any_op
     %herd_tile_par = transform.loop.forall_to_parallel %herd_tile_loop  : (!transform.any_op) -> !transform.any_op
     %herd = transform.air.par_to_herd %herd_tile_par : (!transform.any_op) -> !transform.any_op

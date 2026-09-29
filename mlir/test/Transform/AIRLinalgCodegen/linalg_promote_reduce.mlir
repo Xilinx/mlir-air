@@ -43,7 +43,7 @@ func.func @reduce_promote(%arg0: memref<2x256xbf16>) -> memref<2xbf16> {
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.linalg_promote %0 {memory_space = "L1"} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 <{memory_space = "L1"}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

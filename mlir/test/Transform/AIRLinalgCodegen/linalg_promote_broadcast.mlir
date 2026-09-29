@@ -49,7 +49,7 @@ func.func @broadcast_promote_mixed(
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.linalg_promote %0 {memory_space = "L1"} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 <{memory_space = "L1"}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
@@ -89,7 +89,7 @@ func.func @broadcast_promote_all_non_subview(
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.linalg_promote %0 {memory_space = "L1"} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 <{memory_space = "L1"}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

@@ -1045,10 +1045,10 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     auto prodRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_prod_lock");
     auto consRef = op->getAttrOfType<FlatSymbolRefAttr>("air.shared_cons_lock");
     if (prodRef && consRef) {
-      auto prodLock = dyn_cast_or_null<AIE::LockOp>(
-          SymbolTable::lookupSymbolIn(device, prodRef.getAttr()));
-      auto consLock = dyn_cast_or_null<AIE::LockOp>(
-          SymbolTable::lookupSymbolIn(device, consRef.getAttr()));
+      auto prodLock =
+          air::lookupBySymName<AIE::LockOp>(device, prodRef.getValue());
+      auto consLock =
+          air::lookupBySymName<AIE::LockOp>(device, consRef.getValue());
       if (prodLock && consLock) {
         // Return (cons, prod). generateDmaBd selects
         // acq = isMM2S ? first : second, rel = isMM2S ? second : first.
@@ -2768,8 +2768,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
                                         AIE::AIETileType::ShimNOCTile,
                                         /*col=*/IntegerAttr(),
-                                        /*row=*/IntegerAttr(),
-                                        /*allocation_scheme=*/StringAttr());
+                                        /*row=*/IntegerAttr());
   }
 
   auto usedChans = channelsUsedOn(tileLT);

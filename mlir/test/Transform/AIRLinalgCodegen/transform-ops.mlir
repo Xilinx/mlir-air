@@ -45,7 +45,7 @@ func.func @linalg_promote_L2(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x10
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0,1,2]} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 <{memory_space="L2", operands_to_promote=[0,1,2]}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
@@ -67,7 +67,7 @@ func.func @linalg_promote_one(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.linalg_promote %0 {operands_to_promote=[0]} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 <{operands_to_promote=[0]}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
@@ -93,7 +93,7 @@ module attributes {transform.with_named_sequence} {
     %0 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
     %1 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
     %2 = transform.merge_handles %0, %1 : !transform.any_op
-    transform.air.linalg_promote %2 {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+    transform.air.linalg_promote %2 <{"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

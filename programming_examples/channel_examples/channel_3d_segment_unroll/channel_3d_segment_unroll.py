@@ -34,7 +34,7 @@ role for every one of them.
 Two differences from the predecessor:
 
 * ``acc[:] = in_buf[:]`` and ``acc[:] = in_buf[:] + acc[:]`` replace
-  ``linalg.copy`` and a ``linalg.add`` whose output aliases an input. Same
+  ``linalg.copy`` and a ``linalg.elementwise <add>`` whose output aliases an input. Same
   values; the DSL vectorises them rather than handing the pipeline named ops to
   fuse.
 * The upstream neighbour is ``tx - 1`` rather than a hand-built ``arith.subi``,

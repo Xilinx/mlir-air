@@ -17,28 +17,25 @@ module attributes {transform.with_named_sequence} {
     %fused_fill, %fused_loop = transform.structured.fuse_into_containing_op %fill into %forall : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Pad operation.
-    %padded, %pad, %__ = transform.structured.pad %tiled_matmul {
-      padding_values=[0.000000e+00 : bf16, 0.000000e+00 : bf16, 0.000000e+00 : f32],
+    %padded, %pad, %__ = transform.structured.pad %tiled_matmul <{padding_values=[0.000000e+00 : bf16, 0.000000e+00 : bf16, 0.000000e+00 : f32],
       padding_dimensions=[0, 1, 2],
-      pack_paddings=[1, 1, 1],
       nofold_flags=[1, 1, 1],
-      copy_back_op="linalg.copy"
-    } : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+      copy_back_op="linalg.copy"}> : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
     %pad_dps = transform.structured.rewrite_in_destination_passing_style %pad : (!transform.any_op) -> !transform.any_op
 
     // Promote the operands to shared memory.
     %padded_lhs = transform.get_producer_of_operand %padded[0] : (!transform.any_op) -> (!transform.any_op)
     %padded_lhs_buffer, %padded_lhs_new = transform.structured.bufferize_to_allocation %padded_lhs
-        {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+        <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     %padded_rhs = transform.get_producer_of_operand %padded[1] : (!transform.any_op) -> (!transform.any_op)
     %padded_rhs_buffer, %padded_rhs_new = transform.structured.bufferize_to_allocation %padded_rhs
-        {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+        <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Promote the result to shared memrory
     %padded_result = transform.get_producer_of_operand %padded[2] : (!transform.any_op) -> (!transform.any_op)
     %padded_result_buffer, %padded_result_new = transform.structured.bufferize_to_allocation %padded_result
-        {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+        <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Find the copy operations to tile using for.
     %copy_1 = transform.get_producer_of_operand %padded[0] : (!transform.any_op) -> (!transform.any_op)
@@ -57,11 +54,9 @@ module attributes {transform.with_named_sequence} {
 
     // Clean up.
     %func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.apply_patterns to %func {
-        transform.apply_patterns.linalg.tiling_canonicalization
+    transform.apply_patterns to %func {transform.apply_patterns.linalg.tiling_canonicalization
         transform.apply_patterns.scf.for_loop_canonicalization
-        transform.apply_patterns.canonicalization
-    } : !transform.any_op
+        transform.apply_patterns.canonicalization} : !transform.any_op
     transform.apply_cse to %func : !transform.any_op
 
     // Fuse fill operation into the forall loop.
@@ -78,11 +73,9 @@ module attributes {transform.with_named_sequence} {
     //   : (!transform.any_op) -> (!transform.any_op)
 
     %func1 = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.apply_patterns to %func1 {
-        transform.apply_patterns.linalg.tiling_canonicalization
+    transform.apply_patterns to %func1 {transform.apply_patterns.linalg.tiling_canonicalization
         transform.apply_patterns.scf.for_loop_canonicalization
-        transform.apply_patterns.canonicalization
-    } : !transform.any_op
+        transform.apply_patterns.canonicalization} : !transform.any_op
     transform.apply_cse to %func1 : !transform.any_op
 
     // Transpose A matrix from [M K m k m0 k0] to [M K k m m0 k0]
@@ -114,7 +107,7 @@ module attributes {transform.with_named_sequence} {
     // %pack_b = transform.get_producer_of_operand %packed[1] : (!transform.any_op) -> (!transform.any_op)
     // %pack_c = transform.get_producer_of_operand %packed[2] : (!transform.any_op) -> (!transform.any_op)
     // %buffer_c, %new_c = transform.structured.bufferize_to_allocation %pack_c
-    //   {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+    //   <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // First level for loop.
     // %tiled_reduction, %for_loop =
@@ -128,9 +121,9 @@ module attributes {transform.with_named_sequence} {
 
     // // Promote the inputs to local memory.
     // %buffer_a, %new_a = transform.structured.bufferize_to_allocation %fused_pack_a
-    //   {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+    //   <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
     // %buffer_b, %new_b = transform.structured.bufferize_to_allocation %fused_pack_b
-    //   {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+    //   <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Clean up.
     //transform.include @cleanup failures(propagate) (%variant_op) : (!transform.any_op) -> ()

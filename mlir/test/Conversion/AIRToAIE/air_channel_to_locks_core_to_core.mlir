@@ -195,7 +195,7 @@ func.func @one_to_two() {
 // CHECK-DAG:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
 // CHECK:             %[[vecread:.*]] = vector.transfer_read %{{.*}}[%c0{{.*}}], %[[CST]] {in_bounds = [true]}
@@ -208,7 +208,7 @@ func.func @one_to_two() {
 // CHECK:             %[[cascade_get:.*]] = aie.get_cascade()
 // CHECK-NEXT:        vector.transfer_write %[[cascade_get]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
 // CHECK:             %[[vecread:.*]] = vector.transfer_read %{{.*}}[%c0{{.*}}], %[[CST]] {in_bounds = [true]}
@@ -221,7 +221,7 @@ func.func @one_to_two() {
 // CHECK:             %[[cascade_get:.*]] = aie.get_cascade()
 // CHECK-NEXT:        vector.transfer_write %[[cascade_get]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
 // CHECK:             %[[vecread:.*]] = vector.transfer_read %{{.*}}[%c0{{.*}}], %[[CST]] {in_bounds = [true]}
@@ -233,7 +233,7 @@ func.func @one_to_two() {
 // CHECK:             %[[cascade_get:.*]] = aie.get_cascade()
 // CHECK-NEXT:        vector.transfer_write %[[cascade_get]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 
 // CHECK:         aie.cascade_flow(%[[tile_2_6]], %[[tile_2_5]])
 // CHECK:         aie.cascade_flow(%[[tile_2_5]], %[[tile_2_4]])
@@ -267,7 +267,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
         }
         %5 = air.channel.get async [%async_token_3]  @channel_1[] (%results_4[] [] []) {id = 2 : i32} : (memref<2048xi32, 2 : i32>)
         %async_token_5 = air.execute [%5, %async_token_2] {
-          linalg.add ins(%results_4, %results : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%results : memref<2048xi32, 2 : i32>)
+          linalg.elementwise <add> ins(%results_4, %results : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%results : memref<2048xi32, 2 : i32>)
         }
         %6 = arith.subi %arg9, %c1_1 : index
         %c0 = arith.constant 0 : index
@@ -295,7 +295,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
             scf.yield %700 : !air.async.token
           }
           %async_token_5 = air.execute [%7, %async_token_2] {
-            linalg.add ins(%results_4, %results : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%results : memref<2048xi32, 2 : i32>)
+            linalg.elementwise <add> ins(%results_4, %results : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%results : memref<2048xi32, 2 : i32>)
           }
           %8 = scf.for %arg600 = %c0 to %c2048 step %c16 iter_args (%iterarg = %async_token_5) -> !air.async.token {
             %subview_12 = memref.subview %results[%arg600] [16] [1] : memref<2048xi32, 2 : i32> to memref<16xi32, strided<[1], offset: ?>, 2 : i32>
@@ -317,7 +317,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
             scf.yield %700 : !air.async.token
           }
           %async_token_5 = air.execute [%6, %async_token_2] {
-            linalg.add ins(%results_4, %results : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%results : memref<2048xi32, 2 : i32>)
+            linalg.elementwise <add> ins(%results_4, %results : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%results : memref<2048xi32, 2 : i32>)
           }
           %7 = air.channel.put async [%async_token_5]  @channel_2[] (%results[] [] []) {id = 7 : i32} : (memref<2048xi32, 2 : i32>)
           affine.yield %7 : !air.async.token
@@ -340,7 +340,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 // CHECK-DAG:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[0, 0, %[[arg6]]] [1, 1, 16] [1, 1, 1]
 // CHECK:             %[[collapse_shape:.*]] = memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
@@ -355,7 +355,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 // CHECK-NEXT:        %[[collapse_shape:.*]] = memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
 // CHECK-NEXT:        vector.transfer_write %[[cascade_get]], %[[collapse_shape]][%c0] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[0, 0, %[[arg6]]] [1, 1, 16] [1, 1, 1]
 // CHECK:             %[[collapse_shape:.*]] = memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
@@ -370,7 +370,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 // CHECK-NEXT:        %[[collapse_shape:.*]] = memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
 // CHECK-NEXT:        vector.transfer_write %[[cascade_get]], %[[collapse_shape]][%c0] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[0, 0, %[[arg6]]] [1, 1, 16] [1, 1, 1]
 // CHECK:             %[[collapse_shape:.*]] = memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
@@ -384,7 +384,7 @@ func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
 // CHECK-NEXT:        %[[collapse_shape:.*]] = memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
 // CHECK-NEXT:        vector.transfer_write %[[cascade_get]], %[[collapse_shape]][%c0] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 
 // CHECK:         aie.cascade_flow(%[[tile_2_6]], %[[tile_2_5]])
 // CHECK:         aie.cascade_flow(%[[tile_2_5]], %[[tile_2_4]])
@@ -422,7 +422,7 @@ module {
           }
           %5 = air.channel.get async [%async_token_3]  @channel_1[] (%results_4[] [] []) {id = 2 : i32} : (memref<1x1x2048xi32, 2 : i32>)
           %async_token_5 = air.execute [%5, %async_token_2] {
-            linalg.add ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
+            linalg.elementwise <add> ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
           }
           %6 = arith.subi %arg9, %c1_1 : index
           %7 = scf.for %arg12 = %c0 to %c2048 step %c16 iter_args(%arg13 = %async_token_5) -> (!air.async.token) {
@@ -444,7 +444,7 @@ module {
               scf.yield %10 : !air.async.token
             }
             %async_token_5 = air.execute [%async_token_3, %async_token_2] {
-              linalg.add ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
+              linalg.elementwise <add> ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
             }
             %8 = scf.for %arg12 = %c0 to %c2048 step %c16 iter_args(%arg13 = %async_token_5) -> (!air.async.token) {
               %subview = memref.subview %results[0, 0, %arg12] [1, 1, 16] [1, 1, 1] : memref<1x1x2048xi32, 2 : i32> to memref<1x1x16xi32, strided<[2048, 2048, 1], offset: ?>, 2 : i32>
@@ -464,7 +464,7 @@ module {
               scf.yield %9 : !air.async.token
             }
             %async_token_5 = air.execute [%async_token_3, %async_token_2] {
-              linalg.add ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
+              linalg.elementwise <add> ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
             }
             %7 = air.channel.put async [%async_token_5]  @channel_2[] (%results[] [] []) {id = 7 : i32} : (memref<1x1x2048xi32, 2 : i32>)
             %8 = air.wait_all async [%6, %7] 
@@ -630,7 +630,7 @@ module {
 // CHECK-DAG:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
 // CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
@@ -645,7 +645,7 @@ module {
 // CHECK:             %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
 // CHECK-NEXT:        vector.transfer_write %[[cascade_data]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
 // CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
@@ -660,7 +660,7 @@ module {
 // CHECK:             %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
 // CHECK-NEXT:        vector.transfer_write %[[cascade_data]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
 // CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
@@ -674,7 +674,7 @@ module {
 // CHECK:             %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
 // CHECK-NEXT:        vector.transfer_write %[[cascade_data]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
-// CHECK:           linalg.add
+// CHECK:           linalg.elementwise <add>
 
 // CHECK:         aie.cascade_flow(%[[tile_2_6]], %[[tile_2_5]])
 // CHECK:         aie.cascade_flow(%[[tile_2_5]], %[[tile_2_4]])
@@ -710,7 +710,7 @@ module {
           }
           %5 = air.channel.get async [%async_token_3]  @channel_1[] (%results_4[] [] []) {id = 2 : i32} : (memref<1x1x2048xi32, 2 : i32>)
           %async_token_5 = air.execute [%5, %async_token_2] {
-            linalg.add ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
+            linalg.elementwise <add> ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
           }
           %6 = arith.subi %arg9, %c1_1 : index
           %7 = air.channel.put async [%async_token_5]  @channel_0[%6] (%results[] [] []) {id = 3 : i32} : (memref<1x1x2048xi32, 2 : i32>)
@@ -724,7 +724,7 @@ module {
             %6 = arith.subi %arg9, %c1_1 : index
             %7 = air.channel.get async [%async_token_3]  @channel_0[%arg9] (%results_4[] [] []) {id = 4 : i32} : (memref<1x1x2048xi32, 2 : i32>)
             %async_token_5 = air.execute [%7, %async_token_2] {
-              linalg.add ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
+              linalg.elementwise <add> ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
             }
             %8 = air.channel.put async [%async_token_5]  @channel_0[%6] (%results[] [] []) {id = 5 : i32} : (memref<1x1x2048xi32, 2 : i32>)
             affine.yield %8 : !air.async.token
@@ -735,7 +735,7 @@ module {
             }
             %6 = air.channel.get async [%async_token_3]  @channel_0[%arg9] (%results_4[] [] []) {id = 6 : i32} : (memref<1x1x2048xi32, 2 : i32>)
             %async_token_5 = air.execute [%6, %async_token_2] {
-              linalg.add ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
+              linalg.elementwise <add> ins(%results_4, %results : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%results : memref<1x1x2048xi32, 2 : i32>)
             }
             %7 = air.channel.put async [%async_token_5]  @channel_2[] (%results[] [] []) {id = 7 : i32} : (memref<1x1x2048xi32, 2 : i32>)
             affine.yield %7 : !air.async.token

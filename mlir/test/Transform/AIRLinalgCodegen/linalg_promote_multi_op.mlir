@@ -76,7 +76,7 @@ func.func @multi_op_shared_input(
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["linalg.generic", "linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.linalg_promote %0 {memory_space = "L1"} : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 <{memory_space = "L1"}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

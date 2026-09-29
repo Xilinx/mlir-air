@@ -26,7 +26,7 @@ west-to-east between adjacent columns.
 
 Two differences from the predecessor:
 
-* ``local[:] = recv[:] + local[:]`` replaces a ``linalg.add`` with the output
+* ``local[:] = recv[:] + local[:]`` replaces a ``linalg.elementwise <add>`` with the output
   aliasing an input. Same accumulate, and the DSL vectorises it rather than
   handing the pipeline a named op to fuse.
 * The neighbour index is ``tx - 1`` rather than a hand-built ``arith.subi``, so

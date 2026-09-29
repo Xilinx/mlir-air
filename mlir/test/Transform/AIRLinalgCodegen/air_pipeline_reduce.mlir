@@ -12,7 +12,7 @@
 // CHECK:   func.func @f0(%[[VAL_0:.*]]: memref<32xf32>) -> memref<f32> {
 // CHECK:     %[[VAL_2:.*]] = arith.constant 1 : index
 // CHECK:     %[[VAL_1:.*]] = arith.constant 2 : index
-// CHECK:     %[[VAL_3:.*]] = memref.alloc() {alignment = 64 : i64} : memref<f32>
+// CHECK:     %[[VAL_3:.*]] = memref.alloc() alignment = 64 : memref<f32>
 // CHECK:     air.herd  tile (%[[VAL_4:.*]], %[[VAL_5:.*]]) in (%[[VAL_6:.*]]=%[[VAL_1]], %[[VAL_7:.*]]=%[[VAL_2]]) args(%[[VAL_8:.*]]=%[[VAL_0]], %[[VAL_9:.*]]=%[[VAL_3]]) : memref<32xf32>, memref<f32> {
 // CHECK:       %[[VAL_10:.*]] = affine.apply #map(){{\[}}%[[VAL_4]]]
 // CHECK:       %[[VAL_11:.*]] = memref.subview %[[VAL_8]]{{\[}}%[[VAL_10]]] [16] [1] : memref<32xf32> to memref<16xf32, strided<[1], offset: ?>>
@@ -39,7 +39,7 @@
 #map = affine_map<(d0) -> (d0)>
 #map1 = affine_map<(d0) -> ()>
 func.func @f0(%arg0: memref<32xf32>) -> memref<f32> {
-  %alloc = memref.alloc() {alignment = 64 : i64} : memref<f32>
+  %alloc = memref.alloc() alignment = 64 : memref<f32>
   linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["reduction"]} ins(%arg0 : memref<32xf32>) outs(%alloc : memref<f32>) {
   ^bb0(%in: f32, %out: f32):
     %0 = arith.addf %in, %out : f32

@@ -14,7 +14,7 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
     // Should use "my_explicit_func" as the function name
-    %call = transform.air.linalg_to_library_call %matmul { function_name = "my_explicit_func" } : (!transform.any_op) -> !transform.any_op
+    %call = transform.air.linalg_to_library_call %matmul <{function_name = "my_explicit_func"}> : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

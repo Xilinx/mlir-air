@@ -18,9 +18,9 @@ module attributes {torch.debug_module_name = "mmult"} {
   func.func @mmult(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>) -> memref<64x64xi32> {
     %c2 = arith.constant 2 : index
     %c0_i32 = arith.constant 0 : i32
-    %alloc = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
+    %alloc = memref.alloc() alignment = 128 : memref<64x64xi32>
     linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<64x64xi32>)
-    %alloc_0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
+    %alloc_0 = memref.alloc() alignment = 128 : memref<64x64xi32>
     memref.copy %alloc, %alloc_0 : memref<64x64xi32> to memref<64x64xi32>
 // CHECK: scf.parallel
 // CHECK: scf.for

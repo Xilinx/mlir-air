@@ -411,8 +411,8 @@ if __name__ == "__main__":
                 %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
                   transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
                   : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                transform.loop.unroll %vec_loops_to_unroll#1 {{factor = 2}} : !transform.any_op
-                transform.loop.unroll %vec_loops_to_unroll#0 {{factor = 2}} : !transform.any_op
+                transform.loop.unroll %vec_loops_to_unroll#1 factor = 2 : !transform.any_op
+                transform.loop.unroll %vec_loops_to_unroll#0 factor = 2 : !transform.any_op
 
                 %linalg_fills = transform.structured.match ops{{["linalg.fill"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %inner_most_fills, %vec_fill_loops:2 =
@@ -445,10 +445,10 @@ if __name__ == "__main__":
                 %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
                 %scf_fors_1 = transform.structured.match ops{{["scf.for"]}} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {{overflow_result = 1}} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+                %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
                 %vector_contracts = transform.structured.match ops{{["vector.contract"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
-                %result11 = transform.air.vector_type_cast %vector_contracts {{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}} : (!transform.any_op) -> !transform.any_op
+                %result11 = transform.air.vector_type_cast %vector_contracts <{{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}}> : (!transform.any_op) -> !transform.any_op
 
                 // Hoist all accumulator transfer pairs from the innermost loop
                 %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
@@ -456,7 +456,7 @@ if __name__ == "__main__":
                 %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
 
                 %fors_to_hoist_ptrs = transform.structured.match ops{{["scf.for"]}} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {{overflow_result = 1}}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+                %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs overflow_result = 1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
                 // Hoist the 4 extsi/trunci pairs from the innermost loop
                 %all_extsi_loop = transform.structured.match ops{{["arith.extsi"]}} in %innermost_for1 : (!transform.any_op) -> !transform.any_op

@@ -401,7 +401,7 @@ module {
 // CHECK: affine.if [[$SET0]]()
 // CHECK: %[[alloc_5:.*]] = memref.alloc()
 // CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
-// CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
+// CHECK: linalg.elementwise <add> ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
 // CHECK: %[[idx:.*]] = arith.subi %[[arg0]], %c1{{.*}}
 // CHECK: air.channel.put  @channel_0[%[[idx]]] (%[[alloc_4]][] [] [])
 // CHECK: } else {
@@ -409,14 +409,14 @@ module {
 // CHECK: %[[alloc_5:.*]] = memref.alloc()
 // CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
 // CHECK: air.channel.get  @channel_0[%[[arg0]]] (%[[alloc_5]][] [] [])
-// CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
+// CHECK: linalg.elementwise <add> ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
 // CHECK: %[[idx:.*]] = arith.subi %[[arg0]], %c1{{.*}}
 // CHECK: air.channel.put  @channel_0[%[[idx]]] (%[[alloc_4]][] [] [])
 // CHECK: } else {
 // CHECK: %[[alloc_5:.*]] = memref.alloc()
 // CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
 // CHECK: air.channel.get  @channel_0[%[[arg0]]] (%[[alloc_5]][] [] [])
-// CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
+// CHECK: linalg.elementwise <add> ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
 // CHECK: }
 // CHECK: }
 
@@ -449,7 +449,7 @@ module {
       }
       scf.reduce(%alloc_3 : memref<32xi32, 2 : i32>) {
       ^bb0(%arg3: memref<32xi32, 2 : i32>, %arg4: memref<32xi32, 2 : i32>):
-        linalg.add ins(%arg3, %arg4 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%arg3 : memref<32xi32, 2 : i32>)
+        linalg.elementwise <add> ins(%arg3, %arg4 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%arg3 : memref<32xi32, 2 : i32>)
         scf.reduce.return %arg3 : memref<32xi32, 2 : i32>
       }
     }
@@ -483,7 +483,7 @@ module {
       memref.dealloc %alloc_1 : memref<32x1xi32, 2>
       scf.reduce(%cast : memref<32xi32, 2>) {
       ^bb0(%arg5: memref<32xi32, 2>, %arg6: memref<32xi32, 2>):
-        linalg.add ins(%arg5, %arg6 : memref<32xi32, 2>, memref<32xi32, 2>) outs(%arg5 : memref<32xi32, 2>)
+        linalg.elementwise <add> ins(%arg5, %arg6 : memref<32xi32, 2>, memref<32xi32, 2>) outs(%arg5 : memref<32xi32, 2>)
         scf.reduce.return %arg5 : memref<32xi32, 2>
       }
     }

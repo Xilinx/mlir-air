@@ -16,7 +16,7 @@ module attributes {transform.with_named_sequence} {
     // correct memory space, making the policy visible in the transform script.
     %funcs = transform.structured.match ops{["func.func"]} in %arg1
       : (!transform.any_op) -> !transform.any_op
-    %funcs_updated = transform.air.override_memref_memory_space %funcs {memory_space = 1 : i32}
+    %funcs_updated = transform.air.override_memref_memory_space %funcs <{memory_space = 1 : i32}>
       : (!transform.any_op) -> !transform.any_op
 
     // Step 1: Match the main elementwise op (linalg.generic).
@@ -34,7 +34,7 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Allocates the result buffer in memory space 1 (shared/L2), required for AIR/AIE memory hierarchy.
     // Assumption: The result of the elementwise op will be written to L2/shared memory.
         %add_res_shared, %new_add = transform.structured.bufferize_to_allocation %add_flattened
-          {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
+          <{memory_space = 1, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 4: Tile the computation using scf.forall for herd parallelism.
     // Purpose: Introduces parallelism and prepares for mapping to AIE columns.
@@ -47,11 +47,9 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Cleans up the IR after tiling, merges redundant ops, and prepares for further transforms.
     // Assumption: Canonicalization will simplify the IR and remove dead code.
         %func_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func_2 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func_2 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func_2 : !transform.any_op
 
     // Step 6: Match the (possibly tiled) linalg.generic for further transformation.
@@ -60,12 +58,10 @@ module attributes {transform.with_named_sequence} {
     // Step 7: Pad the operation.
     // Purpose: Ensures that the computation is aligned to tile sizes, handles boundary conditions.
     // Assumption: Padding values/types are correct for the op; nofold_flags prevent folding of padding.
-        %padded_add, %pad_add, %__ = transform.structured.pad %add_2 {
-            padding_values=[@PAD_VAL@, @PAD_VAL@, @PAD_VAL@],
+        %padded_add, %pad_add, %__ = transform.structured.pad %add_2 <{padding_values=[@PAD_VAL@, @PAD_VAL@, @PAD_VAL@],
             padding_dimensions=[0, 1, 2],
             nofold_flags=[1, 1, 1],
-            copy_back_op="linalg.copy"
-        } : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+            copy_back_op="linalg.copy"}> : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
     // Step 8: Rewrite in destination-passing style (DPS).
     // Purpose: Converts the op to DPS, which is required for bufferization and explicit memory management.
@@ -77,28 +73,26 @@ module attributes {transform.with_named_sequence} {
     // Assumption: The operands are suitable for promotion and local memory is available.
         %padded_add_lhs = transform.get_producer_of_operand %padded_add[0] : (!transform.any_op) -> (!transform.any_op)
         %padded_add_lhs_buffer, %padded_add_lhs_new = transform.structured.bufferize_to_allocation %padded_add_lhs
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
         %padded_add_rhs = transform.get_producer_of_operand %padded_add[1] : (!transform.any_op) -> (!transform.any_op)
         %padded_add_rhs_buffer, %padded_add_rhs_new = transform.structured.bufferize_to_allocation %padded_add_rhs
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 10: Promote the result to local memory (AIE local, memory_space=2).
     // Purpose: Ensures the result buffer is also in local memory for fast access.
     // Assumption: The result fits in local memory and can be promoted.
         %padded_add_result = transform.get_producer_of_operand %padded_add[2] : (!transform.any_op) -> (!transform.any_op)
         %padded_add_result_buffer, %padded_add_result_new = transform.structured.bufferize_to_allocation %padded_add_result
-            {memory_space = 2, bufferize_destination_only, emit_dealloc} : !transform.any_op
+            <{memory_space = 2, bufferize_destination_only, emit_dealloc}> : !transform.any_op
 
     // Step 11: Run canonicalization and CSE again.
     // Purpose: Cleans up after bufferization and promotion, merges redundant allocs/copies.
     // Assumption: Canonicalization will further simplify the IR.
         %func_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func_3 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func_3 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func_3 : !transform.any_op
 
     // Step 12: One-shot bufferization of the function.
@@ -111,21 +105,17 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Removes redundant memcpy ops, eliminates cascade memcpy patterns, and canonicalizes.
     // Assumption: AIR passes will further optimize memory ops for hardware.
         %func6 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.linalg.tiling_canonicalization
+        transform.apply_patterns to %func6 {transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+            transform.apply_patterns.canonicalization} : !transform.any_op
         transform.apply_cse to %func6 : !transform.any_op
-        transform.apply_patterns to %func6 {
-            transform.apply_patterns.canonicalization
-        } : !transform.any_op
+        transform.apply_patterns to %func6 {transform.apply_patterns.canonicalization} : !transform.any_op
         %linalg_copies = transform.structured.match ops{["linalg.copy"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %memref_copies = transform.structured.linalg_copy_to_memref %linalg_copies : (!transform.any_op) -> !transform.any_op
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated : (!transform.any_op) -> !transform.any_op
 
-    // Step 14: Tile linalg.add for vectorization.
+    // Step 14: Tile linalg.elementwise <add> for vectorization.
     // Purpose: Final tiling to enable vectorized execution on AIE hardware.
     // The tile size is configurable via @VECTOR_SIZE@ and should match the
     // AIE vector lane count. Defaults: i16 -> 32, f32/bf16 -> 16.
@@ -140,7 +130,7 @@ module attributes {transform.with_named_sequence} {
     // Convert parallel loops to AIE herd operations for multi-core execution
         %forall_as_herd = transform.structured.match ops{["scf.forall"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %parallel = transform.loop.forall_to_parallel %forall_as_herd  : (!transform.any_op) -> !transform.any_op
-        %herd = transform.air.par_to_herd %parallel { first_dim = @HERD_FIRST_DIM@ } : (!transform.any_op) -> !transform.any_op
+        %herd = transform.air.par_to_herd %parallel <{first_dim = @HERD_FIRST_DIM@}> : (!transform.any_op) -> !transform.any_op
 
     // Convert memory copies to DMA operations for efficient data movement
         %copies_in_herd = transform.structured.match ops{["memref.copy", "linalg.copy"]} in %herd : (!transform.any_op) -> !transform.any_op

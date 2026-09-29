@@ -549,6 +549,26 @@ Operation *cloneOpAndOperands(
 
 bool opOrAncestorIsDominantOver(Operation *a, Operation *b);
 
+// Find the op of type `OpT` under `symbolTableOp` whose `sym_name` is `name`.
+//
+// Deliberately not `SymbolTable::lookupSymbolIn`: that only finds ops
+// implementing `SymbolOpInterface`, and several AIE ops AIR looks up by name
+// carry `sym_name` without implementing it.
+template <typename OpT>
+OpT lookupBySymName(Operation *symbolTableOp, llvm::StringRef name) {
+  OpT found = nullptr;
+  symbolTableOp->walk([&](OpT op) {
+    auto symName = op->template getAttrOfType<mlir::StringAttr>(
+        mlir::SymbolTable::getSymbolAttrName());
+    if (symName && symName.getValue() == name) {
+      found = op;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return found;
+}
+
 } // namespace air
 } // namespace xilinx
 

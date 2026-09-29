@@ -176,7 +176,7 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
                                   segmentName.getSymNameAttr());
     auto segmentNameLen = LLVM::ConstantOp::create(
         builder, loc, IntegerType::get(ctx, 64),
-        builder.getI32IntegerAttr(segment_name.size()));
+        builder.getI64IntegerAttr(segment_name.size()));
 
     LLVM::GEPOp::create(builder, loc, LLVM::LLVMPointerType::get(ctx),
                         segmentName.getType(), segmentNameArray,
@@ -308,7 +308,7 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
       builder, loc, LLVM::LLVMPointerType::get(ctx), herdName.getSymNameAttr());
   auto herdNameLen =
       LLVM::ConstantOp::create(builder, loc, IntegerType::get(ctx, 64),
-                               builder.getI32IntegerAttr(herd_name.size()));
+                               builder.getI64IntegerAttr(herd_name.size()));
 
   auto herdNamePtr = LLVM::BitcastOp::create(
       builder, loc, LLVM::LLVMPointerType::get(ctx),
@@ -386,7 +386,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
         for (int k = 0; k < 8; k++) {
           auto c = LLVM::ConstantOp::create(
               builder, loc, IntegerType::get(ctx, 64),
-              builder.getI32IntegerAttr(chans[i][j][k]));
+              builder.getI64IntegerAttr(chans[i][j][k]));
           data = LLVM::InsertValueOp::create(
               builder, loc, data, c,
               builder.getDenseI64ArrayAttr({i * 8 * 8 + j * 8 + k}));

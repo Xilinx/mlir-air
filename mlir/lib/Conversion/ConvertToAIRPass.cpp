@@ -2499,20 +2499,22 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
         }
 
         if (reductionOp && isa<arith::AddIOp, arith::AddFOp>(reductionOp)) {
-          // For addition reduction, use linalg.add
-          linalg::AddOp::create(rewriter, loc,
-                                ValueRange{reduceBlock.getArgument(0),
-                                           reduceBlock.getArgument(1)},
-                                ValueRange{reduceBlock.getArgument(0)});
+          // For addition reduction
+          linalg::ElementwiseOp::create(rewriter, loc,
+                                        ValueRange{reduceBlock.getArgument(0),
+                                                   reduceBlock.getArgument(1)},
+                                        ValueRange{reduceBlock.getArgument(0)},
+                                        linalg::ElementwiseKind::add);
           scf::ReduceReturnOp::create(rewriter, loc,
                                       reduceBlock.getArgument(0));
         } else if (reductionOp &&
                    isa<arith::MulIOp, arith::MulFOp>(reductionOp)) {
-          // For multiplication reduction, use linalg.mul
-          linalg::MulOp::create(rewriter, loc,
-                                ValueRange{reduceBlock.getArgument(0),
-                                           reduceBlock.getArgument(1)},
-                                ValueRange{reduceBlock.getArgument(0)});
+          // For multiplication reduction
+          linalg::ElementwiseOp::create(rewriter, loc,
+                                        ValueRange{reduceBlock.getArgument(0),
+                                                   reduceBlock.getArgument(1)},
+                                        ValueRange{reduceBlock.getArgument(0)},
+                                        linalg::ElementwiseKind::mul);
           scf::ReduceReturnOp::create(rewriter, loc,
                                       reduceBlock.getArgument(0));
         } else {

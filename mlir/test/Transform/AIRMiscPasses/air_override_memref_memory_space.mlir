@@ -64,14 +64,14 @@ module {
     %c2 = arith.constant 2 : index
     air.launch (%arg9, %arg10, %arg11) in (%arg12=%c2, %arg13=%c2, %arg14=%c1) args(%arg15=%arg0, %arg16=%arg1, %arg17=%arg2) : memref<*xf32>, memref<*xf32>, memref<*xf32> {
       %cst = arith.constant 0.000000e+00 : f32
-      %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<8x4x4x8xf32>
+      %alloc_2 = memref.alloc() alignment = 64 : memref<8x4x4x8xf32>
       %collapse_shape = memref.collapse_shape %alloc_2 [[0, 1], [2, 3]] : memref<8x4x4x8xf32> into memref<32x32xf32>
-      %alloc_3 = memref.alloc() {alignment = 64 : i64} : memref<4x8x8x4xf32>
+      %alloc_3 = memref.alloc() alignment = 64 : memref<4x8x8x4xf32>
       %collapse_shape_4 = memref.collapse_shape %alloc_3 [[0, 1], [2, 3]] : memref<4x8x8x4xf32> into memref<32x32xf32>
-      %alloc_5 = memref.alloc() {alignment = 64 : i64} : memref<32x32xf32>
+      %alloc_5 = memref.alloc() alignment = 64 : memref<32x32xf32>
       linalg.matmul ins(%collapse_shape, %collapse_shape_4 : memref<32x32xf32>, memref<32x32xf32>) outs(%alloc_5 : memref<32x32xf32>)
       %expand_shape = memref.expand_shape %alloc_5 [[0, 1], [2, 3]] output_shape [8, 4, 8, 4] : memref<32x32xf32> into memref<8x4x8x4xf32>
-      %alloc_6 = memref.alloc() {alignment = 64 : i64} : memref<8x8x4x4xf32>
+      %alloc_6 = memref.alloc() alignment = 64 : memref<8x8x4x4xf32>
       linalg.transpose ins(%expand_shape : memref<8x4x8x4xf32>) outs(%alloc_6 : memref<8x8x4x4xf32>) permutation = [0, 2, 1, 3]
     }
     return

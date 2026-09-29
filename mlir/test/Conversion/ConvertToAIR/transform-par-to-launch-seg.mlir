@@ -24,7 +24,7 @@ func.func @air_par_to_launch() {
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
       %0 = transform.structured.match ops{["scf.parallel"]} in %arg1: (!transform.any_op) -> !transform.any_op
-      %1 = transform.air.par_to_launch %0 {"has_air_segment"=true} : (!transform.any_op) -> !transform.any_op
+      %1 = transform.air.par_to_launch %0 <{"has_air_segment"=true}> : (!transform.any_op) -> !transform.any_op
       transform.yield
   }
 }

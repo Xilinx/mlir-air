@@ -2902,14 +2902,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   for (auto &[oldOp, splitInfo] : opToSplitInfoMap) {
     Operation *o = oldOp;
     infoEntryTy info = splitInfo;
-    auto unrollMapEntry = llvm::find_if(
-        parUnrollMap,
-        [o](std::tuple<Operation *, SmallVector<Operation *>> mapEnry) {
-          return std::get<0>(mapEnry)->isAncestor(o);
+    auto unrollMapEntry =
+        llvm::find_if(parUnrollMap, [o](const auto &mapEntry) {
+          return mapEntry.first->isAncestor(o);
         });
     if (unrollMapEntry == parUnrollMap.end())
       continue;
-    for (auto newOpAncestor : std::get<1>(*unrollMapEntry))
+    for (auto newOpAncestor : unrollMapEntry->second)
       newOpAncestor->walk(
           [&opToSplitInfoMap, info](air::ChannelInterface newOp) {
             opToSplitInfoMap[newOp] = info;

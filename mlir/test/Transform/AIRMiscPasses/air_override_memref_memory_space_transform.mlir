@@ -78,19 +78,19 @@ module attributes {transform.with_named_sequence} {
     // Override herd allocs to L1 (memory_space 2)
     %herds = transform.structured.match ops{["air.herd"]} in %arg1
       : (!transform.any_op) -> !transform.any_op
-    %herds_updated = transform.air.override_memref_memory_space %herds {memory_space = 2 : i32}
+    %herds_updated = transform.air.override_memref_memory_space %herds <{memory_space = 2 : i32}>
       : (!transform.any_op) -> !transform.any_op
 
     // Override segment allocs to L2 (memory_space 1)
     %segments = transform.structured.match ops{["air.segment"]} in %arg1
       : (!transform.any_op) -> !transform.any_op
-    %segments_updated = transform.air.override_memref_memory_space %segments {memory_space = 1 : i32}
+    %segments_updated = transform.air.override_memref_memory_space %segments <{memory_space = 1 : i32}>
       : (!transform.any_op) -> !transform.any_op
 
     // Override func-level allocs to L2 (memory_space 1)
     %funcs = transform.structured.match ops{["func.func"]} in %arg1
       : (!transform.any_op) -> !transform.any_op
-    %funcs_updated = transform.air.override_memref_memory_space %funcs {memory_space = 1 : i32}
+    %funcs_updated = transform.air.override_memref_memory_space %funcs <{memory_space = 1 : i32}>
       : (!transform.any_op) -> !transform.any_op
 
     transform.yield
