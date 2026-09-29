@@ -263,20 +263,15 @@ module attributes {transform.with_named_sequence} {
 
         %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %linalg_generic1, %linalg_reduce2, %linalg_generic2, %linalg_generic3, %linalg_generic4, %linalg_generic5, %linalg_generic6, %linalg_generic7 = transform.split_handle %linalg_generics : (!transform.any_op<"linalg.generic">) -> (!transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">, !transform.any_op<"linalg.generic">)
-        %linalg_generic2_specialized = transform.structured.specialize %linalg_generic2 : (!transform.any_op) -> !transform.any_op
-        %linalg_generic3_specialized = transform.structured.specialize %linalg_generic3 : (!transform.any_op) -> !transform.any_op
-        %linalg_generic4_specialized = transform.structured.specialize %linalg_generic4 : (!transform.any_op) -> !transform.any_op
-        %linalg_generic5_specialized = transform.structured.specialize %linalg_generic5 : (!transform.any_op) -> !transform.any_op
-        %linalg_generic6_specialized = transform.structured.specialize %linalg_generic6 : (!transform.any_op) -> !transform.any_op
 
         // Bcast: 16-lane vector intrinsic
-        %linalg_broadcasts = transform.structured.match ops{["linalg.broadcast"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %linalg_broadcasts = transform.merge_handles %linalg_generic2, %linalg_generic5 : !transform.any_op<"linalg.generic">
         %inner_most_bcasts, %vec_loops_bcasts:1 =
           transform.structured.tile_using_for %linalg_broadcasts tile_sizes [0, 16]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
         
         // Div: scalar
-        %linalg_divs = transform.structured.match ops{["linalg.elementwise <div>"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %linalg_divs = transform.merge_handles %linalg_generic6 : !transform.any_op<"linalg.generic">
         %linalg_divs_loops = transform.structured.convert_to_loops %linalg_divs : (!transform.any_op) -> !transform.any_op
 
         // Extf: 16-lane vector intrinsic
@@ -285,7 +280,7 @@ module attributes {transform.with_named_sequence} {
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
         
         // Sub: 16-lane vector intrinsic
-        %linalg_subs = transform.structured.match ops{["linalg.elementwise <sub>"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %linalg_subs = transform.merge_handles %linalg_generic3 : !transform.any_op<"linalg.generic">
         %inner_most_subs, %vec_loops_subs:1 =
           transform.structured.tile_using_for %linalg_subs tile_sizes [0, 16]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
@@ -295,7 +290,7 @@ module attributes {transform.with_named_sequence} {
         %inner_most_fills = transform.structured.convert_to_loops %linalg_fills : (!transform.any_op) -> !transform.any_op
         
         // Exp: 16-lane vector intrinsic
-        %linalg_exps = transform.structured.match ops{["linalg.elementwise <exp>"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %linalg_exps = transform.merge_handles %linalg_generic4 : !transform.any_op<"linalg.generic">
         %inner_most_exps, %vec_loops_exps:1 =
           transform.structured.tile_using_for %linalg_exps tile_sizes [0, 16]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
