@@ -325,7 +325,7 @@ module attributes {transform.with_named_sequence} {
         %linalg_copies_in_herd = transform.structured.match ops{["linalg.copy"]} in %herd : (!transform.any_op) -> !transform.any_op
         %memref_copies_in_herd = transform.structured.match ops{["memref.copy"]} in %herd : (!transform.any_op) -> !transform.any_op
         %memref_copies_from_linalg_copies = transform.structured.linalg_copy_to_memref %linalg_copies_in_herd : (!transform.any_op) -> !transform.any_op
-        %all_copies = transform.merge_handles %memref_copies_in_herd, %memref_copies_from_linalg_copies <{deduplicate}> : !transform.any_op
+        %all_copies = transform.merge_handles deduplicate %memref_copies_in_herd, %memref_copies_from_linalg_copies : !transform.any_op
         %dmas_from_copies = transform.air.copy_to_dma %all_copies : (!transform.any_op) -> !transform.any_op
         
         // Apply vectorization to optimize for AIE vector units

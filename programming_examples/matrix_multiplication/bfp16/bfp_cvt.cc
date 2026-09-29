@@ -37,7 +37,24 @@ static void bfp16_to_float_blocks(const bfp16ebs8 *__restrict src,
   }
 }
 
+// Zeroing the bfp16ebs8 accumulator. mm_bfp.cc used to export this as
+// `zero_kernel` under a ZERO_ONLY macro; that path is gone from the reference
+// kernel, so the example carries its own. Writing a zeroed accum as bfp16ebs8
+// (rather than memset) keeps the shared-exponent block layout well-formed.
+template <int M, int N>
+static void zero_blocks(bfp16ebs8 *__restrict cOut) {
+  static_assert(M * N % 64 == 0, "tile must be a whole number of 8x8 blocks");
+  const aie::accum<accfloat, 64> acc = aie::zeros<accfloat, 64>();
+  aie::block_vector_output_buffer_stream<bfp16ebs8, 64> out(cOut);
+  for (int i = 0; i < M * N / 64; ++i)
+    out << acc.to_vector<bfp16ebs8>();
+}
+
 extern "C" {
+
+void zero_kernel(bfp16ebs8 *__restrict cOut) {
+  zero_blocks<DIM_M, DIM_N>(cOut);
+}
 
 void bfp16_to_bf16_mn(uint8_t *src, bfloat16 *dst) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
