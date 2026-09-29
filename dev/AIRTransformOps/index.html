@@ -4226,7 +4226,7 @@
 <h3 id="transformairbroadcast_before_unary-transformbroadcastbeforeunaryop"><code>transform.air.broadcast_before_unary</code> (transform::BroadcastBeforeUnaryOp)<a class="headerlink" href="#transformairbroadcast_before_unary-transformbroadcastbeforeunaryop" title="Permanent link">&para;</a></h3>
 <p><em>Move vector.broadcast before element-wise unary operations to enable vector execution</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>operation ::= `transform.air.broadcast_before_unary` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>operation ::= `transform.air.broadcast_before_unary` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform identifies patterns where an element-wise unary operation operates on a
 single-element vector or scalar and its result is immediately broadcast to a larger vector.
@@ -5176,7 +5176,7 @@ present once.</p>
 <h3 id="transformairherd_vectorize-transformairherdvectorizeop"><code>transform.air.herd_vectorize</code> (transform::AIRHerdVectorizeOp)<a class="headerlink" href="#transformairherd_vectorize-transformairherdvectorizeop" title="Permanent link">&para;</a></h3>
 <p><em>Vectorize operations inside air.herd operations</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>operation ::= `transform.air.herd_vectorize` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>operation ::= `transform.air.herd_vectorize` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes a handle to air.herd operations and vectorizes the operations
 inside their bodies using the same logic as the AIRHerdVectorizePass. It walks the
@@ -5565,7 +5565,7 @@ for hardware accelerators with limited address computation capabilities.</p>
 </table>
 <h3 id="transformairlinalg_promote-transformlinalgpromoteop"><code>transform.air.linalg_promote</code> (transform::LinalgPromoteOp)<a class="headerlink" href="#transformairlinalg_promote-transformlinalgpromoteop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>operation ::= `transform.air.linalg_promote` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>operation ::= `transform.air.linalg_promote` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Promotes the specified operands of the target into a separate memory buffer
 using the <code>mlir::linalg::promoteSubViews</code> utility.</p>
@@ -5690,7 +5690,7 @@ performed with the <code>transform::tileToForallOpImpl</code> so that an
 <h3 id="transformairlinalg_to_library_call-transformlinalgtolibrarycallop"><code>transform.air.linalg_to_library_call</code> (transform::LinalgToLibraryCallOp)<a class="headerlink" href="#transformairlinalg_to_library_call-transformlinalgtolibrarycallop" title="Permanent link">&para;</a></h3>
 <p><em>Convert a linalg op to a function call (library call)</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>operation ::= `transform.air.linalg_to_library_call` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>operation ::= `transform.air.linalg_to_library_call` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Replaces a linalg op with a call to a function. If the <code>function_name</code>
 attribute is provided, it is used as the function name. Otherwise, the
@@ -5810,7 +5810,7 @@ the transformation will:
 <h3 id="transformairoverride_memref_memory_space-transformoverridememrefmemoryspaceop"><code>transform.air.override_memref_memory_space</code> (transform::OverrideMemRefMemorySpaceOp)<a class="headerlink" href="#transformairoverride_memref_memory_space-transformoverridememrefmemoryspaceop" title="Permanent link">&para;</a></h3>
 <p><em>Override memref memory spaces within a target operation scope</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>operation ::= `transform.air.override_memref_memory_space` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>operation ::= `transform.air.override_memref_memory_space` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Overrides the memory space of all <code>memref.alloc</code> operations within the target
 operation to the specified <code>memory_space</code> value. The scope is inferred from
@@ -5880,7 +5880,7 @@ hierarchy levels by invoking the op multiple times with different targets.</p>
 </table>
 <h3 id="transformairpar_to_herd-transformpartoherdop"><code>transform.air.par_to_herd</code> (transform::ParToHerdOp)<a class="headerlink" href="#transformairpar_to_herd-transformpartoherdop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>operation ::= `transform.air.par_to_herd` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>operation ::= `transform.air.par_to_herd` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Transform a <code>scf.parallel</code> operation into a <code>air.herd</code> operation.
 If the <code>scf.parallel</code> operation has more than two dimensions, then only
@@ -5926,7 +5926,7 @@ herd. Returns the new <code>air.herd</code> operation.</p>
 </table>
 <h3 id="transformairpar_to_launch-transformpartolaunchop"><code>transform.air.par_to_launch</code> (transform::ParToLaunchOp)<a class="headerlink" href="#transformairpar_to_launch-transformpartolaunchop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>operation ::= `transform.air.par_to_launch` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>operation ::= `transform.air.par_to_launch` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Transform a <code>scf.parallel</code> operation into a <code>air.launch</code> operation.
 Returns the new <code>air.launch</code> operation.</p>
@@ -5970,7 +5970,7 @@ Returns the new <code>air.launch</code> operation.</p>
 </table>
 <h3 id="transformairpar_to_segment-transformpartosegmentop"><code>transform.air.par_to_segment</code> (transform::ParToSegmentOp)<a class="headerlink" href="#transformairpar_to_segment-transformpartosegmentop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>operation ::= `transform.air.par_to_segment` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>operation ::= `transform.air.par_to_segment` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Transform a <code>scf.parallel</code> operation into a <code>air.segment</code> operation.
 Returns the new <code>air.segment</code> operation.</p>
@@ -6014,7 +6014,7 @@ Returns the new <code>air.segment</code> operation.</p>
 </table>
 <h3 id="transformairpipeline_reduce-transformpipelinereduceop"><code>transform.air.pipeline_reduce</code> (transform::PipelineReduceOp)<a class="headerlink" href="#transformairpipeline_reduce-transformpipelinereduceop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a>operation ::= `transform.air.pipeline_reduce` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a>operation ::= `transform.air.pipeline_reduce` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Experimental</p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code>, <code>TransformEachOpTrait</code></p>
@@ -6209,7 +6209,7 @@ efficient reductions when the reduction dimensions are contiguous and innermost.
 <h3 id="transformairvector_type_cast-transformvectortypecastop"><code>transform.air.vector_type_cast</code> (transform::VectorTypeCastOp)<a class="headerlink" href="#transformairvector_type_cast-transformvectortypecastop" title="Permanent link">&para;</a></h3>
 <p><em>Cast vector operands and results of vector operations to a user-provided datatype</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a>operation ::= `transform.air.vector_type_cast` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a>operation ::= `transform.air.vector_type_cast` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes a handle to vector dialect operations and casts input operands
 and/or results of vector type to a user-provided datatype. By default, if none of 
