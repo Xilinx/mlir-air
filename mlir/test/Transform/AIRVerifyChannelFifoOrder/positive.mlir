@@ -223,3 +223,84 @@ module {
     return
   }
 }
+
+// -----
+// Endpoints under unrelated conditions. No ordering is required: on the arm
+// that does not run, a conditional's token result carries whatever the other
+// arm yields, which says nothing about the endpoint inside.
+module {
+  air.channel @channel_7 [1]
+  func.func @pos_distinct_guards(%p0: i1, %p1: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp0=%p0, %lp1=%p1) : i1, i1 {
+      air.segment @seg args(%q0=%lp0, %q1=%lp1) : i1, i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %i0 = scf.if %q0 -> (!air.async.token) {
+          %g0 = air.channel.get async [%t0] @channel_7[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g0 : !air.async.token
+        } else {
+          scf.yield %w : !air.async.token
+        }
+        %i1 = scf.if %q1 -> (!air.async.token) {
+          %g1 = air.channel.get async [%t1] @channel_7[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        } else {
+          scf.yield %w : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+// The path from the second endpoint to the first runs through the arm of an
+// affine.if. Reading the branch op's dependency list alone would stop at the
+// branch, since an affine.if's operands are index values.
+#set2 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
+module {
+  air.channel @channel_8 [1, 1] {broadcast_shape = [1, 2]}
+  func.func @pos_path_through_affine_if_arm() {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        %c2_0 = arith.constant 2 : index
+        air.herd @h tile (%x, %y) in (%sx=%c1_0, %sy=%c2_0) {
+          %t0, %r0 = air.execute -> (memref<8xi32, 2 : i32>) {
+            %m = memref.alloc() : memref<8xi32, 2 : i32>
+            air.execute_terminator %m : memref<8xi32, 2 : i32>
+          }
+          %t1, %r1 = air.execute -> (memref<8xi32, 2 : i32>) {
+            %m = memref.alloc() : memref<8xi32, 2 : i32>
+            air.execute_terminator %m : memref<8xi32, 2 : i32>
+          }
+          %w = air.wait_all async
+          %i0 = affine.if #set2()[%x, %y] -> !air.async.token {
+            %g0 = air.channel.get async [%t0] @channel_8[%x, %y] (%r0[] [] []) : (memref<8xi32, 2 : i32>)
+            affine.yield %g0 : !air.async.token
+          } else {
+            affine.yield %w : !air.async.token
+          }
+          %i1 = affine.if #set2()[%x, %y] -> !air.async.token {
+            %j = air.wait_all async [%i0]
+            %g1 = air.channel.get async [%t1, %j] @channel_8[%x, %y] (%r1[] [] []) : (memref<8xi32, 2 : i32>)
+            affine.yield %g1 : !air.async.token
+          } else {
+            affine.yield %w : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}

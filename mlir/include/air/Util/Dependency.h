@@ -71,22 +71,38 @@ ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan);
 bool sameChannelEndpoint(const ChannelEndpointKey &a,
                          const ChannelEndpointKey &b);
 
-// The chain of sequential scopes `chan` participates in, innermost first. Each
-// entry pairs a block with the token carrying `chan`'s completion into that
-// block.
-//
-// affine.if / scf.if bodies are guarded straight-line code in the enclosing
-// scope, so the chain walks out through them, promoting the token to the
-// conditional's token result: that result, not the guarded op's own token, is
-// what an op outside the region can name. A loop body is a scope of its own, so
-// the chain stops at the first non-conditional parent.
-void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
-                          SmallVectorImpl<std::pair<Block *, Value>> &chain);
+// One scope a channel op participates in: the block, the token carrying the
+// op's completion into that block, and the conditional arms crossed to reach it
+// as (conditional op, region number) pairs.
+struct ChannelScopeLevel {
+  Block *block;
+  Value token;
+  SmallVector<std::pair<Operation *, unsigned>> guards;
+};
 
-// Add a dependency from each channel op under `root` to the nearest preceding
-// op addressing the same slot in the same sequential scope. Idempotent, and
-// cheap on already-ordered IR, so it is safe to re-run after any rewrite that
-// creates or replaces channel ops.
+// The chain of sequential scopes `chan` participates in, innermost first.
+//
+// affine.if / scf.if / scf.index_switch arms are guarded straight-line code in
+// the enclosing scope, so the chain walks out through them, promoting the token
+// to the conditional's token result: that result, not the guarded op's own
+// token, is what an op outside the region can name. A loop body is a scope of
+// its own, so the chain stops at the first non-conditional parent.
+void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
+                          SmallVectorImpl<ChannelScopeLevel> &chain);
+
+// Do two endpoints sit under the same guard, and so execute together?
+//
+// Endpoints under unrelated conditions must not be ordered through a
+// conditional's token result. On the arm that does not run, that result carries
+// whatever the other arm yields, which says nothing about the endpoint inside
+// -- so the ordering would be fictional. Requiring the same guard keeps every
+// published token one the endpoint actually stands behind.
+//
+// Arms of one conditional are never the same guard: they are mutually
+// exclusive, and no order between them is needed or expressible.
+bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
+                    ArrayRef<std::pair<Operation *, unsigned>> b);
+
 void enforceChannelFifoOrder(Operation *root);
 void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,

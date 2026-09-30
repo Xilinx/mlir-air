@@ -7,10 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Util/Dependency.h"
+
 #include "air/Util/Util.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -700,15 +702,56 @@ bool sameChannelEndpoint(const ChannelEndpointKey &a,
   return true;
 }
 
+// Is this op a conditional whose arms are guarded straight-line code?
+static bool isConditionalOp(Operation *op) {
+  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(op);
+}
+
+// Do two conditionals select on the same runtime value?
+static bool sameCondition(Operation *a, Operation *b) {
+  if (a == b)
+    return true;
+  if (auto ifA = dyn_cast<scf::IfOp>(a)) {
+    auto ifB = dyn_cast<scf::IfOp>(b);
+    return ifB && ifA.getCondition() == ifB.getCondition();
+  }
+  if (auto afA = dyn_cast<affine::AffineIfOp>(a)) {
+    auto afB = dyn_cast<affine::AffineIfOp>(b);
+    return afB && afA.getIntegerSet() == afB.getIntegerSet() &&
+           afA.getOperands() == afB.getOperands();
+  }
+  if (auto swA = dyn_cast<scf::IndexSwitchOp>(a)) {
+    auto swB = dyn_cast<scf::IndexSwitchOp>(b);
+    return swB && swA.getArg() == swB.getArg() &&
+           swA.getCases() == swB.getCases();
+  }
+  return false;
+}
+
+bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
+                    ArrayRef<std::pair<Operation *, unsigned>> b) {
+  if (a.size() != b.size())
+    return false;
+  for (auto [ga, gb] : llvm::zip(a, b)) {
+    // Different arms of the same condition never run together.
+    if (ga.second != gb.second)
+      return false;
+    if (!sameCondition(ga.first, gb.first))
+      return false;
+  }
+  return true;
+}
+
 void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
-                          SmallVectorImpl<std::pair<Block *, Value>> &chain) {
+                          SmallVectorImpl<ChannelScopeLevel> &chain) {
   Block *block = chan->getBlock();
   Value token = directToken;
-  chain.push_back({block, token});
+  SmallVector<std::pair<Operation *, unsigned>> guards;
+  chain.push_back({block, token, guards});
   while (Operation *parent = block->getParentOp()) {
-    if (!isa<affine::AffineIfOp, scf::IfOp>(parent))
+    if (!isConditionalOp(parent))
       break;
-    // Both branches of an async guard yield a token. Without one there is no
+    // Both arms of an async conditional yield a token. Without one there is no
     // value an op outside the region could name, so the walk stops here.
     Value promoted;
     for (Value res : parent->getResults())
@@ -718,63 +761,61 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
       }
     if (!promoted)
       break;
+    guards.push_back({parent, block->getParent()->getRegionNumber()});
     token = promoted;
     block = parent->getBlock();
-    chain.push_back({block, token});
+    chain.push_back({block, token, guards});
   }
 }
 
 void enforceChannelFifoOrder(Operation *root) {
-  // Per scope block, the token of the most recent endpoint at each slot.
-  // walk() runs in program order, so linking each op to its last-seen match
-  // builds the nearest-preceding chain in one pass.
+  // Per scope block, the token of the most recent endpoint at each slot, with
+  // the guard chain that token stands behind. walk() runs in program order, so
+  // linking each op to its last-seen match builds the nearest-preceding chain
+  // in one pass.
   //
   // Publishing at every scope in the chain and looking up innermost-first is
-  // what lets a nested endpoint pair with a sibling at any enclosing
-  // conditional level, while a loop boundary keeps the two apart.
-  llvm::DenseMap<Block *, SmallVector<std::pair<ChannelEndpointKey, Value>>>
-      lastSeen;
+  // what lets a nested endpoint pair with a sibling under the same guard, while
+  // a loop boundary keeps the two apart.
+  struct Slot {
+    ChannelEndpointKey key;
+    Value token;
+    SmallVector<std::pair<Operation *, unsigned>> guards;
+  };
+  llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
   root->walk([&](air::ChannelInterface chan) {
     auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
     if (!async || !async.getAsyncToken())
       return;
     ChannelEndpointKey key = getChannelEndpointKey(chan);
-    SmallVector<std::pair<Block *, Value>> chain;
+    SmallVector<ChannelScopeLevel> chain;
     getChannelScopeChain(chan, async.getAsyncToken(), chain);
 
-    auto findSlot = [&](Block *block) -> Value * {
-      auto it = lastSeen.find(block);
+    auto findSlot = [&](const ChannelScopeLevel &level) -> Slot * {
+      auto it = lastSeen.find(level.block);
       if (it == lastSeen.end())
         return nullptr;
-      for (auto &entry : it->second)
-        if (sameChannelEndpoint(entry.first, key))
-          return &entry.second;
+      for (auto &slot : it->second)
+        if (sameChannelEndpoint(slot.key, key) &&
+            sameGuardChain(slot.guards, level.guards))
+          return &slot;
       return nullptr;
     };
 
     // Link to the nearest preceding match, innermost scope outward.
-    for (auto &level : chain) {
-      Value *slot = findSlot(level.first);
-      if (!slot)
-        continue;
-      // Match defined by an ancestor of `chan`: the earlier endpoint is in the
-      // other branch of a conditional `chan` sits inside. Mutually exclusive,
-      // nothing to order, and naming the ancestor's result would be a
-      // self-dependency. Outer levels reach the same ancestor, so give up.
-      if (Operation *def = slot->getDefiningOp())
-        if (def->isAncestor(chan.getOperation()))
-          break;
-      addAsyncDependencyIfNew(chan.getOperation(), *slot);
-      break;
-    }
+    for (auto &level : chain)
+      if (Slot *slot = findSlot(level)) {
+        addAsyncDependencyIfNew(chan.getOperation(), slot->token);
+        break;
+      }
 
     // Publish at every scope level, so a later endpoint at any of them matches.
     for (auto &level : chain) {
-      if (Value *slot = findSlot(level.first)) {
-        *slot = level.second;
+      if (Slot *slot = findSlot(level)) {
+        slot->token = level.token;
         continue;
       }
-      lastSeen[level.first].push_back({key, level.second});
+      lastSeen[level.block].push_back({key, level.token, level.guards});
     }
   });
 }

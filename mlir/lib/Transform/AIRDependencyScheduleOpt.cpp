@@ -4438,13 +4438,31 @@ public:
 // Does `op` transitively depend on `target`? Walks dependency lists by value,
 // not op-to-op: `target` may be a conditional's token result, which no channel
 // op defines.
+//
+// Branch ops are also entered through the tokens their arms yield. A dependency
+// list alone stops at the branch: air::getAsyncDependenciesFromOp reports an
+// affine.if's operands, which are index values, so a path reaching `target`
+// from inside an arm would read as no path at all.
 static bool asyncDependsOnValue(Operation *op, Value target,
                                 llvm::SmallPtrSetImpl<Operation *> &visited) {
-  for (Value dep : air::getAsyncDependenciesFromOp(op)) {
+  auto isBranch = [](Operation *o) {
+    return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(o);
+  };
+
+  SmallVector<Value> deps = air::getAsyncDependenciesFromOp(op);
+  if (isBranch(op))
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        if (Operation *term = block.getTerminator())
+          for (Value operand : term->getOperands())
+            if (isa<air::AsyncTokenType>(operand.getType()))
+              deps.push_back(operand);
+
+  for (Value dep : deps) {
     if (dep == target)
       return true;
     Operation *def = dep.getDefiningOp();
-    if (!def || !air::isAsyncOp(def))
+    if (!def || !(air::isAsyncOp(def) || isBranch(def)))
       continue;
     if (!visited.insert(def).second)
       continue;
@@ -4465,10 +4483,13 @@ public:
   AIRVerifyChannelFifoOrder() = default;
 
   void runOnOperation() override {
-    llvm::DenseMap<Block *,
-                   SmallVector<std::pair<air::ChannelEndpointKey,
-                                         std::pair<Value, Operation *>>>>
-        lastSeen;
+    struct Slot {
+      air::ChannelEndpointKey key;
+      Value token;
+      SmallVector<std::pair<Operation *, unsigned>> guards;
+      Operation *op;
+    };
+    llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
     bool failed = false;
 
     getOperation().walk([&](air::ChannelInterface chan) {
@@ -4476,34 +4497,31 @@ public:
       if (!async || !async.getAsyncToken())
         return;
       air::ChannelEndpointKey key = air::getChannelEndpointKey(chan);
-      SmallVector<std::pair<Block *, Value>> chain;
+      SmallVector<air::ChannelScopeLevel> chain;
       air::getChannelScopeChain(chan, async.getAsyncToken(), chain);
 
-      auto findSlot = [&](Block *block) -> std::pair<Value, Operation *> * {
-        auto it = lastSeen.find(block);
+      auto findSlot = [&](const air::ChannelScopeLevel &level) -> Slot * {
+        auto it = lastSeen.find(level.block);
         if (it == lastSeen.end())
           return nullptr;
-        for (auto &entry : it->second)
-          if (air::sameChannelEndpoint(entry.first, key))
-            return &entry.second;
+        for (auto &slot : it->second)
+          if (air::sameChannelEndpoint(slot.key, key) &&
+              air::sameGuardChain(slot.guards, level.guards))
+            return &slot;
         return nullptr;
       };
 
       for (auto &level : chain) {
-        auto *slot = findSlot(level.first);
+        Slot *slot = findSlot(level);
         if (!slot)
           continue;
-        // Mutually exclusive branches of one conditional: nothing to order.
-        if (Operation *def = slot->first.getDefiningOp())
-          if (def->isAncestor(chan.getOperation()))
-            break;
         llvm::SmallPtrSet<Operation *, 16> visited;
-        if (!asyncDependsOnValue(chan.getOperation(), slot->first, visited)) {
+        if (!asyncDependsOnValue(chan.getOperation(), slot->token, visited)) {
           failed = true;
           InFlightDiagnostic diag = chan->emitOpError()
                                     << "addresses the same channel slot as an "
                                        "earlier op but is not ordered after it";
-          diag.attachNote(slot->second->getLoc())
+          diag.attachNote(slot->op->getLoc())
               << "earlier op addressing the same slot";
           diag.attachNote()
               << "ops on one channel share a FIFO and must be totally ordered; "
@@ -4514,12 +4532,13 @@ public:
       }
 
       for (auto &level : chain) {
-        if (auto *slot = findSlot(level.first)) {
-          *slot = {level.second, chan.getOperation()};
+        if (Slot *slot = findSlot(level)) {
+          slot->token = level.token;
+          slot->op = chan.getOperation();
           continue;
         }
-        lastSeen[level.first].push_back(
-            {key, {level.second, chan.getOperation()}});
+        lastSeen[level.block].push_back(
+            {key, level.token, level.guards, chan.getOperation()});
       }
     });
 

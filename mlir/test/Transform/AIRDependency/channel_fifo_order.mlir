@@ -314,3 +314,98 @@ module {
     return
   }
 }
+
+// -----
+
+// Endpoints under unrelated conditions are not ordered. On the arm that does not
+// run, a conditional's token result carries whatever the other arm yields, which
+// says nothing about the endpoint inside -- so an edge through it would be
+// fictional, and would keep the other arm's token live for no reason.
+
+// CHECK-LABEL: func.func @chan_fifo_distinct_guards
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_8
+// CHECK-NOT: air.channel.get async [%{{[a-z_0-9]+}}, %{{[a-z_0-9]+}}] @channel_8
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_8
+
+module {
+  air.channel @channel_8 [1]
+  func.func @chan_fifo_distinct_guards(%p0: i1, %p1: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp0=%p0, %lp1=%p1) : i1, i1 {
+      air.segment @seg args(%q0=%lp0, %q1=%lp1) : i1, i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %i0 = scf.if %q0 -> (!air.async.token) {
+          %g0 = air.channel.get async [%t0] @channel_8[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g0 : !air.async.token
+        } else {
+          scf.yield %w : !air.async.token
+        }
+        %i1 = scf.if %q1 -> (!air.async.token) {
+          %g1 = air.channel.get async [%t1] @channel_8[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        } else {
+          scf.yield %w : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// scf.index_switch arms are conditional scopes like scf.if arms. Endpoints in
+// the same arm of two switches on the same value are ordered against each other.
+
+// CHECK-LABEL: func.func @chan_fifo_index_switch
+// CHECK: %[[S0:.*]] = scf.index_switch
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_9
+// CHECK: scf.index_switch
+// CHECK: air.channel.get async [{{.*}}%[[S0]]{{.*}}] @channel_9
+
+module {
+  air.channel @channel_9 [1]
+  func.func @chan_fifo_index_switch(%arg: index) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%larg=%arg) : index {
+      air.segment @seg args(%sel=%larg) : index {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %s0 = scf.index_switch %sel -> !air.async.token
+        case 0 {
+          %g0 = air.channel.get async [%t0] @channel_9[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g0 : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+        %s1 = scf.index_switch %sel -> !air.async.token
+        case 0 {
+          %g1 = air.channel.get async [%t1] @channel_9[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}

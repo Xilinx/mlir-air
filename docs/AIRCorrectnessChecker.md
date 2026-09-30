@@ -451,14 +451,20 @@ rejects IR the emitter is content to produce:
 
 | Construct | Treated as |
 |-----------|-----------|
-| `affine.if` / `scf.if` region | Same scope; ordering names the region op's token result |
-| Opposite branches of one conditional | Mutually exclusive; no ordering required |
+| `affine.if` / `scf.if` / `scf.index_switch` arm | Same scope; ordering names the conditional's token result |
+| Endpoints under unrelated conditions | No ordering required, and none is expressible |
 | Loop body | New scope; endpoints in distinct loops unordered |
 | Indices not provably equal | Distinct slots; no ordering required |
 
+Two endpoints reached through conditional arms pair only under the same guard.
+The token result of a conditional that did not run carries whatever the other
+arm yields, so an edge through it would order nothing. Opposite arms of one
+conditional fall out of the same rule.
+
 The requirement states reachability, not adjacency, so the checker accepts a
-transitive path. The emitter nonetheless adds a direct edge, because a path
-routed through ops on other channels does not survive compilation (see 2.5).
+transitive path, including one that runs through the arm of a conditional. The
+emitter nonetheless adds a direct edge, because a path routed through ops on
+other channels does not survive compilation.
 
 ### 8.3 Why a checker and not just an emitter
 

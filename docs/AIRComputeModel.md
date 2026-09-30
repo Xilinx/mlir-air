@@ -808,12 +808,16 @@ the shared FIFO rather than the data.
 - Program order does not establish the ordering. Within an async region the token graph is
   the only ordering the IR carries, so two same-slot endpoints with disjoint dependency
   lists are unordered, and which transfer each endpoint consumes is undefined.
-- A conditional region does not open a new sequential scope. An `affine.if` / `scf.if` body
-  is guarded straight-line code belonging to the enclosing scope, so endpoints in sibling
-  conditionals must still be ordered; the edge names the conditional's token result rather
-  than the guarded op's own token. Endpoints in opposite branches of one conditional are
-  mutually exclusive and require no ordering. A loop body does open a new scope, so
-  endpoints in distinct loops are not ordered against each other.
+- A conditional region does not open a new sequential scope. An `affine.if` / `scf.if` /
+  `scf.index_switch` arm is guarded straight-line code belonging to the enclosing scope, so
+  endpoints in sibling conditionals must still be ordered; the edge names the conditional's
+  token result rather than the guarded op's own token. A loop body does open a new scope,
+  so endpoints in distinct loops are not ordered against each other.
+- Two endpoints reached through conditional arms are ordered only when they sit under the
+  same guard. On the arm that does not run, a conditional's token result carries whatever
+  the other arm yields, which says nothing about the endpoint inside; ordering through it
+  would be fictional. Endpoints under unrelated conditions, including opposite arms of one
+  conditional, are therefore left unordered.
 - Indices that are not provably equal address distinct slots and require no ordering.
   Treating unknown indices as equal instead would serialize independent sub-channels.
 

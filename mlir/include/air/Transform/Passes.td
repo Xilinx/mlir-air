@@ -1202,10 +1202,16 @@ def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp
     Shares air::enforceChannelFifoOrder with the earlier emitters, so the
     definition of "same slot" cannot drift. Idempotent.
 
-    A conditional region is not a scope boundary: an affine.if / scf.if body is
-    guarded straight-line code in the enclosing scope, so endpoints in sibling
-    conditionals are ordered through the conditional's token result. A loop body
-    is a scope boundary, so endpoints in distinct loops are left unordered.
+    A conditional arm is not a scope boundary: an affine.if / scf.if /
+    scf.index_switch arm is guarded straight-line code in the enclosing scope,
+    so endpoints in sibling conditionals are ordered through the conditional's
+    token result. A loop body is a scope boundary, so endpoints in distinct
+    loops are left unordered.
+
+    Endpoints reached through conditional arms pair only under the same guard.
+    On the arm that does not run, a conditional's token result carries whatever
+    the other arm yields, so an edge through it would order nothing -- and would
+    keep that other arm's token live for no reason.
   }];
 }
 
