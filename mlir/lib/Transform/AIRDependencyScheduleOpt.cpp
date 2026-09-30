@@ -4394,43 +4394,8 @@ public:
 private:
 };
 
-// Endpoint identity of an air.channel.put/get: which channel, which direction,
-// and the per-dimension indices (kept as both SSA Values and constant folds so
-// callers can pick their own equality/independence policy). Shared by the FIFO
-// ordering and loop-isolation passes below.
-struct ChannelEndpointKey {
-  StringRef name;
-  bool isPut;
-  SmallVector<Value> indices;
-  SmallVector<std::optional<int64_t>> constIndices;
-};
-
-static ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan) {
-  ChannelEndpointKey k;
-  k.name = chan.getChanName();
-  k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
-  for (auto idx : chan.getIndices()) {
-    k.indices.push_back(idx);
-    k.constIndices.push_back(getConstantIntValue(idx));
-  }
-  return k;
-}
-
-// FIFO policy: two endpoints address the same channel slot iff same channel,
-// same direction, same index arity, and every index provably equal. Unknown
-// (non-constant, non-identical) indices are treated as NOT equal so no false
-// ordering edge is added.
-static bool sameChannelEndpoint(const ChannelEndpointKey &a,
-                                const ChannelEndpointKey &b) {
-  if (a.isPut != b.isPut || a.name != b.name)
-    return false;
-  if (a.indices.size() != b.indices.size())
-    return false;
-  for (auto it : llvm::zip(a.indices, b.indices))
-    if (!areEqualIndices(std::get<0>(it), std::get<1>(it)))
-      return false;
-  return true;
-}
+// ChannelEndpointKey and friends live in air/Util/Dependency.h: every emitter
+// of FIFO ordering shares one definition of "same channel slot".
 
 // Isolation policy: same-direction endpoints on the same channel whose indices
 // are not provably distinct constitute an ordering resource dependency. Unknown
@@ -4450,16 +4415,15 @@ static bool channelEndpointsResourceDep(const ChannelEndpointKey &a,
   return true;
 }
 
-// A single air.channel is an ordered FIFO. air-dependency only orders channel
-// ops that share a buffer, so ops on the same channel + same indices + same
-// direction that touch different buffers (e.g. two phases temporally reusing
-// one channel) are left unordered and lower to racing BD chains. This pass adds
-// a direct async dependency from each such op to the nearest preceding matching
-// op in the same block. It runs late (after channel fusion collapses loop nests
-// into single ops), so the deps are direct op-to-op edges that survive later
-// canonicalization (loop-carried ordering deps do not). It only orders
-// same-block ops (post-fusion collapsed channel ops); it does not order ops
-// still nested in distinct loops.
+// Re-establishes channel endpoint ordering ("Endpoint ordering requirement" in
+// docs/AIRComputeModel.md) late in the pipeline.
+//
+// Earlier emitters order the endpoints they can see, but rewrites that replace
+// channel ops leave the replacements ordered only transitively, and a
+// transitive path through other channels is made of false dependencies that
+// canonicalization is free to delete. Re-running here restores direct edges.
+//
+// Idempotent, so running it when nothing is missing costs only the walk.
 class AIREnforceChannelFifoOrder
     : public xilinx::air::impl::AIREnforceChannelFifoOrderBase<
           AIREnforceChannelFifoOrder> {
@@ -4467,33 +4431,100 @@ public:
   AIREnforceChannelFifoOrder() = default;
 
   void runOnOperation() override {
-    // Per block, remember the async token of the most recent channel op for
-    // each distinct endpoint. walk() visits ops in program order within a
-    // block, so linking each op to its last-seen matching token yields a
-    // nearest-preceding FIFO chain in a single O(N) pass. Keying by block
-    // confines ordering to same-block siblings (the post-fusion collapsed
-    // channel ops); ops still nested in distinct loops are out of scope.
-    llvm::DenseMap<Block *, SmallVector<std::pair<ChannelEndpointKey, Value>>>
+    air::enforceChannelFifoOrder(getOperation());
+  }
+};
+
+// Does `op` transitively depend on `target`? Walks dependency lists by value,
+// not op-to-op: `target` may be a conditional's token result, which no channel
+// op defines.
+static bool asyncDependsOnValue(Operation *op, Value target,
+                                llvm::SmallPtrSetImpl<Operation *> &visited) {
+  for (Value dep : air::getAsyncDependenciesFromOp(op)) {
+    if (dep == target)
+      return true;
+    Operation *def = dep.getDefiningOp();
+    if (!def || !air::isAsyncOp(def))
+      continue;
+    if (!visited.insert(def).second)
+      continue;
+    if (asyncDependsOnValue(def, target, visited))
+      return true;
+  }
+  return false;
+}
+
+// Mirrors air::enforceChannelFifoOrder's traversal, testing reachability where
+// the emitter adds an edge. Sharing the scope chain and the slot predicate is
+// what keeps checker and emitter from disagreeing about which endpoints need
+// ordering.
+class AIRVerifyChannelFifoOrder
+    : public xilinx::air::impl::AIRVerifyChannelFifoOrderBase<
+          AIRVerifyChannelFifoOrder> {
+public:
+  AIRVerifyChannelFifoOrder() = default;
+
+  void runOnOperation() override {
+    llvm::DenseMap<Block *,
+                   SmallVector<std::pair<air::ChannelEndpointKey,
+                                         std::pair<Value, Operation *>>>>
         lastSeen;
+    bool failed = false;
+
     getOperation().walk([&](air::ChannelInterface chan) {
       auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
       if (!async || !async.getAsyncToken())
         return;
-      ChannelEndpointKey key = getChannelEndpointKey(chan);
-      auto &bucket = lastSeen[chan->getBlock()];
-      Value *slot = nullptr;
-      for (auto &entry : bucket)
-        if (sameChannelEndpoint(entry.first, key)) {
-          slot = &entry.second;
-          break;
+      air::ChannelEndpointKey key = air::getChannelEndpointKey(chan);
+      SmallVector<std::pair<Block *, Value>> chain;
+      air::getChannelScopeChain(chan, async.getAsyncToken(), chain);
+
+      auto findSlot = [&](Block *block) -> std::pair<Value, Operation *> * {
+        auto it = lastSeen.find(block);
+        if (it == lastSeen.end())
+          return nullptr;
+        for (auto &entry : it->second)
+          if (air::sameChannelEndpoint(entry.first, key))
+            return &entry.second;
+        return nullptr;
+      };
+
+      for (auto &level : chain) {
+        auto *slot = findSlot(level.first);
+        if (!slot)
+          continue;
+        // Mutually exclusive branches of one conditional: nothing to order.
+        if (Operation *def = slot->first.getDefiningOp())
+          if (def->isAncestor(chan.getOperation()))
+            break;
+        llvm::SmallPtrSet<Operation *, 16> visited;
+        if (!asyncDependsOnValue(chan.getOperation(), slot->first, visited)) {
+          failed = true;
+          InFlightDiagnostic diag = chan->emitOpError()
+                                    << "addresses the same channel slot as an "
+                                       "earlier op but is not ordered after it";
+          diag.attachNote(slot->second->getLoc())
+              << "earlier op addressing the same slot";
+          diag.attachNote()
+              << "ops on one channel share a FIFO and must be totally ordered; "
+                 "see 'Endpoint ordering requirement' in "
+                 "docs/AIRComputeModel.md";
         }
-      if (slot) {
-        addAsyncDependencyIfNew(chan.getOperation(), *slot);
-        *slot = async.getAsyncToken();
-      } else {
-        bucket.push_back({std::move(key), async.getAsyncToken()});
+        break;
+      }
+
+      for (auto &level : chain) {
+        if (auto *slot = findSlot(level.first)) {
+          *slot = {level.second, chan.getOperation()};
+          continue;
+        }
+        lastSeen[level.first].push_back(
+            {key, {level.second, chan.getOperation()}});
       }
     });
+
+    if (failed)
+      signalPassFailure();
   }
 };
 
@@ -8510,6 +8541,10 @@ std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
 
 std::unique_ptr<Pass> createAIREnforceChannelFifoOrder() {
   return std::make_unique<AIREnforceChannelFifoOrder>();
+}
+
+std::unique_ptr<Pass> createAIRVerifyChannelFifoOrder() {
+  return std::make_unique<AIRVerifyChannelFifoOrder>();
 }
 
 std::unique_ptr<Pass> createAIRFuseChannels() {

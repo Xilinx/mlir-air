@@ -420,6 +420,16 @@ public:
         }
       });
     }
+
+    // 5th traversal: channel endpoint ordering.
+    //
+    // Endpoints on one channel slot share a FIFO and must be ordered even when
+    // they write unrelated buffers, which the memref tracing above cannot see.
+    //
+    // Runs after the transitive reduction, which has no notion of the shared
+    // channel and would drop these edges, and after loop-carried deps, which
+    // supply the iter_args that in-loop scopes hang off.
+    air::enforceChannelFifoOrder(module);
   }
 
 private:

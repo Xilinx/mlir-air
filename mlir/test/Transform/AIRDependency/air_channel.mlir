@@ -142,20 +142,26 @@ module {
 
 // -----
 
+// Each pair of gets addresses one channel slot, as does each pair of puts: same
+// channel, same (empty) indices, same direction. The pairs touch different
+// buffers, so no memref dependency relates them, but they share a FIFO and the
+// second of each pair carries an edge to the first. Matched permissively
+// because dependency list order is not part of the contract.
+
 // CHECK: scf.for {{.*}}iter_args(%[[VAL0:.*]] = %{{.*}})
 // CHECK: %[[VAL1:.*]] = air.channel.get async [%[[VAL0]]]
-// CHECK: %[[VAL2:.*]] = air.channel.get async [%[[VAL0]]]
+// CHECK: air.channel.get async [{{.*}}%[[VAL1]]{{.*}}]
 // CHECK: scf.for {{.*}}iter_args(%[[VAL3:.*]] = %{{.*}})
-// CHECK: air.channel.put async [%[[VAL3]]]
-// CHECK: air.channel.put async [%[[VAL3]]]
+// CHECK: %[[VAL4:.*]] = air.channel.put async [%[[VAL3]]]
+// CHECK: air.channel.put async [{{.*}}%[[VAL4]]{{.*}}]
 // CHECK: scf.yield
 
 // CHECK: scf.for {{.*}}iter_args(%[[VAL6:.*]] = %{{.*}})
 // CHECK: %[[VAL7:.*]] = air.channel.get async [%[[VAL6]]]
-// CHECK: %[[VAL8:.*]] = air.channel.get async [%[[VAL6]]]
+// CHECK: air.channel.get async [{{.*}}%[[VAL7]]{{.*}}]
 // CHECK: scf.for {{.*}}iter_args(%[[VAL9:.*]] = %{{.*}})
-// CHECK: air.channel.put async [%[[VAL9]]]
-// CHECK: air.channel.put async [%[[VAL9]]]
+// CHECK: %[[VAL10:.*]] = air.channel.put async [%[[VAL9]]]
+// CHECK: air.channel.put async [{{.*}}%[[VAL10]]{{.*}}]
 // CHECK: scf.yield
 
 #map = affine_map<()[s0] -> (s0 * 96)>

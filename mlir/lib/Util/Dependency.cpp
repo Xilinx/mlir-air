@@ -673,6 +673,112 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     op->emitOpError("unknown async op");
 }
 
+//===----------------------------------------------------------------------===//
+// Channel endpoint identity and FIFO ordering
+//===----------------------------------------------------------------------===//
+
+ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan) {
+  ChannelEndpointKey k;
+  k.name = chan.getChanName();
+  k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+  for (auto idx : chan.getIndices()) {
+    k.indices.push_back(idx);
+    k.constIndices.push_back(getConstantIntValue(idx));
+  }
+  return k;
+}
+
+bool sameChannelEndpoint(const ChannelEndpointKey &a,
+                         const ChannelEndpointKey &b) {
+  if (a.isPut != b.isPut || a.name != b.name)
+    return false;
+  if (a.indices.size() != b.indices.size())
+    return false;
+  for (auto it : llvm::zip(a.indices, b.indices))
+    if (!areEqualIndices(std::get<0>(it), std::get<1>(it)))
+      return false;
+  return true;
+}
+
+void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
+                          SmallVectorImpl<std::pair<Block *, Value>> &chain) {
+  Block *block = chan->getBlock();
+  Value token = directToken;
+  chain.push_back({block, token});
+  while (Operation *parent = block->getParentOp()) {
+    if (!isa<affine::AffineIfOp, scf::IfOp>(parent))
+      break;
+    // Both branches of an async guard yield a token. Without one there is no
+    // value an op outside the region could name, so the walk stops here.
+    Value promoted;
+    for (Value res : parent->getResults())
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        promoted = res;
+        break;
+      }
+    if (!promoted)
+      break;
+    token = promoted;
+    block = parent->getBlock();
+    chain.push_back({block, token});
+  }
+}
+
+void enforceChannelFifoOrder(Operation *root) {
+  // Per scope block, the token of the most recent endpoint at each slot.
+  // walk() runs in program order, so linking each op to its last-seen match
+  // builds the nearest-preceding chain in one pass.
+  //
+  // Publishing at every scope in the chain and looking up innermost-first is
+  // what lets a nested endpoint pair with a sibling at any enclosing
+  // conditional level, while a loop boundary keeps the two apart.
+  llvm::DenseMap<Block *, SmallVector<std::pair<ChannelEndpointKey, Value>>>
+      lastSeen;
+  root->walk([&](air::ChannelInterface chan) {
+    auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
+    if (!async || !async.getAsyncToken())
+      return;
+    ChannelEndpointKey key = getChannelEndpointKey(chan);
+    SmallVector<std::pair<Block *, Value>> chain;
+    getChannelScopeChain(chan, async.getAsyncToken(), chain);
+
+    auto findSlot = [&](Block *block) -> Value * {
+      auto it = lastSeen.find(block);
+      if (it == lastSeen.end())
+        return nullptr;
+      for (auto &entry : it->second)
+        if (sameChannelEndpoint(entry.first, key))
+          return &entry.second;
+      return nullptr;
+    };
+
+    // Link to the nearest preceding match, innermost scope outward.
+    for (auto &level : chain) {
+      Value *slot = findSlot(level.first);
+      if (!slot)
+        continue;
+      // Match defined by an ancestor of `chan`: the earlier endpoint is in the
+      // other branch of a conditional `chan` sits inside. Mutually exclusive,
+      // nothing to order, and naming the ancestor's result would be a
+      // self-dependency. Outer levels reach the same ancestor, so give up.
+      if (Operation *def = slot->getDefiningOp())
+        if (def->isAncestor(chan.getOperation()))
+          break;
+      addAsyncDependencyIfNew(chan.getOperation(), *slot);
+      break;
+    }
+
+    // Publish at every scope level, so a later endpoint at any of them matches.
+    for (auto &level : chain) {
+      if (Value *slot = findSlot(level.first)) {
+        *slot = level.second;
+        continue;
+      }
+      lastSeen[level.first].push_back({key, level.second});
+    }
+  });
+}
+
 bool isAsyncOp(Operation *op) {
   if (!op)
     return false;

@@ -41,6 +41,53 @@ namespace air {
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1);
 // Mixed static/dynamic overload: a null entry still means "whole memref".
 bool areEqualIndices(mlir::OpFoldResult index_0, mlir::OpFoldResult index_1);
+
+//===----------------------------------------------------------------------===//
+// Channel endpoint identity and FIFO ordering
+//
+// A channel is an ordered FIFO, so ops addressing the same slot must be totally
+// ordered by dependency tokens. The ordering constrains the FIFO, not the data,
+// and holds for endpoints writing unrelated buffers. The memref tracing
+// elsewhere in this header therefore cannot derive it.
+//
+// See "Endpoint ordering requirement" in docs/AIRComputeModel.md.
+//===----------------------------------------------------------------------===//
+
+// Which channel, which direction, and the per-dimension indices (kept as both
+// SSA Values and constant folds so callers can pick their own equality policy).
+struct ChannelEndpointKey {
+  StringRef name;
+  bool isPut;
+  SmallVector<Value> indices;
+  SmallVector<std::optional<int64_t>> constIndices;
+};
+
+ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan);
+
+// FIFO policy: two endpoints address the same channel slot iff same channel,
+// same direction, same index arity, and every index provably equal. Unknown
+// (non-constant, non-identical) indices are treated as NOT equal so no false
+// ordering edge is added.
+bool sameChannelEndpoint(const ChannelEndpointKey &a,
+                         const ChannelEndpointKey &b);
+
+// The chain of sequential scopes `chan` participates in, innermost first. Each
+// entry pairs a block with the token carrying `chan`'s completion into that
+// block.
+//
+// affine.if / scf.if bodies are guarded straight-line code in the enclosing
+// scope, so the chain walks out through them, promoting the token to the
+// conditional's token result: that result, not the guarded op's own token, is
+// what an op outside the region can name. A loop body is a scope of its own, so
+// the chain stops at the first non-conditional parent.
+void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
+                          SmallVectorImpl<std::pair<Block *, Value>> &chain);
+
+// Add a dependency from each channel op under `root` to the nearest preceding
+// op addressing the same slot in the same sequential scope. Idempotent, and
+// cheap on already-ordered IR, so it is safe to re-run after any rewrite that
+// creates or replaces channel ops.
+void enforceChannelFifoOrder(Operation *root);
 void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);

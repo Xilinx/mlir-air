@@ -1189,19 +1189,44 @@ def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp
   let summary = "Serialize same-channel async ops to preserve FIFO order";
   let constructor = "xilinx::air::createAIREnforceChannelFifoOrder()";
   let description = [{
-    A single air.channel is an ordered FIFO, but air-dependency only orders
-    channel ops that share a buffer. Ops on the same channel + same indices +
-    same direction (put/put or get/get) that touch different buffers (e.g. two
-    phases of a kernel temporally reusing one input/output channel) are left
-    unordered and lower to racing BD chains. This pass adds a direct async
-    dependency from each such op to the nearest preceding matching one in the
-    same block. It runs late (after channel fusion has collapsed loop nests into
-    single ops), so the deps are direct op-to-op edges that survive later
-    canonicalization, unlike loop-carried ordering deps.
+    A channel is an ordered FIFO, so ops addressing the same slot (same channel
+    + same indices + same direction) must be totally ordered even when they
+    touch different buffers. See "Endpoint ordering requirement" in
+    docs/AIRComputeModel.md.
 
-    NOTE: it only orders same-block ops (post-fusion collapsed channel ops); it
-    does not order ops still nested in distinct loops (those would need
-    loop-carried deps, which canonicalize strips).
+    Earlier passes order the endpoints they can see. Rewrites that replace
+    channel ops leave the replacements ordered only transitively, and a
+    transitive path through other channels is made of false dependencies that
+    canonicalization is free to delete. This pass restores direct edges.
+
+    Shares air::enforceChannelFifoOrder with the earlier emitters, so the
+    definition of "same slot" cannot drift. Idempotent.
+
+    A conditional region is not a scope boundary: an affine.if / scf.if body is
+    guarded straight-line code in the enclosing scope, so endpoints in sibling
+    conditionals are ordered through the conditional's token result. A loop body
+    is a scope boundary, so endpoints in distinct loops are left unordered.
+  }];
+}
+
+def AIRVerifyChannelFifoOrder: Pass<"air-verify-channel-fifo-order", "ModuleOp"> {
+  let summary = "Verify that same-slot channel ops are totally ordered";
+  let constructor = "xilinx::air::createAIRVerifyChannelFifoOrder()";
+  let description = [{
+    For every group of ops addressing one channel slot within a sequential
+    scope, each op must transitively depend on its nearest preceding sibling.
+    See "Endpoint ordering requirement" in docs/AIRComputeModel.md.
+
+    Does not modify the IR.
+
+    A missing ordering edge produces neither a diagnostic nor a wrong answer:
+    the NPU backend lowers same-slot endpoints onto one DMA channel as a static
+    BD chain, so an under-constrained program still yields correct hardware.
+    The defect only surfaces once some pass reorders the two endpoints, which
+    is why the ordering needs a checker and not just an emitter.
+
+    To be folded into AIRVerifyProgram as property P5; see
+    docs/AIRCorrectnessChecker.md.
   }];
 }
 
