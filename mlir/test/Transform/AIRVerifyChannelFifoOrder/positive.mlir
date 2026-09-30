@@ -304,3 +304,36 @@ module {
     return
   }
 }
+
+// -----
+// The same shape, but every arm of the branch carries the earlier endpoint, so
+// the later one is ordered after it whichever arm runs.
+module {
+  air.channel @channel_9 [1]
+  func.func @pos_ordering_on_every_arm(%p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp=%p) : i1 {
+      air.segment @seg args(%q=%lp) : i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %g0 = air.channel.get async [%t0] @channel_9[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+        %i = scf.if %q -> (!air.async.token) {
+          %j = air.wait_all async [%g0]
+          scf.yield %j : !air.async.token
+        } else {
+          %k = air.wait_all async [%g0]
+          scf.yield %k : !air.async.token
+        }
+        %g1 = air.channel.get async [%t1, %i] @channel_9[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+      }
+    }
+    return
+  }
+}

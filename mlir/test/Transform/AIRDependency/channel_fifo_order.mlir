@@ -409,3 +409,53 @@ module {
     return
   }
 }
+
+// -----
+
+// A conditional can carry several token results, and the one this endpoint
+// yields need not be the first: rebuildIndexSwitchWithTrailingAsyncToken
+// appends its summary token after the existing results. Promotion has to pick
+// the result the arm yields this endpoint into -- here result #1, not #0 --
+// or the published token says nothing about the endpoint.
+
+// CHECK-LABEL: func.func @chan_fifo_second_token_result
+// CHECK: %[[IF0:.*]]:2 = scf.if
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_10
+// CHECK: scf.if
+// CHECK: air.channel.get async [{{.*}}%[[IF0]]#1{{.*}}] @channel_10
+
+module {
+  air.channel @channel_10 [1]
+  func.func @chan_fifo_second_token_result(%p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp=%p) : i1 {
+      air.segment @seg args(%q=%lp) : i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %i0:2 = scf.if %q -> (!air.async.token, !air.async.token) {
+          %u = air.wait_all async
+          %g0 = air.channel.get async [%t0] @channel_10[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %u, %g0 : !air.async.token, !air.async.token
+        } else {
+          scf.yield %w, %w : !air.async.token, !air.async.token
+        }
+        %i1:2 = scf.if %q -> (!air.async.token, !air.async.token) {
+          %u = air.wait_all async
+          %g1 = air.channel.get async [%t1] @channel_10[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %u, %g1 : !air.async.token, !air.async.token
+        } else {
+          scf.yield %w, %w : !air.async.token, !air.async.token
+        }
+      }
+    }
+    return
+  }
+}

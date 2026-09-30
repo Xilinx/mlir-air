@@ -109,3 +109,40 @@ module {
     return
   }
 }
+
+// -----
+// A branch result carries the earlier endpoint on one arm only. On the other
+// arm it carries an unrelated token, so the later endpoint is not ordered
+// after the earlier one and the verifier must say so.
+module {
+  air.channel @channel_3 [1]
+  func.func @neg_ordering_on_one_arm_only(%p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp=%p) : i1 {
+      air.segment @seg args(%q=%lp) : i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        // expected-note@+1 {{earlier op addressing the same slot}}
+        %g0 = air.channel.get async [%t0] @channel_3[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+        %i = scf.if %q -> (!air.async.token) {
+          %j = air.wait_all async [%g0]
+          scf.yield %j : !air.async.token
+        } else {
+          scf.yield %w : !air.async.token
+        }
+        // expected-error@+2 {{addresses the same channel slot as an earlier op but is not ordered after it}}
+        // expected-note@+1 {{ops on one channel share a FIFO and must be totally ordered}}
+        %g1 = air.channel.get async [%t1, %i] @channel_3[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+      }
+    }
+    return
+  }
+}

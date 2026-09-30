@@ -751,15 +751,24 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
   while (Operation *parent = block->getParentOp()) {
     if (!isConditionalOp(parent))
       break;
-    // Both arms of an async conditional yield a token. Without one there is no
-    // value an op outside the region could name, so the walk stops here.
-    Value promoted;
-    for (Value res : parent->getResults())
-      if (isa<air::AsyncTokenType>(res.getType())) {
-        promoted = res;
-        break;
-      }
-    if (!promoted)
+    // Promote to the result that carries `token` out of this arm, found by
+    // matching the arm's yielded operand. A conditional can have several token
+    // results -- rebuildIndexSwitchWithTrailingAsyncToken appends its summary
+    // token after the existing ones -- so taking the first would publish a
+    // result that says nothing about this endpoint. Where no yielded operand
+    // is `token`, the relationship cannot be established and the walk stops.
+    Operation *term = block->getTerminator();
+    if (!term)
+      break;
+    auto operands = term->getOperands();
+    auto it = llvm::find(operands, token);
+    if (it == operands.end())
+      break;
+    unsigned idx = std::distance(operands.begin(), it);
+    if (idx >= parent->getNumResults())
+      break;
+    Value promoted = parent->getResult(idx);
+    if (!isa<air::AsyncTokenType>(promoted.getType()))
       break;
     guards.push_back({parent, block->getParent()->getRegionNumber()});
     token = promoted;

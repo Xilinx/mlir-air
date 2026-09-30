@@ -4435,41 +4435,75 @@ public:
   }
 };
 
-// Does `op` transitively depend on `target`? Walks dependency lists by value,
-// not op-to-op: `target` may be a conditional's token result, which no channel
-// op defines.
-//
-// Branch ops are also entered through the tokens their arms yield. A dependency
-// list alone stops at the branch: air::getAsyncDependenciesFromOp reports an
-// affine.if's operands, which are index values, so a path reaching `target`
-// from inside an arm would read as no path at all.
+static bool isBranchOp(Operation *op) {
+  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(op);
+}
+
+static bool asyncValueCarries(Value v, Value target,
+                              llvm::SmallPtrSetImpl<Operation *> &visited);
+
+// Does `op` transitively depend on `target`?
 static bool asyncDependsOnValue(Operation *op, Value target,
                                 llvm::SmallPtrSetImpl<Operation *> &visited) {
-  auto isBranch = [](Operation *o) {
-    return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(o);
-  };
-
-  SmallVector<Value> deps = air::getAsyncDependenciesFromOp(op);
-  if (isBranch(op))
-    for (Region &region : op->getRegions())
-      for (Block &block : region)
-        if (Operation *term = block.getTerminator())
-          for (Value operand : term->getOperands())
-            if (isa<air::AsyncTokenType>(operand.getType()))
-              deps.push_back(operand);
-
-  for (Value dep : deps) {
-    if (dep == target)
+  for (Value dep : air::getAsyncDependenciesFromOp(op))
+    if (asyncValueCarries(dep, target, visited))
       return true;
-    Operation *def = dep.getDefiningOp();
-    if (!def || !(air::isAsyncOp(def) || isBranch(def)))
-      continue;
-    if (!visited.insert(def).second)
-      continue;
-    if (asyncDependsOnValue(def, target, visited))
+  return false;
+}
+
+// Does `v` complete no earlier than `target`?
+//
+// Walks by value rather than op-to-op: `target` may be a conditional's token
+// result, which no channel op defines.
+//
+// A branch result carries `target` only when EVERY arm does. An arm that does
+// not run contributes whatever it yields, so one arm reaching `target` says
+// nothing about the result as a whole. Arms are explored because a dependency
+// list alone stops at the branch: air::getAsyncDependenciesFromOp reports an
+// affine.if's operands, which are index values.
+static bool asyncValueCarries(Value v, Value target,
+                              llvm::SmallPtrSetImpl<Operation *> &visited) {
+  if (v == target)
+    return true;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return false;
+
+  if (isBranchOp(def)) {
+    bool sawArm = false;
+    for (Region &region : def->getRegions())
+      for (Block &block : region) {
+        Operation *term = block.getTerminator();
+        if (!term)
+          continue;
+        bool armYieldsToken = false, armCarries = false;
+        for (Value operand : term->getOperands()) {
+          if (!isa<air::AsyncTokenType>(operand.getType()))
+            continue;
+          armYieldsToken = true;
+          // A fresh visited set per arm: sharing one would let an op explored
+          // for an earlier arm short-circuit a later arm into a false negative.
+          llvm::SmallPtrSet<Operation *, 16> armVisited;
+          if (asyncValueCarries(operand, target, armVisited)) {
+            armCarries = true;
+            break;
+          }
+        }
+        if (!armYieldsToken)
+          continue;
+        if (!armCarries)
+          return false;
+        sawArm = true;
+      }
+    if (sawArm)
       return true;
   }
-  return false;
+
+  if (!air::isAsyncOp(def))
+    return false;
+  if (!visited.insert(def).second)
+    return false;
+  return asyncDependsOnValue(def, target, visited);
 }
 
 // Mirrors air::enforceChannelFifoOrder's traversal, testing reachability where
