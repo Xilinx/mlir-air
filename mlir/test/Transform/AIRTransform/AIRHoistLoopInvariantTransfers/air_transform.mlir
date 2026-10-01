@@ -32,6 +32,11 @@ module attributes {transform.with_named_sequence} {
   %loop4 = transform.structured.match ops{["scf.for"]} in %func4 : (!transform.any_op) -> !transform.any_op
   // Auto-discover hoists both pairs in a single call
   %loop4_final = transform.air.hoist_loop_invariant_transfers %func4, %loop4 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 5: Hoisted writes keep their order in the loop body
+  %func5 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_three_pairs_keeps_write_order"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop5 = transform.structured.match ops{["scf.for"]} in %func5 : (!transform.any_op) -> !transform.any_op
+  %loop5_final = transform.air.hoist_loop_invariant_transfers %func5, %loop5 : (!transform.any_op, !transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
