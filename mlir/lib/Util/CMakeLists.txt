@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 set(AIRUTIL_LINK_LIBS
+  MLIRAnalysis
   MLIRIR
   MLIRTransforms
 )
