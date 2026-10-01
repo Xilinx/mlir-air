@@ -59,94 +59,13 @@ static unsigned traceFuncArgIdx(Value memref) {
   return UINT_MAX;
 }
 
-// Collect tile-size candidates from arith.muli uses of blockIdx. Traces
-// through arith.index_cast chains, which the canonicalizer no longer folds
-// away after llvm/llvm-project#189042 (it used to incorrectly drop
+// Collect tile-size candidates from the multipliers applied to blockIdx: an
+// arith.muli by a constant, or blockIdx's coefficient in an affine.apply, which
+// is where the multiplier lives once the offset computation is folded into one
+// map. Traces through arith.index_cast chains, which the canonicalizer no
+// longer folds away after llvm/llvm-project#189042 (it used to incorrectly drop
 // index → iN → index round-trips even when iN is narrower than index).
-// True when `expr` is a linear combination: sums of dims, symbols and
-// constants, each scaled only by a constant. Everything else -- mod, floordiv,
-// ceildiv, or a product of two non-constants -- is rejected.
-static bool isLinearCombination(AffineExpr expr) {
-  switch (expr.getKind()) {
-  case AffineExprKind::Constant:
-  case AffineExprKind::DimId:
-  case AffineExprKind::SymbolId:
-    return true;
-  case AffineExprKind::Add: {
-    auto bin = cast<AffineBinaryOpExpr>(expr);
-    return isLinearCombination(bin.getLHS()) &&
-           isLinearCombination(bin.getRHS());
-  }
-  case AffineExprKind::Mul: {
-    auto bin = cast<AffineBinaryOpExpr>(expr);
-    if (!isa<AffineConstantExpr>(bin.getLHS()) &&
-        !isa<AffineConstantExpr>(bin.getRHS()))
-      return false;
-    return isLinearCombination(bin.getLHS()) &&
-           isLinearCombination(bin.getRHS());
-  }
-  default:
-    return false;
-  }
-}
-
-// The coefficient `v` is multiplied by inside an affine.apply, or 0 if the
-// map's expression is not a linear combination of its inputs.
-//
-// An offset written as a chain of arith ops keeps the multiplier as its own
-// op, which the arith::MulIOp case below reads directly. Built through an
-// affine map instead -- `(s0 * 128 + s1 * 32)[block_idx, tile_idx]`, which is
-// what folding a whole offset computation into one op produces -- the same
-// multiplier is a coefficient inside the map, and there is no muli to find.
-// Recover it by evaluating the map's difference between v=1 and v=0, with
-// every other input pinned to 0: for a linear combination that difference is
-// exactly the coefficient.
-//
-// The linearity check is not a formality. That difference is well-defined for
-// any expression, and for a semi-affine one it is not a multiplier: `s0 mod 8`
-// gives 1 - 0 = 1, and since inferTileSize keeps the *smallest* candidate a
-// spurious 1 would beat every real tile size and mis-split the padding
-// silently. Refusing to answer makes the pass report that it could not infer
-// the tile sizes, which is the safe outcome.
-static int64_t affineCoefficient(affine::AffineApplyOp applyOp, Value v) {
-  AffineMap map = applyOp.getAffineMap();
-  if (map.getNumResults() != 1)
-    return 0;
-  if (!isLinearCombination(map.getResult(0)))
-    return 0;
-
-  auto positionOf = [&](Value operand) -> std::optional<unsigned> {
-    for (auto [i, o] : llvm::enumerate(applyOp.getOperands()))
-      if (o == operand)
-        return i;
-    return std::nullopt;
-  };
-  auto pos = positionOf(v);
-  if (!pos)
-    return 0;
-
-  auto *ctx = applyOp.getContext();
-  auto evaluateWith = [&](int64_t valueOfV) -> std::optional<int64_t> {
-    SmallVector<AffineExpr> dims, syms;
-    for (unsigned i = 0; i < map.getNumDims(); i++)
-      dims.push_back(getAffineConstantExpr(i == *pos ? valueOfV : 0, ctx));
-    for (unsigned i = 0; i < map.getNumSymbols(); i++)
-      syms.push_back(getAffineConstantExpr(
-          map.getNumDims() + i == *pos ? valueOfV : 0, ctx));
-    AffineExpr folded = simplifyAffineExpr(
-        map.getResult(0).replaceDimsAndSymbols(dims, syms), 0, 0);
-    if (auto constant = dyn_cast<AffineConstantExpr>(folded))
-      return constant.getValue();
-    return std::nullopt;
-  };
-
-  auto atOne = evaluateWith(1);
-  auto atZero = evaluateWith(0);
-  if (!atOne || !atZero)
-    return 0;
-  return *atOne - *atZero;
-}
-
+// A map that is not linear in blockIdx has no multiplier and gives none.
 static void collectTileSizeCandidates(Value blockIdx,
                                       SmallVectorImpl<int64_t> &candidates) {
   SmallVector<Value> worklist{blockIdx};
@@ -161,9 +80,9 @@ static void collectTileSizeCandidates(Value blockIdx,
           if (*constVal > 0)
             candidates.push_back(*constVal);
       } else if (auto applyOp = dyn_cast<affine::AffineApplyOp>(user)) {
-        if (int64_t coefficient = affineCoefficient(applyOp, v))
-          if (coefficient > 0)
-            candidates.push_back(coefficient);
+        if (auto coefficient = air::getAffineApplyCoefficient(applyOp, v))
+          if (*coefficient > 0)
+            candidates.push_back(*coefficient);
       } else if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(user)) {
         Value result = user->getResult(0);
         if (visited.insert(result).second)

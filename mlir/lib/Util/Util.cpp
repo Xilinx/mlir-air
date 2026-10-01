@@ -558,6 +558,24 @@ air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
   return dyn_cast_if_present<air::HierarchyInterface>(containingOp);
 }
 
+std::optional<int64_t>
+air::getAffineApplyCoefficient(affine::AffineApplyOp applyOp, Value v) {
+  AffineMap map = applyOp.getAffineMap();
+  if (map.getNumResults() != 1)
+    return std::nullopt;
+  // Flattened as [dims..., symbols..., locals..., constant]. A mod or div adds
+  // a local column, so a linear map has exactly one entry per input plus one.
+  std::vector<SmallVector<int64_t, 8>> flat;
+  if (failed(getFlattenedAffineExprs(map, &flat)) ||
+      flat[0].size() != map.getNumInputs() + 1)
+    return std::nullopt;
+  int64_t coefficient = 0;
+  for (auto [pos, operand] : llvm::enumerate(applyOp.getMapOperands()))
+    if (operand == v)
+      coefficient += flat[0][pos];
+  return coefficient;
+}
+
 // Get a static scf.for trip count as int
 std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
   std::optional<int64_t> output = std::nullopt;
@@ -2040,14 +2058,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
   }
 
-  // Evaluate offset from affine map.
-  auto evalOffsetFromAffineMap = [&](MLIRContext *ctx, AffineMap map) {
-    SmallVector<std::optional<int64_t>> zeroSyms(map.getNumSymbols(),
-                                                 std::optional<int64_t>{0});
-    SmallVector<std::optional<int64_t>> zeroDims(map.getNumDims(),
-                                                 std::optional<int64_t>{0});
-    return air::evaluateConstantsInMap(map, zeroSyms, zeroDims, ctx);
-  };
   for (auto o : for_loops) {
     int64_t stepSize = -1;
     int loop_lower_bound = 0;
@@ -2081,29 +2091,14 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
           iv_consumer = &exec.getChildOps().front();
         if (auto affop =
                 dyn_cast_if_present<affine::AffineApplyOp>(iv_consumer)) {
-          auto idx = llvm::find_if(affop.getOperands(),
-                                   [iv](Value oper) { return oper == iv; });
-          if (idx == affop.getOperands().end())
+          if (!llvm::is_contained(affop.getOperands(), iv))
             continue;
-          auto map = affop.getAffineMap();
-          int64_t map_offset =
-              evalOffsetFromAffineMap(for_op->getContext(), map).value();
-          ind_var_factor = *getConstantIntValue(strides[i]);
-          SmallVector<std::optional<int64_t>> stepSizeAsSymVec(
-              affop.getMap().getNumSymbols(), std::optional<int64_t>{0});
-          SmallVector<std::optional<int64_t>> stepSizeAsDimVec(
-              affop.getMap().getNumDims(), std::optional<int64_t>{0});
-          if (idx - affop.getOperands().begin() < affop.getMap().getNumDims())
-            stepSizeAsDimVec[idx - affop.getOperands().begin()] = stepSize;
-          else
-            stepSizeAsSymVec[idx - affop.getOperands().begin() -
-                             affop.getMap().getNumDims()] = stepSize;
-          int64_t map_gradient =
-              air::evaluateConstantsInMap(
-                  map, stepSizeAsSymVec, stepSizeAsDimVec, for_op->getContext())
-                  .value() -
-              map_offset;
-          ind_var_factor *= map_gradient;
+          // A map that is not linear in the IV has no single stride to fold.
+          auto coefficient = air::getAffineApplyCoefficient(affop, iv);
+          if (!coefficient)
+            return failure();
+          ind_var_factor =
+              *getConstantIntValue(strides[i]) * *coefficient * stepSize;
         } else if (auto arithop =
                        dyn_cast_if_present<arith::AddIOp>(iv_consumer)) {
           ind_var_factor = stepSize;
@@ -2384,57 +2379,197 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
   return overall_access_bounds;
 }
 
+// The values an index's defining op reads: its operands, or for an
+// air.execute the values its body uses from above. These are where the
+// shrink's index rewrite (getUpdatedOffsetAfterShrinkage) zeroes herd tile
+// indices.
+static SetVector<Value> getIndexDefOperands(Operation *op) {
+  SetVector<Value> operands;
+  if (auto exec = dyn_cast<air::ExecuteOp>(op))
+    getUsedValuesDefinedAbove(exec.getRegion(), operands);
+  else
+    operands.insert(op->operand_begin(), op->operand_end());
+  return operands;
+}
+
+// The block arguments `v` is computed from, through any chain of ops and the
+// values their regions use from above. Async tokens order ops but carry no
+// data, so they are not followed.
+static SetVector<BlockArgument> getIndexSources(Value v) {
+  SetVector<BlockArgument> sources;
+  SmallVector<Value> worklist{v};
+  DenseSet<Value> visited{v};
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    if (auto arg = dyn_cast<BlockArgument>(cur)) {
+      sources.insert(arg);
+      continue;
+    }
+    Operation *def = cur.getDefiningOp();
+    SetVector<Value> operands(def->operand_begin(), def->operand_end());
+    for (Region &region : def->getRegions())
+      getUsedValuesDefinedAbove(region, operands);
+    for (Value operand : operands)
+      if (!isa<air::AsyncTokenType>(operand.getType()) &&
+          visited.insert(operand).second)
+        worklist.push_back(operand);
+  }
+  return sources;
+}
+
+// Whether the shrink's index rewrite removes every herd tile index `index`
+// depends on. It only zeroes those its defining op reads directly, so one
+// reached through a deeper op (`iv + tile * 2` built from arith ops) stays in
+// the index after the buffer has shrunk.
+static bool herdTileIndicesAreRewritable(Value index) {
+  Operation *def = index.getDefiningOp();
+  if (!def)
+    return true;
+  for (Value operand : getIndexDefOperands(def)) {
+    if (air::getHerdArgOwner(operand))
+      continue;
+    if (llvm::any_of(getIndexSources(operand), [](BlockArgument arg) {
+          return air::getHerdArgOwner(arg);
+        }))
+      return false;
+  }
+  return true;
+}
+
+// The coefficient of `iv` in `v`, when `v` is a linear function of it built
+// from affine.apply, arith.addi/subi, arith.muli by a constant and index casts,
+// looking through air.execute bodies. 0 when `v` does not depend on `iv`;
+// std::nullopt when it does, but not linearly.
+static std::optional<int64_t>
+getLinearIVCoefficient(Value v, Value iv,
+                       DenseMap<Value, std::optional<int64_t>> &cache) {
+  if (v == iv)
+    return 1;
+  if (auto it = cache.find(v); it != cache.end())
+    return it->second;
+  auto recurse = [&](Value operand) {
+    return getLinearIVCoefficient(operand, iv, cache);
+  };
+  std::optional<int64_t> result = 0;
+  Operation *def = v.getDefiningOp();
+  if (!def || getConstantIntValue(v)) {
+    result = 0;
+  } else if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+    unsigned idx = llvm::find(exec.getResults(), v) - exec.getResults().begin();
+    result = recurse(exec.getBody().getTerminator()->getOperand(idx));
+  } else if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
+    // Each distinct operand once: getAffineApplyCoefficient already sums over
+    // every position an operand takes.
+    SetVector<Value> operands(llvm::from_range, apply.getMapOperands());
+    for (Value operand : operands) {
+      auto inner = recurse(operand);
+      if (inner && *inner == 0)
+        continue;
+      auto outer = air::getAffineApplyCoefficient(apply, operand);
+      if (!inner || !outer) {
+        result = std::nullopt;
+        break;
+      }
+      *result += *outer * *inner;
+    }
+  } else if (isa<arith::AddIOp, arith::SubIOp>(def)) {
+    auto lhs = recurse(def->getOperand(0)), rhs = recurse(def->getOperand(1));
+    if (lhs && rhs)
+      result = isa<arith::AddIOp>(def) ? *lhs + *rhs : *lhs - *rhs;
+    else
+      result = std::nullopt;
+  } else if (isa<arith::MulIOp>(def)) {
+    auto lhsConst = getConstantIntValue(def->getOperand(0));
+    auto rhsConst = getConstantIntValue(def->getOperand(1));
+    auto lhs = recurse(def->getOperand(0)), rhs = recurse(def->getOperand(1));
+    if (lhs && rhs && *lhs == 0 && *rhs == 0)
+      result = 0;
+    else if (rhsConst && lhs)
+      result = *lhs * *rhsConst;
+    else if (lhsConst && rhs)
+      result = *rhs * *lhsConst;
+    else
+      result = std::nullopt;
+  } else if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(def)) {
+    result = recurse(def->getOperand(0));
+  } else {
+    // Any other op is opaque: fine if `iv` does not reach it, not otherwise.
+    for (Value operand : def->getOperands()) {
+      auto inner = recurse(operand);
+      if (!inner || *inner != 0) {
+        result = std::nullopt;
+        break;
+      }
+    }
+  }
+  cache[v] = result;
+  return result;
+}
+
+// The stride and trip count with which `index` walks `forOp`: step times the
+// IV's linear coefficient in `index`, or, for a result of an
+// affine.delinearize_index of the IV inside an air.execute, the step and that
+// result's basis.
+static std::optional<std::pair<int64_t, int64_t>>
+getLoopStrideAndTripCount(Value index, scf::ForOp forOp) {
+  auto step = getConstantIntValue(forOp.getStep());
+  auto tripCount = air::getStaticScfForTripCountAsInt(forOp);
+  if (!step || !tripCount || *step <= 0)
+    return std::nullopt;
+  Value iv = forOp.getInductionVar();
+  if (auto exec = index.getDefiningOp<air::ExecuteOp>()) {
+    auto delinearize =
+        dyn_cast<affine::AffineDelinearizeIndexOp>(&exec.getChildOps().front());
+    if (delinearize && delinearize.getLinearIndex() == iv) {
+      unsigned resIdx =
+          llvm::find(exec.getResults(), index) - exec.getResults().begin();
+      auto basis = getConstantIntValue(delinearize.getMixedBasis()[resIdx]);
+      if (!basis)
+        return std::nullopt;
+      return std::make_pair(*step, *basis);
+    }
+  }
+  DenseMap<Value, std::optional<int64_t>> cache;
+  auto coefficient = getLinearIVCoefficient(index, iv, cache);
+  if (!coefficient || *coefficient <= 0)
+    return std::nullopt;
+  return std::make_pair(*step * *coefficient, *tripCount);
+}
+
+// Widen each index's dimension of `pattern` to the range its enclosing scf.for
+// loops sweep. An index that is a linear function of a single loop's IV gets
+// that loop's trip count and stride. Where `fullShape` is given, an index
+// driven by loops in any other way, or one whose herd tile indices the
+// shrink's rewrite cannot remove, keeps the full extent of its dimension.
 static void updateAccessPatternByScfForNest(
     std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
         &pattern,
-    SmallVector<Value> indices, OpBuilder builder) {
+    SmallVector<Value> indices, OpBuilder builder,
+    ArrayRef<int64_t> fullShape = {}) {
   auto loc = builder.getUnknownLoc();
-  auto updateWrapAndStride = [&](int stepSize, int tripCount, int i) {
-    std::get<1>(pattern)[i] =
-        arith::ConstantIndexOp::create(builder, loc, tripCount);
-    std::get<2>(pattern)[i] = arith::ConstantIndexOp::create(
-        builder, loc,
-        stepSize * (*getConstantIntValue(std::get<2>(pattern)[i])));
-  };
-  // Infer data access pattern's sizes from parent scf.for loop and any affine
-  // op applied on the induction variable
-  auto inferDataAccessSizes = [](scf::ForOp scfForOp, air::ExecuteOp execOp,
-                                 Value index) {
-    int scfForTripCount = *air::getStaticScfForTripCountAsInt(scfForOp);
-    // If scf.for's iv applies affine::DelinerizeIndexOp
-    if (auto delinearizeOp =
-            dyn_cast_if_present<affine::AffineDelinearizeIndexOp>(
-                &execOp.getChildOps().front())) {
-      int resIdx =
-          llvm::find(execOp.getResults(), index) - execOp.getResults().begin();
-      auto constBasis =
-          getConstantIntValue(delinearizeOp.getMixedBasis()[resIdx]);
-      if (!constBasis)
-        delinearizeOp->emitOpError("basis ") << resIdx << " is non-static.";
-      else
-        scfForTripCount = *constBasis;
-    }
-    return scfForTripCount;
-  };
-  int dim = -1;
-  for (auto index : indices) {
-    dim++;
+  for (auto [dim, index] : llvm::enumerate(indices)) {
     if (getConstantIntValue(index))
       continue;
-    if (auto scfForOp = scf::getForInductionVarOwner(index))
-      updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
-                          *air::getStaticScfForTripCountAsInt(scfForOp), dim);
-    if (!index.getDefiningOp())
+    SmallVector<scf::ForOp> loops;
+    for (BlockArgument arg : getIndexSources(index))
+      if (auto forOp = scf::getForInductionVarOwner(arg))
+        loops.push_back(forOp);
+    bool rewritable = herdTileIndicesAreRewritable(index);
+    if (loops.empty() && rewritable)
       continue;
-    if (auto execOp =
-            dyn_cast_if_present<air::ExecuteOp>(index.getDefiningOp())) {
-      for (auto &childOp : execOp.getChildOps())
-        for (auto oper : childOp.getOperands())
-          if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
-            int scfForTripCount = inferDataAccessSizes(scfForOp, execOp, index);
-            updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
-                                scfForTripCount, dim);
-          }
+    std::optional<std::pair<int64_t, int64_t>> strideAndTrips;
+    if (loops.size() == 1 && rewritable)
+      strideAndTrips = getLoopStrideAndTripCount(index, loops.front());
+    if (strideAndTrips) {
+      auto [stride, tripCount] = *strideAndTrips;
+      std::get<1>(pattern)[dim] =
+          arith::ConstantIndexOp::create(builder, loc, tripCount);
+      std::get<2>(pattern)[dim] = arith::ConstantIndexOp::create(
+          builder, loc,
+          stride * *getConstantIntValue(std::get<2>(pattern)[dim]));
+    } else if (dim < fullShape.size() && ShapedType::isStatic(fullShape[dim])) {
+      std::get<1>(pattern)[dim] =
+          arith::ConstantIndexOp::create(builder, loc, fullShape[dim]);
     }
   }
 }
@@ -2525,24 +2660,29 @@ getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
   };
 
   if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
-    // A linear map flattens to one coefficient per input plus a constant; a
-    // mod or div adds a local column and is not modelled.
+    // The map's value with every input at 0, plus each distinct operand's
+    // coefficient times that operand's range. A map that is not linear in its
+    // operands has no coefficients and is not modelled.
     AffineMap map = apply.getAffineMap();
-    std::vector<SmallVector<int64_t, 8>> flat;
-    if (map.getNumResults() != 1 ||
-        failed(getFlattenedAffineExprs(map, &flat)) ||
-        flat[0].size() != map.getNumInputs() + 1)
+    auto constant = air::evaluateConstantsInMap(
+        map, SmallVector<std::optional<int64_t>>(map.getNumSymbols(), 0),
+        SmallVector<std::optional<int64_t>>(map.getNumDims(), 0),
+        apply.getContext());
+    if (!constant)
       return std::nullopt;
-    Range range{flat[0].back(), flat[0].back()};
-    for (auto [pos, operand] : llvm::enumerate(apply.getMapOperands())) {
-      int64_t c = flat[0][pos];
-      if (c == 0)
+    Range range{*constant, *constant};
+    SetVector<Value> operands(llvm::from_range, apply.getMapOperands());
+    for (Value operand : operands) {
+      auto c = air::getAffineApplyCoefficient(apply, operand);
+      if (!c)
+        return std::nullopt;
+      if (*c == 0)
         continue;
       auto r = operandRange(operand);
       if (!r)
         return std::nullopt;
-      range.first += c > 0 ? c * r->first : c * r->second;
-      range.second += c > 0 ? c * r->second : c * r->first;
+      range.first += *c > 0 ? *c * r->first : *c * r->second;
+      range.second += *c > 0 ? *c * r->second : *c * r->first;
     }
     return range;
   }
@@ -2705,7 +2845,9 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
     std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
         builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
-  updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
+  updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder,
+                                  memrefTy.hasRank() ? memrefTy.getShape()
+                                                     : ArrayRef<int64_t>{});
   return pattern;
 }
 
@@ -2750,7 +2892,9 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
     std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
         builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
-  updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
+  updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder,
+                                  memrefTy.hasRank() ? memrefTy.getShape()
+                                                     : ArrayRef<int64_t>{});
   return pattern;
 }
 

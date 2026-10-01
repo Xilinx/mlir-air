@@ -98,6 +98,13 @@ T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
+// The coefficient of `v` in the single result of `applyOp`, summed over every
+// operand position `v` takes (0 if `v` is not an operand). std::nullopt if the
+// map has several results or is not linear in its operands: mod, floordiv,
+// ceildiv, or a product of two operands.
+std::optional<int64_t> getAffineApplyCoefficient(affine::AffineApplyOp applyOp,
+                                                 Value v);
+
 std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
 std::optional<int64_t>
 getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
