@@ -4880,7 +4880,7 @@ public:
       std::vector<air::ChannelInterface> ops) {
     if (!everyAIRChannelAccessIsContiguousRowMajor(ops))
       return false; // Incontiguous or not row-major, NYI.
-    for (unsigned i = 0; i < ops.size() - 1; i++) {
+    for (unsigned i = 0; i + 1 < ops.size(); i++) {
       for (unsigned j = i + 1; j < ops.size(); j++) {
         air::ChannelInterface op1 = ops[i];
         air::ChannelInterface op2 = ops[j];
@@ -5068,6 +5068,10 @@ public:
         else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user))
           gets.push_back(get);
       }
+      // Channels on one side only: the other side is not a channel, and
+      // partitioning cannot rewrite it.
+      if (puts.empty() || gets.empty())
+        continue;
       if (everyAIRChannelAccessIsNonOverlapping(gets) &&
           everyAIRChannelAccessIsNonOverlapping(puts)) {
         partitionMemref(puts, gets);
@@ -5185,6 +5189,12 @@ public:
     // is load-bearing (bundled sub-channels, broadcasts, pinned/dedicated
     // flows) is left alone.
     shim_dma_alloc.spreadCollapsedPacketChannels(memcpy_flows);
+
+    // Step 3f: with every channel final, reject a port two flows share in a way
+    // the switchbox cannot carry. A tile out of free channels gets a flow
+    // wrapped onto one already in use, whatever that one carries.
+    if (failed(air::verifyDmaPortSharing(memcpy_flows)))
+      return failure();
 
     // Step 4: Connect flows.
     //
