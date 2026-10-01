@@ -4880,7 +4880,9 @@ public:
       std::vector<air::ChannelInterface> ops) {
     if (!everyAIRChannelAccessIsContiguousRowMajor(ops))
       return false; // Incontiguous or not row-major, NYI.
-    for (unsigned i = 0; i < ops.size() - 1; i++) {
+    // `i + 1 <`, not `i < size() - 1`: the latter wraps for an empty list and
+    // spins for 2^64 iterations with an empty inner loop.
+    for (unsigned i = 0; i + 1 < ops.size(); i++) {
       for (unsigned j = i + 1; j < ops.size(); j++) {
         air::ChannelInterface op1 = ops[i];
         air::ChannelInterface op2 = ops[j];
@@ -5068,6 +5070,10 @@ public:
         else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user))
           gets.push_back(get);
       }
+      // A memref reached through channels on one side only has nothing to
+      // partition against; leave it whole, as the NYI case below does.
+      if (puts.empty() || gets.empty())
+        continue;
       if (everyAIRChannelAccessIsNonOverlapping(gets) &&
           everyAIRChannelAccessIsNonOverlapping(puts)) {
         partitionMemref(puts, gets);
