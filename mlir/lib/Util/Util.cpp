@@ -2530,20 +2530,35 @@ getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
                           lhs->second * rhs->first, lhs->second * rhs->second};
     return Range{*llvm::min_element(products), *llvm::max_element(products)};
   }
-  if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(def))
-    return operandRange(def->getOperand(0));
+  if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(def)) {
+    // A cast keeps the value only if it fits the narrower of the two types
+    // and, for the unsigned cast, is not negative: index_castui of an i8 -1 is
+    // 255.
+    auto r = operandRange(def->getOperand(0));
+    auto width = [](Type t) {
+      return t.isIndex() ? IndexType::kInternalStorageBitWidth
+                         : t.getIntOrFloatBitWidth();
+    };
+    unsigned bits = std::min(width(def->getOperand(0).getType()),
+                             width(def->getResult(0).getType()));
+    if (!r || !llvm::isIntN(bits, r->first) || !llvm::isIntN(bits, r->second) ||
+        (isa<arith::IndexCastUIOp>(def) && r->first < 0))
+      return std::nullopt;
+    return r;
+  }
   return std::nullopt;
 }
 
 // The access pattern of an access starting at `offsets` and covering
 // `accessExtents[d]` elements along each dimension d. Each dimension's size is
 // the highest offset it takes after the shrink rewrites it plus its access
-// extent, paired with that dimension's own stride. An unknown offset or extent
-// gives the full dimension; an empty pattern means the whole memref.
+// extent, paired with that dimension's own stride. An unknown offset or extent,
+// or an offset that can go negative, gives the full dimension; an empty pattern
+// means the whole memref.
 static std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeExtentPattern(Operation *op, Type type, ArrayRef<OpFoldResult> offsets,
+writeExtentPattern(Operation *op, Value base, ArrayRef<OpFoldResult> offsets,
                    ArrayRef<std::optional<int64_t>> accessExtents) {
-  auto memrefTy = llvm::dyn_cast<MemRefType>(type);
+  auto memrefTy = llvm::dyn_cast<MemRefType>(base.getType());
   SmallVector<int64_t> memrefStrides;
   int64_t memrefOffset;
   if (!memrefTy ||
@@ -2559,10 +2574,15 @@ writeExtentPattern(Operation *op, Type type, ArrayRef<OpFoldResult> offsets,
     if (ShapedType::isDynamic(dimSize) ||
         ShapedType::isDynamic(memrefStrides[dim]))
       return {};
-    std::optional<int64_t> maxOffset = getConstantIntValue(offset);
-    if (auto value = dyn_cast<Value>(offset))
-      if (auto range = getOffsetRangeAfterShrinkage(value, OffsetDepth::Offset))
-        maxOffset = range->second;
+    std::optional<std::pair<int64_t, int64_t>> range;
+    if (auto c = getConstantIntValue(offset))
+      range = {*c, *c};
+    else
+      range = getOffsetRangeAfterShrinkage(cast<Value>(offset),
+                                           OffsetDepth::Offset);
+    std::optional<int64_t> maxOffset;
+    if (range && range->first >= 0)
+      maxOffset = range->second;
     int64_t extent = dimSize;
     if (maxOffset && accessExtent)
       extent = std::min(dimSize, *maxOffset + *accessExtent);
@@ -2587,41 +2607,22 @@ air::writeAccessPattern(memref::SubViewOp subview) {
     else
       accessExtents.push_back(std::nullopt);
   }
-  return writeExtentPattern(subview, subview.getSource().getType(),
+  return writeExtentPattern(subview, subview.getSource(),
                             subview.getMixedOffsets(), accessExtents);
 }
 
-// A vector transfer covers the vector's size along each memref dimension its
-// permutation map names, and one element along the others. A broadcast vector
-// dimension covers nothing extra.
-static std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeTransferAccessPattern(VectorTransferOpInterface transfer) {
-  auto shapedTy = llvm::cast<ShapedType>(transfer.getBase().getType());
-  SmallVector<std::optional<int64_t>> accessExtents(shapedTy.getRank(), 1);
-  VectorType vectorTy = transfer.getVectorType();
-  for (auto [i, result] :
-       llvm::enumerate(transfer.getPermutationMap().getResults())) {
-    auto dimExpr = dyn_cast<AffineDimExpr>(result);
-    if (!dimExpr)
-      continue;
-    if (vectorTy.getScalableDims()[i])
-      accessExtents[dimExpr.getPosition()] = std::nullopt;
-    else
-      accessExtents[dimExpr.getPosition()] = vectorTy.getDimSize(i);
-  }
-  return writeExtentPattern(transfer, transfer.getBase().getType(),
+// A vector transfer covers the slice getTransferChunkAccessed gives: the
+// vector's size along each memref dimension its permutation map names, one
+// element along the others, and nothing extra for a broadcast dimension.
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(VectorTransferOpInterface transfer) {
+  if (transfer.getVectorType().isScalable())
+    return {};
+  auto accessExtents = llvm::to_vector_of<std::optional<int64_t>>(
+      transfer.getTransferChunkAccessed());
+  return writeExtentPattern(transfer, transfer.getBase(),
                             getAsOpFoldResult(transfer.getIndices()),
                             accessExtents);
-}
-
-std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
-  return writeTransferAccessPattern(readOp);
-}
-
-std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
-  return writeTransferAccessPattern(writeOp);
 }
 
 SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
@@ -2647,12 +2648,9 @@ air::getDataAccessShapeFromMemcpyOp(Value memref,
       accessPatterns.push_back(writeAccessPattern(chanUser));
     else if (auto svUser = dyn_cast_if_present<memref::SubViewOp>(user))
       accessPatterns.push_back(writeAccessPattern(svUser));
-    else if (auto vecReadUser =
-                 dyn_cast_if_present<mlir::vector::TransferReadOp>(user))
-      accessPatterns.push_back(writeAccessPattern(vecReadUser));
-    else if (auto vecWriteUser =
-                 dyn_cast_if_present<mlir::vector::TransferWriteOp>(user))
-      accessPatterns.push_back(writeAccessPattern(vecWriteUser));
+    else if (auto transfer =
+                 dyn_cast_if_present<VectorTransferOpInterface>(user))
+      accessPatterns.push_back(writeAccessPattern(transfer));
   }
   return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
 }

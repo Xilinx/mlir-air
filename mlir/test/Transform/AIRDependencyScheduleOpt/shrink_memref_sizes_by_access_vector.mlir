@@ -251,3 +251,182 @@ module {
     return
   }
 }
+
+// -----
+
+// A vector of lower rank than the memref fills the innermost dimension and one
+// element along the others: rows 0 to 3, column 1, so 4x2x8.
+
+// CHECK-LABEL: func.func @lower_rank_vector
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<4x2x8xf32, 2>
+module {
+  func.func @lower_rank_vector() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<4x4x8xf32, 2>) {
+          %a = memref.alloc() : memref<4x4x8xf32, 2>
+          air.execute_terminator %a : memref<4x4x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<4x4x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %cst = arith.constant dense<0.000000e+00> : vector<8xf32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            vector.transfer_write %cst, %buf[%i, %c1_0, %c0] {in_bounds = [true]} : vector<8xf32>, memref<4x4x8xf32, 2>
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<4x4x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A read at column 6 that may run past the row: columns 6 to 9, so the row
+// keeps its 8 columns, and the masked tail stays out of bounds.
+
+// CHECK-LABEL: func.func @inner_offset_out_of_bounds
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<2x8xf32, 2>
+module {
+  func.func @inner_offset_out_of_bounds() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<16x8xf32, 2>) {
+          %a = memref.alloc() : memref<16x8xf32, 2>
+          air.execute_terminator %a : memref<16x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<16x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %c6 = arith.constant 6 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %r = vector.transfer_read %buf[%c0, %c6], %f0 {in_bounds = [true, false]} : memref<16x8xf32, 2>, vector<1x4xf32>
+          vector.transfer_write %r, %buf[%c1_0, %c0] {in_bounds = [true, true]} : vector<1x4xf32>, memref<16x8xf32, 2>
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<16x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A negative coefficient: 7 - i for i < 4 reaches rows 4 to 7, so 8 rows.
+
+// CHECK-LABEL: func.func @negative_coefficient
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<8x8xf32, 2>
+module {
+  func.func @negative_coefficient() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<16x8xf32, 2>) {
+          %a = memref.alloc() : memref<16x8xf32, 2>
+          air.execute_terminator %a : memref<16x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<16x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %cst = arith.constant dense<0.000000e+00> : vector<1x8xf32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %n = affine.apply affine_map<()[s0] -> (7 - s0)>()[%i]
+            vector.transfer_write %cst, %buf[%n, %c0] {in_bounds = [true, true]} : vector<1x8xf32>, memref<16x8xf32, 2>
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<16x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// An index cast to i32 and back keeps its value: rows 0 to 3, so 4 rows.
+
+// CHECK-LABEL: func.func @cast_round_trip
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<4x8xf32, 2>
+module {
+  func.func @cast_round_trip() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<16x8xf32, 2>) {
+          %a = memref.alloc() : memref<16x8xf32, 2>
+          air.execute_terminator %a : memref<16x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<16x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %cst = arith.constant dense<0.000000e+00> : vector<1x8xf32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %t = arith.index_cast %i : index to i32
+            %n = arith.index_cast %t : i32 to index
+            vector.transfer_write %cst, %buf[%n, %c0] {in_bounds = [true, true]} : vector<1x8xf32>, memref<16x8xf32, 2>
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<16x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// i - 4 is -4 to -1 as an i8, which index_castui reads as 252 to 255. The
+// range does not survive the cast, so the buffer keeps its 256 rows.
+
+// CHECK-LABEL: func.func @unsigned_cast_of_negative
+// CHECK: memref.alloc() : memref<256x8xf32, 2>
+module {
+  func.func @unsigned_cast_of_negative() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<256x8xf32, 2>) {
+          %a = memref.alloc() : memref<256x8xf32, 2>
+          air.execute_terminator %a : memref<256x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<256x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %cst = arith.constant dense<0.000000e+00> : vector<1x8xf32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %d = arith.subi %i, %c4 : index
+            %t = arith.index_cast %d : index to i8
+            %n = arith.index_castui %t : i8 to index
+            vector.transfer_write %cst, %buf[%n, %c0] {in_bounds = [true, true]} : vector<1x8xf32>, memref<256x8xf32, 2>
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<256x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}

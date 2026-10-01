@@ -6618,7 +6618,9 @@ private:
     return success();
   }
 
-  // Update access patterns to shrunk memref implementation.
+  // Update access patterns to shrunk memref implementation. The buffer was
+  // sized by getOffsetRangeAfterShrinkage in Util.cpp, which models which herd
+  // tile indices this zeroes; change the two together.
   Value getUpdatedOffsetAfterShrinkage(Value index,
                                        PatternRewriter &rewriter) const {
     if (!index)
