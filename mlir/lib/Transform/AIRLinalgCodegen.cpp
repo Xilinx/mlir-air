@@ -2651,12 +2651,13 @@ static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
 
 /// Hoist a single transfer read/write pair out of a loop. The read is cloned
 /// before the loop, the write is cloned after the loop, and an iter_arg is
-/// added to carry the accumulator value through the loop body.
+/// added to carry the accumulator value through the loop body. The write goes
+/// after `lastHoistedWrite` when that is set, so that writes hoisted one after
+/// another keep their order in the loop body; it is updated to the new write.
 /// Returns the new ForOp on success.
-static FailureOr<scf::ForOp>
-hoistTransferPairFromLoop(vector::TransferReadOp readOp,
-                          vector::TransferWriteOp writeOp, scf::ForOp loopOp,
-                          RewriterBase &rewriter) {
+static FailureOr<scf::ForOp> hoistTransferPairFromLoop(
+    vector::TransferReadOp readOp, vector::TransferWriteOp writeOp,
+    scf::ForOp loopOp, Operation *&lastHoistedWrite, RewriterBase &rewriter) {
   Value loopIV = loopOp.getInductionVar();
 
   // Clone the read and its operands before the loop
@@ -2692,7 +2693,10 @@ hoistTransferPairFromLoop(vector::TransferReadOp readOp,
   IRMapping writeMapping;
   writeMapping.map(writeVector, valueToWrite);
 
-  rewriter.setInsertionPointAfter(newLoop);
+  if (lastHoistedWrite)
+    rewriter.setInsertionPointAfter(lastHoistedWrite);
+  else
+    rewriter.setInsertionPointAfter(newLoop);
 
   for (Value index : writeOp.getIndices()) {
     Operation *defOp = index.getDefiningOp();
@@ -2708,7 +2712,7 @@ hoistTransferPairFromLoop(vector::TransferReadOp readOp,
     }
   }
 
-  rewriter.clone(*writeOp.getOperation(), writeMapping);
+  lastHoistedWrite = rewriter.clone(*writeOp.getOperation(), writeMapping);
   rewriter.eraseOp(writeOp);
 
   return newLoop;
@@ -2742,6 +2746,7 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
   // After each hoist, the loop is replaced with a new loop, so we re-discover
   // pairs in the new loop to avoid stale Operation* pointers.
   scf::ForOp currentLoop = loopOp;
+  Operation *lastHoistedWrite = nullptr;
 
   while (true) {
     Value loopIV = currentLoop.getInductionVar();
@@ -2799,8 +2804,8 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     if (!foundWrite || !foundRead)
       break; // No more pairs to hoist
 
-    FailureOr<scf::ForOp> newLoop =
-        hoistTransferPairFromLoop(foundRead, foundWrite, currentLoop, rewriter);
+    FailureOr<scf::ForOp> newLoop = hoistTransferPairFromLoop(
+        foundRead, foundWrite, currentLoop, lastHoistedWrite, rewriter);
     if (failed(newLoop)) {
       return emitDefiniteFailure() << "failed to hoist transfer pair";
     }
