@@ -759,10 +759,12 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
     aie::store_v(l_state, zero);
   }
-  // Block fully beyond L: skip (pairs with attn_qk_blk's skip -- s_block/c are
-  // not produced for this block, so they must not be consumed). No V
-  // contribution, matching the runtime-L path.
-  if (L - blk * 16 <= 0)
+  const int lo = attn_window_lo(L);
+  L &= ATTN_RTP_L_MASK;
+  // Block fully beyond L, or wholly before a sliding window: skip (pairs with
+  // attn_qk_blk's skips -- s_block/c are not produced for this block, so they
+  // must not be consumed). No V contribution, matching the runtime-L path.
+  if (L - blk * 16 <= 0 || (blk + 1) * 16 <= lo)
     return;
   float *c = (float *)(s_block + Q_HEADS_PADDED_PER_CU * 16);
 #ifndef SKIP_CALC_L
