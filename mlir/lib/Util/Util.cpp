@@ -2386,14 +2386,18 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
 static void updateAccessPatternByScfForNest(
     std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
         &pattern,
-    SmallVector<Value> indices, OpBuilder builder, Region *untilReg = nullptr) {
+    SmallVector<Value> indices, OpBuilder builder) {
   auto loc = builder.getUnknownLoc();
+  // An access of size k whose offset steps by stepSize for tripCount
+  // iterations covers (tripCount - 1) * stepSize + k along that dimension. A
+  // runtime size is left as is, and the bound then falls back to the full
+  // memref shape.
   auto updateWrapAndStride = [&](int stepSize, int tripCount, int i) {
-    std::get<1>(pattern)[i] =
-        arith::ConstantIndexOp::create(builder, loc, tripCount);
-    std::get<2>(pattern)[i] = arith::ConstantIndexOp::create(
-        builder, loc,
-        stepSize * (*getConstantIntValue(std::get<2>(pattern)[i])));
+    auto size = getConstantIntValue(std::get<1>(pattern)[i]);
+    if (!size)
+      return;
+    std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
+        builder, loc, (tripCount - 1) * stepSize + *size);
   };
   // Infer data access pattern's sizes from parent scf.for loop and any affine
   // op applied on the induction variable
@@ -2420,12 +2424,9 @@ static void updateAccessPatternByScfForNest(
     dim++;
     if (getConstantIntValue(index))
       continue;
-    if (auto scfForOp = scf::getForInductionVarOwner(index)) {
-      if (untilReg && !untilReg->isAncestor(scfForOp->getParentRegion()))
-        continue; // Out of scope
+    if (auto scfForOp = scf::getForInductionVarOwner(index))
       updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
                           *air::getStaticScfForTripCountAsInt(scfForOp), dim);
-    }
     if (!index.getDefiningOp())
       continue;
     if (auto execOp =
@@ -2433,8 +2434,6 @@ static void updateAccessPatternByScfForNest(
       for (auto &childOp : execOp.getChildOps())
         for (auto oper : childOp.getOperands())
           if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
-            if (untilReg && !untilReg->isAncestor(scfForOp->getParentRegion()))
-              continue; // Out of scope
             int scfForTripCount = inferDataAccessSizes(scfForOp, execOp, index);
             updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
                                 scfForTripCount, dim);
@@ -2461,19 +2460,32 @@ air::writeAccessPattern(air::ChannelInterface chanOp) {
 }
 
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
+air::writeAccessPattern(memref::SubViewOp subview) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
   auto subview_offsets = subview.getOffsets().begin();
   auto subview_sizes = subview.getSizes().begin();
-  auto subview_strides = subview.getStrides().begin();
   auto static_offsets = subview.getStaticOffsets();
   auto static_sizes = subview.getStaticSizes();
-  auto static_strides = subview.getStaticStrides();
-  // Get strided layout from subview op's output MemRefType
-  if (auto strided = llvm::dyn_cast_if_present<StridedLayoutAttr>(
-          llvm::cast<MemRefType>(subview.getResult().getType()).getLayout()))
-    static_strides = strided.getStrides();
+
+  // The element stride along each source dimension: the source layout's
+  // stride times the subview's own. Read from the source, not the result: a
+  // rank-reducing subview's result layout omits the dropped unit dimensions
+  // and does not say which ones they were. A runtime stride leaves no bound to
+  // compute, and the empty pattern returned for it means the whole memref.
+  SmallVector<int64_t> sourceStrides;
+  int64_t sourceOffset;
+  if (failed(llvm::cast<MemRefType>(subview.getSource().getType())
+                 .getStridesAndOffset(sourceStrides, sourceOffset)))
+    return pattern;
+  SmallVector<int64_t> elementStrides;
+  for (auto [sourceStride, stride] :
+       llvm::zip_equal(sourceStrides, subview.getMixedStrides())) {
+    auto constStride = getConstantIntValue(stride);
+    if (ShapedType::isDynamic(sourceStride) || !constStride)
+      return pattern;
+    elementStrides.push_back(sourceStride * *constStride);
+  }
 
   auto loc = subview.getLoc();
   OpBuilder builder(subview);
@@ -2491,24 +2503,10 @@ air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
     else
       std::get<1>(pattern).push_back(*subview_sizes++);
   }
-  if (static_sizes.size() < static_strides.size()) {
-    subview->emitOpError(
-        "isn't standard or rank-reduced memref.subview. Not supported.");
-    return pattern;
-  }
-  // If rank-reduced memref.subview, then pad strides with 1s.
-  for (unsigned i = 0; i < static_sizes.size() - static_strides.size(); i++)
+  for (int64_t stride : elementStrides)
     std::get<2>(pattern).push_back(
-        arith::ConstantIndexOp::create(builder, loc, 1));
-  for (auto o : static_strides) {
-    if (o >= 0)
-      std::get<2>(pattern).push_back(
-          arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      std::get<2>(pattern).push_back(*subview_strides++);
-  }
-  updateAccessPatternByScfForNest(pattern, std::get<0>(pattern), builder,
-                                  commonReg);
+        arith::ConstantIndexOp::create(builder, loc, stride));
+  updateAccessPatternByScfForNest(pattern, std::get<0>(pattern), builder);
   return pattern;
 }
 
@@ -2651,15 +2649,11 @@ air::getDataAccessShapeFromMemcpyOp(Value memref,
   SmallVector<
       std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
       accessPatterns;
-  // Get a common ancestor region for all users
-  Region *commonAncestorReg = findCommonRegionContainingAllAncestors(
-      users, users.front()->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
-
   for (auto user : users) {
     if (auto chanUser = dyn_cast_if_present<air::ChannelInterface>(user))
       accessPatterns.push_back(writeAccessPattern(chanUser));
     else if (auto svUser = dyn_cast_if_present<memref::SubViewOp>(user))
-      accessPatterns.push_back(writeAccessPattern(svUser, commonAncestorReg));
+      accessPatterns.push_back(writeAccessPattern(svUser));
     else if (auto vecReadUser =
                  dyn_cast_if_present<mlir::vector::TransferReadOp>(user))
       accessPatterns.push_back(writeAccessPattern(vecReadUser));
