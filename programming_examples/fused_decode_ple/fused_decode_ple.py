@@ -1480,6 +1480,24 @@ assert not KV_SRC or (
 )
 if KV_SRC == list(range(UNI_DEC)):
     KV_SRC = []  # identity: keep the pre-existing offset expression verbatim
+# Which model layer each decode wave computes, for builds that pack layers into
+# waves out of order: the layer gate scores layer 4 alone as wave 0, or layers
+# 14,19 as waves 0,1. The weights are packed on the host and need no map; only
+# the per-layer attention class does, since a sliding-window wave carries its
+# window in the instruction stream. Empty (every model's default) is the
+# identity, which is what a full-depth or prefix build computes.
+WAVE_LAYERS = [
+    int(t) for t in _os.environ.get("DECODE_LAYERS", "").split(",") if t != ""
+] or list(range(UNI_DEC))
+assert len(WAVE_LAYERS) == UNI_DEC, (
+    f"DECODE_LAYERS must name one model layer per decode wave (UNI_DEC="
+    f"{UNI_DEC}): {WAVE_LAYERS}"
+)
+# Decode waves that attend the whole context. Every other decode wave is a
+# sliding-window wave when the model has a window.
+FULL_WAVES = tuple(
+    i for i, l in enumerate(WAVE_LAYERS) if l in MODEL.get("FULL_LAYERS", ())
+)
 UNI_WAVES = UNI_DEC + UNI_LM
 # ATTN_LAYERS indexes DECODE waves, and the unified sequence continues past them
 # into UNI_LM lm-head waves. A SHORT bisect build (DECODE_UNI_DEC below the
@@ -2574,6 +2592,14 @@ def build_module():
                 # its rmsX input.
                 a_iv = _la[-1] if len(_la) > 4 + len(_fa) else None
 
+                # Whether some decode wave carries a window. A build whose waves
+                # are all full-attention layers has none to carry.
+                _WINDOWED = (
+                    bool(MODEL.get("SLIDING_WINDOW", 0))
+                    and a_iv is not None
+                    and len(FULL_WAVES) < UNI_DEC
+                )
+
                 def _attn_L():
                     """L for the attention herd, with this wave's window packed above it.
 
@@ -2583,11 +2609,11 @@ def build_module():
                     wave loop is fully unrolled by the shim), so the word is L plus a
                     per-wave constant and DecodeInstsGen's base + slope * L still
                     reproduces it exactly. Waves at or past UNI_DEC are lm-head
-                    waves and FULL_LAYERS attend everything: both keep L as is.
+                    waves and FULL_WAVES attend everything: both keep L as is.
                     """
-                    sw = MODEL.get("SLIDING_WINDOW", 0)
-                    if not (sw and a_iv is not None):
+                    if not _WINDOWED:
                         return L_rt
+                    sw = MODEL["SLIDING_WINDOW"]
                     assert sw % 16 == 0 and 0 < sw // 16 < 2048, sw
                     assert ATTN_MAXL <= _RTP_L_MASK, ATTN_MAXL
                     _c = lambda v: arith.ConstantOp(
@@ -2602,7 +2628,7 @@ def build_module():
                         _c((sw // 16) << 20),
                         _c(0),
                     )
-                    for _full in MODEL.get("FULL_LAYERS", ()):
+                    for _full in FULL_WAVES:
                         win = arith.select(
                             arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_full)),
                             _c(0),
@@ -2612,7 +2638,6 @@ def build_module():
 
                 # An operand whenever it varies: per dispatch under DYNSEQ, per
                 # wave under a sliding window.
-                _WINDOWED = bool(MODEL.get("SLIDING_WINDOW", 0)) and a_iv is not None
                 L_attn = _attn_L() if (DYNSEQ or _WINDOWED) else None
 
                 # Per-layer offset helpers. a_iv is None (single-layer): plain Python

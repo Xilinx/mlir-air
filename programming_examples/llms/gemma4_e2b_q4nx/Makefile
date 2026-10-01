@@ -298,7 +298,7 @@ endef
 layer-gate:
 	@set -e; for L in $(GATE_LAYERS); do \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
-	    UNI_DEC=1 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
+	    UNI_DEC=1 LAYERS=$$L PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
 	  cd $(srcdir); \
 	  SCORE_ARGS="--layer $$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$L.npz"; \
 	  $(score_layer); \
@@ -313,12 +313,12 @@ layer-gate-shared:
 	@set -e; for P in $(GATE_PAIRS); do \
 	  SRC=$${P%:*}; L=$${P#*:}; \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
-	    UNI_DEC=1 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
+	    UNI_DEC=1 LAYERS=$$SRC PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
 	  cd $(srcdir); \
 	  SCORE_ARGS="--layer $$SRC --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$SRC.npz --dump /tmp/g4_d$$SRC.npz"; \
 	  $(score_layer); \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
-	    UNI_DEC=2 KV_SRC=0,0 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
+	    UNI_DEC=2 KV_SRC=0,0 LAYERS=$$SRC,$$L PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
 	  cd $(srcdir); \
 	  SCORE_ARGS="--layers $$SRC,$$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$${SRC}_$$L.npz --prefix-dump /tmp/g4_d$$SRC.npz"; \
 	  $(score_layer); \

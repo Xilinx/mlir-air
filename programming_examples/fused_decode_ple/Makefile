@@ -59,16 +59,20 @@ PEANO_KBASE := -std=c++20 --target=aie2p-none-unknown-elf \
 # ATTN_MAXL to build for. 16 is the layer gate's size (llms/gemma4_e2b_q4nx
 # scores one token at position 0); production is 2048.
 LBUILD ?= 16
-# Decode waves in the unified sequence, and the per-wave KV source map. Both are
-# what the layer gate varies: UNI_DEC=2 with KV_SRC=0,0 puts a KV-SHARED layer
-# (>=15, which has no k/v projection of its own) in slab 1 reading slab 0.
+# Decode waves in the unified sequence, the per-wave KV source map, and the
+# model layer each wave computes. All are what the layer gate varies: UNI_DEC=2
+# with KV_SRC=0,0 puts a KV-SHARED layer (>=15, which has no k/v projection of
+# its own) in slab 1 reading slab 0, and LAYERS=14,19 says which layers those
+# are, so a full-attention layer is not built with a sliding window.
 UNI_DEC ?= 1
 KV_SRC  ?=
+LAYERS  ?=
 
 DECODE_ENV := DECODE_MODEL=$(DECODE_MODEL) VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) \
               UNIFIED=1 LM_HEAD=0 NLAYERS=$(UNI_DEC) DECODE_GOLDEN=1 \
               DECODE_GOLDEN_L=$(LBUILD) DECODE_UNI_DEC=$(UNI_DEC) \
-              $(if $(KV_SRC),DECODE_KV_SRC=$(KV_SRC),)
+              $(if $(KV_SRC),DECODE_KV_SRC=$(KV_SRC),) \
+              $(if $(LAYERS),DECODE_LAYERS=$(LAYERS),)
 
 # GLU_SLICE is derived from this model's own egress-round parity, not looked up,
 # so a header copied from another model can disagree with the IR -- silently, at
@@ -135,8 +139,8 @@ kernels: preflight-peano
 ## Weight-free: weights are runtime BOs, so no bundle is read at build time.
 ##
 ## Not idempotent, unlike ../fused_decode's compile-decode. The template here is
-## keyed on THREE things the consumer varies per run (LBUILD, UNI_DEC, KV_SRC)
-## rather than one, and a stale-but-present decode.xclbin is the single most
+## keyed on FOUR things the consumer varies per run (LBUILD, UNI_DEC, KV_SRC,
+## LAYERS) rather than one, and a stale-but-present decode.xclbin is the single most
 ## expensive mistake available in this example: the layer gate does not build,
 ## it dispatches whatever template is on disk, so a skipped rebuild scores the
 ## wrong design and reads as a numerics regression.
@@ -149,7 +153,7 @@ kernels: preflight-peano
 ## exit non-zero after writing good artifacts), so the staleness has to be
 ## removed instead.
 compile-decode: kernels
-	@echo ">>> decode template (ATTN_MAXL=$(LBUILD), UNI_DEC=$(UNI_DEC)$(if $(KV_SRC), KV_SRC=$(KV_SRC),))"
+	@echo ">>> decode template (ATTN_MAXL=$(LBUILD), UNI_DEC=$(UNI_DEC)$(if $(KV_SRC), KV_SRC=$(KV_SRC),)$(if $(LAYERS), LAYERS=$(LAYERS),))"
 	@rm -f $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin
 	@cd $(srcdir) && $(DECODE_ENV) $(PYTHON) $(DECODE_DRIVER) >/tmp/ple_decode_L$(LBUILD).log 2>&1; \
 	  if [ -f $(srcdir)/decode.xclbin ] && [ -f $(srcdir)/decode.insts.bin ]; then \
