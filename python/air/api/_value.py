@@ -319,6 +319,38 @@ class _StridedView:
         merged = [was or now for was, now in zip(self.dropped, dropped)]
         return self._respan(combined, sizes, list(self.strides), sizes, merged)
 
+    def broadcast_to(self, *shape):
+        """This region read as ``shape``, numpy's broadcast_to: shapes align
+        on the right, new leading axes and axes of extent 1 repeat with stride
+        0, every other axis must match. Nothing is copied, and like numpy's
+        the result is read-only -- a transfer cannot write it."""
+        if len(shape) == 1 and not isinstance(shape[0], int):
+            shape = tuple(shape[0])
+        if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in shape):
+            raise ValueError(
+                f"broadcast_to takes positive integer extents, got {shape}"
+            )
+        new = len(shape) - len(self.sizes)
+        if new < 0:
+            raise ValueError(
+                f"broadcast_to{tuple(shape)} has fewer axes than the region {tuple(self.sizes)}"
+            )
+        offsets, sizes, strides = [coerce_index(0)] * new, list(shape[:new]), [0] * new
+        for d, (n, size, stride) in enumerate(
+            zip(shape[new:], self.sizes, self.strides)
+        ):
+            if n != size and size != 1:
+                raise ValueError(
+                    f"cannot broadcast region {tuple(self.sizes)} to {tuple(shape)}: "
+                    f"axis {d} has extent {size}, not 1 or {n}"
+                )
+            offsets.append(self.offsets[d])
+            sizes.append(n)
+            strides.append(stride if n == size else 0)
+        out = self._respan(offsets, sizes, strides, list(shape), [False] * len(shape))
+        out.readonly = True
+        return out
+
     def transpose(self, *axes):
         """This region walked with its axes permuted.
 
@@ -360,6 +392,10 @@ class _Reshapable:
     def transpose(self, *axes):
         """The whole array with its axes permuted. See _StridedView."""
         return self._whole_view().transpose(*axes)
+
+    def broadcast_to(self, *shape):
+        """The whole array read as ``shape``. See _StridedView."""
+        return self._whole_view().broadcast_to(*shape)
 
 
 class Tensor(_Reshapable):
@@ -454,6 +490,7 @@ class TensorSlice(_StridedView):
         "logical_sizes",
         "is_view",
         "dropped",
+        "readonly",
     )
 
     def __init__(
@@ -479,9 +516,11 @@ class TensorSlice(_StridedView):
         # what tells a transfer to check element counts instead of axes.
         self.logical_sizes = list(sizes if logical_sizes is None else logical_sizes)
         self.is_view = is_view
+        # set by broadcast_to, kept by every further view of the region
+        self.readonly = False
 
     def _respan(self, offsets, sizes, strides, logical_sizes, dropped=None):
-        return TensorSlice(
+        out = TensorSlice(
             self.tensor,
             offsets,
             sizes,
@@ -490,6 +529,8 @@ class TensorSlice(_StridedView):
             is_view=True,
             dropped=dropped,
         )
+        out.readonly = self.readonly
+        return out
 
     @property
     def dtype(self):
@@ -629,6 +670,7 @@ class BufferSlice(_StridedView):
         "logical_sizes",
         "is_view",
         "dropped",
+        "readonly",
     )
 
     def __init__(
@@ -661,6 +703,8 @@ class BufferSlice(_StridedView):
         # match the other endpoint's axis for axis -- only the element count
         # does. Transfers relax their shape check for it, and only for it.
         self.is_view = is_view
+        # set by broadcast_to, kept by every further view of the region
+        self.readonly = False
 
     @property
     def dtype(self):
@@ -843,7 +887,7 @@ class BufferSlice(_StridedView):
         return [o.materialize() for o in self.offsets]
 
     def _respan(self, offsets, sizes, strides, logical_sizes, dropped=None):
-        return BufferSlice(
+        out = BufferSlice(
             self.buffer,
             offsets,
             sizes,
@@ -852,6 +896,8 @@ class BufferSlice(_StridedView):
             is_view=True,
             dropped=dropped,
         )
+        out.readonly = self.readonly
+        return out
 
     def __repr__(self):
         return f"BufferSlice({self.buffer!r}, sizes={self.sizes})"
