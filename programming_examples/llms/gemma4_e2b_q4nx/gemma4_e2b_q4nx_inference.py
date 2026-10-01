@@ -501,6 +501,29 @@ def _prefill_npu(prompt, model, seq_len=None):
     return ks, vs, int(logits.argmax()), ttft
 
 
+def _prefill_fused(prompt, model, build_dir):
+    """The one-device chunked prefill (fused_prefill/) -> the same tuple."""
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fused_prefill")
+    )
+    from runtime import FusedPrefill
+
+    t_load = time.perf_counter()
+    pf = FusedPrefill(build_dir, max_len=max(2048, len(prompt)))
+    pf.load_weights(model=model)
+    print(
+        f"[inference] model load (repack + resident BOs): "
+        f"{time.perf_counter() - t_load:.1f}s",
+        flush=True,
+    )
+    t0 = time.perf_counter()
+    logits = pf.prefill(prompt)
+    ttft = time.perf_counter() - t0
+    ks, vs = pf.kv_stack()
+    pf.suspend()  # release its hw_contexts before the decoder runs
+    return ks, vs, int(logits.argmax()), ttft
+
+
 def _prefill_numpy(prompt, model):
     """The CPU oracle prefill -> the same tuple, for debugging the device path."""
     import numpy as np
@@ -520,9 +543,16 @@ def _prefill_numpy(prompt, model):
 
 
 def generate(
-    prompt, n_tokens, model=MODEL_DEFAULT, numpy_prefill=False, ignore_eos=False
+    prompt,
+    n_tokens,
+    model=MODEL_DEFAULT,
+    numpy_prefill=False,
+    ignore_eos=False,
+    fused_prefill=None,
 ):
-    src = "numpy reference" if numpy_prefill else "AIR NPU"
+    src = (
+        "numpy reference" if numpy_prefill else "fused" if fused_prefill else "AIR NPU"
+    )
     print(
         f"[inference] {src} prefill (KV seed + first token), "
         f"prompt_len={len(prompt)}...",
@@ -530,6 +560,8 @@ def generate(
     )
     if numpy_prefill:
         ks, vs, first, ttft = _prefill_numpy(prompt, model)
+    elif fused_prefill:
+        ks, vs, first, ttft = _prefill_fused(prompt, model, fused_prefill)
     else:
         ks, vs, first, ttft = _prefill_npu(prompt, model)
     P = ks[0].shape[0]
@@ -678,6 +710,13 @@ def main():
         "NPU prefill (the oracle it is gated against; minutes, not seconds)",
     )
     ap.add_argument(
+        "--fused-prefill",
+        metavar="BUILD_DIR",
+        default=None,
+        help="prefill on the one-device chunked prefill built there by "
+        "`make compile-fused-prefill`",
+    )
+    ap.add_argument(
         "--gate",
         action="store_true",
         help="exit non-zero unless the Paris continuation matches",
@@ -714,6 +753,7 @@ def main():
         model=args.model_source,
         numpy_prefill=args.numpy_prefill,
         ignore_eos=args.ignore_eos,
+        fused_prefill=args.fused_prefill,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")
