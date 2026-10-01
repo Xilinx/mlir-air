@@ -2544,7 +2544,7 @@ getLoopStrideAndTripCount(Value index, scf::ForOp forOp) {
 static void updateAccessPatternByScfForNest(
     std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
         &pattern,
-    SmallVector<Value> indices, OpBuilder builder, Region *untilReg = nullptr,
+    SmallVector<Value> indices, OpBuilder builder,
     ArrayRef<int64_t> fullShape = {}) {
   auto loc = builder.getUnknownLoc();
   for (auto [dim, index] : llvm::enumerate(indices)) {
@@ -2553,8 +2553,7 @@ static void updateAccessPatternByScfForNest(
     SmallVector<scf::ForOp> loops;
     for (BlockArgument arg : getIndexSources(index))
       if (auto forOp = scf::getForInductionVarOwner(arg))
-        if (!untilReg || untilReg->isAncestor(forOp->getParentRegion()))
-          loops.push_back(forOp);
+        loops.push_back(forOp);
     bool rewritable = herdTileIndicesAreRewritable(index);
     if (loops.empty() && rewritable)
       continue;
@@ -2592,57 +2591,186 @@ air::writeAccessPattern(air::ChannelInterface chanOp) {
   return pattern;
 }
 
+namespace {
+// How the shrink's offset rewrite (getUpdatedOffsetAfterShrinkage) treats the
+// herd tile indices a value reaches. It zeroes one that is the offset itself
+// or an operand of the offset's defining op, and, when that op is an
+// air.execute, every one its body uses. A tile index reached any deeper keeps
+// its range over the herd.
+enum class OffsetDepth {
+  Offset,       // The offset value itself.
+  Operand,      // Read directly by the offset's op: tile indices zeroed.
+  InOffsetBody, // Defined inside the offset's air.execute body.
+  Deeper,       // Anything further away: tile indices keep their range.
+};
+} // namespace
+
+// The [min, max] that `v` takes in the herd body once the shrink has rewritten
+// the offset it feeds, or std::nullopt if `v` is computed by an op not modelled
+// here. Ranges combine by interval arithmetic, so they may be wider than the
+// values actually taken, never narrower.
+static std::optional<std::pair<int64_t, int64_t>>
+getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
+                             air::ExecuteOp offsetExec = nullptr) {
+  using Range = std::pair<int64_t, int64_t>;
+  if (auto c = getConstantIntValue(v))
+    return Range{*c, *c};
+  if (auto herd = air::getHerdArgOwner(v)) {
+    if (depth == OffsetDepth::Offset || depth == OffsetDepth::Operand)
+      return Range{0, 0};
+    for (auto [id, size] : llvm::zip(herd.getIds(), herd.getSizeOperands()))
+      if (v == id)
+        if (auto n = getConstantIntValue(size))
+          return Range{0, *n - 1};
+    for (auto [arg, size] : llvm::zip(herd.getSize(), herd.getSizeOperands()))
+      if (v == arg)
+        if (auto n = getConstantIntValue(size))
+          return Range{*n, *n};
+    return std::nullopt;
+  }
+  if (auto forOp = scf::getForInductionVarOwner(v)) {
+    auto lb = getConstantIntValue(forOp.getLowerBound());
+    auto step = getConstantIntValue(forOp.getStep());
+    auto trips = air::getStaticScfForTripCountAsInt(forOp);
+    if (!lb || !step || !trips || *step <= 0 || *trips <= 0)
+      return std::nullopt;
+    return Range{*lb, *lb + (*trips - 1) * *step};
+  }
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+
+  if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+    unsigned idx = llvm::find(exec.getResults(), v) - exec.getResults().begin();
+    Value yielded = exec.getBody().getTerminator()->getOperand(idx);
+    if (depth == OffsetDepth::Offset)
+      return getOffsetRangeAfterShrinkage(yielded, OffsetDepth::InOffsetBody,
+                                          exec);
+    return getOffsetRangeAfterShrinkage(yielded, OffsetDepth::Deeper);
+  }
+  auto operandRange = [&](Value operand) {
+    OffsetDepth next = OffsetDepth::Deeper;
+    if (depth == OffsetDepth::Offset)
+      next = OffsetDepth::Operand;
+    else if (depth == OffsetDepth::InOffsetBody)
+      next = offsetExec.getRegion().isAncestor(operand.getParentRegion())
+                 ? OffsetDepth::InOffsetBody
+                 : OffsetDepth::Operand;
+    return getOffsetRangeAfterShrinkage(operand, next, offsetExec);
+  };
+
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
+    // The map's value with every input at 0, plus each distinct operand's
+    // coefficient times that operand's range. A map that is not linear in its
+    // operands has no coefficients and is not modelled.
+    AffineMap map = apply.getAffineMap();
+    auto constant = air::evaluateConstantsInMap(
+        map, SmallVector<std::optional<int64_t>>(map.getNumSymbols(), 0),
+        SmallVector<std::optional<int64_t>>(map.getNumDims(), 0),
+        apply.getContext());
+    if (!constant)
+      return std::nullopt;
+    Range range{*constant, *constant};
+    SetVector<Value> operands(llvm::from_range, apply.getMapOperands());
+    for (Value operand : operands) {
+      auto c = air::getAffineApplyCoefficient(apply, operand);
+      if (!c)
+        return std::nullopt;
+      if (*c == 0)
+        continue;
+      auto r = operandRange(operand);
+      if (!r)
+        return std::nullopt;
+      range.first += *c > 0 ? *c * r->first : *c * r->second;
+      range.second += *c > 0 ? *c * r->second : *c * r->first;
+    }
+    return range;
+  }
+  if (auto delinearize = dyn_cast<affine::AffineDelinearizeIndexOp>(def)) {
+    auto linear = operandRange(delinearize.getLinearIndex());
+    if (!linear || linear->first < 0)
+      return std::nullopt;
+    // The basis has one entry per result when it names the outer bound, and
+    // one fewer when it does not.
+    SmallVector<OpFoldResult> basis = delinearize.getMixedBasis();
+    unsigned numResults = delinearize.getNumResults();
+    unsigned shift = numResults - basis.size();
+    unsigned r = cast<OpResult>(v).getResultNumber();
+    int64_t inner = 1;
+    for (unsigned j = r + 1; j < numResults; j++) {
+      auto b = getConstantIntValue(basis[j - shift]);
+      if (!b || *b <= 0)
+        return std::nullopt;
+      inner *= *b;
+    }
+    Range range{0, linear->second / inner};
+    if (r >= shift) {
+      auto b = getConstantIntValue(basis[r - shift]);
+      if (!b || *b <= 0)
+        return std::nullopt;
+      range.second = std::min(range.second, *b - 1);
+    }
+    return range;
+  }
+  if (isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def)) {
+    auto lhs = operandRange(def->getOperand(0));
+    auto rhs = operandRange(def->getOperand(1));
+    if (!lhs || !rhs)
+      return std::nullopt;
+    if (isa<arith::AddIOp>(def))
+      return Range{lhs->first + rhs->first, lhs->second + rhs->second};
+    if (isa<arith::SubIOp>(def))
+      return Range{lhs->first - rhs->second, lhs->second - rhs->first};
+    int64_t products[] = {lhs->first * rhs->first, lhs->first * rhs->second,
+                          lhs->second * rhs->first, lhs->second * rhs->second};
+    return Range{*llvm::min_element(products), *llvm::max_element(products)};
+  }
+  if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(def))
+    return operandRange(def->getOperand(0));
+  return std::nullopt;
+}
+
+// The access pattern of a memref.subview, as the extent it reaches along each
+// source dimension: the highest offset that dimension takes once the shrink
+// has rewritten it, plus one access, (size - 1) * stride + 1. Each extent is
+// recorded as a size against the dimension's own stride, so it is the bound
+// directly. A dimension whose offset cannot be bounded keeps its full size.
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
+air::writeAccessPattern(memref::SubViewOp subview) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto subview_offsets = subview.getOffsets().begin();
-  auto subview_sizes = subview.getSizes().begin();
-  auto subview_strides = subview.getStrides().begin();
-  auto static_offsets = subview.getStaticOffsets();
-  auto static_sizes = subview.getStaticSizes();
-  auto static_strides = subview.getStaticStrides();
-  // Get strided layout from subview op's output MemRefType
-  if (auto strided = llvm::dyn_cast_if_present<StridedLayoutAttr>(
-          llvm::cast<MemRefType>(subview.getResult().getType()).getLayout()))
-    static_strides = strided.getStrides();
+  auto sourceTy = llvm::cast<MemRefType>(subview.getSource().getType());
+  SmallVector<int64_t> sourceStrides;
+  int64_t sourceOffset;
+  if (failed(sourceTy.getStridesAndOffset(sourceStrides, sourceOffset)))
+    return pattern; // Empty: the whole memref.
 
   auto loc = subview.getLoc();
   OpBuilder builder(subview);
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      std::get<0>(pattern).push_back(
-          arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      std::get<0>(pattern).push_back(*subview_offsets++);
+  SmallVector<Value> offsets, sizes, strides;
+  for (auto [dim, offset, size, stride] :
+       llvm::enumerate(subview.getMixedOffsets(), subview.getMixedSizes(),
+                       subview.getMixedStrides())) {
+    int64_t dimSize = sourceTy.getDimSize(dim);
+    if (ShapedType::isDynamic(dimSize) ||
+        ShapedType::isDynamic(sourceStrides[dim]))
+      return {};
+    std::optional<int64_t> maxOffset = getConstantIntValue(offset);
+    if (auto value = dyn_cast<Value>(offset))
+      if (auto range = getOffsetRangeAfterShrinkage(value, OffsetDepth::Offset))
+        maxOffset = range->second;
+    auto constSize = getConstantIntValue(size);
+    auto constStride = getConstantIntValue(stride);
+    int64_t extent = dimSize;
+    if (maxOffset && constSize && constStride && *constSize > 0)
+      extent =
+          std::min(dimSize, *maxOffset + (*constSize - 1) * *constStride + 1);
+    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, offset));
+    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, extent));
+    strides.push_back(
+        arith::ConstantIndexOp::create(builder, loc, sourceStrides[dim]));
   }
-  for (auto o : static_sizes) {
-    if (o >= 0)
-      std::get<1>(pattern).push_back(
-          arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      std::get<1>(pattern).push_back(*subview_sizes++);
-  }
-  if (static_sizes.size() < static_strides.size()) {
-    subview->emitOpError(
-        "isn't standard or rank-reduced memref.subview. Not supported.");
-    return pattern;
-  }
-  // If rank-reduced memref.subview, then pad strides with 1s.
-  for (unsigned i = 0; i < static_sizes.size() - static_strides.size(); i++)
-    std::get<2>(pattern).push_back(
-        arith::ConstantIndexOp::create(builder, loc, 1));
-  for (auto o : static_strides) {
-    if (o >= 0)
-      std::get<2>(pattern).push_back(
-          arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      std::get<2>(pattern).push_back(*subview_strides++);
-  }
-  updateAccessPatternByScfForNest(
-      pattern, std::get<0>(pattern), builder, commonReg,
-      llvm::cast<MemRefType>(subview.getSource().getType()).getShape());
-  return pattern;
+  return {offsets, sizes, strides};
 }
 
 // Helper function to check if a value ultimately depends on herd tile indices,
@@ -2718,7 +2846,6 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
     std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
         builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
   updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder,
-                                  /*untilReg=*/nullptr,
                                   memrefTy.hasRank() ? memrefTy.getShape()
                                                      : ArrayRef<int64_t>{});
   return pattern;
@@ -2766,7 +2893,6 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
     std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
         builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
   updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder,
-                                  /*untilReg=*/nullptr,
                                   memrefTy.hasRank() ? memrefTy.getShape()
                                                      : ArrayRef<int64_t>{});
   return pattern;
@@ -2790,15 +2916,11 @@ air::getDataAccessShapeFromMemcpyOp(Value memref,
   SmallVector<
       std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
       accessPatterns;
-  // Get a common ancestor region for all users
-  Region *commonAncestorReg = findCommonRegionContainingAllAncestors(
-      users, users.front()->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
-
   for (auto user : users) {
     if (auto chanUser = dyn_cast_if_present<air::ChannelInterface>(user))
       accessPatterns.push_back(writeAccessPattern(chanUser));
     else if (auto svUser = dyn_cast_if_present<memref::SubViewOp>(user))
-      accessPatterns.push_back(writeAccessPattern(svUser, commonAncestorReg));
+      accessPatterns.push_back(writeAccessPattern(svUser));
     else if (auto vecReadUser =
                  dyn_cast_if_present<mlir::vector::TransferReadOp>(user))
       accessPatterns.push_back(writeAccessPattern(vecReadUser));
