@@ -2428,6 +2428,48 @@ static void updateAccessPatternByScfForNest(
     }
     if (!index.getDefiningOp())
       continue;
+    // An index computed by a bare affine.apply -- typically `iv + tile * c`,
+    // a loop over a herd-tiled buffer -- spans its loop IVs' trip counts just
+    // as an IV used directly does, scaled by each IV's coefficient in the
+    // map. Without this the dimension keeps the size of 1 that a herd-tile
+    // dependence sets, and a buffer that is only ever touched by vector
+    // transfers inside such loops is shrunk to a single vector's footprint.
+    if (auto applyOp =
+            dyn_cast_if_present<affine::AffineApplyOp>(index.getDefiningOp())) {
+      AffineMap map = applyOp.getAffineMap();
+      if (map.getNumResults() != 1)
+        continue;
+      auto evalWith = [&](unsigned pos, int64_t v) -> std::optional<int64_t> {
+        MLIRContext *ctx = map.getContext();
+        SmallVector<AffineExpr> dims, syms;
+        for (unsigned d = 0; d < map.getNumDims(); d++)
+          dims.push_back(getAffineConstantExpr(d == pos ? v : 0, ctx));
+        for (unsigned s = 0; s < map.getNumSymbols(); s++)
+          syms.push_back(
+              getAffineConstantExpr(map.getNumDims() + s == pos ? v : 0, ctx));
+        AffineExpr e = simplifyAffineExpr(
+            map.getResult(0).replaceDimsAndSymbols(dims, syms), 0, 0);
+        if (auto c = dyn_cast<AffineConstantExpr>(e))
+          return c.getValue();
+        return std::nullopt;
+      };
+      for (auto [pos, oper] : llvm::enumerate(applyOp.getMapOperands())) {
+        auto scfForOp = scf::getForInductionVarOwner(oper);
+        if (!scfForOp)
+          continue;
+        if (untilReg && !untilReg->isAncestor(scfForOp->getParentRegion()))
+          continue; // Out of scope
+        auto v0 = evalWith(pos, 0), v1 = evalWith(pos, 1),
+             v2 = evalWith(pos, 2);
+        // Only a linear dependence has a single stride to record.
+        if (!v0 || !v1 || !v2 || *v2 - *v0 != 2 * (*v1 - *v0) || *v1 <= *v0)
+          continue;
+        updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()) *
+                                (*v1 - *v0),
+                            *air::getStaticScfForTripCountAsInt(scfForOp), dim);
+      }
+      continue;
+    }
     if (auto execOp =
             dyn_cast_if_present<air::ExecuteOp>(index.getDefiningOp())) {
       for (auto &childOp : execOp.getChildOps())
