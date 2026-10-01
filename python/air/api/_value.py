@@ -319,6 +319,20 @@ class _StridedView:
         merged = [was or now for was, now in zip(self.dropped, dropped)]
         return self._respan(combined, sizes, list(self.strides), sizes, merged)
 
+    def broadcast(self, n):
+        """This region walked ``n`` times over, as a new outermost axis of
+        stride 0 -- a source read once per round without being stored ``n``
+        times. Nothing is copied."""
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            raise ValueError(f"broadcast(n) takes a positive integer count, got {n!r}")
+        return self._respan(
+            [coerce_index(0)] + list(self.offsets),
+            [int(n)] + list(self.sizes),
+            [0] + list(self.strides),
+            [int(n)] + list(self.logical_sizes),
+            [False] + list(self.dropped),
+        )
+
     def transpose(self, *axes):
         """This region walked with its axes permuted.
 
@@ -360,6 +374,10 @@ class _Reshapable:
     def transpose(self, *axes):
         """The whole array with its axes permuted. See _StridedView."""
         return self._whole_view().transpose(*axes)
+
+    def broadcast(self, n):
+        """The whole array walked n times over. See _StridedView."""
+        return self._whole_view().broadcast(n)
 
 
 class Tensor(_Reshapable):
