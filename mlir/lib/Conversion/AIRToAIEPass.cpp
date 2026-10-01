@@ -4204,7 +4204,8 @@ public:
         return failure();
       allocL1Buffers(device, BufferId);
     } else {
-      specializeL2MemrefsIntoMemtiles(device);
+      if (failed(specializeL2MemrefsIntoMemtiles(device)))
+        return failure();
       allocL1Buffers(device, BufferId);
       allocL2Buffers(device, bufferToMemtileMap, BufferId);
     }
@@ -5017,11 +5018,11 @@ public:
   // Optimize L2 (memtile) buffer allocation by attempting to partition
   // non-overlapping L2 memref accesses into (upto M, where M is the number of
   // memtiles being allocated to) separate memrefs.
-  void specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d) {
+  LogicalResult specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d) {
     // Get all memtiles to place L2 memrefs onto.
     std::vector<AIE::TileLike> memtiles = getMemtilesFromDeviceOp(d);
     if (memtiles.empty())
-      return;
+      return success();
     int maxMemtileSrcConnections =
         memtiles[0].getNumSourceConnections(AIE::WireBundle::DMA);
     int maxMemtileDstConnections =
@@ -5058,7 +5059,7 @@ public:
       }
     });
     if (memrefs.empty())
-      return;
+      return success();
 
     // Tile the memrefs based on air.channel put/get access pattern.
     for (auto memref : memrefs) {
@@ -5071,15 +5072,46 @@ public:
           gets.push_back(get);
       }
       // A memref reached through channels on one side only has nothing to
-      // partition against; leave it whole, as the NYI case below does.
-      if (puts.empty() || gets.empty())
+      // partition against: its other side is not a channel, and partitioning
+      // cannot rewrite it. Left whole, it is only correct if its channels fit
+      // the memtile's ports. Packet flows share a port, but circuit flows
+      // beyond the port count would be assigned round-robin onto a port that
+      // already carries another flow, broadcasting each BD to both
+      // destinations (MM2S) or merging unrelated inputs (S2MM).
+      if (puts.empty() || gets.empty()) {
+        std::vector<air::ChannelInterface> chanOps;
+        for (auto put : puts)
+          chanOps.push_back(put);
+        for (auto get : gets)
+          chanOps.push_back(get);
+        std::vector<std::string> circuitChannels;
+        for (auto op : chanOps) {
+          auto chan = air::getChannelDeclarationThroughSymbol(op);
+          if (chan && chan.getChannelType() != "npu_dma_packet")
+            push_back_if_unique<std::string>(circuitChannels,
+                                             op.getChanName().str());
+        }
+        int ports =
+            puts.empty() ? maxMemtileDstConnections : maxMemtileSrcConnections;
+        if ((int)circuitChannels.size() > ports)
+          return memref.getDefiningOp()->emitOpError()
+                 << "L2 memref is accessed by " << circuitChannels.size()
+                 << " circuit-switched channel "
+                 << (puts.empty() ? "gets" : "puts")
+                 << ", more than a memtile's " << ports << " "
+                 << (puts.empty() ? "S2MM" : "MM2S")
+                 << " ports, and has no channel "
+                 << (puts.empty() ? "puts" : "gets")
+                 << " to partition it against. Not supported.";
         continue;
+      }
       if (everyAIRChannelAccessIsNonOverlapping(gets) &&
           everyAIRChannelAccessIsNonOverlapping(puts)) {
         partitionMemref(puts, gets);
       } else
         continue; // Multiple of puts and multiple of gets, NYI.
     }
+    return success();
   }
 
   template <typename T>
@@ -8276,7 +8308,10 @@ public:
             device->hasAttr("segment_unroll_y"))
           removeOrphanedChannels(device);
         unifyIndexSwitchArmBuffers(device);
-        specializeL2MemrefsIntoMemtiles(device);
+        if (failed(specializeL2MemrefsIntoMemtiles(device))) {
+          signalPassFailure();
+          return;
+        }
         allocL1Buffers(device, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         air::renumberMemcpyIfOps(&device.getRegion(),
