@@ -807,7 +807,9 @@ module {
   air.channel @channel_1 [1, 1]
   air.channel @channel_2 [1, 1]
   air.channel @channel_3 [1, 1]
-  air.channel @channel_10 [4, 4]
+  // Packet-switched: twelve of the sixteen cores drain into one memtile, more
+  // than its six S2MM channels, so flows share channels.
+  air.channel @channel_10 [4, 4] {channel_type = "npu_dma_packet"}
   func.func @func12(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c2 = arith.constant 2 : index
     %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg2) : memref<512x512xbf16> attributes {id = 1 : i32} {
