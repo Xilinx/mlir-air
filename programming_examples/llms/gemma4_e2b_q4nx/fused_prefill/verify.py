@@ -76,6 +76,7 @@ def main():
     print(f"weights loaded in {time.perf_counter() - t0:.0f} s", flush=True)
 
     logits = pf.prefill(ids)
+    fails = []
     for r in range(a.repeat):
         pf.dev_t, pf.by_op = 0.0, {}
         t0 = time.perf_counter()
@@ -86,7 +87,7 @@ def main():
             flush=True,
         )
         if int(lg.argmax()) != int(logits.argmax()):
-            print("run-to-run first token mismatch")
+            fails.append(f"run {r} first token differs from the first run")
     ks, vs = pf.kv_stack()
 
     ref, kv = gw.forward_prompt(model, ids)
@@ -105,7 +106,14 @@ def main():
         for L in range(gw.NUM_LAYERS)
     )
     print(f"worst per-layer K/V cosine vs reference = {worst:.5f}")
-    print("GATE PASS" if c >= a.tol and first == rfirst else "GATE FAIL")
+    if c < a.tol:
+        fails.append(f"logit cosine {c:.5f} < {a.tol}")
+    if first != rfirst:
+        fails.append("first token differs from the reference")
+    if fails:
+        print("GATE FAIL: " + "; ".join(fails))
+        sys.exit(1)
+    print("GATE PASS")
 
 
 if __name__ == "__main__":
