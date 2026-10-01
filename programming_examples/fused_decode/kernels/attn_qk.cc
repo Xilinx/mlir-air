@@ -486,6 +486,10 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
   const aie::vector<bf16, 16> neg_inf = aie::broadcast<bf16, 16>(-0x1.FEp127f);
   const aie::vector<int, 16> idx = aie::vector<int, 16>(
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+  // The RTP packs a sliding window above L: bits 0-19 are L, bits 20-30 the
+  // window in units of 16 keys (0 = full attention). See attn_window_lo().
+  const int lo = attn_window_lo(L);
+  L &= ATTN_RTP_L_MASK;
   if (blk == 0)
     aie::store_v(m_state, neg_inf); // reset running max for a new query
   int rem = L - blk * 16;
@@ -496,9 +500,16 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
   // ATTN_MAXL build serve every L (the reference one-MAX_L masking).
   if (rem <= 0)
     return;
+  // ...and the same for a block wholly before a sliding window: every key in
+  // it is out of reach, so it is skipped rather than fed through as -inf.
+  if ((blk + 1) * 16 <= lo)
+    return;
   rem = (rem < 16) ? rem : 16;
   aie::mask<16> mask = aie::le(idx, rem); // partial mask on the last block
-  bool is_first = (blk == 0);
+  // The block the window opens in: keys before `lo` are masked like the tail.
+  if (lo > blk * 16)
+    mask = mask & aie::gt(idx, lo - blk * 16);
+  bool is_first = (blk == lo / 16);
   _attn_qk<DH / 8, GQA_R, GQA_S, GQA_T>(q, k_block, s_block, m_state, c_state,
                                         mask, is_first);
   float *c = (float *)(s_block + Q_HEADS_PADDED_PER_CU * 16);

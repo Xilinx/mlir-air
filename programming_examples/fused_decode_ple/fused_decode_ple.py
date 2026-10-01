@@ -1480,6 +1480,24 @@ assert not KV_SRC or (
 )
 if KV_SRC == list(range(UNI_DEC)):
     KV_SRC = []  # identity: keep the pre-existing offset expression verbatim
+# Which model layer each decode wave computes, for builds that pack layers into
+# waves out of order: the layer gate scores layer 4 alone as wave 0, or layers
+# 14,19 as waves 0,1. The weights are packed on the host and need no map; only
+# the per-layer attention class does, since a sliding-window wave carries its
+# window in the instruction stream. Empty (every model's default) is the
+# identity, which is what a full-depth or prefix build computes.
+WAVE_LAYERS = [
+    int(t) for t in _os.environ.get("DECODE_LAYERS", "").split(",") if t != ""
+] or list(range(UNI_DEC))
+assert len(WAVE_LAYERS) == UNI_DEC, (
+    f"DECODE_LAYERS must name one model layer per decode wave (UNI_DEC="
+    f"{UNI_DEC}): {WAVE_LAYERS}"
+)
+# Decode waves that attend the whole context. Every other decode wave is a
+# sliding-window wave when the model has a window.
+FULL_WAVES = tuple(
+    i for i, l in enumerate(WAVE_LAYERS) if l in MODEL.get("FULL_LAYERS", ())
+)
 UNI_WAVES = UNI_DEC + UNI_LM
 # ATTN_LAYERS indexes DECODE waves, and the unified sequence continues past them
 # into UNI_LM lm-head waves. A SHORT bisect build (DECODE_UNI_DEC below the
@@ -2450,6 +2468,17 @@ def build_module():
         def idx(v):
             return arith.ConstantOp.create_index(v)
 
+        # The attention RTP-L word carries a sliding window above L: bits 0-19
+        # are L, bits 20-30 the window in units of 16 keys (0 = full attention).
+        # See attn_window_lo() in kernels/aie_kernel_utils.h. Anything that
+        # wants L itself -- a block count -- takes it through here.
+        _RTP_L_MASK = 0xFFFFF
+
+        def _rtp_l(v):
+            return arith.andi(
+                v, arith.ConstantOp(IntegerAttr.get(i32, _RTP_L_MASK), None).result
+            )
+
         def _arm_of_wave(iv, arm):
             """Promote a decode arm to ATTN (2) on the attention waves.
 
@@ -2562,6 +2591,54 @@ def build_module():
                 # layer k's res2 is written back to arg0[0], which layer k+1 reads as
                 # its rmsX input.
                 a_iv = _la[-1] if len(_la) > 4 + len(_fa) else None
+
+                # Whether some decode wave carries a window. A build whose waves
+                # are all full-attention layers has none to carry.
+                _WINDOWED = (
+                    bool(MODEL.get("SLIDING_WINDOW", 0))
+                    and a_iv is not None
+                    and len(FULL_WAVES) < UNI_DEC
+                )
+
+                def _attn_L():
+                    """L for the attention herd, with this wave's window packed above it.
+
+                    Sliding-window layers attend only the last SLIDING_WINDOW keys;
+                    the readback still streams all L rows and the cores mask the
+                    ones before the window. The window is a constant per wave (the
+                    wave loop is fully unrolled by the shim), so the word is L plus a
+                    per-wave constant and DecodeInstsGen's base + slope * L still
+                    reproduces it exactly. Waves at or past UNI_DEC are lm-head
+                    waves and FULL_WAVES attend everything: both keep L as is.
+                    """
+                    if not _WINDOWED:
+                        return L_rt
+                    sw = MODEL["SLIDING_WINDOW"]
+                    assert sw % 16 == 0 and 0 < sw // 16 < 2048, sw
+                    assert ATTN_MAXL <= _RTP_L_MASK, ATTN_MAXL
+                    _c = lambda v: arith.ConstantOp(
+                        IntegerAttr.get(i32, v), None
+                    ).result
+                    # Without DYNSEQ, L is the build's own ATTN_L -- the word
+                    # DecodeInstsGen patches per token -- rather than a runtime
+                    # argument; the window rides on it the same way.
+                    base = L_rt if DYNSEQ else _c(ATTN_L)
+                    win = arith.select(
+                        arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
+                        _c((sw // 16) << 20),
+                        _c(0),
+                    )
+                    for _full in FULL_WAVES:
+                        win = arith.select(
+                            arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_full)),
+                            _c(0),
+                            win,
+                        )
+                    return arith.ori(base, win)
+
+                # An operand whenever it varies: per dispatch under DYNSEQ, per
+                # wave under a sliding window.
+                L_attn = _attn_L() if (DYNSEQ or _WINDOWED) else None
 
                 # Per-layer offset helpers. a_iv is None (single-layer): plain Python
                 # ints, byte-identical to the original single-layer feeds. a_iv is a
@@ -3629,7 +3706,7 @@ def build_module():
                 _seg_opers = (
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
-                    + ([L_rt] if DYNSEQ else [])
+                    + ([L_attn] if L_attn is not None else [])
                 )
 
                 @segment(name="seg", operands=_seg_opers)
@@ -3638,7 +3715,10 @@ def build_module():
                     # The context length reaches the attention herd from here, as a
                     # herd operand: an RTP slot the instruction stream writes per
                     # dispatch, not a constant folded into the core ELF.
-                    _seg_L = _sa[-1] if DYNSEQ else None
+                    # The attention herd's L word (window packed above L), and
+                    # the runtime L itself where there is one.
+                    _seg_Lw = _sa[-1] if L_attn is not None else None
+                    _seg_L = _seg_Lw if DYNSEQ else None
 
                     def _seg_rounds():
                         """ceil(L/16) for the memtile's block dequeue.
@@ -3650,7 +3730,7 @@ def build_module():
                         if not DYNSEQ_MEM:
                             return idx(ATTN_ROUNDS)
                         _s = arith.addi(
-                            _seg_L,
+                            _rtp_l(_seg_L),
                             arith.ConstantOp(IntegerAttr.get(i32, 15), None).result,
                         )
                         _q = arith.divui(
@@ -4551,8 +4631,8 @@ def build_module():
                                 # the last block. Lh = RTP_L herd operand (kernel masks
                                 # the last partial block). Compute proven in attn_iso.
                                 L_c = (
-                                    _seg_L
-                                    if DYNSEQ_RTP
+                                    _seg_Lw
+                                    if _seg_Lw is not None
                                     else arith.ConstantOp(
                                         IntegerAttr.get(i32, ATTN_L), None
                                     ).result
@@ -4721,7 +4801,7 @@ def build_module():
                                     if not DYNSEQ_RTP:
                                         return idx(ATTN_ROUNDS)
                                     _s = arith.addi(
-                                        Lh,
+                                        _rtp_l(Lh),
                                         arith.ConstantOp(
                                             IntegerAttr.get(i32, 15), None
                                         ).result,
