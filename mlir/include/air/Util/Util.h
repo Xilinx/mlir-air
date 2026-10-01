@@ -98,6 +98,11 @@ T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
+// True when `expr` is a linear combination: sums of dims, symbols and
+// constants, each scaled only by a constant. Everything else -- mod, floordiv,
+// ceildiv, or a product of two non-constants -- is rejected.
+bool isLinearAffineExpr(AffineExpr expr);
+
 std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
 std::optional<int64_t>
 getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);

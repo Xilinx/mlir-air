@@ -63,33 +63,6 @@ static unsigned traceFuncArgIdx(Value memref) {
 // through arith.index_cast chains, which the canonicalizer no longer folds
 // away after llvm/llvm-project#189042 (it used to incorrectly drop
 // index → iN → index round-trips even when iN is narrower than index).
-// True when `expr` is a linear combination: sums of dims, symbols and
-// constants, each scaled only by a constant. Everything else -- mod, floordiv,
-// ceildiv, or a product of two non-constants -- is rejected.
-static bool isLinearCombination(AffineExpr expr) {
-  switch (expr.getKind()) {
-  case AffineExprKind::Constant:
-  case AffineExprKind::DimId:
-  case AffineExprKind::SymbolId:
-    return true;
-  case AffineExprKind::Add: {
-    auto bin = cast<AffineBinaryOpExpr>(expr);
-    return isLinearCombination(bin.getLHS()) &&
-           isLinearCombination(bin.getRHS());
-  }
-  case AffineExprKind::Mul: {
-    auto bin = cast<AffineBinaryOpExpr>(expr);
-    if (!isa<AffineConstantExpr>(bin.getLHS()) &&
-        !isa<AffineConstantExpr>(bin.getRHS()))
-      return false;
-    return isLinearCombination(bin.getLHS()) &&
-           isLinearCombination(bin.getRHS());
-  }
-  default:
-    return false;
-  }
-}
-
 // The coefficient `v` is multiplied by inside an affine.apply, or 0 if the
 // map's expression is not a linear combination of its inputs.
 //
@@ -112,7 +85,7 @@ static int64_t affineCoefficient(affine::AffineApplyOp applyOp, Value v) {
   AffineMap map = applyOp.getAffineMap();
   if (map.getNumResults() != 1)
     return 0;
-  if (!isLinearCombination(map.getResult(0)))
+  if (!air::isLinearAffineExpr(map.getResult(0)))
     return 0;
 
   auto positionOf = [&](Value operand) -> std::optional<unsigned> {

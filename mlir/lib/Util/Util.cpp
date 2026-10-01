@@ -558,6 +558,28 @@ air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
 }
 
 // Get a static scf.for trip count as int
+bool air::isLinearAffineExpr(AffineExpr expr) {
+  switch (expr.getKind()) {
+  case AffineExprKind::Constant:
+  case AffineExprKind::DimId:
+  case AffineExprKind::SymbolId:
+    return true;
+  case AffineExprKind::Add: {
+    auto bin = cast<AffineBinaryOpExpr>(expr);
+    return isLinearAffineExpr(bin.getLHS()) && isLinearAffineExpr(bin.getRHS());
+  }
+  case AffineExprKind::Mul: {
+    auto bin = cast<AffineBinaryOpExpr>(expr);
+    if (!isa<AffineConstantExpr>(bin.getLHS()) &&
+        !isa<AffineConstantExpr>(bin.getRHS()))
+      return false;
+    return isLinearAffineExpr(bin.getLHS()) && isLinearAffineExpr(bin.getRHS());
+  }
+  default:
+    return false;
+  }
+}
+
 std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
   std::optional<int64_t> output = std::nullopt;
   // Get for loop iteration count
@@ -2386,7 +2408,8 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
 static void updateAccessPatternByScfForNest(
     std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
         &pattern,
-    SmallVector<Value> indices, OpBuilder builder, Region *untilReg = nullptr) {
+    SmallVector<Value> indices, OpBuilder builder, Region *untilReg = nullptr,
+    ArrayRef<int64_t> fullShape = {}) {
   auto loc = builder.getUnknownLoc();
   auto updateWrapAndStride = [&](int stepSize, int tripCount, int i) {
     std::get<1>(pattern)[i] =
@@ -2429,16 +2452,28 @@ static void updateAccessPatternByScfForNest(
     if (!index.getDefiningOp())
       continue;
     // An index computed by a bare affine.apply -- typically `iv + tile * c`,
-    // a loop over a herd-tiled buffer -- spans its loop IVs' trip counts just
-    // as an IV used directly does, scaled by each IV's coefficient in the
-    // map. Without this the dimension keeps the size of 1 that a herd-tile
+    // a loop over a herd-tiled buffer -- spans its loop IV's trip count just
+    // as an IV used directly does, scaled by the IV's coefficient in the map.
+    // Without this the dimension keeps the size of 1 that a herd-tile
     // dependence sets, and a buffer that is only ever touched by vector
     // transfers inside such loops is shrunk to a single vector's footprint.
     if (auto applyOp =
             dyn_cast_if_present<affine::AffineApplyOp>(index.getDefiningOp())) {
-      AffineMap map = applyOp.getAffineMap();
-      if (map.getNumResults() != 1)
+      SmallVector<unsigned> ivPositions;
+      for (auto [pos, oper] : llvm::enumerate(applyOp.getMapOperands())) {
+        auto scfForOp = scf::getForInductionVarOwner(oper);
+        if (scfForOp &&
+            (!untilReg || untilReg->isAncestor(scfForOp->getParentRegion())))
+          ivPositions.push_back(pos);
+      }
+      if (ivPositions.empty())
         continue;
+      // Only one IV with a positive constant stride and a static trip count
+      // is modelled. The coefficient is read off as the map's value at IV=1
+      // minus IV=0, which is a stride only when the map is linear: `s0 + s0
+      // floordiv 4` also steps by 1 there, yet over 8 iterations it reaches
+      // 9, not 7. A second IV would need a second dimension to describe.
+      AffineMap map = applyOp.getAffineMap();
       auto evalWith = [&](unsigned pos, int64_t v) -> std::optional<int64_t> {
         MLIRContext *ctx = map.getContext();
         SmallVector<AffineExpr> dims, syms;
@@ -2453,20 +2488,26 @@ static void updateAccessPatternByScfForNest(
           return c.getValue();
         return std::nullopt;
       };
-      for (auto [pos, oper] : llvm::enumerate(applyOp.getMapOperands())) {
-        auto scfForOp = scf::getForInductionVarOwner(oper);
-        if (!scfForOp)
-          continue;
-        if (untilReg && !untilReg->isAncestor(scfForOp->getParentRegion()))
-          continue; // Out of scope
-        auto v0 = evalWith(pos, 0), v1 = evalWith(pos, 1),
-             v2 = evalWith(pos, 2);
-        // Only a linear dependence has a single stride to record.
-        if (!v0 || !v1 || !v2 || *v2 - *v0 != 2 * (*v1 - *v0) || *v1 <= *v0)
-          continue;
-        updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()) *
-                                (*v1 - *v0),
-                            *air::getStaticScfForTripCountAsInt(scfForOp), dim);
+      std::optional<int64_t> stride, tripCount;
+      if (ivPositions.size() == 1 && map.getNumResults() == 1 &&
+          air::isLinearAffineExpr(map.getResult(0))) {
+        auto scfForOp = scf::getForInductionVarOwner(
+            applyOp.getMapOperands()[ivPositions.front()]);
+        auto step = getConstantIntValue(scfForOp.getStep());
+        auto v0 = evalWith(ivPositions.front(), 0);
+        auto v1 = evalWith(ivPositions.front(), 1);
+        tripCount = air::getStaticScfForTripCountAsInt(scfForOp);
+        if (step && v0 && v1 && *v1 > *v0)
+          stride = *step * (*v1 - *v0);
+      }
+      if (stride && tripCount)
+        updateWrapAndStride(*stride, *tripCount, dim);
+      else if (dim < (int)fullShape.size() &&
+               ShapedType::isStatic(fullShape[dim])) {
+        // The access range is unknown: keep the whole dimension rather than
+        // shrink it to whatever size it was given before the loop was seen.
+        std::get<1>(pattern)[dim] =
+            arith::ConstantIndexOp::create(builder, loc, fullShape[dim]);
       }
       continue;
     }
@@ -2626,7 +2667,10 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
     std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
         builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
-  updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
+  updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder,
+                                  /*untilReg=*/nullptr,
+                                  memrefTy.hasRank() ? memrefTy.getShape()
+                                                     : ArrayRef<int64_t>{});
   return pattern;
 }
 
@@ -2671,7 +2715,10 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
     std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
         builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
-  updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
+  updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder,
+                                  /*untilReg=*/nullptr,
+                                  memrefTy.hasRank() ? memrefTy.getShape()
+                                                     : ArrayRef<int64_t>{});
   return pattern;
 }
 
