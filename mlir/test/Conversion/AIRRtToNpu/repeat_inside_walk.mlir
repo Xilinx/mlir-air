@@ -82,6 +82,48 @@ module {
 
 // -----
 
+// A runtime offset on the walking dim: piece k starts at block %off + k.
+
+// CHECK-LABEL: aie.runtime_sequence @forward(%arg0: memref<65536xbf16>, %arg1: i64)
+// CHECK: %[[B0:.*]] = arith.muli %arg1, %[[C32768:.*]] : i64
+// CHECK: %[[O0:.*]] = arith.trunci %[[B0]]
+// CHECK: aie.dma_bd(%arg0 : memref<65536xbf16> offset = %[[O0]] len = 8192 sizes = [16, 512] strides = [512, 1])
+// CHECK: } {repeat_count = 3 : i32}
+// CHECK: %[[K1:.*]] = arith.addi %arg1, %{{.*}} : i64
+// CHECK: %[[B1:.*]] = arith.muli %[[K1]], %[[C32768]] : i64
+// CHECK: %[[O1:.*]] = arith.trunci %[[B1]]
+// CHECK: aie.dma_bd(%arg0 : memref<65536xbf16> offset = %[[O1]] len = 8192 sizes = [16, 512] strides = [512, 1])
+// CHECK: } {repeat_count = 3 : i32}
+
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<65536xbf16>, %off: i64) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c4_i64 = arith.constant 4 : i64
+    %c16_i64 = arith.constant 16 : i64
+    %c512_i64 = arith.constant 512 : i64
+    %c32768_i64 = arith.constant 32768 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    // The runtime offset rides in each BD's offset operand.
+    // expected-warning @+1 {{non-constant DMA offset (dim 3) defaulting to 0}}
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%off, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c4_i64, %c16_i64, %c512_i64], [%c32768_i64, %c0_i64, %c512_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<65536xbf16>) : !airrt.event
+    return
+  }
+}
+
+// -----
+
 // A walking dim with more entries than the split allows is reported, not
 // lowered with the repeat outside the walk.
 

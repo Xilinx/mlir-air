@@ -708,24 +708,10 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
 
   auto memrefType = thisOp.getMemref().getType();
 
-  // If empty offsets/sizes/strides, then populate the lists with default
-  // values.
-  if (offsets.empty() && wraps.empty() && strides.empty()) {
-    offsets.push_back(zero_idx);
-    auto memref_volume = air::getTensorVolume(memrefType);
-    wraps.push_back(builder.getIndexAttr(memref_volume));
-    strides.push_back(one_idx);
-  }
-  // Stride field implicit last element one
-  auto lastStrideConst = getConstantIntValue(strides.back());
-  if (!lastStrideConst) {
-    thisOp->emitOpError("last stride is not static.");
-    return failure();
-  }
-
   // A shim descriptor takes four dimensions. Squeeze a longer pattern first
   // (extent-1 dims drop, carrying their offset into another dim; contiguous
-  // dims merge), then drop only leading dims that address nothing.
+  // dims merge), then drop only leading dims that address nothing. This runs
+  // first because a full-volume pattern squeezes to the empty default.
   if (wraps.size() > 4) {
     SmallVector<Value> o =
         getValueOrCreateConstantIndexOp(builder, loc, offsets);
@@ -746,6 +732,21 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       }
     }
   }
+  // If empty offsets/sizes/strides, then populate the lists with default
+  // values.
+  if (offsets.empty() && wraps.empty() && strides.empty()) {
+    offsets.push_back(zero_idx);
+    auto memref_volume = air::getTensorVolume(memrefType);
+    wraps.push_back(builder.getIndexAttr(memref_volume));
+    strides.push_back(one_idx);
+  }
+  // Stride field implicit last element one
+  auto lastStrideConst = getConstantIntValue(strides.back());
+  if (!lastStrideConst) {
+    thisOp->emitOpError("last stride is not static.");
+    return failure();
+  }
+
   while (offsets.size() > 4) {
     offsets.erase(offsets.begin());
   }

@@ -2610,7 +2610,7 @@ bool violatesAIE2StrideLimit(airrt::DmaMemcpyNdOp dma) {
 // Replace a transfer by `wrap` copies of it, copy k having dim i at wrap 1 and
 // offset off + k, issued back to back in that order.
 static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
-                               int64_t constOff, int64_t constWrap) {
+                               OpFoldResult off, int64_t constWrap) {
   auto loc = memcpy_op->getLoc();
   OpBuilder builder(memcpy_op);
   SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
@@ -2646,7 +2646,16 @@ static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
   for (int64_t k = 0; k < constWrap; k++) {
     SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
         newStrides(strides);
-    newOffsets[i] = builder.getI64IntegerAttr(constOff + k);
+    if (auto c = getConstantIntValue(off))
+      newOffsets[i] = builder.getI64IntegerAttr(*c + k);
+    else if (k == 0)
+      newOffsets[i] = off;
+    else
+      newOffsets[i] =
+          arith::AddIOp::create(builder, loc, cast<Value>(off),
+                                arith::ConstantOp::create(
+                                    builder, loc, builder.getI64IntegerAttr(k)))
+              .getResult();
     newWraps[i] = builder.getI64IntegerAttr(1);
     bool isLast = k + 1 == constWrap;
     lastOp = airrt::DmaMemcpyNdOp::create(
@@ -2739,7 +2748,7 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
   for (unsigned d = 0; d < i; d++)
     if (getConstantIntValue(wraps[d]).value_or(0) != 1)
       return success();
-  splitDimIntoPieces(memcpy_op, i, *constOff, *constWrap);
+  splitDimIntoPieces(memcpy_op, i, offsets[i], *constWrap);
   folded = true;
   return success();
 }
@@ -2783,13 +2792,12 @@ LogicalResult enforceRepeatOutermost(ModuleOp module) {
     if (targets.empty())
       return success();
     for (auto [op, e] : targets) {
-      auto off = getConstantIntValue(op.getMixedOffsets()[e]);
       auto wrap = getConstantIntValue(op.getMixedLengths()[e]);
-      if (!off || !wrap || *wrap > AIE2_STRIDE_UNROLL_LIMIT)
+      if (!wrap || *wrap > AIE2_STRIDE_UNROLL_LIMIT)
         return op->emitOpError("a repeated dim inside a walking dim of ")
                << (wrap ? *wrap : -1)
                << " entries cannot be expressed as shim tasks";
-      splitDimIntoPieces(op, e, *off, *wrap);
+      splitDimIntoPieces(op, e, op.getMixedOffsets()[e], *wrap);
     }
   }
   return success();
