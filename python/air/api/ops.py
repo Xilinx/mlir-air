@@ -123,6 +123,13 @@ class _Endpoint:
 
 
 def _endpoint(obj, direction, role):
+    if getattr(obj, "readonly", False) and (
+        role == "destination" or direction == "channel.get"
+    ):
+        raise ValueError(
+            f"{direction}: a broadcast_to view is read-only (it repeats elements "
+            "with stride 0), so it cannot be written; it is a source only"
+        )
     if isinstance(obj, Buffer):
         if obj.value is None:
             raise RuntimeError("buffer used before allocation")

@@ -8,10 +8,11 @@
 // RUN: air-opt %s -air-shrink-memref-sizes-by-access -split-input-file | FileCheck %s
 
 // L1 buffers reached only by vector transfers inside a 2x2 herd, at indices
-// that combine a loop IV with a herd tile index. Each dimension is shrunk to
-// the range its loop sweeps per tile. It keeps its full size when that range
-// is not one stride and trip count, or when the tile index cannot be removed
-// from the rewritten index.
+// that combine loop IVs with a herd tile index. Each dimension is sized to the
+// highest index it reaches once the shrink has rewritten it, plus the vector's
+// extent along it. A tile index the rewrite removes counts as 0; one it cannot
+// remove counts over every tile. An index that cannot be bounded keeps the
+// dimension's full size.
 
 // A bare affine.apply, coefficient 1 on the IV: each tile walks a 2x2 block
 // of 8x8 tiles, and the tile term is dropped from the rewritten indices.
@@ -102,11 +103,10 @@ module {
 
 // -----
 
-// Coefficient 2 on the IV, so the stride is 2 and each tile touches rows 0 and
-// 2. The bound is stride x trip count, 4.
+// Coefficient 2 on the IV: each tile writes rows 0 and 2, so 3 rows.
 
 // CHECK-LABEL: func.func @apply_coef2
-// CHECK: memref.alloc() {air.shrinkage = true} : memref<4x1x8x8xf32, 2>
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<3x1x8x8xf32, 2>
 #map = affine_map<()[s0, s1] -> (s0 * 2 + s1 * 4)>
 module {
   func.func @apply_coef2() {
@@ -142,7 +142,7 @@ module {
 // The same index computed inside an air.execute.
 
 // CHECK-LABEL: func.func @execute_apply_coef2
-// CHECK: memref.alloc() {air.shrinkage = true} : memref<4x1x8x8xf32, 2>
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<3x1x8x8xf32, 2>
 #map = affine_map<()[s0, s1] -> (s0 * 2 + s1 * 4)>
 module {
   func.func @execute_apply_coef2() {
@@ -216,11 +216,12 @@ module {
 
 // -----
 
-// Two loops drive one index: their combined range is not one stride and trip
-// count, so that dimension keeps its full size.
+// Two loops drive one index, i + 4 * j for i < 4 and j < 8: rows 0 to 31 per
+// tile once the tile term is removed.
 
 // CHECK-LABEL: func.func @two_ivs
-// CHECK: memref.alloc() {air.shrinkage = true} : memref<64x1x8x8xf32, 2>
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<32x1x8x8xf32, 2>
+// CHECK: affine.apply #{{.*}}()[%{{.*}}, %{{.*}}, %c0]
 #map = affine_map<()[s0, s1, s2] -> (s0 + s1 * 4 + s2 * 32)>
 module {
   func.func @two_ivs() {
@@ -258,8 +259,9 @@ module {
 // -----
 
 // The tile index reaches the index through an arith.muli. The shrink's index
-// rewrite only zeroes tile indices the index's own op reads, so it would leave
-// `tile * 2` in place; the dimensions keep their full size instead.
+// rewrite only zeroes tile indices the index's own op reads, so `tile * 2`
+// stays in the index and counts over both tiles: i + 2 * tile reaches row 3,
+// the whole dimension.
 
 // CHECK-LABEL: func.func @arith_index
 // CHECK: memref.alloc() : memref<4x4x8x8xf32, 2>

@@ -446,7 +446,8 @@ def apply_rope(x, cos, sin, rot):
     """Half-split rotary on the first `rot` dims of the last axis."""
     out = x.copy()
     h = rot // 2
-    a, b = out[..., :h], out[..., h:rot]
+    # read from x: views of out would see the first half already rotated
+    a, b = x[..., :h], x[..., h:rot]
     out[..., :h] = a * cos - b * sin
     out[..., h:rot] = b * cos + a * sin
     return out

@@ -418,3 +418,96 @@ module {
     return
   }
 }
+
+// -----
+
+// Feeds in different arms of an scf.index_switch are not merged, even where one
+// arm's feed ends at the other's (the walk visits the default region first, so
+// the default feed at 0 and the case feed at 1024 are adjacent). The arm is
+// picked by the loop iteration, so the switch survives until the loop is
+// unrolled, and each arm keeps its own length.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.dma_bd(%arg0 : memref<2048xbf16> offset = 1024 len = 1024 sizes = [1024] strides = [1])
+// CHECK: aie.dma_bd(%arg0 : memref<2048xbf16> offset = 0 len = 1024 sizes = [1024] strides = [1])
+
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<2048xbf16>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c3 = arith.constant 3 : index
+    %p = airrt.segment_load "forward_0" : i64
+    scf.for %i = %c0 to %c2 step %c1 {
+      %first = arith.cmpi eq, %i, %c0 : index
+      %arm = arith.select %first, %c3, %c1 : index
+      scf.index_switch %arm
+      case 3 {
+        %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c1024_i64], [%c1_i64, %c1_i64, %c1_i64, %c1024_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<2048xbf16>) : !airrt.event
+        scf.yield
+      }
+      default {
+        %1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c1024_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<2048xbf16>) : !airrt.event
+        scf.yield
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Contiguous feeds within one arm still merge.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.dma_bd(%arg0 : memref<2048xbf16> offset = 0 len = 2048 sizes = [2048] strides = [1])
+
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<2048xbf16>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c3 = arith.constant 3 : index
+    %p = airrt.segment_load "forward_0" : i64
+    scf.for %i = %c0 to %c2 step %c1 {
+      %first = arith.cmpi eq, %i, %c0 : index
+      %arm = arith.select %first, %c3, %c1 : index
+      scf.index_switch %arm
+      case 3 {
+        %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c1024_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<2048xbf16>) : !airrt.event
+        %1 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c1024_i64], [%c1_i64, %c1_i64, %c1_i64, %c1024_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4, air.preserve_shim_dma_order} : (i32, i64, i64, memref<2048xbf16>) : !airrt.event
+        scf.yield
+      }
+      default {
+        scf.yield
+      }
+    }
+    return
+  }
+}
