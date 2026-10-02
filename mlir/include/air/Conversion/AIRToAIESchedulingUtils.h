@@ -529,8 +529,9 @@ void reorderL3PacketPutsByFlowOrder(
 // leaving it, so flows sharing one must go to the same destinations; and a
 // circuit-switched destination port takes one source. Two distinct logical
 // tiles not yet placed may still share a physical tile, so only conflicts that
-// hold wherever they are placed are rejected; flows that both carry
-// air.tile_dma_channel are left as pinned.
+// hold wherever they are placed are rejected. Two flows that both carry
+// air.tile_dma_channel may still share a circuit source; the other two rules
+// are hardware limits a pin cannot override.
 LogicalResult
 verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
