@@ -262,12 +262,7 @@ class FusedPrefill:
         q0 = r0 // lkp
         nend = -(-(r0 + t) // lkp)
         k0 = max(0, q0 - D.WINDOW // lkp) if kv["a"] == "s" else 0
-        np.copyto(
-            at["qm"][:, :t],
-            (qe * (np.sqrt(dh) * gw.ATTN_SCALE)).transpose(1, 0, 2),
-            casting="unsafe",
-        )
-        at["qm"][:, t:] = 0
+        H.q_pack(qe, float(np.sqrt(dh) * gw.ATTN_SCALE), at["qm"])
         at["q"].sync(TO, h * D.M * dh * 2, 0)
         rec = D.kv_rec(kv["a"]) * 2
         sub = xrt.bo(kv["bo"], (nend - k0) * rec, k0 * rec)
@@ -277,7 +272,7 @@ class FusedPrefill:
         at["ib"].sync(TO)
         self._go(at["run"], f"attn {kv['a']}")
         at["o"].sync(FROM)
-        return at["om"][:, :t].transpose(1, 0, 2).reshape(t, h * dh).astype(np.float32)
+        return H.o_unpack(at["om"], t)
 
     # ---- model ----
 

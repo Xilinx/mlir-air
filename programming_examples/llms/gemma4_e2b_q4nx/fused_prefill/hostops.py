@@ -24,6 +24,8 @@ def load(build_dir):
     _lib.rope.argtypes = [_p, _i, _i, _i, _i, _p, _p]
     _lib.glu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _i, _p]
     _lib.mul_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
+    _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _p]
+    _lib.o_unpack.argtypes = [_p, _i, _i, _i, _i, _p]
 
 
 def tile_a(x, dst, tm, tk):
@@ -109,3 +111,18 @@ def mul_tile(g, p, dst, tm, tk):
         tk,
         dst.ctypes.data,
     )
+
+
+def q_pack(q, scale, dst):
+    """dst [H, M, dh] bf16 = q [T, H, dh] * scale, head-first, rows T.. zeroed."""
+    q = _c(q)
+    t, h, dh = q.shape
+    _lib.q_pack(q.ctypes.data, t, h, dh, dst.shape[1], scale, dst.ctypes.data)
+
+
+def o_unpack(o, t):
+    """o [H, M, dh] bf16 -> new float32 [t, H * dh]."""
+    h, m, dh = o.shape
+    out = np.empty((t, h * dh), np.float32)
+    _lib.o_unpack(o.ctypes.data, t, h, dh, m, out.ctypes.data)
+    return out

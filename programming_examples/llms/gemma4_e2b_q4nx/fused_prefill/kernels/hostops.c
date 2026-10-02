@@ -42,15 +42,21 @@ void bf16_to_f32(const uint16_t *src, int rows, int ld, int n, float *dst) {
 
 #include <math.h>
 
+// sum of squares, in vector lanes (an in-order float sum does not vectorize)
+static inline float sumsq(const float *a, int n) {
+  float s = 0.f;
+#pragma omp simd reduction(+ : s)
+  for (int j = 0; j < n; j++)
+    s += a[j] * a[j];
+  return s;
+}
+
 // y[r] = x[r] / sqrt(mean(x[r]^2) + eps) * (w ? w : 1); rows of n
 void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
   for (int r = 0; r < rows; r++) {
     const float *a = x + (long)r * n;
     float *o = y + (long)r * n;
-    float s = 0.f;
-    for (int j = 0; j < n; j++)
-      s += a[j] * a[j];
-    float inv = 1.f / sqrtf(s / n + eps);
+    float inv = 1.f / sqrtf(sumsq(a, n) / n + eps);
     if (w)
       for (int j = 0; j < n; j++)
         o[j] = a[j] * inv * w[j];
@@ -63,10 +69,13 @@ void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
 // y = res + rms(x) * w
 void add_rms(const float *res, const float *x, int rows, int n, const float *w,
              float eps, float *y) {
-  rms(x, rows, n, w, eps, y);
-  long tot = (long)rows * n;
-  for (long i = 0; i < tot; i++)
-    y[i] += res[i];
+  for (int r = 0; r < rows; r++) {
+    const float *a = x + (long)r * n, *b = res + (long)r * n;
+    float *o = y + (long)r * n;
+    float inv = 1.f / sqrtf(sumsq(a, n) / n + eps);
+    for (int j = 0; j < n; j++)
+      o[j] = b[j] + a[j] * inv * w[j];
+  }
 }
 
 // x [T, H, dh] in place: half-split rotary on the first rot dims; cs/sn [T,
@@ -124,4 +133,29 @@ void mul_tile(const uint16_t *g, int ldg, const float *p, int t, int n, int TM,
         d[k] = f2bf(bf2f(gs[k]) * ps[k]);
     }
   }
+}
+
+// q [T, H, dh] f32 -> dst [H, M, dh] bf16 = bf16(q * scale), rows T..M zeroed
+void q_pack(const float *q, int T, int H, int dh, int M, float scale,
+            uint16_t *dst) {
+  for (int k = 0; k < H; k++) {
+    uint16_t *d = dst + (long)k * M * dh;
+    for (int t = 0; t < T; t++) {
+      const float *s = q + ((long)t * H + k) * dh;
+      for (int i = 0; i < dh; i++)
+        d[(long)t * dh + i] = f2bf(s[i] * scale);
+    }
+    memset(d + (long)T * dh, 0, (size_t)(M - T) * dh * 2);
+  }
+}
+
+// o [H, M, dh] bf16 -> dst [T, H * dh] f32
+void o_unpack(const uint16_t *o, int T, int H, int dh, int M, float *dst) {
+  for (int t = 0; t < T; t++)
+    for (int k = 0; k < H; k++) {
+      const uint16_t *s = o + ((long)k * M + t) * dh;
+      float *d = dst + ((long)t * H + k) * dh;
+      for (int i = 0; i < dh; i++)
+        d[i] = bf2f(s[i]);
+    }
 }

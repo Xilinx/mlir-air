@@ -159,6 +159,7 @@ def build_kernels(out):
             "gcc",
             "-O3",
             "-march=native",
+            "-fopenmp-simd",
             "-shared",
             "-fPIC",
             HERE / "kernels/hostops.c",
