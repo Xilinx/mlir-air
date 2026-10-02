@@ -336,6 +336,7 @@ class _StridedView:
                 f"broadcast_to{tuple(shape)} has fewer axes than the region {tuple(self.sizes)}"
             )
         offsets, sizes, strides = [coerce_index(0)] * new, list(shape[:new]), [0] * new
+        moved = []  # (offset, stride) of the axes that now repeat
         for d, (n, size, stride) in enumerate(
             zip(shape[new:], self.sizes, self.strides)
         ):
@@ -344,9 +345,34 @@ class _StridedView:
                     f"cannot broadcast region {tuple(self.sizes)} to {tuple(shape)}: "
                     f"axis {d} has extent {size}, not 1 or {n}"
                 )
-            offsets.append(self.offsets[d])
             sizes.append(n)
-            strides.append(stride if n == size else 0)
+            if n == size:
+                offsets.append(self.offsets[d])
+                strides.append(stride)
+            else:
+                # A stride-0 axis drops its offset from the address, so the
+                # offset moves to an axis that keeps a stride.
+                offsets.append(coerce_index(0))
+                strides.append(0)
+                if _carries_offset(self.offsets[d]):
+                    moved.append((self.offsets[d], stride))
+        for off, stride in moved:
+            k = next(
+                (
+                    k
+                    for k in reversed(range(len(strides)))
+                    if strides[k] and stride % strides[k] == 0
+                ),
+                None,
+            )
+            if k is None:
+                raise ValueError(
+                    f"broadcast_to{tuple(shape)}: the repeated axis is at an "
+                    f"offset, and no axis with a stride is left to carry it"
+                )
+            offsets[k] = coerce_index(offsets[k]) + coerce_index(off) * (
+                stride // strides[k]
+            )
         out = self._respan(offsets, sizes, strides, list(shape), [False] * len(shape))
         out.readonly = True
         return out
