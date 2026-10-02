@@ -899,7 +899,11 @@ module {
 // CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_dim2
 // CHECK-SAME: %[[ARG0:.*]]: memref<256xbf16>
 // CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId3 {
-// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16> offset = 0 len = 128 sizes = [2, 64] strides = [128, 1])
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16> offset = 0 len = 64 sizes = [64] strides = [1])
+// CHECK: } {repeat_count = 2 : i32}
+// CHECK: aiex.dma_start_task
+// CHECK: aiex.dma_configure_task_for @airMemcpyId3 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16> offset = 128 len = 64 sizes = [64] strides = [1])
 // CHECK: } {repeat_count = 2 : i32}
 // CHECK: aiex.dma_start_task
 module {
@@ -914,13 +918,9 @@ module {
       %c64_i64 = arith.constant 64 : i64
       %c128_i64 = arith.constant 128 : i64
       %c3_i32 = arith.constant 3 : i32
-      // sizes=[1, 2, 3, 64] strides=[0, 128, 0, 1]
-      // dim 0: size=1 -> repeat_count=0 (no repeat)
-      // dim 1: stride=128 size=2 -> BD dim (non-zero stride)
-      // dim 2: stride=0 size=3 -> fold into repeat_count: (0+1)*3-1=2
-      // dim 3: stride=1 size=64 -> BD dim
-      // Expected: repeat_count=2, BD dims=[<size=2, stride=128>, <size=64, stride=1>]
-      // transferLen = 2*3*64=384 -> 384/3=128 per BD execution (after folding dim 2)
+      // sizes=[1, 2, 3, 64] strides=[0, 128, 0, 1]: row 0 three times, then
+      // row 1 three times. A task repeats its whole BD, so dim 1 splits into
+      // one task per row, each repeating its row (repeat_count=2).
       airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c2_i64, %c3_i64, %c64_i64], [%c0_i64, %c128_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId3} : (i32, i64, i64, memref<256xbf16>)
       return
     }

@@ -428,11 +428,9 @@ getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(air::ChannelInterface chanOp);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(memref::SubViewOp subview, Region *commonReg = nullptr);
+writeAccessPattern(memref::SubViewOp subview);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(mlir::vector::TransferReadOp readOp);
-std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(mlir::vector::TransferWriteOp writeOp);
+writeAccessPattern(VectorTransferOpInterface transfer);
 SmallVector<int64_t>
 getDataAccessShapeFromMemcpyOp(Value memref,
                                SmallVector<air::ChannelInterface> chanUsers);

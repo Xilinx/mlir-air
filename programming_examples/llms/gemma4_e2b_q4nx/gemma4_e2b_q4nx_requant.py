@@ -3,13 +3,13 @@
 #
 # Build the Gemma4-E2B fused-decode weight cache from the model.q4nx bundle.
 # Mirrors gemma3_4b_q4nx_requant.py; the Gemma4 deltas are all consequences of
-# ONE design decision in fused_decode_ple.py -- every layer is built at the
-# WIDEST layer's geometry (M=5120, INTER=12288) and the narrow layers are padded
-# up to it, so the device sees a single uniform shape.
+# ONE design decision in fused_decode_ple.py -- every layer's attention is built
+# at the WIDEST layer's geometry and the sliding layers are padded up to it. The
+# narrow-FFN layers are packed at their own width and the KV-shared layers
+# without k/v rows (the device skips the rest).
 #
-# Padding the FFN is trivial (zero rows; gelu(0)*0 contributes nothing, and the
-# down-proj columns that read them are zero too). Padding ATTENTION is not, and
-# the two traps below were both found by measurement, not inspection:
+# Padding ATTENTION is not trivial, and the two traps below were both found by
+# measurement, not inspection:
 #
 #   1. RoPE. kernels/rope.cc pairs dim i with dim i + DH/2, with DH the BUILD's
 #      head dim (512). A sliding layer's real head is 256 wide, so its correct
@@ -122,6 +122,63 @@ def layer_rope_w(pos, L, fd, rope_freqs):
     return np.concatenate([c, s]).astype(np.float32), dh
 
 
+def pack_layer_weights(fd, L, w):
+    """One layer's projections as the decode slab layer L streams.
+
+    `w` holds the layer's float weights, [out, in]: q, o, up, gate, down, and k,
+    v on the layers that own their KV. `fd` is the loaded fused_decode_ple
+    module; the slab has fd.w_layer_of(L) elements.
+    """
+    G, NCX, NCY, NPH = fd.GROUP, fd.NCX, fd.NCY, fd.NPH
+    OP, GP, DP = fd.OPROJ_PHASE, fd.GLU_PHASE, fd.DOWN_PHASE
+    DH, K = fd.DH_A, fd.K
+    NQ, NKV = fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
+    dh = gw.head_dim(L)
+
+    # --- attention, padded into the build's head geometry ---
+    q = _pad_head(w["q"], NQ, dh, DH)
+    if "k" in w:
+        # MQA against a 2-CU build: the device wants NKV kv heads, the model
+        # has one, and each CU needs its own copy (see the N_ATTN_CU note in
+        # the gemma4-e2b entry). Duplicate the rows BEFORE padding, so every
+        # copy gets the same head interleave.
+        _rep = NKV // (w["k"].shape[0] // dh)
+        qkv = [
+            q,
+            _pad_head(np.tile(w["k"], (_rep, 1)), NKV, dh, DH),
+            _pad_head(np.tile(w["v"], (_rep, 1)), NKV, dh, DH),
+        ]
+    elif fd.PER_CLASS:
+        # A KV-shared layer reuses a lower layer's cache and streams q only.
+        qkv = [q]
+    else:
+        # Without per-class geometry the QKV phase has one shape for every
+        # layer, so a KV-shared layer's k/v rows are zero.
+        qkv = [q, np.zeros((2 * NKV * DH, K), np.float32)]
+    o = _pad_head(w["o"], NQ, dh, DH, axis=1)
+
+    # --- FFN: at its own width on a per-class build, else padded up to the
+    # widest layer ---
+    inter = w["up"].shape[0] if fd.PER_CLASS else fd.MODEL["INTER_NARROW"] * 2
+    up, gate = _pad_rows(w["up"], inter), _pad_rows(w["gate"], inter)
+    down = _pad_cols(w["down"], inter)
+
+    qmats = [None] * NPH
+    qmats[0] = _requant_q4k(np.concatenate(qkv, 0), G)
+    qmats[OP] = _requant_q4k(o, G)
+    qmats[GP] = _interleave512(_requant_q4k(up, G), _requant_q4k(gate, G), fd.GLU_CHUNK)
+    qmats[DP] = _requant_q4k(down, G)
+    dual = bool(getattr(fd, "W_DUAL_CHAN", 0))
+    packed = np.concatenate(
+        [
+            fd.pack_q4k_cascade(*qmats[p], NCX, NCY, iter_major=True, dual_chan=dual)
+            for p in range(NPH)
+        ]
+    )
+    assert packed.size == fd.w_layer_of(L), (packed.size, fd.w_layer_of(L))
+    return packed
+
+
 def build_requant_cache(
     model, fd, cache_path, layers=None, verbose=True, pack_vocab=False
 ):
@@ -139,12 +196,8 @@ def build_requant_cache(
     the token-level driver needs it and passes True.
     """
     qm = gw.Q4nxModel(model)
-    G, NCX, NCY, NPH = fd.GROUP, fd.NCX, fd.NCY, fd.NPH
-    OP, GP, DP = fd.OPROJ_PHASE, fd.GLU_PHASE, fd.DOWN_PHASE
-    GLU_CHUNK, W_LAYER = fd.GLU_CHUNK, fd.W_LAYER
+    G, NCX, NCY = fd.GROUP, fd.NCX, fd.NCY
     DH, K = fd.DH_A, fd.K
-    NQ, NKV = fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
-    INTER = fd.MODEL["INTER_NARROW"] * 2  # the padded (widest) FFN
     DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
     layers = list(range(fd.UNI_DEC)) if layers is None else list(layers)
 
@@ -157,45 +210,7 @@ def build_requant_cache(
         nm = qm.layer_norms(L)
         dh = gw.head_dim(L)
 
-        # --- attention, padded into the build's head geometry ---
-        q = _pad_head(w["q"], NQ, dh, DH)
-        if "k" in w:
-            # MQA against a 2-CU build: the device wants NKV kv heads, the model
-            # has one, and each CU needs its own copy (see the N_ATTN_CU note in
-            # the gemma4-e2b entry). Duplicate the rows BEFORE padding, so every
-            # copy gets the same head interleave.
-            _rep = NKV // (w["k"].shape[0] // dh)
-            k = _pad_head(np.tile(w["k"], (_rep, 1)), NKV, dh, DH)
-            v = _pad_head(np.tile(w["v"], (_rep, 1)), NKV, dh, DH)
-        else:
-            # Layers >= FIRST_KV_SHARED carry no k/v at all: they reuse a lower
-            # layer's cache. Their QKV phase still has to be the same shape, so
-            # the k/v rows are zero and the device simply recomputes nothing
-            # useful into a slot it will not read.
-            k = np.zeros((NKV * DH, K), np.float32)
-            v = np.zeros((NKV * DH, K), np.float32)
-        o = _pad_head(w["o"], NQ, dh, DH, axis=1)
-
-        # --- FFN, zero-padded up to the widest layer ---
-        up, gate = _pad_rows(w["up"], INTER), _pad_rows(w["gate"], INTER)
-        down = _pad_cols(w["down"], INTER)
-
-        qmats = [None] * NPH
-        qmats[0] = _requant_q4k(np.concatenate([q, k, v], 0), G)
-        qmats[OP] = _requant_q4k(o, G)
-        qmats[GP] = _interleave512(
-            _requant_q4k(up, G), _requant_q4k(gate, G), GLU_CHUNK
-        )
-        qmats[DP] = _requant_q4k(down, G)
-        packed = np.concatenate(
-            [
-                fd.pack_q4k_cascade(
-                    *qmats[p], NCX, NCY, iter_major=True, dual_chan=DUAL
-                )
-                for p in range(NPH)
-            ]
-        )
-        assert packed.size == W_LAYER, (packed.size, W_LAYER)
+        packed = pack_layer_weights(fd, L, w)
         W_all.append(packed)
 
         for key, src in (
