@@ -723,6 +723,29 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     return failure();
   }
 
+  // A shim descriptor takes four dimensions. Squeeze a longer pattern first
+  // (extent-1 dims drop, carrying their offset into another dim; contiguous
+  // dims merge), then drop only leading dims that address nothing.
+  if (wraps.size() > 4) {
+    SmallVector<Value> o =
+        getValueOrCreateConstantIndexOp(builder, loc, offsets);
+    SmallVector<Value> w = getValueOrCreateConstantIndexOp(builder, loc, wraps);
+    SmallVector<Value> s =
+        getValueOrCreateConstantIndexOp(builder, loc, strides);
+    (void)air::canonicalizeWrapAndStrideList(builder, o, w, s,
+                                             air::getTensorVolume(memrefType));
+    offsets = getAsOpFoldResult(o);
+    wraps = getAsOpFoldResult(w);
+    strides = getAsOpFoldResult(s);
+    for (size_t i = 0; i + 4 < wraps.size(); i++) {
+      if (getConstantIntValue(wraps[i]) != 1 ||
+          getConstantIntValue(offsets[i]) != 0) {
+        thisOp->emitOpError("access pattern needs ")
+            << wraps.size() << " dimensions; a shim DMA takes 4";
+        return failure();
+      }
+    }
+  }
   while (offsets.size() > 4) {
     offsets.erase(offsets.begin());
   }

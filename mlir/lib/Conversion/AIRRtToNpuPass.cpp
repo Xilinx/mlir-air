@@ -2494,8 +2494,11 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     };
     // The base joins the key: feeds off different bases are never contiguous,
     // and for a rolled body the base is what distinguishes one wave's slice.
+    // So does the block: the walk visits an scf.index_switch's arms back to
+    // back, and a merge across them would erase one arm's feed and lengthen
+    // the other's.
     llvm::MapVector<
-        std::tuple<int64_t, StringRef, void *, void *, const void *>,
+        std::tuple<int64_t, StringRef, void *, void *, const void *, Block *>,
         SmallVector<Entry>>
         groups;
     for (auto d : paced) {
@@ -2509,7 +2512,7 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
         wave = w.getInt();
       groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer(),
-              desc->base.getAsOpaquePointer(), desc->shape}]
+              desc->base.getAsOpaquePointer(), desc->shape, d->getBlock()}]
           .push_back({d, desc->offset, desc->len});
     }
 
@@ -2604,6 +2607,80 @@ bool violatesAIE2StrideLimit(airrt::DmaMemcpyNdOp dma) {
       .has_value();
 }
 
+// Replace a transfer by `wrap` copies of it, copy k having dim i at wrap 1 and
+// offset off + k, issued back to back in that order.
+static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
+                               int64_t constOff, int64_t constWrap) {
+  auto loc = memcpy_op->getLoc();
+  OpBuilder builder(memcpy_op);
+  SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
+  SmallVector<OpFoldResult> wraps = memcpy_op.getMixedLengths();
+  SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
+  // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
+  // channel -- the Nth wait for a channel awaits the Nth config for it. This
+  // rewrite turns one config into `wrap` of them, so the channel needs `wrap`
+  // waits or the pairing shifts: the original wait would land on the first
+  // piece, every later transfer on the channel would be awaited one slot
+  // early, and the tail pieces would go unawaited -- on an S2MM channel that
+  // is both a missed completion token and a BD that is never freed. Emit the
+  // extra waits alongside the extra configs so the 1:1 invariant survives.
+  //
+  // Only on a channel that is already waited: adding waits to a fire-and-
+  // forget channel would impose synchronisation the design never asked for.
+  StringRef waitedSym;
+  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata"))
+    if (auto func = memcpy_op->getParentOfType<func::FuncOp>())
+      func.walk([&](AIEX::NpuDmaWaitOp wait) {
+        if (wait.getSymbol() == metadata.getValue())
+          waitedSym = metadata.getValue();
+      });
+
+  // The op's !airrt.event is optional and, unlike tileIllegalWrapDim (which
+  // rewrites in place), this replaces the op -- so the result has to be
+  // carried across. The pieces are issued in program order on one channel, so
+  // the last one completing implies all of them have; give it the event and
+  // let it stand in for the original. This mirrors how coalesceShimDmaOrder
+  // redirects the event tokens of the ops it merges away.
+  SmallVector<Type> eventTy(memcpy_op->getResultTypes());
+  airrt::DmaMemcpyNdOp lastOp;
+  for (int64_t k = 0; k < constWrap; k++) {
+    SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
+        newStrides(strides);
+    newOffsets[i] = builder.getI64IntegerAttr(constOff + k);
+    newWraps[i] = builder.getI64IntegerAttr(1);
+    bool isLast = k + 1 == constWrap;
+    lastOp = airrt::DmaMemcpyNdOp::create(
+        builder, loc, isLast ? eventTy : SmallVector<Type>{}, memcpy_op.getId(),
+        memcpy_op.getX(), memcpy_op.getY(), memcpy_op.getMemref(), newOffsets,
+        newWraps, newStrides);
+    // Ordering/barrier markers must ride along on every piece, or the split
+    // silently drops the append barrier and the shim order constraint.
+    lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+  }
+  // Where they go does not change the pairing -- FIFO orders waits among
+  // themselves, and anywhere after the pieces and before the transfer's own
+  // wait gives piece k the kth of these and the last piece the original wait.
+  // It does change when the awaits execute, so prefer the transfer's own wait:
+  // a design that deliberately waits late keeps the overlap it asked for
+  // instead of being synchronised early. Only in the same block, though -- a
+  // wait in a nested region (a per-iteration drain inside an scf.for, say)
+  // would multiply these by the trip count and unbalance the very pairing they
+  // exist to preserve. Falling back to right after the pieces is always valid:
+  // every piece dominates them, which the pairing's dominance guard requires.
+  if (!waitedSym.empty()) {
+    for (Operation *o = memcpy_op->getNextNode(); o; o = o->getNextNode())
+      if (auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(o))
+        if (wait.getSymbol() == waitedSym) {
+          builder.setInsertionPoint(wait);
+          break;
+        }
+    for (int64_t k = 1; k < constWrap; k++)
+      AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
+  }
+  memcpy_op->replaceAllUsesWith(lastOp);
+  memcpy_op.erase();
+}
+
 // Replace one over-strided dim with `wrap` copies of the transfer, each
 // carrying that dim's address contribution in its own base offset.
 //
@@ -2622,8 +2699,6 @@ bool violatesAIE2StrideLimit(airrt::DmaMemcpyNdOp dma) {
 // assumed: only a middle dim of a BD that does not use the 4th dim qualifies.
 LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
                                      bool &folded) {
-  auto loc = memcpy_op->getLoc();
-  OpBuilder builder(memcpy_op);
   SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
   SmallVector<OpFoldResult> wraps = memcpy_op.getMixedLengths();
   SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
@@ -2664,70 +2739,59 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
   for (unsigned d = 0; d < i; d++)
     if (getConstantIntValue(wraps[d]).value_or(0) != 1)
       return success();
-  // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
-  // channel -- the Nth wait for a channel awaits the Nth config for it. This
-  // rewrite turns one config into `wrap` of them, so the channel needs `wrap`
-  // waits or the pairing shifts: the original wait would land on the first
-  // piece, every later transfer on the channel would be awaited one slot
-  // early, and the tail pieces would go unawaited -- on an S2MM channel that
-  // is both a missed completion token and a BD that is never freed. Emit the
-  // extra waits alongside the extra configs so the 1:1 invariant survives.
-  //
-  // Only on a channel that is already waited: adding waits to a fire-and-
-  // forget channel would impose synchronisation the design never asked for.
-  StringRef waitedSym;
-  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata"))
-    if (auto func = memcpy_op->getParentOfType<func::FuncOp>())
-      func.walk([&](AIEX::NpuDmaWaitOp wait) {
-        if (wait.getSymbol() == metadata.getValue())
-          waitedSym = metadata.getValue();
-      });
-
-  // The op's !airrt.event is optional and, unlike tileIllegalWrapDim (which
-  // rewrites in place), this replaces the op -- so the result has to be
-  // carried across. The pieces are issued in program order on one channel, so
-  // the last one completing implies all of them have; give it the event and
-  // let it stand in for the original. This mirrors how coalesceShimDmaOrder
-  // redirects the event tokens of the ops it merges away.
-  SmallVector<Type> eventTy(memcpy_op->getResultTypes());
-  airrt::DmaMemcpyNdOp lastOp;
-  for (int64_t k = 0; k < *constWrap; k++) {
-    SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
-        newStrides(strides);
-    newOffsets[i] = builder.getI64IntegerAttr(*constOff + k);
-    newWraps[i] = builder.getI64IntegerAttr(1);
-    bool isLast = k + 1 == *constWrap;
-    lastOp = airrt::DmaMemcpyNdOp::create(
-        builder, loc, isLast ? eventTy : SmallVector<Type>{}, memcpy_op.getId(),
-        memcpy_op.getX(), memcpy_op.getY(), memcpy_op.getMemref(), newOffsets,
-        newWraps, newStrides);
-    // Ordering/barrier markers must ride along on every piece, or the split
-    // silently drops the append barrier and the shim order constraint.
-    lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
-  }
-  // Where they go does not change the pairing -- FIFO orders waits among
-  // themselves, and anywhere after the pieces and before the transfer's own
-  // wait gives piece k the kth of these and the last piece the original wait.
-  // It does change when the awaits execute, so prefer the transfer's own wait:
-  // a design that deliberately waits late keeps the overlap it asked for
-  // instead of being synchronised early. Only in the same block, though -- a
-  // wait in a nested region (a per-iteration drain inside an scf.for, say)
-  // would multiply these by the trip count and unbalance the very pairing they
-  // exist to preserve. Falling back to right after the pieces is always valid:
-  // every piece dominates them, which the pairing's dominance guard requires.
-  if (!waitedSym.empty()) {
-    for (Operation *o = memcpy_op->getNextNode(); o; o = o->getNextNode())
-      if (auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(o))
-        if (wait.getSymbol() == waitedSym) {
-          builder.setInsertionPoint(wait);
-          break;
-        }
-    for (int64_t k = 1; k < *constWrap; k++)
-      AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
-  }
-  memcpy_op->replaceAllUsesWith(lastOp);
-  memcpy_op.erase();
+  splitDimIntoPieces(memcpy_op, i, *constOff, *constWrap);
   folded = true;
+  return success();
+}
+
+// A shim task repeats its whole BD, so a stride-0 middle dim can become the
+// task's repeat count only when every dim outside it is degenerate. Otherwise
+// the repeat would run outside the walking dim instead of inside it, and the
+// BD length would no longer match its dims. Split the outermost walking dim
+// outside a repeat into pieces, each of which then repeats correctly; the
+// pieces are issued in that dim's order.
+static std::optional<unsigned>
+findWalkOutsideRepeat(SmallVector<OpFoldResult> wraps,
+                      SmallVector<OpFoldResult> strides) {
+  if (wraps.size() != AIE2_DIM_COUNT)
+    return std::nullopt;
+  for (unsigned d = 1; d + 1 < AIE2_DIM_COUNT; d++) {
+    auto w = getConstantIntValue(wraps[d]);
+    auto st = getConstantIntValue(strides[d]);
+    if (!w || !st || *w <= 1 || *st != 0)
+      continue;
+    for (unsigned e = 0; e < d; e++) {
+      auto we = getConstantIntValue(wraps[e]);
+      auto se = getConstantIntValue(strides[e]);
+      if (we && se && *we > 1 && *se != 0)
+        return e;
+    }
+  }
+  return std::nullopt;
+}
+
+LogicalResult enforceRepeatOutermost(ModuleOp module) {
+  // Each split removes one walking dim outside a repeat; iterate to a
+  // fixpoint, bounded by the dim count.
+  for (unsigned round = 0; round < AIE2_DIM_COUNT; round++) {
+    SmallVector<std::pair<airrt::DmaMemcpyNdOp, unsigned>> targets;
+    module.walk([&](airrt::DmaMemcpyNdOp dma) {
+      if (auto e = findWalkOutsideRepeat(dma.getMixedLengths(),
+                                         dma.getMixedStrides()))
+        targets.push_back({dma, *e});
+    });
+    if (targets.empty())
+      return success();
+    for (auto [op, e] : targets) {
+      auto off = getConstantIntValue(op.getMixedOffsets()[e]);
+      auto wrap = getConstantIntValue(op.getMixedLengths()[e]);
+      if (!off || !wrap || *wrap > AIE2_STRIDE_UNROLL_LIMIT)
+        return op->emitOpError("a repeated dim inside a walking dim of ")
+               << (wrap ? *wrap : -1)
+               << " entries cannot be expressed as shim tasks";
+      splitDimIntoPieces(op, e, *off, *wrap);
+    }
+  }
   return success();
 }
 
@@ -2911,6 +2975,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // After wrap tiling, since tiling can introduce a new outer dim whose
     // stride is the product of the tiled ones.
     if (failed(enforceAIE2StrideLimit(module))) {
+      signalPassFailure();
+      return;
+    }
+
+    if (failed(enforceRepeatOutermost(module))) {
       signalPassFailure();
       return;
     }

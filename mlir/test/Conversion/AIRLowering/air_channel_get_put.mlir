@@ -373,3 +373,38 @@ module {
     return
   }
 }
+
+// -----
+
+// A five-dim pattern squeezes into the four-dim descriptor: the extent-1 dims
+// drop (the column offset 64 moves to the innermost dim) and the two row
+// blocks merge into 256 rows. Nothing is truncated.
+
+// CHECK-LABEL:   func.func @five_dims
+// CHECK: airrt.dma_memcpy_nd(%c2_i32, %{{.*}}, %{{.*}}, %arg0[0, 0, 0, 64], [1, 1, 256, 64], [0, 0, 384, 1]) {chan_name = @c5}
+
+module {
+  air.channel @c5 [1, 1]
+  func.func @five_dims(%a0: memref<256x384xi32>) {
+    %c1_0 = arith.constant 1 : index
+    air.launch (%arg2, %arg3) in (%arg4=%c1_0, %arg5=%c1_0) args(%arg0=%a0) : memref<256x384xi32> {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %c384 = arith.constant 384 : index
+      %c49152 = arith.constant 49152 : index
+      %0 = air.channel.get async @c5[%c0, %c0] (%arg0[%c0, %c0, %c0, %c1, %c0] [%c2, %c1, %c128, %c1, %c64] [%c49152, %c384, %c384, %c64, %c1]) {id = 1 : i32} : (memref<256x384xi32>)
+      air.segment @segment_0 {
+        %c1_1 = arith.constant 1 : index
+        air.herd @herd_0  tile (%x, %y) in (%sx=%c1_1, %sy=%c1_1) {
+          %alloc = memref.alloc() : memref<2x128x64xi32, 2>
+          air.channel.put @c5[%x, %y] (%alloc[] [] []) {id = 2 : i32} : (memref<2x128x64xi32, 2>)
+          memref.dealloc %alloc : memref<2x128x64xi32, 2>
+        }
+      }
+    }
+    return
+  }
+}
