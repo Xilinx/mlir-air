@@ -144,6 +144,9 @@ def derive_w_elems(fd, n_layers):
     number. Reproduces all three previously hand-carried values exactly
     (see _CHECK_W_ELEMS).
     """
+    slabs = getattr(fd, "W_SLABS", None)  # per-class builds size each layer
+    if slabs is not None and len(slabs) == n_layers:
+        return fd.W_DEC + _head_elems(fd)
     return n_layers * fd.W_LAYER + _head_elems(fd)
 
 
