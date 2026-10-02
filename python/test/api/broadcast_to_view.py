@@ -113,6 +113,33 @@ def runtime_offset():
     print(launch.mlir())
 
 
+# CHECK-LABEL: TEST: already_repeated_axis
+# An axis that already has stride 0 has no offset to move, so no carrier is
+# needed.
+# CHECK: air.channel.put @Tiles[] (%{{.*}}[0] [4] [0]) : (memref<8xi32>)
+@run
+def already_repeated_axis():
+    A = air.tensor([8], i32)
+    tiles = air.channel("Tiles")
+    with air.launch(name="rows") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    tiles.put(A[0:1].broadcast_to(4)[3:4].broadcast_to(4))
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([4], i32, scope=h.private())
+                            tiles.get(buf)
+
+    print(launch.mlir())
+
+
 # CHECK-LABEL: TEST: after_a_view
 # It composes with the other views: here a flattened row block, as a tuple.
 # CHECK: air.channel.put @Tiles[] (%{{.*}}[0, 128] [3, 128] [0, 1]) : (memref<32x64xi32>)

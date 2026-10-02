@@ -354,7 +354,7 @@ class _StridedView:
                 # offset moves to an axis that keeps a stride.
                 offsets.append(coerce_index(0))
                 strides.append(0)
-                if _carries_offset(self.offsets[d]):
+                if stride and _carries_offset(self.offsets[d]):
                     moved.append((self.offsets[d], stride))
         for off, stride in moved:
             k = next(
