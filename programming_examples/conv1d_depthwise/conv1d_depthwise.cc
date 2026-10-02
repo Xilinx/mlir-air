@@ -41,8 +41,8 @@
 #define REL_WRITE 0
 #define REL_READ 1
 
-#include <aie_api/aie.hpp>
 #include "aie_kernels/aie_kernel_utils.h"
+#include <aie_api/aie.hpp>
 
 extern "C" {
 
