@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 // int4 weight tile -> the bf16 B tile mm_aie2p.cc's matmul consumes.
 //
 // One K step of one core's DQ_TN output columns, packed on the host

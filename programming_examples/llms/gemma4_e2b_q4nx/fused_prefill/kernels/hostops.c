@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 // Host side of the fused prefill: conversions between float32 activations and
 // the device's bf16 layouts, and the elementwise ops between GEMMs.
 #include <stdint.h>

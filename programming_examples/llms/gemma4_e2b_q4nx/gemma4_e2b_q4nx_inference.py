@@ -503,10 +503,12 @@ def _prefill_npu(prompt, model, seq_len=None):
 
 def _prefill_fused(prompt, model, build_dir):
     """The one-device chunked prefill (fused_prefill/) -> the same tuple."""
-    sys.path.insert(
-        0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fused_prefill")
-    )
-    from runtime import FusedPrefill
+    import types
+
+    sys.modules.setdefault(
+        "air_examples", types.ModuleType("air_examples")
+    ).__path__ = [str(_PE)]
+    from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import FusedPrefill
 
     t_load = time.perf_counter()
     pf = FusedPrefill(build_dir, max_len=max(2048, len(prompt)))

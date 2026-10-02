@@ -17,12 +17,13 @@ import numpy as np
 import pyxrt as xrt
 from ml_dtypes import bfloat16
 
-import device as D
 import gemma4_e2b_q4nx_weights as gw
-import hostops as H
-import insts as I
-import lm_gemv
-import packing as P
+
+from . import device as D
+from . import hostops as H
+from . import insts as I
+from . import lm_gemv
+from . import packing as P
 
 TO, FROM = (
     xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE,

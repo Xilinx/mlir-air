@@ -10,8 +10,9 @@ is no requantization.
 import numpy as np
 from ml_dtypes import bfloat16
 
-import device as D
 import gemma4_e2b_q4nx_weights as gw
+
+from . import device as D
 
 
 def q4nx_raw(model, name, rows, K, r0=0):

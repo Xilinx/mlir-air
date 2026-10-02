@@ -13,15 +13,25 @@ GATE PASS needs logit cosine >= --tol and the same first token.
 import argparse
 import sys
 import time
+import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent)]
+# The model's directory goes on sys.path, this one does not: its module names
+# are too generic to publish. The package is reached as air_examples.*.
+sys.path[:] = [str(HERE.parent)] + [
+    p for p in sys.path if Path(p or ".").resolve() != HERE
+]
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(HERE.parents[2])
+]
 
 import numpy as np  # noqa: E402
 
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402
-from runtime import FusedPrefill  # noqa: E402
+from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import (  # noqa: E402
+    FusedPrefill,
+)
 
 
 def cos(a, b):
@@ -106,7 +116,7 @@ def main():
         for L in range(gw.NUM_LAYERS)
     )
     print(f"worst per-layer K/V cosine vs reference = {worst:.5f}")
-    if c < a.tol:
+    if not c >= a.tol:  # also catches NaN
         fails.append(f"logit cosine {c:.5f} < {a.tol}")
     if first != rfirst:
         fails.append("first token differs from the reference")

@@ -50,6 +50,8 @@ export Q4NX_CACHE_DIR := $(CURDIR)/_q4nx_cache_seq$(CTX)
 # The fused prefill's build (kernels + every op's insts), under the invoking
 # directory like the ELF cache. Its prefill is chunked, so it has no CTX.
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
+# Absolute, because run-fused changes to srcdir.
+override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_JOBS ?= 6
 
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Read by the

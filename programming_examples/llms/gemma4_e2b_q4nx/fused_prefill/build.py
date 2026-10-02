@@ -15,15 +15,24 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 EX = HERE.parents[2]  # programming_examples
-sys.path[:0] = [str(HERE), str(HERE.parent)]
+# The model's directory goes on sys.path, this one does not: its module names
+# are too generic to publish. The package is reached as air_examples.*.
+sys.path[:] = [str(HERE.parent)] + [
+    p for p in sys.path if Path(p or ".").resolve() != HERE
+]
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(EX)
+]
 
-import device as D  # noqa: E402
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402
+
+from air_examples.llms.gemma4_e2b_q4nx.fused_prefill import device as D  # noqa: E402
 
 ATTN_FNS = (
     "zero_fill_g_bf16 zero_fill_gp_bf16 zero_fill_sp_bf16 neg_inf_fill_up_bf16 matmul_a_b_bf16 "
@@ -175,7 +184,7 @@ def _compile(args):
         os.symlink(o, work / o.name)
     os.chdir(work)
     if op == "lm":
-        import lm_gemv
+        from air_examples.llms.gemma4_e2b_q4nx.fused_prefill import lm_gemv
 
         mod = lm_gemv.build().build(target="npu2")
     else:

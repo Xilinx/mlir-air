@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
 // int4 GEMV for the LM head: y[n] = sum_k w[n][k] x[k], dequantized in place.
 //
 // One packet = GV_N output rows x GV_K inputs, packed on the host
