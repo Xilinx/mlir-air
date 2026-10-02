@@ -4,6 +4,7 @@ build_chess/
 __pycache__/
 *.pyc
 _q4nx_*/
+_fused_prefill/
 .wcache/
 .decode_wcache/
 kernel_cache/
