@@ -306,8 +306,7 @@ def main():
     ib.sync(TO)
 
     K, DH = fd.K, fd.DH_A
-    n_w = fd.UNI_DEC * fd.W_TOTAL_BLOCKS + fd.UNI_LM * fd.VOCAB_W_BLOCKS
-    n_w *= fd.BLOCK_BF16
+    n_w = fd.W_DEC + fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
     n_rms = fd.UNI_DEC * fd.RMS_LAYER + fd.UNI_DEC * fd.ROPE_W_LEN + K
     n_y = (
         fd.HOST_ROUNDS + fd.LAYER_RNDS

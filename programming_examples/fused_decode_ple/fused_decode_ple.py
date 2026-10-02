@@ -275,15 +275,12 @@ _MODELS = {
     # which is why FLM's flag for it is named RTP_GLU_IS_SKIP rather than
     # anything about the MLP. LAYER_CLASS below is that bit plus the s/F bit.
     #
-    # PAD-TO-MAX, for now. M and INTER here are the WIDEST layer's, and the
-    # narrow layers are zero-padded up to them. Zero weights contribute nothing
-    # through either gelu(0)*0 or a zeroed o-proj column, so this is
-    # numerically exact -- it is purely a bandwidth cost, and a real one:
-    # ~2478M weight elements/token against a true 1836M, i.e. +35%. That is far
-    # worse than the 3.6% the lfm2 entry pays for its uniform schedule, so it
-    # is a STAGING decision, not the endpoint. It buys a correct model on the
-    # proven phase machinery; per-class geometry is the optimization after the
-    # numerics gate is green. Do not quote its tok/s as the port's ceiling.
+    # M and INTER here are the WIDEST layer's. Each wave streams only its
+    # class's real weights (see PER_CLASS): no FFN padding on the narrow layers
+    # and no k/v rows on the KV-shared ones. The attention side is still
+    # zero-padded to the full layer's heads; zero weights contribute nothing
+    # through a zeroed o-proj column, so that padding is numerically exact and
+    # costs only bandwidth.
     #
     #   I2P = [M, K, 2*INTER, K]/(ROW_BLOCK*NCX*NCY*PAIR_ROWS)
     #       = [6144, 1536, 24576, 1536]/512 = [12, 3, 48, 3]
@@ -1753,6 +1750,53 @@ NLAYERS = int(_os.environ.get("NLAYERS", "1"))
 # Per-layer DDR slab sizes (elements). LUT is per-position (shared across layers),
 # placed after all NLAYERS rms slabs.
 W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights / layer
+
+# Per-class geometry. The build is sized for the widest layer; each wave streams
+# only its class's real weights: a NARROW wave (own KV, INTER_NARROW FFN) its
+# real up/gate rounds and down columns, a WIDE wave (KV-shared) its q rows
+# without the k/v rounds. Everything downstream keeps the build's shape: the
+# projection cores emit zero rounds for rows with no weights and skip the
+# weight half of a narrow down contraction, so rope, the GLU, the down buffer
+# and every X refeed are unchanged. A narrow wave carries NARROW_ARM.
+NARROW_ARM = 3
+PER_CLASS = bool(MODEL.get("INTER_NARROW")) and not HYBRID_MIXER and not LM_HEAD
+if PER_CLASS:
+    # how many times wider the build's FFN is than a narrow layer's
+    _nf = 2 * J2P[DOWN_PHASE] * COL_BLOCK // MODEL["INTER_NARROW"]
+    assert I2P[GATEUP_PHASE] % _nf == 0 and J2P[DOWN_PHASE] % _nf == 0, (I2P, J2P)
+    _rnd_rows = ROW_BLOCK * NCX * NCY * PAIR_ROWS  # rows per round
+    assert DQ_PADDED % _rnd_rows == 0, DQ_PADDED
+    I2P_N = [v // _nf if p == GATEUP_PHASE else v for p, v in enumerate(I2P)]
+    J2P_N = [v // _nf if p == DOWN_PHASE else v for p, v in enumerate(J2P)]
+    I2P_W = [DQ_PADDED // _rnd_rows if p == 0 else v for p, v in enumerate(I2P)]
+    J2P_W = list(J2P)
+    NARROW_WAVES = [
+        w for w, l in enumerate(WAVE_LAYERS) if l < MODEL["FIRST_KV_SHARED"]
+    ]
+else:
+    I2P_N, J2P_N, I2P_W, J2P_W, NARROW_WAVES = I2P, J2P, I2P, J2P, []
+
+
+def _per_col(i2, j2):
+    return [(i2[p] * PAIR_ROWS * NCY) * 2 * j2[p] for p in range(NPH)]
+
+
+PER_COL_PH_N, PER_COL_PH_W = _per_col(I2P_N, J2P_N), _per_col(I2P_W, J2P_W)
+W_LAYER_N = sum(NCX * PER_COL_PH_N[p] * BLOCK_BF16 for p in range(NPH))
+W_LAYER_W = sum(NCX * PER_COL_PH_W[p] * BLOCK_BF16 for p in range(NPH))
+
+
+def w_layer_of(layer):
+    """Packed weight elements of one model layer's slab."""
+    if not PER_CLASS:
+        return W_LAYER
+    return W_LAYER_N if layer < MODEL["FIRST_KV_SHARED"] else W_LAYER_W
+
+
+W_SLABS = [w_layer_of(l) for l in WAVE_LAYERS]
+W_OFFS = [sum(W_SLABS[:w]) for w in range(UNI_DEC)]
+W_DEC = sum(W_SLABS)  # all decode slabs; the LM head follows
+assert not (PER_CLASS and W_SPLIT), "per-class slabs assume one weight buffer"
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 # ShortConv carried state [BX[t-2] | BX[t-1]] per layer, also in arg4.
@@ -1788,9 +1832,9 @@ def build_module():
         # of the decode phase weights. Separate compile-time size -> decode IR is
         # byte-identical; the device (CDO) is unchanged (only this DDR memref size +
         # the runtime feed differ), so both still share one xclbin.
-        _w_blocks = UNI_DEC * W_TOTAL_BLOCKS + UNI_LM * VOCAB_W_BLOCKS
+        _w_elems = W_DEC + UNI_LM * VOCAB_W_BLOCKS * BLOCK_BF16
         w_l3 = MemRefType.get(
-            [_w_blocks * BLOCK_BF16], bf16
+            [_w_elems], bf16
         )  # packed q4k weights (all phases concatenated), NLAYERS slabs
         # W_SPLIT: w_l3 above stays arg1 and holds GROUP 0; the remaining groups and
         # the lm-head slab are APPENDED after the existing args so every current host
@@ -2505,6 +2549,18 @@ def build_module():
                 )
             return arm
 
+        def _class_arm(iv, arm):
+            """NARROW_ARM on the narrow-FFN decode waves, as equality selects over
+            NARROW_WAVES (folded once the wave loop is unrolled)."""
+            if not PER_CLASS or iv is None:
+                return arm
+            _an = arith.ConstantOp(IntegerAttr.get(i32, NARROW_ARM), None).result
+            for _k in NARROW_WAVES:
+                arm = arith.select(
+                    arith.cmpi(arith.CmpIPredicate.eq, iv, idx(_k)), _an, arm
+                )
+            return arm
+
         def grp_leads(g):
             # the leads (cx,pp) of group g, header-bearer first (k==0). Group g owns
             # NCX//N_GRP consecutive logical columns: llama 2 cols/group (g*2+lc),
@@ -2793,6 +2849,14 @@ def build_module():
 
                 for _layer in range(NLAYERS if a_iv is None else 1):
                     _wbase = _lb(W_LAYER)  # weights slab for this layer
+                    if PER_CLASS and a_iv is not None:
+                        _wbase = idx(W_OFFS[-1])
+                        for _w in range(UNI_DEC - 2, -1, -1):
+                            _wbase = arith.select(
+                                arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_w)),
+                                idx(W_OFFS[_w]),
+                                _wbase,
+                            )
                     _wgi = None  # which weight buffer this decode wave reads
                     if W_SPLIT and a_iv is not None:
                         # Group index and group base, as nested selects over the group
@@ -2841,7 +2905,10 @@ def build_module():
                             _ucmp = arith.cmpi(
                                 arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)
                             )
-                            _uarm = _arm_of_wave(a_iv, arith.select(_ucmp, _u1, _u0))
+                            _uarm = _class_arm(
+                                a_iv,
+                                _arm_of_wave(a_iv, arith.select(_ucmp, _u1, _u0)),
+                            )
                         _uarm_i = arith.index_cast(idx_t, _uarm)
 
                         def _mix_gate(
@@ -2894,7 +2961,7 @@ def build_module():
                                 )
                             else:
                                 _vwb = arith.addi(
-                                    idx(UNI_DEC * W_LAYER),
+                                    idx(W_DEC),
                                     arith.muli(
                                         arith.subi(a_iv, idx(UNI_DEC)),
                                         idx(VOCAB_W_BLOCKS * BLOCK_BF16),
@@ -3522,9 +3589,11 @@ def build_module():
                             # weight boundary -- append after QKV weights (rope has produced
                             # K/V), barrier, readback, THEN o/up/down weights.
                             woff = 0
+                            woff_n = woff_w = 0  # per-class slab offsets
                             for p in range(NPH):
                                 per_col = PER_COL_PH[p]
-                                assert per_col % NCY == 0
+                                per_col_n, per_col_w = PER_COL_PH_N[p], PER_COL_PH_W[p]
+                                assert per_col % NCY == 0 and per_col_n % NCY == 0
                                 _colspan = per_col * blk
                                 # Spatial fan over the NCX proj columns: the bundle index
                                 # @inW[cx] must be an scf.parallel IV (canonical form; a
@@ -3536,8 +3605,39 @@ def build_module():
                                 # skip coalescing and lose that barrier.
                                 # air-to-aie spatially unrolls this to the per-column feeds.
                                 _wcol0 = _lo(_wbase, woff)  # _wbase + woff (col 0 base)
-                                _feed_wcols(_wcol0, _colspan, per_col // NCY)
+                                if not PER_CLASS:
+                                    _feed_wcols(_wcol0, _colspan, per_col // NCY)
+                                elif per_col_n == per_col_w and woff_n == woff_w:
+                                    _feed_wcols(
+                                        _lo(_wbase, woff_w),
+                                        per_col_w * blk,
+                                        per_col_w // NCY,
+                                    )
+                                else:
+                                    # The whole fan in each arm: a switch per column
+                                    # would split the phase barrier.
+                                    def _narrow(_o=woff_n, _pc=per_col_n):
+                                        _feed_wcols(
+                                            _lo(_wbase, _o), _pc * blk, _pc // NCY
+                                        )
+                                        yield_([])
+
+                                    def _wide(_o=woff_w, _pc=per_col_w):
+                                        _feed_wcols(
+                                            _lo(_wbase, _o), _pc * blk, _pc // NCY
+                                        )
+                                        yield_([])
+
+                                    index_switch(
+                                        [],
+                                        _uarm_i,
+                                        [NARROW_ARM],
+                                        case_body_builder=lambda op, i, cv: _narrow(),
+                                        default_body_builder=lambda op: _wide(),
+                                    )
                                 woff += NCX * per_col * blk
+                                woff_n += NCX * per_col_n * blk
+                                woff_w += NCX * per_col_w * blk
                                 # LAST mixer phase, not the first. The shim is a
                                 # sequential instruction stream: the append blocks
                                 # on rope's K/V, and rope cannot run until the
@@ -3691,16 +3791,20 @@ def build_module():
                 # identical flow sets, both of them the ShortConv one. An i32
                 # operand is left alone (this is how DYNSEQ's L already reaches
                 # the attention herd) and survives as a real per-dispatch RTP.
+                # PER_CLASS takes the same route for the projection cores' arm.
                 _seg_arm_rt = (
-                    _arm_of_wave(
+                    _class_arm(
                         a_iv,
-                        arith.select(
-                            arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
-                            arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
-                            arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
+                        _arm_of_wave(
+                            a_iv,
+                            arith.select(
+                                arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
+                                arith.ConstantOp(IntegerAttr.get(i32, 1), None).result,
+                                arith.ConstantOp(IntegerAttr.get(i32, 0), None).result,
+                            ),
                         ),
                     )
-                    if (HYBRID_MIXER and a_iv is not None)
+                    if ((HYBRID_MIXER or PER_CLASS) and a_iv is not None)
                     else None
                 )
                 _seg_opers = (
@@ -5972,18 +6076,36 @@ def build_module():
                             # writes row 1. See proj_qmm_flush_row.
                             c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
 
-                            def _gemv(J2v):
+                            def _gemv(J2v, nw=None):
                                 J2x2 = arith.muli(J2v, c2)
                                 a_acc = AllocOp(yacc_l1, [], [])
                                 CallOp(zero, [a_acc, _arm])
                                 for _j in for_(idx(0), J2x2, idx(1)):
                                     a_x = AllocOp(xblk_l1, [], [])
                                     ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                    a_w = AllocOp(wblk_l1, [], [])
-                                    ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
-                                    CallOp(acc256, [a_x, a_w, a_acc])
+                                    if nw is None:
+                                        a_w = AllocOp(wblk_l1, [], [])
+                                        ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
+                                        CallOp(acc256, [a_x, a_w, a_acc])
+                                        DeallocOp(a_w)
+                                    else:
+                                        # X blocks past the first nw carry no
+                                        # weights: one get site per channel, the
+                                        # weight half in a 0/1-trip loop.
+                                        _has_w = arith.select(
+                                            arith.cmpi(arith.CmpIPredicate.ult, _j, nw),
+                                            idx(1),
+                                            idx(0),
+                                        )
+                                        for _w in for_(idx(0), _has_w, idx(1)):
+                                            a_w = AllocOp(wblk_l1, [], [])
+                                            ChannelGet(
+                                                "wL2ToL1", a_w, indices=[gcx, gcy]
+                                            )
+                                            CallOp(acc256, [a_x, a_w, a_acc])
+                                            DeallocOp(a_w)
+                                            yield_([])
                                     DeallocOp(a_x)
-                                    DeallocOp(a_w)
                                     yield_([])
                                 return a_acc
 
@@ -6038,9 +6160,52 @@ def build_module():
                                 pktv = _sel(
                                     _id4, lambda: _psw(_ephv, pktc, idx_t), idx_t
                                 )
+                                if not PER_CLASS:
+                                    for _v1 in for_(idx(0), I2v, idx(1)):
+                                        for _e in range(PAIR_ROWS):  # 1 (non-paired)
+                                            _emit(_gemv(J2v), pktv)
+                                        yield_([])  # v1
+                                    yield_([])  # ph
+                                    continue
+                                # Every wave keeps the build's round count and X
+                                # stream; rounds past its class's I2w and X blocks
+                                # past 2*J2w have no weights and contribute zero.
+                                i2n = [idx(v) for v in I2P_N]
+                                j2n = [idx(v) for v in J2P_N]
+                                i2w = [idx(v) for v in I2P_W]
+                                j2w = [idx(v) for v in J2P_W]
+
+                                def _cls(voc_val, nar, wide):
+                                    return index_switch(
+                                        [idx_t],
+                                        _arm_i,
+                                        [0, NARROW_ARM],
+                                        case_body_builder=lambda op, i, cv: yield_(
+                                            [voc_val if i == 0 else nar()]
+                                        ),
+                                        default_body_builder=lambda op: yield_(
+                                            [wide()]
+                                        ),
+                                    )
+
+                                I2w = _cls(
+                                    idx(VOCAB_I2),
+                                    lambda: _psw(_ephv, i2n, idx_t),
+                                    lambda: _psw(_ephv, i2w, idx_t),
+                                )
+                                J2w = _cls(
+                                    idx(VOCAB_J2),
+                                    lambda: _psw(_ephv, j2n, idx_t),
+                                    lambda: _psw(_ephv, j2w, idx_t),
+                                )
                                 for _v1 in for_(idx(0), I2v, idx(1)):
+                                    _nw = arith.select(
+                                        arith.cmpi(arith.CmpIPredicate.ult, _v1, I2w),
+                                        arith.muli(J2w, c2),
+                                        idx(0),
+                                    )
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
-                                        _emit(_gemv(J2v), pktv)
+                                        _emit(_gemv(J2v, _nw), pktv)
                                     yield_([])  # v1
                                 yield_([])  # ph
 
@@ -6263,7 +6428,7 @@ def build_module():
 
                         return body
 
-                    _arm_proj = _seg_arm
+                    _arm_proj = _core_arm if PER_CLASS else _seg_arm
                     # Fuse all 16 proj cores into TWO [2,4] block herds: west = logical
                     # cols 0,1 (phys 0,1), east = logical cols 2,3 (phys 6,7). Each block
                     # is a contiguous 2-col x 4-row rectangle. The two blocks cannot merge

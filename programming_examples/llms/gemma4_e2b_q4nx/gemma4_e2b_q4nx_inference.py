@@ -111,7 +111,10 @@ def _wcache_path(uni_dec, fingerprint):
     catches that; the layer-count and LM-head checks below still pass and the
     dispatch completes, running a different model than the caller asked for.
     """
-    return _WCACHE_DIR / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_{fingerprint}.npz"
+    return (
+        _WCACHE_DIR
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_{fingerprint}.npz"
+    )
 
 
 def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
@@ -208,9 +211,8 @@ class FusedDecoder:
         self.VOCAB_SIZE, self.VP = fd.VOCAB_SIZE, fd.VOCAB_SIZE_PADDED
         self.decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD
         self.ny = self.decode_y + self.UNI_LM * self.VP
-        self.n_w = (
-            self.UNI * fd.W_TOTAL_BLOCKS + self.UNI_LM * fd.VOCAB_W_BLOCKS
-        ) * fd.BLOCK_BF16
+        # the per-layer slabs, then the LM head
+        self.n_w = fd.W_DEC + self.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
         # RMS BO: [UNI per-layer 5-norm slabs | UNI per-layer rope_w slabs | final_norm]
         self._rope_base = self.UNI * fd.RMS_LAYER
         self._RMS_SIZE = self._rope_base + self.UNI * fd.ROPE_W_LEN + self.K
