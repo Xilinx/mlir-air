@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Conversion/AIRRtToNpuPass.h"
+#include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -3628,8 +3629,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // already short-run keeps its emission order and its await structure byte for
   // byte, which is what keeps this off the hot path of the tuned LLM decoders.
   void boundShimFeedBursts(ModuleOp module) {
-    // Per-channel tasks in flight that a shim channel absorbs without the
-    // control program blocking on the push: the AIE2 shim DMA task queue depth.
     // The measured limit is 6 (queue + an L2 ping-pong); staying at the queue
     // depth alone keeps the bound independent of what the consumer buffers.
     constexpr unsigned burstLimit = air::kShimTaskQueueDepth;

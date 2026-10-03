@@ -398,6 +398,9 @@ public:
   spreadCollapsedPacketChannels(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 };
 
+// Tasks one shim DMA channel's task queue holds.
+constexpr unsigned kShimTaskQueueDepth = 4;
+
 class ShimDMAAllocator : public DMAAllocator {
 
 public:
