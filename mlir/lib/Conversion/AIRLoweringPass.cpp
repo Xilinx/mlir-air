@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Conversion/AIRLoweringPass.h"
+#include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -1335,6 +1336,19 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
   return window;
 }
 
+// AIE1 shim DMAs chain BDs rather than queue tasks, so the task queue depth
+// does not apply to them. The depth was measured on NPU2 only.
+static bool isShimTaskQueueUnbounded(ModuleOp module, FlatSymbolRefAttr md) {
+  bool unbounded = false;
+  module.walk([&](AIE::DeviceOp d) {
+    if (!AIE::ShimDMAAllocationOp::getForSymbol(d, md.getValue()))
+      return WalkResult::advance();
+    unbounded = d.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1;
+    return WalkResult::interrupt();
+  });
+  return unbounded;
+}
+
 // A launch-scope air.channel.get draining an on-device producer to host DDR
 // lowers to a device->host (S2MM) airrt.dma_memcpy_nd. air-dependency cannot
 // model the implicit @channel put->get backpressure across the herd/segment
@@ -1374,6 +1388,29 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
           drainDmas.push_back(dma);
     if (drainDmas.empty())
       return;
+
+    // TODO(#2030): stop-gap. This pass starts every drain up front, which is
+    // what makes a long chain of drains overflow a channel's task queue; the
+    // real fix is to order drains by dependency. More than kShimTaskQueueDepth
+    // outstanding on one channel hangs the launch (ERT_CMD_STATE_TIMEOUT), so
+    // say so instead of leaving a silent timeout.
+    //
+    // Drains are counted per allocation symbol: the shim allocator gives each
+    // air.channel's readbacks their own S2MM channel.
+    llvm::MapVector<FlatSymbolRefAttr, unsigned> drainsPerChannel;
+    for (auto dma : drainDmas) {
+      auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata");
+      if (!md || isShimTaskQueueUnbounded(module, md))
+        continue;
+      if (++drainsPerChannel[md] == air::kShimTaskQueueDepth + 1) {
+        auto diag = dma->emitWarning()
+                    << "device-to-host drains on shim channel " << md
+                    << " exceed its task queue depth ("
+                    << air::kShimTaskQueueDepth << "); the launch may hang";
+        diag.attachNote() << "drain more of the output per channel.get, or "
+                             "split the launch";
+      }
+    }
 
     // (1) Defer the wait: strip drain tokens from every non-terminator wait_all
     // and gather them onto launch_end.
