@@ -101,6 +101,10 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
 // option.
 bool isChainLockCandidate(AIE::BufferOp buf);
 
+// Whether `buf` gets the chain-lock template: it must be a candidate, and
+// either v2 is on for the whole design or the buffer carries air.chain_lock.
+bool usesChainLock(AIE::BufferOp buf, bool lockRaceConditionFixV2);
+
 // Refuse a design whose serialized chain lock has a ping-ponged producer.
 //
 // The chain orders its stages, so a producer running a round ahead parks a

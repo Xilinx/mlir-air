@@ -559,6 +559,12 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   return false;
 }
 
+bool air::usesChainLock(AIE::BufferOp buf, bool lockRaceConditionFixV2) {
+  if (!buf || !isChainLockCandidate(buf))
+    return false;
+  return lockRaceConditionFixV2 || buf->hasAttr(air::attrs::ChainLock);
+}
+
 // True iff `buf` is an L2 memtile buffer that is FILLED by DMA (>=1 writer
 // endpoint) but NEVER READ (0 reader endpoints) within the segment -- a "pure
 // drain" (e.g. a readback whose data is discarded). Such a buffer's receiving
@@ -1065,11 +1071,12 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   }
 
   // v2: chain-lock branch. Memtile-only; requires the buffer to be a
-  // shared L2 with fan-in or fan-out shape (predicate is shape-based).
+  // shared L2 with fan-in or fan-out shape (predicate is shape-based), and
+  // either v2 on for the design or air.chain_lock on the buffer.
   // Takes precedence over the legacy / v1 paths when it applies.
-  if (lockRaceConditionFixV2 && tileIsMemTile && UsesSemaphoreLocks) {
+  if (tileIsMemTile && UsesSemaphoreLocks) {
     auto buf = dyn_cast_or_null<AIE::BufferOp>(bufferOp);
-    if (buf && isChainLockCandidate(buf)) {
+    if (usesChainLock(buf, lockRaceConditionFixV2)) {
       auto clsOrFail = getOrCreateChainLockSet(buf, tile);
       if (failed(clsOrFail))
         return memcpyOp->emitOpError(
@@ -1100,7 +1107,8 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
       // AIE2's semaphore locks may share by air.channels
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
         if (tileIsMemTile) {
-          if (!lockRaceConditionFix) {
+          if (!lockRaceConditionFix ||
+              (bufferOp && bufferOp->hasAttr(air::attrs::CountedLock))) {
             // If memtile, and multiple bds reference the same buffer op, but
             // different DMA channels, then we assume the scenario of having two
             // bds, one S2MM and the other MM2S. This scenario is almost always

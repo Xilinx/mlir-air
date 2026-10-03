@@ -70,6 +70,7 @@ class XRTRunner:
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
         use_lock_race_condition_fix_v2: bool = False,
+        use_lock_race_condition_fix_auto: bool = None,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -99,6 +100,7 @@ class XRTRunner:
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
+            use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves it to aircc, which turns it on unless one of the other two fixes is set; False turns it off.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
             output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn, elf].
@@ -143,6 +145,7 @@ class XRTRunner:
         self.channel_multiplexing = channel_multiplexing
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
+        self.use_lock_race_condition_fix_auto = use_lock_race_condition_fix_auto
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.output_format = output_format
@@ -201,6 +204,7 @@ class XRTRunner:
             channel_multiplexing=self.channel_multiplexing,
             use_lock_race_condition_fix=self.use_lock_race_condition_fix,
             use_lock_race_condition_fix_v2=self.use_lock_race_condition_fix_v2,
+            use_lock_race_condition_fix_auto=self.use_lock_race_condition_fix_auto,
             trace_offset=self.trace_offset,
             trace_size=self.trace_size,
             output_format=self.output_format,
