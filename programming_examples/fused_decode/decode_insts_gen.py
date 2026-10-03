@@ -220,18 +220,32 @@ class DecodeInstsGen:
         A staircase driver holds every window at once and picks per token, so it needs
         the streams without the select()/active_maxl round trip.
         """
+        return self.words_for(maxl, L, slice(None))
+
+    def varying(self, maxl):
+        """Indices of the words of the `maxl` template that change with L."""
+        t = self.templates[maxl]
+        if "varying" not in t:
+            v = t["slope"] != 0
+            for k in ("rb", "sw"):
+                if t.get(k) is not None:
+                    v |= t[k] != 0
+            t["varying"] = np.nonzero(v)[0]
+        return t["varying"]
+
+    def words_for(self, maxl, L, idx):
+        """The words at `idx` of insts_for(maxl, L), computed for those alone."""
         t = self.templates[maxl]
         if t["slope"] is None:
             raise KeyError(f"template ATTN_MAXL={maxl} is not calibrated")
         if not (1 <= L <= maxl):
             raise ValueError(f"L={L} out of range for ATTN_MAXL={maxl}")
-        out = t["base"].astype(np.int64)
-        ld = t["slope"] != 0
-        out[ld] = t["base"][ld].astype(np.int64) + (L - t["base_L"]) * t["slope"][ld]
+        out = t["base"][idx].astype(np.int64)
+        out += (L - t["base_L"]) * t["slope"][idx]
         if t["rb"] is not None:
-            out += ((L + 15) // 16 - t["rb_rounds"]) * t["rb"]
+            out += ((L + 15) // 16 - t["rb_rounds"]) * t["rb"][idx]
         if t["sw"] is not None and L > t["window"]:
-            out += ((L - t["window"]) // 16) * t["sw"]
+            out += ((L - t["window"]) // 16) * t["sw"][idx]
         return out.astype(np.uint32)
 
     def calibrated_windows(self):

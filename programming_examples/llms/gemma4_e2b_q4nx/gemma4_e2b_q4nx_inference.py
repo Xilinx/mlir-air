@@ -358,16 +358,30 @@ class FusedDecoder:
         the full ones 128 of 512 at theta 1e6 (partial rotary, folded into the
         bundle's rope_freqs divisor). The LUT is DH_A wide with cos in the low half
         and sin in the high half, so a 256-wide layer fills a quarter of each.
+
+        The norms are laid out once. A LUT depends on its layer only through the
+        layer class, so per position each class's cos/sin is computed once and
+        scattered to its layers.
         """
         np = self.np
-        out = []
-        for L in range(self.UNI):
-            cos, sin, dh = self.gw.rope_lut(p, L, rope_freqs=self.rope_freqs)
-            lut = np.zeros(self.DH_A, np.float32)
-            lut[: dh // 2] = cos
-            lut[self.DH_A // 2 : self.DH_A // 2 + dh // 2] = sin
-            out += [lut.astype(self.bf16), self.QNORM[L], self.KNORM[L]]
-        return np.concatenate(out)
+        if not hasattr(self, "_rope_tpl"):
+            out, cls, off = [], {}, 0
+            for L in range(self.UNI):
+                seg = [np.zeros(self.DH_A, self.bf16), self.QNORM[L], self.KNORM[L]]
+                cls.setdefault(self.gw.is_sliding(L), [L, []])[1].append(off)
+                out += seg
+                off += sum(a.size for a in seg)
+            self._rope_tpl = np.concatenate(out)
+            self._rope_cls = []
+            for rep, offs in cls.values():
+                h = self.gw.head_dim(rep) // 2
+                at = np.asarray(offs)[:, None] + np.arange(h)
+                self._rope_cls.append((rep, at, at + self.DH_A // 2))
+        for rep, at_cos, at_sin in self._rope_cls:
+            cos, sin, _dh = self.gw.rope_lut(p, rep, rope_freqs=self.rope_freqs)
+            self._rope_tpl[at_cos] = cos.astype(self.bf16)
+            self._rope_tpl[at_sin] = sin.astype(self.bf16)
+        return self._rope_tpl
 
     def _ple_embed(self, tok):
         """This token's per-layer embedding slice, [UNI, PLI_D].
@@ -414,18 +428,18 @@ class FusedDecoder:
             self._patch(self.pw_bo, emb[i], i * self.PLE_LAYER + self.PLE_EMB_OFF)
         self._patch(self.r_bo, self._rope_slab(p), self._rope_base)
 
-        st = self.kern(
-            3,
-            self.ib,
-            insts_size,
-            self.x_bo,
-            self.w_bo,
-            self.r_bo,
-            self.y_bo,
-            self.kvc,
-            self.pw_bo,
-            self.px_bo,
-        ).wait(60000)
+        # The run's arguments are bound once; they change only with the window.
+        key = (id(self.kern), id(self.ib), insts_size)
+        if getattr(self, "_run_key", None) != key:
+            self._run = xrt.run(self.kern)
+            for i, a in enumerate(
+                (3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo)
+                + (self.y_bo, self.kvc, self.pw_bo, self.px_bo)
+            ):
+                self._run.set_arg(i, a)
+            self._run_key = key
+        self._run.start()
+        st = self._run.wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
         _voc_n = self.UNI_LM * self.VP
@@ -438,7 +452,11 @@ class FusedDecoder:
         cap = self.gw.FINAL_LOGIT_SOFTCAP
         # Monotonic, so it cannot move the argmax -- but it IS the model's output,
         # and anything scoring logits against the CPU reference needs it applied.
-        return cap * np.tanh(yv / cap) if cap else yv
+        if cap:
+            yv /= cap
+            np.tanh(yv, out=yv)
+            yv *= cap
+        return yv
 
     # Kernels, insts states and BOs are all created against self.dev, but self.dev
     # is assigned first and CPython clears an instance __dict__ in insertion order,
@@ -448,6 +466,7 @@ class FusedDecoder:
     # dropped ahead of it or they keep that state (and its cacheable BO) alive past
     # the device.
     _XRT_RELEASE_ORDER = (
+        "_run",
         "ib",
         "_st",
         "_ist",
