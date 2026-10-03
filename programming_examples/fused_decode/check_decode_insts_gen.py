@@ -52,3 +52,11 @@ with tempfile.TemporaryDirectory() as td:
         np.array_equal(g.insts_for(MAXL, L), expect(L, True)) for L in Ls
     )
     print(f"with .rb: readback follows ceil(L/16): {ok}")
+
+    # an .rb stream that did not change the readback is refused, not used
+    write(d, f"decode_L{MAXL}.rb", stream(MAXL, MAXL // 16))
+    try:
+        DecodeInstsGen(str(d))
+        print("identical .rb refused: False")
+    except RuntimeError:
+        print("identical .rb refused: True")

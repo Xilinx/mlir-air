@@ -177,6 +177,9 @@ int main(int argc, char **argv) {
     auto irb = readWords(rbPath);
     if (irb.size() != ibase.size())
       throw std::runtime_error(rbPath + ": size differs from the base build");
+    if (irb == ibase)
+      throw std::runtime_error(rbPath + " equals the base build: its build "
+                                        "ignored DECODE_RB_ROUNDS");
     const long dr = (L + 15) / 16 - (baseL + 15) / 16;
     for (size_t i = 0; i < insts.size(); i++) {
       const int64_t d =

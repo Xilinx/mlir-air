@@ -95,6 +95,11 @@ class DecodeInstsGen:
                     full = os.path.join(artifact_dir, builds[L])
                     d = np.fromfile(full, np.uint32).astype(np.int64)
                     d -= np.fromfile(rb, np.uint32).astype(np.int64)
+                    if not d.any():
+                        raise RuntimeError(
+                            f"{rb} equals {builds[L]}: its build ignored "
+                            "DECODE_RB_ROUNDS, so the readback cannot be cut"
+                        )
                     t["rb"], t["rb_rounds"], self.exact = d, (L + 15) // 16, True
         self._check_declared_windows(artifact_dir)
         self.select(max_L)

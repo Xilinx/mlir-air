@@ -985,8 +985,7 @@ ATTN_ROUNDS = (ATTN_L + 15) // 16
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
-# Shim KV-readback outer block count: always ceil(ATTN_L/16).
-RB_ROUNDS = (ATTN_L + 15) // 16
+RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
 # DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
 # in. It becomes a launch operand that drives BOTH the shim readback's block count
 # and the attention herd's RTP-L, so the shim pushes exactly what the cores consume
@@ -1005,6 +1004,10 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # skip the far blocks by masking exactly as the xclbin design does.
 DYNSEQ_RTP = DYNSEQ_APPEND = bool(DYNSEQ)
 DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
+# DECODE_RT_ROUNDS=1, xclbin path: the cores run ceil(L/16) KV blocks from their
+# RTP word, and the host cuts the readback to match with the build's
+# decode_L<N>.rb.insts.bin (see decode_insts_gen). The memtile ring is count-free.
+RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
 
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 # Cross-wave shim-feed coalescing: always on (the un-coalesced feed was an A/B).
@@ -3622,7 +3625,7 @@ def build_module():
                         def _core_rounds(Lh):
                             """The core-side attention loop bound.
 
-                            With DYNSEQ_TRIP this is ceil(Lh/16) built from the
+                            With DYNSEQ_TRIP or RT_ROUNDS this is ceil(Lh/16) built from the
                             RTP-L herd block-arg, so it is opaque to folding and
                             survives to core codegen as a real runtime trip count
                             -- the same count the shim's readback BD pushes, which
@@ -3636,7 +3639,7 @@ def build_module():
                             the only form the full-ELF path can build; the shim's
                             push count is then fixed and agrees by construction.
                             """
-                            if not DYNSEQ_TRIP:
+                            if not (DYNSEQ_TRIP or RT_ROUNDS):
                                 return idx(ATTN_ROUNDS)
                             _s = arith.addi(
                                 Lh,
@@ -4774,6 +4777,11 @@ def run():
     out_fmt = _os.environ.get("DECODE_OUTPUT_FORMAT", "xclbin")
     if out_fmt not in ("xclbin", "elf"):
         raise SystemExit(f"DECODE_OUTPUT_FORMAT must be xclbin or elf, got {out_fmt!r}")
+    if RT_ROUNDS and out_fmt == "elf":
+        raise SystemExit(
+            "DECODE_RT_ROUNDS needs the host to cut the KV readback per token, "
+            "which an ELF's embedded instruction stream does not allow"
+        )
 
     # For ELF, XRT resolves the kernel as "main:<instance_name>", and
     # instance_name must be the module's func.func name -- the OUTER runtime
