@@ -218,9 +218,9 @@ _compile_decode_elf_build: preflight-llvm-link
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
-	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L and KV block count via scratchpad)"
 	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
-	  DECODE_DYNSEQ=1 \
+	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
 	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; \

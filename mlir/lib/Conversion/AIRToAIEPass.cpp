@@ -173,7 +173,8 @@ static void declareHerdScratchpadParameter(air::HerdOp h, StringRef name,
   AIEX::ScratchpadParameterOp::create(b, h.getLoc(), b.getStringAttr(name),
                                       TypeAttr::get(type),
                                       /*state_table_idx=*/nullptr,
-                                      /*kind=*/nullptr);
+                                      /*kind=*/nullptr, /*min_value=*/nullptr,
+                                      /*max_value=*/nullptr);
 }
 
 // Breakpoint stages for debugging with --test-patterns

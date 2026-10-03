@@ -126,6 +126,37 @@ def channel_slice():
     print(launch.mlir())
 
 
+# CHECK-LABEL: TEST: runtime_extent
+# extent= replaces the outermost size of an L3 region with a value known only at
+# run time; the rest of the pattern is the region's own.
+# CHECK: %[[N:.*]] = arith.index_cast %{{.*}} : i32 to index
+# CHECK: %[[E:.*]] = affine.apply #{{.*}}()[%[[N]]]
+# CHECK: air.channel.put @Rows[] (%{{.*}}[0, 0] [%[[E]], 16] [16, 1]) : (memref<64x16xi32>)
+@run
+def runtime_extent():
+    A = air.tensor([64, 16], i32)
+    nrows = air.tensor([], i32, name="nrows")
+    rows = air.channel("Rows")
+
+    with air.launch(name="rt") as launch:
+
+        @launch.body
+        def _():
+            rows.put(A[0:64, 0:16], extent=nrows)
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="h", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([16], i32, scope=h.private())
+                            rows.get(buf)
+
+    print(launch.mlir())
+
+
 # CHECK-LABEL: TEST: channel_array
 # size= makes the channel an array, and indices= selects one of its members.
 # The herd coordinate is a legitimate index, so the subscript is dynamic.

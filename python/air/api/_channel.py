@@ -394,7 +394,7 @@ class Channel:
             out.append(value)
         return out
 
-    def _emit(self, obj, indices, dependency, direction, dest=None):
+    def _emit(self, obj, indices, dependency, direction, dest=None, extent=None):
         from ._trace import current_herd, current_launch, current_segment
         from ._value import Tensor, TensorSlice
         from .ops import _check_dependency, _endpoint
@@ -463,6 +463,29 @@ class Channel:
             # value defined outside the region".
             endpoint = _endpoint(obj, f"channel.{direction}", "argument")
             offsets, sizes, strides = endpoint.pattern or ([], [], [])
+            if extent is not None:
+                from ._index import coerce_index
+
+                if tensor is None or not sizes:
+                    raise ValueError(
+                        f"air.channel {self.name!r}: extent= sets the size of an "
+                        "L3 region's outermost axis at run time; this endpoint "
+                        "has no such axis"
+                    )
+                ext = extent
+                if isinstance(ext, Tensor):
+                    # A rank-0 argument, read here because only now is it
+                    # bound to the launch's own block argument.
+                    if ext.shape:
+                        raise ValueError(
+                            f"air.channel {self.name!r}: extent= takes a rank-0 "
+                            f"tensor, got shape {ext.shape}"
+                        )
+                    from ..dialects import arith
+                    from ..ir import IndexType
+
+                    ext = arith.index_cast(IndexType.get(), ext.value)
+                sizes = [coerce_index(ext).materialize(), *sizes[1:]]
             extra = {}
             if dest is not None:
                 from ._index import coerce_index
@@ -531,7 +554,9 @@ class Channel:
 
     # -- public ------------------------------------------------------------
 
-    def put(self, obj, indices=None, dependency=None, dest=None, **unsupported):
+    def put(
+        self, obj, indices=None, dependency=None, dest=None, extent=None, **unsupported
+    ):
         """Send a tensor, a buffer, or a region of either into the channel.
 
         ``dest`` names which *destination* of a packet-switched channel this put
@@ -540,14 +565,22 @@ class Channel:
         these, so the wire number lives in one place instead of being written
         here, written again on the channel, and hoped to agree. Only meaningful
         on a channel_type="npu_dma_packet" channel with several consumers.
+
+        ``extent`` replaces the size of an L3 region's outermost axis with a
+        value known only at run time: a rank-0 tensor argument, or an index
+        computed inside the launch. The region's own size on that axis is the
+        most it may move.
         """
         _reject_unsupported(unsupported)
-        return self._emit(obj, indices, dependency, "put", dest=dest)
+        return self._emit(obj, indices, dependency, "put", dest=dest, extent=extent)
 
-    def get(self, obj, indices=None, dependency=None, **unsupported):
-        """Receive the channel's next chunk into a tensor, buffer, or region."""
+    def get(self, obj, indices=None, dependency=None, extent=None, **unsupported):
+        """Receive the channel's next chunk into a tensor, buffer, or region.
+
+        ``extent`` is as for :meth:`put`.
+        """
         _reject_unsupported(unsupported)
-        return self._emit(obj, indices, dependency, "get")
+        return self._emit(obj, indices, dependency, "get", extent=extent)
 
 
 # Keywords the underlying ops accept and this DSL does not lower. They raise
