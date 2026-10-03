@@ -280,12 +280,22 @@ profile-prefill:
 _compile_decode_build:
 	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
 	@set -e; for L in $(LBUILD) $(LREF); do \
-	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
+	  DECODE_RT_ROUNDS=1 $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
 	    UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
 	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
 	  mv -f $(DEC)/decode.xclbin    $(srcdir)/decode_L$$L.xclbin; \
 	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$$L.insts.bin; \
 	done
+	@# The cores run ceil(L/16) KV blocks (DECODE_RT_ROUNDS), so the host cuts the
+	@# readback to match; this one-block-shorter build locates its length words.
+	@set -e; R=$$(( ($(LBUILD) + 15) / 16 - 1 )); rm -f $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
+	if [ $$R -ge 1 ]; then \
+	  DECODE_RT_ROUNDS=1 DECODE_RB_ROUNDS=$$R $(MAKE) --no-print-directory -C $(DEC) compile-decode \
+	    LBUILD=$(LBUILD) UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
+	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
+	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
+	  rm -f $(DEC)/decode.xclbin; \
+	fi
 	@echo "Gemma4 decode templates built: decode_L$(LBUILD) + decode_L$(LREF) (UNI_DEC=$(SWEEP_UNI_DEC))."
 
 ## One dispatch is not a verdict on this hardware. A few percent of NPU2

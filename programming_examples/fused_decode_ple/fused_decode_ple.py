@@ -1032,6 +1032,12 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+# DECODE_RT_ROUNDS=1: the attention cores run ceil(L/16) KV blocks, L from their
+# RTP word, instead of all of ATTN_MAXL. The memtile KV ring is count-free and
+# keeps its compile-time bound. Only valid with the host patching the shim
+# readback down to the same block count (DecodeInstsGen's .rb.insts.bin), so the
+# KV traffic follows the context rather than the template.
+RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -4949,7 +4955,7 @@ def build_module():
                                     pushes, which is what keeps the core off a channel get
                                     that never arrives.
                                     """
-                                    if not DYNSEQ_RTP:
+                                    if not (DYNSEQ_RTP or RT_ROUNDS):
                                         return idx(ATTN_ROUNDS)
                                     _s = arith.addi(
                                         _rtp_l(Lh),
