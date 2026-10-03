@@ -41,6 +41,69 @@ namespace air {
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1);
 // Mixed static/dynamic overload: a null entry still means "whole memref".
 bool areEqualIndices(mlir::OpFoldResult index_0, mlir::OpFoldResult index_1);
+
+//===----------------------------------------------------------------------===//
+// Channel endpoint identity and FIFO ordering
+//
+// A channel is an ordered FIFO, so ops addressing the same slot must be totally
+// ordered by dependency tokens. The ordering constrains the FIFO, not the data,
+// and holds for endpoints writing unrelated buffers. The memref tracing
+// elsewhere in this header therefore cannot derive it.
+//
+// See "Endpoint ordering requirement" in docs/AIRComputeModel.md.
+//===----------------------------------------------------------------------===//
+
+// Which channel, which direction, and the per-dimension indices (kept as both
+// SSA Values and constant folds so callers can pick their own equality policy).
+struct ChannelEndpointKey {
+  StringRef name;
+  bool isPut;
+  SmallVector<Value> indices;
+  SmallVector<std::optional<int64_t>> constIndices;
+};
+
+ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan);
+
+// FIFO policy: two endpoints address the same channel slot iff same channel,
+// same direction, same index arity, and every index provably equal. Unknown
+// (non-constant, non-identical) indices are treated as NOT equal so no false
+// ordering edge is added.
+bool sameChannelEndpoint(const ChannelEndpointKey &a,
+                         const ChannelEndpointKey &b);
+
+// One scope a channel op participates in: the block, the token carrying the
+// op's completion into that block, and the conditional arms crossed to reach it
+// as (conditional op, region number) pairs.
+struct ChannelScopeLevel {
+  Block *block;
+  Value token;
+  SmallVector<std::pair<Operation *, unsigned>> guards;
+};
+
+// The chain of sequential scopes `chan` participates in, innermost first.
+//
+// affine.if / scf.if / scf.index_switch arms are guarded straight-line code in
+// the enclosing scope, so the chain walks out through them, promoting the token
+// to the conditional's token result: that result, not the guarded op's own
+// token, is what an op outside the region can name. A loop body is a scope of
+// its own, so the chain stops at the first non-conditional parent.
+void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
+                          SmallVectorImpl<ChannelScopeLevel> &chain);
+
+// Do two endpoints sit under the same guard, and so execute together?
+//
+// Endpoints under unrelated conditions must not be ordered through a
+// conditional's token result. On the arm that does not run, that result carries
+// whatever the other arm yields, which says nothing about the endpoint inside
+// -- so the ordering would be fictional. Requiring the same guard keeps every
+// published token one the endpoint actually stands behind.
+//
+// Arms of one conditional are never the same guard: they are mutually
+// exclusive, and no order between them is needed or expressible.
+bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
+                    ArrayRef<std::pair<Operation *, unsigned>> b);
+
+void enforceChannelFifoOrder(Operation *root);
 void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);

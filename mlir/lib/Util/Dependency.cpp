@@ -7,10 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Util/Dependency.h"
+
 #include "air/Util/Util.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -671,6 +673,160 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     addAsyncDependencyIfNewImpl(affine_if_op, token);
   } else
     op->emitOpError("unknown async op");
+}
+
+//===----------------------------------------------------------------------===//
+// Channel endpoint identity and FIFO ordering
+//===----------------------------------------------------------------------===//
+
+ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan) {
+  ChannelEndpointKey k;
+  k.name = chan.getChanName();
+  k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+  for (auto idx : chan.getIndices()) {
+    k.indices.push_back(idx);
+    k.constIndices.push_back(getConstantIntValue(idx));
+  }
+  return k;
+}
+
+bool sameChannelEndpoint(const ChannelEndpointKey &a,
+                         const ChannelEndpointKey &b) {
+  if (a.isPut != b.isPut || a.name != b.name)
+    return false;
+  if (a.indices.size() != b.indices.size())
+    return false;
+  for (auto it : llvm::zip(a.indices, b.indices))
+    if (!areEqualIndices(std::get<0>(it), std::get<1>(it)))
+      return false;
+  return true;
+}
+
+// Is this op a conditional whose arms are guarded straight-line code?
+static bool isConditionalOp(Operation *op) {
+  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(op);
+}
+
+// Do two conditionals select on the same runtime value?
+static bool sameCondition(Operation *a, Operation *b) {
+  if (a == b)
+    return true;
+  if (auto ifA = dyn_cast<scf::IfOp>(a)) {
+    auto ifB = dyn_cast<scf::IfOp>(b);
+    return ifB && ifA.getCondition() == ifB.getCondition();
+  }
+  if (auto afA = dyn_cast<affine::AffineIfOp>(a)) {
+    auto afB = dyn_cast<affine::AffineIfOp>(b);
+    return afB && afA.getIntegerSet() == afB.getIntegerSet() &&
+           afA.getOperands() == afB.getOperands();
+  }
+  if (auto swA = dyn_cast<scf::IndexSwitchOp>(a)) {
+    auto swB = dyn_cast<scf::IndexSwitchOp>(b);
+    return swB && swA.getArg() == swB.getArg() &&
+           swA.getCases() == swB.getCases();
+  }
+  return false;
+}
+
+bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
+                    ArrayRef<std::pair<Operation *, unsigned>> b) {
+  if (a.size() != b.size())
+    return false;
+  for (auto [ga, gb] : llvm::zip(a, b)) {
+    // Different arms of the same condition never run together.
+    if (ga.second != gb.second)
+      return false;
+    if (!sameCondition(ga.first, gb.first))
+      return false;
+  }
+  return true;
+}
+
+void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
+                          SmallVectorImpl<ChannelScopeLevel> &chain) {
+  Block *block = chan->getBlock();
+  Value token = directToken;
+  SmallVector<std::pair<Operation *, unsigned>> guards;
+  chain.push_back({block, token, guards});
+  while (Operation *parent = block->getParentOp()) {
+    if (!isConditionalOp(parent))
+      break;
+    // Promote to the result that carries `token` out of this arm, found by
+    // matching the arm's yielded operand. A conditional can have several token
+    // results -- rebuildIndexSwitchWithTrailingAsyncToken appends its summary
+    // token after the existing ones -- so taking the first would publish a
+    // result that says nothing about this endpoint. Where no yielded operand
+    // is `token`, the relationship cannot be established and the walk stops.
+    Operation *term = block->getTerminator();
+    if (!term)
+      break;
+    auto operands = term->getOperands();
+    auto it = llvm::find(operands, token);
+    if (it == operands.end())
+      break;
+    unsigned idx = std::distance(operands.begin(), it);
+    if (idx >= parent->getNumResults())
+      break;
+    Value promoted = parent->getResult(idx);
+    if (!isa<air::AsyncTokenType>(promoted.getType()))
+      break;
+    guards.push_back({parent, block->getParent()->getRegionNumber()});
+    token = promoted;
+    block = parent->getBlock();
+    chain.push_back({block, token, guards});
+  }
+}
+
+void enforceChannelFifoOrder(Operation *root) {
+  // Per scope block, the token of the most recent endpoint at each slot, with
+  // the guard chain that token stands behind. walk() runs in program order, so
+  // linking each op to its last-seen match builds the nearest-preceding chain
+  // in one pass.
+  //
+  // Publishing at every scope in the chain and looking up innermost-first is
+  // what lets a nested endpoint pair with a sibling under the same guard, while
+  // a loop boundary keeps the two apart.
+  struct Slot {
+    ChannelEndpointKey key;
+    Value token;
+    SmallVector<std::pair<Operation *, unsigned>> guards;
+  };
+  llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
+  root->walk([&](air::ChannelInterface chan) {
+    auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
+    if (!async || !async.getAsyncToken())
+      return;
+    ChannelEndpointKey key = getChannelEndpointKey(chan);
+    SmallVector<ChannelScopeLevel> chain;
+    getChannelScopeChain(chan, async.getAsyncToken(), chain);
+
+    auto findSlot = [&](const ChannelScopeLevel &level) -> Slot * {
+      auto it = lastSeen.find(level.block);
+      if (it == lastSeen.end())
+        return nullptr;
+      for (auto &slot : it->second)
+        if (sameChannelEndpoint(slot.key, key) &&
+            sameGuardChain(slot.guards, level.guards))
+          return &slot;
+      return nullptr;
+    };
+
+    // Link to the nearest preceding match, innermost scope outward.
+    for (auto &level : chain)
+      if (Slot *slot = findSlot(level)) {
+        addAsyncDependencyIfNew(chan.getOperation(), slot->token);
+        break;
+      }
+
+    // Publish at every scope level, so a later endpoint at any of them matches.
+    for (auto &level : chain) {
+      if (Slot *slot = findSlot(level)) {
+        slot->token = level.token;
+        continue;
+      }
+      lastSeen[level.block].push_back({key, level.token, level.guards});
+    }
+  });
 }
 
 bool isAsyncOp(Operation *op) {

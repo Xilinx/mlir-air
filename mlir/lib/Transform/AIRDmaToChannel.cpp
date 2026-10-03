@@ -1559,6 +1559,14 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       updateDependencyOnFunction(f);
     }
 
+    // Channel endpoint ordering. The channels were just created here, so no
+    // earlier pass had endpoints to order; establish it now rather than leave
+    // the IR under-constrained downstream.
+    //
+    // Endpoints on one channel slot share a FIFO and must be ordered even when
+    // they write unrelated buffers, which the dep tracing above cannot see.
+    air::enforceChannelFifoOrder(module);
+
     // Clear channel attributes
     for (auto f : funcOps) {
       f.walk([&](Operation *op) {
