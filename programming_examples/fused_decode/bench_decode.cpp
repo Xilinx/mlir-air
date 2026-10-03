@@ -167,6 +167,30 @@ int main(int argc, char **argv) {
   for (size_t i = 0; i < insts.size(); i++)
     insts[i] = static_cast<uint32_t>(static_cast<int64_t>(ibase[i]) +
                                      (L - baseL) * slope[i]);
+  // A build whose cores take their KV block count from the RTP-L word ships
+  // decode_L<base>.rb.insts.bin, the same build with one readback block fewer;
+  // the difference cuts the readback to ceil(L/16) blocks (see
+  // decode_insts_gen).
+  const std::string rbPath =
+      dir + "/decode_L" + std::to_string(baseL) + ".rb.insts.bin";
+  if (std::ifstream(rbPath).good()) {
+    auto irb = readWords(rbPath);
+    if (irb.size() != ibase.size())
+      throw std::runtime_error(rbPath + ": size differs from the base build");
+    const long dr = (L + 15) / 16 - (baseL + 15) / 16;
+    for (size_t i = 0; i < insts.size(); i++) {
+      const int64_t d =
+          static_cast<int64_t>(ibase[i]) - static_cast<int64_t>(irb[i]);
+      if (d) {
+        insts[i] =
+            static_cast<uint32_t>(static_cast<int64_t>(insts[i]) + dr * d);
+        lo = std::min(lo, i);
+        hi = std::max(hi, i + 1);
+      }
+    }
+    std::cout << "readback    " << (L + 15) / 16 << " blocks (" << rbPath
+              << ")\n";
+  }
 
   std::cout << "xclbin      " << xclbinPath << "\n"
             << "insts       " << insts.size() << " words, L-dependent [" << lo

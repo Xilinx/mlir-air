@@ -17,6 +17,13 @@ build (the two same-ATTN_MAXL reference builds locate those words; verified byte
 
 (An ATTN_MAXL smaller than the target generation length streams less KV per step but caps
 context; choosing ATTN_MAXL >= max generation length is the single knob, exactly MAX_L.)
+
+A build whose attention cores take their block count from the RTP-L word
+(DECODE_RT_ROUNDS) also needs the shim readback cut to ceil(L/16) blocks, as the
+reference's per-token sequence does. Its directory then holds
+decode_L<N>.rb.insts.bin: decode_L<N> rebuilt with one readback block fewer. The
+difference locates the readback lengths, and every stream is rewritten whole per
+token, since a ceil(L/16) step is not a two-point slope.
 """
 
 import os
@@ -79,6 +86,16 @@ class DecodeInstsGen:
                 Ls=Ls,
                 xclbin=os.path.join(artifact_dir, f"decode_L{base_L}.xclbin"),
             )
+        self.exact = False
+        for t in self.templates.values():
+            t["rb"] = None
+            for L in t["Ls"]:
+                rb = os.path.join(artifact_dir, f"decode_L{L}.rb.insts.bin")
+                if os.path.exists(rb):
+                    full = os.path.join(artifact_dir, builds[L])
+                    d = np.fromfile(full, np.uint32).astype(np.int64)
+                    d -= np.fromfile(rb, np.uint32).astype(np.int64)
+                    t["rb"], t["rb_rounds"], self.exact = d, (L + 15) // 16, True
         self._check_declared_windows(artifact_dir)
         self.select(max_L)
 
@@ -164,6 +181,8 @@ class DecodeInstsGen:
         out = t["base"].astype(np.int64)
         ld = t["slope"] != 0
         out[ld] = t["base"][ld].astype(np.int64) + (L - t["base_L"]) * t["slope"][ld]
+        if t["rb"] is not None:
+            out += ((L + 15) // 16 - t["rb_rounds"]) * t["rb"]
         return out.astype(np.uint32)
 
     def calibrated_windows(self):

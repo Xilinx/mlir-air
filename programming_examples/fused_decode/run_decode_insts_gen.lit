@@ -1,0 +1,10 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Device-free check of DecodeInstsGen: the per-L instruction stream, with and
+// without the readback-length patch (decode_L<N>.rb.insts.bin).
+//
+// RUN: %PYTHON %S/check_decode_insts_gen.py | FileCheck %s
+//
+// CHECK: without .rb: readback stays at ATTN_MAXL: True
+// CHECK: with .rb: readback follows ceil(L/16): True
