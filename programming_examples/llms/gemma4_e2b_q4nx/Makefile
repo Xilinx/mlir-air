@@ -288,7 +288,9 @@ _compile_decode_build:
 	done
 	@# The cores run ceil(L/16) KV blocks (DECODE_RT_ROUNDS), so the host cuts the
 	@# readback to match; this one-block-shorter build locates its length words.
+	@# decode_L<N>.rt_rounds tells the consumers this template needs that .rb.
 	@set -e; R=$$(( ($(LBUILD) + 15) / 16 - 1 )); rm -f $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
+	echo 1 > $(srcdir)/decode_L$(LBUILD).rt_rounds; \
 	if [ $$R -ge 1 ]; then \
 	  DECODE_RT_ROUNDS=1 DECODE_RB_ROUNDS=$$R $(MAKE) --no-print-directory -C $(DEC) compile-decode \
 	    LBUILD=$(LBUILD) UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
@@ -437,6 +439,6 @@ sublayer-ref:
 clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
-	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
+	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds 2>/dev/null || true
 	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano $(FUSED_DIR) 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."

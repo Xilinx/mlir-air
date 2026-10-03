@@ -193,6 +193,16 @@ int main(int argc, char **argv) {
     }
     std::cout << "readback    " << (L + 15) / 16 << " blocks (" << rbPath
               << ")\n";
+  } else if ((baseL + 15) / 16 > 1 &&
+             (std::ifstream(dir + "/decode_L" + std::to_string(baseL) +
+                            ".rt_rounds")
+                  .good() ||
+              std::ifstream(dir + "/decode_L" + std::to_string(refL) +
+                            ".rt_rounds")
+                  .good())) {
+    // The cores stop at ceil(L/16) blocks; a full-length readback would hang.
+    throw std::runtime_error(rbPath + " is missing, but the templates were "
+                                      "built with DECODE_RT_ROUNDS; rebuild");
   }
 
   std::cout << "xclbin      " << xclbinPath << "\n"

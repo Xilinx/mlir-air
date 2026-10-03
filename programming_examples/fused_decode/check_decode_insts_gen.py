@@ -60,3 +60,12 @@ with tempfile.TemporaryDirectory() as td:
         print("identical .rb refused: False")
     except RuntimeError:
         print("identical .rb refused: True")
+
+    # a runtime-rounds template whose .rb went missing is refused, not run
+    (d / f"decode_L{MAXL}.rb.insts.bin").unlink()
+    (d / f"decode_L{MAXL}.rt_rounds").touch()
+    try:
+        DecodeInstsGen(str(d))
+        print("missing .rb refused: False")
+    except RuntimeError:
+        print("missing .rb refused: True")
