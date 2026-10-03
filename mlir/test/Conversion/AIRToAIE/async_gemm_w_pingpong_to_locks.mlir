@@ -102,11 +102,13 @@
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 module {
   air.channel @channel_5 [2, 2]
-  air.channel @channel_4 [2, 2]
-  air.channel @channel_3 [1, 1] {broadcast_shape = [2, 1]}
-  air.channel @channel_2 [1, 1] {broadcast_shape = [2, 1]}
-  air.channel @channel_1 [1, 1] {broadcast_shape = [1, 2]}
-  air.channel @channel_0 [1, 1] {broadcast_shape = [1, 2]}
+  // The core inputs are packet-switched: each core takes three (A, B and its
+  // C tile) on two S2MM channels, so two of them share one.
+  air.channel @channel_4 [2, 2] {channel_type = "npu_dma_packet"}
+  air.channel @channel_3 [1, 1] {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+  air.channel @channel_2 [1, 1] {broadcast_shape = [2, 1], channel_type = "npu_dma_packet"}
+  air.channel @channel_1 [1, 1] {broadcast_shape = [1, 2], channel_type = "npu_dma_packet"}
+  air.channel @channel_0 [1, 1] {broadcast_shape = [1, 2], channel_type = "npu_dma_packet"}
   func.func @matmul(%arg0: memref<64x512xi32>, %arg1: memref<512x64xi32>, %arg2: memref<64x64xi32>) {
     %c32 = arith.constant 32 : index
     %c512 = arith.constant 512 : index

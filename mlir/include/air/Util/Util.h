@@ -98,6 +98,13 @@ T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
+// The coefficient of `v` in the single result of `applyOp`, summed over every
+// operand position `v` takes (0 if `v` is not an operand). std::nullopt if the
+// map has several results or is not linear in its operands: mod, floordiv,
+// ceildiv, or a product of two operands.
+std::optional<int64_t> getAffineApplyCoefficient(affine::AffineApplyOp applyOp,
+                                                 Value v);
+
 std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
 std::optional<int64_t>
 getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
@@ -421,11 +428,9 @@ getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(air::ChannelInterface chanOp);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(memref::SubViewOp subview, Region *commonReg = nullptr);
+writeAccessPattern(memref::SubViewOp subview);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(mlir::vector::TransferReadOp readOp);
-std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(mlir::vector::TransferWriteOp writeOp);
+writeAccessPattern(VectorTransferOpInterface transfer);
 SmallVector<int64_t>
 getDataAccessShapeFromMemcpyOp(Value memref,
                                SmallVector<air::ChannelInterface> chanUsers);

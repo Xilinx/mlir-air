@@ -119,7 +119,41 @@ func.func @hoist_two_pairs_from_same_loop(%arg0: memref<32x32xi32, 2>, %x: index
     // CHECK: %[[COMPUTE2:.*]] = arith.muli %[[ITER2]], %[[ITER2]]
     // CHECK: scf.yield %[[COMPUTE1]], %[[COMPUTE2]]
   }
-  // CHECK: vector.transfer_write %[[LOOP]]#1, %{{.*}}[%[[AFFINE]], %{{.*}}]
+  // The writes keep their order in the loop body.
   // CHECK: vector.transfer_write %[[LOOP]]#0, %{{.*}}[%{{.*}}, %{{.*}}]
+  // CHECK-NEXT: vector.transfer_write %[[LOOP]]#1, %{{.*}}[%{{.*}}, %{{.*}}]
+  return
+}
+
+// Test case 5: Three pairs whose indices are computed inside the loop. Each
+// hoisted write gets its own copy of the index computation, and the writes
+// keep their order in the loop body.
+// CHECK-LABEL: @hoist_three_pairs_keeps_write_order
+#map2 = affine_map<()[s0] -> (s0 + 2)>
+func.func @hoist_three_pairs_keeps_write_order(%arg0: memref<32x32xf32, 2>, %x: index) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %cst = arith.constant 0.0 : f32
+  // CHECK: %[[LOOP:.*]]:3 = scf.for
+  scf.for %i = %c0 to %c4 step %c1 {
+    %x1 = affine.apply #map1()[%x]
+    %x2 = affine.apply #map2()[%x]
+    %v0 = vector.transfer_read %arg0[%x, %c0], %cst {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+    %v1 = vector.transfer_read %arg0[%x1, %c0], %cst {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+    %v2 = vector.transfer_read %arg0[%x2, %c0], %cst {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+    %r0 = arith.addf %v0, %v0 : vector<4x4xf32>
+    %r1 = arith.addf %v1, %v1 : vector<4x4xf32>
+    %r2 = arith.addf %v2, %v2 : vector<4x4xf32>
+    vector.transfer_write %r0, %arg0[%x, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+    vector.transfer_write %r1, %arg0[%x1, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+    vector.transfer_write %r2, %arg0[%x2, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+  }
+  // CHECK: vector.transfer_write %[[LOOP]]#0, %{{.*}}[%{{.*}}, %{{.*}}]
+  // CHECK-NEXT: %[[X1:.*]] = affine.apply #{{.*}}()[%{{.*}}]
+  // CHECK-NEXT: vector.transfer_write %[[LOOP]]#1, %{{.*}}[%[[X1]], %{{.*}}]
+  // CHECK-NEXT: %[[X2:.*]] = affine.apply #{{.*}}()[%{{.*}}]
+  // CHECK-NEXT: vector.transfer_write %[[LOOP]]#2, %{{.*}}[%[[X2]], %{{.*}}]
+  // CHECK-NEXT: return
   return
 }

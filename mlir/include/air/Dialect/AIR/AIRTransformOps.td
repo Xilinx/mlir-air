@@ -915,7 +915,8 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
     2. Access the same memref with equivalent indices (forming a load-modify-store pair)
 
     Each discovered pair is hoisted out of the loop: the read is moved before the
-    loop (with an iter_arg), and the write is moved after the loop. All necessary
+    loop (with an iter_arg), and the write is moved after the loop, keeping the
+    order the writes had in the loop body. All necessary
     operand-producing operations (constants, affine.apply, etc.) are also hoisted
     to maintain SSA dominance.
 

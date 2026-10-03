@@ -43,7 +43,7 @@ _DEC = _HERE / ".." / ".." / "fused_decode_ple"
 BUNDLE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
 
 
-def _load_fd(uni_dec, attn_maxl, kv_src=None):
+def _load_fd(uni_dec, attn_maxl, kv_src=None, layers=None):
     """Import the builder with the env its module-level constants read."""
     os.environ.update(
         DECODE_MODEL="gemma4-e2b",
@@ -57,6 +57,10 @@ def _load_fd(uni_dec, attn_maxl, kv_src=None):
     )
     if kv_src is not None:
         os.environ["DECODE_KV_SRC"] = ",".join(str(s) for s in kv_src)
+    # Which model layer each slab is: the builder gives sliding-window layers
+    # their window per wave, so layer 4 in slab 0 must not be taken for layer 0.
+    if layers is not None:
+        os.environ["DECODE_LAYERS"] = ",".join(str(l) for l in layers)
     sys.path.insert(0, str(_DEC))
     spec = importlib.util.spec_from_file_location(
         "fdp", str(_DEC / "fused_decode_ple.py")
@@ -218,7 +222,7 @@ def main():
             )
         kv_src.append(Ls.index(src))
 
-    fd = _load_fd(len(Ls), a.attn_maxl, kv_src=kv_src)
+    fd = _load_fd(len(Ls), a.attn_maxl, kv_src=kv_src, layers=Ls)
     qm = gw.Q4nxModel(a.bundle)
     for i, Li in enumerate(Ls):
         print(
@@ -302,8 +306,7 @@ def main():
     ib.sync(TO)
 
     K, DH = fd.K, fd.DH_A
-    n_w = fd.UNI_DEC * fd.W_TOTAL_BLOCKS + fd.UNI_LM * fd.VOCAB_W_BLOCKS
-    n_w *= fd.BLOCK_BF16
+    n_w = fd.W_DEC + fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
     n_rms = fd.UNI_DEC * fd.RMS_LAYER + fd.UNI_DEC * fd.ROPE_W_LEN + K
     n_y = (
         fd.HOST_ROUNDS + fd.LAYER_RNDS

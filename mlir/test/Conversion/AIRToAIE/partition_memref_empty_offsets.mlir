@@ -25,13 +25,16 @@
 
 module {
   // Seven S2MM channels on the L2 buffer (exceeds memtile DMA limit of 6).
-  air.channel @channel_0 [1, 1]
-  air.channel @channel_1 [1, 1]
-  air.channel @channel_2 [1, 1]
-  air.channel @channel_3 [1, 1]
-  air.channel @channel_4 [1, 1]
-  air.channel @channel_5 [1, 1]
-  air.channel @channel_6 [1, 1]
+  // Packet-switched, so they can share the memtile's S2MM channels: seven
+  // circuit-switched flows into six channels would put two on one, which no
+  // switchbox routes.
+  air.channel @channel_0 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @channel_1 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @channel_2 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @channel_3 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @channel_4 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @channel_5 [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @channel_6 [1, 1] {channel_type = "npu_dma_packet"}
   // One MM2S channel with empty offsets (the trigger for the crash).
   air.channel @channel_out [1, 1]
   // L1 channels.

@@ -2437,9 +2437,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // offset is usually an affine.apply, either scaling the induction
     // variable (`s0 * 4` over a unit-step loop) or folding it in beside a herd
     // coordinate (`s0 * 8 + s1` over a loop that steps by the tile height).
-    // Evaluate the map at iv = 0 and iv = step with every other operand pinned
-    // to 0 and subtract; std::nullopt when the induction variable does not
-    // reach the map directly, which leaves the caller on its old behaviour.
+    // How far the split-dim offset moves per trip of its scf.for: step times
+    // the IV's coefficient in the offset's affine map. std::nullopt when the
+    // IV does not reach the map directly or the map is not linear in it, and
+    // the walk is then not treated as contiguous.
     auto getSplitDimAdvancePerTrip =
         [&](air::ChannelInterface ci, int offsetDim) -> std::optional<int64_t> {
       auto forOp = getScfForFromVal(air::getOffsetsAsValues(ci)[offsetDim]);
@@ -2451,29 +2452,13 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       auto apply = getAffineMapOnMemrefSplitDim(ci, offsetDim);
       if (!apply)
         return *step; // The offset is the induction variable itself.
-      AffineMap map = apply.getAffineMap();
-      SmallVector<std::optional<int64_t>> symsLo(map.getNumSymbols(),
-                                                 int64_t{0}),
-          dimsLo(map.getNumDims(), int64_t{0});
-      auto symsHi = symsLo, dimsHi = dimsLo;
-      bool found = false;
-      for (auto [pos, oper] : llvm::enumerate(apply.getSymbolOperands()))
-        if (oper == forOp.getInductionVar()) {
-          symsHi[pos] = *step;
-          found = true;
-        }
-      for (auto [pos, oper] : llvm::enumerate(apply.getDimOperands()))
-        if (oper == forOp.getInductionVar()) {
-          dimsHi[pos] = *step;
-          found = true;
-        }
-      if (!found)
+      if (!llvm::is_contained(apply.getMapOperands(), forOp.getInductionVar()))
         return std::nullopt;
-      auto lo = air::evaluateConstantsInMap(map, symsLo, dimsLo, ctx);
-      auto hi = air::evaluateConstantsInMap(map, symsHi, dimsHi, ctx);
-      if (!lo || !hi)
+      auto coefficient =
+          air::getAffineApplyCoefficient(apply, forOp.getInductionVar());
+      if (!coefficient)
         return std::nullopt;
-      return *hi - *lo;
+      return *coefficient * *step;
     };
 
     for (unsigned i = 0; i < putgets.size(); i++) {

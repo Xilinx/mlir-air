@@ -230,4 +230,19 @@ static inline void aie_round_nearest_even() {
 #endif
 }
 
+// The attention herd's RTP-L word. Bits 0-19 are the context length L; bits
+// 20-30 are a sliding window in units of 16 keys, 0 for full attention. The
+// builder sets the window on a sliding layer's wave only, as a constant offset
+// on that wave's word, so DecodeInstsGen's L-slope calibration -- which writes
+// base + slope * L -- reproduces it unchanged at every L.
+#define ATTN_RTP_L_MASK 0xFFFFF
+
+// The first key position the current token may attend: the token sits at L-1,
+// and with a window W it sees keys j with (L-1) - j < W, i.e. j >= L - W.
+static inline int attn_window_lo(int rtp) {
+  const int L = rtp & ATTN_RTP_L_MASK;
+  const int W = ((rtp >> 20) & 0x7FF) * 16;
+  return (W > 0 && L > W) ? L - W : 0;
+}
+
 #endif

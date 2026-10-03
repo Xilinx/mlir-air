@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 
@@ -3988,6 +3989,139 @@ bool air::groupingMemcpysByLoop(
     flow_op_group_max = std::max(flow_op_group_max, f.flow_op_group);
   }
   return flow_op_group_max;
+}
+
+LogicalResult
+air::verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
+  using Port = std::tuple<Operation *, AIE::DMAChannelDir, int>;
+  struct Route {
+    MemcpyBundleAsFlow *flow;
+    bool packet;
+    Port src, dst;
+  };
+  // The routes flow creation emits: every producer of a flow to every one of
+  // its receivers.
+  SmallVector<Route> routes;
+  for (auto &f : memcpy_flows) {
+    bool packet = f.memcpyResourceType == "npu_dma_packet";
+    if (!packet && f.memcpyResourceType != "npu_dma_stream")
+      continue;
+    for (int j = 0; j < f.numMM2SAllocs; j++)
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
+        auto &mm2s = f.MM2S_alloc[j];
+        auto &s2mm = f.S2MM_alloc[i];
+        if (!mm2s.getDmaTile() || !s2mm.getDmaTile())
+          continue;
+        routes.push_back(
+            {&f, packet,
+             Port{mm2s.getDmaTile().getOperation(), mm2s.dma_channel.direction,
+                  mm2s.dma_channel.channel},
+             Port{s2mm.getDmaTile().getOperation(), s2mm.dma_channel.direction,
+                  s2mm.dma_channel.channel}});
+      }
+  }
+
+  auto describe = [](const Port &port) {
+    auto [op, dir, chan] = port;
+    std::string str;
+    llvm::raw_string_ostream os(str);
+    auto tile = cast<AIE::TileLike>(op);
+    os << "tile (";
+    if (auto col = tile.tryGetCol())
+      os << *col;
+    else
+      os << "?";
+    os << ", ";
+    if (auto row = tile.tryGetRow())
+      os << *row;
+    else
+      os << "?";
+    os << ") " << (dir == AIE::DMAChannelDir::MM2S ? "MM2S" : "S2MM")
+       << " channel " << chan;
+    return str;
+  };
+  // air.tile_dma_channel is the explicit override: two flows pinned to the
+  // same channel are left as pinned.
+  auto pinned = [](MemcpyBundleAsFlow *flow) {
+    return flow->air_flow_op &&
+           flow->air_flow_op->hasAttr(air::attrs::TileDmaChannel);
+  };
+  auto conflict = [&](MemcpyBundleAsFlow *flow, MemcpyBundleAsFlow *other,
+                      const Port &port, const Twine &problem) -> LogicalResult {
+    if (pinned(flow) && pinned(other))
+      return success();
+    auto diag = flow->air_flow_op->emitOpError()
+                << describe(port) << " " << problem;
+    diag.attachNote(other->air_flow_op->getLoc()) << "the other flow";
+    return diag;
+  };
+
+  // A port is one switching kind.
+  std::map<Port, const Route *> kindOf;
+  for (auto &r : routes)
+    for (const Port &port : {r.src, r.dst}) {
+      auto [it, inserted] = kindOf.try_emplace(port, &r);
+      if (!inserted && it->second->packet != r.packet &&
+          failed(
+              conflict(r.flow, it->second->flow, port,
+                       "carries both a packet-switched and a circuit-switched "
+                       "flow; a switchbox port is one or the other")))
+        return failure();
+    }
+
+  // Whether two ports are certainly different physical ports. Two distinct
+  // logical tiles not yet placed may still be placed on the same tile, so only
+  // placed tiles at different coordinates count.
+  auto provablyDifferent = [](const Port &a, const Port &b) {
+    auto [opA, dirA, chanA] = a;
+    auto [opB, dirB, chanB] = b;
+    if (dirA != dirB || chanA != chanB)
+      return true;
+    if (opA == opB)
+      return false;
+    auto tileA = cast<AIE::TileLike>(opA), tileB = cast<AIE::TileLike>(opB);
+    auto colA = tileA.tryGetCol(), rowA = tileA.tryGetRow();
+    auto colB = tileB.tryGetCol(), rowB = tileB.tryGetRow();
+    return colA && rowA && colB && rowB && (*colA != *colB || *rowA != *rowB);
+  };
+  // Whether every port in `a` may be the same physical port as one in `b`.
+  auto mayCover = [&](const std::set<Port> &a, const std::set<Port> &b) {
+    return llvm::all_of(a, [&](const Port &pa) {
+      return llvm::any_of(
+          b, [&](const Port &pb) { return !provablyDifferent(pa, pb); });
+    });
+  };
+
+  // A circuit-switched source port broadcasts: every flow on it must go to
+  // the same destinations. A circuit-switched destination has one source.
+  // MapVectors, so that which conflict is reported does not depend on
+  // pointer order.
+  llvm::MapVector<Port, llvm::MapVector<MemcpyBundleAsFlow *, std::set<Port>>>
+      destsOf;
+  std::map<Port, std::pair<Port, MemcpyBundleAsFlow *>> sourceOf;
+  for (auto &r : routes) {
+    if (r.packet)
+      continue;
+    destsOf[r.src][r.flow].insert(r.dst);
+    auto [it, inserted] = sourceOf.try_emplace(r.dst, r.src, r.flow);
+    if (!inserted && provablyDifferent(it->second.first, r.src) &&
+        failed(conflict(r.flow, it->second.second, r.dst,
+                        "is fed by two circuit-switched sources, " +
+                            describe(r.src) + " and " +
+                            describe(it->second.first))))
+      return failure();
+  }
+  for (auto &[src, flows] : destsOf) {
+    auto &[first, firstDests] = *flows.begin();
+    for (auto &[flow, dests] : flows)
+      if ((!mayCover(dests, firstDests) || !mayCover(firstDests, dests)) &&
+          failed(conflict(flow, first, src,
+                          "streams to different destinations for two "
+                          "circuit-switched flows, so each would receive the "
+                          "other's data")))
+        return failure();
+  }
+  return success();
 }
 
 } // namespace xilinx

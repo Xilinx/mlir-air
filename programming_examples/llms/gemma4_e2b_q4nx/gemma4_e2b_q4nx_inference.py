@@ -111,7 +111,10 @@ def _wcache_path(uni_dec, fingerprint):
     catches that; the layer-count and LM-head checks below still pass and the
     dispatch completes, running a different model than the caller asked for.
     """
-    return _WCACHE_DIR / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_{fingerprint}.npz"
+    return (
+        _WCACHE_DIR
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_{fingerprint}.npz"
+    )
 
 
 def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
@@ -208,9 +211,8 @@ class FusedDecoder:
         self.VOCAB_SIZE, self.VP = fd.VOCAB_SIZE, fd.VOCAB_SIZE_PADDED
         self.decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD
         self.ny = self.decode_y + self.UNI_LM * self.VP
-        self.n_w = (
-            self.UNI * fd.W_TOTAL_BLOCKS + self.UNI_LM * fd.VOCAB_W_BLOCKS
-        ) * fd.BLOCK_BF16
+        # the per-layer slabs, then the LM head
+        self.n_w = fd.W_DEC + self.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
         # RMS BO: [UNI per-layer 5-norm slabs | UNI per-layer rope_w slabs | final_norm]
         self._rope_base = self.UNI * fd.RMS_LAYER
         self._RMS_SIZE = self._rope_base + self.UNI * fd.ROPE_W_LEN + self.K
@@ -501,6 +503,31 @@ def _prefill_npu(prompt, model, seq_len=None):
     return ks, vs, int(logits.argmax()), ttft
 
 
+def _prefill_fused(prompt, model, build_dir):
+    """The one-device chunked prefill (fused_prefill/) -> the same tuple."""
+    import types
+
+    sys.modules.setdefault(
+        "air_examples", types.ModuleType("air_examples")
+    ).__path__ = [str(_PE)]
+    from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import FusedPrefill
+
+    t_load = time.perf_counter()
+    pf = FusedPrefill(build_dir, max_len=max(2048, len(prompt)))
+    pf.load_weights(model=model)
+    print(
+        f"[inference] model load (repack + resident BOs): "
+        f"{time.perf_counter() - t_load:.1f}s",
+        flush=True,
+    )
+    t0 = time.perf_counter()
+    logits = pf.prefill(prompt)
+    ttft = time.perf_counter() - t0
+    ks, vs = pf.kv_stack()
+    pf.suspend()  # release its hw_contexts before the decoder runs
+    return ks, vs, int(logits.argmax()), ttft
+
+
 def _prefill_numpy(prompt, model):
     """The CPU oracle prefill -> the same tuple, for debugging the device path."""
     import numpy as np
@@ -520,9 +547,16 @@ def _prefill_numpy(prompt, model):
 
 
 def generate(
-    prompt, n_tokens, model=MODEL_DEFAULT, numpy_prefill=False, ignore_eos=False
+    prompt,
+    n_tokens,
+    model=MODEL_DEFAULT,
+    numpy_prefill=False,
+    ignore_eos=False,
+    fused_prefill=None,
 ):
-    src = "numpy reference" if numpy_prefill else "AIR NPU"
+    src = (
+        "numpy reference" if numpy_prefill else "fused" if fused_prefill else "AIR NPU"
+    )
     print(
         f"[inference] {src} prefill (KV seed + first token), "
         f"prompt_len={len(prompt)}...",
@@ -530,6 +564,8 @@ def generate(
     )
     if numpy_prefill:
         ks, vs, first, ttft = _prefill_numpy(prompt, model)
+    elif fused_prefill:
+        ks, vs, first, ttft = _prefill_fused(prompt, model, fused_prefill)
     else:
         ks, vs, first, ttft = _prefill_npu(prompt, model)
     P = ks[0].shape[0]
@@ -678,6 +714,13 @@ def main():
         "NPU prefill (the oracle it is gated against; minutes, not seconds)",
     )
     ap.add_argument(
+        "--fused-prefill",
+        metavar="BUILD_DIR",
+        default=None,
+        help="prefill on the one-device chunked prefill built there by "
+        "`make compile-fused-prefill`",
+    )
+    ap.add_argument(
         "--gate",
         action="store_true",
         help="exit non-zero unless the Paris continuation matches",
@@ -714,6 +757,7 @@ def main():
         model=args.model_source,
         numpy_prefill=args.numpy_prefill,
         ignore_eos=args.ignore_eos,
+        fused_prefill=args.fused_prefill,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

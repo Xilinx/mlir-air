@@ -32,6 +32,7 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 DEC    := $(srcdir)/../../fused_decode_ple
 PREFILL_DRIVER := $(srcdir)/gemma4_e2b_q4nx_prefill.py
+FUSED          := $(srcdir)/fused_prefill
 INFER_DRIVER   := $(srcdir)/gemma4_e2b_q4nx_inference.py
 BUILD_DIR := build_peano
 
@@ -45,6 +46,13 @@ export Q4NX_SEQ_LEN := $(CTX)
 # run from their own build dir and each start with `make clean`; a cache shared
 # through $(srcdir) would let one test delete the other's ELFs mid-dispatch.
 export Q4NX_CACHE_DIR := $(CURDIR)/_q4nx_cache_seq$(CTX)
+
+# The fused prefill's build (kernels + every op's insts), under the invoking
+# directory like the ELF cache. Its prefill is chunked, so it has no CTX.
+FUSED_DIR ?= $(CURDIR)/_fused_prefill
+# Absolute, because run-fused changes to srcdir.
+override FUSED_DIR := $(abspath $(FUSED_DIR))
+FUSED_JOBS ?= 6
 
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Read by the
 # drivers as Q4NX_MODEL_SOURCE, exactly as in the other q4nx examples.
@@ -145,6 +153,10 @@ help:
 	@echo "  make verify-paris       Alias for 'prefill' (fast weight-integrity smoke)"
 	@echo "  make profile            TTFT + decode tok/s (the perf.json row)"
 	@echo "  make profile-prefill    TTFT only, under the name the prefill sweep drives"
+	@echo "  make compile-fused-prefill  Build the one-device chunked prefill (fused_prefill/)"
+	@echo "  make fused-prefill      Fused prefill, one chunk; gate the logits vs the CPU reference"
+	@echo "  make fused-prefill-long Fused prefill over three chunks of README text, same gate"
+	@echo "  make run-fused          'run' with the fused prefill seeding the decoder"
 	@echo "  make verify             The full on-device LAYER gate (both halves below)"
 	@echo "  make layer-gate         Score own-KV layers ($(GATE_LAYERS)) vs the numpy reference"
 	@echo "  make layer-gate-shared  Score KV-SHARED layers ($(GATE_PAIRS)), two-layer builds"
@@ -204,11 +216,27 @@ prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --gate --tol $(PREFILL_TOL)
 
+## The fused prefill: every op of a 128-token chunk on one configured device,
+## int4 weights dequantized on the cores (fused_prefill/device.py).
+compile-fused-prefill:
+	$(PYTHON) $(FUSED)/build.py $(FUSED_DIR) -j $(FUSED_JOBS)
+
+fused-prefill:
+	$(PYTHON) $(FUSED)/verify.py $(FUSED_DIR) --tol $(PREFILL_TOL)
+
+fused-prefill-long:
+	$(PYTHON) $(FUSED)/verify.py $(FUSED_DIR) --tol $(PREFILL_TOL) \
+	  --text-file $(srcdir)/README.md --text-tokens 280 --repeat 1
+
 ## NPU prefill + fused NPU decode. With no PROMPT this is the canonical Paris
 ## gate: the first token must be 9079 (" Paris") and the continuation must match
 ## the recorded greedy run, which is the half a first-token check cannot see.
 run:
 	@cd $(srcdir) && $(PYTHON) $(INFER_DRIVER) --gate --n-tokens 9 $(PROMPT_ARG)
+
+## `run` with the fused prefill seeding the decoder.
+run-fused:
+	@cd $(srcdir) && $(PYTHON) $(INFER_DRIVER) --gate --n-tokens 9 --fused-prefill $(FUSED_DIR) $(PROMPT_ARG)
 
 ## Single Q&A turn:  make ask PROMPT="What is the capital of France?"
 ask:
@@ -298,7 +326,7 @@ endef
 layer-gate:
 	@set -e; for L in $(GATE_LAYERS); do \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
-	    UNI_DEC=1 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
+	    UNI_DEC=1 LAYERS=$$L PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
 	  cd $(srcdir); \
 	  SCORE_ARGS="--layer $$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$L.npz"; \
 	  $(score_layer); \
@@ -313,12 +341,12 @@ layer-gate-shared:
 	@set -e; for P in $(GATE_PAIRS); do \
 	  SRC=$${P%:*}; L=$${P#*:}; \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
-	    UNI_DEC=1 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
+	    UNI_DEC=1 LAYERS=$$SRC PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
 	  cd $(srcdir); \
 	  SCORE_ARGS="--layer $$SRC --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$SRC.npz --dump /tmp/g4_d$$SRC.npz"; \
 	  $(score_layer); \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
-	    UNI_DEC=2 KV_SRC=0,0 PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
+	    UNI_DEC=2 KV_SRC=0,0 LAYERS=$$SRC,$$L PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
 	  cd $(srcdir); \
 	  SCORE_ARGS="--layers $$SRC,$$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$${SRC}_$$L.npz --prefix-dump /tmp/g4_d$$SRC.npz"; \
 	  $(score_layer); \
@@ -400,5 +428,5 @@ clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
 	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
-	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano 2>/dev/null || true
+	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano $(FUSED_DIR) 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."

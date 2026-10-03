@@ -47,11 +47,14 @@ PLE_BUILDERS = {"gemma4-e2b": (FUSED_DECODE_PLE, "fused_decode_ple.py")}
 # VOCAB_CHUNK_I2=18 and w_elems are that model's, from its lit/Makefile.
 _CHECK_MODEL = dict(model="llama-3.2-1b", i2="18", ctx=2048, w_elems=386662400)
 # The values that used to be hand-carried per model. Derivation must reproduce
-# all three, which is what licenses deriving rather than restating them.
+# all of them, which is what licenses deriving rather than restating them.
+# gemma4-e2b's slabs differ by layer class; its value is the W.size of a real
+# per-class requant cache.
 _CHECK_W_ELEMS = [
     ("llama-3.2-1b", "18", 16, 386662400),
     ("llama-3.2-3b", "9", 28, 1004666880),
     ("gemma3-4b", "5", 34, 1213644800),
+    ("gemma4-e2b", "27", 35, 765050880),
 ]
 # The split models. Their parts summing to w_elems checks the part that can
 # actually be wrong: that the per-group `min(G, UNI_DEC - g*G)` covers exactly
@@ -144,6 +147,9 @@ def derive_w_elems(fd, n_layers):
     number. Reproduces all three previously hand-carried values exactly
     (see _CHECK_W_ELEMS).
     """
+    slabs = getattr(fd, "W_SLABS", None)  # per-class builds size each layer
+    if slabs is not None and len(slabs) == n_layers:
+        return fd.W_DEC + _head_elems(fd)
     return n_layers * fd.W_LAYER + _head_elems(fd)
 
 
