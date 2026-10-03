@@ -198,3 +198,56 @@ module {
     return
   }
 }
+
+// -----
+
+// A drain whose region a later input of the launch reads back is ordered
+// against that input by the data, so it is NOT hoisted ahead of the inputs:
+// the chain below is d0, in0, d1, in1 (in1 reads what d0 drained), kept in
+// program order. Hoisting d1 above in0 would start every drain of a long chain
+// at once and overflow the channel's task queue. Whether in1 sees a drain is
+// decided on the region it reads, not on the memref it shares with the drains.
+
+// CHECK-LABEL: func.func @drain_readback_chain
+// CHECK: airrt.dma_memcpy_nd({{.*}}[0, 0, 0, 0], [1, 1, 1, 16]{{.*}}metadata = @drainAlloc
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc
+// CHECK: airrt.dma_memcpy_nd({{.*}}[0, 0, 0, 16], [1, 1, 1, 16]{{.*}}metadata = @drainAlloc
+// CHECK: airrt.dma_memcpy_nd({{.*}}[0, 0, 0, 0], [1, 1, 1, 16]{{.*}}metadata = @inAlloc
+
+module {
+  aie.device(npu1_1col) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @drainAlloc(%t, S2MM, 0)
+    aie.shim_dma_allocation @inAlloc(%t, MM2S, 0)
+  } {sym_name = "seg0"}
+  air.channel @drain [1, 1]
+  air.channel @win [1, 1]
+  func.func @drain_readback_chain(%arena: memref<32xi32>, %in: memref<16xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%aar=%arena, %ain=%in) : memref<32xi32>, memref<16xi32> {
+      %c0 = arith.constant 0 : index
+      %c16 = arith.constant 16 : index
+      %cc1 = arith.constant 1 : index
+      %d0 = air.channel.get async  @drain[] (%aar[%c0] [%c16] [%cc1]) {id = 1 : i32, metadata = @drainAlloc} : (memref<32xi32>)
+      %w0 = air.channel.put async  @win[] (%ain[] [] []) {id = 2 : i32, metadata = @inAlloc} : (memref<16xi32>)
+      %d1 = air.channel.get async  @drain[] (%aar[%c16] [%c16] [%cc1]) {id = 3 : i32, metadata = @drainAlloc} : (memref<32xi32>)
+      %w1 = air.channel.put async [%d0] @win[] (%aar[%c0] [%c16] [%cc1]) {id = 4 : i32, metadata = @inAlloc} : (memref<32xi32>)
+      %e = air.wait_all async [%d0, %w0, %d1, %w1] {air.launch_end}
+      %s = air.segment @seg0 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<16xi32, 2>) {
+            %alloc = memref.alloc() : memref<16xi32, 2>
+            air.execute_terminator %alloc : memref<16xi32, 2>
+          }
+          %g0 = air.channel.get async [%tok]  @win[] (%a[] [] []) {id = 5 : i32} : (memref<16xi32, 2>)
+          %p0 = air.channel.put async [%g0]  @drain[] (%a[] [] []) {id = 6 : i32} : (memref<16xi32, 2>)
+          %g1 = air.channel.get async [%p0]  @win[] (%a[] [] []) {id = 7 : i32} : (memref<16xi32, 2>)
+          %p1 = air.channel.put async [%g1]  @drain[] (%a[] [] []) {id = 8 : i32} : (memref<16xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}

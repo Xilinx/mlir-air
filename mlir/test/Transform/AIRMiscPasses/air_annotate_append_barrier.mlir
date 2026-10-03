@@ -148,3 +148,50 @@ func.func @mutually_exclusive_branches(%kv: memref<1024xbf16>, %sel: index) {
   }
   return
 }
+
+// -----
+
+// A chain of jobs through one buffer: job k drains row k, and its input reads
+// row k - 1. Each read pairs with the drain of the row it reads and with no
+// other: pairing at whole-buffer granularity would make job k's input wait on
+// job k's own drain, which needs that input to run.
+
+// CHECK-LABEL: @chain_of_rows
+// CHECK: air.channel.get @cd[] (%arg0[%c0] [%c16] [%c1]) {air.append_barrier}
+// CHECK: air.channel.get @cd[] (%arg0[%c16] [%c16] [%c1]) {air.append_barrier}
+// CHECK: air.channel.put @cf[] (%arg0[%c0] [%c16] [%c1]) {air.await_appends}
+// CHECK: air.channel.get @cd[] (%arg0[%c32] [%c16] [%c1]) : (memref<48xi32>)
+// CHECK: air.channel.put @cf[] (%arg0[%c16] [%c16] [%c1]) {air.await_appends}
+air.channel @cd [1]
+air.channel @cf [1]
+func.func @chain_of_rows(%arena: memref<48xi32>) {
+  %c0 = arith.constant 0 : index
+  %c16 = arith.constant 16 : index
+  %c32 = arith.constant 32 : index
+  %c1 = arith.constant 1 : index
+  air.channel.get @cd[] (%arena[%c0] [%c16] [%c1]) : (memref<48xi32>)
+  air.channel.get @cd[] (%arena[%c16] [%c16] [%c1]) : (memref<48xi32>)
+  air.channel.put @cf[] (%arena[%c0] [%c16] [%c1]) : (memref<48xi32>)
+  air.channel.get @cd[] (%arena[%c32] [%c16] [%c1]) : (memref<48xi32>)
+  air.channel.put @cf[] (%arena[%c16] [%c16] [%c1]) : (memref<48xi32>)
+  return
+}
+
+// -----
+
+// A read that overlaps a write only partly is still paired with it.
+
+// CHECK-LABEL: @partial_overlap
+// CHECK: air.channel.get @po[] (%arg0[%c0] [%c16] [%c1]) {air.append_barrier}
+// CHECK: air.channel.put @pr[] (%arg0[%c8] [%c16] [%c1]) {air.await_appends}
+air.channel @po [1]
+air.channel @pr [1]
+func.func @partial_overlap(%arena: memref<48xi32>) {
+  %c0 = arith.constant 0 : index
+  %c8 = arith.constant 8 : index
+  %c16 = arith.constant 16 : index
+  %c1 = arith.constant 1 : index
+  air.channel.get @po[] (%arena[%c0] [%c16] [%c1]) : (memref<48xi32>)
+  air.channel.put @pr[] (%arena[%c8] [%c16] [%c1]) : (memref<48xi32>)
+  return
+}
