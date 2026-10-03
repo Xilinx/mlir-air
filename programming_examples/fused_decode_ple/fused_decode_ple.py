@@ -1754,43 +1754,72 @@ W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights /
 # Per-class geometry. The build is sized for the widest layer; each wave streams
 # only its class's real weights: a NARROW wave (own KV, INTER_NARROW FFN) its
 # real up/gate rounds and down columns, a WIDE wave (KV-shared) its q rows
-# without the k/v rounds. Everything downstream keeps the build's shape: the
-# projection cores emit zero rounds for rows with no weights and skip the
-# weight half of a narrow down contraction, so rope, the GLU, the down buffer
-# and every X refeed are unchanged. A narrow wave carries NARROW_ARM.
-NARROW_ARM = 3
+# without the k/v rounds. A SLIDING wave's heads are DH_SWA wide in a DH_A slot:
+# its q/k/v rows arrive compact (rope_compute_swa spreads them), and its v sits
+# at the front of the slot, so the attention output has every odd o-proj X
+# block zero and the o-proj streams weights for the even ones only. Everything
+# downstream keeps the build's shape: the projection cores emit zero rounds for
+# rows with no weights and skip X blocks with none. Arm 0 is an LM-head wave.
 PER_CLASS = bool(MODEL.get("INTER_NARROW")) and not HYBRID_MIXER and not LM_HEAD
+# the sliding layout needs rope to know the layer class
+assert PER_CLASS or "DH_SWA" not in MODEL or LM_HEAD, "sliding heads need PER_CLASS"
+SWA_ARM_BIT = 4
+
+
+def arm_of_layer(layer):
+    """The decode arm a model layer's wave carries."""
+    if not PER_CLASS:
+        return 1
+    narrow = layer < MODEL["FIRST_KV_SHARED"]
+    sliding = "DH_SWA" in MODEL and layer not in MODEL["FULL_LAYERS"]
+    return 1 + 2 * narrow + SWA_ARM_BIT * sliding
+
+
 if PER_CLASS:
     # how many times wider the build's FFN is than a narrow layer's
     _nf = 2 * J2P[DOWN_PHASE] * COL_BLOCK // MODEL["INTER_NARROW"]
     assert I2P[GATEUP_PHASE] % _nf == 0 and J2P[DOWN_PHASE] % _nf == 0, (I2P, J2P)
     _rnd_rows = ROW_BLOCK * NCX * NCY * PAIR_ROWS  # rows per round
     assert DQ_PADDED % _rnd_rows == 0, DQ_PADDED
-    I2P_N = [v // _nf if p == GATEUP_PHASE else v for p, v in enumerate(I2P)]
-    J2P_N = [v // _nf if p == DOWN_PHASE else v for p, v in enumerate(J2P)]
-    I2P_W = [DQ_PADDED // _rnd_rows if p == 0 else v for p, v in enumerate(I2P)]
-    J2P_W = list(J2P)
-    NARROW_WAVES = [
-        w for w, l in enumerate(WAVE_LAYERS) if l < MODEL["FIRST_KV_SHARED"]
-    ]
+    _sf = DH_A // MODEL.get("DH_SWA", DH_A)  # slot / sliding head
+    assert J2P[OPROJ_PHASE] % _sf == 0 and DQ_PADDED // _sf % _rnd_rows == 0
+    assert M // _sf % _rnd_rows == 0, M
+    CLASS_GEOM = {}
+    for _arm in (1, 3, 5, 7) if "DH_SWA" in MODEL else (1, 3):
+        _narrow, _sliding = _arm & 2, _arm & SWA_ARM_BIT
+        _f = _sf if _sliding else 1
+        # per phase: I2 rounds, J2 X-block pairs, X-block step
+        _i2 = [
+            v // _nf if (_narrow and p == GATEUP_PHASE) else v
+            for p, v in enumerate(I2P)
+        ]
+        _j2 = [
+            v // _nf if (_narrow and p == DOWN_PHASE) else v for p, v in enumerate(J2P)
+        ]
+        _i2[0] = (M if _narrow else DQ_PADDED) // _f // _rnd_rows
+        _j2[OPROJ_PHASE] //= _f
+        _xs = [_f if p == OPROJ_PHASE else 1 for p in range(NPH)]
+        CLASS_GEOM[_arm] = (_i2, _j2, _xs)
 else:
-    I2P_N, J2P_N, I2P_W, J2P_W, NARROW_WAVES = I2P, J2P, I2P, J2P, []
+    CLASS_GEOM = {1: (I2P, J2P, [1] * NPH)}
+DEC_ARMS = tuple(CLASS_GEOM)
+SWA_HEADS = any(a & SWA_ARM_BIT for a in DEC_ARMS)
 
 
-def _per_col(i2, j2):
+def class_per_col(arm):
+    """Weight blocks one fed column streams in each phase, for an arm."""
+    i2, j2, _ = CLASS_GEOM[arm]
     return [(i2[p] * PAIR_ROWS * NCY) * 2 * j2[p] for p in range(NPH)]
 
 
-PER_COL_PH_N, PER_COL_PH_W = _per_col(I2P_N, J2P_N), _per_col(I2P_W, J2P_W)
-W_LAYER_N = sum(NCX * PER_COL_PH_N[p] * BLOCK_BF16 for p in range(NPH))
-W_LAYER_W = sum(NCX * PER_COL_PH_W[p] * BLOCK_BF16 for p in range(NPH))
+def class_slab(arm):
+    """Packed weight elements of a slab of that arm."""
+    return sum(NCX * n * BLOCK_BF16 for n in class_per_col(arm))
 
 
 def w_layer_of(layer):
     """Packed weight elements of one model layer's slab."""
-    if not PER_CLASS:
-        return W_LAYER
-    return W_LAYER_N if layer < MODEL["FIRST_KV_SHARED"] else W_LAYER_W
+    return class_slab(arm_of_layer(layer)) if PER_CLASS else W_LAYER
 
 
 W_SLABS = [w_layer_of(l) for l in WAVE_LAYERS]
@@ -2077,8 +2106,10 @@ def build_module():
         )
         glu_aie.attributes["link_with"] = StringAttr.get("glu.o")
         # reference rope_compute(q,k,v, qkv, lut): rotate-half RoPE on Q,K (V copied).
+        # A model with sliding heads takes the entry that first spreads a
+        # sliding wave's compact heads into their slots (see CLASS_GEOM).
         rope_compute = FuncOp(
-            "rope_compute",
+            "rope_compute_swa" if SWA_HEADS else "rope_compute",
             ([ropeq_l1, ropekv_l1, ropekv_l1, qkv_l1, ropelut_l1, i32], []),
             visibility="private",
         )
@@ -2550,14 +2581,16 @@ def build_module():
             return arm
 
         def _class_arm(iv, arm):
-            """NARROW_ARM on the narrow-FFN decode waves, as equality selects over
-            NARROW_WAVES (folded once the wave loop is unrolled)."""
+            """Each decode wave's arm_of_layer, as equality selects over the
+            waves (folded once the wave loop is unrolled)."""
             if not PER_CLASS or iv is None:
                 return arm
-            _an = arith.ConstantOp(IntegerAttr.get(i32, NARROW_ARM), None).result
-            for _k in NARROW_WAVES:
+            for _w, _l in enumerate(WAVE_LAYERS):
+                if arm_of_layer(_l) == 1:
+                    continue
+                _a = arith.ConstantOp(IntegerAttr.get(i32, arm_of_layer(_l)), None)
                 arm = arith.select(
-                    arith.cmpi(arith.CmpIPredicate.eq, iv, idx(_k)), _an, arm
+                    arith.cmpi(arith.CmpIPredicate.eq, iv, idx(_w)), _a.result, arm
                 )
             return arm
 
@@ -3589,11 +3622,11 @@ def build_module():
                             # weight boundary -- append after QKV weights (rope has produced
                             # K/V), barrier, readback, THEN o/up/down weights.
                             woff = 0
-                            woff_n = woff_w = 0  # per-class slab offsets
+                            # per arm: this phase's (slab offset, blocks per column)
+                            _aoff = {a: 0 for a in DEC_ARMS}
                             for p in range(NPH):
                                 per_col = PER_COL_PH[p]
-                                per_col_n, per_col_w = PER_COL_PH_N[p], PER_COL_PH_W[p]
-                                assert per_col % NCY == 0 and per_col_n % NCY == 0
+                                assert per_col % NCY == 0
                                 _colspan = per_col * blk
                                 # Spatial fan over the NCX proj columns: the bundle index
                                 # @inW[cx] must be an scf.parallel IV (canonical form; a
@@ -3607,37 +3640,50 @@ def build_module():
                                 _wcol0 = _lo(_wbase, woff)  # _wbase + woff (col 0 base)
                                 if not PER_CLASS:
                                     _feed_wcols(_wcol0, _colspan, per_col // NCY)
-                                elif per_col_n == per_col_w and woff_n == woff_w:
-                                    _feed_wcols(
-                                        _lo(_wbase, woff_w),
-                                        per_col_w * blk,
-                                        per_col_w // NCY,
-                                    )
                                 else:
-                                    # The whole fan in each arm: a switch per column
-                                    # would split the phase barrier.
-                                    def _narrow(_o=woff_n, _pc=per_col_n):
+                                    _feeds = {
+                                        a: (_aoff[a], class_per_col(a)[p])
+                                        for a in DEC_ARMS
+                                    }
+                                    for a, (_o, _pc) in _feeds.items():
+                                        assert _pc % NCY == 0
+                                        _aoff[a] += NCX * _pc * blk
+
+                                    def _feed(f):
+                                        _o, _pc = f
                                         _feed_wcols(
                                             _lo(_wbase, _o), _pc * blk, _pc // NCY
                                         )
-                                        yield_([])
 
-                                    def _wide(_o=woff_w, _pc=per_col_w):
-                                        _feed_wcols(
-                                            _lo(_wbase, _o), _pc * blk, _pc // NCY
+                                    # The whole fan in each arm (a switch per column
+                                    # would split the phase barrier), as nested
+                                    # one-case switches.
+                                    def _by_arm(arms):
+                                        a, rest = arms[0], arms[1:]
+                                        if not rest or all(
+                                            _feeds[b] == _feeds[a] for b in rest
+                                        ):
+                                            _feed(_feeds[a])
+                                            return
+
+                                        def _case(op, i, cv):
+                                            _feed(_feeds[a])
+                                            yield_([])
+
+                                        def _other(op):
+                                            _by_arm(rest)
+                                            yield_([])
+
+                                        index_switch(
+                                            [],
+                                            _uarm_i,
+                                            [a],
+                                            case_body_builder=_case,
+                                            default_body_builder=_other,
                                         )
-                                        yield_([])
 
-                                    index_switch(
-                                        [],
-                                        _uarm_i,
-                                        [NARROW_ARM],
-                                        case_body_builder=lambda op, i, cv: _narrow(),
-                                        default_body_builder=lambda op: _wide(),
-                                    )
+                                    _by_arm(list(DEC_ARMS))
                                 woff += NCX * per_col * blk
-                                woff_n += NCX * per_col_n * blk
-                                woff_w += NCX * per_col_w * blk
                                 # LAST mixer phase, not the first. The shim is a
                                 # sequential instruction stream: the append blocks
                                 # on rope's K/V, and rope cannot run until the
@@ -4259,7 +4305,8 @@ def build_module():
                         # during vocab -> it stalled on the dest0 QKV gets (never
                         # produced in vocab) and never emitted the appendK/appendV
                         # the LM launch waits on -> TIMEOUT.
-                        _arm_rope = _seg_arm
+                        # the class arm: a sliding wave's rope spreads its heads
+                        _arm_rope = _core_arm if PER_CLASS else _seg_arm
 
                         @herd(name="rope", sizes=[1, 1], operands=[_arm_rope])
                         def rope_h(tx, ty, _sx, _sy, _arm):
@@ -6076,7 +6123,7 @@ def build_module():
                             # writes row 1. See proj_qmm_flush_row.
                             c0i = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
 
-                            def _gemv(J2v, nw=None):
+                            def _gemv(J2v, nw=None, xm=None):
                                 J2x2 = arith.muli(J2v, c2)
                                 a_acc = AllocOp(yacc_l1, [], [])
                                 CallOp(zero, [a_acc, _arm])
@@ -6089,11 +6136,20 @@ def build_module():
                                         CallOp(acc256, [a_x, a_w, a_acc])
                                         DeallocOp(a_w)
                                     else:
-                                        # X blocks past the first nw carry no
-                                        # weights: one get site per channel, the
-                                        # weight half in a 0/1-trip loop.
+                                        # Only X blocks j < nw with j & xm == 0
+                                        # carry weights: one get site per channel,
+                                        # the weight half in a 0/1-trip loop.
                                         _has_w = arith.select(
-                                            arith.cmpi(arith.CmpIPredicate.ult, _j, nw),
+                                            arith.andi(
+                                                arith.cmpi(
+                                                    arith.CmpIPredicate.ult, _j, nw
+                                                ),
+                                                arith.cmpi(
+                                                    arith.CmpIPredicate.eq,
+                                                    arith.andi(_j, xm),
+                                                    idx(0),
+                                                ),
+                                            ),
                                             idx(1),
                                             idx(0),
                                         )
@@ -6167,45 +6223,50 @@ def build_module():
                                         yield_([])  # v1
                                     yield_([])  # ph
                                     continue
-                                # Every wave keeps the build's round count and X
-                                # stream; rounds past its class's I2w and X blocks
-                                # past 2*J2w have no weights and contribute zero.
-                                i2n = [idx(v) for v in I2P_N]
-                                j2n = [idx(v) for v in J2P_N]
-                                i2w = [idx(v) for v in I2P_W]
-                                j2w = [idx(v) for v in J2P_W]
 
-                                def _cls(voc_val, nar, wide):
+                                # Every wave keeps the build's round count and X
+                                # stream. Rounds past its class's I2w have no
+                                # weights; of the X blocks, only every Xs-th of the
+                                # first 2*J2w*Xs has any.
+                                def _per_arm(voc_val, of_arm):
+                                    arms = [a for a in DEC_ARMS if a != 1]
                                     return index_switch(
                                         [idx_t],
                                         _arm_i,
-                                        [0, NARROW_ARM],
+                                        [0] + arms,
                                         case_body_builder=lambda op, i, cv: yield_(
-                                            [voc_val if i == 0 else nar()]
+                                            [voc_val if i == 0 else of_arm(arms[i - 1])]
                                         ),
                                         default_body_builder=lambda op: yield_(
-                                            [wide()]
+                                            [of_arm(1)]
                                         ),
                                     )
 
-                                I2w = _cls(
-                                    idx(VOCAB_I2),
-                                    lambda: _psw(_ephv, i2n, idx_t),
-                                    lambda: _psw(_ephv, i2w, idx_t),
-                                )
-                                J2w = _cls(
-                                    idx(VOCAB_J2),
-                                    lambda: _psw(_ephv, j2n, idx_t),
-                                    lambda: _psw(_ephv, j2w, idx_t),
+                                def _tab(k):
+                                    return lambda a: _psw(
+                                        _ephv, [idx(v) for v in CLASS_GEOM[a][k]], idx_t
+                                    )
+
+                                I2w = _per_arm(idx(VOCAB_I2), _tab(0))
+                                J2w = _per_arm(idx(VOCAB_J2), _tab(1))
+                                Xm = _per_arm(
+                                    idx(0),
+                                    lambda a: _psw(
+                                        _ephv,
+                                        [idx(x - 1) for x in CLASS_GEOM[a][2]],
+                                        idx_t,
+                                    ),
                                 )
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     _nw = arith.select(
                                         arith.cmpi(arith.CmpIPredicate.ult, _v1, I2w),
-                                        arith.muli(J2w, c2),
+                                        arith.muli(
+                                            arith.muli(J2w, c2), arith.addi(Xm, idx(1))
+                                        ),
                                         idx(0),
                                     )
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
-                                        _emit(_gemv(J2v, _nw), pktv)
+                                        _emit(_gemv(J2v, _nw, Xm), pktv)
                                     yield_([])  # v1
                                 yield_([])  # ph
 

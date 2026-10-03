@@ -113,7 +113,7 @@ def _wcache_path(uni_dec, fingerprint):
     """
     return (
         _WCACHE_DIR
-        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_{fingerprint}.npz"
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_{fingerprint}.npz"
     )
 
 
@@ -206,6 +206,7 @@ class FusedDecoder:
         self.UNI_LM = fd.UNI_LM
         self.REGION_W, self.NGRP = fd.REGION_W, fd.NGRP
         self.KV_LAYER = fd.KV_LAYER
+        self.SWA = {L for L in range(self.UNI) if fd.arm_of_layer(L) & fd.SWA_ARM_BIT}
         self.PLE_LAYER = fd.PLE_LAYER
         self.PLE_EMB_OFF, self.PLE_NORMW_OFF = fd.PLE_EMB_OFF, fd.PLE_NORMW_OFF
         self.VOCAB_SIZE, self.VP = fd.VOCAB_SIZE, fd.VOCAB_SIZE_PADDED
@@ -312,14 +313,15 @@ class FusedDecoder:
         stack. Each device row is REGION_W wide and holds the single MQA head twice,
         once per attention CU.
 
-        A 256-wide head does NOT sit contiguously in its 512-wide slot. Every layer
-        is built at the widest layer's geometry and the narrow heads are scattered
-        as [real_lo | zeros | real_hi | zeros] so that the rope kernel's fixed
-        (i, i+DH_A/2) pairing lands on the real (i, i+128) pairs -- see
+        A 256-wide K head does NOT sit contiguously in its 512-wide slot. Every
+        layer is built at the widest layer's geometry and the narrow heads are
+        scattered as [real_lo | zeros | real_hi | zeros] so that the rope kernel's
+        fixed (i, i+DH_A/2) pairing lands on the real (i, i+128) pairs -- see
         gemma4_e2b_q4nx_requant's module docstring, where that interleave is
         recorded as measured-correct and the contiguous layout as measured-wrong.
         Seeding contiguously does not fail: it produces a correct first token
-        (which comes from the prefill) followed by fluent garbage.
+        (which comes from the prefill) followed by fluent garbage. A sliding
+        layer's V head sits at the front of its slot instead.
         """
         np = self.np
         from gemma4_e2b_q4nx_requant import _head_perm
@@ -331,8 +333,10 @@ class FusedDecoder:
         for L in range(self.UNI):
             # _head_perm is the identity at dh == DH_A, so the full layers take
             # the same path rather than a special case.
-            perm = _head_perm(self.gw.head_dim(L), self.DH_A)
-            for reg, src in ((0, ks[L]), (1, vs[L])):
+            dh = self.gw.head_dim(L)
+            perm = _head_perm(dh, self.DH_A)
+            vperm = np.arange(dh) if L in self.SWA else perm
+            for reg, src, p in ((0, ks[L], perm), (1, vs[L], vperm)):
                 src = np.asarray(src, np.float32).reshape(P, -1)
                 dh = src.shape[1]
                 if dh != self.gw.head_dim(L):
@@ -341,8 +345,8 @@ class FusedDecoder:
                         f"{self.gw.head_dim(L)}"
                     )
                 rows = self.KV[L, reg * RS : reg * RS + P * RW].reshape(P, RW)
-                rows[:, perm] = src.astype(self.bf16)
-                rows[:, self.DH_A + perm] = src.astype(self.bf16)
+                rows[:, p] = src.astype(self.bf16)
+                rows[:, self.DH_A + p] = src.astype(self.bf16)
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.kvc.write(np.ascontiguousarray(self.KV).reshape(-1).view(np.int16), 0)
         self.kvc.sync(TO)

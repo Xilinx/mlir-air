@@ -33,6 +33,8 @@ constexpr int GLU_SLICE = 1024;
 // actually rotates and attends over.
 constexpr int DH = 512;
 constexpr int SWA_DH = 256;
+// rope.cc's rope_compute_swa spreads a sliding wave's compact heads
+#define HAS_SWA_HEADS
 constexpr int SLIDING_WINDOW = 512;
 constexpr int VOCAB_SIZE = 262144;
 // 1.0, NOT 1/sqrt(DH): Gemma4 folds query_pre_attn_scalar into the q weights.

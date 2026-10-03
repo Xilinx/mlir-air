@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 //
 // Weight-free check that the decode builder and the weight packer agree on
-// each layer class's slab: its size, and that it holds the padded slab's
-// weights in the order the projection cores read them.
+// each layer class's slab: its size, that it holds the weights the projection
+// cores read for that class in their order, and that what it leaves out is
+// only zero weights.
 //
 // RUN: %PYTHON %S/check_per_class_slabs.py | FileCheck %s
 //
 // CHECK: W_DEC {{[0-9]+}} = sum of slabs: True
 // CHECK: offsets cumulative: True
-// CHECK: layer 0 (narrow): slab {{[0-9]+}} == w_layer_of, rounds match: True
-// CHECK: layer 19 (kv-shared): slab {{[0-9]+}} == w_layer_of, rounds match: True
+// CHECK: layer 0 (arm 7): slab {{[0-9]+}} == w_layer_of, blocks match: True
+// CHECK: layer 4 (arm 3): slab {{[0-9]+}} == w_layer_of, blocks match: True
+// CHECK: layer 15 (arm 5): slab {{[0-9]+}} == w_layer_of, blocks match: True
+// CHECK: layer 19 (arm 1): slab {{[0-9]+}} == w_layer_of, blocks match: True
