@@ -1008,6 +1008,10 @@ DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
 # RTP word, and the host cuts the readback to match with the build's
 # decode_L<N>.rb.insts.bin (see decode_insts_gen). The memtile ring is count-free.
 RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
+# On the DYNSEQ (full-ELF) path the host cannot cut the instruction stream, so
+# the readback's block count arrives as a second runtime scalar instead, which
+# mlir-aie turns into a scratchpad length parameter on the readback BD.
+RB_ARG = bool(RT_ROUNDS and DYNSEQ)
 
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 # Cross-wave shim-feed coalescing: always on (the un-coalesced feed was an A/B).
@@ -1497,6 +1501,7 @@ def build_module():
             else []
         )
         + ([air_api.tensor([], api_types.i32, name="seqlen")] if DYNSEQ else [])
+        + ([air_api.tensor([], api_types.i32, name="kvblocks")] if RB_ARG else [])
     )
 
     # air.preserve_shim_dma_order: opt out of air-opt-shim-dma-bds' per-channel
@@ -2025,7 +2030,7 @@ def build_module():
         # arg index of each weight group's buffer: group 0 is the original arg1;
         # groups 1.. and the lm-head follow the base args. Index into _la is +4.
         _w_base_n = 5
-        _n_w_extra = len(_tensors) - _w_base_n - (1 if DYNSEQ else 0)
+        _n_w_extra = len(_tensors) - _w_base_n - (1 if DYNSEQ else 0) - RB_ARG
         WARG = [1] + [_w_base_n + i for i in range(_n_w_extra)]
 
         # The launch is already open -- air.launch bound each air.tensor to its
@@ -2060,7 +2065,9 @@ def build_module():
             KVC = _la[8]
             # The dispatch-time context length (DYNSEQ). Last operand before
             # the multi-layer induction variable.
-            L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
+            L_rt = _la[4 + len(_fa) - 1 - RB_ARG] if DYNSEQ else None
+            # The readback's block count, ceil(L/16), on the full-ELF path.
+            B_rt = _la[4 + len(_fa) - 1] if RB_ARG else None
 
             def _rt_blocks():
                 """ceil(L/16) as an index Value, for the readback's block count.
@@ -2627,6 +2634,11 @@ def build_module():
                                 "compile-time BDs, and the 1-D form folds it "
                                 "into a length the shim cannot recompute."
                             )
+                        # RB_ARG: the region is the whole window, of which the
+                        # put moves the first B_rt blocks.
+                        _ext = (
+                            {"extent": arith.index_cast(idx_t, B_rt)} if RB_ARG else {}
+                        )
                         _ci = 0
                         while _ci < _nb:
                             _cb = min(_cbk, _nb - _ci)
@@ -2643,10 +2655,12 @@ def build_module():
                                 _CH["inKV_K"].put(
                                     _kv_region(_loi(_kbase, _kreg_off(gi) + _coff)),
                                     indices=[gi],
+                                    **_ext,
                                 )
                                 _CH["inKV_V"].put(
                                     _kv_region(_loi(_kbase, _vreg_off(gi) + _coff)),
                                     indices=[gi],
+                                    **_ext,
                                 )
                             _ci += _cb
                         return
@@ -2801,7 +2815,7 @@ def build_module():
                 # The context length reaches the attention herd from here, as a
                 # herd operand: an RTP slot the instruction stream writes per
                 # dispatch, not a constant folded into the core ELF.
-                _seg_L = _tensors[-1].value if DYNSEQ else None
+                _seg_L = _tensors[-1 - RB_ARG].value if DYNSEQ else None
 
                 def _seg_rounds():
                     """ceil(L/16) for the memtile's block dequeue.
@@ -4777,10 +4791,10 @@ def run():
     out_fmt = _os.environ.get("DECODE_OUTPUT_FORMAT", "xclbin")
     if out_fmt not in ("xclbin", "elf"):
         raise SystemExit(f"DECODE_OUTPUT_FORMAT must be xclbin or elf, got {out_fmt!r}")
-    if RT_ROUNDS and out_fmt == "elf":
+    if RT_ROUNDS and out_fmt == "elf" and not DYNSEQ:
         raise SystemExit(
-            "DECODE_RT_ROUNDS needs the host to cut the KV readback per token, "
-            "which an ELF's embedded instruction stream does not allow"
+            "DECODE_RT_ROUNDS on a full ELF takes the readback's block count as "
+            "a runtime scalar beside DECODE_DYNSEQ's context length"
         )
 
     # For ELF, XRT resolves the kernel as "main:<instance_name>", and
