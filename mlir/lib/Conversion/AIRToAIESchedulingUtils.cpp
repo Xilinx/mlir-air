@@ -839,16 +839,22 @@ bool xilinx::air::allocation_info_t::valid() {
 AIE::TileLike xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
 
 bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
-  if (channel_op) {
-    for (auto o : memcpyOps) {
-      if (auto chan_op = dyn_cast_if_present<air::ChannelInterface>(o)) {
-        auto chan_declr = getChannelDeclarationThroughSymbol(chan_op);
-        if (chan_declr == channel_op)
-          return true;
-      }
-    }
+  if (!channel_op)
+    return false;
+  // Resolving a channel declaration scans the enclosing symbol table (the
+  // aie.device, which holds every lowered op), and memcpyOps grows with the
+  // program: resolve each op once, so allocation is not quadratic in the number
+  // of puts.
+  if (memcpyDeclsScanned > memcpyOps.size()) {
+    memcpyDecls.clear();
+    memcpyDeclsScanned = 0;
   }
-  return false;
+  for (; memcpyDeclsScanned < memcpyOps.size(); memcpyDeclsScanned++)
+    if (auto chan_op = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOps[memcpyDeclsScanned]))
+      if (auto chan_declr = getChannelDeclarationThroughSymbol(chan_op))
+        memcpyDecls.insert(chan_declr);
+  return memcpyDecls.contains(channel_op);
 }
 
 bool xilinx::air::allocation_info_t::foundAllocInColumn(int32_t col) {
@@ -2454,10 +2460,10 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
 
   // Search for existing dma channel allocation by air.channel symbol.
+  auto memcpyDecl = getChannelDeclarationThroughSymbol(
+      dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation()));
   for (auto &t : *allocs) {
-    if (t.foundAlloc(getChannelDeclarationThroughSymbol(
-            dyn_cast_if_present<air::ChannelInterface>(
-                memcpyOp.getOperation())))) {
+    if (t.foundAlloc(memcpyDecl)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }

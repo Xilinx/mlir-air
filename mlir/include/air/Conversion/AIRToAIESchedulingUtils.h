@@ -12,6 +12,7 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
 
@@ -172,6 +173,12 @@ struct allocation_info_t {
   // Declared last on purpose: several sites aggregate-initialize this struct
   // positionally, so a field inserted earlier silently shifts them.
   bool isHostReadback = false;
+  // Channel declarations of memcpyOps[0, memcpyDeclsScanned), resolved once for
+  // foundAlloc(air::ChannelOp). memcpyOps only grows while allocations are
+  // being made, so a lookup resolves just the ops appended since the last one.
+  // The cache is dropped if memcpyOps has shrunk (an allocation was split).
+  llvm::SmallPtrSet<Operation *, 8> memcpyDecls;
+  size_t memcpyDeclsScanned = 0;
   bool valid();
   AIE::TileLike getDmaTile();
   bool foundAlloc(AIE::TileLike tile);
