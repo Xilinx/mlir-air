@@ -110,3 +110,19 @@ llvm_config.add_tool_substitutions(tools, tool_dirs)
 
 if config.air_enable_gpu:
     config.available_features.add("gpu")
+
+# Tests that compile a kernel down to AMDGPU assembly need the AMDGPU backend
+# built into LLVM. That is a build-time property, not a runtime one: no GPU and
+# no ROCm are involved, llc just has to know the target. The mlir distro wheel
+# CI installs is built for x86 only, so gate those RUN lines rather than have
+# them fail everywhere that LLVM was not built with AMDGPU.
+_llc = os.path.join(config.llvm_tools_dir, "llc")
+if os.path.exists(_llc):
+    try:
+        _targets = subprocess.run(
+            [_llc, "--version"], capture_output=True, text=True, timeout=60
+        ).stdout
+        if "amdgpu" in _targets:
+            config.available_features.add("amdgpu-isa")
+    except (OSError, subprocess.SubprocessError):
+        pass
