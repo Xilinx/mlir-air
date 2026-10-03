@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Device-free check of DecodeInstsGen: the per-L instruction stream, with and
-// without the readback-length patch (decode_L<N>.rb.insts.bin).
+// without the readback-length patch (decode_L<N>.rb.insts.bin), and with the
+// sliding-window start (decode_L<N>.sw.insts.bin).
 //
 // RUN: %PYTHON %S/check_decode_insts_gen.py | FileCheck %s
 //
@@ -10,3 +11,6 @@
 // CHECK: with .rb: readback follows ceil(L/16): True
 // CHECK: identical .rb refused: True
 // CHECK: missing .rb refused: True
+// CHECK: missing .sw refused: True
+// CHECK: with .sw: sliding readback starts where the window opens: True
+// CHECK: identical .sw refused: True
