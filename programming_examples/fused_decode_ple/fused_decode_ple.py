@@ -1038,6 +1038,14 @@ DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # readback down to the same block count (DecodeInstsGen's .rb.insts.bin), so the
 # KV traffic follows the context rather than the template.
 RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
+# DECODE_RT_WINDOW=1 (with DECODE_RT_ROUNDS): a sliding-window wave's cores start
+# at the block the window opens in, and the host starts that wave's readback there
+# (DecodeInstsGen's .sw.insts.bin). DECODE_RB_SWA_SKIP=n moves every sliding
+# wave's readback n blocks later; the host diffs that build to find the words.
+RT_WINDOW = int(_os.environ.get("DECODE_RT_WINDOW", "0"))
+RB_SWA_SKIP = int(_os.environ.get("DECODE_RB_SWA_SKIP", "0"))
+if RT_WINDOW and not RT_ROUNDS:
+    raise SystemExit("DECODE_RT_WINDOW needs DECODE_RT_ROUNDS")
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -2699,12 +2707,13 @@ def build_module():
                     """L for the attention herd, with this wave's window packed above it.
 
                     Sliding-window layers attend only the last SLIDING_WINDOW keys;
-                    the readback still streams all L rows and the cores mask the
-                    ones before the window. The window is a constant per wave (the
-                    wave loop is fully unrolled by the shim), so the word is L plus a
-                    per-wave constant and DecodeInstsGen's base + slope * L still
-                    reproduces it exactly. Waves at or past UNI_DEC are lm-head
-                    waves and FULL_WAVES attend everything: both keep L as is.
+                    the cores mask the ones before the window, and with
+                    DECODE_RT_WINDOW skip the blocks before it. The window is a
+                    constant per wave (the wave loop is fully unrolled by the
+                    shim), so the word is L plus a per-wave constant and
+                    DecodeInstsGen's base + slope * L still reproduces it exactly.
+                    Waves at or past UNI_DEC are lm-head waves and FULL_WAVES
+                    attend everything: both keep L as is.
                     """
                     if not _WINDOWED:
                         return L_rt
@@ -2718,18 +2727,26 @@ def build_module():
                     # DecodeInstsGen patches per token -- rather than a runtime
                     # argument; the window rides on it the same way.
                     base = L_rt if DYNSEQ else _c(ATTN_L)
-                    win = arith.select(
+                    win = _swa_sel(lambda: _c((sw // 16) << 20), lambda: _c(0))
+                    return arith.ori(base, win)
+
+                def _swa_sel(on, off):
+                    """on() on a sliding-window wave, off() on any other."""
+                    v = arith.select(
                         arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
-                        _c((sw // 16) << 20),
-                        _c(0),
+                        on(),
+                        off(),
                     )
                     for _full in FULL_WAVES:
-                        win = arith.select(
+                        v = arith.select(
                             arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_full)),
-                            _c(0),
-                            win,
+                            off(),
+                            v,
                         )
-                    return arith.ori(base, win)
+                    return v
+
+                if RB_SWA_SKIP and not _WINDOWED:
+                    raise SystemExit("DECODE_RB_SWA_SKIP needs sliding-window waves")
 
                 # An operand whenever it varies: per dispatch under DYNSEQ, per
                 # wave under a sliding window.
@@ -3550,6 +3567,19 @@ def build_module():
                                             "compile-time BDs, and the 1-D form folds it "
                                             "into a length the shim cannot recompute."
                                         )
+                                    if RB_SWA_SKIP and (_NRB != 1 or _KV1D):
+                                        raise SystemExit(
+                                            "DECODE_RB_SWA_SKIP needs the single "
+                                            "whole-region 3-D readback"
+                                        )
+                                    # A sliding wave's block count is not a constant
+                                    # until the wave loop unrolls, so keep d0 within
+                                    # the wrap limit rather than have it tiled.
+                                    _run = REGION_W
+                                    if RT_WINDOW and REGION_W >= 1024:
+                                        _run = 512
+                                        assert REGION_W % _run == 0, REGION_W
+                                    _rows = 16 * REGION_W // _run
                                     _ci = 0
                                     while _ci < _nb:
                                         _cb = min(_cbk, _nb - _ci)
@@ -3564,6 +3594,18 @@ def build_module():
                                             if DYNSEQ_RB
                                             else (lambda: idx(_cb))
                                         )
+                                        _rbo = lambda e: _loi(_kbase, e)
+                                        if RB_SWA_SKIP:
+                                            _skb = lambda n: _swa_sel(
+                                                lambda: idx(n), lambda: idx(0)
+                                            )
+                                            _cbv = lambda: arith.subi(
+                                                idx(_cb), _skb(RB_SWA_SKIP)
+                                            )
+                                            _rbo = lambda e: arith.addi(
+                                                _loi(_kbase, e),
+                                                _skb(RB_SWA_SKIP * 16 * REGION_W),
+                                            )
                                         # Contiguous either way; _KV1D just states it as 1-D.
                                         # Spelled inline (not hoisted) so the default path's
                                         # constant emission order -- and thus the emitted IR --
@@ -3573,16 +3615,14 @@ def build_module():
                                                 "inKV_K",
                                                 KVC,
                                                 indices=[idx(gi)],
-                                                offsets=[
-                                                    _loi(_kbase, _kreg_off(gi) + _coff)
-                                                ],
+                                                offsets=[_rbo(_kreg_off(gi) + _coff)],
                                                 sizes=(
                                                     [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
                                                     else [
                                                         _cbv(),
-                                                        idx(16),
-                                                        idx(REGION_W),
+                                                        idx(_rows),
+                                                        idx(_run),
                                                     ]
                                                 ),
                                                 strides=(
@@ -3590,7 +3630,7 @@ def build_module():
                                                     if _KV1D
                                                     else [
                                                         idx(16 * REGION_W),
-                                                        idx(REGION_W),
+                                                        idx(_run),
                                                         idx(1),
                                                     ]
                                                 ),
@@ -3599,16 +3639,14 @@ def build_module():
                                                 "inKV_V",
                                                 KVC,
                                                 indices=[idx(gi)],
-                                                offsets=[
-                                                    _loi(_kbase, _vreg_off(gi) + _coff)
-                                                ],
+                                                offsets=[_rbo(_vreg_off(gi) + _coff)],
                                                 sizes=(
                                                     [idx(_cb * 16 * REGION_W)]
                                                     if _KV1D
                                                     else [
                                                         _cbv(),
-                                                        idx(16),
-                                                        idx(REGION_W),
+                                                        idx(_rows),
+                                                        idx(_run),
                                                     ]
                                                 ),
                                                 strides=(
@@ -3616,7 +3654,7 @@ def build_module():
                                                     if _KV1D
                                                     else [
                                                         idx(16 * REGION_W),
-                                                        idx(REGION_W),
+                                                        idx(_run),
                                                         idx(1),
                                                     ]
                                                 ),
@@ -4971,6 +5009,29 @@ def build_module():
                                     )
                                     return arith.index_cast(idx_t, _q)
 
+                                def _core_first(Lh):
+                                    """attn_window_lo(L) / 16: the block the window opens in.
+
+                                    0 without DECODE_RT_WINDOW, and on any wave whose
+                                    RTP word carries no window.
+                                    """
+                                    if not RT_WINDOW:
+                                        return idx(0)
+                                    _c = lambda v: arith.ConstantOp(
+                                        IntegerAttr.get(i32, v), None
+                                    ).result
+                                    L = _rtp_l(Lh)
+                                    w = arith.andi(arith.shrui(Lh, _c(20)), _c(0x7FF))
+                                    w = arith.shli(w, _c(4))
+                                    _open = arith.andi(
+                                        arith.cmpi(arith.CmpIPredicate.ne, w, _c(0)),
+                                        arith.cmpi(arith.CmpIPredicate.ugt, L, w),
+                                    )
+                                    _lo = arith.shrui(arith.subi(L, w), _c(4))
+                                    return arith.index_cast(
+                                        idx_t, arith.select(_open, _lo, _c(0))
+                                    )
+
                                 def _qk_body(sh, Lh, _c, _arm=None):
                                     a_q = AllocOp(aq_l1, [], [])
                                     ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
@@ -4983,7 +5044,7 @@ def build_module():
                                     # unrollSCFFors only unrolls all-constant loops, so this
                                     # survives to core codegen as a real runtime loop.
                                     _nblk_qk = _core_rounds(Lh)
-                                    for _blk in for_(idx(0), _nblk_qk, idx(1)):
+                                    for _blk in for_(_core_first(Lh), _nblk_qk, idx(1)):
                                         # REQUIRED single-buffer: ping-pong would unroll-by-2 +
                                         # 1-remainder over a 3-buffer toK ring whose remainder reads
                                         # the wrong buffer vs the DMA rotation -> misaligned KV ->
@@ -5012,7 +5073,7 @@ def build_module():
                                     # unrollSCFFors only unrolls all-constant loops, so this
                                     # survives to core codegen as a real runtime loop.
                                     _nblk_qk = _core_rounds(Lh)
-                                    for _blk in for_(idx(0), _nblk_qk, idx(1)):
+                                    for _blk in for_(_core_first(Lh), _nblk_qk, idx(1)):
                                         # REQUIRED single-buffer: ping-pong would unroll-by-2 +
                                         # 1-remainder over a 3-buffer toK ring whose remainder reads
                                         # the wrong buffer vs the DMA rotation -> misaligned KV ->
@@ -5037,7 +5098,7 @@ def build_module():
                                     # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                     # loops per RTP-L; matched by the shim readback push count.
                                     _nblk_kv = _core_rounds(Lh)
-                                    for _blk in for_(idx(0), _nblk_kv, idx(1)):
+                                    for _blk in for_(_core_first(Lh), _nblk_kv, idx(1)):
                                         # REQUIRED single-buffer (see _qk_body): keeps toV/toK
                                         # consumption aligned with the DMA rotation (no unroll-by-2
                                         # remainder desync -> no misaligned KV).

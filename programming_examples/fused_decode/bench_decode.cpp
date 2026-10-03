@@ -204,6 +204,34 @@ int main(int argc, char **argv) {
     throw std::runtime_error(rbPath + " is missing, but the templates were "
                                       "built with DECODE_RT_ROUNDS; rebuild");
   }
+  // decode_L<base>.rt_window: the sliding-window cores start at the block the
+  // window opens in, and decode_L<base>.sw.insts.bin, with each sliding wave's
+  // readback one block later, moves the readback's start to match.
+  const std::string stem = dir + "/decode_L" + std::to_string(baseL);
+  std::ifstream winFile(stem + ".rt_window");
+  long window = 0;
+  if (winFile >> window && L > window) {
+    auto isw = readWords(stem + ".sw.insts.bin");
+    if (isw.size() != ibase.size())
+      throw std::runtime_error(stem + ".sw.insts.bin: size differs from the "
+                                      "base build");
+    if (isw == ibase)
+      throw std::runtime_error(stem + ".sw.insts.bin equals the base build: "
+                                      "its build ignored DECODE_RB_SWA_SKIP");
+    const long skip = (L - window) / 16;
+    for (size_t i = 0; i < insts.size(); i++) {
+      const int64_t d =
+          static_cast<int64_t>(isw[i]) - static_cast<int64_t>(ibase[i]);
+      if (d) {
+        insts[i] =
+            static_cast<uint32_t>(static_cast<int64_t>(insts[i]) + skip * d);
+        lo = std::min(lo, i);
+        hi = std::max(hi, i + 1);
+      }
+    }
+    std::cout << "window      " << window << ", readback from block " << skip
+              << "\n";
+  }
 
   std::cout << "xclbin      " << xclbinPath << "\n"
             << "insts       " << insts.size() << " words, L-dependent [" << lo

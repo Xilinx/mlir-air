@@ -26,6 +26,11 @@ difference locates the readback lengths, and every stream is rewritten whole per
 token, since a ceil(L/16) step is not a two-point slope. Such a build also leaves
 decode_L<N>.rt_rounds, so a template whose .rb went missing is refused rather
 than run with the full readback against cores that stop at ceil(L/16) -- a hang.
+
+A build whose sliding-window cores also start at the block their window opens in
+(DECODE_RT_WINDOW) leaves decode_L<N>.rt_window, holding the window, and
+decode_L<N>.sw.insts.bin, rebuilt with each sliding wave's readback one block
+later; that difference moves the readback's start with the window.
 """
 
 import os
@@ -113,6 +118,31 @@ class DecodeInstsGen:
                     "DECODE_RT_ROUNDS but has no decode_L<N>.rb.insts.bin, so its "
                     "readback cannot be cut to the cores' block count; rebuild it"
                 )
+            t["sw"] = None
+            for L in t["Ls"]:
+                wf = os.path.join(artifact_dir, f"decode_L{L}.rt_window")
+                if not os.path.exists(wf):
+                    continue
+                with open(wf) as f:
+                    win = int(f.read())
+                sw = os.path.join(artifact_dir, f"decode_L{L}.sw.insts.bin")
+                if os.path.exists(sw):
+                    d = np.fromfile(sw, np.uint32).astype(np.int64)
+                    d -= np.fromfile(
+                        os.path.join(artifact_dir, builds[L]), np.uint32
+                    ).astype(np.int64)
+                    if not d.any():
+                        raise RuntimeError(
+                            f"{sw} equals {builds[L]}: its build ignored "
+                            "DECODE_RB_SWA_SKIP"
+                        )
+                    t["sw"], t["window"], self.exact = d, win, True
+                elif maxl > win:
+                    raise RuntimeError(
+                        f"ATTN_MAXL={maxl} template in {artifact_dir} was built "
+                        "with DECODE_RT_WINDOW but has no decode_L<N>.sw.insts.bin, "
+                        "so its readback cannot follow the window; rebuild it"
+                    )
         self._check_declared_windows(artifact_dir)
         self.select(max_L)
 
@@ -200,6 +230,8 @@ class DecodeInstsGen:
         out[ld] = t["base"][ld].astype(np.int64) + (L - t["base_L"]) * t["slope"][ld]
         if t["rb"] is not None:
             out += ((L + 15) // 16 - t["rb_rounds"]) * t["rb"]
+        if t["sw"] is not None and L > t["window"]:
+            out += ((L - t["window"]) // 16) * t["sw"]
         return out.astype(np.uint32)
 
     def calibrated_windows(self):
