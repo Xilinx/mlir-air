@@ -5,6 +5,7 @@
 *.xclbin
 *.bin
 *.exe
+*.rt_rounds
 
 # Build / cache artifacts
 __pycache__/

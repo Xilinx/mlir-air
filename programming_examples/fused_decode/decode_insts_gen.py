@@ -23,7 +23,9 @@ A build whose attention cores take their block count from the RTP-L word
 reference's per-token sequence does. Its directory then holds
 decode_L<N>.rb.insts.bin: decode_L<N> rebuilt with one readback block fewer. The
 difference locates the readback lengths, and every stream is rewritten whole per
-token, since a ceil(L/16) step is not a two-point slope.
+token, since a ceil(L/16) step is not a two-point slope. Such a build also leaves
+decode_L<N>.rt_rounds, so a template whose .rb went missing is refused rather
+than run with the full readback against cores that stop at ceil(L/16) -- a hang.
 """
 
 import os
@@ -87,7 +89,7 @@ class DecodeInstsGen:
                 xclbin=os.path.join(artifact_dir, f"decode_L{base_L}.xclbin"),
             )
         self.exact = False
-        for t in self.templates.values():
+        for maxl, t in self.templates.items():
             t["rb"] = None
             for L in t["Ls"]:
                 rb = os.path.join(artifact_dir, f"decode_L{L}.rb.insts.bin")
@@ -95,7 +97,22 @@ class DecodeInstsGen:
                     full = os.path.join(artifact_dir, builds[L])
                     d = np.fromfile(full, np.uint32).astype(np.int64)
                     d -= np.fromfile(rb, np.uint32).astype(np.int64)
+                    if not d.any():
+                        raise RuntimeError(
+                            f"{rb} equals {builds[L]}: its build ignored "
+                            "DECODE_RB_ROUNDS, so the readback cannot be cut"
+                        )
                     t["rb"], t["rb_rounds"], self.exact = d, (L + 15) // 16, True
+            rt = any(
+                os.path.exists(os.path.join(artifact_dir, f"decode_L{L}.rt_rounds"))
+                for L in t["Ls"]
+            )
+            if rt and t["rb"] is None and maxl > 16:
+                raise RuntimeError(
+                    f"ATTN_MAXL={maxl} template in {artifact_dir} was built with "
+                    "DECODE_RT_ROUNDS but has no decode_L<N>.rb.insts.bin, so its "
+                    "readback cannot be cut to the cores' block count; rebuild it"
+                )
         self._check_declared_windows(artifact_dir)
         self.select(max_L)
 

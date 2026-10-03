@@ -17,6 +17,7 @@ decode.xclbin
 decode.insts.bin
 decode_L*.xclbin
 decode_L*.insts.bin
+decode_L*.rt_rounds
 
 # Stray artifacts from running a driver outside a build dir (xrt.py +
 # external_kernels.py write these to CWD by design).

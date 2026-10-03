@@ -8,3 +8,5 @@
 //
 // CHECK: without .rb: readback stays at ATTN_MAXL: True
 // CHECK: with .rb: readback follows ceil(L/16): True
+// CHECK: identical .rb refused: True
+// CHECK: missing .rb refused: True
