@@ -22,12 +22,13 @@
 // CHECK: [[I:v[0-9]+]] = (int64_t) [[P]]
 // CHECK: [[U:v[0-9]+]] = (uint64_t) [[I]]
 // CHECK: [[PROD:v[0-9]+]] = [[U]] * v{{[0-9]+}}
+// mlir-aie #3791 sizes the transfer in elements and checks the count fits the
+// BD before converting it to words, so the builder rejects (std::nullopt) a
+// runtime extent the hardware cannot express instead of truncating it.
 // CHECK: [[N32:v[0-9]+]] = (int32_t) v{{[0-9]+}}
+// CHECK: if ([[N32]] < {{[0-9]+}} || [[N32]] > {{[0-9]+}}) return std::nullopt;
 // CHECK: [[NU:v[0-9]+]] = (uint32_t) [[N32]]
-// CHECK: [[BYTES:v[0-9]+]] = [[NU]] * v{{[0-9]+}}
-// CHECK: [[B32:v[0-9]+]] = (int32_t) [[BYTES]]
-// CHECK: [[BU:v[0-9]+]] = (uint32_t) [[B32]]
-// CHECK: [[WORDS:v[0-9]+]] = [[BU]] / v{{[0-9]+}}
+// CHECK: [[WORDS:v[0-9]+]] = [[NU]] / v{{[0-9]+}}
 // CHECK: [[LEN:v[0-9]+]] = (int32_t) [[WORDS]]
 // mlir-aie #3559 packs the shim BD's register block into one blockwrite, so the
 // length is now word 0 of that block rather than its own write32. Same property:

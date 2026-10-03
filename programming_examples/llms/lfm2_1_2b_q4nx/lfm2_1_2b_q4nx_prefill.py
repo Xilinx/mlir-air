@@ -374,8 +374,6 @@ def _compile_conv1d_o():
             "-I",
             f"{aieopt}/include",
             "-D__AIE_API_AIE_ADF_HPP__",
-            "-include",
-            "aie_kernels/aie_kernel_utils.h",
             "-c",
             str(src),
             "-o",

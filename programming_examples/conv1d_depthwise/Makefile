@@ -31,7 +31,6 @@ all: run
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
 	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
-		-include aie_kernels/aie_kernel_utils.h \
 		-c $(srcdir)/conv1d_depthwise.cc -o $(BUILD_DIR)/conv1d_depthwise.o
 
 # Print the MLIR module (no kernel .o / NPU needed)

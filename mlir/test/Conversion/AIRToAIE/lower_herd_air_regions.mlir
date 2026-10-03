@@ -7,9 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie="device=npu1 row-offset=2 col-offset=0" | FileCheck %s
+// The C tile is zero-filled on the core rather than loaded: a 1x1 herd has two
+// S2MM channels, and a third input from L3 would have to share one with a flow
+// from another shim, which a circuit-switched port cannot take.
 // CHECK: aie.core({{.*}}) {
 // CHECK: aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK: aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK: linalg.fill
 // CHECK: scf.for {{.*}} = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
@@ -17,8 +20,9 @@
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK: }
-// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
-// CHECK-DAG: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK: aie.use_lock({{.*}}, Release, %{{.*}})
+// CHECK-NOT: aie.use_lock
+// CHECK: aie.end
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set0 = affine_set<(d0, d1)[s0] : (d0 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
@@ -49,7 +53,12 @@ module attributes {torch.debug_module_name = "mmult"} {
         %6 = memref.alloc() : memref<32x32xi32, 2>
         air.execute_terminator %6 : memref<32x32xi32, 2>
       } {id = 9 : i32}
-      %3 = air.dma_memcpy_nd async [%2, %asyncToken_2] (%valOut_3[] [] [], %arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+      %asyncToken_fill = air.execute [%2, %asyncToken_2] {
+        %c0_i32_0 = arith.constant 0 : i32
+        linalg.fill ins(%c0_i32_0 : i32) outs(%valOut_3 : memref<32x32xi32, 2>)
+        air.execute_terminator
+      } {id = 16 : i32}
+      %3 = air.wait_all async [%asyncToken_fill]
       %4 = scf.for %arg10 = %c0 to %c64 step %c32 iter_args(%arg11 = %3) -> (!air.async.token) {
         %asyncToken_5, %valOut_6 = air.execute [%arg11] -> (memref<32x32xi32, 2>) {
           %9 = memref.alloc() : memref<32x32xi32, 2>

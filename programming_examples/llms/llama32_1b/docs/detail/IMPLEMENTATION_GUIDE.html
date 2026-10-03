@@ -2044,16 +2044,11 @@ make chat</code></pre>
 
 <p><strong>How it's compiled.</strong> The MLIR builder constructs an <code>air.herd</code> that takes the gate and up tensors as inputs (each <code>[B, S, D_ff]</code>) and produces one output tensor. The herd body calls <code>@silu_and_mul_bf16</code> (declared with <code>link_with = "silu_and_mul.o"</code>). The C++ implementation does <code>out[i] = SiLU(gate[i]) · up[i]</code> in a vectorized inner loop using AIE bf16 SiLU + multiply intrinsics — fusing the two ops eliminates one full pass over the 8192-wide tensor (vs. doing SiLU and the multiply as two separate kernels).</p>
 
-<p><strong>Compile (with extra include for utils header):</strong> see <span class="file-ref">kernel_builder/external_kernels.py:106</span> (<code>compile_silu_and_mul</code>):</p>
+<p><strong>Compile:</strong> see <span class="file-ref">llms/shared/infra/external_kernels.py</span> (<code>compile_silu_and_mul</code>). <code>silu_and_mul.cc</code> includes <code>aie_kernels/aie_kernel_utils.h</code> itself, for the loop-pipelining macros. Do not pass it with <code>-include</code> on the command line: that header pulls in <code>aie_arch.h</code>, which needs <code>__AIE_ARCH__</code>, and Peano only defines it in the <code>aie2pintrin.h</code> it force-includes after any user <code>-include</code>.</p>
 
 <pre><code><span class="kw">def</span> <span class="fn">compile_silu_and_mul</span>():
-    src = _PROJ_ROOT / <span class="str">"llama32_1b"</span> / <span class="str">"kernel_builder"</span> / <span class="str">"ffn_swiglu"</span> / <span class="str">"silu_and_mul.cc"</span>
-    include_dir = <span class="fn">_get_aie_include_dir</span>()
-    utils_header = <span class="fn">Path</span>(include_dir) / <span class="str">"aie_kernels"</span> / <span class="str">"aie_kernel_utils.h"</span>
-    extra = []
-    <span class="kw">if</span> utils_header.<span class="fn">exists</span>():
-        extra = [<span class="str">"-include"</span>, <span class="fn">str</span>(utils_header)]
-    <span class="fn">_compile_kernel</span>(src, <span class="str">"silu_and_mul.o"</span>, extra_flags=extra)</code></pre>
+    src = _PROJ_ROOT / <span class="str">"silu_and_mul"</span> / <span class="str">"silu_and_mul.cc"</span>
+    <span class="fn">_compile_kernel</span>(src, <span class="str">"silu_and_mul.o"</span>)</code></pre>
 
 <!-- ============================================================ -->
 <h3 id="k-fa">B2.6 — FlashAttention</h3>

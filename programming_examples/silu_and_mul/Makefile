@@ -30,7 +30,6 @@ all: run
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
 	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
-		-include aie_kernels/aie_kernel_utils.h \
 		-c $(srcdir)/silu_and_mul.cc -o $(BUILD_DIR)/silu_and_mul.o
 
 # Print the MLIR module (no kernel .o / NPU needed)

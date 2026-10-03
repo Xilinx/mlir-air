@@ -55,9 +55,11 @@ module {
   air.channel @pkt_b [1, 1] {channel_type = "npu_dma_packet"}
   // One L3->L1 direct packet channel feeding col 0.
   air.channel @pkt_c [1, 1] {channel_type = "npu_dma_packet"}
-  // L2->L1 legs anchoring the memtile-routed flows to col 0 cores.
-  air.channel @a_l2_to_core [1, 1]
-  air.channel @b_l2_to_core [1, 1]
+  // L2->L1 legs anchoring the memtile-routed flows to col 0 cores. They are
+  // packet-switched: the core takes three inputs on two S2MM channels, and the
+  // two legs come from different memtiles, so they cannot share a circuit.
+  air.channel @a_l2_to_core [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @b_l2_to_core [1, 1] {channel_type = "npu_dma_packet"}
 
   func.func @func_shared_col(%a: memref<64xi32>, %b: memref<64xi32>,
                               %c: memref<64xi32>) {

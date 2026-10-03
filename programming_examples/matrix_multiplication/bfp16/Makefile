@@ -29,7 +29,7 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 # The GEMM kernel is mlir-aie's reference design, used unmodified. It ships in
 # the mlir-aie install tree, so resolve it through AIEOPT_DIR rather than
 # assuming a source checkout is present next to mlir-air.
-KERNEL_SRC ?= ${AIEOPT_DIR}/include/aie_kernels/aie2p/mm_bfp.cc
+KERNEL_SRC ?= ${AIEOPT_DIR}/include/aie_kernels/linalg/mm_bfp.cc
 
 # AIE_TARGET is accepted for symmetry with the bf16 example, but aie2p is the
 # only legal value; run.py rejects aie2 with a diagnostic.
@@ -160,7 +160,7 @@ compile-kernel:
 	fi
 	@if [ ! -f "$(KERNEL_SRC)" ]; then \
 		echo "Error: reference kernel not found at $(KERNEL_SRC)."; \
-		echo "Point KERNEL_SRC at mlir-aie's aie_kernels/aie2p/mm_bfp.cc."; \
+		echo "Point KERNEL_SRC at mlir-aie's aie_kernels/linalg/mm_bfp.cc."; \
 		exit 1; \
 	fi
 	$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANOWRAP2P_FLAGS) \
