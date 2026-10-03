@@ -3561,6 +3561,33 @@ void AIRAnnotateAppendBarrierPass::runOnOperation() {
     return (ty && air::isL3(ty)) ? v : nullptr;
   };
 
+  // Can two accesses to one L3 buffer touch the same elements? Compared per
+  // dimension on the bounding range of the offsets/sizes/strides. An access
+  // with no offsets/sizes names the whole memref; a non-constant one is assumed
+  // to overlap, so the pairing can only be dropped when the regions are
+  // provably disjoint.
+  auto mayOverlap = [](air::ChannelInterface a, air::ChannelInterface b) {
+    auto offA = a.getMixedOffsets(), offB = b.getMixedOffsets();
+    auto szA = a.getMixedSizes(), szB = b.getMixedSizes();
+    auto stA = a.getMixedStrides(), stB = b.getMixedStrides();
+    if (offA.empty() || offB.empty() || offA.size() != offB.size() ||
+        szA.size() != offA.size() || szB.size() != offB.size() ||
+        stA.size() != offA.size() || stB.size() != offB.size())
+      return true;
+    for (unsigned i = 0; i < offA.size(); i++) {
+      auto oa = getConstantIntValue(offA[i]), ob = getConstantIntValue(offB[i]);
+      auto sa = getConstantIntValue(szA[i]), sb = getConstantIntValue(szB[i]);
+      auto ta = getConstantIntValue(stA[i]), tb = getConstantIntValue(stB[i]);
+      if (!oa || !ob || !sa || !sb || !ta || !tb)
+        continue;
+      int64_t loA = *oa, hiA = *oa + (*sa > 0 ? (*sa - 1) * *ta : 0);
+      int64_t loB = *ob, hiB = *ob + (*sb > 0 ? (*sb - 1) * *tb : 0);
+      if (hiA < loB || hiB < loA)
+        return false;
+    }
+    return true;
+  };
+
   // Pair only within one block. That gives program order for free, and it
   // keeps the two sides mutually reachable: ops in sibling regions of an
   // scf.if / scf.index_switch are alternatives that never both run, so there
@@ -3585,12 +3612,25 @@ void AIRAnnotateAppendBarrierPass::runOnOperation() {
       auto it = pendingWrites.find(m);
       if (it == pendingWrites.end() || it->second.empty())
         continue;
-      for (Operation *writer : it->second)
+      // Only the writes this read can see: a chain of jobs sharing one buffer
+      // reads what the previous job wrote, not what its own job will.
+      SmallVector<Operation *> kept;
+      bool paired = false;
+      for (Operation *writer : it->second) {
+        if (!mayOverlap(cast<air::ChannelInterface>(writer),
+                        cast<air::ChannelInterface>(&op))) {
+          kept.push_back(writer);
+          continue;
+        }
         writer->setAttr(air::attrs::AppendBarrier,
                         UnitAttr::get(writer->getContext()));
-      put->setAttr(air::attrs::AwaitAppends, UnitAttr::get(put->getContext()));
+        paired = true;
+      }
+      if (paired)
+        put->setAttr(air::attrs::AwaitAppends,
+                     UnitAttr::get(put->getContext()));
       // Consumed: a later round pairs with its own appends, not these.
-      it->second.clear();
+      it->second.assign(kept.begin(), kept.end());
     }
   });
 }

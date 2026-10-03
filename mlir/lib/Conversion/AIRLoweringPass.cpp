@@ -1375,6 +1375,41 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (drainDmas.empty())
       return;
 
+    // A drain whose region a later input DMA of this launch reads back (a chain
+    // of jobs through one host buffer) is ordered against that reader by data,
+    // not by where the receiver must be armed: it stays where the program put
+    // it. Whether a reader sees the drain is decided on the region each
+    // accesses, not on the memref they share.
+    auto mayOverlap = [](airrt::DmaMemcpyNdOp a, airrt::DmaMemcpyNdOp b) {
+      if (a.getMemref() != b.getMemref())
+        return false;
+      for (unsigned i = 0; i < 4; i++) {
+        int64_t oa = a.getStaticOffsets()[i], ob = b.getStaticOffsets()[i];
+        int64_t la = a.getStaticLengths()[i], lb = b.getStaticLengths()[i];
+        int64_t sa = a.getStaticStrides()[i], sb = b.getStaticStrides()[i];
+        if (ShapedType::isDynamic(oa) || ShapedType::isDynamic(ob) ||
+            ShapedType::isDynamic(la) || ShapedType::isDynamic(lb) ||
+            ShapedType::isDynamic(sa) || ShapedType::isDynamic(sb))
+          continue;
+        int64_t hiA = oa + (la > 0 ? (la - 1) * sa : 0);
+        int64_t hiB = ob + (lb > 0 ? (lb - 1) * sb : 0);
+        if (hiA < ob || hiB < oa)
+          return false;
+      }
+      return true;
+    };
+    llvm::SmallPtrSet<Operation *, 8> readBack;
+    for (auto dma : drainDmas)
+      for (Operation *o = dma->getNextNode(); o && o != launchEnd;
+           o = o->getNextNode()) {
+        auto rd = dyn_cast<airrt::DmaMemcpyNdOp>(o);
+        if (rd && rd->getNumResults() && !air::isDeviceToHostShimDMA(rd) &&
+            mayOverlap(dma, rd)) {
+          readBack.insert(dma);
+          break;
+        }
+      }
+
     // (1) Defer the wait: strip drain tokens from every non-terminator wait_all
     // and gather them onto launch_end.
     llvm::SmallSetVector<Value, 8> drainTokens;
@@ -1433,8 +1468,19 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     // Drains already ahead of the anchor already dominate it and are left
     // alone. A drain whose slice contains a side-effecting op is left in place
     // rather than reordered across the intervening input DMAs.
+    // Awaits are matched to a channel's tasks in the order the tasks start, so
+    // no drain may start ahead of a read-back drain that precedes it: those
+    // keep their program order.
+    Operation *firstReadBack = nullptr;
     for (auto dma : drainDmas)
-      if (anchor->isBeforeInBlock(dma.getOperation()))
+      if (readBack.contains(dma)) {
+        firstReadBack = dma;
+        break;
+      }
+    for (auto dma : drainDmas)
+      if (!readBack.contains(dma) &&
+          !(firstReadBack && firstReadBack->isBeforeInBlock(dma)) &&
+          anchor->isBeforeInBlock(dma.getOperation()))
         (void)air::moveWithPureBackwardSlice(dma.getOperation(), anchor,
                                              /*after=*/false);
   });

@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Conversion/AIRRtToNpuPass.h"
+#include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -3487,6 +3488,47 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                              "dma_start_task; the "
                              "append barrier cannot be applied");
           }
+          // The host elements a configure task touches, as a bounding range of
+          // its first BD: nullopt when the buffer or the range is not known.
+          // Readers are paired with the appends whose range they overlap; a
+          // chain of jobs through one buffer reads what the previous job wrote,
+          // not what its own job will.
+          struct Range {
+            Value buffer;
+            int64_t lo, hi;
+          };
+          auto rangeOf =
+              [](AIEX::DMAConfigureTaskForOp c) -> std::optional<Range> {
+            AIE::DMABDOp bd;
+            c.walk([&](AIE::DMABDOp b) {
+              bd = b;
+              return WalkResult::interrupt();
+            });
+            if (!bd)
+              return std::nullopt;
+            if (bd.getOffset() || !bd.getStaticOffset())
+              return std::nullopt;
+            int64_t lo = *bd.getStaticOffset(), hi;
+            auto sizes = bd.getStaticSizes(), strides = bd.getStaticStrides();
+            if (sizes && strides && sizes->size() == strides->size() &&
+                !sizes->empty()) {
+              hi = lo;
+              for (auto [sz, st] : llvm::zip(*sizes, *strides))
+                hi += sz > 0 ? (sz - 1) * st : 0;
+            } else if (bd.getStaticLen()) {
+              hi = lo + *bd.getStaticLen() - 1;
+            } else {
+              return std::nullopt;
+            }
+            return Range{bd.getBuffer(), lo, hi};
+          };
+          auto mayOverlap = [&](AIEX::DMAConfigureTaskForOp a,
+                                AIEX::DMAConfigureTaskForOp b) {
+            auto ra = rangeOf(a), rb = rangeOf(b);
+            if (!ra || !rb || ra->buffer != rb->buffer)
+              return true;
+            return !(ra->hi < rb->lo || rb->hi < ra->lo);
+          };
           bool anyAppendAwait = false;
           for (auto &o : blk) {
             auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
@@ -3505,6 +3547,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             unsigned best = std::numeric_limits<unsigned>::max();
             for (auto s : barrierStarts) {
               unsigned sp = order[s.getOperation()];
+              auto readCfg =
+                  s.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+              if (readCfg && !mayOverlap(cfg, readCfg))
+                continue;
               if (sp > apos && sp < best) {
                 best = sp;
                 target = s;
@@ -3523,6 +3569,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Bound how far one shim feed channel may run ahead of its siblings.
     boundShimFeedBursts(module);
+    boundReadbackFeeds(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -3597,6 +3644,98 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([](xilinx::AIE::DeviceOp device) {
       device->removeAttr(kMultiIterLaunchAttr);
       device->removeAttr(kNumLaunchItersAttr);
+    });
+  }
+
+  // The readbacks of a long chain through one buffer are interleaved with the
+  // awaits that order them, so no burst forms and nothing bounds how many of
+  // their feeds are in flight: every one holds a BD until the end of the
+  // sequence. Cap such a feed channel like a burst: before starting task i,
+  // await task i - kShimTaskQueueDepth, which was issued long ago and does not
+  // depend on anything after it. Only feeds are capped: an await on a drain can
+  // block until an input that has not been issued yet. Runs after
+  // boundShimFeedBursts so a task that already has an await is left alone.
+  void boundReadbackFeeds(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
+          for (auto *u : c.getResult().getUsers())
+            if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
+              return s;
+          return AIEX::DMAStartTaskOp(nullptr);
+        };
+        llvm::SmallDenseSet<StringRef> readbackChannels;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+            if (c->hasAttr(air::attrs::AwaitAppends))
+              readbackChannels.insert(
+                  c.getAlloc().getLeafReference().getValue());
+        if (readbackChannels.empty())
+          continue;
+        // An await on one channel's older task can block until a consumer has
+        // been fed by its sibling channels too, and nothing here orders the
+        // two. Only cap when the block feeds a single MM2S channel; a design
+        // with several keeps its BD pressure and is reported by the BD check.
+        auto device = seq->getParentOfType<AIE::DeviceOp>();
+        llvm::SmallDenseSet<StringRef> feedChannels;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
+            StringRef name = c.getAlloc().getLeafReference().getValue();
+            auto alloc =
+                device ? AIE::ShimDMAAllocationOp::getForSymbol(device, name)
+                       : nullptr;
+            if (!alloc || alloc.getChannelDir() == AIE::DMAChannelDir::MM2S)
+              feedChannels.insert(name);
+          }
+        if (feedChannels.size() > 1)
+          continue;
+        llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+            chanTasks;
+        for (auto &o : blk)
+          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
+            if (readbackChannels.contains(
+                    c.getAlloc().getLeafReference().getValue()) &&
+                getStart(c))
+              chanTasks[c.getAlloc().getLeafReference().getValue()].push_back(
+                  c);
+        for (auto &kv : chanTasks) {
+          auto &tasks = kv.second;
+          for (unsigned i = air::kShimTaskQueueDepth; i < tasks.size(); i++) {
+            AIEX::DMAConfigureTaskForOp older =
+                tasks[i - air::kShimTaskQueueDepth];
+            // Already awaited (a burst cap, or the barrier that orders it
+            // before its reader, got there first): a second await would find
+            // no token. If that await is further away than the cap allows, move
+            // it up -- earlier is always as good for the reader.
+            AIEX::DMAAwaitTaskOp existing = nullptr;
+            for (auto *u : older.getResult().getUsers())
+              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
+                existing = aw;
+            if (existing) {
+              Operation *startI = getStart(tasks[i]);
+              if (existing->getBlock() == startI->getBlock() &&
+                  startI->isBeforeInBlock(existing))
+                existing->moveBefore(startI);
+              continue;
+            }
+            older.setIssueToken(true);
+            OpBuilder b(getStart(tasks[i]));
+            AIEX::DMAAwaitTaskOp::create(b, getStart(tasks[i])->getLoc(),
+                                         older.getResult());
+            // An await also frees the BD: the free this task was given at
+            // conversion would be a second release.
+            for (auto *u :
+                 llvm::make_early_inc_range(older.getResult().getUsers()))
+              if (isa<AIEX::DMAFreeTaskOp>(u))
+                u->erase();
+          }
+        }
+      }
     });
   }
 
