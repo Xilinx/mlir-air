@@ -165,7 +165,9 @@ module {
         %p3 = air.channel.put async [%tok3] @ch_s3[] (%s3[] [] []) : (memref<16xi32, 1>)
 
         // Two herds on col 5 to trigger the saturation fallback (col 5
-        // would receive 2 buckets, exceeding the per-col budget of 1).
+        // would receive 2 buckets, exceeding the per-col budget of 1). They
+        // sit on different rows: on one tile, their inputs from different
+        // memtiles would share an S2MM channel, which a circuit cannot do.
         %h0 = air.herd @herd_col5_a async tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 5 : i64, y_loc = 3 : i64} {
           %tk, %l1 = air.execute -> (memref<32xi32, 2>) {
             %b = memref.alloc() : memref<32xi32, 2>
@@ -182,7 +184,7 @@ module {
           %g = air.channel.get async [%tk] @ch_s1[] (%l1[] [] []) : (memref<64xi32, 2>)
           %d = air.execute [%g] { memref.dealloc %l1 : memref<64xi32, 2> }
         }
-        %h2 = air.herd @herd_col5_b async tile (%tx3, %ty3) in (%sx3=%c1_0, %sy3=%c1_0) attributes {x_loc = 5 : i64, y_loc = 3 : i64} {
+        %h2 = air.herd @herd_col5_b async tile (%tx3, %ty3) in (%sx3=%c1_0, %sy3=%c1_0) attributes {x_loc = 5 : i64, y_loc = 4 : i64} {
           %tk0, %l1c = air.execute -> (memref<128xi32, 2>) {
             %b = memref.alloc() : memref<128xi32, 2>
             air.execute_terminator %b : memref<128xi32, 2>
