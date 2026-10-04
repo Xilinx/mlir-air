@@ -1390,8 +1390,9 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
       return;
 
     // TODO(#2030): stop-gap until drains are ordered by dependency instead of
-    // all being started up front. Warn when more than kShimTaskQueueDepth are
-    // outstanding on one channel, since that may overflow its task queue.
+    // all being started up front (#2030 was closed unmerged; its discussion has
+    // the design). Warn when more than kShimTaskQueueDepth are outstanding on
+    // one channel, since that may overflow its task queue.
     //
     // Drains are counted per allocation symbol: the shim allocator gives each
     // air.channel's readbacks their own S2MM channel.
