@@ -58,7 +58,7 @@ CAMERAS        ?= 3
 DATASET        ?= lerobot/droid_100
 FRAMES         ?= 100
 
-.PHONY: help compile cpu-baseline run verify profile clean
+.PHONY: help compile cpu-baseline run verify profile run-all verify-all profile-all compile-expert clean
 
 help:
 	@echo "=================================================================="
@@ -69,6 +69,8 @@ help:
 	@echo "  make run       One end-to-end forward; prints the chunk shape and magnitude"
 	@echo "  make verify    THE GATE: action chunk vs the pure-CPU model (PASS/FAIL)"
 	@echo "  make profile   CPU vs NPU, interleaved + warmed, with the ELF breakdown"
+	@echo "  make run-all / verify-all / profile-all   EXPERIMENTAL: vision + backbone + action expert"
+	@echo "                 all on the NPU (--npu-all); needs the expert ELFs: make compile-expert"
 	@echo "  make clean     Remove the kernel cache and build artifacts"
 	@echo ""
 	@echo "  run / verify take INPUT=synthetic|real and CAMERAS=1|2|3"
@@ -121,6 +123,31 @@ profile:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py \
 		--profile --reps $(REPS) --cameras $(CAMERAS)
+
+## EXPERIMENTAL all-NPU path (vision + language backbone + action expert, --npu-all). Same
+## targets as above with every stage on the NPU; see the README ("Experimental: backbone and
+## expert on the NPU") for what it needs and what it costs. verify-all is the same gate.
+run-all:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
+		--input $(INPUT) --cameras $(CAMERAS) --dataset $(DATASET)
+
+verify-all:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && SMOLVLA_NPU_ALL=1 $(LEROBOT_PYTHON) $(srcdir)/verify_adapter.py \
+		--input $(INPUT) --cameras $(CAMERAS) \
+		--dataset $(DATASET) --frames $(FRAMES)
+
+profile-all:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
+		--profile --reps $(REPS) --cameras $(CAMERAS)
+
+## Build the expert's two engine ELFs once (prefix + step, 16 layers). Run it with a compiler
+## that honours air.order_drains first on PATH (and its python on PYTHONPATH) and
+## PEANO_INSTALL_DIR at a no-unroll Peano; about 2 minutes, an hour without the async-dependency fix.
+compile-expert:
+	cd $(srcdir)/benchmarking && $(LEROBOT_PYTHON) expert_v2_probe.py --layers 16 --compile-only
 
 clean:
 	rm -rf $(srcdir)/$(BUILD_DIR) $(srcdir)/__pycache__

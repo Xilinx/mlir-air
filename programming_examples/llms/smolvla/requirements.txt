@@ -52,3 +52,6 @@ num2words
 # Host-side reference math and bf16 handling
 numpy
 ml_dtypes
+# Caps numpy's BLAS threads inside the NPU forward (default is every hardware thread; ~25 ms of
+# the vision stage). Optional: without it the cap is skipped with a warning.
+threadpoolctl

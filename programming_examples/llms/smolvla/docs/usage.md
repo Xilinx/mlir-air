@@ -47,6 +47,8 @@ rate limit.
 | `make run` | one end-to-end forward; prints the chunk shape and magnitude | yes |
 | `make verify` | **the gate** — action chunk vs the pure-CPU model, PASS/FAIL | yes |
 | `make profile` | CPU vs NPU interleaved, with the per-ELF breakdown | yes |
+| `make run-all` · `make verify-all` · `make profile-all` | **experimental**: the same three, with the vision encoder, the language backbone and the action expert all on the NPU (`--npu-all`); `verify-all` is the same gate on that path | yes |
+| `make compile-expert` | build the expert's two engine ELFs once (needed by the `-all` targets; see the README, "Experimental: backbone and expert on the NPU") | no |
 | `make clean` | remove the kernel cache and build artifacts | no |
 
 ## Variables
@@ -60,6 +62,8 @@ rate limit.
 | `REPS` | `5` | profile | interleaved CPU/NPU pairs; the median is reported |
 | `LEROBOT_PYTHON` | `python3` | all | interpreter with torch + lerobot + air + pyxrt |
 | `SMOLVLA_FORCE_COMPILE` | unset | all | `=1` rebuilds every ELF instead of reusing the cache |
+| `SMOLVLA_CPU_THREADS` | `8` | NPU path | threads for the CPU stages: torch's, and numpy's BLAS (capped with `threadpoolctl`, inside the NPU forward only; the pure-CPU arm keeps its defaults). `0` keeps the defaults |
+| `SMOLVLA_NPU_ALL` | unset | all | `=1` is `--npu-all`: backbone and expert on the NPU too (what `make *-all` set) |
 
 ```bash
 make verify                                  # the gate: synthetic, 3 cameras
@@ -119,28 +123,31 @@ interleaved so drift hits both equally, and the median is reported.
 ```
   end to end                              median       min       max
   ------------------------------------ --------- --------- ---------
-  pure CPU (unmodified lerobot)            919.9     902.1     980.4
-  NPU vision + CPU backbone/expert         831.6     808.9     866.0
+  pure CPU (unmodified lerobot)            483.0     476.7     525.4
+  NPU vision + CPU backbone/expert         378.5     372.6     382.8
 
-  speedup (median)  1.106x
+  speedup (median)  1.276x
 
   per stage                                  CPU   NPU run   speedup
   ------------------------------------ --------- --------- ---------
-  vision: SigLIP + connector (x3)          544.8     453.6     1.20x
-  backbone: SmolLM2-360M (x1)               78.6      78.6  CPU both
-  action expert (x10 denoise steps)        281.9     281.9  CPU both
+  vision: SigLIP + connector (x3)          234.3     159.6     1.47x
+  backbone: SmolLM2-360M (x1)               46.5      46.5  CPU both
+  action expert (x10 denoise steps)        191.6     191.6  CPU both
 
   NPU device time, per image (of 3)        calls  ms/image
   ------------------------------------ --------- ---------
-  vit_o_ffn                                   12     65.40
-  flash_attn                                  12     36.77
-  vit_ln_qkv                                  12     36.15
-  gemm_connector                               1      1.12
-  layer_norm                                   1      0.73
-  TOTAL device / image                              140.18
+  vit_o_ffn                                    4     26.62
+  flash_attn                                   4     14.02
+  vit_ln_qkv                                   4      7.73
+  gemm_connector                               1      0.98
+  layer_norm                                   1      0.49
+  TOTAL device / image                               49.84
 
-  x3 images = 420.5 ms device, of the 453.6 ms vision stage (93% device, 33.0 ms host)
+  x3 images = 149.5 ms device, of the 159.6 ms vision stage (94% device, 10.1 ms host)
 ```
+
+(AMD Ryzen AI MAX+ 395, 2026-10-04; `make profile-all` adds the experimental
+arms to the same table: NPU vision + backbone, and all NPU.)
 
 The backbone and expert rows carry the same number in both arms on purpose:
 they are the same unmodified CPU code either way. For what the breakdown means
