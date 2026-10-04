@@ -1097,58 +1097,17 @@ PLE_SHARED_RES = (
     and PLE_BYPASS in (0, 5, 6)
     and int(_os.environ.get("DECODE_PLE_SHARED_RES", "1"))
 )
-# Order the three @pleW destinations are fed in. The compiler splits that one
-# packet channel across TWO shim MM2S ports (proj and up share DMA0, the gate has
-# DMA1 to itself), so the host emission order and the per-port BD order are not
-# the same thing, and which destination goes first measurably changes where the
-# dispatch wedges. Sweepable rather than hardcoded for exactly that reason.
-# THIS DISPATCH IS FLAKY, so single runs mean nothing here -- every claim below
-# is 5 repeats. An early single-sample sweep produced a clean-looking "the gate
-# must not be fed in the middle" rule across 12 points; repeats show several of
-# those points are 2/5 or 3/5, so that rule was partly noise. Do not reinstate
-# it.
-#
-# SUPERSEDED 2026-09-03 -- five repeats was still far too few. At 12 to 20
-# repeats every configuration that runs at all sits at the SAME ~50% ceiling,
-# and the claim that pug + PLE_UP_W_FIRST was "the only stable configuration"
-# does not survive:
-#   gpu (default)             8-10/20 across three builds
-#   gpu + PLE_UP_W_FIRST      10/20   -- identical to baseline, see below
-#   pug + PLE_UP_W_FIRST      10/20   -- was recorded as 5/5
-#   pgu / pug / upg alone     0/12
-#   no-PLE control            10/10 at UNI_DEC=1 and 3
-#   bisect rungs 4, 5, 6      10/10 at UNI_DEC=1, 6/6 at UNI_DEC=2
-# Default gpu: still the best order whose arithmetic is right, and the only one
-# that runs at all without PLE_UP_W_FIRST.
-#
-# THE FAILURE IS A STRICT ALTERNATION, NOT A RACE. Sixteen back-to-back
-# dispatches of the default build give .O.O..O.O.O.O.O. -- a successful dispatch
-# is followed by a failing one and vice versa, with an occasional double-fail
-# that re-phases it. That holds at OUT_CHUNKS 1, 2 and 3 alike. A two-state
-# toggle surviving BETWEEN dispatches is the only thing that produces this, and
-# it explains the hard 50% ceiling that every ordering knob runs into: none of
-# them is addressing the actual mechanism.
-#
-# AND THE 'TIMEOUT' IS THE FIRMWARE'S, NOT THE HOST'S. A failing dispatch
-# reports ERT_CMD_STATE_TIMEOUT after ~6 s no matter how long the host waits
-# (90 s was tried), while a passing one returns in 0.01 s. That is the NPU2 TDR
-# watchdog killing the context -- which is presumably also what resets the
-# toggle and lets the next dispatch through. Raising the host timeout is
-# therefore pointless, and any measurement here must be many repeats, because a
-# single run is close to a coin flip.
-PLE_FEED_ORDER = _os.environ.get("DECODE_PLE_FEED_ORDER", "gpu")
 # Give the UP core its own weight channel instead of a third destination on the
 # shared @pleW packet channel. The up core is the one that holds a long run of
 # blocks it cannot touch until @gateOut arrives, and it shares a shim MM2S port
 # with the proj core -- so its backpressure is the proj core's problem too. With
-# a channel of its own, every shim port carries exactly one core's stream and the
-# emission-order adjacency rule above stops binding.
+# a channel of its own, every shim port carries exactly one core's stream.
 # TESTED: no behavioural change. Column 3 has only two shim MM2S for three PLE
 # cores, so a fourth channel cannot give each core a port of its own -- the
 # compiler just re-pairs them (gate+up on DMA0, proj on DMA1, instead of proj+up
-# on DMA0, gate on DMA1). All six feed orders behave identically either way.
+# on DMA0, gate on DMA1). The feed order made no difference either way.
 # Default OFF because it spends a shim MM2S for nothing; kept because flipping
-# the pairing is what proved the ordering rule is not about port sharing.
+# the pairing is what proved the port sharing is not the fault.
 PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
 # DIAGNOSTIC (DECODE_PLE_UP_W_FIRST=1): have the up core drain its whole weight
 # stream BEFORE it blocks on @gateOut, instead of after. Numerically wrong -- the
@@ -1214,7 +1173,7 @@ PLE_OUT_CHUNKS = int(_os.environ.get("DECODE_PLE_OUT_CHUNKS", "1"))
 # Program the @pleOut host drain BEFORE the weight feed, on the theory that the
 # up core's 50 @pleW blocks backpressure the shim before it ever reaches the
 # drain BD, so the up core can never put. TESTED AND REFUTED: byte-for-byte the
-# same failure on both gpu and pug. Kept as a knob so the negative does not get
+# same failure. Kept as a knob so the negative does not get
 # re-derived, not because it is a candidate.
 PLE_DRAIN_FIRST = PLE and int(_os.environ.get("DECODE_PLE_DRAIN_FIRST", "0"))
 PLE_W_ONESHOT = PLE and int(_os.environ.get("DECODE_PLE_W_ONESHOT", "0"))
@@ -1728,7 +1687,8 @@ if PLE:
     # core runs or how its feed is paced was measured and does not matter:
     # DECODE_PLE_UP_W_FIRST (draining its weights before it blocks on @gateOut)
     # is 27/40, DECODE_PLE_UP_CHAN (its own AIR channel) is 29/40,
-    # DECODE_PLE_W_ONESHOT (144 shim tasks down to 3) does not move it, and a
+    # one packet per weight run (DECODE_PLE_W_ONESHOT, which hangs on the
+    # current feed) did not move it, and a
     # -DPLE_STUB_MAC build that keeps every channel but makes the macs return
     # immediately is 15/20. See also the note on UP_COL below: column 5 is 0/40
     # and is a different fault again.
@@ -3140,28 +3100,24 @@ def build_module():
                             # in-place (offset 0 every layer -- the chained hidden state).
                             ChannelPut("rmsX", X, offsets=[0], sizes=[K], strides=[1])
 
-                            def _emit_ple_feed():
-                                # DEFERRED into the phase loop, to after the LAST
-                                # phase's weight feed -- exactly like
-                                # _emit_mixer_feeds, and for exactly the same
-                                # reason. The shim runs ONE ordered instruction
-                                # stream. The gate core cannot take its weights
-                                # until @toPle arrives, @toPle needs the rms
-                                # core's post-FFN residual, and that residual
-                                # needs every phase's weights -- which come LATER
-                                # in this same stream. Emitted here (before the
-                                # phase loop) the shim blocks on the gate's first
-                                # weight put and never issues @inW at all, so the
-                                # layer cannot start: the dispatch times out with
-                                # not even the KV append landing. Measured on
-                                # NPU2, 3/3 runs.
+                            def _emit_ple_feed(feeds):
+                                # feeds: which of the p(roj), g(ate), u(p) feeds
+                                # to emit. Gate and up are deferred into the
+                                # phase loop, past the last phase's weight
+                                # feed, like _emit_mixer_feeds: the gate core
+                                # takes no weights until the rms core's post-FFN
+                                # residual, and that needs every phase's weights.
                                 if not PLE or PLE_BYPASS:
                                     return
                                 # This layer's PLE slab, same _lb form the rms /
                                 # KV / Y slabs use.
                                 _pb = _pbase
 
-                                def _pput(dest, buf, off, sz):
+                                def _pput(dest, buf, off, sz, n=1):
+                                    """n consecutive sz-element packets from off,
+                                    as one shim task: the outer dim becomes the
+                                    task's repeat count, and every repeat is a
+                                    packet of its own."""
                                     _up = PLE_UP_CHAN and dest == PLE_DEST_UP
                                     ChannelPut(
                                         "pleWu" if _up else "pleW",
@@ -3169,48 +3125,24 @@ def build_module():
                                         indices=(
                                             [idx(0)] if _up else [idx(0), idx(dest)]
                                         ),
-                                        offsets=[off],
-                                        sizes=[sz],
-                                        strides=[1],
+                                        offsets=[0, 0, 0, off],
+                                        sizes=[n, 1, 1, sz],
+                                        strides=[sz, sz, sz, 1],
                                     )
 
                                 def _pw(dest, blk0, n):
                                     """n weight blocks starting at block blk0.
 
-                                    DECODE_PLE_W_ONESHOT=1 sends the run as ONE
-                                    contiguous transfer instead of n. The core's
-                                    inbound chain is a self-looping 2-BD ring
-                                    (see the @pleW comment) and consumes it a
-                                    block at a time either way, so the only
-                                    difference is shim task count: 144 tasks on
-                                    one MM2S port becomes 3. That port carries
-                                    all three destinations now -- @pleX holds the
-                                    other one -- so the pressure is real.
-                                    Only safe since every PLE channel became
-                                    single-task: before that the core's chain
-                                    terminated and a single long put overran it.
-
-                                    Otherwise Python-unrolled, like the vocab
-                                    feed: a launch-scope for_ deadlocks the shim
-                                    sequence (see _feed_wcols).
+                                    One block per packet: a packet spanning the
+                                    whole run hangs the dispatch
+                                    (DECODE_PLE_W_ONESHOT=1, kept as the
+                                    negative).
                                     """
+                                    _o = arith.addi(_pb, idx(blk0 * PLE_BLK))
                                     if PLE_W_ONESHOT:
-                                        _pput(
-                                            dest,
-                                            PLEW,
-                                            arith.addi(_pb, idx(blk0 * PLE_BLK)),
-                                            n * PLE_BLK,
-                                        )
-                                        return
-                                    for _bi in range(n):
-                                        _pput(
-                                            dest,
-                                            PLEW,
-                                            arith.addi(
-                                                _pb, idx((blk0 + _bi) * PLE_BLK)
-                                            ),
-                                            PLE_BLK,
-                                        )
+                                        _pput(dest, PLEW, _o, n * PLE_BLK)
+                                    else:
+                                        _pput(dest, PLEW, _o, PLE_BLK, n)
 
                                 # ORDER IS THE CONTRACT, TWICE OVER.
                                 #
@@ -3224,10 +3156,7 @@ def build_module():
                                 # The gate core waits on @toPle, which needs
                                 # @pliOut from the proj core, which needs ITS
                                 # weights, so PROJ COMES FIRST; then gate, then
-                                # up. That ordering is necessary but NOT
-                                # sufficient on its own -- the whole block also
-                                # has to be deferred past the phase feed, which
-                                # is what _emit_ple_feed's call site does.
+                                # up.
                                 #
                                 # dest 1 (proj). x0 is the TOKEN EMBEDDING and
                                 # is layer-invariant -- offset 0 every layer,
@@ -3322,9 +3251,9 @@ def build_module():
                                     "g": _feed_gate,
                                     "u": _feed_up,
                                 }
-                                assert sorted(PLE_FEED_ORDER) == ["g", "p", "u"]
-                                for _c in PLE_FEED_ORDER:
-                                    _feeders[_c]()
+                                for _c in "pgu":
+                                    if _c in feeds:
+                                        _feeders[_c]()
 
                             if N_NORMS >= 4:
                                 # Gemma: pack two norms per 2K channel -- rmsW =
@@ -3362,6 +3291,13 @@ def build_module():
                                         sizes=[K],
                                         strides=[1],
                                     )
+                            # The proj core needs nothing but x0, so its feed
+                            # goes out with the wave's first puts and streams
+                            # under the layer. Gate and up stay deferred (see
+                            # _emit_ple_feed); feeding the gate this early too
+                            # is slower, its blocks then wait in the network
+                            # for the residual.
+                            _emit_ple_feed("p")
                             # rope LUT: sits after all UNI_DEC rms slabs in arg2. Llama:
                             # ONE per-position LUT SHARED across layers (single theta) at a
                             # layer-independent offset. ROPE_W_PER_LAYER (gemma/qwen3
@@ -3798,25 +3734,12 @@ def build_module():
                                             strides=[1],
                                         )
                                 roff += ROUNDS_PER_DEST[p]
-                            # DEFERRED to here from before the phase loop, and it
-                            # has to be THIS late -- see _emit_ple_feed for the
-                            # rule. Past the phase feed is not enough: the gate
-                            # core waits on the rms core's post-FFN residual, and
-                            # the rms core cannot get there until the per-dest
-                            # egress above is drained, because an undrained proj
-                            # egress backs up and the down phase never lands. Emit
-                            # the feed before that loop and the shim blocks on the
-                            # gate's first weight put while the drain that would
-                            # release it sits behind the block. Measured: emitting
-                            # it before the phase loop appends no KV at all;
-                            # emitting it inside the loop at DOWN_PHASE appends
-                            # wave 0's KV and then wedges; emitting it here runs.
-                            #
-                            # Still AHEAD of the @pleOut drain below, which is a
-                            # shim GET on the up core -- the other half of the
-                            # same rule.
+                            # Gate and up go here, past the phase feed and the
+                            # per-dest egress drain (see _emit_ple_feed), and
+                            # still ahead of the @pleOut drain below, which is a
+                            # shim GET on the up core.
                             if not PLE_DRAIN_FIRST:
-                                _emit_ple_feed()
+                                _emit_ple_feed("gu")
                             # #4: drain the rms layer output (residual2 = h + down). the reference
                             # chaining ABI: write res2 (the new hidden states) IN-PLACE into
                             # arg0 (X) at offset 0, so it feeds the NEXT layer from the same BO.
@@ -3858,7 +3781,7 @@ def build_module():
                                     strides=[1],
                                 )
                             if PLE_DRAIN_FIRST:
-                                _emit_ple_feed()
+                                _emit_ple_feed("gu")
                             yield_([])
 
                         index_switch(
