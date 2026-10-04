@@ -1336,17 +1336,17 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
   return window;
 }
 
-// AIE1 shim DMAs chain BDs rather than queue tasks, so the task queue depth
-// does not apply to them. The depth was measured on NPU2 only.
-static bool isShimTaskQueueUnbounded(ModuleOp module, FlatSymbolRefAttr md) {
-  bool unbounded = false;
+// The queue depth was measured on NPU2 only. Nothing was measured on AIE1
+// (xcvc1902), so the check is skipped there rather than guessed.
+static bool isShimQueueDepthUnmeasured(ModuleOp module, FlatSymbolRefAttr md) {
+  bool unmeasured = false;
   module.walk([&](AIE::DeviceOp d) {
     if (!AIE::ShimDMAAllocationOp::getForSymbol(d, md.getValue()))
       return WalkResult::advance();
-    unbounded = d.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1;
+    unmeasured = d.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1;
     return WalkResult::interrupt();
   });
-  return unbounded;
+  return unmeasured;
 }
 
 // A launch-scope air.channel.get draining an on-device producer to host DDR
@@ -1389,18 +1389,16 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (drainDmas.empty())
       return;
 
-    // TODO(#2030): stop-gap. This pass starts every drain up front, which is
-    // what makes a long chain of drains overflow a channel's task queue; the
-    // real fix is to order drains by dependency. More than kShimTaskQueueDepth
-    // outstanding on one channel hangs the launch (ERT_CMD_STATE_TIMEOUT), so
-    // say so instead of leaving a silent timeout.
+    // TODO(#2030): stop-gap until drains are ordered by dependency instead of
+    // all being started up front. Warn when more than kShimTaskQueueDepth are
+    // outstanding on one channel, since that may overflow its task queue.
     //
     // Drains are counted per allocation symbol: the shim allocator gives each
     // air.channel's readbacks their own S2MM channel.
     llvm::MapVector<FlatSymbolRefAttr, unsigned> drainsPerChannel;
     for (auto dma : drainDmas) {
       auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata");
-      if (!md || isShimTaskQueueUnbounded(module, md))
+      if (!md || isShimQueueDepthUnmeasured(module, md))
         continue;
       if (++drainsPerChannel[md] == air::kShimTaskQueueDepth + 1) {
         auto diag = dma->emitWarning()
