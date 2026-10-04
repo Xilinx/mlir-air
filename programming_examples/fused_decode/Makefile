@@ -107,11 +107,12 @@ MODEL_CFG_QUERY = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONF
 # recursive (`=`): one `:=` runs the query, which imports air, while the
 # makefile is read -- for every target, including the g++-only ones.
 MODEL_CFG = $(eval MODEL_CFG := $(MODEL_CFG_QUERY))$(MODEL_CFG)
-DECODE_FLAGS        = $(MODEL_CFG) PROJ_RC_CACHE=$(PROJ_RC_CACHE)
+DECODE_FLAGS        = $(MODEL_CFG) PROJ_RC_CACHE=$(PROJ_RC_CACHE) RT_ROUNDS=1
 
 compile-decode:
 	@if [ -f $(srcdir)/decode_L2048.xclbin ] && [ -f $(srcdir)/decode_L2048.insts.bin ] \
 	    && [ -f $(srcdir)/decode_L2047.xclbin ] && [ -f $(srcdir)/decode_L2047.insts.bin ] \
+	    && [ -f $(srcdir)/decode_L2048.rb.insts.bin ] && [ -f $(srcdir)/decode_L2048.rt_rounds ] \
 	    && [ "`cat $(DECODE_FLAGS_STAMP) 2>/dev/null`" = "$(DECODE_FLAGS)" ]; then \
 	  echo "Decode templates already built (decode_L2048 + decode_L2047, $(DECODE_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
@@ -245,12 +246,22 @@ _compile_decode_build: preflight-llvm-link
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
 	@# The block loop is single-buffered: air-label-scf-for-to-ping-pong declines it, because the
 	@# running max and accumulator are live across blocks. Turbo for ~50 tok/s.
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).log 2>&1; \
+	@cd $(srcdir) && DECODE_RT_ROUNDS=1 $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L$(LBUILD).xclbin; mv -f decode.insts.bin decode_L$(LBUILD).insts.bin; \
 	  else echo "decode_L$(LBUILD) FAILED (see /tmp/decode_L$(LBUILD).log)"; exit 1; fi
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LREF).log 2>&1; \
+	@cd $(srcdir) && DECODE_RT_ROUNDS=1 $(DECODE_ENV) DECODE_GOLDEN_L=$(LREF) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LREF).log 2>&1; \
 	  if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L$(LREF).insts.bin; mv -f decode.xclbin decode_L$(LREF).xclbin; \
 	  else echo "decode_L$(LREF) FAILED (see /tmp/decode_L$(LREF).log)"; exit 1; fi
+	@# The cores run ceil(L/16) KV blocks (DECODE_RT_ROUNDS), so the host cuts the
+	@# readback to match; this one-block-shorter build locates its length words.
+	@# decode_L<N>.rt_rounds tells the consumers this template needs that .rb.
+	@cd $(srcdir) && R=$$(( ($(LBUILD) + 15) / 16 - 1 )); rm -f decode_L$(LBUILD).rb.insts.bin; \
+	  echo 1 > decode_L$(LBUILD).rt_rounds; \
+	  if [ $$R -ge 1 ]; then \
+	    DECODE_RT_ROUNDS=1 DECODE_RB_ROUNDS=$$R $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_L$(LBUILD).rb.log 2>&1; \
+	    if [ -f decode.insts.bin ]; then mv -f decode.insts.bin decode_L$(LBUILD).rb.insts.bin; rm -f decode.xclbin; \
+	    else echo "decode_L$(LBUILD) readback build FAILED (see /tmp/decode_L$(LBUILD).rb.log)"; exit 1; fi; \
+	  fi
 	@echo "Decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
 
 ## ---- C++ decode-latency benchmark (FLM-comparable scope) --------------------
@@ -306,7 +317,7 @@ bench-decode: $(BENCH_EXE)
 ## Remove compiled kernels + decode templates.
 clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
-	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
+	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds \
 	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) \
 	      $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
 	      $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt $(DECODE_ELF_STAMP) 2>/dev/null || true

@@ -167,6 +167,71 @@ int main(int argc, char **argv) {
   for (size_t i = 0; i < insts.size(); i++)
     insts[i] = static_cast<uint32_t>(static_cast<int64_t>(ibase[i]) +
                                      (L - baseL) * slope[i]);
+  // A build whose cores take their KV block count from the RTP-L word ships
+  // decode_L<base>.rb.insts.bin, the same build with one readback block fewer;
+  // the difference cuts the readback to ceil(L/16) blocks (see
+  // decode_insts_gen).
+  const std::string rbPath =
+      dir + "/decode_L" + std::to_string(baseL) + ".rb.insts.bin";
+  if (std::ifstream(rbPath).good()) {
+    auto irb = readWords(rbPath);
+    if (irb.size() != ibase.size())
+      throw std::runtime_error(rbPath + ": size differs from the base build");
+    if (irb == ibase)
+      throw std::runtime_error(rbPath + " equals the base build: its build "
+                                        "ignored DECODE_RB_ROUNDS");
+    const long dr = (L + 15) / 16 - (baseL + 15) / 16;
+    for (size_t i = 0; i < insts.size(); i++) {
+      const int64_t d =
+          static_cast<int64_t>(ibase[i]) - static_cast<int64_t>(irb[i]);
+      if (d) {
+        insts[i] =
+            static_cast<uint32_t>(static_cast<int64_t>(insts[i]) + dr * d);
+        lo = std::min(lo, i);
+        hi = std::max(hi, i + 1);
+      }
+    }
+    std::cout << "readback    " << (L + 15) / 16 << " blocks (" << rbPath
+              << ")\n";
+  } else if ((baseL + 15) / 16 > 1 &&
+             (std::ifstream(dir + "/decode_L" + std::to_string(baseL) +
+                            ".rt_rounds")
+                  .good() ||
+              std::ifstream(dir + "/decode_L" + std::to_string(refL) +
+                            ".rt_rounds")
+                  .good())) {
+    // The cores stop at ceil(L/16) blocks; a full-length readback would hang.
+    throw std::runtime_error(rbPath + " is missing, but the templates were "
+                                      "built with DECODE_RT_ROUNDS; rebuild");
+  }
+  // decode_L<base>.rt_window: the sliding-window cores start at the block the
+  // window opens in, and decode_L<base>.sw.insts.bin, with each sliding wave's
+  // readback one block later, moves the readback's start to match.
+  const std::string stem = dir + "/decode_L" + std::to_string(baseL);
+  std::ifstream winFile(stem + ".rt_window");
+  long window = 0;
+  if (winFile >> window && L > window) {
+    auto isw = readWords(stem + ".sw.insts.bin");
+    if (isw.size() != ibase.size())
+      throw std::runtime_error(stem + ".sw.insts.bin: size differs from the "
+                                      "base build");
+    if (isw == ibase)
+      throw std::runtime_error(stem + ".sw.insts.bin equals the base build: "
+                                      "its build ignored DECODE_RB_SWA_SKIP");
+    const long skip = (L - window) / 16;
+    for (size_t i = 0; i < insts.size(); i++) {
+      const int64_t d =
+          static_cast<int64_t>(isw[i]) - static_cast<int64_t>(ibase[i]);
+      if (d) {
+        insts[i] =
+            static_cast<uint32_t>(static_cast<int64_t>(insts[i]) + skip * d);
+        lo = std::min(lo, i);
+        hi = std::max(hi, i + 1);
+      }
+    }
+    std::cout << "window      " << window << ", readback from block " << skip
+              << "\n";
+  }
 
   std::cout << "xclbin      " << xclbinPath << "\n"
             << "insts       " << insts.size() << " words, L-dependent [" << lo

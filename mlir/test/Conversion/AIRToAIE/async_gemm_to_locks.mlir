@@ -48,9 +48,11 @@
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {
   air.channel @channel_3 [2, 2]
-  air.channel @channel_2 [2, 2]
-  air.channel @channel_1 [2, 2]
-  air.channel @channel_0 [2, 2]
+  // The core inputs are packet-switched: each core takes three (A, B and its
+  // C tile) on two S2MM channels, so two of them share one.
+  air.channel @channel_2 [2, 2] {channel_type = "npu_dma_packet"}
+  air.channel @channel_1 [2, 2] {channel_type = "npu_dma_packet"}
+  air.channel @channel_0 [2, 2] {channel_type = "npu_dma_packet"}
   func.func @matmul(%arg0: memref<128x384xbf16>, %arg1: memref<384x128xbf16>, %arg2: memref<128x128xbf16>) {
     %c128 = arith.constant 128 : index
     %c64 = arith.constant 64 : index

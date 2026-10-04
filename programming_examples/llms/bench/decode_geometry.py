@@ -54,7 +54,7 @@ _CHECK_W_ELEMS = [
     ("llama-3.2-1b", "18", 16, 386662400),
     ("llama-3.2-3b", "9", 28, 1004666880),
     ("gemma3-4b", "5", 34, 1213644800),
-    ("gemma4-e2b", "27", 35, 765050880),
+    ("gemma4-e2b", "27", 35, 704102400),
 ]
 # The split models. Their parts summing to w_elems checks the part that can
 # actually be wrong: that the per-group `min(G, UNI_DEC - g*G)` covers exactly

@@ -173,7 +173,7 @@ SRC=programming_examples/silu_and_mul
 mkdir -p $SRC/build_peano
 $PEANO_INSTALL_DIR/bin/clang++ -O2 -std=c++20 --target=aie2p-none-unknown-elf \
   -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body -DNDEBUG \
-  -I $(realpath $(dirname $(which aie-opt))/..)/include -include aie_kernels/aie_kernel_utils.h \
+  -I $(realpath $(dirname $(which aie-opt))/..)/include \
   -c $SRC/silu_and_mul.cc -o $SRC/build_peano/silu_and_mul.o
 
 # 2) run from build_peano (the .o must be in cwd; aircc copies it into air_project/)

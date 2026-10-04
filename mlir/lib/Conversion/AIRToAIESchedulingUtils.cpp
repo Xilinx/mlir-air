@@ -4044,15 +4044,18 @@ air::verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
        << " channel " << chan;
     return str;
   };
-  // air.tile_dma_channel is the explicit override: two flows pinned to the
-  // same channel are left as pinned.
+  // air.tile_dma_channel is the explicit override, but only where the result
+  // can still be routed: two pinned flows may broadcast from one circuit
+  // source, while a port of mixed switching kinds or a circuit destination
+  // with two sources is rejected by aie.device's verifier whatever pinned it.
   auto pinned = [](MemcpyBundleAsFlow *flow) {
     return flow->air_flow_op &&
            flow->air_flow_op->hasAttr(air::attrs::TileDmaChannel);
   };
   auto conflict = [&](MemcpyBundleAsFlow *flow, MemcpyBundleAsFlow *other,
-                      const Port &port, const Twine &problem) -> LogicalResult {
-    if (pinned(flow) && pinned(other))
+                      const Port &port, const Twine &problem,
+                      bool pinsOverride = false) -> LogicalResult {
+    if (pinsOverride && pinned(flow) && pinned(other))
       return success();
     auto diag = flow->air_flow_op->emitOpError()
                 << describe(port) << " " << problem;
@@ -4122,7 +4125,8 @@ air::verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
           failed(conflict(flow, first, src,
                           "streams to different destinations for two "
                           "circuit-switched flows, so each would receive the "
-                          "other's data")))
+                          "other's data",
+                          /*pinsOverride=*/true)))
         return failure();
   }
   return success();
