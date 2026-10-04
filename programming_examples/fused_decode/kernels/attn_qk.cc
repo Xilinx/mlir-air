@@ -472,8 +472,9 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
 // streams k blocks via depth-2 ping-pong channels (no in-kernel _lock_acquire).
 // The running max m and the per-block correction scratch c are caller-provided
 // L1 buffers that persist across the herd's block iterations (m is reset on
-// blk==0 for a new query). Reuses the reference's _attn_qk + update verbatim,
-// so the flash-attention math is identical to the reference's attn_qk.
+// the first block in reach, blk == lo/16, for a new query). Reuses the
+// reference's _attn_qk + update verbatim, so the flash-attention math is
+// identical to the reference's attn_qk.
 extern "C" {
 // NOTE arg order: s_block is the LAST memref so AIR's shared-L1 classifier tags
 // this (qk) call as the s PRODUCER, pairing with the kv consumer (s non-last
@@ -490,7 +491,7 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
   // window in units of 16 keys (0 = full attention). See attn_window_lo().
   const int lo = attn_window_lo(L);
   L &= ATTN_RTP_L_MASK;
-  if (blk == 0)
+  if (blk == lo / 16)
     aie::store_v(m_state, neg_inf); // reset running max for a new query
   int rem = L - blk * 16;
   // Block fully beyond the current KV length L (rem<=0): every key is masked,

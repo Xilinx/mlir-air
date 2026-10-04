@@ -745,21 +745,21 @@ void scale_div_aie(bf16 *a, bf16 *o, float *l) {
 // KV. One 16-key block per call; the AIR herd loops rounds=ceil(L/16) and
 // streams s/v blocks via depth-2 ping-pong channels (no in-kernel locks). The
 // weighted-V accumulator y (float) and softmax denominator l are caller L1
-// buffers that persist across the block loop (reset on blk==0). attn_kv_fin
-// normalizes (o = y / l) after the last block. Reuses the reference's
-// calculate_l + attn_fv + scale_div + passThrough verbatim.
+// buffers that persist across the block loop (reset on blk == lo/16).
+// attn_kv_fin normalizes (o = y / l) after the last block. Reuses the
+// reference's calculate_l + attn_fv + scale_div + passThrough verbatim.
 extern "C" {
 ATTN_ENTRY
 void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
                  float *__restrict y_state, float *__restrict l_state, int blk,
                  int L) {
   aie_round_nearest_even();
-  if (blk == 0) {
+  const int lo = attn_window_lo(L);
+  if (blk == lo / 16) {
     zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
     aie::store_v(l_state, zero);
   }
-  const int lo = attn_window_lo(L);
   L &= ATTN_RTP_L_MASK;
   // Block fully beyond L, or wholly before a sliding window: skip (pairs with
   // attn_qk_blk's skips -- s_block/c are not produced for this block, so they

@@ -8,10 +8,8 @@ DEVICE ?= npu2
 
 ifeq ($(DEVICE),npu2)
   AIE_TARGET := aie2p
-  AIE_KERNEL_DIR := aie2p
 else ifeq ($(DEVICE),npu1)
   AIE_TARGET := aie2
-  AIE_KERNEL_DIR := aie2p
 else
   $(error Unsupported DEVICE='$(DEVICE)'. Use DEVICE=npu1 or DEVICE=npu2)
 endif
@@ -37,9 +35,8 @@ else
   PEANO_FLAGS = ${PEANOWRAP2_FLAGS}
 endif
 
-# The aie2p source compiles for both aie2 and aie2p targets; on aie2 the
-# mmul<8,8,8> specialization is emulated via two mmul<4,8,8> macs.
-KERNEL_SRC = ${AIEOPT_DIR}/include/aie_kernels/$(AIE_KERNEL_DIR)/conv2dk14.cc
+# mlir-aie's conv2dk14 kernel, built for whichever target AIE_TARGET selects.
+KERNEL_SRC = ${AIEOPT_DIR}/include/aie_kernels/conv/conv2dk14.cc
 
 all: run
 

@@ -17,6 +17,20 @@ build (the two same-ATTN_MAXL reference builds locate those words; verified byte
 
 (An ATTN_MAXL smaller than the target generation length streams less KV per step but caps
 context; choosing ATTN_MAXL >= max generation length is the single knob, exactly MAX_L.)
+
+A build whose attention cores take their block count from the RTP-L word
+(DECODE_RT_ROUNDS) also needs the shim readback cut to ceil(L/16) blocks, as the
+reference's per-token sequence does. Its directory then holds
+decode_L<N>.rb.insts.bin: decode_L<N> rebuilt with one readback block fewer. The
+difference locates the readback lengths, and every stream is rewritten whole per
+token, since a ceil(L/16) step is not a two-point slope. Such a build also leaves
+decode_L<N>.rt_rounds, so a template whose .rb went missing is refused rather
+than run with the full readback against cores that stop at ceil(L/16) -- a hang.
+
+A build whose sliding-window cores also start at the block their window opens in
+(DECODE_RT_WINDOW) leaves decode_L<N>.rt_window, holding the window, and
+decode_L<N>.sw.insts.bin, rebuilt with each sliding wave's readback one block
+later; that difference moves the readback's start with the window.
 """
 
 import os
@@ -79,6 +93,56 @@ class DecodeInstsGen:
                 Ls=Ls,
                 xclbin=os.path.join(artifact_dir, f"decode_L{base_L}.xclbin"),
             )
+        self.exact = False
+        for maxl, t in self.templates.items():
+            t["rb"] = None
+            for L in t["Ls"]:
+                rb = os.path.join(artifact_dir, f"decode_L{L}.rb.insts.bin")
+                if os.path.exists(rb):
+                    full = os.path.join(artifact_dir, builds[L])
+                    d = np.fromfile(full, np.uint32).astype(np.int64)
+                    d -= np.fromfile(rb, np.uint32).astype(np.int64)
+                    if not d.any():
+                        raise RuntimeError(
+                            f"{rb} equals {builds[L]}: its build ignored "
+                            "DECODE_RB_ROUNDS, so the readback cannot be cut"
+                        )
+                    t["rb"], t["rb_rounds"], self.exact = d, (L + 15) // 16, True
+            rt = any(
+                os.path.exists(os.path.join(artifact_dir, f"decode_L{L}.rt_rounds"))
+                for L in t["Ls"]
+            )
+            if rt and t["rb"] is None and maxl > 16:
+                raise RuntimeError(
+                    f"ATTN_MAXL={maxl} template in {artifact_dir} was built with "
+                    "DECODE_RT_ROUNDS but has no decode_L<N>.rb.insts.bin, so its "
+                    "readback cannot be cut to the cores' block count; rebuild it"
+                )
+            t["sw"] = None
+            for L in t["Ls"]:
+                wf = os.path.join(artifact_dir, f"decode_L{L}.rt_window")
+                if not os.path.exists(wf):
+                    continue
+                with open(wf) as f:
+                    win = int(f.read())
+                sw = os.path.join(artifact_dir, f"decode_L{L}.sw.insts.bin")
+                if os.path.exists(sw):
+                    d = np.fromfile(sw, np.uint32).astype(np.int64)
+                    d -= np.fromfile(
+                        os.path.join(artifact_dir, builds[L]), np.uint32
+                    ).astype(np.int64)
+                    if not d.any():
+                        raise RuntimeError(
+                            f"{sw} equals {builds[L]}: its build ignored "
+                            "DECODE_RB_SWA_SKIP"
+                        )
+                    t["sw"], t["window"], self.exact = d, win, True
+                elif maxl > win:
+                    raise RuntimeError(
+                        f"ATTN_MAXL={maxl} template in {artifact_dir} was built "
+                        "with DECODE_RT_WINDOW but has no decode_L<N>.sw.insts.bin, "
+                        "so its readback cannot follow the window; rebuild it"
+                    )
         self._check_declared_windows(artifact_dir)
         self.select(max_L)
 
@@ -156,14 +220,32 @@ class DecodeInstsGen:
         A staircase driver holds every window at once and picks per token, so it needs
         the streams without the select()/active_maxl round trip.
         """
+        return self.words_for(maxl, L, slice(None))
+
+    def varying(self, maxl):
+        """Indices of the words of the `maxl` template that change with L."""
+        t = self.templates[maxl]
+        if "varying" not in t:
+            v = t["slope"] != 0
+            for k in ("rb", "sw"):
+                if t.get(k) is not None:
+                    v |= t[k] != 0
+            t["varying"] = np.nonzero(v)[0]
+        return t["varying"]
+
+    def words_for(self, maxl, L, idx):
+        """The words at `idx` of insts_for(maxl, L), computed for those alone."""
         t = self.templates[maxl]
         if t["slope"] is None:
             raise KeyError(f"template ATTN_MAXL={maxl} is not calibrated")
         if not (1 <= L <= maxl):
             raise ValueError(f"L={L} out of range for ATTN_MAXL={maxl}")
-        out = t["base"].astype(np.int64)
-        ld = t["slope"] != 0
-        out[ld] = t["base"][ld].astype(np.int64) + (L - t["base_L"]) * t["slope"][ld]
+        out = t["base"][idx].astype(np.int64)
+        out += (L - t["base_L"]) * t["slope"][idx]
+        if t["rb"] is not None:
+            out += ((L + 15) // 16 - t["rb_rounds"]) * t["rb"][idx]
+        if t["sw"] is not None and L > t["window"]:
+            out += ((L - t["window"]) // 16) * t["sw"][idx]
         return out.astype(np.uint32)
 
     def calibrated_windows(self):
