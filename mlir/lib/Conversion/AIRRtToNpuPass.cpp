@@ -1064,6 +1064,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // readback (see the air.await_appends barrier below).
     if (op->hasAttr(air::attrs::AppendBarrier))
       configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
+    if (op->hasAttr(air::attrs::OrderedDrain))
+      configTaskOp->setAttr(air::attrs::OrderedDrain, rewriter.getUnitAttr());
     // Carry the coalesced-feed marker so the double-buffered await synthesis
     // paces this merged channel at depth 1 (no cross-run overlap).
     if (op->hasAttr(air::attrs::CoalescedShimFeed))
@@ -3658,16 +3660,36 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         return allocOp && allocOp.getChannelDir() == AIE::DMAChannelDir::MM2S;
       };
 
+      // An ordered drain (air.ordered_drain) is armed, and an earlier one
+      // awaited, right before the next feed, which may read what the awaited
+      // drain wrote. Such ops travel with that feed instead of ending the
+      // burst: cutting the burst there would stop the other channels' feeds
+      // from being woven in, and a cut per drain leaves them all after the last
+      // one.
+      auto isOrderedDrainOp = [](Operation *o) {
+        auto drainCfg = [](Value v) {
+          auto cfg = v.getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+          return cfg && cfg->hasAttr(air::attrs::OrderedDrain);
+        };
+        if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(o))
+          return cfg->hasAttr(air::attrs::OrderedDrain);
+        if (isa<AIEX::DMAStartTaskOp, AIEX::DMAAwaitTaskOp>(o))
+          return drainCfg(o->getOperand(0));
+        return false;
+      };
+
       struct Unit {
         AIEX::DMAConfigureTaskForOp cfg;
         Operation *start;
         StringRef chan;
+        SmallVector<Operation *> prefix; // ordered-drain ops kept in front
       };
 
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blk : blocks) {
         SmallVector<Unit> run;
+        SmallVector<Operation *> pending; // ordered-drain ops awaiting a feed
         SmallVector<Operation *> staleFrees;
 
         // Lay the burst back down just before `fence`, round-robin over the
@@ -3677,6 +3699,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // each other. A single-channel burst has nothing to weave and just gets
         // the cap.
         auto flush = [&](Operation *fence) {
+          // Ordered-drain ops after the last feed stay behind every feed.
+          SmallVector<Operation *> trailing = std::move(pending);
+          pending.clear();
           if (run.size() < 2 || !fence)
             return;
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
@@ -3687,14 +3712,32 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             deepest = std::max<unsigned>(deepest, kv.second.size());
           if (deepest <= burstLimit)
             return; // already within what a channel absorbs; leave as emitted.
+          // Within a round, channels carrying ordered-drain awaits go last, so
+          // the other channels' tasks of that round are out before the control
+          // program blocks.
+          SmallVector<std::pair<StringRef, SmallVector<Unit>> *> order;
+          for (auto &kv : byChan)
+            order.push_back(&kv);
+          llvm::stable_sort(order, [](auto *a, auto *b) {
+            auto carries = [](auto *kv) {
+              return llvm::any_of(
+                  kv->second, [](const Unit &u) { return !u.prefix.empty(); });
+            };
+            return !carries(a) && carries(b);
+          });
           for (unsigned i = 0; i < deepest; i++)
-            for (auto &kv : byChan) {
+            for (auto *kvp : order) {
+              auto &kv = *kvp;
               if (i >= kv.second.size())
                 continue;
               const Unit &u = kv.second[i];
+              for (Operation *p : u.prefix)
+                p->moveBefore(fence);
               u.cfg->moveBefore(fence);
               u.start->moveBefore(fence);
             }
+          for (Operation *p : trailing)
+            p->moveBefore(fence);
           // Interleaving alone is not enough. It does bound how far one channel
           // runs ahead, but the overflow is per channel and absolute: a push
           // past what the channel can hold is dropped, not deferred, so the
@@ -3732,6 +3775,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // operands is repaired by the rematerialization pass below, which is
         // there for exactly this.
         for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (isOrderedDrainOp(&o)) {
+            pending.push_back(&o);
+            continue;
+          }
           if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
             Operation *start = nullptr;
             for (auto *u : cfg.getResult().getUsers()) {
@@ -3744,8 +3791,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               start = u;
             }
             if (start && isReorderable(cfg)) {
-              run.push_back(
-                  {cfg, start, cfg.getAlloc().getLeafReference().getValue()});
+              run.push_back({cfg, start,
+                             cfg.getAlloc().getLeafReference().getValue(),
+                             std::move(pending)});
+              pending.clear();
               continue;
             }
             flush(&o);

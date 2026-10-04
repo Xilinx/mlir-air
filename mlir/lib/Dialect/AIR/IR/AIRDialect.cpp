@@ -134,6 +134,9 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
     dst->setAttr(attrs::AwaitAppends, aa);
   if (auto ab = src->getAttr(attrs::AppendBarrier))
     dst->setAttr(attrs::AppendBarrier, ab);
+  // Builder opt-in for in-order drains, consumed by air-to-std.
+  if (auto od = src->getAttr(attrs::OrderDrains))
+    dst->setAttr(attrs::OrderDrains, od);
   // Producer-side re-feed count (single-buffer count-free re-broadcast), read
   // by AIRToAIE's lock allocators.
   if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))
