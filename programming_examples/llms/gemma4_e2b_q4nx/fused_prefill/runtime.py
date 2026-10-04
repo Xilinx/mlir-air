@@ -116,7 +116,10 @@ class FusedPrefill:
         raw = (self.dir / f"{name}.insts.bin").read_bytes()
         return np.frombuffer(I.strip_columns(raw, D.COLS[group]), np.uint32)
 
-    def _go(self, run, tag):
+    def _go(self, run, tag, out):
+        # Unless out's first cache line is flushed before the dispatch, the
+        # host can read that line back with the previous dispatch's bytes.
+        out.sync(TO, 64, 0)
         t0 = time.perf_counter()
         run.r.start()
         st = run.r.wait()
@@ -165,7 +168,7 @@ class FusedPrefill:
             bos = [self.dummy[i] for i in range(9)]
             bos[0:3] = [self.abuf[s["k"]]["a"], s["w"], s["c"]]
             s["runs"][act] = (self.fp.run(ib, len(ins), bos), ib, name)
-        self._go(s["runs"][act][0], site.split(".")[-1])
+        self._go(s["runs"][act][0], site.split(".")[-1], s["c"])
         s["c"].sync(FROM, t * s["npd"] * 2, 0)
         return s
 
@@ -270,7 +273,7 @@ class FusedPrefill:
         at["sub"] = sub
         at["iv"][:] = at["tmpl"].at(nkv=nend - k0, q0=q0, k0=k0)
         at["ib"].sync(TO)
-        self._go(at["run"], f"attn {kv['a']}")
+        self._go(at["run"], f"attn {kv['a']}", at["o"])
         at["o"].sync(FROM)
         return H.o_unpack(at["om"], t)
 
@@ -344,7 +347,7 @@ class FusedPrefill:
         lm = self.lm
         np.copyto(lm["xm"], last.reshape(-1), casting="unsafe")
         lm["bx"].sync(TO)
-        self._go(lm["run"], "lm")
+        self._go(lm["run"], "lm", lm["by"])
         lm["by"].sync(FROM)
         return lm_gemv.unpack_y(lm["ym"].astype(np.float32))
 
