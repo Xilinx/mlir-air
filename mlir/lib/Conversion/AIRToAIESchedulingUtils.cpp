@@ -841,20 +841,18 @@ AIE::TileLike xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
 bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   if (!channel_op)
     return false;
-  // Resolving a channel declaration scans the enclosing symbol table (the
-  // aie.device, which holds every lowered op), and memcpyOps grows with the
-  // program: resolve each op once, so allocation is not quadratic in the number
-  // of puts.
-  if (memcpyDeclsScanned > memcpyOps.size()) {
-    memcpyDecls.clear();
-    memcpyDeclsScanned = 0;
+  // Resolving a channel declaration scans the enclosing symbol tables (the
+  // aie.device holds every lowered op), and memcpyOps grows with the program.
+  // Ops on a different channel cannot resolve to this declaration, so compare
+  // the symbol names first and resolve only the ops that could match.
+  StringRef name = channel_op.getSymName();
+  for (auto o : memcpyOps) {
+    auto chan_op = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (chan_op && chan_op.getChanName() == name &&
+        getChannelDeclarationThroughSymbol(chan_op) == channel_op)
+      return true;
   }
-  for (; memcpyDeclsScanned < memcpyOps.size(); memcpyDeclsScanned++)
-    if (auto chan_op = dyn_cast_if_present<air::ChannelInterface>(
-            memcpyOps[memcpyDeclsScanned]))
-      if (auto chan_declr = getChannelDeclarationThroughSymbol(chan_op))
-        memcpyDecls.insert(chan_declr);
-  return memcpyDecls.contains(channel_op);
+  return false;
 }
 
 bool xilinx::air::allocation_info_t::foundAllocInColumn(int32_t col) {
