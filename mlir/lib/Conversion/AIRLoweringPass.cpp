@@ -1437,6 +1437,14 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
       if (anchor->isBeforeInBlock(dma.getOperation()))
         (void)air::moveWithPureBackwardSlice(dma.getOperation(), anchor,
                                              /*after=*/false);
+
+    // Arming every drain ahead of every input is only safe while the drains
+    // fit in their shim channel: a drain cannot retire before the inputs that
+    // produce its data, and those now come later in the sequence. Mark the
+    // armed drains so airrt-to-npu can weave them back between those inputs.
+    for (auto dma : drainDmas)
+      if (dma->isBeforeInBlock(anchor))
+        dma->setAttr(air::attrs::ArmedDrain, UnitAttr::get(dma.getContext()));
   });
 }
 
