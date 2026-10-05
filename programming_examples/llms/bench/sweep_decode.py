@@ -128,6 +128,11 @@ def _make_vars(args):
     return v + list(args.builder_env or [])
 
 
+# Files a template build may leave beside decode_L<ctx> for bench_decode. A
+# template that takes the context at runtime hangs if benched without them.
+SIDECARS = ("rb.insts.bin", "rt_rounds", "sw.insts.bin", "rt_window")
+
+
 def build_templates(makefile, ctx, workdir, template_dir, log, args):
     """Build the decode_L{ctx} / decode_L{ctx-1} pair and stage it in workdir.
 
@@ -137,10 +142,12 @@ def build_templates(makefile, ctx, workdir, template_dir, log, args):
     binary eight times.
     """
     ref = ctx - 1
-    for l in (ctx, ref):
-        for ext in ("xclbin", "insts.bin"):
-            for d in (workdir, template_dir):
+    for d in (workdir, template_dir):
+        for l in (ctx, ref):
+            for ext in ("xclbin", "insts.bin"):
                 (d / f"decode_L{l}.{ext}").unlink(missing_ok=True)
+        for ext in SIDECARS:
+            (d / f"decode_L{ctx}.{ext}").unlink(missing_ok=True)
     shutil.rmtree(FUSED_DECODE / "air_project", ignore_errors=True)
 
     r = _run(
@@ -168,6 +175,10 @@ def build_templates(makefile, ctx, workdir, template_dir, log, args):
             src = template_dir / f"decode_L{l}.{ext}"
             if not src.exists():
                 return None, f"no_template: {src.name} not produced"
+            shutil.copy2(src, workdir / src.name)
+    for ext in SIDECARS:
+        src = template_dir / f"decode_L{ctx}.{ext}"
+        if src.exists():
             shutil.copy2(src, workdir / src.name)
     return workdir / f"decode_L{ctx}.xclbin", None
 
