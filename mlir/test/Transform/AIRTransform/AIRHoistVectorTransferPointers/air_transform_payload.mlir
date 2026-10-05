@@ -215,3 +215,19 @@ func.func @no_flatten_invariant_block(%arg0: memref<16x16xf32, 2>, %arg1: memref
   }
   return
 }
+
+// Test case: a broadcasting read whose vector has more dims than its memref,
+// in a loop with no IV-dependent transfer, is left as it is.
+// CHECK-LABEL: @no_flatten_rank_broadcast
+// CHECK: vector.transfer_read %arg0[%{{.*}}]{{.*}}permutation_map{{.*}} : memref<8xf32, 2>, vector<2x2x8xf32>
+func.func @no_flatten_rank_broadcast(%arg0: memref<8xf32, 2>, %arg1: memref<2x2x8xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %cst = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %c4 step %c1 {
+    %v = vector.transfer_read %arg0[%c0], %cst {in_bounds = [true, true, true], permutation_map = affine_map<(d0) -> (0, 0, d0)>} : memref<8xf32, 2>, vector<2x2x8xf32>
+    vector.transfer_write %v, %arg1[%c0, %c0, %c0] {in_bounds = [true, true, true]} : vector<2x2x8xf32>, memref<2x2x8xf32, 2>
+  }
+  return
+}

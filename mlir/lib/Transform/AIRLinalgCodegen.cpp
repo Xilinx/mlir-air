@@ -5096,7 +5096,9 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       bool flattenable = transferOp.getPermutationMap().isMinorIdentity() &&
                          llvm::all_of(transferOp.getInBoundsValues(),
                                       [](bool b) { return b; });
-      {
+      if (flattenable && vectorType.getRank() > memrefType.getRank())
+        flattenable = false;
+      if (flattenable) {
         ArrayRef<int64_t> vecShape = vectorType.getShape();
         ArrayRef<int64_t> memShape = memrefType.getShape();
         int64_t lead = memShape.size() - vecShape.size();
@@ -7021,12 +7023,23 @@ struct ExtractSliceToShuffle
 // vector.fma: with a and b widened from bf16 the AIE lowering makes it one
 // bf16 x bf16 + f32 multiply-accumulate.
 struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
-  using OpRewritePattern<arith::AddFOp>::OpRewritePattern;
+  MulAddToFMA(MLIRContext *ctx, bool contract, PatternBenefit benefit)
+      : OpRewritePattern<arith::AddFOp>(ctx, benefit), contract(contract) {}
 
   LogicalResult matchAndRewrite(arith::AddFOp add,
                                 PatternRewriter &rewriter) const override {
     auto vt = dyn_cast<VectorType>(add.getType());
     if (!vt || vt.getRank() != 1 || !vt.getElementType().isF32())
+      return failure();
+    // Contraction drops the product's rounding: only where allowed.
+    auto mayContract = [&](Operation *op) {
+      if (contract)
+        return true;
+      auto fm = dyn_cast<arith::ArithFastMathInterface>(op);
+      return fm && bitEnumContainsAll(fm.getFastMathFlagsAttr().getValue(),
+                                      arith::FastMathFlags::contract);
+    };
+    if (!mayContract(add))
       return failure();
     // Only a product of widened bf16 values (possibly replicated by a shuffle):
     // that is the multiply-accumulate the AIE lowering has; an f32 x f32 fma
@@ -7040,8 +7053,8 @@ struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
     for (auto [mulSide, other] : {std::make_pair(add.getLhs(), add.getRhs()),
                                   std::make_pair(add.getRhs(), add.getLhs())}) {
       auto mul = mulSide.getDefiningOp<arith::MulFOp>();
-      if (!mul || !mul->hasOneUse() || !widened(mul.getLhs()) ||
-          !widened(mul.getRhs()))
+      if (!mul || !mul->hasOneUse() || !mayContract(mul) ||
+          !widened(mul.getLhs()) || !widened(mul.getRhs()))
         continue;
       rewriter.replaceOpWithNewOp<vector::FMAOp>(add, mul.getLhs(),
                                                  mul.getRhs(), other);
@@ -7049,6 +7062,9 @@ struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
     }
     return failure();
   }
+
+private:
+  bool contract;
 };
 
 #if AIR_ENABLE_AIE
@@ -7468,7 +7484,8 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     unpackPatterns.add<NibbleUnpackFromShifts>(ctx);
     unpackPatterns.add<UnrollStridedTransferRead>(ctx, /*benefit=*/0);
     unpackPatterns.add<SplitWideElementwise>(ctx, getF32Lanes());
-    unpackPatterns.add<MulAddToFMA, SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
+    unpackPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/2);
+    unpackPatterns.add<SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
     vector::ExtractStridedSliceOp::getCanonicalizationPatterns(unpackPatterns,
                                                                ctx);
     vector::ShuffleOp::getCanonicalizationPatterns(unpackPatterns, ctx);
@@ -7555,7 +7572,7 @@ DiagnosedSilenceableFailure transform::PushUnpackThroughSlicesOp::apply(
     if (d < 0 || it == innerPos.end() || ShapedType::isDynamic(s))
       return emitDefiniteFailure() << "the split dim is not a packed dim";
     int64_t ti = it - innerPos.begin();
-    if (ShapedType::isDynamic(tiles[ti]) || tiles[ti] % s)
+    if (ShapedType::isDynamic(tiles[ti]) || s <= 0 || tiles[ti] % s)
       return emitDefiniteFailure()
              << "the inner tile is not a multiple of " << s;
 

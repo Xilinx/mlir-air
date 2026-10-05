@@ -76,3 +76,43 @@ module {
     return
   }
 }
+
+
+// -----
+
+// The async form the AIR pipeline produces: each buffer is an air.execute
+// holding only its allocation, which is still distinct storage, so both
+// arguments keep llvm.noalias.
+// CHECK-LABEL: aie.device
+// CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias})
+module {
+  func.func @async_allocs() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      %1 = air.segment @seg async {
+        %c1_0 = arith.constant 1 : index
+        %2 = air.herd @h async tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %t0, %in = air.execute -> (memref<64xi32, 2>) {
+            %a = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %a : memref<64xi32, 2>
+          }
+          %t1, %out = air.execute -> (memref<64xi32, 2>) {
+            %a = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %a : memref<64xi32, 2>
+          }
+          %t2 = air.execute [%t0, %t1] {
+            func.call @tile_body(%in, %out) : (memref<64xi32, 2>, memref<64xi32, 2>) -> ()
+          }
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<64xi32, 2>, %b: memref<64xi32, 2>) {
+    %c0 = arith.constant 0 : index
+    %p = arith.constant 0 : i32
+    %v = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<64xi32, 2>, vector<16xi32>
+    vector.transfer_write %v, %b[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32, 2>
+    return
+  }
+}

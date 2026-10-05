@@ -745,16 +745,27 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         for (unsigned i = 0; i < n; ++i) {
           if (!isa<MemRefType>(call.getOperand(i).getType()))
             continue;
-          // Distinct roots prove distinct buffers only when both are
-          // allocations; two block arguments may still alias.
+          // Distinct roots prove distinct buffers only when both create
+          // their own storage; block arguments, globals and other
+          // definitions may still alias.
+          auto unique = [](Value v) {
+            Operation *d = v.getDefiningOp();
+            if (!d)
+              return false;
+            if (isa<memref::AllocOp, memref::AllocaOp, AIE::BufferOp>(d))
+              return true;
+            // The async form: an air.execute holding only the allocation.
+            auto exec = dyn_cast<air::ExecuteOp>(d);
+            return exec && exec.getChildOps().size() == 2 &&
+                   isa<memref::AllocOp>(exec.getChildOps().front());
+          };
           Value ri = root(call.getOperand(i));
           bool disjoint = true;
           for (unsigned j = 0; j < n && disjoint; ++j) {
             if (j == i || !isa<MemRefType>(call.getOperand(j).getType()))
               continue;
             Value rj = root(call.getOperand(j));
-            bool distinct =
-                ri != rj && ri.getDefiningOp() && rj.getDefiningOp();
+            bool distinct = ri != rj && unique(ri) && unique(rj);
             if (!distinct && (writes(i) || writes(j)))
               disjoint = false;
           }

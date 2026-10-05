@@ -1516,13 +1516,19 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
     32 bf16 lanes into a 32-lane f32 accumulator, so 32 there halves the
     multiply-accumulates and conversions of a bf16 x bf16 + f32 FMA.
 
+    An f32 `arith.mulf` of two widened bf16 values feeding an `arith.addf` is
+    contracted into `vector.fma` (the AIE multiply-accumulate) only when both
+    ops carry the `contract` fast-math flag, or when `contract` is set here
+    for the whole target: contraction skips the product's rounding.
+
     Returns a handle to `target`.
   }];
 
   let arguments = (ins TransformHandleTypeInterface:$target,
-                   DefaultValuedAttr<I64Attr, "16">:$f32_lanes);
+                   DefaultValuedAttr<I64Attr, "16">:$f32_lanes,
+                   UnitAttr:$contract);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target (`f32_lanes` `=` $f32_lanes^)? attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$target (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)";
 }
 
 def PushUnpackThroughSlicesOp : Op<Transform_Dialect, "air.push_unpack_through_slices",
