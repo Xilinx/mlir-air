@@ -133,7 +133,8 @@ def _attn_backend(n_images=1, extra_launch_dims=0):
         "verbose": False,
         "omit_while_true_loop": False,
         "omit_pingpong": "all",
-        "runtime_loop_tiling_sizes": [1] * ((3 if n_images > 1 else 2) + extra_launch_dims),
+        "runtime_loop_tiling_sizes": [1]
+        * ((3 if n_images > 1 else 2) + extra_launch_dims),
         "output_format": "elf",
         "instance_name": "attention_bf16",
     }
@@ -252,6 +253,9 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
     n_kv_heads = config.n_heads  # MHA
     head_dim = config.head_dim
     fa_2d = FA_2D and _FA_Q_IN_SEGMENT
+    assert _FA_QK_PRETRANSPOSE or not (
+        FA_FUSED or fa_2d
+    ), "SMOLVLA_FA_FUSED / SMOLVLA_FA_2D need SMOLVLA_FA_QK_PRETRANSPOSE=1 (zero-init Q@K^T)"
     num_heads_per_unroll = 4 if fa_2d else 2
     num_cascade_stages = 2 if fa_2d else 4
     num_q_tiles = 4
@@ -296,7 +300,9 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         "flash_attn",
         attn_mod,
         {
-            **_attn_backend(n_images, extra_launch_dims=1 if (FA_2D and _FA_Q_IN_SEGMENT) else 0),
+            **_attn_backend(
+                n_images, extra_launch_dims=1 if (FA_2D and _FA_Q_IN_SEGMENT) else 0
+            ),
             "verbose": cache.verbose,
         },
     )

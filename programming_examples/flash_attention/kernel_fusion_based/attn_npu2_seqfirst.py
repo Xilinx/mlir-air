@@ -978,6 +978,10 @@ def _build_launch_q_in_segment(
         air.extern("merge_gp_div", link_with=KERNEL) if fused_merge else None
     )
 
+    matmul_a_b_z = (
+        air.extern("matmul_a_b_bf16_z", link_with=KERNEL) if fused_merge else None
+    )
+
     (
         qk2l1,
         qkin,
@@ -1105,11 +1109,15 @@ def _build_launch_q_in_segment(
                                         copy_tile(qk, q_saved)
 
                                 for chunk in air.sequential(0, chunks_per_stage):
-                                    zero_fill_g(g.reshape(g_flat))
+                                    if matmul_a_b_z is None:
+                                        zero_fill_g(g.reshape(g_flat))
                                     for s in range(NS):
                                         with ops.branch(ty == s):
                                             qk2l1[s].get(qk, indices=[seg_x, ty, tx])
-                                    matmul_a_b(q_saved, qk, g.reshape(g_flat))
+                                    if matmul_a_b_z is None:
+                                        matmul_a_b(q_saved, qk, g.reshape(g_flat))
+                                    else:
+                                        matmul_a_b_z(q_saved, qk, g.reshape(g_flat))
                                     for s in range(NS):
                                         with ops.branch(ty == s):
                                             v2l1[s].get(v_l1, indices=[seg_x, ty, tx])
@@ -1276,6 +1284,11 @@ def _build_launch_2d(
         add_gp_g,
         _m,
     ) = _declare_flash_kernels(causal=False)
+    # fused_merge also zero-initialises the Q@K^T accumulators (no zero_fill_g pass); needs the
+    # kernel built with -DFUSE_EXP_SUM and -DQK_PRETRANSPOSE
+    matmul_a_b_z = (
+        air.extern("matmul_a_b_bf16_z", link_with=KERNEL) if fused_merge else None
+    )
     merge_gp_div_k = (
         air.extern("merge_gp_div", link_with=KERNEL) if fused_merge else None
     )
@@ -1433,9 +1446,13 @@ def _build_launch_2d(
                                     with ops.branch(tx == qt):
                                         copy_tile(qk, q_saved)
                                 for _c in air.sequential(0, chunks_per_stage):
-                                    zero_fill_g(g.reshape(g_flat))
+                                    if matmul_a_b_z is None:
+                                        zero_fill_g(g.reshape(g_flat))
                                     get_into(qk2l1, qk)
-                                    matmul_a_b(q_saved, qk, g.reshape(g_flat))
+                                    if matmul_a_b_z is None:
+                                        matmul_a_b(q_saved, qk, g.reshape(g_flat))
+                                    else:
+                                        matmul_a_b_z(q_saved, qk, g.reshape(g_flat))
                                     get_into(v2l1, v_l1)
                                     s_tmp = air.alloc(
                                         [tile_size_q, 1], bf16, scope=h.private()

@@ -85,14 +85,18 @@ SMOLVLA_FA_QK_PRETRANSPOSE (default 1)
     cache name (`_kt`). 0 restores the in-matmul transpose.
 
 SMOLVLA_FA_FUSED (default 0)
-    FlashAttention with the cascade merge fused into one pass over L1 (`merge_gp`, and
-    `merge_gp_div` for the last stage, which also folds in the divide by the softmax sum)
-    and the exp and the row sums computed in one sweep (`exp_sum_g`). The merge and the
-    softmax sum round once instead of two or three times, so the output matches the
-    default to bf16 rounding (standalone cosine vs NumPy 0.998830 against 0.998828), not
-    bit for bit. About -190 us and -85 us on the 3-camera call (3,530 -> ~3,260 us), about
-    1 ms per image per encode. Needs the q loop in the segment. Part of the ELF cache
-    name (`_mf`).
+    FlashAttention kernels rebuilt from a single-core cost breakdown of the 64x64 key chunk
+    (shared with `fa_chunk_bench.py` in aie-for-ai/experiments/flash_att_amd_npu): the cascade
+    merge fused into one pass over L1 (`merge_gp`, and `merge_gp_div` for the last stage, which
+    also folds in the divide by the softmax sum); exp and row sums in one sweep (`exp_sum_g`,
+    row sums by one 8x8 transpose per 8 rows, `-DSUM_T`); `max_g` with four independent row-block
+    chains (`-DMAX_X4`, the single chain was latency bound); and a Q@K^T that writes G instead of
+    accumulating into a zero-filled G (`matmul_a_b_bf16_z`, no zero-fill pass). The max and the
+    zero-init are exact; the merge and the row sums round once instead of two or three times, so
+    the output matches the default to bf16 rounding (standalone cosine vs NumPy 0.998933 for both
+    the 2-D and the default placement), not bit for bit. Chunk cost 9.3k -> 6.4k cycles on a
+    single core, 3-camera FA call 3,530 -> about 3,000 us with the kernels alone. Needs the q
+    loop in the segment and SMOLVLA_FA_QK_PRETRANSPOSE=1. Part of the ELF cache name (`_mf`).
 
 SMOLVLA_FA_2D (default 0)
     FlashAttention with 4 head-images in flight instead of 2: 2 along the columns and 2
@@ -100,8 +104,8 @@ SMOLVLA_FA_2D (default 0)
     2 key stages instead of 4, and the q blocks split over 2 launch iterations (the shim
     has 16 buffer descriptors per tile). Waves of 8 key chunks instead of 4, so the
     per-wave overhead (Q capture, cascade chain, output) is paid half as often. Implies
-    SMOLVLA_FA_FUSED. 3,250 -> 3,000 us on the 3-camera call (-7.7%), flash_attn
-    14.0 -> 11.9 ms per image, vision stage ~161 -> ~155 ms. Needs the q loop in the
+    SMOLVLA_FA_FUSED. With the kernels above: FA call 3,530 -> about 2,710 us (-23%),
+    flash_attn 14.1 -> about 11.2 ms per image (3 cameras). Needs the q loop in the
     segment. Part of the ELF cache name (`_f2d`).
 """
 
