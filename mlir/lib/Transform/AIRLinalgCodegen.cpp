@@ -5027,6 +5027,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       SmallVector<Value> indices;
       int64_t constantStride; // Total constant stride per iteration
       bool hasIVDependentIndices;
+      bool flattenable;
     };
 
     SmallVector<TransferOpInfo> transferOps;
@@ -5084,16 +5085,18 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
           constantStride += dimStride * *coefficient * *loopStep;
         }
       }
-      // The pointer walk addresses the flattened memref directly, so it only
-      // reproduces a transfer whose permutation map is a minor identity (a
-      // broadcast or transposing map would be silently dropped) and whose
-      // vector is contiguous in memory: past its leading unit dims, one dim
-      // may be partial and every dim inside it must span its whole memref
-      // dim. A 4x8 block of rows 64 wide is not, and would be read as 32
-      // consecutive elements.
-      if (hasIVDependentIndices) {
-        if (!transferOp.getPermutationMap().isMinorIdentity())
-          unsupported = true;
+      // The pointer walk, and the flattening of a transfer the loop does not
+      // move, address the flattened memref directly and mark the access in
+      // bounds. That only reproduces a transfer that is in bounds, whose
+      // permutation map is a minor identity (a broadcast or transposing map
+      // would be silently dropped), and whose vector is contiguous in memory:
+      // past its leading unit dims, one dim may be partial and every dim
+      // inside it must span its whole memref dim. A 4x8 block of rows 64 wide
+      // is not, and would be read as 32 consecutive elements.
+      bool flattenable = transferOp.getPermutationMap().isMinorIdentity() &&
+                         llvm::all_of(transferOp.getInBoundsValues(),
+                                      [](bool b) { return b; });
+      {
         ArrayRef<int64_t> vecShape = vectorType.getShape();
         ArrayRef<int64_t> memShape = memrefType.getShape();
         int64_t lead = memShape.size() - vecShape.size();
@@ -5102,13 +5105,16 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
           ++partial;
         for (size_t i = partial + 1; i < vecShape.size(); ++i)
           if (vecShape[i] != memShape[lead + i])
-            unsupported = true;
+            flattenable = false;
       }
+      if (hasIVDependentIndices && !flattenable)
+        unsupported = true;
       if (unsupported)
         break;
 
       transferOps.push_back({&op, base, memrefType, vectorType, indices,
-                             constantStride, hasIVDependentIndices});
+                             constantStride, hasIVDependentIndices,
+                             flattenable});
     }
     // Leave the loop as it is rather than walk a pointer that is wrong.
     if (unsupported) {
@@ -5197,6 +5203,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
     if (newInitArgs.empty()) {
       // Process all transfers without using iter_args
       for (const auto &info : transferOps) {
+        if (!info.flattenable)
+          continue;
         rewriter.setInsertionPoint(info.op);
 
         // Flatten vector type
@@ -6129,6 +6137,25 @@ transform::MergeSiblingCopiesOp::apply(transform::TransformRewriter &rewriter,
         if (strides[i - 1] % strides[i] == 0 &&
             bound[i] > strides[i - 1] / strides[i])
           ok = false;
+      // The merged copy runs where the first one did, so nothing between the
+      // first and the last may write memory: a later copy would otherwise
+      // read a stale snapshot of the source.
+      llvm::SmallPtrSet<Operation *, 8> memberOps;
+      for (SiblingCopy &m : members)
+        memberOps.insert(m.copy);
+      for (Operation *op = members.front().copy->getNextNode();
+           ok && op != members.back().copy.getOperation();
+           op = op->getNextNode()) {
+        if (memberOps.contains(op))
+          continue;
+        std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
+            getEffectsRecursively(op);
+        if (!effects ||
+            llvm::any_of(*effects, [](const MemoryEffects::EffectInstance &e) {
+              return isa<MemoryEffects::Write>(e.getEffect());
+            }))
+          ok = false;
+      }
       if (!ok)
         continue;
 
@@ -6967,19 +6994,23 @@ struct ExtractSliceToShuffle
         ex.getSource().getDefiningOp<vector::InsertStridedSliceOp>())
       return failure();
     int64_t off = cast<IntegerAttr>(ex.getOffsets()[0]).getInt();
+    int64_t stride = cast<IntegerAttr>(ex.getStrides()[0]).getInt();
     // A slice of a shuffle is a narrower shuffle of the same inputs: a
     // replicated scale or base then never exists at the full width.
     if (auto sh = ex.getSource().getDefiningOp<vector::ShuffleOp>()) {
       ArrayRef<int64_t> full = sh.getMask();
-      rewriter.replaceOpWithNewOp<vector::ShuffleOp>(
-          ex, sh.getV1(), sh.getV2(), full.slice(off, rt.getNumElements()));
+      SmallVector<int64_t> sub;
+      for (int64_t i = 0; i < rt.getNumElements(); ++i)
+        sub.push_back(full[off + i * stride]);
+      rewriter.replaceOpWithNewOp<vector::ShuffleOp>(ex, sh.getV1(), sh.getV2(),
+                                                     sub);
       return success();
     }
-    if (rt.getNumElements() * 2 == st.getNumElements())
+    if (stride == 1 && rt.getNumElements() * 2 == st.getNumElements())
       return failure();
     SmallVector<int64_t> mask;
     for (int64_t i = 0; i < rt.getNumElements(); ++i)
-      mask.push_back(off + i);
+      mask.push_back(off + i * stride);
     rewriter.replaceOpWithNewOp<vector::ShuffleOp>(ex, ex.getSource(),
                                                    ex.getSource(), mask);
     return success();
@@ -7246,7 +7277,9 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
     if (cast && cast->hasOneUse())
       write = dyn_cast<vector::TransferWriteOp>(*cast->user_begin());
     VectorType wt = cast ? cast.getResultVectorType() : VectorType();
-    if (!write || write.getMask() || wt.getRank() < 2 ||
+    // Memref writes only: a tensor write's result would need rethreading.
+    if (!write || write.getMask() ||
+        !isa<MemRefType>(write.getBase().getType()) || wt.getRank() < 2 ||
         wt.getDimSize(0) % 2 != 0 ||
         !write.getPermutationMap().isMinorIdentity() ||
         write.getPermutationMap().getNumResults() != wt.getRank() ||

@@ -41,3 +41,21 @@ func.func @trunc_feeds_compute(%a: memref<64xf32>, %w: memref<64xbf16>) {
   vector.transfer_write %s, %w[%c0] {in_bounds = [true]} : vector<64xbf16>, memref<64xbf16>
   return
 }
+
+// Only a write to a memref has its halves stored separately; a write into a
+// tensor takes the concatenated value, so its result stays well defined.
+// CHECK-LABEL: @trunc_into_tensor
+// CHECK: %[[L:.*]] = aievec.srs %{{.*}}, %{{.*}} : vector<32xf32>, i32, vector<32xbf16>
+// CHECK: %[[H:.*]] = aievec.srs %{{.*}}, %{{.*}} : vector<32xf32>, i32, vector<32xbf16>
+// CHECK: vector.shuffle %[[L]], %[[H]]
+// CHECK: %[[W:.*]] = vector.transfer_write %{{.*}} : vector<8x8xbf16>, tensor<8x8xbf16>
+// CHECK: return %[[W]]
+func.func @trunc_into_tensor(%a: memref<64xf32>, %t: tensor<8x8xbf16>) -> tensor<8x8xbf16> {
+  %c0 = arith.constant 0 : index
+  %pf = arith.constant 0.0 : f32
+  %av = vector.transfer_read %a[%c0], %pf {in_bounds = [true]} : memref<64xf32>, vector<64xf32>
+  %r = arith.truncf %av : vector<64xf32> to vector<64xbf16>
+  %r2 = vector.shape_cast %r : vector<64xbf16> to vector<8x8xbf16>
+  %w = vector.transfer_write %r2, %t[%c0, %c0] {in_bounds = [true, true]} : vector<8x8xbf16>, tensor<8x8xbf16>
+  return %w : tensor<8x8xbf16>
+}

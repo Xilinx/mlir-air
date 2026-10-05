@@ -684,9 +684,92 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       } else
         AIE::EndOp::create(core_builder, hloc);
 
+      // Module-defined callees are cloned into the device in the default
+      // memory space, as aie-normalize-address-spaces leaves the core's
+      // buffers: that pass retypes a function's signature but not the uses of
+      // its arguments.
+      auto plain = [](Type t) -> Type {
+        auto m = dyn_cast<MemRefType>(t);
+        if (!m || !m.getMemorySpace())
+          return t;
+        return MemRefType::get(m.getShape(), m.getElementType(), m.getLayout(),
+                               nullptr);
+      };
+      auto toDefaultMemorySpace = [&](func::FuncOp f) {
+        f.walk([&](Operation *o) {
+          for (Value r : o->getResults())
+            r.setType(plain(r.getType()));
+          for (Region &reg : o->getRegions())
+            for (Block &b : reg)
+              for (BlockArgument a : b.getArguments())
+                a.setType(plain(a.getType()));
+        });
+        SmallVector<Type> ins, outs;
+        for (Type t : f.getFunctionType().getInputs())
+          ins.push_back(plain(t));
+        for (Type t : f.getFunctionType().getResults())
+          outs.push_back(plain(t));
+        f.setFunctionType(FunctionType::get(f.getContext(), ins, outs));
+      };
+      // Inline, the core's buffers are distinct globals; as arguments LLVM
+      // must assume they alias, and stops hoisting loads past the stores. An
+      // argument gets llvm.noalias only while every call proves it disjoint
+      // from the others: different buffers, or both only read.
+      auto narrowNoAlias = [](func::CallOp call, func::FuncOp fn,
+                              bool firstCall) {
+        auto root = [](Value v) {
+          while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+            v = view.getViewSource();
+          return v;
+        };
+        auto writes = [&](unsigned i) {
+          SmallVector<Value> wl{fn.getArgument(i)};
+          while (!wl.empty()) {
+            Value m = wl.pop_back_val();
+            for (Operation *u : m.getUsers()) {
+              if (auto view = dyn_cast<ViewLikeOpInterface>(u);
+                  view && view.getViewSource() == m) {
+                for (Value r : u->getResults())
+                  wl.push_back(r);
+                continue;
+              }
+              auto eff = dyn_cast<MemoryEffectOpInterface>(u);
+              if (!eff || eff.getEffectOnValue<MemoryEffects::Write>(m))
+                return true;
+            }
+          }
+          return false;
+        };
+        StringRef noalias = LLVM::LLVMDialect::getNoAliasAttrName();
+        unsigned n = call.getNumOperands();
+        for (unsigned i = 0; i < n; ++i) {
+          if (!isa<MemRefType>(call.getOperand(i).getType()))
+            continue;
+          // Distinct roots prove distinct buffers only when both are
+          // allocations; two block arguments may still alias.
+          Value ri = root(call.getOperand(i));
+          bool disjoint = true;
+          for (unsigned j = 0; j < n && disjoint; ++j) {
+            if (j == i || !isa<MemRefType>(call.getOperand(j).getType()))
+              continue;
+            Value rj = root(call.getOperand(j));
+            bool distinct =
+                ri != rj && ri.getDefiningOp() && rj.getDefiningOp();
+            if (!distinct && (writes(i) || writes(j)))
+              disjoint = false;
+          }
+          if (firstCall && disjoint)
+            fn.setArgAttr(i, noalias, UnitAttr::get(fn.getContext()));
+          else if (!disjoint)
+            fn.removeArgAttr(i, noalias);
+        }
+      };
+
       core.walk([&](Operation *op) {
         if (auto call = dyn_cast_if_present<func::CallOp>(op)) {
           auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
+          if (fn && fn->hasAttr("air.cloned_callee"))
+            narrowNoAlias(call, fn, /*firstCall=*/false);
           // A callee the module defines (a loop nest outlined from the herd,
           // e.g. by transform.loop.outline) is compiled with the core: clone
           // it whole instead of declaring an external kernel.
@@ -695,97 +778,43 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
               auto origFn =
                   parentModule.lookupSymbol<func::FuncOp>(call.getCallee());
               if (origFn && !origFn.isExternal()) {
-                // In the default memory space, as aie-normalize-address-spaces
-                // leaves the core's buffers: that pass retypes a function's
-                // signature but not the uses of its arguments.
-                auto plain = [](Type t) -> Type {
-                  auto m = dyn_cast<MemRefType>(t);
-                  if (!m || !m.getMemorySpace())
-                    return t;
-                  return MemRefType::get(m.getShape(), m.getElementType(),
-                                         m.getLayout(), nullptr);
-                };
                 fn = cast<func::FuncOp>(origFn->clone());
                 fn.setPrivate();
-                fn.walk([&](Operation *o) {
-                  for (Value r : o->getResults())
-                    r.setType(plain(r.getType()));
-                  for (Region &reg : o->getRegions())
-                    for (Block &b : reg)
-                      for (BlockArgument a : b.getArguments())
-                        a.setType(plain(a.getType()));
-                });
-                SmallVector<Type> ins, outs;
-                for (Type t : fn.getFunctionType().getInputs())
-                  ins.push_back(plain(t));
-                for (Type t : fn.getFunctionType().getResults())
-                  outs.push_back(plain(t));
-                fn.setFunctionType(
-                    FunctionType::get(fn.getContext(), ins, outs));
+                fn->setAttr("air.cloned_callee",
+                            UnitAttr::get(fn.getContext()));
+                toDefaultMemorySpace(fn);
                 aie_device.insert(aie_device.getBody()->getTerminator(), fn);
-                // Inline, the core's buffers are distinct globals; as
-                // arguments LLVM must assume they alias, and stops hoisting
-                // loads past the stores. Mark the arguments this call site
-                // proves disjoint: different buffers, or both only read.
-                {
-                  auto root = [](Value v) {
-                    while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
-                      v = view.getViewSource();
-                    return v;
-                  };
-                  auto writes = [&](unsigned i) {
-                    SmallVector<Value> wl{fn.getArgument(i)};
-                    while (!wl.empty()) {
-                      Value m = wl.pop_back_val();
-                      for (Operation *u : m.getUsers()) {
-                        if (auto view = dyn_cast<ViewLikeOpInterface>(u);
-                            view && view.getViewSource() == m) {
-                          for (Value r : u->getResults())
-                            wl.push_back(r);
-                          continue;
-                        }
-                        auto eff = dyn_cast<MemoryEffectOpInterface>(u);
-                        if (!eff ||
-                            eff.getEffectOnValue<MemoryEffects::Write>(m))
-                          return true;
-                      }
-                    }
-                    return false;
-                  };
-                  unsigned n = call.getNumOperands();
-                  for (unsigned i = 0; i < n; ++i) {
-                    if (!isa<MemRefType>(call.getOperand(i).getType()))
-                      continue;
-                    bool disjoint = true;
-                    for (unsigned j = 0; j < n && disjoint; ++j)
-                      if (j != i &&
-                          isa<MemRefType>(call.getOperand(j).getType()) &&
-                          root(call.getOperand(i)) ==
-                              root(call.getOperand(j)) &&
-                          (writes(i) || writes(j)))
-                        disjoint = false;
-                    if (disjoint)
-                      fn.setArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName(),
-                                    UnitAttr::get(fn.getContext()));
-                  }
-                }
-                // And whatever it calls (intrinsic declarations, say).
+                narrowNoAlias(call, fn, /*firstCall=*/true);
+                // And whatever it calls, in the same memory space, so that
+                // its calls stay well typed.
                 SmallVector<func::FuncOp> work{fn};
                 while (!work.empty()) {
                   func::FuncOp f = work.pop_back_val();
                   f.walk([&](func::CallOp c) {
-                    if (aie_device.lookupSymbol<func::FuncOp>(c.getCallee()))
+                    if (auto known = aie_device.lookupSymbol<func::FuncOp>(
+                            c.getCallee())) {
+                      // Its arguments are this function's; nothing here
+                      // proves them disjoint.
+                      if (known->hasAttr("air.cloned_callee"))
+                        for (unsigned i = 0; i < known.getNumArguments(); ++i)
+                          known.removeArgAttr(
+                              i, LLVM::LLVMDialect::getNoAliasAttrName());
                       return;
+                    }
                     auto callee =
                         parentModule.lookupSymbol<func::FuncOp>(c.getCallee());
                     if (!callee)
                       return;
                     auto copy = cast<func::FuncOp>(callee->clone());
                     copy.setPrivate();
+                    toDefaultMemorySpace(copy);
                     aie_device.insert(aie_device.getBody()->getTerminator(),
                                       copy);
-                    if (!copy.isExternal())
+                    if (!copy.isExternal()) {
+                      copy->setAttr("air.cloned_callee",
+                                    UnitAttr::get(copy.getContext()));
                       work.push_back(copy);
+                    }
                   });
                 }
               }
@@ -8314,6 +8343,7 @@ public:
       signalPassFailure();
       return;
     }
+    module.walk([](func::FuncOp f) { f->removeAttr("air.cloned_callee"); });
 
     std::set<AIE::DeviceOp> seen;
     DenseSet<func::FuncOp> shimUnrolledFuncs;

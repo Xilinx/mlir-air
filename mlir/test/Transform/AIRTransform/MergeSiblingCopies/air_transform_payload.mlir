@@ -53,3 +53,24 @@ func.func @different_bases(%p: memref<*xi16>, %q: memref<*xi16>, %o: index) -> (
   %t1 = bufferization.to_tensor %a1 restrict writable : memref<4xi16> to tensor<4xi16>
   return %t0, %t1 : tensor<4xi16>, tensor<4xi16>
 }
+
+// A write between the copies (here to the packed buffer itself) means the
+// later copy reads a different state than the earlier one: no merge.
+// CHECK-LABEL: @write_between
+// CHECK: memref.copy
+// CHECK: memref.store
+// CHECK: memref.copy
+func.func @write_between(%p: memref<*xi16>, %o: index, %x: memref<64xi16>, %v: i16) -> (tensor<4xi16>, tensor<4xi16>) {
+  %c4 = arith.constant 4 : index
+  %o1 = arith.addi %o, %c4 : index
+  %v0 = memref.reinterpret_cast %p to offset: [%o], sizes: [4], strides: [1] : memref<*xi16> to memref<4xi16, strided<[1], offset: ?>>
+  %a0 = memref.alloc() : memref<4xi16, 1>
+  memref.copy %v0, %a0 : memref<4xi16, strided<[1], offset: ?>> to memref<4xi16, 1>
+  %t0 = bufferization.to_tensor %a0 restrict writable : memref<4xi16, 1> to tensor<4xi16>
+  memref.store %v, %x[%o1] : memref<64xi16>
+  %v1 = memref.reinterpret_cast %p to offset: [%o1], sizes: [4], strides: [1] : memref<*xi16> to memref<4xi16, strided<[1], offset: ?>>
+  %a1 = memref.alloc() : memref<4xi16, 1>
+  memref.copy %v1, %a1 : memref<4xi16, strided<[1], offset: ?>> to memref<4xi16, 1>
+  %t1 = bufferization.to_tensor %a1 restrict writable : memref<4xi16, 1> to tensor<4xi16>
+  return %t0, %t1 : tensor<4xi16>, tensor<4xi16>
+}

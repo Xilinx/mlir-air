@@ -7,7 +7,8 @@
 
 // RUN: air-opt -air-transform='filename=%S/air_transform.mlir' -verify-diagnostics %s | FileCheck %s
 
-// Test case 1: Basic hoisting with 2D memref - loop-invariant indices
+// Test case 1: Basic hoisting with 2D memref - loop-invariant indices. The
+// 4x16 block spans whole rows, so it is contiguous and flattens exactly.
 // CHECK-LABEL: @hoist_simple_2d_transfers
 func.func @hoist_simple_2d_transfers(%arg0: memref<16x16xf32, 2>) {
   %c0 = arith.constant 0 : index
@@ -22,15 +23,15 @@ func.func @hoist_simple_2d_transfers(%arg0: memref<16x16xf32, 2>) {
   scf.for %i = %c0 to %c4 step %c1 {
     // CHECK: %[[PTR:.*]] = affine.apply
     // CHECK: %[[FLAT_READ:.*]] = vector.transfer_read %[[COLLAPSED]][%[[PTR]]]
-    // CHECK-NEXT: %[[SHAPED:.*]] = vector.shape_cast %[[FLAT_READ]] : vector<16xf32> to vector<4x4xf32>
-    %val = vector.transfer_read %arg0[%c0, %c2], %c0_f32 {in_bounds = [true, true]} : memref<16x16xf32, 2>, vector<4x4xf32>
+    // CHECK-NEXT: %[[SHAPED:.*]] = vector.shape_cast %[[FLAT_READ]] : vector<64xf32> to vector<4x16xf32>
+    %val = vector.transfer_read %arg0[%c2, %c0], %c0_f32 {in_bounds = [true, true]} : memref<16x16xf32, 2>, vector<4x16xf32>
     
-    %result = arith.addf %val, %val : vector<4x4xf32>
+    %result = arith.addf %val, %val : vector<4x16xf32>
     
     // CHECK: %[[PTR2:.*]] = affine.apply
-    // CHECK: %[[FLAT_VAL:.*]] = vector.shape_cast %{{.*}} : vector<4x4xf32> to vector<16xf32>
+    // CHECK: %[[FLAT_VAL:.*]] = vector.shape_cast %{{.*}} : vector<4x16xf32> to vector<64xf32>
     // CHECK: vector.transfer_write %[[FLAT_VAL]], %[[COLLAPSED2]][%[[PTR2]]]
-    vector.transfer_write %result, %arg0[%c0, %c2] {in_bounds = [true, true]} : vector<4x4xf32>, memref<16x16xf32, 2>
+    vector.transfer_write %result, %arg0[%c2, %c0] {in_bounds = [true, true]} : vector<4x16xf32>, memref<16x16xf32, 2>
   }
   return
 }
@@ -173,6 +174,44 @@ func.func @hoist_iv_plus_constant(%arg0: memref<16x8xi16, 2>, %arg1: memref<16x8
     %r = arith.addi %i, %c1 : index
     %v = vector.transfer_read %arg0[%r, %c0], %c0_i16 {in_bounds = [true]} : memref<16x8xi16, 2>, vector<8xi16>
     vector.transfer_write %v, %arg1[%i, %c0] {in_bounds = [true]} : vector<8xi16>, memref<16x8xi16, 2>
+  }
+  return
+}
+
+// Test case: a loop with no IV-dependent transfer. Its invariant transfers
+// are flattened only where that is exact: the broadcasting read keeps its
+// permutation map, the plain write is flattened.
+// CHECK-LABEL: @no_flatten_invariant_broadcast
+func.func @no_flatten_invariant_broadcast(%arg0: memref<1x8xf32, 2>, %arg1: memref<4x8xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %cst = arith.constant 0.0 : f32
+  // CHECK: scf.for
+  scf.for %i = %c0 to %c8 step %c1 {
+    // CHECK: vector.transfer_read %arg0[%{{.*}}, %{{.*}}]{{.*}}permutation_map
+    %s = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true], permutation_map = affine_map<(d0, d1) -> (0, d1)>} : memref<1x8xf32, 2>, vector<4x8xf32>
+    // CHECK: vector.transfer_write %{{.*}} : vector<32xf32>, memref<32xf32, 2>
+    vector.transfer_write %s, %arg1[%c0, %c0] {in_bounds = [true, true]} : vector<4x8xf32>, memref<4x8xf32, 2>
+  }
+  return
+}
+
+// Test case: a loop with no IV-dependent transfer, whose invariant 4x4 block
+// at column 2 of a 16x16 buffer is not contiguous: it is not flattened into 16
+// consecutive elements.
+// CHECK-LABEL: @no_flatten_invariant_block
+// CHECK-NOT: memref.collapse_shape %arg0
+// CHECK: vector.transfer_read %arg0[%{{.*}}, %{{.*}}]{{.*}} : memref<16x16xf32, 2>, vector<4x4xf32>
+func.func @no_flatten_invariant_block(%arg0: memref<16x16xf32, 2>, %arg1: memref<4x4xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %cst = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %c4 step %c1 {
+    %v = vector.transfer_read %arg0[%c0, %c2], %cst {in_bounds = [true, true]} : memref<16x16xf32, 2>, vector<4x4xf32>
+    vector.transfer_write %v, %arg1[%c0, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<4x4xf32, 2>
   }
   return
 }
