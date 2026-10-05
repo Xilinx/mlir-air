@@ -4814,7 +4814,8 @@ public:
           if (!checkIfMergeable(channelOps[i], channelOps[j]))
             continue;
           // Aggressively fuse air.channels by time multiplexing.
-          mergeChannels(rewriter, channelOps[i], channelOps[j]);
+          if (!mergeChannels(rewriter, channelOps[i], channelOps[j]))
+            continue;
           invalidateChannelIndex();
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
@@ -5606,8 +5607,8 @@ private:
   // channel op is merged into an earlier nest, the buffer has to exist before
   // it. Cloning it along with the channel op, as other operands are, would
   // fill a different buffer. Returns false only for such an allocation that
-  // cannot move.
-  bool hoistAllocAbove(Value v, Operation *a) {
+  // cannot move; with `dryRun`, reports that without moving anything.
+  bool hoistAllocAbove(Value v, Operation *a, DominanceInfo &dom, bool dryRun) {
     Operation *def = v.getDefiningOp();
     if (!def)
       return true;
@@ -5616,7 +5617,6 @@ private:
     if (!exec || exec.getChildOps().size() != 2 ||
         !isa<memref::AllocOp>(exec.getChildOps().front()))
       return true;
-    DominanceInfo dom(def->getParentOfType<func::FuncOp>());
     if (dom.properlyDominates(def, a))
       return true;
     Operation *anchor = def->getBlock()->findAncestorOpInBlock(*a);
@@ -5625,24 +5625,29 @@ private:
     for (Value operand : def->getOperands())
       if (!dom.properlyDominates(operand, anchor))
         return false;
-    def->moveBefore(anchor);
+    if (!dryRun)
+      def->moveBefore(anchor);
     return true;
   }
 
-  void mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
-                       air::ChannelInterface b) {
+  // With `dryRun`, only reports whether the merge is possible.
+  bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
+                       air::ChannelInterface b, bool dryRun = false) {
     // fuse a and b under the same loop nest, if a and b are under different
     // loop nests
     if (a->getParentRegion() == b->getParentRegion())
-      return;
+      return true;
     // b is cloned next to a. What b uses from a region enclosing both nests
     // is not cloned with it, so it has to be defined before a.
+    DominanceInfo dom(a->getParentOfType<func::FuncOp>());
     for (Value operand : b->getOperands()) {
       Operation *def = operand.getDefiningOp();
       if (def && def->getParentRegion()->isAncestor(a->getParentRegion()) &&
-          !hoistAllocAbove(operand, a))
-        return;
+          !hoistAllocAbove(operand, a, dom, dryRun))
+        return false;
     }
+    if (dryRun)
+      return true;
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);
@@ -5664,16 +5669,18 @@ private:
       air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
     }
     b->erase();
+    return true;
   }
   // Fuse parent region nests to both a and b, interleaving pairs of
   // air::ChannelInterface ops, originating from a and b loop nests
   // respectively, into the fused loop nest.
-  void fuseParentRegionNestByIneterleaving(RewriterBase &rewriter, Operation *a,
-                                           Operation *b) {
+  // With `dryRun`, only reports whether every pair can be merged.
+  bool fuseParentRegionNestByIneterleaving(RewriterBase &rewriter, Operation *a,
+                                           Operation *b, bool dryRun = false) {
     if (!a->getParentOfType<LoopLikeOpInterface>())
-      return;
+      return true;
     if (!b->getParentOfType<LoopLikeOpInterface>())
-      return;
+      return true;
     Region *aRegion = a->getParentRegion();
     Region *bRegion = b->getParentRegion();
     while (!aRegion->getParentOp()->getParentRegion()->isAncestor(
@@ -5690,10 +5697,11 @@ private:
       bChanOps.push_back(chanOp);
     });
     if (aChanOps.size() != bChanOps.size())
-      return;
+      return true;
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
-      mergeChannelOps(rewriter, aOtherOp, bOtherOp);
-    return;
+      if (!mergeChannelOps(rewriter, aOtherOp, bOtherOp, dryRun))
+        return false;
+    return true;
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
@@ -5736,7 +5744,10 @@ private:
     }
     b->erase();
   }
-  void mergeChannels(RewriterBase &rewriter, air::ChannelOp chan_a,
+  // Returns false, changing nothing, when some pair of b's ops cannot be
+  // merged into a's nests: merging only one side of a channel pair would
+  // interleave on one side and not the other.
+  bool mergeChannels(RewriterBase &rewriter, air::ChannelOp chan_a,
                      air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
@@ -5746,11 +5757,20 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
+    for (unsigned i = 0; i < a_puts.size(); i++)
+      if (!fuseParentRegionNestByIneterleaving(rewriter, a_puts[i], b_puts[i],
+                                               /*dryRun=*/true))
+        return false;
+    for (unsigned i = 0; i < a_gets.size(); i++)
+      if (!fuseParentRegionNestByIneterleaving(rewriter, a_gets[i], b_gets[i],
+                                               /*dryRun=*/true))
+        return false;
     // Interleave puts and gets
     for (unsigned i = 0; i < a_puts.size(); i++)
       fuseParentRegionNestByIneterleaving(rewriter, a_puts[i], b_puts[i]);
     for (unsigned i = 0; i < a_gets.size(); i++)
       fuseParentRegionNestByIneterleaving(rewriter, a_gets[i], b_gets[i]);
+    return true;
   }
   void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
                                  std::string mergeByLBOrUB) {

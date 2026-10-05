@@ -8,7 +8,7 @@
 // RUN: air-opt -air-transform='filename=%S/air_transform_wide64.mlir' %s | FileCheck %s
 
 // A 4-bit dequant tile, w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, in
-// the AIE2P forms air's hand-written dq4.cc compiles to: the 0x4300 | q
+// the AIE2P forms a hand-written dequant kernel uses: the 0x4300 | q
 // widening as two byte interleaves with 0x43 (vshuffle modes 20/21), one
 // 64-lane bf16 multiply-accumulate, and the conversion back to bf16 as two
 // 32-lane aievec.srs whose halves are stored separately. The intrinsics are

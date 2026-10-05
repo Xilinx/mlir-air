@@ -36,3 +36,29 @@ func.func @pairs(%acc: tensor<4x2x8x8xf32>) -> tensor<16x16xbf16> {
   } -> tensor<16x16xbf16>
   return %h : tensor<16x16xbf16>
 }
+
+// The elementwise op also reads a tensor that is not one of the unpacked
+// slices. The unpack still moves below the slice, but the elementwise op stays
+// on unpacked values: only an op whose inputs are all such unpacks can run on
+// the packed layout.
+// CHECK-LABEL: @mixed_inputs
+// CHECK: tensor.expand_shape %arg0
+// CHECK: %[[S:.*]] = tensor.extract_slice
+// CHECK: %[[U:.*]] = linalg.unpack %[[S]]
+// CHECK: linalg.generic {{.*}} ins(%[[U]], %arg1 : tensor<16x16xf32>, tensor<16x16xf32>)
+// CHECK-NOT: linalg.unpack
+func.func @mixed_inputs(%acc: tensor<4x2x8x8xf32>, %other: tensor<16x16xf32>) -> tensor<16x16xbf16> {
+  %e0 = tensor.empty() : tensor<16x32xf32>
+  %u = linalg.unpack %acc outer_dims_perm = [1, 0] inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %e0 : tensor<4x2x8x8xf32> -> tensor<16x32xf32>
+  %x = tensor.expand_shape %u [[0], [1, 2]] output_shape [16, 16, 2] : tensor<16x32xf32> into tensor<16x16x2xf32>
+  %g = tensor.extract_slice %x[0, 0, 0] [16, 16, 1] [1, 1, 1] : tensor<16x16x2xf32> to tensor<16x16xf32>
+  %o = tensor.empty() : tensor<16x16xbf16>
+  %h = linalg.generic {indexing_maps = [#id, #id, #id], iterator_types = ["parallel", "parallel"]}
+      ins(%g, %other : tensor<16x16xf32>, tensor<16x16xf32>) outs(%o : tensor<16x16xbf16>) {
+  ^bb0(%a: f32, %b: f32, %c: bf16):
+    %m = arith.mulf %a, %b : f32
+    %t = arith.truncf %m : f32 to bf16
+    linalg.yield %t : bf16
+  } -> tensor<16x16xbf16>
+  return %h : tensor<16x16xbf16>
+}

@@ -2468,12 +2468,6 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       auto offsetDimOpt =
           air::getOffsetDimFromMemrefDim(*splitDim, air::getStridesAsValues(ci),
                                          air::getTensorShape(memref.getType()));
-      // A channel time-multiplexed by air-fuse-channels' aggressive mode also
-      // carries other buffers' puts and gets, whose access pattern need not
-      // address this buffer's split dimension at all. They say nothing about
-      // how to split it.
-      if (!offsetDimOpt)
-        continue;
       // Infer offset at splitDim.
       if (auto rootOffset =
               getRootOffset(air::getOffsetsAsValues(ci)[*offsetDimOpt]))

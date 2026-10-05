@@ -6573,8 +6573,10 @@ struct TrailingUnitDimsTransferRead
     int64_t rank = memrefType.getRank();
     if (!dim)
       return failure();
+    // The trailing indices are dropped, so each must be the constant 0.
     for (int64_t d = dim.getPosition() + 1; d < rank; ++d)
-      if (memrefType.getDimSize(d) != 1)
+      if (memrefType.getDimSize(d) != 1 ||
+          getConstantIntValue(read.getIndices()[d]) != 0)
         return failure();
     // Fold dims k.. (all but k of extent 1) into one: the read is then a
     // minor identity read of the collapsed memref.
@@ -6615,6 +6617,9 @@ struct UnrollStridedTransferRead
     auto memrefType = dyn_cast<MemRefType>(read.getBase().getType());
     if (read.getMask() || vecType.getRank() != 1 || vecType.isScalable() ||
         map.getNumResults() != 1 || !memrefType)
+      return failure();
+    // memref.load has no padding: only a read known to be in bounds.
+    if (!llvm::all_of(read.getInBoundsValues(), [](bool b) { return b; }))
       return failure();
     auto dim = dyn_cast<AffineDimExpr>(map.getResult(0));
     if (!dim)
@@ -7071,12 +7076,27 @@ struct WideTruncFToSRS : public OpRewritePattern<arith::TruncFOp> {
 // Calls an AIE2P LLVM intrinsic through a private func.func named after it,
 // the way mlir-aie declares its own (llvm.aie2p.acquire, ...). An LLVM-dialect
 // op would not do: aie-standard-lowering silently drops a core that holds one.
-static Value callAIE2p(PatternRewriter &rewriter, Location loc, Type resTy,
-                       StringRef name, ValueRange args) {
-  Operation *at = rewriter.getInsertionBlock()->getParentOp();
-  ModuleOp mod = at->getParentOfType<ModuleOp>();
+static ModuleOp outermostModule(Operation *op) {
+  ModuleOp mod = op->getParentOfType<ModuleOp>();
   while (auto parent = mod->getParentOfType<ModuleOp>())
     mod = parent;
+  return mod;
+}
+
+// Whether `name` can be declared (or is already declared) with type `ty` in
+// the module holding `op`. A symbol of that name with another type would
+// make the call ill-typed, so the patterns check this before rewriting.
+static bool canDeclareAIE2p(Operation *op, StringRef name, FunctionType ty) {
+  Operation *sym = SymbolTable::lookupSymbolIn(outermostModule(op), name);
+  if (!sym)
+    return true;
+  auto fn = dyn_cast<func::FuncOp>(sym);
+  return fn && fn.getFunctionType() == ty;
+}
+
+static Value callAIE2p(PatternRewriter &rewriter, Location loc, Type resTy,
+                       StringRef name, ValueRange args) {
+  ModuleOp mod = outermostModule(rewriter.getInsertionBlock()->getParentOp());
   auto fnTy = rewriter.getFunctionType(TypeRange(ValueRange(args)), {resTy});
   auto fn = mod.lookupSymbol<func::FuncOp>(name);
   if (!fn) {
@@ -7120,9 +7140,12 @@ struct ByteInterleave4300 : public OpRewritePattern<arith::OrIOp> {
       // source must be an unpacked nibble.
       if (ext && !src.getDefiningOp<xilinx::aievec::UnpackOp>())
         continue;
-      Location loc = orOp.getLoc();
       auto i32 = rewriter.getI32Type();
       auto v16 = VectorType::get({16}, i32);
+      if (!canDeclareAIE2p(orOp, "llvm.aie2p.vshuffle",
+                           rewriter.getFunctionType({v16, v16, i32}, {v16})))
+        return failure();
+      Location loc = orOp.getLoc();
       Value words = vector::BitCastOp::create(rewriter, loc, v16, src);
       Value bias = arith::ConstantOp::create(
           rewriter, loc, DenseElementsAttr::get(v16, APInt(32, 0x43434343)));
@@ -7164,6 +7187,11 @@ struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
     };
     Value lhs = narrow(fma.getLhs()), rhs = narrow(fma.getRhs());
     if (!lhs || !rhs)
+      return failure();
+    if (!canDeclareAIE2p(fma, "llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf",
+                         rewriter.getFunctionType({lhs.getType(), rhs.getType(),
+                                                   vt, rewriter.getI32Type()},
+                                                  {vt})))
       return failure();
     Location loc = fma.getLoc();
     Value conf = arith::ConstantOp::create(rewriter, loc,

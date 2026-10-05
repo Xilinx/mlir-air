@@ -124,3 +124,28 @@ func.func @trailing_unit_dims(%w: memref<8x8x1xi32>, %o: memref<4xi32>, %i: inde
   vector.transfer_write %v, %o[%c0] {in_bounds = [true]} : vector<4xi32>, memref<4xi32>
   return
 }
+
+// A strided read not known to be in bounds keeps its padding semantics, so it
+// is not unrolled into memref.load.
+// CHECK-LABEL: @strided_column_not_in_bounds
+// CHECK-NOT: vector.from_elements
+// CHECK: vector.transfer_read
+func.func @strided_column_not_in_bounds(%w: memref<4xi32, strided<[8]>>, %o: memref<4xi32>, %i: index) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0 : i32
+  %v = vector.transfer_read %w[%i], %p {in_bounds = [false]} : memref<4xi32, strided<[8]>>, vector<4xi32>
+  vector.transfer_write %v, %o[%c0] {in_bounds = [true]} : vector<4xi32>, memref<4xi32>
+  return
+}
+
+// Trailing unit dims indexed by something other than the constant 0 are not
+// collapsed away.
+// CHECK-LABEL: @trailing_unit_dims_nonzero_index
+// CHECK-NOT: memref.collapse_shape
+func.func @trailing_unit_dims_nonzero_index(%w: memref<8x8x1xi32>, %o: memref<4xi32>, %i: index, %j: index) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0 : i32
+  %v = vector.transfer_read %w[%i, %c0, %j], %p {in_bounds = [true], permutation_map = affine_map<(d0, d1, d2) -> (d1)>} : memref<8x8x1xi32>, vector<4xi32>
+  vector.transfer_write %v, %o[%c0] {in_bounds = [true]} : vector<4xi32>, memref<4xi32>
+  return
+}
