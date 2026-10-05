@@ -57,12 +57,14 @@ set(TRANSFORM_LINK_LIBS
   MLIRLinalgTransforms
   MLIRLinalgUtils
   MLIRSupport
+  MLIRVectorTransforms
 )
 
 if(AIR_ENABLE_AIE)
   list(APPEND TRANSFORM_LINK_LIBS
     AIE
     AIEX
+    MLIRAIEVecDialect
   )
 endif()
 

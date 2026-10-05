@@ -1692,6 +1692,44 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     auto isDefiniteWrite = [](Operation *op, Value v) {
       if (auto get = dyn_cast<air::ChannelGetOp>(op))
         return get.getMemref() == v;
+      // A call into a function the module defines (a loop nest outlined from
+      // the herd) is a definite write of an argument its body writes and
+      // never reads, directly or through a view.
+      if (auto call = dyn_cast<func::CallOp>(op)) {
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            call, call.getCalleeAttr());
+        if (!callee || callee.isExternal())
+          return false;
+        bool any = false;
+        for (auto [i, operand] : llvm::enumerate(call.getOperands())) {
+          if (operand != v)
+            continue;
+          SmallVector<Value> worklist{callee.getArgument(i)};
+          bool written = false;
+          while (!worklist.empty()) {
+            Value m = worklist.pop_back_val();
+            for (OpOperand &use : m.getUses()) {
+              Operation *user = use.getOwner();
+              if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+                  view && view.getViewSource() == m) {
+                for (Value r : user->getResults())
+                  if (isa<MemRefType>(r.getType()))
+                    worklist.push_back(r);
+                continue;
+              }
+              auto eff = dyn_cast<MemoryEffectOpInterface>(user);
+              if (!eff || eff.getEffectOnValue<MemoryEffects::Read>(m))
+                return false;
+              written |=
+                  eff.getEffectOnValue<MemoryEffects::Write>(m).has_value();
+            }
+          }
+          if (!written)
+            return false;
+          any = true;
+        }
+        return any;
+      }
       auto effects = dyn_cast<MemoryEffectOpInterface>(op);
       if (!effects)
         return false;
@@ -1712,6 +1750,16 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
           continue;
         if (auto it = aliasToCanonical.find(operand);
             it != aliasToCanonical.end()) {
+          // A view (subview, collapse_shape, ...) does not access the
+          // buffer: its result aliases it, and the first access through
+          // the view is what counts.
+          if (auto view = dyn_cast<ViewLikeOpInterface>(op);
+              view && view.getViewSource() == operand) {
+            for (Value r : op->getResults())
+              if (isa<MemRefType>(r.getType()))
+                aliasToCanonical[r] = it->second;
+            continue;
+          }
           if (firstAccessSeen.insert(it->second).second &&
               !isDefiniteWrite(op, operand))
             unsafe = true;
@@ -5551,12 +5599,50 @@ private:
     }
     return false;
   }
+  // Moves the definition of `v` above `a` when it does not dominate it
+  // already and is an allocation: an air.execute holding only a memref.alloc,
+  // whose own operands dominate the new position. That is the L1 buffer a
+  // herd allocates right before the loop nest that fills it; once that nest's
+  // channel op is merged into an earlier nest, the buffer has to exist before
+  // it. Cloning it along with the channel op, as other operands are, would
+  // fill a different buffer. Returns false only for such an allocation that
+  // cannot move.
+  bool hoistAllocAbove(Value v, Operation *a) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return true;
+    auto exec = dyn_cast<air::ExecuteOp>(def);
+    // The body is the alloc and the terminator yielding it.
+    if (!exec || exec.getChildOps().size() != 2 ||
+        !isa<memref::AllocOp>(exec.getChildOps().front()))
+      return true;
+    DominanceInfo dom(def->getParentOfType<func::FuncOp>());
+    if (dom.properlyDominates(def, a))
+      return true;
+    Operation *anchor = def->getBlock()->findAncestorOpInBlock(*a);
+    if (!anchor || !anchor->isBeforeInBlock(def))
+      return false;
+    for (Value operand : def->getOperands())
+      if (!dom.properlyDominates(operand, anchor))
+        return false;
+    def->moveBefore(anchor);
+    return true;
+  }
+
   void mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
                        air::ChannelInterface b) {
     // fuse a and b under the same loop nest, if a and b are under different
     // loop nests
     if (a->getParentRegion() == b->getParentRegion())
       return;
+    // b is cloned next to a. What b uses from a region enclosing both nests
+    // is not cloned with it, so it has to be defined before a.
+    for (Value operand : b->getOperands()) {
+      Operation *def = operand.getDefiningOp();
+      if (def && def->getParentRegion()->isAncestor(a->getParentRegion()) &&
+          !hoistAllocAbove(operand, a))
+        return;
+    }
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);

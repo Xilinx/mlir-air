@@ -120,3 +120,15 @@ func.func @func_scalar_ssa_chain(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %
   bufferization.materialize_in_destination %truncated in writable %reinterpret_cast_out : (tensor<64xbf16>, memref<64xbf16, strided<[1], offset: ?>>) -> ()
   return
 }
+
+// A private function (a loop nest outlined from a herd) is not a kernel entry:
+// it is left unwrapped.
+// CHECK-LABEL: func.func private @outlined_helper
+// CHECK-NOT: scf.parallel
+// CHECK: return
+func.func private @outlined_helper(%arg0: memref<16xf32>, %arg1: memref<16xf32>, %arg2: i32, %arg3: i32) {
+  %c0 = arith.constant 0 : index
+  %v = memref.load %arg0[%c0] : memref<16xf32>
+  memref.store %v, %arg1[%c0] : memref<16xf32>
+  return
+}

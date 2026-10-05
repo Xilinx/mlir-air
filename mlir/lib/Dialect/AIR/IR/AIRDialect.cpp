@@ -2212,6 +2212,10 @@ static LogicalResult FoldWaitAll(air::WaitAllOp op, PatternRewriter &rewriter) {
     for (auto user : op.getResults().front().getUsers()) {
       users.push_back(user);
     }
+    // A wait_all among its own users would have its dependencies appended to
+    // the very list being iterated, without end.
+    if (llvm::is_contained(users, op.getOperation()))
+      return failure();
     for (auto user : users) {
       air::AsyncOpInterface asyncUser =
           dyn_cast_if_present<air::AsyncOpInterface>(user);
@@ -2219,8 +2223,11 @@ static LogicalResult FoldWaitAll(air::WaitAllOp op, PatternRewriter &rewriter) {
         if (asyncUser.getAsyncDependencies()[i] == op.getResults().front())
           asyncUser.eraseAsyncDependency(i);
       }
+      // Skip what the user already waits on: chains of wait_alls folded one
+      // into the next otherwise multiply the lists without bound.
       for (auto dep : op.getAsyncDependencies())
-        asyncUser.addAsyncDependency(dep);
+        if (!llvm::is_contained(asyncUser.getAsyncDependencies(), dep))
+          asyncUser.addAsyncDependency(dep);
     }
     rewriter.eraseOp(op);
     return success();

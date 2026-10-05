@@ -2130,6 +2130,10 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
                                 PatternRewriter &rewriter) const override {
     if (funcOp.isExternal())
       return failure(); // Ignore external functions
+    // Nor private helpers (e.g. a loop nest outlined from a herd): only the
+    // kernel entry carries the launch grid.
+    if (funcOp.isPrivate())
+      return failure();
 
     if (loopBounds.empty()) {
       funcOp.emitError("Pass option 'loop-bounds' must be specified.");

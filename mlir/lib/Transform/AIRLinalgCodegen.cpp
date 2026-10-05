@@ -16,6 +16,10 @@
 #include "air/Util/Outliner.h"
 #include "air/Util/Util.h"
 
+#if AIR_ENABLE_AIE
+#include "aie/Dialect/AIEVec/IR/AIEVecOps.h"
+#endif
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -31,14 +35,18 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
+#include "mlir/Dialect/Vector/Utils/VectorUtils.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
@@ -3883,6 +3891,40 @@ DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
     };
 
     linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);
+    if (getFoldReshapes()) {
+      // Only reshapes between two elementwise (all-parallel) generics: a
+      // contraction's operands, packed or not, are left alone.
+      linalg::ControlFusionFn reshapeControl = [](OpOperand *fusedOperand) {
+        Operation *producer = fusedOperand->get().getDefiningOp();
+        Operation *consumer = fusedOperand->getOwner();
+        auto isParallelGeneric = [](Operation *op) {
+          auto generic = dyn_cast_if_present<linalg::GenericOp>(op);
+          return generic &&
+                 generic.getNumLoops() == generic.getNumParallelLoops();
+        };
+        auto isGenericOrReshape = [&](Operation *op) {
+          return isParallelGeneric(op) ||
+                 isa_and_present<tensor::ExpandShapeOp,
+                                 tensor::CollapseShapeOp>(op);
+        };
+        if (!isGenericOrReshape(producer) || !isGenericOrReshape(consumer))
+          return false;
+        auto otherSide = [&](Operation *reshape, bool up) -> Operation * {
+          if (up)
+            return reshape->getOperand(0).getDefiningOp();
+          if (!reshape->hasOneUse())
+            return nullptr;
+          return *reshape->getUsers().begin();
+        };
+        if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(producer))
+          return isParallelGeneric(otherSide(producer, true));
+        if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(consumer))
+          return isParallelGeneric(otherSide(consumer, false));
+        return false;
+      };
+      linalg::populateFoldReshapeOpsByExpansionPatterns(patterns,
+                                                        reshapeControl);
+    }
 
     // Apply the patterns greedily
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
@@ -4839,6 +4881,95 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
 
 namespace {
 /// Check if a value depends on the given loop induction variable
+bool dependsOnLoopIVForHoist(Value val, Value loopIV);
+
+// The coefficient of `iv` in `v` when `v` is linear in it: built from `iv`
+// with arith.addi / subi, arith.muli by a constant, and affine.apply ops
+// linear in their operands. 0 for a value that does not depend on `iv`;
+// std::nullopt otherwise.
+std::optional<int64_t> linearIVCoefficient(Value v, Value iv) {
+  if (v == iv)
+    return 1;
+  if (!dependsOnLoopIVForHoist(v, iv))
+    return 0;
+  if (auto add = v.getDefiningOp<arith::AddIOp>()) {
+    auto a = linearIVCoefficient(add.getLhs(), iv);
+    auto b = linearIVCoefficient(add.getRhs(), iv);
+    if (a && b)
+      return *a + *b;
+    return std::nullopt;
+  }
+  if (auto sub = v.getDefiningOp<arith::SubIOp>()) {
+    auto a = linearIVCoefficient(sub.getLhs(), iv);
+    auto b = linearIVCoefficient(sub.getRhs(), iv);
+    if (a && b)
+      return *a - *b;
+    return std::nullopt;
+  }
+  if (auto mul = v.getDefiningOp<arith::MulIOp>()) {
+    if (auto c = getConstantIntValue(mul.getRhs()))
+      if (auto a = linearIVCoefficient(mul.getLhs(), iv))
+        return *a * *c;
+    if (auto c = getConstantIntValue(mul.getLhs()))
+      if (auto a = linearIVCoefficient(mul.getRhs(), iv))
+        return *a * *c;
+    return std::nullopt;
+  }
+  if (auto apply = v.getDefiningOp<affine::AffineApplyOp>()) {
+    // Linear in each operand; sum each operand's coefficient on `iv`.
+    int64_t total = 0;
+    for (Value operand : apply.getMapOperands()) {
+      auto inner = linearIVCoefficient(operand, iv);
+      if (!inner)
+        return std::nullopt;
+      if (*inner == 0)
+        continue;
+      auto outer = xilinx::air::getAffineApplyCoefficient(apply, operand);
+      if (!outer)
+        return std::nullopt;
+      total += *outer * *inner;
+    }
+    return total;
+  }
+  return std::nullopt;
+}
+
+// Whether `v` can be computed before `forOp` for its first iteration: every
+// value it is computed from inside the loop is the induction variable or
+// produced by ops (not loop-carried block arguments).
+bool isComputableAtLowerBound(Value v, scf::ForOp forOp) {
+  if (v == forOp.getInductionVar())
+    return true;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return !forOp->isAncestor(cast<BlockArgument>(v).getOwner()->getParentOp());
+  if (!forOp->isAncestor(def))
+    return true;
+  if (def->getNumRegions() != 0)
+    return false;
+  return llvm::all_of(def->getOperands(), [&](Value operand) {
+    return isComputableAtLowerBound(operand, forOp);
+  });
+}
+
+// `v` as of the first iteration of `forOp`: its computation cloned before the
+// loop (at the rewriter's insertion point) with the induction variable
+// replaced by the lower bound. Requires isComputableAtLowerBound.
+Value cloneAtLowerBound(Value v, scf::ForOp forOp, RewriterBase &rewriter,
+                        IRMapping &mapping) {
+  if (v == forOp.getInductionVar())
+    return forOp.getLowerBound();
+  if (Value mapped = mapping.lookupOrNull(v))
+    return mapped;
+  Operation *def = v.getDefiningOp();
+  if (!def || !forOp->isAncestor(def))
+    return v;
+  for (Value operand : def->getOperands())
+    mapping.map(operand, cloneAtLowerBound(operand, forOp, rewriter, mapping));
+  Operation *clone = rewriter.clone(*def, mapping);
+  return clone->getResult(cast<OpResult>(v).getResultNumber());
+}
+
 bool dependsOnLoopIVForHoist(Value val, Value loopIV) {
   if (val == loopIV)
     return true;
@@ -4899,6 +5030,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
     };
 
     SmallVector<TransferOpInfo> transferOps;
+    std::optional<int64_t> loopStep = getConstantIntValue(forOp.getStep());
+    bool unsupported = false;
 
     for (Operation &op : forOp.getBody()->without_terminator()) {
       auto transferOp = dyn_cast_if_present<VectorTransferOpInterface>(&op);
@@ -4939,14 +5072,48 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
             dimStride *= memrefType.getShape()[j];
           }
 
-          // For now, assume the IV coefficient is 1 (i.e., the index is IV or
-          // IV + const) This is the total stride increment per loop iteration
-          constantStride += dimStride;
+          // The index advances by (its coefficient on the IV) * (the loop
+          // step) per iteration. An index not linear in the IV cannot be
+          // walked by a constant increment.
+          std::optional<int64_t> coefficient = linearIVCoefficient(idx, loopIV);
+          if (!coefficient || !loopStep ||
+              !isComputableAtLowerBound(idx, forOp)) {
+            unsupported = true;
+            break;
+          }
+          constantStride += dimStride * *coefficient * *loopStep;
         }
       }
+      // The pointer walk addresses the flattened memref directly, so it only
+      // reproduces a transfer whose permutation map is a minor identity (a
+      // broadcast or transposing map would be silently dropped) and whose
+      // vector is contiguous in memory: past its leading unit dims, one dim
+      // may be partial and every dim inside it must span its whole memref
+      // dim. A 4x8 block of rows 64 wide is not, and would be read as 32
+      // consecutive elements.
+      if (hasIVDependentIndices) {
+        if (!transferOp.getPermutationMap().isMinorIdentity())
+          unsupported = true;
+        ArrayRef<int64_t> vecShape = vectorType.getShape();
+        ArrayRef<int64_t> memShape = memrefType.getShape();
+        int64_t lead = memShape.size() - vecShape.size();
+        size_t partial = 0;
+        while (partial < vecShape.size() && vecShape[partial] == 1)
+          ++partial;
+        for (size_t i = partial + 1; i < vecShape.size(); ++i)
+          if (vecShape[i] != memShape[lead + i])
+            unsupported = true;
+      }
+      if (unsupported)
+        break;
 
       transferOps.push_back({&op, base, memrefType, vectorType, indices,
                              constantStride, hasIVDependentIndices});
+    }
+    // Leave the loop as it is rather than walk a pointer that is wrong.
+    if (unsupported) {
+      transformedOps.push_back(forOp);
+      continue;
     }
 
     // Prepare to add iter_args for each transfer operation with IV-dependent
@@ -4987,7 +5154,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       }
       flatMemrefs.push_back(flatMemref);
 
-      // Compute base pointer (with zeros for IV-dependent parts)
+      // Compute the base pointer: the indices on the first iteration
       int64_t rank = info.memrefType.getRank();
       AffineExpr linearExpr = rewriter.getAffineConstantExpr(0);
       int64_t stride = 1;
@@ -5013,8 +5180,10 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
             baseIndices.push_back(idx);
           }
         } else {
+          // The index on the first iteration: `iv + c` starts at lb + c, not
+          // at 0.
           baseIndices.push_back(
-              arith::ConstantIndexOp::create(rewriter, loc, 0));
+              cloneAtLowerBound(idx, forOp, rewriter, indexMapping));
         }
       }
 
@@ -5745,6 +5914,1806 @@ struct ConvertSize1VectorOpsToScalar : public RewritePattern {
     return success();
   }
 };
+
+//===----------------------------------------------------------------------===//
+// NormalizeLoopToUnitStepOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::NormalizeLoopToUnitStepOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> loops;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp)
+      return emitDefiniteFailure() << "expects scf.for targets";
+    OpFoldResult lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+                 step = forOp.getStep();
+    if (!isZeroInteger(lb) || !isOneInteger(step)) {
+      Location loc = forOp.getLoc();
+      rewriter.setInsertionPoint(forOp);
+      Range range = emitNormalizedLoopBounds(rewriter, loc, lb, ub, step);
+      rewriter.modifyOpInPlace(forOp, [&] {
+        forOp.setLowerBound(
+            getValueOrCreateConstantIndexOp(rewriter, loc, range.offset));
+        forOp.setUpperBound(
+            getValueOrCreateConstantIndexOp(rewriter, loc, range.size));
+        forOp.setStep(
+            getValueOrCreateConstantIndexOp(rewriter, loc, range.stride));
+      });
+      rewriter.setInsertionPointToStart(forOp.getBody());
+      denormalizeInductionVariable(rewriter, loc, forOp.getInductionVar(), lb,
+                                   step);
+    }
+    loops.push_back(forOp);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), loops);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// MergeSiblingCopiesOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+// b - a, when it is a constant: equal values, equal constants, or the two
+// reach a common value through arith.addi of constants.
+static std::optional<int64_t> constantDelta(OpFoldResult a, OpFoldResult b) {
+  auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+  if (ca && cb)
+    return *cb - *ca;
+  auto va = dyn_cast<Value>(a), vb = dyn_cast<Value>(b);
+  if (!va || !vb)
+    return std::nullopt;
+  auto split = [](Value v) {
+    int64_t c = 0;
+    while (auto add = v.getDefiningOp<arith::AddIOp>()) {
+      if (auto k = getConstantIntValue(add.getRhs())) {
+        c += *k;
+        v = add.getLhs();
+      } else if (auto k = getConstantIntValue(add.getLhs())) {
+        c += *k;
+        v = add.getRhs();
+      } else {
+        break;
+      }
+    }
+    return std::make_pair(v, c);
+  };
+  auto [baseA, offA] = split(va);
+  auto [baseB, offB] = split(vb);
+  if (baseA != baseB)
+    return std::nullopt;
+  return offB - offA;
+}
+
+// A memref.copy of a reinterpret_cast view into a fresh buffer that is only
+// read back through bufferization.to_tensor.
+struct SiblingCopy {
+  memref::CopyOp copy;
+  memref::ReinterpretCastOp view;
+  memref::AllocOp alloc;
+  SmallVector<bufferization::ToTensorOp> reads;
+  SmallVector<int64_t> sizes, strides;
+};
+
+static std::optional<SiblingCopy> matchSiblingCopy(memref::CopyOp copy) {
+  auto view = copy.getSource().getDefiningOp<memref::ReinterpretCastOp>();
+  auto alloc = copy.getTarget().getDefiningOp<memref::AllocOp>();
+  if (!view || !alloc || !alloc.getType().getLayout().isIdentity() ||
+      !alloc.getType().hasStaticShape())
+    return std::nullopt;
+  SiblingCopy c{copy, view, alloc, {}, {}, {}};
+  for (OpFoldResult ofr : view.getMixedSizes()) {
+    auto v = getConstantIntValue(ofr);
+    if (!v)
+      return std::nullopt;
+    c.sizes.push_back(*v);
+  }
+  for (OpFoldResult ofr : view.getMixedStrides()) {
+    auto v = getConstantIntValue(ofr);
+    if (!v || *v <= 0)
+      return std::nullopt;
+    c.strides.push_back(*v);
+  }
+  if (ArrayRef<int64_t>(c.sizes) != alloc.getType().getShape())
+    return std::nullopt;
+  for (Operation *user : alloc->getUsers()) {
+    if (user == copy)
+      continue;
+    auto read = dyn_cast<bufferization::ToTensorOp>(user);
+    if (!read)
+      return std::nullopt;
+    c.reads.push_back(read);
+  }
+  return c;
+}
+
+// The position, per dimension of a view with `strides`, of an element
+// `delta` elements past the view's origin; std::nullopt if it is not on the
+// view's grid.
+static std::optional<SmallVector<int64_t>>
+decomposeAlongStrides(int64_t delta, ArrayRef<int64_t> strides) {
+  if (delta < 0)
+    return std::nullopt;
+  SmallVector<int64_t> idx;
+  for (int64_t stride : strides) {
+    idx.push_back(delta / stride);
+    delta %= stride;
+  }
+  if (delta != 0)
+    return std::nullopt;
+  return idx;
+}
+
+} // namespace
+
+DiagnosedSilenceableFailure
+transform::MergeSiblingCopiesOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+  SmallVector<Operation *> merged;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    // Group by base, rank, element type and destination memory space,
+    // within one block. Strides are reconciled per group below: a dimension
+    // of extent 1 may carry any stride.
+    llvm::MapVector<std::tuple<Block *, Value, int64_t, Type, Attribute>,
+                    SmallVector<SiblingCopy>>
+        groups;
+    target->walk([&](memref::CopyOp copy) {
+      auto c = matchSiblingCopy(copy);
+      if (!c)
+        return;
+      MemRefType allocTy = c->alloc.getType();
+      groups[{copy->getBlock(), c->view.getSource(),
+              static_cast<int64_t>(c->strides.size()), allocTy.getElementType(),
+              allocTy.getMemorySpace()}]
+          .push_back(*c);
+    });
+
+    for (auto &[key, members] : groups) {
+      if (members.size() < 2)
+        continue;
+      // Order by position, and take the view with the lowest offset as the
+      // origin of the bounding region.
+      llvm::sort(members, [](const SiblingCopy &a, const SiblingCopy &b) {
+        return a.copy->isBeforeInBlock(b.copy);
+      });
+      OpFoldResult firstOffset = members.front().view.getMixedOffsets()[0];
+      SmallVector<int64_t> deltas;
+      for (SiblingCopy &m : members) {
+        auto d = constantDelta(firstOffset, m.view.getMixedOffsets()[0]);
+        if (!d)
+          break;
+        deltas.push_back(*d);
+      }
+      if (deltas.size() != members.size())
+        continue;
+      int64_t minDelta = *llvm::min_element(deltas);
+      // The common view's strides: a dimension's stride is set by the members
+      // that span more than one element of it, which must agree.
+      size_t rank = members.front().strides.size();
+      SmallVector<int64_t> strides(members.front().strides);
+      bool stridesAgree = true;
+      for (size_t i = 0; i < rank; ++i) {
+        std::optional<int64_t> set;
+        for (SiblingCopy &m : members) {
+          if (m.sizes[i] == 1)
+            continue;
+          if (set && *set != m.strides[i])
+            stridesAgree = false;
+          set = m.strides[i];
+        }
+        if (set)
+          strides[i] = *set;
+      }
+      if (!stridesAgree)
+        continue;
+      SmallVector<SmallVector<int64_t>> positions;
+      SmallVector<int64_t> bound(rank, 0);
+      bool ok = true;
+      for (auto [m, d] : llvm::zip_equal(members, deltas)) {
+        auto idx = decomposeAlongStrides(d - minDelta, strides);
+        if (!idx) {
+          ok = false;
+          break;
+        }
+        for (size_t i = 0; i < rank; ++i)
+          bound[i] = std::max(bound[i], (*idx)[i] + m.sizes[i]);
+        positions.push_back(*idx);
+      }
+      // The bounding region must stay a view of the same grid: in each inner
+      // dimension it may not run past the next outer stride.
+      for (size_t i = 1; ok && i < rank; ++i)
+        if (strides[i - 1] % strides[i] == 0 &&
+            bound[i] > strides[i - 1] / strides[i])
+          ok = false;
+      if (!ok)
+        continue;
+
+      SiblingCopy &first = members.front();
+      Location loc = first.copy.getLoc();
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(first.copy);
+      OpFoldResult offset = firstOffset;
+      if (minDelta != 0) {
+        if (auto c = getConstantIntValue(firstOffset))
+          offset = rewriter.getIndexAttr(*c + minDelta);
+        else
+          offset = arith::AddIOp::create(
+                       rewriter, loc, cast<Value>(firstOffset),
+                       arith::ConstantIndexOp::create(rewriter, loc, minDelta))
+                       .getResult();
+      }
+      Type elemTy = first.alloc.getType().getElementType();
+      auto viewTy = MemRefType::get(
+          bound, elemTy,
+          StridedLayoutAttr::get(rewriter.getContext(),
+                                 getConstantIntValue(offset)
+                                     ? *getConstantIntValue(offset)
+                                     : ShapedType::kDynamic,
+                                 strides),
+          first.view.getType().getMemorySpace());
+      auto view = memref::ReinterpretCastOp::create(
+          rewriter, loc, viewTy, first.view.getSource(), offset,
+          getAsIndexOpFoldResult(rewriter.getContext(), bound),
+          getAsIndexOpFoldResult(rewriter.getContext(), strides));
+      auto allocTy = MemRefType::get(bound, elemTy, MemRefLayoutAttrInterface{},
+                                     first.alloc.getType().getMemorySpace());
+      auto alloc = memref::AllocOp::create(rewriter, loc, allocTy);
+      auto copy = memref::CopyOp::create(rewriter, loc, view, alloc);
+      auto whole = bufferization::ToTensorOp::create(
+          rewriter, loc, memref::getTensorTypeFromMemRefType(allocTy), alloc,
+          rewriter.getUnitAttr(), rewriter.getUnitAttr());
+      merged.push_back(copy);
+
+      for (auto [m, pos] : llvm::zip_equal(members, positions)) {
+        for (bufferization::ToTensorOp read : m.reads) {
+          rewriter.setInsertionPoint(read);
+          SmallVector<OpFoldResult> ones(rank, rewriter.getIndexAttr(1));
+          rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
+              read, cast<RankedTensorType>(read.getType()), whole,
+              getAsIndexOpFoldResult(rewriter.getContext(), pos),
+              getAsIndexOpFoldResult(rewriter.getContext(), m.sizes), ones);
+        }
+        rewriter.eraseOp(m.copy);
+        rewriter.eraseOp(m.alloc);
+        if (m.view->use_empty())
+          rewriter.eraseOp(m.view);
+      }
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), merged);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// CoalesceSlicesOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// `v` as a simplified affine expression of the leaf values it is computed
+// from through affine.apply, affine.delinearize_index and arith add/mul by
+// constants. Leaves become dims.
+struct AffineOfValue {
+  SmallVector<Value> leaves;
+  std::optional<AffineExpr> build(Value v, MLIRContext *ctx, int depth = 0) {
+    if (auto c = getConstantIntValue(v))
+      return getAffineConstantExpr(*c, ctx);
+    Operation *def = v.getDefiningOp();
+    if (depth < 16 && def) {
+      if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
+        AffineMap map = apply.getAffineMap();
+        SmallVector<AffineExpr> dims, syms;
+        for (unsigned i = 0; i < map.getNumDims(); ++i) {
+          auto e = build(apply.getMapOperands()[i], ctx, depth + 1);
+          if (!e)
+            return std::nullopt;
+          dims.push_back(*e);
+        }
+        for (unsigned i = 0; i < map.getNumSymbols(); ++i) {
+          auto e = build(apply.getMapOperands()[map.getNumDims() + i], ctx,
+                         depth + 1);
+          if (!e)
+            return std::nullopt;
+          syms.push_back(*e);
+        }
+        return map.getResult(0).replaceDimsAndSymbols(dims, syms);
+      }
+      if (auto delin = dyn_cast<affine::AffineDelinearizeIndexOp>(def)) {
+        auto in = build(delin.getLinearIndex(), ctx, depth + 1);
+        SmallVector<int64_t> basis(delin.getStaticBasis());
+        if (!in || llvm::any_of(basis, ShapedType::isDynamic))
+          return std::nullopt;
+        unsigned i = cast<OpResult>(v).getResultNumber();
+        // With an outer bound the basis has one entry per result.
+        bool hasOuter = basis.size() == delin.getNumResults();
+        int64_t inner = 1;
+        for (size_t k = (hasOuter ? i + 1 : i); k < basis.size(); ++k)
+          inner *= basis[k];
+        AffineExpr e = in->floorDiv(inner);
+        if (i != 0 || hasOuter)
+          e = e % basis[hasOuter ? i : i - 1];
+        return e;
+      }
+      if (auto add = dyn_cast<arith::AddIOp>(def)) {
+        auto a = build(add.getLhs(), ctx, depth + 1);
+        auto b = build(add.getRhs(), ctx, depth + 1);
+        if (a && b)
+          return *a + *b;
+        return std::nullopt;
+      }
+      if (auto mul = dyn_cast<arith::MulIOp>(def)) {
+        auto a = build(mul.getLhs(), ctx, depth + 1);
+        auto b = build(mul.getRhs(), ctx, depth + 1);
+        if (a && b &&
+            (isa<AffineConstantExpr>(*a) || isa<AffineConstantExpr>(*b)))
+          return *a * *b;
+        return std::nullopt;
+      }
+    }
+    auto it = llvm::find(leaves, v);
+    unsigned pos = it - leaves.begin();
+    if (it == leaves.end())
+      leaves.push_back(v);
+    return getAffineDimExpr(pos, ctx);
+  }
+};
+
+// The constant value of an offset that simplifies to one: `8 * ((8 * j) mod
+// 4)`, say, from delinearizing a loop index into (group, row block).
+static std::optional<int64_t> provenConstant(OpFoldResult ofr,
+                                             MLIRContext *ctx) {
+  if (auto c = getConstantIntValue(ofr))
+    return c;
+  AffineOfValue builder;
+  auto e = builder.build(cast<Value>(ofr), ctx);
+  if (!e)
+    return std::nullopt;
+  AffineExpr simplified =
+      simplifyAffineExpr(*e, builder.leaves.size(), /*numSymbols=*/0);
+  if (auto c = dyn_cast<AffineConstantExpr>(simplified))
+    return c.getValue();
+  return std::nullopt;
+}
+} // namespace
+
+DiagnosedSilenceableFailure
+transform::CoalesceSlicesOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+  SmallVector<Operation *> copies;
+  // The slices feeding the targets' inputs, grouped by source.
+  llvm::MapVector<Value, SmallVector<tensor::ExtractSliceOp>> groups;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    auto dps = dyn_cast<DestinationStyleOpInterface>(target);
+    if (!dps)
+      return emitDefiniteFailure() << "expects destination-style targets";
+    for (OpOperand *operand : dps.getDpsInputOperands()) {
+      // A slice may reach the input through a tensor.expand_shape (unit
+      // dimensions Triton's broadcasting adds); the expand stays.
+      Value in = operand->get();
+      if (auto expand = in.getDefiningOp<tensor::ExpandShapeOp>())
+        in = expand.getSrc();
+      if (auto slice = in.getDefiningOp<tensor::ExtractSliceOp>())
+        if (!llvm::is_contained(groups[slice.getSource()], slice))
+          groups[slice.getSource()].push_back(slice);
+    }
+  }
+
+  for (auto &[source, slices] : groups) {
+    if (slices.size() < 2)
+      continue;
+    int64_t rank = slices.front().getSourceType().getRank();
+    Block *block = slices.front()->getBlock();
+    bool ok = llvm::all_of(slices, [&](tensor::ExtractSliceOp s) {
+      return s.hasUnitStride() && s->getBlock() == block;
+    });
+    // Per dimension: the same offset everywhere (the region starts there and
+    // is as large as the largest slice), or static offsets and sizes.
+    SmallVector<OpFoldResult> lo(rank), size(rank);
+    SmallVector<bool> common(rank, false);
+    for (int64_t d = 0; ok && d < rank; ++d) {
+      OpFoldResult off0 = slices.front().getMixedOffsets()[d];
+      bool same = llvm::all_of(slices, [&](tensor::ExtractSliceOp s) {
+        return isEqualConstantIntOrValue(s.getMixedOffsets()[d], off0);
+      });
+      if (same) {
+        common[d] = true;
+        lo[d] = off0;
+        int64_t maxSize = 0;
+        for (tensor::ExtractSliceOp s : slices) {
+          auto sz = getConstantIntValue(s.getMixedSizes()[d]);
+          if (!sz) {
+            ok = false;
+            break;
+          }
+          maxSize = std::max(maxSize, *sz);
+        }
+        size[d] = rewriter.getIndexAttr(maxSize);
+        continue;
+      }
+      int64_t l = std::numeric_limits<int64_t>::max(), h = 0;
+      for (tensor::ExtractSliceOp s : slices) {
+        auto o = provenConstant(s.getMixedOffsets()[d], rewriter.getContext());
+        auto sz = getConstantIntValue(s.getMixedSizes()[d]);
+        if (!o || !sz) {
+          ok = false;
+          break;
+        }
+        l = std::min(l, *o);
+        h = std::max(h, *o + *sz);
+      }
+      lo[d] = rewriter.getIndexAttr(l);
+      size[d] = rewriter.getIndexAttr(h - l);
+    }
+    if (!ok)
+      continue;
+
+    tensor::ExtractSliceOp earliest = slices.front();
+    for (tensor::ExtractSliceOp s : slices)
+      if (s->isBeforeInBlock(earliest))
+        earliest = s;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(earliest);
+    Location loc = earliest.getLoc();
+    SmallVector<OpFoldResult> ones(rank, rewriter.getIndexAttr(1));
+    auto region =
+        tensor::ExtractSliceOp::create(rewriter, loc, source, lo, size, ones);
+    auto empty =
+        tensor::EmptyOp::create(rewriter, loc, region.getType().getShape(),
+                                region.getType().getElementType());
+    auto copy = linalg::CopyOp::create(rewriter, loc, region.getResult(),
+                                       empty.getResult());
+    copies.push_back(copy);
+    for (tensor::ExtractSliceOp s : slices) {
+      SmallVector<OpFoldResult> offsets;
+      for (int64_t d = 0; d < rank; ++d)
+        offsets.push_back(
+            common[d]
+                ? rewriter.getIndexAttr(0)
+                : rewriter.getIndexAttr(*provenConstant(s.getMixedOffsets()[d],
+                                                        rewriter.getContext()) -
+                                        *getConstantIntValue(lo[d])));
+      rewriter.setInsertionPoint(s);
+      rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
+          s, s.getType(), copy.getResult(0), offsets, s.getMixedSizes(), ones);
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), copies);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// FoldPackIntoGenericOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::FoldPackIntoGenericOp::apply(transform::TransformRewriter &rewriter,
+                                        transform::TransformResults &results,
+                                        transform::TransformState &state) {
+  SmallVector<Operation *> updated;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    auto generic = dyn_cast<linalg::GenericOp>(target);
+    if (!generic)
+      return emitDefiniteFailure() << "expects linalg.generic targets";
+    SmallVector<AffineMap> maps = generic.getIndexingMapsArray();
+    SmallVector<linalg::PackOp> folded;
+    for (OpOperand *operand : generic.getDpsInputOperands()) {
+      auto pack = operand->get().getDefiningOp<linalg::PackOp>();
+      if (!pack)
+        continue;
+      ArrayRef<int64_t> srcShape = pack.getSourceType().getShape();
+      ArrayRef<int64_t> innerPos = pack.getInnerDimsPos();
+      SmallVector<int64_t> tiles(pack.getStaticInnerTiles());
+      // Without padding: every tiled dimension divides into whole tiles.
+      bool exact = true;
+      for (auto [d, t] : llvm::zip_equal(innerPos, tiles))
+        exact &= !ShapedType::isDynamic(t) &&
+                 !ShapedType::isDynamic(srcShape[d]) && srcShape[d] % t == 0;
+      if (!exact)
+        continue;
+      int64_t srcRank = srcShape.size();
+      AffineMap packed = maps[operand->getOperandNumber()];
+      ArrayRef<int64_t> outerPerm = pack.getOuterDimsPerm();
+      SmallVector<AffineExpr> exprs(srcRank);
+      for (int64_t j = 0; j < srcRank; ++j)
+        exprs[outerPerm.empty() ? j : outerPerm[j]] = packed.getResult(j);
+      for (auto [i, d] : llvm::enumerate(innerPos))
+        exprs[d] = exprs[d] * tiles[i] + packed.getResult(srcRank + i);
+      maps[operand->getOperandNumber()] =
+          AffineMap::get(packed.getNumDims(), packed.getNumSymbols(), exprs,
+                         rewriter.getContext());
+      rewriter.modifyOpInPlace(generic,
+                               [&] { operand->set(pack.getSource()); });
+      folded.push_back(pack);
+    }
+    rewriter.modifyOpInPlace(generic, [&] {
+      generic.setIndexingMapsAttr(rewriter.getAffineMapArrayAttr(maps));
+    });
+    for (linalg::PackOp pack : folded)
+      if (pack->use_empty())
+        rewriter.eraseOp(pack);
+    updated.push_back(generic);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), updated);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// LinearizeVectorsOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+// A transfer_read whose permutation map is the identity except for broadcast
+// (constant 0) results reads one element along each broadcast dim: memref dim
+// i is then not indexed by any vector dim, so the read takes the element at
+// indices[i]. Read that with an identity map (extent 1 at the broadcast dims)
+// and stretch it with vector.broadcast, which linearization turns into a
+// shuffle.
+struct UnbroadcastTransferRead
+    : public OpRewritePattern<vector::TransferReadOp> {
+  using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferReadOp read,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = read.getVectorType();
+    AffineMap map = read.getPermutationMap();
+    if (read.getMask() || vecType.isScalable() ||
+        map.getNumResults() != map.getNumDims() ||
+        !isa<MemRefType>(read.getBase().getType()))
+      return failure();
+
+    SmallVector<int64_t> readShape(vecType.getShape());
+    SmallVector<bool> inBounds = read.getInBoundsValues();
+    bool broadcasts = false;
+    for (auto [i, expr] : llvm::enumerate(map.getResults())) {
+      if (auto dim = dyn_cast<AffineDimExpr>(expr)) {
+        if (dim.getPosition() != i)
+          return failure();
+        continue;
+      }
+      auto cst = dyn_cast<AffineConstantExpr>(expr);
+      if (!cst || cst.getValue() != 0)
+        return failure();
+      // The original read already took this element, so it is in bounds.
+      readShape[i] = 1;
+      inBounds[i] = true;
+      broadcasts = true;
+    }
+    if (!broadcasts)
+      return failure();
+
+    auto newRead = vector::TransferReadOp::create(
+        rewriter, read.getLoc(),
+        VectorType::get(readShape, vecType.getElementType()), read.getBase(),
+        read.getIndices(), read.getPadding(),
+        rewriter.getMultiDimIdentityMap(map.getNumDims()),
+        ArrayRef<bool>(inBounds));
+    rewriter.replaceOpWithNewOp<vector::BroadcastOp>(read, vecType, newRead);
+    return success();
+  }
+};
+
+// A transfer_read whose vector is not one contiguous run of its memref (a
+// 4x8 block of rows 64 wide, say), read one innermost row at a time and
+// assembled with vector.insert, which linearization turns into shuffles.
+// Downstream flattening of n-D transfers (mlir-aie's
+// FlattenMultDimTransferReadPattern) checks only that the memref is
+// row-major, and reads such a block as consecutive elements.
+struct SplitNonContiguousTransferRead
+    : public OpRewritePattern<vector::TransferReadOp> {
+  using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferReadOp read,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = read.getVectorType();
+    auto memrefType = dyn_cast<MemRefType>(read.getBase().getType());
+    if (!memrefType || read.getMask() || vecType.getRank() < 2 ||
+        vecType.isScalable() || !read.getPermutationMap().isMinorIdentity() ||
+        vector::isContiguousSlice(memrefType, vecType))
+      return failure();
+
+    Location loc = read.getLoc();
+    int64_t rank = vecType.getRank();
+    int64_t memRank = memrefType.getRank();
+    ArrayRef<int64_t> shape = vecType.getShape();
+    auto rowType = VectorType::get({shape.back()}, vecType.getElementType());
+    SmallVector<bool> inBounds = read.getInBoundsValues();
+    Value result = arith::ConstantOp::create(rewriter, loc, vecType,
+                                             rewriter.getZeroAttr(vecType));
+    SmallVector<int64_t> pos(rank - 1, 0);
+    for (int64_t n = 0, e = vecType.getNumElements() / shape.back(); n < e;
+         ++n) {
+      // Row `pos` of the vector reads memref indices offset by `pos` in the
+      // vector's (trailing) dims.
+      SmallVector<Value> indices(read.getIndices());
+      for (int64_t d = 0; d < rank - 1; ++d)
+        if (pos[d] != 0) {
+          Value &idx = indices[memRank - rank + d];
+          idx = arith::AddIOp::create(
+              rewriter, loc, idx,
+              arith::ConstantIndexOp::create(rewriter, loc, pos[d]));
+        }
+      Value row = vector::TransferReadOp::create(
+          rewriter, loc, rowType, read.getBase(), indices, read.getPadding(),
+          ArrayRef<bool>{inBounds.back()});
+      result = vector::InsertOp::create(rewriter, loc, row, result, pos);
+      for (int64_t d = rank - 2; d >= 0; --d) {
+        if (++pos[d] < shape[d])
+          break;
+        pos[d] = 0;
+      }
+    }
+    rewriter.replaceOp(read, result);
+    return success();
+  }
+};
+
+// A rank-1 transfer_read along memref dim k, every later dim of extent 1:
+// the permutation map `(..., dk, ...) -> (dk)` that folding a rank-reducing
+// subview into the read leaves. Collapse the trailing unit dims into dim k
+// and read with a minor identity map: the AIE core lowering handles only
+// those. (The trailing indices index extent-1 dims, so they are 0.)
+struct TrailingUnitDimsTransferRead
+    : public OpRewritePattern<vector::TransferReadOp> {
+  using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferReadOp read,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = read.getVectorType();
+    AffineMap map = read.getPermutationMap();
+    auto memrefType = dyn_cast<MemRefType>(read.getBase().getType());
+    if (read.getMask() || vecType.getRank() != 1 || !memrefType ||
+        map.getNumResults() != 1 || map.isMinorIdentity())
+      return failure();
+    auto dim = dyn_cast<AffineDimExpr>(map.getResult(0));
+    int64_t rank = memrefType.getRank();
+    if (!dim)
+      return failure();
+    for (int64_t d = dim.getPosition() + 1; d < rank; ++d)
+      if (memrefType.getDimSize(d) != 1)
+        return failure();
+    // Fold dims k.. (all but k of extent 1) into one: the read is then a
+    // minor identity read of the collapsed memref.
+    int64_t k = dim.getPosition();
+    SmallVector<ReassociationIndices> reassoc;
+    for (int64_t d = 0; d < k; ++d)
+      reassoc.push_back({d});
+    ReassociationIndices last;
+    for (int64_t d = k; d < rank; ++d)
+      last.push_back(d);
+    reassoc.push_back(last);
+    if (!memref::CollapseShapeOp::isGuaranteedCollapsible(memrefType, reassoc))
+      return failure();
+    Location loc = read.getLoc();
+    Value collapsed =
+        memref::CollapseShapeOp::create(rewriter, loc, read.getBase(), reassoc);
+    SmallVector<Value> indices(read.getIndices().begin(),
+                               read.getIndices().begin() + k + 1);
+    rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
+        read, vecType, collapsed, indices, read.getPadding(),
+        ArrayRef<bool>{read.getInBoundsValues()[0]});
+    return success();
+  }
+};
+
+// A rank-1 transfer_read that is a strided gather, along a memref dim
+// other than the innermost (permutation map `(..., dk, ...) -> (dk)`), or
+// along a strided innermost dim: the AIE core lowering has no pattern for
+// it. Read element by element.
+struct UnrollStridedTransferRead
+    : public OpRewritePattern<vector::TransferReadOp> {
+  using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferReadOp read,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = read.getVectorType();
+    AffineMap map = read.getPermutationMap();
+    auto memrefType = dyn_cast<MemRefType>(read.getBase().getType());
+    if (read.getMask() || vecType.getRank() != 1 || vecType.isScalable() ||
+        map.getNumResults() != 1 || !memrefType)
+      return failure();
+    auto dim = dyn_cast<AffineDimExpr>(map.getResult(0));
+    if (!dim)
+      return failure();
+    // Along the innermost dim it is a gather only if that dim is strided
+    // (a rank-reduced subview of a column, say).
+    if (map.isMinorIdentity() && vector::isContiguousSlice(memrefType, vecType))
+      return failure();
+    Location loc = read.getLoc();
+    SmallVector<Value> elems;
+    for (int64_t i = 0, e = vecType.getNumElements(); i < e; ++i) {
+      SmallVector<Value> indices(read.getIndices());
+      Value &idx = indices[dim.getPosition()];
+      if (i != 0)
+        idx = arith::AddIOp::create(
+            rewriter, loc, idx,
+            arith::ConstantIndexOp::create(rewriter, loc, i));
+      elems.push_back(
+          memref::LoadOp::create(rewriter, loc, read.getBase(), indices));
+    }
+    rewriter.replaceOpWithNewOp<vector::FromElementsOp>(read, vecType, elems);
+    return success();
+  }
+};
+
+// vector.broadcast of a vector, linearized as a vector.shuffle of the
+// flattened source: result element i takes the source element at i's
+// coordinates, with the stretched (extent 1) and the new leading dims
+// pinned to 0.
+struct LinearizeBroadcastToShuffle
+    : public OpConversionPattern<vector::BroadcastOp> {
+  using OpConversionPattern<vector::BroadcastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::BroadcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto srcType = dyn_cast<VectorType>(op.getSourceType());
+    VectorType resType = op.getResultVectorType();
+    if (!srcType || srcType.isScalable() || resType.isScalable())
+      return failure();
+    Type flatType = getTypeConverter()->convertType(resType);
+    if (!flatType)
+      return failure();
+
+    ArrayRef<int64_t> resShape = resType.getShape();
+    ArrayRef<int64_t> srcShape = srcType.getShape();
+    int64_t lead = resShape.size() - srcShape.size();
+    SmallVector<int64_t> srcStrides(srcShape.size(), 1);
+    for (int64_t d = static_cast<int64_t>(srcShape.size()) - 2; d >= 0; --d)
+      srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
+
+    SmallVector<int64_t> mask;
+    mask.reserve(resType.getNumElements());
+    SmallVector<int64_t> coord(resShape.size(), 0);
+    for (int64_t n = 0, e = resType.getNumElements(); n < e; ++n) {
+      int64_t src = 0;
+      for (size_t d = 0; d < srcShape.size(); ++d)
+        if (srcShape[d] != 1)
+          src += coord[lead + d] * srcStrides[d];
+      mask.push_back(src);
+      for (int64_t d = static_cast<int64_t>(resShape.size()) - 1; d >= 0; --d) {
+        if (++coord[d] < resShape[d])
+          break;
+        coord[d] = 0;
+      }
+    }
+
+    Value src = adaptor.getSource();
+    if (cast<VectorType>(src.getType()).getRank() != 1)
+      src = vector::ShapeCastOp::create(
+          rewriter, op.getLoc(),
+          VectorType::get({srcType.getNumElements()}, srcType.getElementType()),
+          src);
+    rewriter.replaceOpWithNewOp<vector::ShuffleOp>(op, flatType, src, src,
+                                                   mask);
+    return success();
+  }
+};
+
+// The lanes of a rank-1 `v` as lanes of the value it is a static permutation
+// of, through vector.shuffle (of one source), vector.shape_cast and
+// vector.transpose: `lanes[l]` is the source lane of lane l.
+static Value traceLanes(Value v, SmallVector<int64_t> &lanes) {
+  auto vt = cast<VectorType>(v.getType());
+  lanes.resize(vt.getNumElements());
+  std::iota(lanes.begin(), lanes.end(), 0);
+  while (true) {
+    Operation *def = v.getDefiningOp();
+    if (auto sc = dyn_cast_if_present<vector::ShapeCastOp>(def)) {
+      v = sc.getSource();
+      continue;
+    }
+    if (auto tr = dyn_cast_if_present<vector::TransposeOp>(def)) {
+      // Result lane at coords c reads source coords c' with c'[perm[i]] =
+      // c[i].
+      VectorType rt = tr.getResultVectorType();
+      VectorType st = tr.getSourceVectorType();
+      ArrayRef<int64_t> perm = tr.getPermutation();
+      SmallVector<int64_t> rStrides = computeStrides(rt.getShape());
+      SmallVector<int64_t> sStrides = computeStrides(st.getShape());
+      for (int64_t &l : lanes) {
+        SmallVector<int64_t> c = delinearize(l, rStrides);
+        int64_t src = 0;
+        for (size_t i = 0; i < perm.size(); ++i)
+          src += c[i] * sStrides[perm[i]];
+        l = src;
+      }
+      v = tr.getVector();
+      continue;
+    }
+    if (auto sh = dyn_cast_if_present<vector::ShuffleOp>(def)) {
+      int64_t n1 = sh.getV1VectorType().getNumElements();
+      ArrayRef<int64_t> mask = sh.getMask();
+      bool fromV1 =
+          llvm::all_of(lanes, [&](int64_t l) { return mask[l] < n1; });
+      bool fromV2 =
+          llvm::all_of(lanes, [&](int64_t l) { return mask[l] >= n1; });
+      if (!fromV1 && !fromV2 && sh.getV1() != sh.getV2())
+        return v;
+      for (int64_t &l : lanes)
+        l = mask[l] % n1;
+      v = (fromV2 && !fromV1) ? sh.getV2() : sh.getV1();
+      continue;
+    }
+    return v;
+  }
+}
+
+// `(X >> [0, 4, 8, ...]) & 15` where lane l of X is word l / k of a vector
+// W (k = 4-bit fields per word): the 4-bit fields of W in order. Rewritten
+// as `extsi(extui(bitcast(W) to i4) to i8)`, which AIE lowers to its
+// unpack instruction; neither the per-lane right shift nor the
+// replication of W has a lowering there. Triton, having no i4, spells a
+// 4-bit unpack this way.
+struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
+  using OpRewritePattern<arith::AndIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AndIOp andOp,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(andOp.getType());
+    if (!vt || vt.getRank() != 1)
+      return failure();
+    auto elemTy = dyn_cast<IntegerType>(vt.getElementType());
+    if (!elemTy || elemTy.getWidth() % 4 != 0)
+      return failure();
+    int64_t k = elemTy.getWidth() / 4, n = vt.getNumElements();
+    // Constants may come reshaped or replicated (defined outside the
+    // linearized region, say): look through lane permutations.
+    auto constantOf = [](Value v, DenseIntElementsAttr &attr) {
+      SmallVector<int64_t> unused;
+      return matchPattern(traceLanes(v, unused), m_Constant(&attr));
+    };
+    DenseIntElementsAttr maskAttr, shiftAttr;
+    Value shifted = andOp.getLhs();
+    if (!constantOf(andOp.getRhs(), maskAttr)) {
+      shifted = andOp.getRhs();
+      if (!constantOf(andOp.getLhs(), maskAttr))
+        return failure();
+    }
+    if (!maskAttr.isSplat() || maskAttr.getSplatValue<APInt>() != 15)
+      return failure();
+    Operation *shOp = shifted.getDefiningOp();
+    if (!isa_and_present<arith::ShRSIOp, arith::ShRUIOp>(shOp))
+      return failure();
+    // The shift amounts: a constant, possibly replicated by shuffles.
+    SmallVector<int64_t> shiftLanes;
+    Value shiftBase = traceLanes(shOp->getOperand(1), shiftLanes);
+    if (!matchPattern(shiftBase, m_Constant(&shiftAttr)))
+      return failure();
+    auto shifts = llvm::to_vector(shiftAttr.getValues<APInt>());
+    for (int64_t l = 0; l < n; ++l)
+      if (shifts[shiftLanes[l]].getZExtValue() !=
+          static_cast<uint64_t>(4 * (l % k)))
+        return failure();
+    SmallVector<int64_t> lanes;
+    Value words = traceLanes(shOp->getOperand(0), lanes);
+    auto wt = dyn_cast<VectorType>(words.getType());
+    if (!wt || wt.isScalable() || wt.getElementType() != elemTy)
+      return failure();
+    for (int64_t l = 0; l < n; ++l)
+      if (lanes[l] != l / k)
+        return failure();
+    // The unpack instruction takes 64 or 128 4-bit fields.
+    int64_t fields = n <= 64 ? 64 : 128;
+    if (n > 128 || n % k != 0)
+      return failure();
+
+    Location loc = andOp.getLoc();
+    Type i8 = rewriter.getI8Type();
+    if (wt.getRank() != 1) {
+      wt = VectorType::get({wt.getNumElements()}, elemTy);
+      words = vector::ShapeCastOp::create(rewriter, loc, wt, words);
+    }
+    int64_t wordBytes = elemTy.getWidth() / 8;
+#if AIR_ENABLE_AIE
+    // Exactly one unpack's worth of bytes: emit aievec.unpack itself. The
+    // standard spelling (bitcast to i4 + extui to i8) is folded apart by
+    // canonicalization (bitcast chains merge, extsi(extui) becomes one
+    // extui) before the AIE lowering gets to match it.
+    if (wt.getNumElements() * wordBytes * 2 == n && (n == 64 || n == 128)) {
+      Value bytes = vector::BitCastOp::create(
+          rewriter, loc, VectorType::get({n / 2}, i8), words);
+      Value unpacked = xilinx::aievec::UnpackOp::create(
+          rewriter, loc, VectorType::get({n}, i8), bytes);
+      rewriter.replaceOpWithNewOp<arith::ExtSIOp>(andOp, vt, unpacked);
+      if (shOp->use_empty())
+        rewriter.eraseOp(shOp);
+      return success();
+    }
+#endif
+    Value bytes = vector::BitCastOp::create(
+        rewriter, loc, VectorType::get({wt.getNumElements() * wordBytes}, i8),
+        words);
+    int64_t haveBytes = wt.getNumElements() * wordBytes;
+    SmallVector<int64_t> pick(fields / 2);
+    for (int64_t b = 0; b < fields / 2; ++b)
+      pick[b] = b < haveBytes ? b : haveBytes; // padding: lane 0 of `zero`
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc, cast<VectorType>(bytes.getType()),
+        rewriter.getZeroAttr(bytes.getType()));
+    Value padded = vector::ShuffleOp::create(rewriter, loc, bytes, zero, pick);
+    Value nibbles = vector::BitCastOp::create(
+        rewriter, loc, VectorType::get({fields}, rewriter.getIntegerType(4)),
+        padded);
+    Value unpacked = arith::ExtUIOp::create(
+        rewriter, loc, VectorType::get({fields}, i8), nibbles);
+    SmallVector<int64_t> first(n);
+    std::iota(first.begin(), first.end(), 0);
+    Value lanesN =
+        vector::ShuffleOp::create(rewriter, loc, unpacked, unpacked, first);
+    // 0..15 in i8: sign and zero extension agree.
+    rewriter.replaceOpWithNewOp<arith::ExtSIOp>(andOp, vt, lanesN);
+    if (shOp->use_empty())
+      rewriter.eraseOp(shOp);
+    return success();
+  }
+};
+
+// A rank-1 elementwise op wider than the AIE vector lowering handles, split
+// into native-width pieces: 32 lanes of bf16 (add/sub/mul), 16 lanes when
+// f32 is involved (vector.fma, extf to f32, truncf from f32, f32
+// add/sub/mul), one 512-bit register or accumulator each. The pieces are
+// assembled with vector.insert_strided_slice so that the next split op's
+// vector.extract_strided_slice folds onto them, keeping producer and
+// consumer pieces adjacent (mul+add for the FMA lowering, extf feeding an
+// fma for mac_elem).
+struct SplitWideElementwise : public RewritePattern {
+  SplitWideElementwise(MLIRContext *ctx, int64_t f32Lanes)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, ctx),
+        f32Lanes(f32Lanes) {}
+
+  int64_t f32Lanes;
+
+  int64_t nativeLanes(Operation *op) const {
+    auto isF32 = [](Type t) {
+      auto vt = dyn_cast<VectorType>(t);
+      return vt && vt.getElementType().isF32();
+    };
+    bool f32 = llvm::any_of(op->getOperandTypes(), isF32) ||
+               llvm::any_of(op->getResultTypes(), isF32);
+    if (isa<vector::FMAOp, arith::ExtFOp, arith::TruncFOp>(op))
+      return f32 ? f32Lanes : 0;
+    if (isa<arith::AddFOp, arith::SubFOp, arith::MulFOp>(op)) {
+      if (f32)
+        return f32Lanes;
+      auto vt = dyn_cast<VectorType>(op->getResult(0).getType());
+      return vt && vt.getElementType().isBF16() ? 32 : 0;
+    }
+    return 0;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    int64_t lanes = nativeLanes(op);
+    if (!lanes || op->getNumResults() != 1)
+      return failure();
+    auto vt = dyn_cast<VectorType>(op->getResult(0).getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() <= lanes ||
+        vt.getNumElements() % lanes != 0)
+      return failure();
+    for (Value v : op->getOperands()) {
+      auto ot = dyn_cast<VectorType>(v.getType());
+      if (!ot || ot.getRank() != 1 ||
+          ot.getNumElements() != vt.getNumElements())
+        return failure();
+    }
+    // Halve, and let the pattern apply again to the halves: the AIE
+    // lowering extracts halves of a register, not arbitrary sub-ranges.
+    if (!llvm::isPowerOf2_64(vt.getNumElements() / lanes))
+      return failure();
+    lanes = vt.getNumElements() / 2;
+    Location loc = op->getLoc();
+    auto pieceType = VectorType::get({lanes}, vt.getElementType());
+    Value result = ub::PoisonOp::create(rewriter, loc, vt);
+    for (int64_t off = 0; off < vt.getNumElements(); off += lanes) {
+      SmallVector<Value> pieces;
+      for (Value v : op->getOperands())
+        pieces.push_back(vector::ExtractStridedSliceOp::create(rewriter, loc, v,
+                                                               off, lanes, 1));
+      OperationState state(loc, op->getName().getIdentifier(), pieces,
+                           TypeRange{pieceType}, op->getAttrs());
+      Value r = rewriter.create(state)->getResult(0);
+      result = vector::InsertStridedSliceOp::create(rewriter, loc, r, result,
+                                                    off, 1);
+    }
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+// `shuffle(extf(a), _)` reading only its first operand, as
+// `extf(shuffle(a, a))`: the widening reaches the op that consumes the
+// replicated value, where the AIE multiply-accumulate lowering matches a
+// bf16 operand widened to f32.
+struct SinkExtFBelowShuffle : public OpRewritePattern<vector::ShuffleOp> {
+  using OpRewritePattern<vector::ShuffleOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ShuffleOp shuffle,
+                                PatternRewriter &rewriter) const override {
+    auto ext = shuffle.getV1().getDefiningOp<arith::ExtFOp>();
+    int64_t n1 = shuffle.getV1VectorType().getNumElements();
+    if (!ext ||
+        llvm::any_of(shuffle.getMask(), [&](int64_t m) { return m >= n1; }))
+      return failure();
+    Value src = ext.getIn();
+    Value narrow = vector::ShuffleOp::create(rewriter, shuffle.getLoc(), src,
+                                             src, shuffle.getMask());
+    rewriter.replaceOpWithNewOp<arith::ExtFOp>(shuffle, shuffle.getType(),
+                                               narrow);
+    return success();
+  }
+};
+
+// A vector.extract_strided_slice of a register (not of an insert it would
+// fold with) that is not a half of it, as a vector.shuffle: the AIE lowering
+// extracts only register halves; LLVM lowers the shuffle.
+struct ExtractSliceToShuffle
+    : public OpRewritePattern<vector::ExtractStridedSliceOp> {
+  using OpRewritePattern<vector::ExtractStridedSliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ExtractStridedSliceOp ex,
+                                PatternRewriter &rewriter) const override {
+    VectorType st = ex.getSourceVectorType(), rt = ex.getType();
+    if (st.getRank() != 1 ||
+        ex.getSource().getDefiningOp<vector::InsertStridedSliceOp>())
+      return failure();
+    int64_t off = cast<IntegerAttr>(ex.getOffsets()[0]).getInt();
+    // A slice of a shuffle is a narrower shuffle of the same inputs: a
+    // replicated scale or base then never exists at the full width.
+    if (auto sh = ex.getSource().getDefiningOp<vector::ShuffleOp>()) {
+      ArrayRef<int64_t> full = sh.getMask();
+      rewriter.replaceOpWithNewOp<vector::ShuffleOp>(
+          ex, sh.getV1(), sh.getV2(), full.slice(off, rt.getNumElements()));
+      return success();
+    }
+    if (rt.getNumElements() * 2 == st.getNumElements())
+      return failure();
+    SmallVector<int64_t> mask;
+    for (int64_t i = 0; i < rt.getNumElements(); ++i)
+      mask.push_back(off + i);
+    rewriter.replaceOpWithNewOp<vector::ShuffleOp>(ex, ex.getSource(),
+                                                   ex.getSource(), mask);
+    return success();
+  }
+};
+
+// `addf(mulf(a, b), c)` on f32 vectors, the product used only there, as
+// vector.fma: with a and b widened from bf16 the AIE lowering makes it one
+// bf16 x bf16 + f32 multiply-accumulate.
+struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
+  using OpRewritePattern<arith::AddFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddFOp add,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(add.getType());
+    if (!vt || vt.getRank() != 1 || !vt.getElementType().isF32())
+      return failure();
+    // Only a product of widened bf16 values (possibly replicated by a shuffle):
+    // that is the multiply-accumulate the AIE lowering has; an f32 x f32 fma
+    // has none.
+    auto widened = [](Value v) {
+      if (auto sh = v.getDefiningOp<vector::ShuffleOp>())
+        v = sh.getV1();
+      auto ext = v.getDefiningOp<arith::ExtFOp>();
+      return ext && getElementTypeOrSelf(ext.getIn().getType()).isBF16();
+    };
+    for (auto [mulSide, other] : {std::make_pair(add.getLhs(), add.getRhs()),
+                                  std::make_pair(add.getRhs(), add.getLhs())}) {
+      auto mul = mulSide.getDefiningOp<arith::MulFOp>();
+      if (!mul || !mul->hasOneUse() || !widened(mul.getLhs()) ||
+          !widened(mul.getRhs()))
+        continue;
+      rewriter.replaceOpWithNewOp<vector::FMAOp>(add, mul.getLhs(),
+                                                 mul.getRhs(), other);
+      return success();
+    }
+    return failure();
+  }
+};
+
+#if AIR_ENABLE_AIE
+// A 32-lane f32 `vector.fma` of two bf16 values widened by arith.extf, as
+// aievec.mac_elem, and a 32-lane f32 -> bf16 arith.truncf, as aievec.srs.
+// AIE2P multiplies 32 bf16 lanes into a 32-lane f32 accumulator and converts
+// it back in one instruction, and its LLVM lowering takes both, but the
+// vector-to-aievec conversion only matches the 16-lane forms.
+struct WideFMAToMacElem : public OpRewritePattern<vector::FMAOp> {
+  using OpRewritePattern<vector::FMAOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::FMAOp fma,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(fma.getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() != 32 ||
+        !vt.getElementType().isF32())
+      return failure();
+    auto narrow = [](Value v) -> Value {
+      auto ext = v.getDefiningOp<arith::ExtFOp>();
+      if (!ext || !getElementTypeOrSelf(ext.getIn().getType()).isBF16())
+        return nullptr;
+      return ext.getIn();
+    };
+    Value lhs = narrow(fma.getLhs()), rhs = narrow(fma.getRhs());
+    if (!lhs || !rhs)
+      return failure();
+    rewriter.replaceOpWithNewOp<xilinx::aievec::FMAElemOp>(
+        fma, vt, lhs, rhs, fma.getAcc(), /*fmsub=*/false);
+    return success();
+  }
+};
+
+struct WideTruncFToSRS : public OpRewritePattern<arith::TruncFOp> {
+  using OpRewritePattern<arith::TruncFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncFOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(trunc.getType());
+    auto st = dyn_cast<VectorType>(trunc.getIn().getType());
+    if (!vt || !st || vt.getRank() != 1 || vt.getNumElements() != 32 ||
+        !vt.getElementType().isBF16() || !st.getElementType().isF32())
+      return failure();
+    Value shift = arith::ConstantOp::create(rewriter, trunc.getLoc(),
+                                            rewriter.getI32IntegerAttr(0));
+    rewriter.replaceOpWithNewOp<xilinx::aievec::SRSOp>(trunc, vt, trunc.getIn(),
+                                                       shift);
+    return success();
+  }
+};
+
+// f32_lanes = 64: the AIE2P instruction forms a hand-written dequant kernel
+// uses, called as LLVM intrinsics because the aievec lowering has no route to
+// them (aievec.shuffle lowers to the AIE2 vshuffle; mac_elem stops at 32
+// lanes).
+
+// Calls an AIE2P LLVM intrinsic through a private func.func named after it,
+// the way mlir-aie declares its own (llvm.aie2p.acquire, ...). An LLVM-dialect
+// op would not do: aie-standard-lowering silently drops a core that holds one.
+static Value callAIE2p(PatternRewriter &rewriter, Location loc, Type resTy,
+                       StringRef name, ValueRange args) {
+  Operation *at = rewriter.getInsertionBlock()->getParentOp();
+  ModuleOp mod = at->getParentOfType<ModuleOp>();
+  while (auto parent = mod->getParentOfType<ModuleOp>())
+    mod = parent;
+  auto fnTy = rewriter.getFunctionType(TypeRange(ValueRange(args)), {resTy});
+  auto fn = mod.lookupSymbol<func::FuncOp>(name);
+  if (!fn) {
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPointToStart(mod.getBody());
+    fn = func::FuncOp::create(rewriter, loc, name, fnTy);
+    fn.setPrivate();
+  }
+  return func::CallOp::create(rewriter, loc, fn, args).getResult(0);
+}
+
+// `bf16(0x4300 | zext(q))` on 64 lanes (exactly 128 + q) as two byte
+// interleaves of q with 0x43 (AIE2P vshuffle modes 20/21), replacing an
+// upshift, two shift-round-saturates and an or.
+struct ByteInterleave4300 : public OpRewritePattern<arith::OrIOp> {
+  using OpRewritePattern<arith::OrIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::OrIOp orOp,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(orOp.getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() != 64 ||
+        !vt.getElementType().isInteger(16))
+      return failure();
+    for (auto [extSide, cstSide] :
+         {std::make_pair(orOp.getLhs(), orOp.getRhs()),
+          std::make_pair(orOp.getRhs(), orOp.getLhs())}) {
+      auto ext = extSide.getDefiningOp<arith::ExtSIOp>();
+      if (!ext)
+        ext = nullptr;
+      Value src = ext ? ext.getIn() : Value();
+      if (!src) {
+        if (auto zext = extSide.getDefiningOp<arith::ExtUIOp>())
+          src = zext.getIn();
+      }
+      DenseIntElementsAttr cst;
+      if (!src || !matchPattern(cstSide, m_Constant(&cst)) || !cst.isSplat() ||
+          cst.getSplatValue<APInt>().getZExtValue() != 0x4300 ||
+          !getElementTypeOrSelf(src.getType()).isInteger(8))
+        continue;
+      // Sign extension equals zero extension only for bytes below 0x80: the
+      // source must be an unpacked nibble.
+      if (ext && !src.getDefiningOp<xilinx::aievec::UnpackOp>())
+        continue;
+      Location loc = orOp.getLoc();
+      auto i32 = rewriter.getI32Type();
+      auto v16 = VectorType::get({16}, i32);
+      Value words = vector::BitCastOp::create(rewriter, loc, v16, src);
+      Value bias = arith::ConstantOp::create(
+          rewriter, loc, DenseElementsAttr::get(v16, APInt(32, 0x43434343)));
+      SmallVector<Value> halves;
+      for (int32_t mode : {20, 21}) {
+        Value m = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(mode));
+        halves.push_back(callAIE2p(rewriter, loc, v16, "llvm.aie2p.vshuffle",
+                                   {words, bias, m}));
+      }
+      SmallVector<int64_t> cat;
+      for (int64_t i = 0; i < 32; ++i)
+        cat.push_back(i);
+      Value both =
+          vector::ShuffleOp::create(rewriter, loc, halves[0], halves[1], cat);
+      rewriter.replaceOpWithNewOp<vector::BitCastOp>(orOp, vt, both);
+      return success();
+    }
+    return failure();
+  }
+};
+
+// A 64-lane f32 vector.fma of two bf16 values widened by arith.extf, as one
+// 64-lane bf16 multiply-accumulate (I1024.I1024.ACC2048, aie_api's config).
+struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
+  using OpRewritePattern<vector::FMAOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::FMAOp fma,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(fma.getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() != 64 ||
+        !vt.getElementType().isF32())
+      return failure();
+    auto narrow = [](Value v) -> Value {
+      auto ext = v.getDefiningOp<arith::ExtFOp>();
+      if (!ext || !getElementTypeOrSelf(ext.getIn().getType()).isBF16())
+        return nullptr;
+      return ext.getIn();
+    };
+    Value lhs = narrow(fma.getLhs()), rhs = narrow(fma.getRhs());
+    if (!lhs || !rhs)
+      return failure();
+    Location loc = fma.getLoc();
+    Value conf = arith::ConstantOp::create(rewriter, loc,
+                                           rewriter.getI32IntegerAttr(828));
+    Value mac = callAIE2p(rewriter, loc, vt,
+                          "llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf",
+                          {lhs, rhs, fma.getAcc(), conf});
+    rewriter.replaceOp(fma, mac);
+    return success();
+  }
+};
+
+// A 64-lane f32 -> bf16 arith.truncf as two 32-lane aievec.srs (srs is also
+// what makes aie-standard-lowering set the rounding mode). When the result is
+// only stored, through a shape_cast and an in-bounds minor-identity
+// transfer_write, the halves are stored separately: the backend then fuses
+// each conversion into its store (vst.conv), which a re-concatenated 64-lane
+// store prevents.
+struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
+  using OpRewritePattern<arith::TruncFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncFOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(trunc.getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() != 64 ||
+        !vt.getElementType().isBF16() ||
+        !getElementTypeOrSelf(trunc.getIn().getType()).isF32())
+      return failure();
+    Location loc = trunc.getLoc();
+    Value shift =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
+    // Halve the accumulator with vector.shuffle, which reaches LLVM as a
+    // shufflevector (a register half); extract_strided_slice would become
+    // aievec shifts.
+    auto half = VectorType::get({32}, rewriter.getBF16Type());
+    Value parts[2];
+    for (int k = 0; k < 2; ++k) {
+      SmallVector<int64_t> mask;
+      for (int64_t i = 0; i < 32; ++i)
+        mask.push_back(k * 32 + i);
+      Value acc = vector::ShuffleOp::create(rewriter, loc, trunc.getIn(),
+                                            trunc.getIn(), mask);
+      parts[k] = xilinx::aievec::SRSOp::create(rewriter, loc, half, acc, shift);
+    }
+    SmallVector<int64_t> cat;
+    for (int64_t i = 0; i < 64; ++i)
+      cat.push_back(i);
+    vector::ShapeCastOp cast;
+    vector::TransferWriteOp write;
+    if (trunc->hasOneUse())
+      cast = dyn_cast<vector::ShapeCastOp>(*trunc->user_begin());
+    if (cast && cast->hasOneUse())
+      write = dyn_cast<vector::TransferWriteOp>(*cast->user_begin());
+    VectorType wt = cast ? cast.getResultVectorType() : VectorType();
+    if (!write || write.getMask() || wt.getRank() < 2 ||
+        wt.getDimSize(0) % 2 != 0 ||
+        !write.getPermutationMap().isMinorIdentity() ||
+        write.getPermutationMap().getNumResults() != wt.getRank() ||
+        !llvm::all_of(write.getInBoundsValues(), [](bool b) { return b; })) {
+      rewriter.replaceOpWithNewOp<vector::ShuffleOp>(trunc, parts[0], parts[1],
+                                                     cat);
+      return success();
+    }
+    SmallVector<int64_t> hs(wt.getShape());
+    hs[0] /= 2;
+    auto hvt = VectorType::get(hs, wt.getElementType());
+    unsigned d0 = write.getIndices().size() - wt.getRank();
+    rewriter.setInsertionPoint(write);
+    for (int k = 0; k < 2; ++k) {
+      Value v = vector::ShapeCastOp::create(rewriter, loc, hvt, parts[k]);
+      SmallVector<Value> idx(write.getIndices());
+      if (k)
+        idx[d0] = arith::AddIOp::create(
+            rewriter, loc, idx[d0],
+            arith::ConstantIndexOp::create(rewriter, loc, hs[0]));
+      vector::TransferWriteOp::create(rewriter, loc, v, write.getBase(), idx,
+                                      write.getPermutationMapAttr(),
+                                      write.getInBoundsAttr());
+    }
+    rewriter.eraseOp(write);
+    rewriter.eraseOp(cast);
+    rewriter.eraseOp(trunc);
+    return success();
+  }
+};
+#endif
+
+// A transfer_read that fixes the memref's innermost dim at a constant k and
+// reads the dims just above it (every s-th element of a contiguous run, e.g.
+// one slot of the interleaved pairs a fused gate/up epilogue reads) as a read
+// of the whole run and a shuffle taking slot k. The AIE lowering takes
+// contiguous reads only.
+struct DeinterleaveTransferRead
+    : public OpRewritePattern<vector::TransferReadOp> {
+  using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferReadOp read,
+                                PatternRewriter &rewriter) const override {
+    auto mt = dyn_cast<MemRefType>(read.getBase().getType());
+    VectorType vt = read.getVectorType();
+    AffineMap map = read.getPermutationMap();
+    if (!mt || read.getMask() || !mt.hasStaticShape() ||
+        !mt.getLayout().isIdentity())
+      return failure();
+    int64_t r = mt.getRank(), vr = vt.getRank();
+    if (vr < 1 || map.getNumResults() != vr || r < vr + 1)
+      return failure();
+    for (int64_t i = 0; i < vr; ++i) {
+      auto e = dyn_cast<AffineDimExpr>(map.getResult(i));
+      if (!e || e.getPosition() != r - 1 - vr + i)
+        return failure();
+    }
+    int64_t s = mt.getDimSize(r - 1);
+    std::optional<int64_t> k = getConstantIntValue(read.getIndices()[r - 1]);
+    if (s < 2 || s > 8 || !k)
+      return failure();
+    if (!llvm::all_of(read.getInBoundsValues(), [](bool b) { return b; }))
+      return failure();
+    Location loc = read.getLoc();
+    SmallVector<Value> idx(read.getIndices());
+    idx[r - 1] = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    SmallVector<int64_t> wshape(vt.getShape());
+    wshape.push_back(s);
+    auto wvt = VectorType::get(wshape, vt.getElementType());
+    Value whole;
+    // Through an expand_shape that only splits the innermost dim into [n, s],
+    // with the read covering all n: read the unexpanded rows instead, so the
+    // view dies (memref analyses, e.g. L1 shrinking, do not see through it).
+    auto ex = read.getBase().getDefiningOp<memref::ExpandShapeOp>();
+    if (ex && ex.getSrcType().getRank() == r - 1 &&
+        ex.getReassociationIndices().back() ==
+            ReassociationIndices{r - 2, r - 1} &&
+        getConstantIntValue(idx[r - 2]) == 0 &&
+        vt.getShape().back() == mt.getDimSize(r - 2)) {
+      SmallVector<Value> sidx(idx.begin(), idx.begin() + r - 1);
+      SmallVector<int64_t> rshape(vt.getShape());
+      rshape.back() *= s;
+      auto rvt = VectorType::get(rshape, vt.getElementType());
+      Value rows = vector::TransferReadOp::create(
+          rewriter, loc, rvt, ex.getSrc(), sidx,
+          AffineMapAttr::get(
+              AffineMap::getMinorIdentityMap(r - 1, vr, rewriter.getContext())),
+          read.getPadding(), Value(),
+          rewriter.getBoolArrayAttr(SmallVector<bool>(vr, true)));
+      whole = vector::ShapeCastOp::create(rewriter, loc, wvt, rows);
+    } else {
+      SmallVector<bool> inb(vr + 1, true);
+      whole = vector::TransferReadOp::create(
+          rewriter, loc, wvt, read.getBase(), idx,
+          AffineMapAttr::get(
+              AffineMap::getMinorIdentityMap(r, vr + 1, rewriter.getContext())),
+          read.getPadding(), Value(), rewriter.getBoolArrayAttr(inb));
+    }
+    int64_t n = vt.getNumElements();
+    auto flat = VectorType::get({n * s}, vt.getElementType());
+    Value lin = vector::ShapeCastOp::create(rewriter, loc, flat, whole);
+    SmallVector<int64_t> mask;
+    for (int64_t i = 0; i < n; ++i)
+      mask.push_back(i * s + *k);
+    Value picked = vector::ShuffleOp::create(rewriter, loc, lin, lin, mask);
+    rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(read, vt, picked);
+    return success();
+  }
+};
+
+// The ops whose n-D vector types get linearized: elementwise computation and
+// what feeds it. Transfers, contractions and loops keep their types.
+static bool isLinearizedOp(Operation *op) {
+  return OpTrait::hasElementwiseMappableTraits(op) ||
+         op->hasTrait<OpTrait::ConstantLike>() ||
+         isa<vector::BitCastOp, vector::BroadcastOp, vector::InsertOp>(op);
+}
+
+} // namespace
+
+DiagnosedSilenceableFailure
+transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
+                                     transform::TransformResults &results,
+                                     transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets) {
+    MLIRContext *ctx = target->getContext();
+
+    // Rewrite by op list rather than over `target`'s regions: the target
+    // need not be isolated from above (a loop holding one computation, say).
+    GreedyRewriteConfig config;
+    config.setStrictness(GreedyRewriteStrictness::ExistingAndNewOps);
+    SmallVector<Operation *> reads;
+    target->walk([&](vector::TransferReadOp op) { reads.push_back(op); });
+    RewritePatternSet readPatterns(ctx);
+    readPatterns.add<UnbroadcastTransferRead, SplitNonContiguousTransferRead,
+                     TrailingUnitDimsTransferRead>(ctx);
+    readPatterns.add<DeinterleaveTransferRead>(ctx, /*benefit=*/2);
+    if (failed(applyOpPatternsGreedily(reads, std::move(readPatterns), config)))
+      return emitDefiniteFailure()
+             << "failed to unbroadcast vector.transfer_read ops";
+
+    TypeConverter typeConverter;
+    ConversionTarget convTarget(*ctx);
+    vector::populateForVectorLinearize(typeConverter, convTarget);
+    // Replaces the upstream predicate, which would make every n-D vector
+    // dialect op (transfers, contract) illegal with no pattern to legalize it.
+    convTarget.markUnknownOpDynamicallyLegal(
+        [&](Operation *op) -> std::optional<bool> {
+          if (!isLinearizedOp(op))
+            return true;
+          return typeConverter.isLegal(op);
+        });
+    RewritePatternSet patterns(ctx);
+    vector::populateVectorLinearizeBasePatterns(typeConverter, convTarget,
+                                                patterns);
+    vector::populateVectorLinearizeShuffleLikeOpsPatterns(typeConverter,
+                                                          convTarget, patterns);
+    patterns.add<LinearizeBroadcastToShuffle>(typeConverter, ctx,
+                                              /*benefit=*/2);
+    if (failed(applyPartialConversion(target, convTarget, std::move(patterns))))
+      return emitDefiniteFailure() << "failed to linearize vector ops";
+
+    SmallVector<Operation *> casts;
+    target->walk([&](Operation *op) {
+      if (isa<vector::ShapeCastOp, vector::BroadcastOp>(op))
+        casts.push_back(op);
+    });
+    RewritePatternSet canonPatterns(ctx);
+    vector::ShapeCastOp::getCanonicalizationPatterns(canonPatterns, ctx);
+    vector::BroadcastOp::getCanonicalizationPatterns(canonPatterns, ctx);
+    if (failed(
+            applyOpPatternsGreedily(casts, std::move(canonPatterns), config)))
+      return emitDefiniteFailure()
+             << "failed to canonicalize after linearization";
+
+    SmallVector<Operation *> ands;
+    target->walk([&](Operation *op) {
+      if (isa<arith::AndIOp, vector::TransferReadOp, arith::AddFOp,
+              arith::SubFOp, arith::MulFOp, arith::ExtFOp, arith::TruncFOp,
+              vector::FMAOp, vector::ShuffleOp>(op))
+        ands.push_back(op);
+    });
+    RewritePatternSet unpackPatterns(ctx);
+    unpackPatterns.add<NibbleUnpackFromShifts>(ctx);
+    unpackPatterns.add<UnrollStridedTransferRead>(ctx, /*benefit=*/0);
+    unpackPatterns.add<SplitWideElementwise>(ctx, getF32Lanes());
+    unpackPatterns.add<MulAddToFMA, SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
+    vector::ExtractStridedSliceOp::getCanonicalizationPatterns(unpackPatterns,
+                                                               ctx);
+    vector::ShuffleOp::getCanonicalizationPatterns(unpackPatterns, ctx);
+    arith::TruncIOp::getCanonicalizationPatterns(unpackPatterns, ctx);
+    if (failed(
+            applyOpPatternsGreedily(ands, std::move(unpackPatterns), config)))
+      return emitDefiniteFailure() << "failed to rewrite 4-bit unpacks";
+
+    // Once the pieces have settled (extracts of inserts folded), extracts
+    // that remain read real registers.
+    SmallVector<Operation *> extracts;
+    target->walk(
+        [&](vector::ExtractStridedSliceOp op) { extracts.push_back(op); });
+    RewritePatternSet extractPatterns(ctx);
+    extractPatterns.add<ExtractSliceToShuffle>(ctx);
+    if (failed(applyOpPatternsGreedily(extracts, std::move(extractPatterns),
+                                       config)))
+      return emitDefiniteFailure() << "failed to rewrite register extracts";
+
+#if AIR_ENABLE_AIE
+    if (getF32Lanes() == 64) {
+      SmallVector<Operation *> wide;
+      target->walk([&](Operation *op) {
+        if (isa<vector::FMAOp, arith::TruncFOp, arith::OrIOp>(op))
+          wide.push_back(op);
+      });
+      RewritePatternSet widePatterns(ctx);
+      widePatterns.add<FMA64ToMac, TruncF64ToSRS, ByteInterleave4300>(ctx);
+      if (failed(
+              applyOpPatternsGreedily(wide, std::move(widePatterns), config)))
+        return emitDefiniteFailure()
+               << "failed to emit 64-lane AIE2P intrinsics";
+    }
+    if (getF32Lanes() == 32) {
+      SmallVector<Operation *> wide;
+      target->walk([&](Operation *op) {
+        if (isa<vector::FMAOp, arith::TruncFOp>(op))
+          wide.push_back(op);
+      });
+      RewritePatternSet widePatterns(ctx);
+      widePatterns.add<WideFMAToMacElem, WideTruncFToSRS>(ctx);
+      if (failed(
+              applyOpPatternsGreedily(wide, std::move(widePatterns), config)))
+        return emitDefiniteFailure() << "failed to emit 32-lane aievec ops";
+    }
+#endif
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// PushUnpackThroughSlicesOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::PushUnpackThroughSlicesOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> created;
+  for (Operation *op : state.getPayloadOps(getTarget())) {
+    auto unpack = dyn_cast<linalg::UnPackOp>(op);
+    if (!unpack || !unpack->hasOneUse())
+      return emitDefiniteFailure() << "expected a linalg.unpack with one user";
+    auto expand = dyn_cast<tensor::ExpandShapeOp>(*unpack->user_begin());
+    if (!expand)
+      return emitDefiniteFailure()
+             << "the unpack's user is not an expand_shape";
+    // The one source dim the expand splits, into [n, s].
+    int64_t d = -1, b = -1;
+    for (auto [i, group] : llvm::enumerate(expand.getReassociationIndices())) {
+      if (group.size() == 1)
+        continue;
+      if (group.size() != 2 || d >= 0)
+        return emitDefiniteFailure()
+               << "expand_shape must split one dim in two";
+      d = i;
+      b = group[1];
+    }
+    ArrayRef<int64_t> outShape = expand.getResultType().getShape();
+    int64_t s = outShape[b];
+    ArrayRef<int64_t> innerPos = unpack.getInnerDimsPos();
+    SmallVector<int64_t> tiles(unpack.getStaticInnerTiles());
+    auto it = llvm::find(innerPos, d);
+    if (d < 0 || it == innerPos.end() || ShapedType::isDynamic(s))
+      return emitDefiniteFailure() << "the split dim is not a packed dim";
+    int64_t ti = it - innerPos.begin();
+    if (ShapedType::isDynamic(tiles[ti]) || tiles[ti] % s)
+      return emitDefiniteFailure()
+             << "the inner tile is not a multiple of " << s;
+
+    SmallVector<tensor::ExtractSliceOp> slices;
+    for (Operation *u : expand->getUsers()) {
+      auto x = dyn_cast<tensor::ExtractSliceOp>(u);
+      if (!x || !x.hasUnitStride() ||
+          x.getType().getRank() != expand.getResultType().getRank() - 1)
+        return emitDefiniteFailure() << "expected rank-reducing slices";
+      for (int64_t i = 0; i < (int64_t)outShape.size(); ++i) {
+        std::optional<int64_t> off =
+            getConstantIntValue(x.getMixedOffsets()[i]);
+        std::optional<int64_t> sz = getConstantIntValue(x.getMixedSizes()[i]);
+        bool ok = i == b ? (off && sz == 1) : (off == 0 && sz == outShape[i]);
+        if (!ok)
+          return emitDefiniteFailure()
+                 << "a slice must take one index of the split dim, all else";
+      }
+      slices.push_back(x);
+    }
+
+    // The packed source with d's tile dim split into [t / s, s].
+    Value src = unpack.getSource();
+    auto srcTy = cast<RankedTensorType>(src.getType());
+    int64_t pos = unpack.getDestType().getRank() + ti;
+    SmallVector<int64_t> expShape;
+    SmallVector<ReassociationIndices> reassoc;
+    for (int64_t i = 0, j = 0; i < srcTy.getRank(); ++i) {
+      if (i == pos) {
+        expShape.append({tiles[ti] / s, s});
+        reassoc.push_back({j, j + 1});
+        j += 2;
+      } else {
+        expShape.push_back(srcTy.getDimSize(i));
+        reassoc.push_back({j++});
+      }
+    }
+    rewriter.setInsertionPoint(expand);
+    Location loc = unpack.getLoc();
+    Value srcExp = tensor::ExpandShapeOp::create(
+        rewriter, loc, RankedTensorType::get(expShape, srcTy.getElementType()),
+        src, reassoc);
+    SmallVector<int64_t> newTiles = tiles;
+    newTiles[ti] = tiles[ti] / s;
+    SmallVector<OpFoldResult> newTileOfr;
+    for (int64_t t : newTiles)
+      newTileOfr.push_back(rewriter.getIndexAttr(t));
+    for (tensor::ExtractSliceOp x : slices) {
+      int64_t k = *getConstantIntValue(x.getMixedOffsets()[b]);
+      SmallVector<OpFoldResult> offs, sizes, strides;
+      SmallVector<int64_t> sliceShape;
+      for (int64_t i = 0; i < (int64_t)expShape.size(); ++i) {
+        bool pair = i == pos + 1;
+        offs.push_back(rewriter.getIndexAttr(pair ? k : 0));
+        sizes.push_back(rewriter.getIndexAttr(pair ? 1 : expShape[i]));
+        strides.push_back(rewriter.getIndexAttr(1));
+        if (!pair)
+          sliceShape.push_back(expShape[i]);
+      }
+      rewriter.setInsertionPoint(x);
+      Value part = tensor::ExtractSliceOp::create(
+          rewriter, loc,
+          RankedTensorType::get(sliceShape, srcTy.getElementType()), srcExp,
+          offs, sizes, strides);
+      Value dest = tensor::EmptyOp::create(
+          rewriter, loc, x.getType().getShape(), x.getType().getElementType());
+      auto newUnpack =
+          linalg::UnPackOp::create(rewriter, loc, part, dest, innerPos,
+                                   newTileOfr, unpack.getOuterDimsPerm());
+      rewriter.replaceOp(x, newUnpack.getResult());
+      created.push_back(newUnpack);
+    }
+    rewriter.eraseOp(expand);
+    rewriter.eraseOp(unpack);
+  }
+
+  // An elementwise generic all of whose inputs are such unpacks, of one layout,
+  // runs on the packed values instead, with one unpack after it. (Upstream
+  // data-layout propagation takes a generic with one unpacked operand only.)
+  SmallVector<Operation *> result;
+  llvm::SmallPtrSet<Operation *, 8> done;
+  for (Operation *u : created) {
+    auto up = cast<linalg::UnPackOp>(u);
+    if (!up->hasOneUse()) {
+      result.push_back(u);
+      continue;
+    }
+    auto gen = dyn_cast<linalg::GenericOp>(*up->user_begin());
+    if (!gen || done.contains(gen))
+      continue;
+    auto sameLayout = [&](linalg::UnPackOp o) {
+      return o && o.getInnerDimsPos() == up.getInnerDimsPos() &&
+             o.getStaticInnerTiles() == up.getStaticInnerTiles() &&
+             o.getOuterDimsPerm() == up.getOuterDimsPerm() &&
+             o.getSourceType().getShape() == up.getSourceType().getShape();
+    };
+    bool ok =
+        gen.getNumDpsInits() == 1 &&
+        llvm::all_of(gen.getIteratorTypesArray(), linalg::isParallelIterator) &&
+        llvm::all_of(gen.getIndexingMapsArray(),
+                     [](AffineMap m) { return m.isIdentity(); }) &&
+        llvm::all_of(gen.getDpsInputs(),
+                     [&](Value v) {
+                       return sameLayout(v.getDefiningOp<linalg::UnPackOp>());
+                     }) &&
+        gen.getRegionOutputArgs()[0].use_empty();
+    if (!ok) {
+      result.push_back(u);
+      continue;
+    }
+    done.insert(gen);
+    rewriter.setInsertionPoint(gen);
+    Location loc = gen.getLoc();
+    SmallVector<Value> ins;
+    for (Value v : gen.getDpsInputs())
+      ins.push_back(v.getDefiningOp<linalg::UnPackOp>().getSource());
+    auto outTy = cast<RankedTensorType>(gen.getResult(0).getType());
+    ArrayRef<int64_t> pshape = up.getSourceType().getShape();
+    Value pout =
+        tensor::EmptyOp::create(rewriter, loc, pshape, outTy.getElementType());
+    int64_t rank = pshape.size();
+    SmallVector<AffineMap> maps(ins.size() + 1,
+                                rewriter.getMultiDimIdentityMap(rank));
+    SmallVector<utils::IteratorType> iters(rank, utils::IteratorType::parallel);
+    auto pgen =
+        linalg::GenericOp::create(rewriter, loc, TypeRange{pout.getType()}, ins,
+                                  ValueRange{pout}, maps, iters);
+    pgen->setDiscardableAttrs(gen->getDiscardableAttrDictionary());
+    rewriter.cloneRegionBefore(gen.getRegion(), pgen.getRegion(),
+                               pgen.getRegion().begin());
+    Value dest = tensor::EmptyOp::create(rewriter, loc, outTy.getShape(),
+                                         outTy.getElementType());
+    SmallVector<OpFoldResult> tilesOfr;
+    for (int64_t t : up.getStaticInnerTiles())
+      tilesOfr.push_back(rewriter.getIndexAttr(t));
+    auto out = linalg::UnPackOp::create(rewriter, loc, pgen.getResult(0), dest,
+                                        up.getInnerDimsPos(), tilesOfr,
+                                        up.getOuterDimsPerm());
+    // Not replaceOp: a handle to `gen` has no generic to be tracked to.
+    rewriter.replaceAllUsesWith(gen.getResult(0), out.getResult());
+    rewriter.eraseOp(gen);
+    result.push_back(out);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), result);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// SinkHerdOperandViewsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::SinkHerdOperandViewsOp::apply(transform::TransformRewriter &rewriter,
+                                         transform::TransformResults &results,
+                                         transform::TransformState &state) {
+  SmallVector<Operation *> herds;
+  for (Operation *op : state.getPayloadOps(getTarget())) {
+    auto herd = dyn_cast<xilinx::air::HerdOp>(op);
+    if (!herd)
+      return emitDefiniteFailure() << "expected air.herd";
+    herds.push_back(herd);
+    for (unsigned i = 0, e = herd.getNumKernelOperands(); i < e; ++i) {
+      Value opnd = herd.getKernelOperand(i);
+      SmallVector<Operation *> chain;
+      Value root = opnd;
+      while (auto view = root.getDefiningOp<ViewLikeOpInterface>()) {
+        if (!isa<MemRefType>(view.getViewSource().getType()))
+          break;
+        chain.push_back(view);
+        root = view.getViewSource();
+      }
+      if (chain.empty())
+        continue;
+      // The chain's other operands (dynamic sizes/offsets) must be constants.
+      for (Operation *v : chain)
+        for (Value x : v->getOperands())
+          if (x != (cast<ViewLikeOpInterface>(v)).getViewSource() &&
+              !x.getDefiningOp<arith::ConstantOp>())
+            return emitDefiniteFailure()
+                   << "a view operand with a non-constant operand";
+      BlockArgument arg = herd.getKernelArgument(i);
+      SmallVector<OpOperand *> uses;
+      for (OpOperand &u : arg.getUses())
+        uses.push_back(&u);
+      herd->setOperand(herd.getKernelOperands().getBeginOperandIndex() + i,
+                       root);
+      arg.setType(root.getType());
+      rewriter.setInsertionPointToStart(&herd.getBody().front());
+      IRMapping map;
+      map.map(root, arg);
+      Value cur = arg;
+      for (Operation *v : llvm::reverse(chain)) {
+        for (Value x : v->getOperands())
+          if (auto c = x.getDefiningOp<arith::ConstantOp>())
+            map.map(x, rewriter.clone(*c)->getResult(0));
+        cur = rewriter.clone(*v, map)->getResult(0);
+        map.map(v->getResult(0), cur);
+      }
+      for (OpOperand *u : uses)
+        rewriter.modifyOpInPlace(u->getOwner(), [&] { u->set(cur); });
+      // Herds sharing an L1 buffer are time phases of one physical herd and
+      // must share its name; par_to_herd named this one while it still took
+      // the view.
+      auto rootTy = dyn_cast<MemRefType>(root.getType());
+      if (rootTy && xilinx::air::isL1(rootTy))
+        if (auto func = herd->getParentOfType<func::FuncOp>())
+          func.walk([&](xilinx::air::HerdOp other) {
+            if (other == herd ||
+                !llvm::is_contained(other.getKernelOperands(), root))
+              return;
+            if (auto name = other->getAttrOfType<StringAttr>(
+                    SymbolTable::getSymbolAttrName()))
+              herd->setAttr(SymbolTable::getSymbolAttrName(), name);
+          });
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), herds);
+  return DiagnosedSilenceableFailure::success();
+}
 
 DiagnosedSilenceableFailure transform::ConvertSize1VectorToScalarOp::apply(
     transform::TransformRewriter &rewriter,

@@ -15,3 +15,6 @@ add_mlir_dialect_library(AIRTransformOps
   MLIRIR
   MLIRTransformDialect
 )
+if(AIR_ENABLE_AIE)
+  target_link_libraries(AIRTransformOps PUBLIC MLIRAIEVecDialect)
+endif()
