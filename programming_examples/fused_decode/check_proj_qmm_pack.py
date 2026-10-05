@@ -58,6 +58,9 @@ for name, order in (
     ("core_major", dict(core_major=True)),
     ("iter_major", dict(iter_major=True)),
     ("dual_chan", dict(dual_chan=True)),
+    # The requantizers combine a row order with the dual-channel split.
+    ("iter_major+dual_chan", dict(iter_major=True, dual_chan=True)),
+    ("core_major+dual_chan", dict(core_major=True, dual_chan=True)),
 ):
     ok = True
     for dt in (np.float32, np.float64):

@@ -10,3 +10,5 @@
 // CHECK: core_major: cascade matches the per-block packer: True
 // CHECK: iter_major: cascade matches the per-block packer: True
 // CHECK: dual_chan: cascade matches the per-block packer: True
+// CHECK: iter_major+dual_chan: cascade matches the per-block packer: True
+// CHECK: core_major+dual_chan: cascade matches the per-block packer: True
