@@ -4945,7 +4945,9 @@ bool isComputableAtLowerBound(Value v, scf::ForOp forOp) {
     return !forOp->isAncestor(cast<BlockArgument>(v).getOwner()->getParentOp());
   if (!forOp->isAncestor(def))
     return true;
-  if (def->getNumRegions() != 0)
+  // Cloned before the loop, it runs even when the loop does not: only pure
+  // ops.
+  if (def->getNumRegions() != 0 || !isPure(def))
     return false;
   return llvm::all_of(def->getOperands(), [&](Value operand) {
     return isComputableAtLowerBound(operand, forOp);
@@ -6033,7 +6035,9 @@ static std::optional<SiblingCopy> matchSiblingCopy(memref::CopyOp copy) {
     if (user == copy)
       continue;
     auto read = dyn_cast<bufferization::ToTensorOp>(user);
-    if (!read)
+    // The reads are rewritten to use a copy made where this copy is.
+    if (!read || read->getBlock() != copy->getBlock() ||
+        !copy->isBeforeInBlock(read))
       return std::nullopt;
     c.reads.push_back(read);
   }
@@ -6792,7 +6796,7 @@ struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
     if (!vt || vt.getRank() != 1)
       return failure();
     auto elemTy = dyn_cast<IntegerType>(vt.getElementType());
-    if (!elemTy || elemTy.getWidth() % 4 != 0)
+    if (!elemTy || elemTy.getWidth() <= 8 || elemTy.getWidth() % 4 != 0)
       return failure();
     int64_t k = elemTy.getWidth() / 4, n = vt.getNumElements();
     // Constants may come reshaped or replicated (defined outside the

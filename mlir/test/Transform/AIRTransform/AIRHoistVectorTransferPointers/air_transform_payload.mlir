@@ -231,3 +231,24 @@ func.func @no_flatten_rank_broadcast(%arg0: memref<8xf32, 2>, %arg1: memref<2x2x
   }
   return
 }
+
+// Test case: an index computed by a call cannot be cloned before the loop (it
+// would run even for zero iterations): the loop is left as it is.
+// CHECK-LABEL: @no_hoist_impure_index
+// CHECK-NOT: memref.collapse_shape
+// CHECK: scf.for
+// CHECK: func.call @next_offset
+func.func private @next_offset() -> index
+func.func @no_hoist_impure_index(%arg0: memref<64xf32, 2>, %arg1: memref<64xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %cst = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %c4 step %c1 {
+    %n = func.call @next_offset() : () -> index
+    %j = arith.addi %i, %n : index
+    %v = vector.transfer_read %arg0[%j], %cst {in_bounds = [true]} : memref<64xf32, 2>, vector<8xf32>
+    vector.transfer_write %v, %arg1[%j] {in_bounds = [true]} : vector<8xf32>, memref<64xf32, 2>
+  }
+  return
+}

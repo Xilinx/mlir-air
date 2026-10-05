@@ -149,3 +149,19 @@ func.func @trailing_unit_dims_nonzero_index(%w: memref<8x8x1xi32>, %o: memref<4x
   vector.transfer_write %v, %o[%c0] {in_bounds = [true]} : vector<4xi32>, memref<4xi32>
   return
 }
+
+// The same spelling on i8 words is left as shifts: its result is already i8.
+// CHECK-LABEL: @nibble_unpack_i8
+// CHECK-NOT: vector<{{[0-9]+}}xi4>
+// CHECK: arith.shrsi
+func.func @nibble_unpack_i8(%w: memref<16x1xi8>, %o: memref<16x2xi8>) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0 : i8
+  %sh = arith.constant dense<[[0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4], [0, 4]]> : vector<16x2xi8>
+  %c15 = arith.constant dense<15> : vector<16x2xi8>
+  %v = vector.transfer_read %w[%c0, %c0], %p {in_bounds = [true, true], permutation_map = affine_map<(d0, d1) -> (d0, 0)>} : memref<16x1xi8>, vector<16x2xi8>
+  %x = arith.shrsi %v, %sh : vector<16x2xi8>
+  %m = arith.andi %x, %c15 : vector<16x2xi8>
+  vector.transfer_write %m, %o[%c0, %c0] {in_bounds = [true, true]} : vector<16x2xi8>, memref<16x2xi8>
+  return
+}

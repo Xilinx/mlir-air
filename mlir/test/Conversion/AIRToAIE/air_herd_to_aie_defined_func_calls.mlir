@@ -116,3 +116,67 @@ module {
     return
   }
 }
+
+// -----
+
+// A cloned callee that returns a memref: the call takes the callee's
+// default-memory-space result type, cast back for its users.
+// CHECK-LABEL: aie.device
+// CHECK: %[[R:.*]] = func.call @pick(%{{.*}}) : (memref<64xi32>) -> memref<64xi32>
+// CHECK: memref.memory_space_cast %[[R]] : memref<64xi32> to memref<64xi32, 2>
+// CHECK: func.func private @pick(%{{.*}}: memref<64xi32>{{.*}}) -> memref<64xi32>
+module {
+  func.func @returns_memref() {
+    %c1 = arith.constant 1 : index
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %in = memref.alloc() : memref<64xi32, 2>
+          %r = func.call @pick(%in) : (memref<64xi32, 2>) -> memref<64xi32, 2>
+          %c0 = arith.constant 0 : index
+          %z = arith.constant 0 : i32
+          memref.store %z, %r[%c0] : memref<64xi32, 2>
+        }
+      }
+    }
+    return
+  }
+  func.func private @pick(%a: memref<64xi32, 2>) -> memref<64xi32, 2> {
+    return %a : memref<64xi32, 2>
+  }
+}
+
+// -----
+
+// One air.execute yielding the same allocation twice: two results, one
+// buffer, so the written argument gets no llvm.noalias.
+// CHECK-LABEL: aie.device
+// CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32>, %{{.*}}: memref<64xi32>) {
+module {
+  func.func @same_alloc_twice() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      %1 = air.segment @seg async {
+        %c1_0 = arith.constant 1 : index
+        %2 = air.herd @h async tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %t0, %a, %b = air.execute -> (memref<64xi32, 2>, memref<64xi32, 2>) {
+            %m = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %m, %m : memref<64xi32, 2>, memref<64xi32, 2>
+          }
+          %t1 = air.execute [%t0] {
+            func.call @tile_body(%a, %b) : (memref<64xi32, 2>, memref<64xi32, 2>) -> ()
+          }
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<64xi32, 2>, %b: memref<64xi32, 2>) {
+    %c0 = arith.constant 0 : index
+    %p = arith.constant 0 : i32
+    %v = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<64xi32, 2>, vector<16xi32>
+    vector.transfer_write %v, %b[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32, 2>
+    return
+  }
+}

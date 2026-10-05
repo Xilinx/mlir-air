@@ -74,3 +74,21 @@ func.func @write_between(%p: memref<*xi16>, %o: index, %x: memref<64xi16>, %v: i
   %t1 = bufferization.to_tensor %a1 restrict writable : memref<4xi16, 1> to tensor<4xi16>
   return %t0, %t1 : tensor<4xi16>, tensor<4xi16>
 }
+
+// A read of the destination before its copy would see the merged copy before
+// it is made: no merge.
+// CHECK-LABEL: @read_before_copy
+// CHECK-COUNT-2: memref.copy
+func.func @read_before_copy(%p: memref<*xi16>, %o: index) -> (tensor<4xi16>, tensor<4xi16>) {
+  %c4 = arith.constant 4 : index
+  %o1 = arith.addi %o, %c4 : index
+  %v0 = memref.reinterpret_cast %p to offset: [%o], sizes: [4], strides: [1] : memref<*xi16> to memref<4xi16, strided<[1], offset: ?>>
+  %a0 = memref.alloc() : memref<4xi16, 1>
+  %t0 = bufferization.to_tensor %a0 restrict writable : memref<4xi16, 1> to tensor<4xi16>
+  memref.copy %v0, %a0 : memref<4xi16, strided<[1], offset: ?>> to memref<4xi16, 1>
+  %v1 = memref.reinterpret_cast %p to offset: [%o1], sizes: [4], strides: [1] : memref<*xi16> to memref<4xi16, strided<[1], offset: ?>>
+  %a1 = memref.alloc() : memref<4xi16, 1>
+  memref.copy %v1, %a1 : memref<4xi16, strided<[1], offset: ?>> to memref<4xi16, 1>
+  %t1 = bufferization.to_tensor %a1 restrict writable : memref<4xi16, 1> to tensor<4xi16>
+  return %t0, %t1 : tensor<4xi16>, tensor<4xi16>
+}

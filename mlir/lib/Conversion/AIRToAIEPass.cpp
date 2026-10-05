@@ -754,10 +754,20 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
               return false;
             if (isa<memref::AllocOp, memref::AllocaOp, AIE::BufferOp>(d))
               return true;
-            // The async form: an air.execute holding only the allocation.
+            // The async form: an air.execute result yielding its own
+            // allocation.
             auto exec = dyn_cast<air::ExecuteOp>(d);
-            return exec && exec.getChildOps().size() == 2 &&
-                   isa<memref::AllocOp>(exec.getChildOps().front());
+            if (!exec)
+              return false;
+            auto res = cast<OpResult>(v);
+            Operation *term = exec->getRegion(0).front().getTerminator();
+            if (res.getResultNumber() == 0 ||
+                res.getResultNumber() - 1 >= term->getNumOperands())
+              return false;
+            Value yielded = term->getOperand(res.getResultNumber() - 1);
+            auto alloc = yielded.getDefiningOp<memref::AllocOp>();
+            return alloc && alloc->getParentOp() == exec &&
+                   llvm::count(term->getOperands(), yielded) == 1;
           };
           Value ri = root(call.getOperand(i));
           bool disjoint = true;
@@ -909,6 +919,22 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
           }
           if (needsUpdate)
             call->setOperands(newOperands);
+          // A cloned callee's memref results were retyped too: call it with
+          // its own result types and cast back for the existing users.
+          if (call.getResultTypes() != fnType.getResults()) {
+            OpBuilder b(call);
+            auto newCall =
+                func::CallOp::create(b, call.getLoc(), fn, call.getOperands());
+            for (auto [oldRes, newRes] :
+                 llvm::zip(call.getResults(), newCall.getResults())) {
+              Value v = newRes;
+              if (v.getType() != oldRes.getType())
+                v = memref::MemorySpaceCastOp::create(b, call.getLoc(),
+                                                      oldRes.getType(), v);
+              oldRes.replaceAllUsesWith(v);
+            }
+            call->erase();
+          }
         }
       });
 

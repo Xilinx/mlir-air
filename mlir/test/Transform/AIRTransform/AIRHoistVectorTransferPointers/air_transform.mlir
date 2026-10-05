@@ -45,6 +45,9 @@ module attributes {transform.with_named_sequence} {
   %func_rb = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_flatten_rank_broadcast"} in %arg1 : (!transform.any_op) -> !transform.any_op
   %loop_rb = transform.structured.match ops{["scf.for"]} in %func_rb : (!transform.any_op) -> !transform.any_op
   %hoisted_rb = transform.air.hoist_vector_transfer_pointers %loop_rb : (!transform.any_op) -> !transform.any_op
+  %func_ip = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_hoist_impure_index"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop_ip = transform.structured.match ops{["scf.for"]} in %func_ip : (!transform.any_op) -> !transform.any_op
+  %hoisted_ip = transform.air.hoist_vector_transfer_pointers %loop_ip : (!transform.any_op) -> !transform.any_op
   %func7 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_iv_plus_constant"} in %arg1 : (!transform.any_op) -> !transform.any_op
   %loop7 = transform.structured.match ops{["scf.for"]} in %func7 : (!transform.any_op) -> !transform.any_op
   %hoisted7 = transform.air.hoist_vector_transfer_pointers %loop7 : (!transform.any_op) -> !transform.any_op
