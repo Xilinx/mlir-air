@@ -82,6 +82,8 @@ from smolvla_fuse import (  # noqa: E402
     OFFN_TILING_OVERRIDE,
     FA_Q_IN_SEGMENT,
     FA_QK_PRETRANSPOSE,
+    FA_FUSED,
+    FA_2D,
     B_STATIONARY,
     B_PANEL_LAYOUT,
     O_SWAP,
@@ -116,6 +118,8 @@ _CACHE_SUFFIX = (
     + "x".join(map(str, _LNQKV_TILING))
     + ("_qseg" if FA_Q_IN_SEGMENT else "")
     + ("_kt" if FA_QK_PRETRANSPOSE else "")
+    + ("_mf" if FA_FUSED else "")
+    + ("_f2d" if FA_2D else "")
     + ("_bst" if B_STATIONARY else "")
     + ("_bpnl" if B_PANEL_LAYOUT else "")
     + ("_os" if O_SWAP else "")

@@ -83,6 +83,26 @@ SMOLVLA_FA_QK_PRETRANSPOSE (default 1)
     for every row-block pair inside the matmul. Bit-identical output; Q@K^T drops from
     ~3000 to ~1650 cycles per 64x64 block at a ~340 cycle transpose pass. Part of the ELF
     cache name (`_kt`). 0 restores the in-matmul transpose.
+
+SMOLVLA_FA_FUSED (default 0)
+    FlashAttention with the cascade merge fused into one pass over L1 (`merge_gp`, and
+    `merge_gp_div` for the last stage, which also folds in the divide by the softmax sum)
+    and the exp and the row sums computed in one sweep (`exp_sum_g`). The merge and the
+    softmax sum round once instead of two or three times, so the output matches the
+    default to bf16 rounding (standalone cosine vs NumPy 0.998830 against 0.998828), not
+    bit for bit. About -190 us and -85 us on the 3-camera call (3,530 -> ~3,260 us), about
+    1 ms per image per encode. Needs the q loop in the segment. Part of the ELF cache
+    name (`_mf`).
+
+SMOLVLA_FA_2D (default 0)
+    FlashAttention with 4 head-images in flight instead of 2: 2 along the columns and 2
+    along the rows of the array (a [4, 4] herd holding two row groups of 2 cascade stages),
+    2 key stages instead of 4, and the q blocks split over 2 launch iterations (the shim
+    has 16 buffer descriptors per tile). Waves of 8 key chunks instead of 4, so the
+    per-wave overhead (Q capture, cascade chain, output) is paid half as often. Implies
+    SMOLVLA_FA_FUSED. 3,250 -> 3,000 us on the 3-camera call (-7.7%), flash_attn
+    14.0 -> 11.9 ms per image, vision stage ~161 -> ~155 ms. Needs the q loop in the
+    segment. Part of the ELF cache name (`_f2d`).
 """
 
 import os
@@ -100,6 +120,9 @@ OFFN_TILING_OVERRIDE = _sizes_override("SMOLVLA_OFFN_TILING")
 LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
 FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
 FA_QK_PRETRANSPOSE = os.environ.get("SMOLVLA_FA_QK_PRETRANSPOSE", "1") == "1"
+# Both change the ELF, so they are part of the cache-dir name in smolvla_runtime.py.
+FA_FUSED = os.environ.get("SMOLVLA_FA_FUSED", "0") == "1"
+FA_2D = os.environ.get("SMOLVLA_FA_2D", "0") == "1"
 B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
 B_PANEL_LAYOUT = os.environ.get("SMOLVLA_B_PANEL_LAYOUT", "1") == "1"
 O_SWAP = os.environ.get("SMOLVLA_O_SWAP", "1") == "1"

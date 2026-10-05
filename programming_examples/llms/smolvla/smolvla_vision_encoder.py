@@ -49,6 +49,8 @@ from smolvla_fuse import (
     FA_QK_PRETRANSPOSE,
     B_STATIONARY,
     B_PANEL_LAYOUT,
+    FA_FUSED,
+    FA_2D,
     ZERO_COPY,
 )
 from smolvla_vision_weights import SigLIPVisionConfig
@@ -121,7 +123,7 @@ _FA_Q_IN_SEGMENT = FA_Q_IN_SEGMENT
 _FA_QK_PRETRANSPOSE = FA_QK_PRETRANSPOSE
 
 
-def _attn_backend(n_images=1):
+def _attn_backend(n_images=1, extra_launch_dims=0):
     """FlashAttention ELF kwargs. `runtime_loop_tiling_sizes` needs ONE ENTRY
     PER LAUNCH DIMENSION: batching images adds a third axis, and with only two
     entries that axis survives as an scf.for in the runtime sequence, which
@@ -131,7 +133,7 @@ def _attn_backend(n_images=1):
         "verbose": False,
         "omit_while_true_loop": False,
         "omit_pingpong": "all",
-        "runtime_loop_tiling_sizes": [1, 1, 1] if n_images > 1 else [1, 1],
+        "runtime_loop_tiling_sizes": [1] * ((3 if n_images > 1 else 2) + extra_launch_dims),
         "output_format": "elf",
         "instance_name": "attention_bf16",
     }
@@ -249,10 +251,12 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
     n_heads = config.n_heads
     n_kv_heads = config.n_heads  # MHA
     head_dim = config.head_dim
-    num_heads_per_unroll = 2
+    fa_2d = FA_2D and _FA_Q_IN_SEGMENT
+    num_heads_per_unroll = 4 if fa_2d else 2
+    num_cascade_stages = 2 if fa_2d else 4
     num_q_tiles = 4
     assert n_heads % num_heads_per_unroll == 0
-    assert num_heads_per_unroll * num_q_tiles <= 8
+    assert num_heads_per_unroll // (2 if fa_2d else 1) * num_q_tiles <= 8  # columns
     print(
         f"  Compiling flash_attn: non-causal, seq={seq_len}, {n_heads}Q/{n_kv_heads}KV, "
         f"head_dim={head_dim}, hpu={num_heads_per_unroll}"
@@ -265,7 +269,7 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         dk=head_dim,
         dv=head_dim,
         num_q_tiles=num_q_tiles,
-        num_cascade_stages=4,
+        num_cascade_stages=num_cascade_stages,
         num_heads=n_heads,
         num_kv_heads=n_kv_heads,
         causal=False,
@@ -273,12 +277,16 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
         fused_qkv=fused_qkv,
         n_images=n_images,
         q_in_segment=_FA_Q_IN_SEGMENT,
+        fused_merge=(FA_FUSED or fa_2d) and _FA_Q_IN_SEGMENT,
+        heads_rows=2 if fa_2d else 1,
+        q_launch=2 if fa_2d else 1,
     )
     compile_attn_npu2(
         head_dim=head_dim,
         bfp16=fa_bfp16,
         force=True,
         pretranspose_k=_FA_QK_PRETRANSPOSE,
+        fused_softmax_merge=(FA_FUSED or fa_2d) and _FA_Q_IN_SEGMENT,
     )
     print(
         f"    (FA microkernel BFP16={fa_bfp16}, q loop in segment={_FA_Q_IN_SEGMENT}, "
@@ -287,7 +295,10 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
     cache.compile_and_cache(
         "flash_attn",
         attn_mod,
-        {**_attn_backend(n_images), "verbose": cache.verbose},
+        {
+            **_attn_backend(n_images, extra_launch_dims=1 if (FA_2D and _FA_Q_IN_SEGMENT) else 0),
+            "verbose": cache.verbose,
+        },
     )
 
 
