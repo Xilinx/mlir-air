@@ -6,10 +6,11 @@
 // NPU1 (AIE2) variant of kernel_fusion_based flash attention.
 // Key differences from NPU2 (attn_npu2.cc):
 //   - mmul<4,8,4> instead of mmul<8,8,8>
-//   - LUT-based exp instead of aie::exp2
+//   - exp built from bf16 multiplies (exp_diff16), since AIE2 has no
+//     aie::exp2. It applies the 1/sqrt(dk) scale, so scores and row maxima
+//     are kept unscaled.
 //   - Column-major 4x4 block tiling instead of 8x8
 //   - aie::div instead of aie::inv
-//   - scale_g_bf16: explicit 1/sqrt(dk) scaling after matmul
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,7 +26,6 @@
 
 #include <aie_api/aie.hpp>
 
-#include "lut_based_ops.h"
 #include "zero.cc"
 
 // Default values if not provided by Makefile
@@ -326,59 +326,6 @@ matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
 }
 
 // ============================================================================
-// LUT-based exponential for AIE2 (no native exp2)
-// ============================================================================
-
-alignas(aie::vector_decl_align) extern int16 exp_ilut_ab[512];
-alignas(aie::vector_decl_align) extern int16 exp_ilut_cd[512];
-alignas(aie::vector_decl_align) extern int16 exp_flut_ab[512];
-alignas(aie::vector_decl_align) extern int16 exp_flut_cd[512];
-
-__attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
-  bfloat16 __aie_dm_resource_a *ilut_ab =
-      (bfloat16 __aie_dm_resource_a *)exp_ilut_ab;
-  bfloat16 __aie_dm_resource_b *ilut_cd =
-      (bfloat16 __aie_dm_resource_b *)exp_ilut_cd;
-  bfloat16 __aie_dm_resource_a *flut_ab =
-      (bfloat16 __aie_dm_resource_a *)exp_flut_ab;
-  bfloat16 __aie_dm_resource_b *flut_cd =
-      (bfloat16 __aie_dm_resource_b *)exp_flut_cd;
-
-  using lut_type = aie::lut<4, bfloat16, bfloat16>;
-  const int LUT_elems = 256;
-  const int step_i = 8;
-  const int step_f = 0;
-
-  lut_type lut_i(LUT_elems, ilut_ab, ilut_cd);
-  lut_type lut_f(LUT_elems, flut_ab, flut_cd);
-  aie::parallel_lookup<uint16, lut_type, aie::lut_oor_policy::truncate>
-      lookup_i(lut_i, step_i);
-  aie::parallel_lookup<uint16, lut_type, aie::lut_oor_policy::truncate>
-      lookup_f(lut_f, step_f);
-
-  aie::vector<bfloat16, 16> I_val_vec, F_val_vec;
-  aie::accum<accfloat, 16> exp_val;
-  // bfloat16_to_int(x, 8) below is 8.8 fixed point, so the
-  // LUT covers [-128, 128). A larger-magnitude input (the causal mask's -inf,
-  // or the -inf running max on the first block) does not saturate: it indexes
-  // a large exp instead of ~0. Every caller passes x = v - max <= 0, so
-  // clamping from below at -127 (exp(-127) ~ 0 in bf16) is exact.
-  aie::vector<bfloat16, 16> input_bf16 =
-      aie::max(aie::vector<bfloat16, 16>(x),
-               aie::broadcast<bfloat16, 16>((bfloat16)-127.0f));
-
-  // position of output decimal point = 8, making input become 8 bits, and for
-  // LUT_elems = 256 lookup.
-  aie::vector<int16, 32> input0 = v32int16(bfloat16_to_int(input_bf16, 8));
-  aie::vector<int16, 16> input = aie::filter_even(input0);
-
-  I_val_vec = lookup_i.fetch(input.cast_to<uint16>());
-  F_val_vec = lookup_f.fetch(input.cast_to<uint16>());
-  exp_val = aie::mul(I_val_vec, F_val_vec);
-  return v16accfloat(exp_val);
-}
-
-// ============================================================================
 // Scaling constant for 1/sqrt(dk_full)
 // ============================================================================
 #include <cmath>
@@ -386,6 +333,72 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
 static const double inv_sqrt_dk_val = 1.0 / sqrt((double)dk_full);
 
 #define inv_sqrt_dk inv_sqrt_dk_val
+
+// ============================================================================
+// Vector helpers for the 4x4-block (column-major) G / Gp layout
+// ============================================================================
+#include "aie_kernels/aie_kernel_utils.h"
+
+// Expand r[lqp] into r4[4 * lqp], each value repeated 4 times. r4 + 16 * rb
+// then holds the per-lane factors for row block rb of a 4x4-tiled matrix:
+// lanes 4i .. 4i + 3 belong to row 4 * rb + i.
+static_assert(lqp % 16 == 0, "row reductions and expand_rows4 work on 16 rows");
+static_assert(lkp % 4 == 0 && dv % 4 == 0, "G and Gp are tiled 4x4");
+static_assert((lqp * lkp) % 64 == 0 && (lqp * dv) % 64 == 0,
+              "the zero fills store 64 elements per iteration");
+static bfloat16 row4_buf[4 * lqp] __attribute__((aligned(64)));
+static inline void expand_rows4(const bfloat16 *__restrict r,
+                                bfloat16 *__restrict r4) {
+  for (int i = 0; i < lqp; i += 16) {
+    aie::vector<bfloat16, 16> v = aie::load_v<16>(r + i);
+    auto [a, b] = aie::interleave_zip(v, v, 1);
+    auto [a0, a1] = aie::interleave_zip(a, a, 2);
+    auto [b0, b1] = aie::interleave_zip(b, b, 2);
+    aie::store_v(r4 + 4 * i, a0);
+    aie::store_v(r4 + 4 * i + 16, a1);
+    aie::store_v(r4 + 4 * i + 32, b0);
+    aie::store_v(r4 + 4 * i + 48, b1);
+  }
+}
+
+// exp(s * (v - u)) for 16 lanes, s = 1/sqrt(dk_full), computed as 2^-y with
+// y = c * (u - v) and c = s * log2(e). mul_elem_16_2 adds the products of the
+// two halves of its 32-lane operands, so [v | u] * [-c | c] gives y in one
+// multiply, and applying c to both terms avoids rounding s * v to bf16 before
+// the subtraction. y is split into an integer and a fractional part: the
+// fraction goes through a cubic and the integer is added to the f32 exponent
+// with saturation. maxdiff clamps the result at +0, which also covers
+// v = -inf. Expects v <= u and aie::saturation_mode::saturate.
+static inline __attribute__((always_inline)) aie::vector<bfloat16, 16>
+exp_diff16(aie::vector<bfloat16, 16> v, aie::vector<bfloat16, 16> u) {
+  using Acc = aie::accum<accfloat, 16>;
+  const auto one = aie::broadcast<bfloat16, 16>(1.0f);
+  const float c = 1.44269504089f * (float)inv_sqrt_dk_val;
+  const auto neg_scale = aie::concat(aie::broadcast<bfloat16, 16>((bfloat16)-c),
+                                     aie::broadcast<bfloat16, 16>((bfloat16)c));
+  Acc magic;
+  magic.from_vector(aie::broadcast<float, 16>(12582912.0f));
+  const auto x = aie::concat(v, u);
+  Acc y(mul_elem_16_2(x, neg_scale));
+  const aie::vector<float, 16> ym =
+      aie::add(magic, y.to_vector<float>()).to_vector<float>();
+  const aie::vector<int32_t, 16> k =
+      aie::sub(ym.cast_to<int32_t>(), aie::broadcast<int32_t, 16>(0x4b400000));
+  Acc f(mac_elem_16_2(x, neg_scale, aie::sub(magic, ym)));
+  const auto fv = aie::concat(f.to_vector<bfloat16>(), one);
+  Acc t(mul_elem_16_2(
+      fv, aie::concat(aie::broadcast<bfloat16, 16>(-0.0555041087f),
+                      aie::broadcast<bfloat16, 16>(0.2402265069f))));
+  t = mul_elem_16_2(fv,
+                    aie::concat(t.to_vector<bfloat16>(),
+                                aie::broadcast<bfloat16, 16>(-0.6931471805f)));
+  t = mul_elem_16_2(fv, aie::concat(t.to_vector<bfloat16>(), one));
+  Acc r;
+  r.from_vector(
+      aie::maxdiff(t.to_vector<float>().cast_to<int32_t>(), aie::upshift(k, 23))
+          .cast_to<float>());
+  return r.to_vector<bfloat16>();
+}
 
 // ============================================================================
 // Kernel functions
@@ -637,8 +650,12 @@ void matmul_g_b_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out) {
 }
 
 void zero_fill_gp_bf16(bfloat16 *c_out) {
-  // Buffer shape: [lqp, dv]
-  zero_vectorized<bfloat16, lqp, dv, 16>(c_out);
+  const aie::vector<bfloat16, 32> z = aie::zeros<bfloat16, 32>();
+  AIE_LOOP_MIN_ITERATION_COUNT(lqp * dv / 64)
+  for (int i = 0; i < lqp * dv; i += 64) {
+    aie::store_v(c_out + i, z);
+    aie::store_v(c_out + i + 32, z);
+  }
 }
 
 void zero_fill_sp_bf16(bfloat16 *c_out) {
@@ -647,30 +664,17 @@ void zero_fill_sp_bf16(bfloat16 *c_out) {
 }
 
 void zero_fill_g_bf16(bfloat16 *c_out) {
-  // Buffer shape: [lqp, lkp]
-  zero_vectorized<bfloat16, lqp, lkp, 16>(c_out);
+  const aie::vector<bfloat16, 32> z = aie::zeros<bfloat16, 32>();
+  AIE_LOOP_MIN_ITERATION_COUNT(lqp * lkp / 64)
+  for (int i = 0; i < lqp * lkp; i += 64) {
+    aie::store_v(c_out + i, z);
+    aie::store_v(c_out + i + 32, z);
+  }
 }
 
 void neg_inf_fill_up_bf16(bfloat16 *c_out) {
   // Buffer shape: [lqp, 1]
   neg_inf_vectorized<bfloat16, lqp, 1, 16>(c_out);
-}
-
-// Scale G by 1/sqrt(dk_full) in-place.
-// G is column-major 4x4 block tiled: [lqp, lkp].
-void scale_g_bf16(bfloat16 *g) {
-  constexpr int VecLen = 16;
-  constexpr int num_elems = lqp * lkp;
-  bfloat16 scale_val = (bfloat16)inv_sqrt_dk;
-  aie::vector<bfloat16, VecLen> scale_vec =
-      aie::broadcast<bfloat16, VecLen>(scale_val);
-  bfloat16 *__restrict pG = g;
-  for (int i = 0; i < num_elems; i += VecLen) {
-    aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(pG);
-    aie::accum<accfloat, VecLen> acc = aie::mul(v, scale_vec);
-    aie::store_v(pG, acc.to_vector<bfloat16>());
-    pG += VecLen;
-  }
 }
 
 // Row-wise max of G matrix.
@@ -680,42 +684,28 @@ void scale_g_bf16(bfloat16 *g) {
 // [12..15]=row3. Since aie::vector<bf16,4> is not supported on AIE2,
 // use scalar element access for per-row reduction.
 void max_g_bf16(bfloat16 *in, bfloat16 *out) {
-  constexpr int VecLen = 16;
-  constexpr int BlockSize = 16; // 4x4 block
-  constexpr int ColsPerBlock = 4;
-  constexpr int RowsPerBlock = 4;
-  constexpr int col_blocks = lkp / ColsPerBlock;
-  constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride =
-      lqp * ColsPerBlock; // stride between column blocks
-
-  // Use bf16 lowest (0xff7f) instead of -inf to avoid NaN propagation.
+  // Row maxima of G (unscaled). The 16 tiles of a row block are reduced
+  // lane-wise to one 4x4 tile, and four such tiles (16 rows) are folded into
+  // 16 row maxima, in row order, with two interleave_unzip steps.
+  constexpr int row_blocks = lqp / 4;
+  constexpr int col_blocks = lkp / 4;
+  constexpr int block_stride = lqp * 4;
   uint16_t lowest_u16 = (uint16_t)0xff7f;
-  bfloat16 lowest_val = *(bfloat16 *)&lowest_u16;
-
-  bfloat16 *__restrict pOut = out;
-  for (int rb = 0; rb < row_blocks; rb++) {
-    aie::vector<bfloat16, VecLen> max_vec =
-        aie::broadcast<bfloat16, VecLen>(lowest_val);
-    int base = rb * BlockSize;
-    for (int cb = 0; cb < col_blocks; cb++)
-      chess_prepare_for_pipelining chess_loop_range(8, ) {
-        aie::vector<bfloat16, VecLen> v =
-            aie::load_v<VecLen>(in + base + cb * block_stride);
-        max_vec = aie::max(max_vec, v);
-      }
-    // Extract per-row max via scalar access.
-    // Row i occupies elements [i*4 .. i*4+3] in the 16-wide vector.
-    for (int row = 0; row < RowsPerBlock; row++) {
-      bfloat16 m = max_vec[row * ColsPerBlock];
-      for (int c = 1; c < ColsPerBlock; c++) {
-        bfloat16 val = max_vec[row * ColsPerBlock + c];
-        if (val > m)
-          m = val;
-      }
-      pOut[row] = m;
+  const auto lowest = aie::broadcast<bfloat16, 16>(*(bfloat16 *)&lowest_u16);
+  for (int rb = 0; rb < row_blocks; rb += 4) {
+    aie::vector<bfloat16, 16> m[4];
+    for (int k = 0; k < 4; k++) {
+      const bfloat16 *__restrict p = in + (rb + k) * 16;
+      aie::vector<bfloat16, 16> acc = lowest;
+      for (int cb = 0; cb < col_blocks; cb++)
+        acc = aie::max(acc, aie::load_v<16>(p + cb * block_stride));
+      m[k] = acc;
     }
-    pOut += RowsPerBlock;
+    auto [a0, a1] = aie::interleave_unzip(m[0], m[1], 2);
+    auto [b0, b1] = aie::interleave_unzip(m[2], m[3], 2);
+    auto [c0, c1] =
+        aie::interleave_unzip(aie::max(a0, a1), aie::max(b0, b1), 1);
+    aie::store_v(out + rb * 4, aie::max(c0, c1));
   }
 }
 
@@ -734,93 +724,58 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
   }
 }
 
-// G = exp(G - u) in-place. G is column-major 4x4 block tiled.
-// VecLen=16 processes one full 4x4 block (4 rows x 4 cols).
-// Uses LUT-based exp.
+// G = exp((G - u) / sqrt(dk)) in place. G is column-major 4x4 block tiled.
 void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
-  constexpr int VecLen = 16;
-  constexpr int BlockSize = 16;
-  constexpr int ColsPerBlock = 4;
-  constexpr int RowsPerBlock = 4;
-  constexpr int col_blocks = lkp / ColsPerBlock;
-  constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride = lqp * ColsPerBlock;
-
-  for (int rb = 0; rb < row_blocks; rb++) {
-    // Build 16-wide u vector: 4 rows x 4 cols, each row's u broadcast to its
-    // 4 column elements. Use scalar set since vector<bf16,4> not supported.
-    int row_start = rb * RowsPerBlock;
-    aie::vector<bfloat16, VecLen> u_vec = aie::zeros<bfloat16, VecLen>();
-    for (int row = 0; row < RowsPerBlock; row++) {
-      bfloat16 uval = u[row_start + row];
-      for (int c = 0; c < ColsPerBlock; c++) {
-        u_vec[row * ColsPerBlock + c] = uval;
-      }
+  // Tile (rb, cb) starts at cb * lqp * 4 + rb * 16, so with rb innermost G
+  // and the expanded u are both read in order. Separate read and write
+  // pointers are safe because each tile is read once and then written once,
+  // and they let the compiler pipeline the loop.
+  constexpr int col_blocks = lkp / 4;
+  constexpr int row_blocks = lqp / 4;
+  aie::saturation_mode saved_saturation =
+      aie::swap_saturation(aie::saturation_mode::saturate);
+  expand_rows4(u, row4_buf);
+  const bfloat16 *__restrict pin = g;
+  bfloat16 *__restrict pout = g;
+  for (int cb = 0; cb < col_blocks; cb++) {
+    const bfloat16 *__restrict pu = row4_buf;
+    AIE_PREPARE_FOR_PIPELINING
+    AIE_LOOP_MIN_ITERATION_COUNT(row_blocks)
+    for (int rb = 0; rb < row_blocks; rb++) {
+      aie::store_v(pout, exp_diff16(aie::load_v<16>(pin), aie::load_v<16>(pu)));
+      pin += 16;
+      pout += 16;
+      pu += 16;
     }
-
-    int base = rb * BlockSize;
-    for (int cb = 0; cb < col_blocks; cb++)
-      chess_prepare_for_pipelining chess_loop_range(8, ) {
-        int off = base + cb * block_stride;
-        aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(g + off);
-        v = aie::sub(v, u_vec);
-        // LUT-based exp: getExpBf16 takes v16bfloat16, returns v16accfloat
-        aie::vector<bfloat16, VecLen> exp_val = to_v16bfloat16(getExpBf16(v));
-        aie::store_v(g + off, exp_val);
-      }
   }
+  aie::set_saturation(saved_saturation);
 }
 
-// r = exp(up - u). Uses LUT-based exp.
+// r = exp((up - u) / sqrt(dk)).
 void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
-  constexpr int VecLen = 16;
-  constexpr int num_elems = lqp;
-  bfloat16 *__restrict pr = r;
-  bfloat16 *__restrict pu = u;
-  bfloat16 *__restrict pup = up;
-  for (int i = 0; i < num_elems; i += VecLen) {
-    aie::vector<bfloat16, VecLen> uTemp = aie::load_v<VecLen>(pu);
-    aie::vector<bfloat16, VecLen> upTemp = aie::load_v<VecLen>(pup);
-    aie::vector<bfloat16, VecLen> diff = aie::sub(upTemp, uTemp);
-    // LUT-based exp
-    aie::vector<bfloat16, VecLen> exp_val = to_v16bfloat16(getExpBf16(diff));
-    aie::store_v(pr, exp_val);
-    pr += VecLen;
-    pu += VecLen;
-    pup += VecLen;
-  }
+  aie::saturation_mode saved_saturation =
+      aie::swap_saturation(aie::saturation_mode::saturate);
+  for (int i = 0; i < lqp; i += 16)
+    aie::store_v(r + i,
+                 exp_diff16(aie::load_v<16>(up + i), aie::load_v<16>(u + i)));
+  aie::set_saturation(saved_saturation);
 }
 
 // Gp = Gp * r (per-row scaling).
 // Gp is column-major 4x4 block tiled: [lqp, dv].
 void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
-  constexpr int VecLen = 16;
-  constexpr int BlockSize = 16; // 4x4 block
-  constexpr int ColsPerBlock = 4;
-  constexpr int RowsPerBlock = 4;
-  constexpr int col_blocks = dv / ColsPerBlock;
-  constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride =
-      lqp * ColsPerBlock; // stride between column blocks
-
+  constexpr int col_blocks = dv / 4;
+  constexpr int row_blocks = lqp / 4;
+  constexpr int block_stride = lqp * 4;
+  expand_rows4(r, row4_buf);
   for (int rb = 0; rb < row_blocks; rb++) {
-    // Build 16-wide r vector: 4 rows x 4 cols, each row's r broadcast
-    int row_start = rb * RowsPerBlock;
-    aie::vector<bfloat16, VecLen> r_vec = aie::zeros<bfloat16, VecLen>();
-    for (int row = 0; row < RowsPerBlock; row++) {
-      bfloat16 rval = r[row_start + row];
-      for (int c = 0; c < ColsPerBlock; c++) {
-        r_vec[row * ColsPerBlock + c] = rval;
-      }
-    }
-
-    int base = rb * BlockSize;
+    const aie::vector<bfloat16, 16> r_vec = aie::load_v<16>(row4_buf + 16 * rb);
+    bfloat16 *__restrict p = gp + rb * 16;
     for (int cb = 0; cb < col_blocks; cb++)
       chess_prepare_for_pipelining chess_loop_range(8, ) {
-        int off = base + cb * block_stride;
-        aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(gp + off);
-        aie::accum<accfloat, VecLen> acc = aie::mul(v, r_vec);
-        aie::store_v(gp + off, acc.to_vector<bfloat16>());
+        aie::accum<accfloat, 16> acc = aie::mul(aie::load_v<16>(p), r_vec);
+        aie::store_v(p, acc.to_vector<bfloat16>());
+        p += block_stride;
       }
   }
 }
@@ -828,35 +783,27 @@ void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
 // s = sum(G, axis=-1, keepdims=True).
 // G is column-major 4x4 block tiled.
 void sum_g(bfloat16 *g, bfloat16 *s) {
-  constexpr int VecLen = 16;
-  constexpr int BlockSize = 16;
-  constexpr int ColsPerBlock = 4;
-  constexpr int RowsPerBlock = 4;
-  constexpr int col_blocks = lkp / ColsPerBlock;
-  constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride = lqp * ColsPerBlock;
-
-  bfloat16 *__restrict ps = s;
-  for (int rb = 0; rb < row_blocks; rb++) {
-    // Accumulate sum across column blocks for 4 rows
-    aie::accum<accfloat, VecLen> sum_acc = aie::zeros<accfloat, VecLen>();
-    int base = rb * BlockSize;
-    for (int cb = 0; cb < col_blocks; cb++)
-      chess_prepare_for_pipelining chess_loop_range(8, ) {
-        aie::vector<bfloat16, VecLen> v =
-            aie::load_v<VecLen>(g + base + cb * block_stride);
-        sum_acc = aie::add(sum_acc, v);
-      }
-    // Reduce each 4-element row slice via scalar access.
-    aie::vector<float, VecLen> sum_v = sum_acc.to_vector<float>();
-    for (int row = 0; row < RowsPerBlock; row++) {
-      float row_sum = 0.0f;
-      for (int c = 0; c < ColsPerBlock; c++) {
-        row_sum += sum_v[row * ColsPerBlock + c];
-      }
-      ps[row] = (bfloat16)row_sum;
+  // Row sums of G, folded the same way as in max_g_bf16, in f32.
+  constexpr int row_blocks = lqp / 4;
+  constexpr int col_blocks = lkp / 4;
+  constexpr int block_stride = lqp * 4;
+  auto fold = [](aie::vector<float, 16> x, aie::vector<float, 16> y,
+                 unsigned step) {
+    auto [lo, hi] = aie::interleave_unzip(x, y, step);
+    return aie::add(aie::accum<accfloat, 16>(lo), hi).to_vector<float>();
+  };
+  for (int rb = 0; rb < row_blocks; rb += 4) {
+    aie::vector<float, 16> t[4];
+    for (int k = 0; k < 4; k++) {
+      const bfloat16 *__restrict p = g + (rb + k) * 16;
+      aie::accum<accfloat, 16> acc = aie::zeros<accfloat, 16>();
+      for (int cb = 0; cb < col_blocks; cb++)
+        acc = aie::add(acc, aie::load_v<16>(p + cb * block_stride));
+      t[k] = acc.to_vector<float>();
     }
-    ps += RowsPerBlock;
+    aie::vector<float, 16> r =
+        fold(fold(t[0], t[1], 2), fold(t[2], t[3], 2), 1);
+    aie::store_v(s + rb * 4, aie::accum<accfloat, 16>(r).to_vector<bfloat16>());
   }
 }
 
@@ -899,33 +846,20 @@ void vector_copy_32elems(const int offset, const bfloat16 *__restrict inputs,
 // Gp is column-major 4x4 block tiled: [lqp, dv].
 // Uses aie::div (AIE2-compatible, no aie::inv).
 void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
-  constexpr int VecLen = 16;
-  constexpr int BlockSize = 16; // 4x4 block
-  constexpr int ColsPerBlock = 4;
-  constexpr int RowsPerBlock = 4;
-  constexpr int col_blocks = dv / ColsPerBlock;
-  constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride =
-      lqp * ColsPerBlock; // stride between column blocks
-
+  constexpr int col_blocks = dv / 4;
+  constexpr int row_blocks = lqp / 4;
+  constexpr int block_stride = lqp * 4;
+  expand_rows4(sp, row4_buf);
   for (int rb = 0; rb < row_blocks; rb++) {
-    // Build 16-wide sp vector via scalar access
-    int row_start = rb * RowsPerBlock;
-    aie::vector<bfloat16, VecLen> sp_vec = aie::zeros<bfloat16, VecLen>();
-    for (int row = 0; row < RowsPerBlock; row++) {
-      bfloat16 spval = sp[row_start + row];
-      for (int c = 0; c < ColsPerBlock; c++) {
-        sp_vec[row * ColsPerBlock + c] = spval;
-      }
-    }
-
-    int base = rb * BlockSize;
+    const aie::vector<bfloat16, 16> sp_vec =
+        aie::load_v<16>(row4_buf + 16 * rb);
+    bfloat16 *__restrict p = gp + rb * 16;
     for (int cb = 0; cb < col_blocks; cb++)
       chess_prepare_for_pipelining chess_loop_range(8, ) {
-        int off = base + cb * block_stride;
-        aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(gp + off);
+        aie::vector<bfloat16, 16> v = aie::load_v<16>(p);
         v = aie::div(v, sp_vec);
-        aie::store_v(gp + off, v);
+        aie::store_v(p, v);
+        p += block_stride;
       }
   }
 }
@@ -933,7 +867,7 @@ void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
 // Fused softmax: delegates to existing kernels.
 // On return: up=new_max, sp=sum(exp(G)), r=rescale_factor, G=exp(G-max).
 void fused_softmax(bfloat16 *g, bfloat16 *up, bfloat16 *sp, bfloat16 *r) {
-  scale_g_bf16(g);
+  // up, r and G are unscaled; exp_diff16 applies 1/sqrt(dk).
   max_g_bf16(g, r);
   maximum_up_u_bf16(up, r);
   exp_g_minus_u(r, g);
@@ -965,54 +899,35 @@ void add_gp_g(bfloat16 *gp, bfloat16 *g) {
 void apply_causal_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx) {
   uint16_t neg_inf_u16 = (uint16_t)0xff80;
   bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
+  const aie::vector<bfloat16, 16> neg_inf_vec =
+      aie::broadcast<bfloat16, 16>(neg_inf_val);
 
-  // 1. Block above diagonal: all masked -> fill with -inf
+  // Block below the diagonal: nothing to mask.
+  if (kv_block_idx < q_block_idx)
+    return;
+
+  // Block above the diagonal: all masked.
   if (kv_block_idx > q_block_idx) {
-    constexpr int VecLen = 16;
-    aie::vector<bfloat16, VecLen> neg_inf_vec =
-        aie::broadcast<bfloat16, VecLen>(neg_inf_val);
     bfloat16 *p = g;
-    for (int i = 0; i < lqp * lkp; i += VecLen) {
+    for (int i = 0; i < lqp * lkp; i += 16) {
       aie::store_v(p, neg_inf_vec);
-      p += VecLen;
+      p += 16;
     }
     return;
   }
 
-  // 2. Block below diagonal: no masking needed
-  if (kv_block_idx < q_block_idx) {
-    return;
-  }
-
-  // 3. Diagonal block (kv_block_idx == q_block_idx):
-  // Use scalar writes for per-element causal masking.
-  constexpr int BlkDim = 4;
-
-  for (int row = 0; row < lqp; row++) {
-    int mask_start = row + 1;
-    int row_blk = row / BlkDim;
-    int row_in = row % BlkDim;
-
-    for (int col_blk = 0; col_blk < lkp / BlkDim; col_blk++) {
-      int col_start = col_blk * BlkDim;
-      int off = col_blk * (lqp * BlkDim) + row_blk * (BlkDim * BlkDim) +
-                row_in * BlkDim;
-
-      if (col_start >= mask_start) {
-        // Entire sub-row masked
-        for (int c = 0; c < BlkDim; c++) {
-          g[off + c] = neg_inf_val;
-        }
-      } else if (col_start + BlkDim > mask_start) {
-        // Partial: mask columns >= mask_start
-        for (int c = 0; c < BlkDim; c++) {
-          if (col_start + c >= mask_start) {
-            g[off + c] = neg_inf_val;
-          }
-        }
-      }
-      // else: unmasked, leave unchanged
-    }
+  // Diagonal block (lqp == lkp). Tile (rb, cb) starts at cb * lqp * 4 + rb * 16
+  // and its lane 4i + j is row 4rb + i, column 4cb + j. Tiles with cb > rb are
+  // fully masked, tiles with cb == rb keep the lanes with j <= i, and tiles
+  // with cb < rb are left alone. Lanes with j > i are 1-3, 6-7 and 11.
+  const aie::mask<16> upper = aie::mask<16>::from_uint32(0x08CEu);
+  constexpr int blocks = lqp / 4;
+  for (int cb = 0; cb < blocks; cb++) {
+    bfloat16 *col = g + cb * lqp * 4;
+    aie::store_v(col + cb * 16, aie::select(aie::load_v<16>(col + cb * 16),
+                                            neg_inf_vec, upper));
+    for (int rb = 0; rb < cb; rb++)
+      aie::store_v(col + rb * 16, neg_inf_vec);
   }
 }
 
