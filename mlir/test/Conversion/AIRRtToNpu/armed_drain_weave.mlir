@@ -204,3 +204,36 @@ module {
     return
   }
 }
+
+// -----
+
+// A drain-only launch: six armed drains and no feed. Their producer needs
+// nothing later in the sequence (the segment load lowers to no instruction), so
+// they keep their order and gain no waits.
+// CHECK-LABEL: aie.runtime_sequence @drain_only
+// CHECK-COUNT-6: aiex.dma_configure_task_for @drain_only_out
+// CHECK-NOT: aiex.dma_await_task
+// CHECK-COUNT-6: aiex.dma_await_task
+// CHECK-NOT: air.armed_drain
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @drain_only_out(%shim_noc_tile_0_0, S2MM, 0)
+  } {sym_name = "drain_only_seg"}
+  airrt.module_metadata{}
+  func.func @drain_only(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c3_i32 = arith.constant 3 : i32
+    %0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drain_only_out, air.armed_drain} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drain_only_out, air.armed_drain} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drain_only_out, air.armed_drain} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %3 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drain_only_out, air.armed_drain} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %4 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drain_only_out, air.armed_drain} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %5 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drain_only_out, air.armed_drain} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %p = airrt.segment_load "drain_only_seg" : i64
+    airrt.wait_all %0, %1, %2, %3, %4, %5
+    return
+  }
+}

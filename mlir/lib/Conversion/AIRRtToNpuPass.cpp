@@ -3715,6 +3715,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // each other. A single-channel burst has nothing to weave and just gets
         // the cap.
         auto flush = [&](Operation *fence) {
+          // Drains with no feed after them (a drain-only launch) are left as
+          // armed: their producer needs nothing later in the sequence -- a
+          // segment/herd load lowers to no instruction, the cores run from
+          // configuration -- so a wait on an older drain always retires.
           if (!fence || run.empty())
             return;
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
