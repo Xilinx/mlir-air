@@ -1,0 +1,16 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Causal attention on NPU1. Each kernel runs twice on one hardware context and
+// the second output is checked, so state the cores carry across runs is
+// covered. The first case has four K/V blocks per cascade stage and GQA; the
+// second has a head dimension of two tiles.
+//
+// REQUIRES: ryzen_ai_npu1, peano
+//
+// RUN: mkdir -p %t/gqa %t/d128
+// RUN: cd %t/gqa && make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: cd %t/gqa && make -f %S/Makefile run-npu1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR LK=1024 LQ=1024 NUM_HEADS=4 NUM_KV_HEADS=2 EXTRA_PY_FLAGS="--causal --num-runs 2" | FileCheck %s
+// RUN: cd %t/d128 && make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: cd %t/d128 && make -f %S/Makefile run-npu1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR LK=512 LQ=512 DK=128 DV=128 NUM_HEADS=2 EXTRA_PY_FLAGS="--causal --num-runs 2" | FileCheck %s
+// CHECK: PASS!
