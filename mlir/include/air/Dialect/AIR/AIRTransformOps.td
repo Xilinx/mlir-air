@@ -783,12 +783,20 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     } -> tensor<16xf32>
     ```
     
+    With `fold_reshapes`, also folds `tensor.expand_shape` and
+    `tensor.collapse_shape` ops between two all-parallel linalg.generic ops
+    into them by expanding the iteration space (upstream
+    fold-reshape-by-expansion), so that elementwise chains split by reshapes
+    fuse too. Reshapes next to any other op, a contraction included, are
+    left alone.
+
     Returns a handle to the modified function.
   }];
   
-  let arguments = (ins TransformHandleTypeInterface:$target);
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   UnitAttr:$fold_reshapes);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$target (`fold_reshapes` $fold_reshapes^)? attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
@@ -1321,6 +1329,234 @@ def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
     Returns a handle to the transformed loop.
   }];
   
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def NormalizeLoopToUnitStepOp : Op<Transform_Dialect, "air.normalize_loop_to_unit_step",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Rewrite scf.for to count from 0 by 1, the IV's value an affine.apply";
+  let description = [{
+    Rewrites each target `scf.for %i = %lb to %ub step %s` in place as
+    `scf.for %j = 0 to ceildiv(%ub - %lb, %s) step 1`, replacing the uses of
+    `%i` with `affine.apply (%j * %s + %lb)`. The inverse of
+    `air.normalize_for_bounds`.
+
+    Offsets computed from the induction variable then show their stride, so
+    that `tensor.bubble_up_extract_slice` can prove a slice of a collapsed
+    dim aligned to the inner dims: a slice at `%j * 8` of a dim collapsed
+    from 64x4 is, one at `%i` (step 8) cannot be shown to be.
+
+    The targets must be signed loops over `index`; otherwise this is a
+    silenceable failure and no loop is rewritten.
+
+    Returns the rewritten loops.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def MergeSiblingCopiesOp : Op<Transform_Dialect, "air.merge_sibling_copies",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Copy several views of one buffer as one copy of their bounding region";
+  let description = [{
+    Finds the `memref.copy` ops under `target` that copy a
+    `memref.reinterpret_cast` of a common base into a fresh `memref.alloc`
+    read only through `bufferization.to_tensor`, and merges those whose
+    views differ only by a constant offset: same base, element type, strides
+    and destination memory space, in the same block, with no write between
+    them. Each group becomes one alloc and one copy of the views' bounding
+    region, and each original buffer's `bufferization.to_tensor` a
+    `tensor.extract_slice` of the merged buffer's tensor. Several fields of
+    one packed buffer then move as one DMA stream.
+
+    The offsets must differ by a provable constant, which must decompose
+    along the strides into a position on the common view's grid. The region
+    may not hold more elements than the copies it replaces, nor end past
+    the last element any of them reads. Copies that do not qualify are left
+    alone.
+
+    Returns the merged copies.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Read sibling slices of one tensor through a single copy";
+  let description = [{
+    Groups the `tensor.extract_slice` ops that produce the inputs of the
+    `target` ops, directly or through a `tensor.expand_shape`, by source. A
+    group of two or more unit-stride slices in one block, whose offsets in
+    each dimension are either the same value or constants, is rewritten as
+    one `linalg.copy` of the slices' bounding region into a `tensor.empty`,
+    with each slice taken from that copy. An offset counts as a constant
+    when it simplifies to one through `affine.apply`,
+    `affine.delinearize_index` and `arith.addi` / `arith.muli` by constants.
+    The region may not hold more elements than the slices it replaces.
+
+    Promoting the returned copies (with
+    `transform.structured.bufferize_to_allocation`) then moves the region
+    with one DMA instead of one per slice.
+
+    Returns the new `linalg.copy` ops.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def FoldPackIntoGenericOp : Op<Transform_Dialect, "air.fold_pack_into_generic",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Read a packed input through the generic's indexing map";
+  let description = [{
+    For each input of the target `linalg.generic` produced by a
+    `linalg.pack` without padding (every tiled dimension divides evenly),
+    replaces the operand by the pack's source and composes the pack's
+    relayout into the operand's indexing map: a packed index
+    `(..., o, ..., i)` reads source element `o * tile + i`. Packs left
+    without uses are erased. The generic then reads the source directly,
+    and no relayout copy (on AIE, a DMA between two L1 buffers) is made.
+
+    The composed maps are not projected permutations: tile the generic so
+    the outer packed dimensions are 1 and fold unit dimensions before
+    vectorizing it. `structured.lower_pack`, generalizing its transpose and
+    fusing it into the generic gives an equivalent read through a
+    `tensor.expand_shape` view with a projected-permutation map; this op is
+    for packs that have already been tiled and fused into a loop.
+
+    Returns the updated generics.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Rewrite n-D elementwise vector computation as rank-1 vectors";
+  let description = [{
+    Rewrites the elementwise vector computation nested in `target` so every
+    value it produces is a rank-1 vector, the form the AIE vector lowerings
+    handle. A rank-2+ elementwise op would otherwise be unrolled along its
+    leading dims during LLVM lowering into one narrow op per innermost row.
+    `target` need not be isolated from above.
+
+    The rewrite runs in phases, each on the ops the previous ones leave:
+
+    1. Transfer reads the AIE core lowering cannot take become ones it can:
+       - a read broadcasting along a memref dim of extent 1 (a map like
+         `(d0, d1, d2) -> (d0, 0, d2)`) becomes an identity-map read and a
+         `vector.broadcast`;
+       - a read whose vector is not one contiguous run of its memref (a 4x8
+         block of rows 64 wide) becomes one read per innermost row and
+         `vector.insert`s; the rows must be in bounds;
+       - a rank-1 read whose map selects one dim followed only by unit dims
+         reads the collapsed memref with a minor identity map;
+       - a read of the dims just above the innermost one, with the
+         innermost index a constant `k` and that dim's extent `s` between 2
+         and 8, becomes a read that includes the innermost dim and a
+         `vector.shuffle` taking every `s`-th lane from `k`.
+    2. Upstream vector linearization of the elementwise ops, constants,
+       `vector.bitcast`, `vector.insert` and `vector.broadcast` (the last
+       as a `vector.shuffle`). Values crossing into ops left alone are
+       reshaped with `vector.shape_cast`; transfers, contractions and loops
+       keep their n-D types.
+    3. Rank-1 rewrites:
+       - `(x >> [0, 4, 8, ...]) & 15` on 16- or 32-bit words, where lane l
+         of `x` is word `l / k` of one vector (`k` fields per word), is
+         unpacked as `vector.bitcast` to i4 and `arith.extui`, or with
+         `aievec.unpack` on AIE2P when it is exactly 64 or 128 fields;
+       - an f32 `addf(mulf(a, b), c)` with `a` and `b` widened from bf16
+         becomes `vector.fma`, when both ops carry the `contract` fast-math
+         flag or `contract` is set here: contraction drops the product's
+         rounding;
+       - elementwise float ops wider than the native width are halved until
+         they fit: 32 lanes for bf16, `f32_lanes` for ops on f32;
+       - a strided rank-1 read that is in bounds is read element by element.
+    4. On AIE2P, with `f32_lanes` 32: a 32-lane bf16 x bf16 + f32
+       `vector.fma` becomes `aievec.mac_elem` and a 32-lane f32 to bf16
+       `arith.truncf` (default rounding) `aievec.srs`. With `f32_lanes` 64:
+       the 64-lane fma becomes the `llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf`
+       intrinsic, the 64-lane truncf two `aievec.srs` (stored as two halves
+       when its only use is a shape_cast to an in-bounds memref write), and
+       `bf16(0x4300 | zext(q))` for unpacked 4-bit `q` two
+       `llvm.aie2p.vshuffle` byte interleaves of `q` with 0x43. Intrinsics
+       are called through private `func.func` declarations of their names.
+
+    `arch` is `"aie2"` (default) or `"aie2p"`. `f32_lanes` is 16 (default),
+    or 32 or 64 on AIE2P.
+
+    Run it after vectorization, then canonicalize so that adjacent
+    `vector.shape_cast` pairs fold.
+
+    Example:
+    ```mlir
+    %s = vector.transfer_read %scale[%c0, %c0, %c0], %pad
+        {in_bounds = [true, true, true],
+         permutation_map = affine_map<(d0, d1, d2) -> (d0, 0, d2)>}
+        : memref<1x1x8xbf16>, vector<1x4x8xbf16>
+    %w = arith.mulf %q, %s : vector<1x4x8xbf16>
+    ```
+    becomes
+    ```mlir
+    %r = vector.transfer_read %scale[%c0, %c0, %c0], %pad
+        {in_bounds = [true, true, true]} : memref<1x1x8xbf16>, vector<1x1x8xbf16>
+    %r1 = vector.shape_cast %r : vector<1x1x8xbf16> to vector<8xbf16>
+    %s1 = vector.shuffle %r1, %r1 [0, 1, ..., 7, 0, 1, ..., 7, ...]
+        : vector<8xbf16>, vector<8xbf16>
+    %q1 = vector.shape_cast %q : vector<1x4x8xbf16> to vector<32xbf16>
+    %w1 = arith.mulf %q1, %s1 : vector<32xbf16>
+    ```
+
+    Returns a handle to `target`.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   DefaultValuedStrAttr<StrAttr, "aie2">:$arch,
+                   DefaultValuedAttr<I64Attr, "16">:$f32_lanes,
+                   UnitAttr:$contract);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target (`arch` `=` $arch^)? (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+
+def PushUnpackThroughSlicesOp : Op<Transform_Dialect, "air.push_unpack_through_slices",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Move a linalg.unpack below an expand_shape and the single-index slices of it";
+  let description = [{
+    Each target is a `linalg.unpack` whose only user is a
+    `tensor.expand_shape` splitting exactly one packed dim `d` into `[n, s]`,
+    whose users are all rank-reducing `tensor.extract_slice`s taking one
+    index `k` of the `s` dim and all of every other dim, and whose inner
+    tile `t` on `d` is a multiple of `s`. Each slice is rewritten as an
+    unpack, with inner tile `t / s` on `d`, of the packed source's tile dim
+    split into `[t / s, s]` and sliced at `k`.
+
+    Then an all-parallel `linalg.generic` with identity maps whose inputs
+    are all such unpacks, of one layout, that does not use `linalg.index`
+    and does not read its output, runs on the packed values with one unpack
+    after it.
+
+    Every target is matched before any is rewritten; a target that does not
+    match is a silenceable failure.
+
+    Returns the new unpacks.
+  }];
   let arguments = (ins TransformHandleTypeInterface:$target);
   let results = (outs TransformHandleTypeInterface:$result);
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
