@@ -1557,23 +1557,6 @@ def PushUnpackThroughSlicesOp : Op<Transform_Dialect, "air.push_unpack_through_s
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
-def SinkHerdOperandViewsOp : Op<Transform_Dialect, "air.sink_herd_operand_views",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-     DeclareOpInterfaceMethods<TransformOpInterface>]> {
-  let summary = "Pass a herd the buffer under a view operand, and take the view inside";
-  let description = [{
-    A herd operand that is a chain of view-like ops (expand_shape, subview, ...)
-    over a memref becomes that memref, and the chain is rebuilt at the top of the
-    herd body. Core outlining cannot carry a view of an L1 buffer made outside the
-    herd (e.g. the slices of an accumulator a fused epilogue reads).
-
-    Returns the herds.
-  }];
-  let arguments = (ins TransformHandleTypeInterface:$target);
-  let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
-}
-
 def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vector_to_scalar",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {

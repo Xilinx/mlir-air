@@ -30,6 +30,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -1039,6 +1040,43 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
   return success();
 }
 
+// Clones into `region` each view of an L1 buffer that it uses from above,
+// when the view's other operands are constants: the herd then takes the
+// buffer itself as an operand, which core outlining needs, and herds sharing
+// the buffer get one name.
+static void sinkL1ViewsIntoRegion(Region &region, PatternRewriter &rewriter) {
+  llvm::SetVector<Value> above;
+  getUsedValuesDefinedAbove(region, above);
+  for (Value v : above) {
+    SmallVector<ViewLikeOpInterface> chain;
+    Value root = v;
+    while (auto view = root.getDefiningOp<ViewLikeOpInterface>()) {
+      chain.push_back(view);
+      root = view.getViewSource();
+    }
+    auto rootTy = dyn_cast<MemRefType>(root.getType());
+    if (chain.empty() || !rootTy || !air::isL1(rootTy))
+      continue;
+    bool constantOperands = llvm::all_of(chain, [](ViewLikeOpInterface view) {
+      return llvm::all_of(view->getOperands(), [&](Value x) {
+        return x == view.getViewSource() || matchPattern(x, m_Constant());
+      });
+    });
+    if (!constantOperands)
+      continue;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&region.front());
+    IRMapping map;
+    for (ViewLikeOpInterface view : llvm::reverse(chain)) {
+      for (Value x : view->getOperands())
+        if (x != view.getViewSource() && !map.contains(x))
+          map.map(x, rewriter.clone(*x.getDefiningOp())->getResult(0));
+      rewriter.clone(*view, map);
+    }
+    replaceAllUsesInRegionWith(v, map.lookup(v), region);
+  }
+}
+
 template <typename hierTy>
 FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     scf::ParallelOp parOp, SmallPtrSet<Operation *, 8> &filteredOps,
@@ -1078,6 +1116,8 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     auto step_int = to_int(op.getStep()[i]);
     bounds[i] = ub_int / step_int;
   }
+  if constexpr (std::is_same_v<hierTy, air::HerdOp>)
+    sinkL1ViewsIntoRegion(op.getRegion(), rewriter);
   SmallVector<Value, 4> args;
   SmallVector<Value, 4> constants;
   getUsedArgsDefinedAbove(op.getRegion(), args);
