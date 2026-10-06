@@ -218,7 +218,7 @@ prefill:
 	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --gate --tol $(PREFILL_TOL)
 
 ## The fused prefill: every op of a 128-token chunk on one configured device,
-## int4 weights dequantized on the cores (fused_prefill/device.py).
+## int4 weights dequantized on the cores (../shared/fused_prefill).
 compile-fused-prefill:
 	$(PYTHON) $(FUSED)/build.py $(FUSED_DIR) -j $(FUSED_JOBS)
 

@@ -159,6 +159,16 @@ def build_prefiller(args, prompt_len=None):
     into resident BOs."""
     if args.no_prefill:
         return None
+    if args.fused_prefill:
+        import types
+
+        sys.modules.setdefault(
+            "air_examples", types.ModuleType("air_examples")
+        ).__path__ = [str(Path(__file__).resolve().parents[2])]
+        from air_examples.llms.shared.fused_prefill import dense
+
+        print(f"\nLoading the fused prefill ({args.fused_prefill}) ...")
+        return dense.load("llama32_3b_q4nx", args.fused_prefill, args.model_source)
     if prompt_len is not None and prompt_len < args.prefill_min:
         print(
             f"\nPrompt is {prompt_len} tokens (< --prefill-min {args.prefill_min}); "
@@ -202,7 +212,14 @@ def repl(dec, tokenizer, args, prefiller=None):
             break
         ids = format_prompt(tokenizer, line, args.model)
         pf = prefiller if len(ids) >= args.prefill_min else None
-        _, tp, tg = generate_stream(dec, tokenizer, ids, args.n_tokens, prefiller=pf)
+        _, tp, tg = generate_stream(
+            dec,
+            tokenizer,
+            ids,
+            args.n_tokens,
+            prefiller=pf,
+            min_prefill=args.prefill_min,
+        )
         print(f"\n[{len(ids)} prompt tok in {tp:.2f}s | decode {tg:.2f}s]", flush=True)
 
 
@@ -264,13 +281,23 @@ if __name__ == "__main__":
         help="keep generating past EOS (use with --profile so the decode rate is "
         "measured over the full --n-tokens)",
     )
+    parser.add_argument(
+        "--fused-prefill",
+        default=None,
+        metavar="BUILD_DIR",
+        help="prefill every prompt on the fused prefill built by "
+        "`make compile-fused-prefill`",
+    )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()
 
     if args.interactive and args.compile_only:
         parser.error("--interactive cannot be combined with --compile-only")
 
-    if not args.run_only:
+    if args.fused_prefill:
+        # no padded length, so even a short prompt is cheaper prefilled
+        args.prefill_min = 1
+    if not args.run_only and not args.fused_prefill:
         compile_prefill(args.seq_len)
         if args.compile_only:
             print("\nCompilation passed.")
@@ -297,6 +324,7 @@ if __name__ == "__main__":
         ids,
         args.n_tokens,
         prefiller=prefiller,
+        min_prefill=args.prefill_min,
         stop_on_eos=not args.no_eos_stop,
     )
     if args.profile:

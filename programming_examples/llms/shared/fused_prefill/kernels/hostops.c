@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 //
 // Host side of the fused prefill: conversions between float32 activations and
-// the device's bf16 layouts, and the elementwise ops between GEMMs.
+// the device's bf16 layouts, and the elementwise ops between GEMMs. Row loops
+// run on NT threads; rows are independent, so results do not depend on NT.
 #include <stdint.h>
 #include <string.h>
+
+#ifndef NT
+#define NT 4
+#endif
 
 // round to nearest even; NaN not handled
 static inline uint16_t f2bf(float f) {
@@ -16,6 +21,7 @@ static inline uint16_t f2bf(float f) {
 // x [t, K] f32 -> dst [HR][K/TK][TM][TK] bf16, the GEMM's A layout
 void tile_a(const float *x, int t, int K, int TM, int TK, uint16_t *dst) {
   int ks = K / TK;
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     const float *src = x + (long)r * K;
@@ -30,6 +36,7 @@ void tile_a(const float *x, int t, int K, int TM, int TK, uint16_t *dst) {
 
 // src [rows, ld] bf16 -> dst [rows, n] f32
 void bf16_to_f32(const uint16_t *src, int rows, int ld, int n, float *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < rows; r++) {
     const uint16_t *s = src + (long)r * ld;
     float *d = dst + (long)r * n;
@@ -53,6 +60,7 @@ static inline float sumsq(const float *a, int n) {
 
 // y[r] = x[r] / sqrt(mean(x[r]^2) + eps) * (w ? w : 1); rows of n
 void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < rows; r++) {
     const float *a = x + (long)r * n;
     float *o = y + (long)r * n;
@@ -69,6 +77,7 @@ void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
 // y = res + rms(x) * w
 void add_rms(const float *res, const float *x, int rows, int n, const float *w,
              float eps, float *y) {
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < rows; r++) {
     const float *a = x + (long)r * n, *b = res + (long)r * n;
     float *o = y + (long)r * n;
@@ -83,6 +92,7 @@ void add_rms(const float *res, const float *x, int rows, int n, const float *w,
 void rope(float *x, int T, int H, int dh, int rot, const float *cs,
           const float *sn) {
   int h = rot / 2;
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int t = 0; t < T; t++)
     for (int k = 0; k < H; k++) {
       float *v = x + ((long)t * H + k) * dh;
@@ -107,6 +117,7 @@ static inline float bf2f(uint16_t b) {
 void glu_tile(const uint16_t *g, int ldg, const uint16_t *u, int ldu, int t,
               int n, int TM, int TK, uint16_t *dst) {
   int ks = n / TK;
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     for (int s = 0; s < ks; s++) {
@@ -123,6 +134,7 @@ void glu_tile(const uint16_t *g, int ldg, const uint16_t *u, int ldu, int t,
 void mul_tile(const uint16_t *g, int ldg, const float *p, int t, int n, int TM,
               int TK, uint16_t *dst) {
   int ks = n / TK;
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     for (int s = 0; s < ks; s++) {
@@ -138,6 +150,7 @@ void mul_tile(const uint16_t *g, int ldg, const float *p, int t, int n, int TM,
 // q [T, H, dh] f32 -> dst [H, M, dh] bf16 = bf16(q * scale), rows T..M zeroed
 void q_pack(const float *q, int T, int H, int dh, int M, float scale,
             uint16_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int k = 0; k < H; k++) {
     uint16_t *d = dst + (long)k * M * dh;
     for (int t = 0; t < T; t++) {
@@ -151,6 +164,7 @@ void q_pack(const float *q, int T, int H, int dh, int M, float scale,
 
 // o [H, M, dh] bf16 -> dst [T, H * dh] f32
 void o_unpack(const uint16_t *o, int T, int H, int dh, int M, float *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
   for (int t = 0; t < T; t++)
     for (int k = 0; k < H; k++) {
       const uint16_t *s = o + ((long)k * M + t) * dh;

@@ -16,6 +16,8 @@ _f = ctypes.c_float
 
 def load(build_dir):
     global _lib
+    # spinning OpenMP workers would compete with the XRT waits between ops
+    os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     _lib = ctypes.CDLL(os.path.join(build_dir, "libhostops.so"))
     _lib.tile_a.argtypes = [_p, _i, _i, _i, _i, _p]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]

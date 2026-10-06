@@ -165,15 +165,32 @@ def _ensure_requant_cache(fd):
 
 
 # ------------------------------------------------------------------ prefill worker
-def _prefill_worker(prompt, out_path, seq_len, warm_ttft=False):
-    """Runs in a subprocess: batched prefill -> per-layer roped-K/raw-V + first token."""
+def _make_prefiller(seq_len, fused=None):
+    """The padded per-op prefill, or with `fused` (a `make compile-fused-prefill`
+    build) the chunked one-device prefill; weights loaded."""
     sys.path.insert(0, str(_HERE))
-    import numpy as np
+    if fused:
+        import types
+
+        sys.modules.setdefault(
+            "air_examples", types.ModuleType("air_examples")
+        ).__path__ = [str(_HERE.parents[1])]
+        from air_examples.llms.shared.fused_prefill import dense
+
+        return dense.load("lfm2_1_2b_q4nx", fused)
     from lfm2_1_2b_q4nx_prefill import Lfm2Q4nxPrefill
 
     m = Lfm2Q4nxPrefill(seq_len=seq_len)
     m.compile()
     m.load_weights()
+    return m
+
+
+def _prefill_worker(prompt, out_path, seq_len, warm_ttft=False, fused=None):
+    """Runs in a subprocess: batched prefill -> per-layer roped-K/raw-V + first token."""
+    import numpy as np
+
+    m = _make_prefiller(seq_len, fused)
     logits = np.asarray(m.prefill(prompt), np.float32)
     first = int(logits.argmax())
     cfg = m.config
@@ -211,7 +228,7 @@ def _prefill_worker(prompt, out_path, seq_len, warm_ttft=False):
         Path(str(out_path) + ".warm").write_text(f"{time.perf_counter() - t0:.6f}")
 
 
-def run_prefill(prompt, seq_len, kv_path, warm_ttft=False):
+def run_prefill(prompt, seq_len, kv_path, warm_ttft=False, fused=None):
     """Spawn the prefill worker (clean NPU release before decode)."""
     # Note: avoid the token "prompt_len=" here so it doesn't shadow the canonical
     # "Inference: prompt_len=<seq_len>" line that bench/extract_perf.py parses (it
@@ -233,6 +250,8 @@ def run_prefill(prompt, seq_len, kv_path, warm_ttft=False):
     ]
     if warm_ttft:
         cmd.append("--_warm-ttft")
+    if fused:
+        cmd += ["--fused-prefill", str(fused)]
     subprocess.run(cmd, check=True)
 
 
@@ -796,13 +815,14 @@ def generate(
     seed=0,
     greedy=False,
     profile=False,
+    fused=None,
 ):
     import numpy as np, time
 
     t_ttft0 = time.perf_counter()
     warm_path = Path(str(kv_path) + ".warm")
     warm_path.unlink(missing_ok=True)  # never report a stale run's number
-    run_prefill(prompt, seq_len, kv_path, warm_ttft=profile)
+    run_prefill(prompt, seq_len, kv_path, warm_ttft=profile, fused=fused)
     warm_ttft = float(warm_path.read_text()) if warm_path.exists() else None
     pf = np.load(kv_path)
     fk = pf["k"].astype(np.float32)
@@ -932,19 +952,17 @@ class Session:
     llms' build_session preload. Per-turn TTFT is then prefill COMPUTE only -- the ~1.8 GB weight
     load happens once at startup, not on every turn."""
 
-    def __init__(self, seq_len=2048):
+    def __init__(self, seq_len=2048, fused=None):
         import numpy as np, time
 
         self.seq_len = seq_len  # nominal prefill/decode context window (reported)
         sys.path.insert(0, str(_HERE))
         sys.path.insert(0, str(_DEC))
-        from lfm2_1_2b_q4nx_prefill import Lfm2Q4nxPrefill
 
         self.np = np
         t0 = time.perf_counter()
         print("[session] loading prefill weights (once)...", flush=True)
-        self.prefiller = Lfm2Q4nxPrefill(seq_len=seq_len)
-        self.prefiller.load_weights()
+        self.prefiller = _make_prefiller(seq_len, fused)
         print(
             f"[session] prefill resident ({time.perf_counter() - t0:.2f}s); building decode...",
             flush=True,
@@ -1066,6 +1084,7 @@ def interactive_chat(
     rep_penalty=1.0,
     greedy=False,
     seed=0,
+    fused=None,
 ):
     """the reference-faithful multi-turn REPL (single_turn_conversation applied per turn with an
     accumulating message history): each turn re-applies the chat template to the full
@@ -1076,7 +1095,7 @@ def interactive_chat(
     from transformers import AutoTokenizer
 
     tk = AutoTokenizer.from_pretrained(_TOKENIZER)
-    sess = Session(seq_len=seq_len)  # preload prefill + decode ONCE
+    sess = Session(seq_len=seq_len, fused=fused)  # preload prefill + decode ONCE
     attn_maxl = sess.attn_maxl
 
     def _fresh():
@@ -1245,6 +1264,12 @@ def main():
         action="store_true",
         help="multi-turn chat REPL (the reference-faithful)",
     )
+    ap.add_argument(
+        "--fused-prefill",
+        default=None,
+        metavar="BUILD_DIR",
+        help="prefill on the fused prefill built by `make compile-fused-prefill`",
+    )
     ap.add_argument("--_prefill-worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--_warm-ttft", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument(
@@ -1254,7 +1279,13 @@ def main():
 
     if args._prefill_worker:
         prompt = [int(x) for x in args.prompt_ids.split(",")]
-        _prefill_worker(prompt, args._kv_path, args.seq_len, warm_ttft=args._warm_ttft)
+        _prefill_worker(
+            prompt,
+            args._kv_path,
+            args.seq_len,
+            warm_ttft=args._warm_ttft,
+            fused=args.fused_prefill,
+        )
         return
 
     if args.compile_only:
@@ -1271,6 +1302,7 @@ def main():
             rep_penalty=args.rep_penalty,
             greedy=args.greedy,
             seed=args.seed,
+            fused=args.fused_prefill,
         )
         return
 
@@ -1309,6 +1341,7 @@ def main():
         seed=args.seed,
         greedy=args.greedy,
         profile=args.profile,
+        fused=args.fused_prefill,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

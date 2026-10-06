@@ -261,3 +261,6 @@ clean:
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@echo "Decode templates, build dirs, shared-dir kernels and verify/reports/ removed."
 	@echo "Kept .decode_wcache (requant cache); remove it by hand to force a re-pack."
+
+FUSED_MODEL := llama31_8b_q4nx
+include $(srcdir)/../shared/fused_prefill/fused_prefill.mk

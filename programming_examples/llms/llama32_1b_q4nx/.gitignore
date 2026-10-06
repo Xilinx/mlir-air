@@ -28,3 +28,4 @@ air.insts.bin
 # Golden / weight caches produced at runtime (external data; see README.md).
 *.npz
 diag_cache/
+_fused_prefill/

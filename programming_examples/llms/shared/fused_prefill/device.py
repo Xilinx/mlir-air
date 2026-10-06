@@ -4,8 +4,7 @@
 configured device, laid out like FastFlowLM's fused_prefill.
 
   columns 1-6  GEMM, int4 (Q4NX) or bf16 weights
-  column 0     full attention, head_dim 512
-  column 7     sliding-window attention, head_dim 256
+  other cols   attention, one herd group per column (Config.attn)
 
 The herds loop forever and take their work from RTPs, and the memtile
 channels are count-free rings, so one PDI serves every op and shape and the
@@ -16,6 +15,8 @@ parked.
 An op's rounds loop inside the cores and are the outer axis of its shim
 patterns, so each op is a single launch.
 """
+
+from typing import NamedTuple
 
 from air import api as air
 from air.api.types import bf16, f32, i8, i32
@@ -29,36 +30,79 @@ TM, TN, TK = 32, 64, 128
 HR = M // TM
 NR = TN * GNC
 QB = TN * TK // 2 + 2 * 2 * (TK // 32) * TN  # bytes of one B packet
+MAX_N = 32 * NR  # widest GEMM op: more rounds no longer fit one shim BD
+
+
+def n_split(n):
+    """[n0, n1) column ranges of a GEMM n wide, each at most MAX_N."""
+    return [(n0, min(n, n0 + MAX_N)) for n0 in range(0, n, MAX_N)]
+
+
 MM_OBJ, MM_SUF = "mm_m32n64.o", "_m32n64"
 DQ_OBJ = "dq4.o"
 
-# attention: name -> (column, head_dim, lkp == tile_q, dv_tile)
-ATTN = {"f": (0, 512, 16, 256), "s": (7, 256, 32, 128)}
 NQT = 4  # cores per attention column
-WINDOW = 512
-
-COLS = {"g": set(range(GCOL0, GCOL0 + GNC)), "f": {ATTN["f"][0]}, "s": {ATTN["s"][0]}}
 
 
-def attn_rows(a):
+class Attn(NamedTuple):
+    """One attention column. lkp is both the K block and the q tile of a
+    core. kv_heads > 1 is GQA: the op's heads are kv_heads groups of
+    heads / kv_heads, and each KV head's records sit max_blocks blocks apart."""
+
+    col: int
+    dh: int
+    lkp: int
+    dvt: int
+    window: int = 0  # sliding-window mask when nonzero, else causal
+    kv_heads: int = 1
+    max_blocks: int = 0
+    # the window mask with its width an RTP, so ops differing only in the
+    # window (Config.windows) share one core program
+    window_rtp: bool = False
+
+
+# a window no prompt reaches, which makes the window mask causal
+NO_WINDOW = 1 << 20
+
+
+class Config(NamedTuple):
+    attn: dict  # group name -> Attn
+    act: str = "gelu"  # the GEMM's activation drain, f32_to_bf16_<act>_mn
+    # attention op name -> the groups one dispatch drives, splitting the
+    # op's heads evenly; by default each group is its own op
+    ops: dict = None
+    windows: dict = None  # attention op -> window in tokens, for window_rtp groups
+
+
+def attn_ops(cfg):
+    return cfg.ops or {a: (a,) for a in cfg.attn}
+
+
+def cols(cfg):
+    """op name -> the columns its dispatches keep."""
+    out = {"g": set(range(GCOL0, GCOL0 + GNC))}
+    out.update({op: {cfg.attn[a].col for a in gs} for op, gs in attn_ops(cfg).items()})
+    return out
+
+
+def attn_rows(g):
     """q rows of one attention round."""
-    return NQT * ATTN[a][2]
+    return NQT * g.lkp
 
 
-def attn_qr(a):
+def attn_qr(g):
     """rounds per head for one chunk."""
-    return M // attn_rows(a)
+    return M // attn_rows(g)
 
 
-def kv_rec(a):
+def kv_rec(g):
     """elements of one K block's record: K tile, then the V tiles."""
-    _, dh, lkp, _ = ATTN[a]
-    return 2 * lkp * dh
+    return 2 * g.lkp * g.dh
 
 
 def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
     ksteps = k // TK
-    zero, mmul, cast, cast_gelu, dq, cp = kern
+    zero, mmul, cast, cast_act, dq, cp = kern
     npk = 1 if wq else 4  # B packets per K step: int4, or bf16 in 32-K slices
     a_in = air.channel("gAIn", size=[HR])
     b_in = air.channel("gBIn", size=[GNC])
@@ -167,9 +211,9 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
                                 b2l1.get(b_l1[j % 2], indices=[tx, ty])
                                 cp(b_l1[j % 2], bdq, j)
                             mmul(a_l1[pp], bdq, acc)
-                    # GELU(tanh) in the drain when act is set
+                    # the activation in the drain when act is set
                     for _a in air.sequential(actp):
-                        cast_gelu(acc, out)
+                        cast_act(acc, out)
                     for _p in air.sequential(plain):
                         cast(acc, out)
                     c2l2.put(out.transpose(1, 2, 0, 3), indices=[tx, ty])
@@ -182,16 +226,22 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
     return body
 
 
-def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
-    """MQA attention, one head per round, the column's cores splitting the
+def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs):
+    """Attention, one head per round, the column's cores splitting the
     round's q rows. The cores read nkv K blocks starting at block k0; the
     chunk's first q block is q0. Both are RTPs, in units of lkp rows."""
-    col, dh, lkp, dvt = ATTN[name]
-    tq, R, QR = lkp, attn_rows(name), attn_qr(name)
+    col, dh, lkp, dvt = g.col, g.dh, g.lkp, g.dvt
+    tq, R, QR = lkp, attn_rows(g), attn_qr(g)
     dvc = dh // dvt
     suf = f"_d{dh}"
     obj = f"attn{suf}.o"
-    ext = lambda f, **kw: air.extern(f + suf, link_with=obj, **kw)  # noqa: E731
+
+    def ext(f, **kw):
+        # groups sharing a head_dim share the kernel symbols
+        if f + suf not in externs:
+            externs[f + suf] = air.extern(f + suf, link_with=obj, **kw)
+        return externs[f + suf]
+
     zero_g, zero_gp, zero_sp = (
         ext("zero_fill_g_bf16"),
         ext("zero_fill_gp_bf16"),
@@ -202,11 +252,15 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
     softmax, mul_r_gp = ext("fused_softmax"), ext("mul_r_gp")
     accum, vcopy = ext("accum_sp_r_s"), ext("vector_copy_32elems", scalars=[i32])
     div = ext("div_gp_sp")
-    if name == "s":
+    if g.window_rtp:
         wmask = ext("apply_window_mask", scalars=[i32, i32, i32])
-        mask = lambda g, qb, kb: wmask(g, qb, kb, WINDOW // lkp)  # noqa: E731
+        mask = lambda s, qb, kb, w: wmask(s, qb, kb, w)  # noqa: E731
+    elif g.window:
+        wmask = ext("apply_window_mask", scalars=[i32, i32, i32])
+        mask = lambda s, qb, kb, w: wmask(s, qb, kb, g.window // lkp)  # noqa: E731
     else:
-        mask = ext("apply_causal_mask", scalars=[i32, i32])
+        causal = ext("apply_causal_mask", scalars=[i32, i32])
+        mask = lambda s, qb, kb, w: causal(s, qb, kb)  # noqa: E731
 
     qin = air.channel(f"{name}QIn", size=[1])
     q2l1 = air.channel(f"{name}Q2L1", size=[NQT])
@@ -217,7 +271,18 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
 
     def shim():
         qin.put(Q[0 : rounds * R, 0:dh])
-        kvin.put(KV[0 : nkv * kv_rec(name)].broadcast_to(rounds, nkv * kv_rec(name)))
+        n = nkv * kv_rec(g)
+        if g.kv_heads == 1:
+            kvin.put(KV[0:n].broadcast_to(rounds, n))
+        else:
+            # rounds walk the heads kv-head-major: each KV head's records
+            # repeat for its group's rounds
+            h = g.kv_heads
+            kvin.put(
+                KV.reshape(h, 1, g.max_blocks * kv_rec(g))[0:h, 0:1, 0:n].broadcast_to(
+                    h, rounds // h, n
+                )
+            )
         gpout.get(O[0 : rounds * R, 0:dh])
 
     puts.append(shim)
@@ -227,6 +292,11 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
         nr = air.rtp(wave * 0 + rounds)
         qb0 = air.rtp(wave * 0 + q0)
         kb0 = air.rtp(wave * 0 + k0)
+        params = [nk, nr, qb0, kb0]
+        wb = None
+        if g.window_rtp:
+            wb = air.rtp(wave * 0 + win // lkp)
+            params.append(wb)
         q_l2 = air.alloc([R, dh], bf16, scope=seg.private(), column=col, split=False)
         k_l2 = air.alloc([lkp, dh], bf16, scope=seg.private(), column=col)
         v_l2 = [
@@ -260,7 +330,7 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
             shape=(1, NQT),
             at=(col, 2),
             link_with=obj,
-            params=[nk, nr, qb0, kb0],
+            params=params,
         ) as h:
 
             @h.body
@@ -268,7 +338,7 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
                 q_saved = air.alloc([tq, dh], bf16, scope=h.private())
                 qk = air.alloc([lkp, dh], bf16, scope=h.private())
                 v_l1 = air.alloc([lkp, dvt], bf16, scope=h.private())
-                g = air.alloc([tq, lkp], bf16, scope=h.private())
+                s = air.alloc([tq, lkp], bf16, scope=h.private())
                 gp = [air.alloc([tq, dvt], bf16, scope=h.private()) for _ in range(dvc)]
                 up = air.alloc([tq, 1], bf16, scope=h.private())
                 sp = air.alloc([tq, 1], bf16, scope=h.private())
@@ -284,15 +354,15 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
                     qb = qb0 + (r % QR) * NQT + ty
                     q2l1.get(q_saved, indices=[ty])
                     for blk in air.sequential(nk):
-                        zero_g(g.reshape(tq * lkp))
+                        zero_g(s.reshape(tq * lkp))
                         kv2l1.get(qk, indices=[tx, ty])
-                        mm_ab(q_saved, qk, g.reshape(tq * lkp))
-                        mask(g, qb, kb0 + blk)
-                        softmax(g.reshape(tq * lkp), up, s_tmp, r_tmp)
+                        mm_ab(q_saved, qk, s.reshape(tq * lkp))
+                        mask(s, qb, kb0 + blk, wb)
+                        softmax(s.reshape(tq * lkp), up, s_tmp, r_tmp)
                         for z in range(dvc):
                             kv2l1.get(v_l1, indices=[tx, ty])
                             mul_r_gp(r_tmp, gp[z])
-                            mm_gb(g.reshape(tq * lkp), v_l1, gp[z])
+                            mm_gb(s.reshape(tq * lkp), v_l1, gp[z])
                         accum(sp, r_tmp, s_tmp)
                         vcopy(0, s_tmp, sp)
                     for z in range(dvc):
@@ -315,22 +385,37 @@ def _attention(name, wave, Q, KV, O, nkv, q0, k0, rounds, puts):
     return body
 
 
-def build(op, *shape):
+def _kv_tensor(g, nkv):
+    if g.kv_heads == 1:
+        return air.tensor([nkv * kv_rec(g)], bf16)
+    return air.tensor([g.kv_heads * g.max_blocks * kv_rec(g)], bf16)
+
+
+def build(cfg, op, *shape):
     """The module for one op; the other groups get minimal shapes.
 
-    op 'g': (k, n, act, wq), C[128, n] = A[128, k] @ W, with a GELU drain if
-            act and int4 weight packets if wq (bf16 otherwise)
-    op 'f' / 's': (heads, nkv, q0, k0), attention for one chunk
+    op 'g': (k, n, act, wq), C[128, n] = A[128, k] @ W, with the activation
+            drain if act and int4 weight packets if wq (bf16 otherwise)
+    op <attention op>: (heads, nkv, q0, k0), attention for one chunk
     """
     g = dict(k=2 * TK, n=NR, act=0, wq=1, rounds=1)
-    at = {a: dict(nkv=1, q0=0, k0=0, rounds=1) for a in ATTN}
+    at = {
+        a: dict(nkv=1, q0=0, k0=0, win=NO_WINDOW, rounds=ga.kv_heads)
+        for a, ga in cfg.attn.items()
+    }
     if op == "g":
         k, n, act, wq = shape
         assert k % (2 * TK) == 0 and n % NR == 0, (k, n)
         g.update(k=k, n=n, act=act, wq=wq, rounds=n // NR)
     else:
         heads, nkv, q0, k0 = shape
-        at[op].update(nkv=nkv, q0=q0, k0=k0, rounds=heads * attn_qr(op))
+        groups = attn_ops(cfg)[op]
+        hg = heads // len(groups)
+        for a in groups:
+            ga = cfg.attn[a]
+            assert hg * len(groups) == heads and hg % ga.kv_heads == 0, (heads, ga)
+            win = (cfg.windows or {}).get(op) or NO_WINDOW
+            at[a].update(nkv=nkv, q0=q0, k0=k0, win=win, rounds=hg * attn_qr(ga))
 
     kern = tuple(
         air.extern(f"{f}{MM_SUF}", link_with=MM_OBJ)
@@ -338,7 +423,7 @@ def build(op, *shape):
             "zero_f32_mn",
             "op_has_no_registered_library_name",
             "f32_to_bf16_mn",
-            "f32_to_bf16_gelu_mn",
+            f"f32_to_bf16_{cfg.act}_mn",
         )
     ) + (
         air.extern("dq4_bf16", link_with=DQ_OBJ),
@@ -351,11 +436,11 @@ def build(op, *shape):
     )
     att = {
         a: (
-            air.tensor([at[a]["rounds"] * attn_rows(a), ATTN[a][1]], bf16),
-            air.tensor([at[a]["nkv"] * kv_rec(a)], bf16),
-            air.tensor([at[a]["rounds"] * attn_rows(a), ATTN[a][1]], bf16),
+            air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16),
+            _kv_tensor(ga, at[a]["nkv"]),
+            air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16),
         )
-        for a in ATTN
+        for a, ga in cfg.attn.items()
     }
 
     with air.launch(
@@ -364,15 +449,25 @@ def build(op, *shape):
 
         @lch.body
         def _(wave):
-            puts = []
+            puts, externs = [], {}
             bodies = [
                 _gemm(wave, *gt, g["k"], g["act"], g["wq"], g["rounds"], kern, puts)
             ]
-            for a in ATTN:
+            for a, ga in cfg.attn.items():
                 p = at[a]
                 bodies.append(
                     _attention(
-                        a, wave, *att[a], p["nkv"], p["q0"], p["k0"], p["rounds"], puts
+                        a,
+                        ga,
+                        wave,
+                        *att[a],
+                        p["nkv"],
+                        p["q0"],
+                        p["k0"],
+                        p["win"],
+                        p["rounds"],
+                        puts,
+                        externs,
                     )
                 )
             for p in puts:

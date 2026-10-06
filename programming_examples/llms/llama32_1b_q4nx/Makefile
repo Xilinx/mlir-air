@@ -178,3 +178,6 @@ clean:
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@$(MAKE) --no-print-directory -C $(FUSED_DECODE) clean
 	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
+
+FUSED_MODEL := llama32_1b_q4nx
+include $(srcdir)/../shared/fused_prefill/fused_prefill.mk

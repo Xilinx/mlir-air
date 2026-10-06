@@ -467,4 +467,61 @@ void SYM(f32_to_bf16_gelu_mn)(float *src, bfloat16 *dst) {
     }
 }
 
+// SiLU + narrowing in the drain, as f32_to_bf16_gelu_mn. 0.5 x (1 + tanh(x/2))
+// loses the x < 0 tail to bf16 cancellation, so for a = |x| this takes
+// sigmoid(a) = 0.5 (1 + tanh(a/2)) and sigmoid(-a) = exp(-a) sigmoid(a).
+// aie2p's exp2 returns 2^n (1 + f) for 2^(n + f); the result is scaled by a
+// quadratic fit of 2^f / (1 + f) in the mantissa 1 + f.
+void SYM(f32_to_bf16_silu_mn)(float *src, bfloat16 *dst) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+  constexpr unsigned VW = 16;
+  constexpr unsigned NTOT = DIM_M * DIM_N;
+  static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 16");
+  const aie::vector<bfloat16, VW> half_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)0.5f);
+  const aie::vector<bfloat16, VW> one_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)1.0f);
+  const aie::vector<bfloat16, VW> zero_v = aie::zeros<bfloat16, VW>();
+  const bfloat16 l2e_hi = (bfloat16)-1.4453125f;  // -log2(e), bf16 part
+  const bfloat16 l2e_lo = (bfloat16)0.002617459f; // the remainder
+  const aie::vector<uint16, VW> man_v = aie::broadcast<uint16, VW>(0x007F);
+  const aie::vector<uint16, VW> one_bits = aie::broadcast<uint16, VW>(0x3F80);
+  const aie::vector<bfloat16, VW> c1_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)-0.666678f);
+  const aie::vector<bfloat16, VW> c0_v =
+      aie::broadcast<bfloat16, VW>((bfloat16)1.434497f);
+  const bfloat16 c2 = (bfloat16)0.225742f;
+  for (unsigned i = 0; i < NTOT; i += VW)
+    chess_prepare_for_pipelining chess_loop_range(16, ) {
+      aie::vector<float, VW> f = aie::load_v<VW>(src + i);
+      aie::accum<accfloat, VW> facc;
+      facc.from_vector(f);
+      aie::vector<bfloat16, VW> g = facc.template to_vector<bfloat16>();
+      aie::vector<bfloat16, VW> a = aie::abs(g);
+      aie::vector<bfloat16, VW> ah = aie::mul(half_v, a);
+      aie::accum<accfloat, VW> tanh_in;
+      tanh_in.from_vector(ah);
+      aie::vector<bfloat16, VW> tv =
+          aie::tanh<bfloat16>(tanh_in.template to_vector<float>());
+      aie::vector<bfloat16, VW> sp = aie::mul(half_v, aie::add(one_v, tv));
+      aie::accum<accfloat, VW> ex = aie::mul(a, l2e_hi);
+      ex = aie::mac(ex, a, l2e_lo);
+      aie::vector<bfloat16, VW> e =
+          aie::exp2<bfloat16>(ex.template to_vector<float>());
+      aie::vector<bfloat16, VW> m =
+          aie::bit_or(aie::bit_and(e.template cast_to<uint16>(), man_v),
+                      one_bits)
+              .template cast_to<bfloat16>();
+      aie::vector<bfloat16, VW> c = aie::mul(m, c2);
+      c = aie::add(c, c1_v);
+      c = aie::mul(c, m);
+      c = aie::add(c, c0_v);
+      e = aie::mul(e, c);
+      aie::vector<bfloat16, VW> sn = aie::mul(e, sp);
+      aie::vector<bfloat16, VW> sig = aie::select(sp, sn, aie::lt(g, zero_v));
+      aie::vector<bfloat16, VW> out = aie::mul(g, sig);
+      aie::store_v(dst + i, out);
+    }
+}
+
 } // extern "C"

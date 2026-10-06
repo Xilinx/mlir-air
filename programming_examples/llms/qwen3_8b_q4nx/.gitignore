@@ -39,3 +39,4 @@ decode_scratchpad.params.txt
 decode_scratchpad.maxl
 params.txt
 .decode_elf_flags
+_fused_prefill/
