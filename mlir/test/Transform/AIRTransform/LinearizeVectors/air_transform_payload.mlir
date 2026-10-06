@@ -7,8 +7,8 @@
 
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
-// A packed int8 weight tile dequantized with a per-column scale and offset that
-// broadcast along the tile's rows: w = (bf16(0x4300 | q) - 128) * s + m.
+// An int8 tile scaled and offset per column, with the scale and offset
+// broadcast along the rows: w = (bf16(0x4300 | q) - 128) * s + m.
 // Everything elementwise becomes rank 1; the scale and offset reads lose their
 // broadcast permutation map and are replicated by a shuffle.
 
@@ -79,9 +79,9 @@ func.func @non_contiguous_block(%a: memref<4x64xi16>, %b: memref<32xi16>) {
   return
 }
 
-// Triton's spelling of a 4-bit unpack -- each 32-bit word replicated over 8
-// lanes, shifted right by 0, 4, ..., 28 and masked -- becomes the i4
-// bitcast + extui that AIE lowers to its unpack instruction.
+// A 4-bit unpack spelled with shifts (each 32-bit word replicated over 8
+// lanes, shifted right by 0, 4, ..., 28 and masked) becomes an i4 bitcast
+// and extui.
 // CHECK-LABEL: @nibble_unpack
 // CHECK-NOT: arith.shrsi
 // CHECK: %[[B:.*]] = vector.bitcast %{{.*}} : vector<4xi32> to vector<16xi8>

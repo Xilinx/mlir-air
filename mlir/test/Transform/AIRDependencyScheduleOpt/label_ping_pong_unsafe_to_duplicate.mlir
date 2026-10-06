@@ -210,9 +210,9 @@ func.func @nested_unsafe_disqualifies_outer() {
 
 // -----
 
-// The callee is defined in the module (a loop nest outlined from the herd) and
-// only writes the per-iteration buffer, so its call is the buffer's definite
-// first write: the loop is double buffered as with a channel.get.
+// The callee is defined in the module, overwrites the whole per-iteration
+// buffer and never reads it, so its call is the buffer's definite first write:
+// the loop is double buffered as with a channel.get.
 
 // CHECK-LABEL: @defined_callee_writes_only
 // CHECK: memref.alloc() {hoist_alloc = true} : memref<16xf32, 2>

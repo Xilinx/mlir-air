@@ -783,13 +783,12 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     } -> tensor<16xf32>
     ```
     
-    With `fold_reshapes`, also folds `tensor.expand_shape` /
-    `tensor.collapse_shape` ops between linalg.generic ops into them by
-    expanding the iteration space (upstream fold-reshape-by-expansion), so
-    elementwise chains split by reshapes (such as the unit dimensions
-    Triton's `x[:, None]` broadcasting inserts) fuse as well. Only
-    reshapes between two all-parallel linalg.generic ops are folded, so a
-    contraction is never reshaped.
+    With `fold_reshapes`, also folds `tensor.expand_shape` and
+    `tensor.collapse_shape` ops between two all-parallel linalg.generic ops
+    into them by expanding the iteration space (upstream
+    fold-reshape-by-expansion), so that elementwise chains split by reshapes
+    fuse too. Reshapes next to any other op, a contraction included, are
+    left alone.
 
     Returns a handle to the modified function.
   }];
@@ -1345,13 +1344,13 @@ def NormalizeLoopToUnitStepOp : Op<Transform_Dialect, "air.normalize_loop_to_uni
     `%i` with `affine.apply (%j * %s + %lb)`. The inverse of
     `air.normalize_for_bounds`.
 
-    Offsets computed from the induction variable then show their stride.
-    That is what `tensor.bubble_up_extract_slice` needs to move a slice
-    through a reshape that merges several dims: a slice at offset `%i`
-    (step 8) of a dim collapsed from 64x4 cannot be proven aligned to the
-    inner 4, one at `%j * 8` can. Tiling a contraction whose reduction dim
-    is collapsed from (quantization group, rows of 8 within the group)
-    produces exactly that.
+    Offsets computed from the induction variable then show their stride, so
+    that `tensor.bubble_up_extract_slice` can prove a slice of a collapsed
+    dim aligned to the inner dims: a slice at `%j * 8` of a dim collapsed
+    from 64x4 is, one at `%i` (step 8) cannot be shown to be.
+
+    The targets must be signed loops over `index`; otherwise this is a
+    silenceable failure and no loop is rewritten.
 
     Returns the rewritten loops.
   }];
@@ -1367,22 +1366,20 @@ def MergeSiblingCopiesOp : Op<Transform_Dialect, "air.merge_sibling_copies",
   let summary = "Copy several views of one buffer as one copy of their bounding region";
   let description = [{
     Finds the `memref.copy` ops under `target` that copy a
-    `memref.reinterpret_cast` of a common base into a fresh `memref.alloc`,
-    and merges those whose views differ only by a constant offset: same
-    base, element type, strides and destination memory space, in the same
-    block. Each group becomes one alloc and one copy of the views' bounding
-    region; each original buffer's `bufferization.to_tensor` becomes a
-    `tensor.extract_slice` of the merged buffer's tensor.
+    `memref.reinterpret_cast` of a common base into a fresh `memref.alloc`
+    read only through `bufferization.to_tensor`, and merges those whose
+    views differ only by a constant offset: same base, element type, strides
+    and destination memory space, in the same block, with no write between
+    them. Each group becomes one alloc and one copy of the views' bounding
+    region, and each original buffer's `bufferization.to_tensor` a
+    `tensor.extract_slice` of the merged buffer's tensor. Several fields of
+    one packed buffer then move as one DMA stream.
 
-    This is what lets a kernel read several fields of one host-packed
-    buffer with separate loads (a quantized weight's values, scales and
-    offsets laid out per tile, say) and still move the tile as one DMA
-    stream: everything downstream sees slices of one tensor.
-
-    The offsets must differ by a constant (`arith.addi` of a constant, or
-    equal), and the difference must decompose along the strides into an
-    in-bounds position of the common view. Copies that do not qualify are
-    left alone.
+    The offsets must differ by a provable constant, which must decompose
+    along the strides into a position on the common view's grid. The region
+    may not hold more elements than the copies it replaces, nor end past
+    the last element any of them reads. Copies that do not qualify are left
+    alone.
 
     Returns the merged copies.
   }];
@@ -1398,20 +1395,18 @@ def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
   let summary = "Read sibling slices of one tensor through a single copy";
   let description = [{
     Groups the `tensor.extract_slice` ops that produce the inputs of the
-    `target` ops (the computation of one core, say), directly or through a
-    `tensor.expand_shape`, by source. A group of
-    two or more slices with unit strides, whose offsets in each dimension
-    are either the same value or constants (offsets that simplify to a
-    constant through affine.apply / affine.delinearize_index count, such
-    as the row offset within a quantization group of a tile aligned to the
-    group), is rewritten: one `linalg.copy`
-    of the slices' bounding region into a `tensor.empty`, and each slice
-    taken from that copy instead.
+    `target` ops, directly or through a `tensor.expand_shape`, by source. A
+    group of two or more unit-stride slices in one block, whose offsets in
+    each dimension are either the same value or constants, is rewritten as
+    one `linalg.copy` of the slices' bounding region into a `tensor.empty`,
+    with each slice taken from that copy. An offset counts as a constant
+    when it simplifies to one through `affine.apply`,
+    `affine.delinearize_index` and `arith.addi` / `arith.muli` by constants.
+    The region may not hold more elements than the slices it replaces.
 
-    Promoting the returned copies (`transform.structured.bufferize_to_allocation`
-    into L1, say) then moves the region with one DMA, rather than one per
-    slice: one input stream per core for a tile that packs several
-    fields.
+    Promoting the returned copies (with
+    `transform.structured.bufferize_to_allocation`) then moves the region
+    with one DMA instead of one per slice.
 
     Returns the new `linalg.copy` ops.
   }];
@@ -1426,20 +1421,20 @@ def FoldPackIntoGenericOp : Op<Transform_Dialect, "air.fold_pack_into_generic",
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Read a packed input through the generic's indexing map";
   let description = [{
-    For each input of the target `linalg.generic` that is produced by a
+    For each input of the target `linalg.generic` produced by a
     `linalg.pack` without padding (every tiled dimension divides evenly),
     replaces the operand by the pack's source and composes the pack's
     relayout into the operand's indexing map: a packed index
     `(..., o, ..., i)` reads source element `o * tile + i`. Packs left
-    without uses are erased.
+    without uses are erased. The generic then reads the source directly,
+    and no relayout copy (on AIE, a DMA between two L1 buffers) is made.
 
-    The generic then reads the unpacked data directly. On AIE that keeps
-    a relayout of data already in L1 off the core's DMA channels: a pack
-    between two L1 buffers would otherwise be lowered to a DMA.
-
-    The composed maps are not projected permutations. Tile the generic so
+    The composed maps are not projected permutations: tile the generic so
     the outer packed dimensions are 1 and fold unit dimensions before
-    vectorizing it.
+    vectorizing it. `structured.lower_pack`, generalizing its transpose and
+    fusing it into the generic gives an equivalent read through a
+    `tensor.expand_shape` view with a projected-permutation map; this op is
+    for packs that have already been tiled and fused into a loop.
 
     Returns the updated generics.
   }];
@@ -1455,42 +1450,57 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
   let summary = "Rewrite n-D elementwise vector computation as rank-1 vectors";
   let description = [{
     Rewrites the elementwise vector computation nested in `target` so every
-    value it produces is a rank-1 vector, which is the form the AIE vector
-    lowerings (aievec, Peano) handle. A rank-2+ elementwise op is otherwise
-    unrolled along its leading dims during LLVM lowering, into one op per
-    innermost row: an 8x8 tile becomes 8-lane operations, most of which the
-    AIE backend cannot legalize.
+    value it produces is a rank-1 vector, the form the AIE vector lowerings
+    handle. A rank-2+ elementwise op would otherwise be unrolled along its
+    leading dims during LLVM lowering into one narrow op per innermost row.
+    `target` need not be isolated from above.
 
-    Three steps:
+    The rewrite runs in phases, each on the ops the previous ones leave:
 
-    1. A `vector.transfer_read` that broadcasts along a dim whose memref
-       extent is 1 (a permutation map like `(d0, d1, d2) -> (d0, 0, d2)` on a
-       `memref<?x1x?>`) becomes an identity-map read of the unbroadcast shape
-       and a `vector.broadcast`. This is what vectorizing a linalg op that
-       broadcasts an operand along a tiled-to-one dim produces, e.g. a
-       per-group scale applied to a packed weight tile.
-       A `vector.transfer_read` whose vector is not one contiguous run of its
-       memref (a 4x8 block of rows 64 wide) is read one innermost row at a
-       time and assembled with `vector.insert`: AIE lowering flattens n-D
-       transfers assuming they are contiguous. A rank-1 read along a
-       non-innermost memref dim (a strided gather), which the AIE core
-       lowering cannot lower, is read element by element.
-    2. Upstream vector linearization (`populateVectorLinearizeBasePatterns`,
-       `populateVectorLinearizeShuffleLikeOpsPatterns`) of the elementwise ops
-       (`OpTrait::Elementwise`, e.g. arith and math), splat constants,
-       `vector.bitcast`, `vector.insert` and `vector.broadcast` (as
-       `vector.shuffle`s).
-       Values crossing into ops left alone are reshaped with
-       `vector.shape_cast`. Everything else, notably transfers,
-       `vector.contract` and loops, keeps its n-D types.
-    3. Triton's spelling of a 4-bit unpack, `(w >> [0, 4, ...]) & 15` with
-       each word replicated over its fields, becomes `vector.bitcast` to
-       i4 and `arith.extui`, which AIE lowers to its unpack instruction.
-       f32 `addf(mulf)` becomes `vector.fma`; elementwise float ops wider
-       than the native width are split into 32-lane (bf16) or 16-lane (f32:
-       fma, extf, truncf, add/sub/mul) pieces.
+    1. Transfer reads the AIE core lowering cannot take become ones it can:
+       - a read broadcasting along a memref dim of extent 1 (a map like
+         `(d0, d1, d2) -> (d0, 0, d2)`) becomes an identity-map read and a
+         `vector.broadcast`;
+       - a read whose vector is not one contiguous run of its memref (a 4x8
+         block of rows 64 wide) becomes one read per innermost row and
+         `vector.insert`s; the rows must be in bounds;
+       - a rank-1 read whose map selects one dim followed only by unit dims
+         reads the collapsed memref with a minor identity map;
+       - a read of the dims just above the innermost one, with the
+         innermost index a constant `k` and that dim's extent `s` between 2
+         and 8, becomes a read that includes the innermost dim and a
+         `vector.shuffle` taking every `s`-th lane from `k`.
+    2. Upstream vector linearization of the elementwise ops, constants,
+       `vector.bitcast`, `vector.insert` and `vector.broadcast` (the last
+       as a `vector.shuffle`). Values crossing into ops left alone are
+       reshaped with `vector.shape_cast`; transfers, contractions and loops
+       keep their n-D types.
+    3. Rank-1 rewrites:
+       - `(x >> [0, 4, 8, ...]) & 15` on 16- or 32-bit words, where lane l
+         of `x` is word `l / k` of one vector (`k` fields per word), is
+         unpacked as `vector.bitcast` to i4 and `arith.extui`, or with
+         `aievec.unpack` on AIE2P when it is exactly 64 or 128 fields;
+       - an f32 `addf(mulf(a, b), c)` with `a` and `b` widened from bf16
+         becomes `vector.fma`, when both ops carry the `contract` fast-math
+         flag or `contract` is set here: contraction drops the product's
+         rounding;
+       - elementwise float ops wider than the native width are halved until
+         they fit: 32 lanes for bf16, `f32_lanes` for ops on f32;
+       - a strided rank-1 read that is in bounds is read element by element.
+    4. On AIE2P, with `f32_lanes` 32: a 32-lane bf16 x bf16 + f32
+       `vector.fma` becomes `aievec.mac_elem` and a 32-lane f32 to bf16
+       `arith.truncf` (default rounding) `aievec.srs`. With `f32_lanes` 64:
+       the 64-lane fma becomes the `llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf`
+       intrinsic, the 64-lane truncf two `aievec.srs` (stored as two halves
+       when its only use is a shape_cast to an in-bounds memref write), and
+       `bf16(0x4300 | zext(q))` for unpacked 4-bit `q` two
+       `llvm.aie2p.vshuffle` byte interleaves of `q` with 0x43. Intrinsics
+       are called through private `func.func` declarations of their names.
 
-    Run it after vectorization. Then canonicalize so that adjacent
+    `arch` is `"aie2"` (default) or `"aie2p"`. `f32_lanes` is 16 (default),
+    or 32 or 64 on AIE2P.
+
+    Run it after vectorization, then canonicalize so that adjacent
     `vector.shape_cast` pairs fold.
 
     Example:
@@ -1512,16 +1522,6 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
     %w1 = arith.mulf %q1, %s1 : vector<32xbf16>
     ```
 
-    `arch` is the target, `"aie2"` (default) or `"aie2p"`. `f32_lanes` sets
-    the f32 split width: 16 (default), or on AIE2P 32 or 64. AIE2P multiplies
-    32 bf16 lanes into a 32-lane f32 accumulator, so 32 there halves the
-    multiply-accumulates and conversions of a bf16 x bf16 + f32 FMA.
-
-    An f32 `arith.mulf` of two widened bf16 values feeding an `arith.addf` is
-    contracted into `vector.fma` (the AIE multiply-accumulate) only when both
-    ops carry the `contract` fast-math flag, or when `contract` is set here
-    for the whole target: contraction skips the product's rounding.
-
     Returns a handle to `target`.
   }];
 
@@ -1539,16 +1539,21 @@ def PushUnpackThroughSlicesOp : Op<Transform_Dialect, "air.push_unpack_through_s
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Move a linalg.unpack below an expand_shape and the single-index slices of it";
   let description = [{
-    For each `linalg.unpack` in `target` whose only user is a `tensor.expand_shape`
-    that splits one packed dim `d` into `[n, s]` (`s` innermost), and whose users are
-    all `tensor.extract_slice`s taking one index `k` of that `s` dim (rank-reducing,
-    the rest whole): when `d`'s inner tile `t` is a multiple of `s`, each slice is
-    rewritten as an unpack, with inner tile `t / s` on `d`, of the packed source's
-    tile dim split into `[t / s, s]` and sliced at `k`.
+    Each target is a `linalg.unpack` whose only user is a
+    `tensor.expand_shape` splitting exactly one packed dim `d` into `[n, s]`,
+    whose users are all rank-reducing `tensor.extract_slice`s taking one
+    index `k` of the `s` dim and all of every other dim, and whose inner
+    tile `t` on `d` is a multiple of `s`. Each slice is rewritten as an
+    unpack, with inner tile `t / s` on `d`, of the packed source's tile dim
+    split into `[t / s, s]` and sliced at `k`.
 
-    This is what lets data-layout propagation carry an accumulator's unpack past an
-    epilogue that reads interleaved column pairs (e.g. `tl.split` of a GEMM's
-    output into gate and up): the epilogue then runs on the packed accumulator.
+    Then an all-parallel `linalg.generic` with identity maps whose inputs
+    are all such unpacks, of one layout, that does not use `linalg.index`
+    and does not read its output, runs on the packed values with one unpack
+    after it.
+
+    Every target is matched before any is rewritten; a target that does not
+    match is a silenceable failure.
 
     Returns the new unpacks.
   }];

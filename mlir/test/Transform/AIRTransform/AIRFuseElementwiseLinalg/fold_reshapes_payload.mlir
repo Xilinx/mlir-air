@@ -8,9 +8,8 @@
 // RUN: air-opt -air-transform='filename=%S/Inputs/fold_reshapes.mlir' %s | FileCheck %s
 // RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s --check-prefix=PLAIN
 
-// Two elementwise generics split by a reshape (the unit dim a Triton
-// `x[:, None]` broadcast adds). With fold_reshapes they fuse into one;
-// without it the reshape keeps them apart.
+// Two elementwise generics split by a reshape that adds a unit dim. With
+// fold_reshapes they fuse into one; without it the reshape keeps them apart.
 // CHECK-LABEL: @split_by_expand
 // CHECK: linalg.generic
 // CHECK-NOT: linalg.generic

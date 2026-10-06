@@ -5130,8 +5130,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
             baseIndices.push_back(idx);
           }
         } else {
-          // The index on the first iteration: `iv + c` starts at lb + c, not
-          // at 0.
+          // The index's value on the first iteration.
           baseIndices.push_back(
               cloneAtLowerBound(idx, forOp, rewriter, indexMapping));
         }
@@ -5992,8 +5991,7 @@ transform::MergeSiblingCopiesOp::apply(transform::TransformRewriter &rewriter,
     for (auto &[key, members] : groups) {
       if (members.size() < 2)
         continue;
-      // Order by position, and take the view with the lowest offset as the
-      // origin of the bounding region.
+      // In program order; the region starts at the lowest offset.
       llvm::sort(members, [](const SiblingCopy &a, const SiblingCopy &b) {
         return a.copy->isBeforeInBlock(b.copy);
       });
@@ -6224,8 +6222,8 @@ struct AffineOfValue {
   }
 };
 
-// The constant value of an offset that simplifies to one: `8 * ((8 * j) mod
-// 4)`, say, from delinearizing a loop index into (group, row block).
+// The value of an offset that simplifies to a constant, such as
+// `8 * ((8 * j) mod 4)`.
 static std::optional<int64_t> provenConstant(OpFoldResult ofr,
                                              MLIRContext *ctx) {
   if (auto c = getConstantIntValue(ofr))
@@ -6254,8 +6252,8 @@ transform::CoalesceSlicesOp::apply(transform::TransformRewriter &rewriter,
     if (!dps)
       return emitSilenceableError() << "expects destination-style targets";
     for (OpOperand *operand : dps.getDpsInputOperands()) {
-      // A slice may reach the input through a tensor.expand_shape (unit
-      // dimensions Triton's broadcasting adds); the expand stays.
+      // A slice may reach the input through a tensor.expand_shape, which
+      // stays.
       Value in = operand->get();
       if (auto expand = in.getDefiningOp<tensor::ExpandShapeOp>())
         in = expand.getSrc();
@@ -6574,8 +6572,7 @@ DiagnosedSilenceableFailure transform::PushUnpackThroughSlicesOp::apply(
   }
 
   // An elementwise generic all of whose inputs are such unpacks, of one layout,
-  // runs on the packed values instead, with one unpack after it. (Upstream
-  // data-layout propagation takes a generic with one unpacked operand only.)
+  // runs on the packed values instead, with one unpack after it.
   SmallVector<Operation *> result;
   llvm::SmallPtrSet<Operation *, 8> done;
   for (Operation *u : created) {
@@ -6635,7 +6632,8 @@ DiagnosedSilenceableFailure transform::PushUnpackThroughSlicesOp::apply(
     auto out = linalg::UnPackOp::create(rewriter, loc, pgen.getResult(0), dest,
                                         up.getInnerDimsPos(), tilesOfr,
                                         up.getOuterDimsPerm());
-    // Not replaceOp: a handle to `gen` has no generic to be tracked to.
+    // The result is an unpack, not a generic: erase `gen` rather than have
+    // its handles track a different kind of op.
     rewriter.replaceAllUsesWith(gen.getResult(0), out.getResult());
     rewriter.eraseOp(gen);
     result.push_back(out);

@@ -7,13 +7,11 @@
 
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s
 
-// A 4-bit dequant tile, w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, in
-// the AIE2P forms a hand-written dequant kernel uses: the 0x4300 | q
-// widening as two byte interleaves with 0x43 (vshuffle modes 20/21), one
-// 64-lane bf16 multiply-accumulate, and the conversion back to bf16 as two
-// 32-lane aievec.srs whose halves are stored separately. The intrinsics are
-// called through private func declarations, not LLVM-dialect ops (which
-// aie-standard-lowering drops a core for).
+// w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, with f32_lanes = 64:
+// 0x4300 | q as two byte interleaves with 0x43 (vshuffle modes 20 and 21),
+// one 64-lane bf16 multiply-accumulate, and the conversion back to bf16 as
+// two 32-lane aievec.srs whose halves are stored separately. The intrinsics
+// are called through private func declarations.
 
 // CHECK-DAG: func.func private @llvm.aie2p.vshuffle(vector<16xi32>, vector<16xi32>, i32) -> vector<16xi32>
 // CHECK-DAG: func.func private @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf(vector<64xbf16>, vector<64xbf16>, vector<64xf32>, i32) -> vector<64xf32>

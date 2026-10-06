@@ -8,8 +8,8 @@
 // RUN: air-opt %s -air-to-aie='device=npu2 row-offset=2' | FileCheck %s
 // RUN: air-opt %s -air-to-aie='device=npu1_1col row-offset=2' | FileCheck %s
 
-// A herd calling a function the module defines (a loop nest outlined from the
-// herd by transform.loop.outline): the function is cloned into the device with
+// A herd calling a function the module defines: the function is cloned into
+// the device with
 // its body, in the default memory space, together with what it calls; memref
 // arguments the call site proves disjoint get llvm.noalias (two views of one
 // buffer that are only read keep it too); and the module-level original keeps

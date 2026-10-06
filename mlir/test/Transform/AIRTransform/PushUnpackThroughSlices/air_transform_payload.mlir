@@ -8,7 +8,7 @@
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
 // A packed accumulator [N/8, M/8, 8, 8] whose unpacked columns are interleaved
-// pairs (tl.split of [M, N/2, 2]) feeding one elementwise op: each pair slot
+// pairs ([M, N/2, 2]) feeding one elementwise op: each pair slot
 // becomes a slice of the packed tile dim split [4, 2], and the elementwise op
 // runs on the packed slices with one unpack (inner tile 8 x 4) after it.
 

@@ -40,10 +40,8 @@ using namespace mlir;
 namespace {
 
 // A transfer_read whose permutation map is the identity except for broadcast
-// (constant 0) results reads one element along each broadcast dim: memref dim
-// i is then not indexed by any vector dim, so the read takes the element at
-// indices[i]. Read that with an identity map (extent 1 at the broadcast dims)
-// and stretch it with vector.broadcast, which linearization turns into a
+// (constant 0) results, as an identity-map read with extent 1 at the
+// broadcast dims and a vector.broadcast, which linearization turns into a
 // shuffle.
 struct UnbroadcastTransferRead
     : public OpRewritePattern<vector::TransferReadOp> {
@@ -89,12 +87,10 @@ struct UnbroadcastTransferRead
   }
 };
 
-// A transfer_read whose vector is not one contiguous run of its memref (a
-// 4x8 block of rows 64 wide, say), read one innermost row at a time and
-// assembled with vector.insert, which linearization turns into shuffles.
-// Downstream flattening of n-D transfers (mlir-aie's
-// FlattenMultDimTransferReadPattern) checks only that the memref is
-// row-major, and reads such a block as consecutive elements.
+// A transfer_read whose vector is not one contiguous run of its memref, read
+// one innermost row at a time and assembled with vector.insert, which
+// linearization turns into shuffles. The AIE lowering flattens n-D reads as
+// consecutive elements.
 struct SplitNonContiguousTransferRead
     : public OpRewritePattern<vector::TransferReadOp> {
   using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
@@ -149,11 +145,9 @@ struct SplitNonContiguousTransferRead
   }
 };
 
-// A rank-1 transfer_read along memref dim k, every later dim of extent 1:
-// the permutation map `(..., dk, ...) -> (dk)` that folding a rank-reducing
-// subview into the read leaves. Collapse the trailing unit dims into dim k
-// and read with a minor identity map: the AIE core lowering handles only
-// those. (The trailing indices index extent-1 dims, so they are 0.)
+// A rank-1 transfer_read along memref dim k whose later dims all have extent
+// 1 and index 0, as a minor identity read of the memref with those dims
+// collapsed into k. The AIE core lowering takes minor identity maps only.
 struct TrailingUnitDimsTransferRead
     : public OpRewritePattern<vector::TransferReadOp> {
   using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
@@ -199,10 +193,9 @@ struct TrailingUnitDimsTransferRead
   }
 };
 
-// A rank-1 transfer_read that is a strided gather, along a memref dim
-// other than the innermost (permutation map `(..., dk, ...) -> (dk)`), or
-// along a strided innermost dim: the AIE core lowering has no pattern for
-// it. Read element by element.
+// A rank-1 transfer_read that is a strided gather, along a memref dim other
+// than the innermost or along a strided innermost dim, read element by
+// element: the AIE core lowering has no pattern for it.
 struct UnrollStridedTransferRead
     : public OpRewritePattern<vector::TransferReadOp> {
   using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
@@ -221,8 +214,7 @@ struct UnrollStridedTransferRead
     auto dim = dyn_cast<AffineDimExpr>(map.getResult(0));
     if (!dim)
       return failure();
-    // Along the innermost dim it is a gather only if that dim is strided
-    // (a rank-reduced subview of a column, say).
+    // Along the innermost dim it is a gather only if that dim is strided.
     if (map.isMinorIdentity() && vector::isContiguousSlice(memrefType, vecType))
       return failure();
     Location loc = read.getLoc();
@@ -344,11 +336,9 @@ static Value traceLanes(Value v, SmallVector<int64_t> &lanes) {
 }
 
 // `(X >> [0, 4, 8, ...]) & 15` where lane l of X is word l / k of a vector
-// W (k = 4-bit fields per word): the 4-bit fields of W in order. Rewritten
-// as `extsi(extui(bitcast(W) to i4) to i8)`, which AIE lowers to its
-// unpack instruction; neither the per-lane right shift nor the
-// replication of W has a lowering there. Triton, having no i4, spells a
-// 4-bit unpack this way.
+// W (k 4-bit fields per word): the 4-bit fields of W in order. Rewritten as
+// `extsi(extui(bitcast(W) to i4) to i8)`, or aievec.unpack on AIE2P; AIE has
+// no lowering for the per-lane shift or for the replication of W.
 struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
   NibbleUnpackFromShifts(MLIRContext *ctx, bool aie2p)
       : OpRewritePattern<arith::AndIOp>(ctx), aie2p(aie2p) {}
@@ -364,8 +354,8 @@ struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
     if (!elemTy || elemTy.getWidth() <= 8 || elemTy.getWidth() % 4 != 0)
       return failure();
     int64_t k = elemTy.getWidth() / 4, n = vt.getNumElements();
-    // Constants may come reshaped or replicated (defined outside the
-    // linearized region, say): look through lane permutations.
+    // Constants may come reshaped or replicated: look through lane
+    // permutations.
     auto constantOf = [](Value v, DenseIntElementsAttr &attr) {
       SmallVector<int64_t> unused;
       return matchPattern(traceLanes(v, unused), m_Constant(&attr));
@@ -413,10 +403,8 @@ struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
     }
     int64_t wordBytes = elemTy.getWidth() / 8;
 #if AIR_ENABLE_AIE
-    // Exactly one unpack's worth of bytes: emit aievec.unpack itself. The
-    // standard spelling (bitcast to i4 + extui to i8) is folded apart by
-    // canonicalization (bitcast chains merge, extsi(extui) becomes one
-    // extui) before the AIE lowering gets to match it.
+    // Exactly one unpack's worth of bytes: emit aievec.unpack itself, since
+    // canonicalization folds the bitcast and extui spelling apart.
     if (aie2p && wt.getNumElements() * wordBytes * 2 == n &&
         (n == 64 || n == 128)) {
       Value bytes = vector::BitCastOp::create(
@@ -457,13 +445,11 @@ struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
 };
 
 // A rank-1 elementwise op wider than the AIE vector lowering handles, split
-// into native-width pieces: 32 lanes of bf16 (add/sub/mul), 16 lanes when
-// f32 is involved (vector.fma, extf to f32, truncf from f32, f32
-// add/sub/mul), one 512-bit register or accumulator each. The pieces are
-// assembled with vector.insert_strided_slice so that the next split op's
-// vector.extract_strided_slice folds onto them, keeping producer and
-// consumer pieces adjacent (mul+add for the FMA lowering, extf feeding an
-// fma for mac_elem).
+// into native-width pieces: 32 lanes of bf16 (add/sub/mul), `f32Lanes` when
+// f32 is involved (vector.fma, extf, truncf, f32 add/sub/mul). The pieces are
+// assembled with vector.insert_strided_slice, so that the next split op's
+// vector.extract_strided_slice folds onto them and producer and consumer
+// pieces stay adjacent.
 struct SplitWideElementwise : public RewritePattern {
   SplitWideElementwise(MLIRContext *ctx, int64_t f32Lanes)
       : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, ctx),
@@ -566,8 +552,8 @@ struct ExtractSliceToShuffle
       return failure();
     int64_t off = cast<IntegerAttr>(ex.getOffsets()[0]).getInt();
     int64_t stride = cast<IntegerAttr>(ex.getStrides()[0]).getInt();
-    // A slice of a shuffle is a narrower shuffle of the same inputs: a
-    // replicated scale or base then never exists at the full width.
+    // A slice of a shuffle is a narrower shuffle of the same inputs, so a
+    // replicated value never exists at the full width.
     if (auto sh = ex.getSource().getDefiningOp<vector::ShuffleOp>()) {
       ArrayRef<int64_t> full = sh.getMask();
       SmallVector<int64_t> sub;
@@ -645,10 +631,8 @@ private:
 
 #if AIR_ENABLE_AIE
 // A 32-lane f32 `vector.fma` of two bf16 values widened by arith.extf, as
-// aievec.mac_elem, and a 32-lane f32 -> bf16 arith.truncf, as aievec.srs.
-// AIE2P multiplies 32 bf16 lanes into a 32-lane f32 accumulator and converts
-// it back in one instruction, and its LLVM lowering takes both, but the
-// vector-to-aievec conversion only matches the 16-lane forms.
+// aievec.mac_elem, and a 32-lane f32 -> bf16 arith.truncf, as aievec.srs:
+// the AIE2P forms of both, which vector-to-aievec does not produce.
 struct WideFMAToMacElem : public OpRewritePattern<vector::FMAOp> {
   using OpRewritePattern<vector::FMAOp>::OpRewritePattern;
 
@@ -687,14 +671,10 @@ struct WideTruncFToSRS : public OpRewritePattern<arith::TruncFOp> {
   }
 };
 
-// f32_lanes = 64: the AIE2P instruction forms a hand-written dequant kernel
-// uses, called as LLVM intrinsics because the aievec lowering has no route to
-// them (aievec.shuffle lowers to the AIE2 vshuffle; mac_elem stops at 32
-// lanes).
+// f32_lanes = 64: AIE2P instructions with no aievec form, called as LLVM
+// intrinsics.
 
-// Calls an AIE2P LLVM intrinsic through a private func.func named after it,
-// the way mlir-aie declares its own (llvm.aie2p.acquire, ...). An LLVM-dialect
-// op would not do: aie-standard-lowering silently drops a core that holds one.
+// The top-level module, where intrinsic declarations go.
 static ModuleOp outermostModule(Operation *op) {
   ModuleOp mod = op->getParentOfType<ModuleOp>();
   while (auto parent = mod->getParentOfType<ModuleOp>())
@@ -713,6 +693,9 @@ static bool canDeclareAIE2p(Operation *op, StringRef name, FunctionType ty) {
   return fn && fn.getFunctionType() == ty;
 }
 
+// Calls an AIE2P LLVM intrinsic through a private func.func named after it,
+// as mlir-aie declares its own: aie-standard-lowering does not accept
+// LLVM-dialect ops in a core.
 static Value callAIE2p(PatternRewriter &rewriter, Location loc, Type resTy,
                        StringRef name, ValueRange args) {
   ModuleOp mod = outermostModule(rewriter.getInsertionBlock()->getParentOp());
@@ -727,9 +710,8 @@ static Value callAIE2p(PatternRewriter &rewriter, Location loc, Type resTy,
   return func::CallOp::create(rewriter, loc, fn, args).getResult(0);
 }
 
-// `bf16(0x4300 | zext(q))` on 64 lanes (exactly 128 + q) as two byte
-// interleaves of q with 0x43 (AIE2P vshuffle modes 20/21), replacing an
-// upshift, two shift-round-saturates and an or.
+// `bitcast(0x4300 | zext(q))` to bf16 on 64 lanes, as two byte interleaves
+// of q with 0x43 (AIE2P vshuffle modes 20 and 21), which give the same bits.
 struct ByteInterleave4300 : public OpRewritePattern<arith::OrIOp> {
   using OpRewritePattern<arith::OrIOp>::OpRewritePattern;
 
@@ -786,7 +768,7 @@ struct ByteInterleave4300 : public OpRewritePattern<arith::OrIOp> {
 };
 
 // A 64-lane f32 vector.fma of two bf16 values widened by arith.extf, as one
-// 64-lane bf16 multiply-accumulate (I1024.I1024.ACC2048, aie_api's config).
+// 64-lane bf16 multiply-accumulate (I1024.I1024.ACC2048, configuration 828).
 struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
   using OpRewritePattern<vector::FMAOp>::OpRewritePattern;
 
@@ -815,12 +797,11 @@ struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
   }
 };
 
-// A 64-lane f32 -> bf16 arith.truncf as two 32-lane aievec.srs (srs is also
-// what makes aie-standard-lowering set the rounding mode). When the result is
-// only stored, through a shape_cast and an in-bounds minor-identity
-// transfer_write, the halves are stored separately: the backend then fuses
-// each conversion into its store (vst.conv), which a re-concatenated 64-lane
-// store prevents.
+// A 64-lane f32 -> bf16 arith.truncf (default rounding) as two 32-lane
+// aievec.srs. When the result's only use is a shape_cast whose only use is an
+// unmasked, in-bounds, minor-identity transfer_write to a memref, the halves
+// are stored separately, so that each conversion can be fused into its
+// store.
 struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
   using OpRewritePattern<arith::TruncFOp>::OpRewritePattern;
 
@@ -889,11 +870,10 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
 };
 #endif
 
-// A transfer_read that fixes the memref's innermost dim at a constant k and
-// reads the dims just above it (every s-th element of a contiguous run, e.g.
-// one slot of the interleaved pairs a fused gate/up epilogue reads) as a read
-// of the whole run and a shuffle taking slot k. The AIE lowering takes
-// contiguous reads only.
+// A transfer_read of the dims just above the memref's innermost one, with
+// the innermost index a constant k and extent s (2 to 8): every s-th element
+// of a contiguous run. Rewritten as a read of the whole run and a shuffle
+// taking slot k; the AIE lowering takes contiguous reads only.
 struct DeinterleaveTransferRead
     : public OpRewritePattern<vector::TransferReadOp> {
   using OpRewritePattern<vector::TransferReadOp>::OpRewritePattern;
@@ -929,7 +909,7 @@ struct DeinterleaveTransferRead
     Value whole;
     // Through an expand_shape that only splits the innermost dim into [n, s],
     // with the read covering all n: read the unexpanded rows instead, so the
-    // view dies (memref analyses, e.g. L1 shrinking, do not see through it).
+    // view dies (later memref analyses do not see through it).
     auto ex = read.getBase().getDefiningOp<memref::ExpandShapeOp>();
     if (ex && ex.getSrcType().getRank() == r - 1 &&
         ex.getReassociationIndices().back() ==

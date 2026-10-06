@@ -8,12 +8,10 @@
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide.mlir' %s | FileCheck %s
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide.mlir' %s | FileCheck %s --check-prefix=RANK1
 
-// A fused gate|up epilogue tile: gate and up are interleaved column pairs of
-// an f32 accumulator, and h = g * sigmoid(c2 * (g + k * g^3)) * u is computed
-// in bf16 (the reciprocal in f32), as a Triton GELU-tanh epilogue arrives
-// after its math is moved to bf16. Linearized, both slots are read from the
-// same contiguous rows and split by shuffles, and every op is rank 1 at the
-// AIE vector width.
+// g and u are interleaved column pairs of an f32 accumulator, and
+// h = g * sigmoid(c2 * (g + k * g^3)) * u is computed in bf16 with the
+// reciprocal in f32. Linearized, both slots are read from the same contiguous
+// rows and split by shuffles, and every op is rank 1 at the AIE vector width.
 // CHECK-LABEL: @gate_up_gelu
 // CHECK: %[[R0:.*]] = vector.transfer_read %arg0{{.*}} : memref<8x8xf32>, vector<8x8xf32>
 // CHECK: %[[F0:.*]] = vector.shape_cast %[[R0]] : vector<8x8xf32> to vector<64xf32>
