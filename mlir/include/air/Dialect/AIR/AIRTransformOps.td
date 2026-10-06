@@ -1484,13 +1484,21 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
          becomes `vector.fma`, when both ops carry the `contract` fast-math
          flag or `contract` is set here: contraction drops the product's
          rounding;
+       - with `bf16_math`, the factors of every f32 `arith.mulf` and the
+         argument of every f32 `math.tanh` are rounded to bf16 first, the
+         precision the AIE2P multiplier and tanh take, so that each has a
+         native form; with `contract` as well, the factors of a
+         multiply-add are rounded the same way;
+       - `arith.truncf` of an `arith.extf` back to the original type is
+         dropped;
        - elementwise float ops wider than the native width are halved until
          they fit: 32 lanes for bf16, `f32_lanes` for ops on f32;
        - a strided rank-1 read that is in bounds is read element by element.
     4. On AIE2P, with `f32_lanes` 32: a 32-lane bf16 x bf16 + f32
-       `vector.fma` becomes `aievec.mac_elem` and a 32-lane f32 to bf16
-       `arith.truncf` (default rounding) `aievec.srs`. With `f32_lanes` 64:
-       the 64-lane fma becomes the `llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf`
+       `vector.fma` becomes `aievec.mac_elem`, a 32-lane f32 `arith.mulf` of
+       two values widened from bf16 `aievec.mul_elem`, and a 32-lane f32 to
+       bf16 `arith.truncf` (default rounding) `aievec.srs`. With `f32_lanes`
+       64: the 64-lane fma becomes the `llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf`
        intrinsic, the 64-lane truncf two `aievec.srs` (stored as two halves
        when its only use is a shape_cast to an in-bounds memref write), and
        `bf16(0x4300 | zext(q))` for unpacked 4-bit `q` two
@@ -1528,9 +1536,10 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
   let arguments = (ins TransformHandleTypeInterface:$target,
                    DefaultValuedStrAttr<StrAttr, "aie2">:$arch,
                    DefaultValuedAttr<I64Attr, "16">:$f32_lanes,
-                   UnitAttr:$contract);
+                   UnitAttr:$contract,
+                   UnitAttr:$bf16_math);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target (`arch` `=` $arch^)? (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$target (`arch` `=` $arch^)? (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? (`bf16_math` $bf16_math^)? attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
 

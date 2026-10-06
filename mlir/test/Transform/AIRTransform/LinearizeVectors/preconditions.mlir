@@ -159,10 +159,10 @@ module attributes {transform.with_named_sequence} {
 // -----
 
 // At 32 lanes, without `contract` and without fast-math flags, a widened
-// bf16 multiply and add stay separate.
+// bf16 multiply and add stay separate: a mul_elem and an add.
 // CHECK-LABEL: @mul_add_no_contract
 // CHECK-NOT: aievec.mac_elem
-// CHECK: arith.mulf
+// CHECK: aievec.mul_elem
 // CHECK: arith.addf
 func.func @mul_add_no_contract(%a: memref<32xbf16>, %b: memref<32xbf16>, %c: memref<32xf32>, %o: memref<32xf32>) {
   %c0 = arith.constant 0 : index
@@ -221,7 +221,7 @@ module attributes {transform.with_named_sequence} {
 // With the flag on the multiply only, they stay separate.
 // CHECK-LABEL: @mul_add_mixed_flags
 // CHECK-NOT: aievec.mac_elem
-// CHECK: arith.mulf
+// CHECK: aievec.mul_elem
 // CHECK: arith.addf
 func.func @mul_add_mixed_flags(%a: memref<32xbf16>, %b: memref<32xbf16>, %c: memref<32xf32>, %o: memref<32xf32>) {
   %c0 = arith.constant 0 : index

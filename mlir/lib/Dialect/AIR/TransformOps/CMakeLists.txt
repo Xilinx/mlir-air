@@ -16,6 +16,7 @@ add_mlir_dialect_library(AIRTransformOps
   MLIRArithDialect
   MLIRFuncDialect
   MLIRIR
+  MLIRMathDialect
   MLIRMemRefDialect
   MLIRTransformDialect
   MLIRTransformUtils

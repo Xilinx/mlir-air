@@ -18,6 +18,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -582,12 +583,75 @@ static Value bf16Source(Value v) {
   return ext.getIn();
 }
 
+// An f32 vector constant whose every element is exactly a bf16 value, as
+// that bf16 constant's attribute; null otherwise.
+static DenseElementsAttr exactBF16Constant(Value v) {
+  DenseFPElementsAttr attr;
+  if (!matchPattern(v, m_Constant(&attr)) || !attr.getElementType().isF32())
+    return nullptr;
+  SmallVector<APFloat> vals;
+  for (APFloat x : attr.getValues<APFloat>()) {
+    bool losesInfo = false;
+    x.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven, &losesInfo);
+    if (losesInfo)
+      return nullptr;
+    vals.push_back(x);
+  }
+  auto ty = cast<ShapedType>(attr.getType());
+  return DenseElementsAttr::get(ty.clone(BFloat16Type::get(v.getContext())),
+                                vals);
+}
+
+// `v` as a bf16 value: the source of an arith.extf, or a bf16 constant for an
+// f32 constant whose elements are all bf16 values. Null otherwise.
+static Value bf16Of(PatternRewriter &rewriter, Location loc, Value v) {
+  if (Value src = bf16Source(v))
+    return src;
+  if (DenseElementsAttr c = exactBF16Constant(v))
+    return arith::ConstantOp::create(rewriter, loc, c);
+  return nullptr;
+}
+
+// Whether `v` holds bf16 values exactly: widened by arith.extf, possibly
+// replicated by a shuffle, or a constant.
+static bool isWidenedBF16(Value v) {
+  if (auto sh = v.getDefiningOp<vector::ShuffleOp>())
+    v = sh.getV1();
+  return bf16Source(v) || exactBF16Constant(v);
+}
+
+// `v`, an f32 vector, rounded to bf16 and widened back, unless it already is
+// a widened bf16 value. A constant is rounded in place.
+static Value roundToBF16(PatternRewriter &rewriter, Location loc, Value v) {
+  if (isWidenedBF16(v))
+    return v;
+  DenseFPElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr))) {
+    SmallVector<APFloat> vals;
+    for (APFloat x : attr.getValues<APFloat>()) {
+      bool losesInfo = false;
+      x.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven, &losesInfo);
+      x.convert(APFloat::IEEEsingle(), APFloat::rmNearestTiesToEven,
+                &losesInfo);
+      vals.push_back(x);
+    }
+    return arith::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(attr.getType(), vals));
+  }
+  auto vt = cast<VectorType>(v.getType());
+  auto bt = VectorType::get(vt.getShape(), rewriter.getBF16Type());
+  Value narrow = arith::TruncFOp::create(rewriter, loc, bt, v);
+  return arith::ExtFOp::create(rewriter, loc, vt, narrow);
+}
+
 // `addf(mulf(a, b), c)` on f32 vectors, the product used only there, as
 // vector.fma: with a and b widened from bf16 the AIE lowering makes it one
 // bf16 x bf16 + f32 multiply-accumulate.
 struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
-  MulAddToFMA(MLIRContext *ctx, bool contract, PatternBenefit benefit)
-      : OpRewritePattern<arith::AddFOp>(ctx, benefit), contract(contract) {}
+  MulAddToFMA(MLIRContext *ctx, bool contract, bool bf16Math,
+              PatternBenefit benefit)
+      : OpRewritePattern<arith::AddFOp>(ctx, benefit), contract(contract),
+        bf16Math(bf16Math) {}
 
   LogicalResult matchAndRewrite(arith::AddFOp add,
                                 PatternRewriter &rewriter) const override {
@@ -604,22 +668,22 @@ struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
     };
     if (!mayContract(add))
       return failure();
-    // Only a product of widened bf16 values (possibly replicated by a shuffle):
-    // that is the multiply-accumulate the AIE lowering has; an f32 x f32 fma
-    // has none.
-    auto widened = [](Value v) {
-      if (auto sh = v.getDefiningOp<vector::ShuffleOp>())
-        v = sh.getV1();
-      return bf16Source(v) != nullptr;
-    };
+    // Only a product of widened bf16 values: that is the multiply-accumulate
+    // the AIE lowering has; an f32 x f32 fma has none. With bf16Math the
+    // factors are rounded to bf16 to make it one.
     for (auto [mulSide, other] : {std::make_pair(add.getLhs(), add.getRhs()),
                                   std::make_pair(add.getRhs(), add.getLhs())}) {
       auto mul = mulSide.getDefiningOp<arith::MulFOp>();
-      if (!mul || !mul->hasOneUse() || !mayContract(mul) ||
-          !widened(mul.getLhs()) || !widened(mul.getRhs()))
+      if (!mul || !mul->hasOneUse() || !mayContract(mul))
         continue;
-      rewriter.replaceOpWithNewOp<vector::FMAOp>(add, mul.getLhs(),
-                                                 mul.getRhs(), other);
+      Value lhs = mul.getLhs(), rhs = mul.getRhs();
+      if (bf16Math) {
+        lhs = roundToBF16(rewriter, add.getLoc(), lhs);
+        rhs = roundToBF16(rewriter, add.getLoc(), rhs);
+      } else if (!isWidenedBF16(lhs) || !isWidenedBF16(rhs)) {
+        continue;
+      }
+      rewriter.replaceOpWithNewOp<vector::FMAOp>(add, lhs, rhs, other);
       return success();
     }
     return failure();
@@ -627,10 +691,68 @@ struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
 
 private:
   bool contract;
+  bool bf16Math;
+};
+
+// The factors of an f32 multiply rounded to bf16 and widened back, so that
+// the product is one of widened bf16 values (`bf16_math`).
+struct RoundProductFactors : public OpRewritePattern<arith::MulFOp> {
+  using OpRewritePattern<arith::MulFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MulFOp mul,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(mul.getType());
+    if (!vt || vt.getRank() != 1 || !vt.getElementType().isF32())
+      return failure();
+    if (isWidenedBF16(mul.getLhs()) && isWidenedBF16(mul.getRhs()))
+      return failure();
+    Value lhs = roundToBF16(rewriter, mul.getLoc(), mul.getLhs());
+    Value rhs = roundToBF16(rewriter, mul.getLoc(), mul.getRhs());
+    rewriter.modifyOpInPlace(mul, [&] {
+      mul.getLhsMutable().assign(lhs);
+      mul.getRhsMutable().assign(rhs);
+    });
+    return success();
+  }
+};
+
+// An f32 `math.tanh` computed on its argument rounded to bf16 (`bf16_math`).
+struct TanhInBF16 : public OpRewritePattern<math::TanhOp> {
+  using OpRewritePattern<math::TanhOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::TanhOp tanh,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(tanh.getType());
+    if (!vt || vt.getRank() != 1 || !vt.getElementType().isF32())
+      return failure();
+    Location loc = tanh.getLoc();
+    auto bt = VectorType::get(vt.getShape(), rewriter.getBF16Type());
+    Value narrow =
+        arith::TruncFOp::create(rewriter, loc, bt, tanh.getOperand());
+    Value t = math::TanhOp::create(rewriter, loc, narrow);
+    rewriter.replaceOpWithNewOp<arith::ExtFOp>(tanh, vt, t);
+    return success();
+  }
+};
+
+// truncf(extf(x)) to x's own type, without a rounding mode: widening is
+// exact, so narrowing back returns x.
+struct FoldTruncOfExt : public OpRewritePattern<arith::TruncFOp> {
+  using OpRewritePattern<arith::TruncFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncFOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto ext = trunc.getIn().getDefiningOp<arith::ExtFOp>();
+    if (!ext || trunc.getRoundingmodeAttr() ||
+        ext.getIn().getType() != trunc.getType())
+      return failure();
+    rewriter.replaceOp(trunc, ext.getIn());
+    return success();
+  }
 };
 
 #if AIR_ENABLE_AIE
-// A 32-lane f32 `vector.fma` of two bf16 values widened by arith.extf, as
+// A 32-lane f32 `vector.fma` of two values that hold bf16 values exactly, as
 // aievec.mac_elem, and a 32-lane f32 -> bf16 arith.truncf, as aievec.srs:
 // the AIE2P forms of both, which vector-to-aievec does not produce.
 struct WideFMAToMacElem : public OpRewritePattern<vector::FMAOp> {
@@ -642,11 +764,36 @@ struct WideFMAToMacElem : public OpRewritePattern<vector::FMAOp> {
     if (!vt || vt.getRank() != 1 || vt.getNumElements() != 32 ||
         !vt.getElementType().isF32())
       return failure();
-    Value lhs = bf16Source(fma.getLhs()), rhs = bf16Source(fma.getRhs());
-    if (!lhs || !rhs)
+    if (!isWidenedBF16(fma.getLhs()) || !isWidenedBF16(fma.getRhs()) ||
+        fma.getLhs().getDefiningOp<vector::ShuffleOp>() ||
+        fma.getRhs().getDefiningOp<vector::ShuffleOp>())
       return failure();
+    Value lhs = bf16Of(rewriter, fma.getLoc(), fma.getLhs());
+    Value rhs = bf16Of(rewriter, fma.getLoc(), fma.getRhs());
     rewriter.replaceOpWithNewOp<xilinx::aievec::FMAElemOp>(
         fma, vt, lhs, rhs, fma.getAcc(), /*fmsub=*/false);
+    return success();
+  }
+};
+
+// A 32-lane f32 `arith.mulf` of two values that hold bf16 values exactly
+// (widened by arith.extf, or constants), as aievec.mul_elem.
+struct WideMulToMulElem : public OpRewritePattern<arith::MulFOp> {
+  using OpRewritePattern<arith::MulFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MulFOp mul,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(mul.getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() != 32 ||
+        !vt.getElementType().isF32())
+      return failure();
+    if (!isWidenedBF16(mul.getLhs()) || !isWidenedBF16(mul.getRhs()) ||
+        mul.getLhs().getDefiningOp<vector::ShuffleOp>() ||
+        mul.getRhs().getDefiningOp<vector::ShuffleOp>())
+      return failure();
+    Value lhs = bf16Of(rewriter, mul.getLoc(), mul.getLhs());
+    Value rhs = bf16Of(rewriter, mul.getLoc(), mul.getRhs());
+    rewriter.replaceOpWithNewOp<xilinx::aievec::MulElemOp>(mul, vt, lhs, rhs);
     return success();
   }
 };
@@ -1029,15 +1176,19 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     target->walk([&](Operation *op) {
       if (isa<arith::AndIOp, vector::TransferReadOp, arith::AddFOp,
               arith::SubFOp, arith::MulFOp, arith::ExtFOp, arith::TruncFOp,
-              vector::FMAOp, vector::ShuffleOp>(op))
+              vector::FMAOp, vector::ShuffleOp, math::TanhOp>(op))
         ands.push_back(op);
     });
     RewritePatternSet unpackPatterns(ctx);
     unpackPatterns.add<NibbleUnpackFromShifts>(ctx, aie2p);
     unpackPatterns.add<UnrollStridedTransferRead>(ctx, /*benefit=*/0);
     unpackPatterns.add<SplitWideElementwise>(ctx, getF32Lanes());
-    unpackPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/2);
+    unpackPatterns.add<MulAddToFMA>(ctx, getContract(), getBf16Math(),
+                                    /*benefit=*/4);
     unpackPatterns.add<SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
+    unpackPatterns.add<FoldTruncOfExt>(ctx);
+    if (getBf16Math())
+      unpackPatterns.add<RoundProductFactors, TanhInBF16>(ctx, /*benefit=*/3);
     vector::ExtractStridedSliceOp::getCanonicalizationPatterns(unpackPatterns,
                                                                ctx);
     vector::ShuffleOp::getCanonicalizationPatterns(unpackPatterns, ctx);
@@ -1074,11 +1225,12 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     if (getF32Lanes() == 32) {
       SmallVector<Operation *> wide;
       target->walk([&](Operation *op) {
-        if (isa<vector::FMAOp, arith::TruncFOp>(op))
+        if (isa<vector::FMAOp, arith::TruncFOp, arith::MulFOp>(op))
           wide.push_back(op);
       });
       RewritePatternSet widePatterns(ctx);
-      widePatterns.add<WideFMAToMacElem, WideTruncFToSRS>(ctx);
+      widePatterns.add<WideFMAToMacElem, WideTruncFToSRS, WideMulToMulElem>(
+          ctx);
       if (failed(
               applyOpPatternsGreedily(wide, std::move(widePatterns), config)))
         return emitDefiniteFailure() << "failed to emit 32-lane aievec ops";
