@@ -3,8 +3,10 @@
 """Host side of the fused prefill device: one hw_context, the GEMM weight
 sites, attention with insts generated per chunk, and the KV records.
 
-A model's prefill subclasses Engine and runs its layers through mm(),
-ffn() and attention(); norms, rope and residuals are its own (hostops).
+A model's prefill subclasses Engine and runs a layer at a time over the
+prompt's 128-token chunks: gemm_start and attn_start queue one chunk's op,
+gemm_wait and attn_wait collect it, so the host's work on one chunk overlaps
+the device's on the next. Norms, rope and residuals are its own (hostops).
 """
 
 import json
@@ -183,12 +185,6 @@ class Engine:
         self._write_a(self.sites[site]["k"], x)
         return self._out(self._gemm(site, act, t), t)
 
-    def a_from(self, k, fill):
-        ab = self.abuf[k]
-        fill(ab["am"])
-        ab["a"].sync(TO)
-        ab["last"] = object()
-
     # ---- chunk-parallel GEMMs: per chunk A and C buffers, queued dispatches
 
     def a_chunk(self, k, c):
@@ -229,7 +225,7 @@ class Engine:
         run.set_arg(4, s["w"])
         cb.sync(TO, 64, 0)
         run.r.start()
-        return run, cb, cm, s["npd"], tag
+        return run, cb, cm, s["npd"], site, tag
 
     def warm(self, site):
         """Configure the device now rather than in the first prompt: the first
@@ -254,20 +250,10 @@ class Engine:
         self.wait(pend, t * pend[3] * 2)
         return pend[2]
 
-    def ffn(self, gate, up, down, h):
-        """down(act(gate h) * up h), the activation in the gate's drain."""
-        t = h.shape[0]
-        self._write_a(self.sites[gate]["k"], h)
-        g = self._gemm(gate, 1, t)
-        u = self._gemm(up, 0, t)
-        n = g["n"]
-        self.a_from(n, lambda am: H.glu_tile(g["cm"], u["cm"], t, n, am, D.TM, D.TK))
-        return self._out(self._gemm(down, 0, t), t)
-
     # ---- attention ----
 
     def attn_setup(self):
-        fp, self.attn = self.fp, {}
+        self.attn = {}
         pts = {
             k: dict(zip(("heads", "nkv", "q0", "k0"), v))
             for k, v in self.man["attn_points"].items()
@@ -290,22 +276,8 @@ class Engine:
                 raise RuntimeError(
                     f"attention {op}: insts are not linear in (nkv, q0, k0)"
                 )
-            hg = pts["base"]["heads"] // len(groups)
-            bos = list(self.dummy)
-            parts = []
-            for a in groups:
-                ga, s = self.cfg.attn[a], self.slot[a]
-                parts.append(self._attn_part(ga, hg, s, bos))
-            ib, iv = fp.insts(
-                tmpl.at(**{p: pts["base"][p] for p in ("nkv", "q0", "k0")})
-            )
             self.attn[op] = dict(
-                tmpl=tmpl,
-                groups=groups,
-                parts=parts,
-                ib=ib,
-                iv=iv,
-                run=fp.run(ib, iv.size, bos),
+                tmpl=tmpl, groups=groups, hg=pts["base"]["heads"] // len(groups)
             )
 
     def _attn_part(self, g, hg, s, bos):
@@ -334,9 +306,9 @@ class Engine:
         if key not in self.chunk_attn:
             at = self.attn[op]
             fp, bos, parts = self.fp, list(self.dummy), []
-            for a, p0 in zip(at["groups"], at["parts"]):
+            for a in at["groups"]:
                 parts.append(
-                    self._attn_part(self.cfg.attn[a], p0["hg"], self.slot[a], bos)
+                    self._attn_part(self.cfg.attn[a], at["hg"], self.slot[a], bos)
                 )
             ib, iv = fp.insts(at["tmpl"].at(**at["tmpl"].point))
             self.chunk_attn[key] = dict(
@@ -418,42 +390,6 @@ class Engine:
                     p["m"][h, b0 : b0 + nb] = recs
                 p["bo"].sync(TO, nb * rec, (h * nblk + b0) * rec)
             h0 += g.kv_heads
-
-    def attention(self, kv, qe, r0, scale):
-        """qe [T, heads, dh] (roped) of tokens [r0, r0+T), multiplied by
-        scale on the way in; K/V of tokens [0, r0+T) are in kv's records."""
-        at = self.attn[kv["op"]]
-        g = self.cfg.attn[at["groups"][0]]
-        t, h, dh = qe.shape
-        hg = h // len(at["groups"])
-        q0 = r0 // g.lkp
-        nend = -(-(r0 + t) // g.lkp)
-        window = (self.cfg.windows or {}).get(kv["op"], g.window)
-        k0 = max(0, q0 - window // g.lkp) if window else 0
-        rec = D.kv_rec(g) * 2
-        subs = []
-        for i, (a, p, kp) in enumerate(zip(at["groups"], at["parts"], kv["parts"])):
-            if g.kern == "bfp16":
-                qb = np.empty((hg, D.M, dh), bfloat16)
-                H.q_pack(qe[:, i * hg : (i + 1) * hg], scale, qb)
-                H.q_bfp(qb, g.lkp, p["qm"])
-            else:
-                H.q_pack(qe[:, i * hg : (i + 1) * hg], scale, p["qm"])
-            p["q"].sync(TO)
-            sub = xrt.bo(kp["bo"], kp["bo"].size() - k0 * rec, k0 * rec)
-            at["run"].set_arg(3 + self.slot[a] + 1, sub)
-            subs.append(sub)
-        at["subs"] = subs
-        at["iv"][:] = at["tmpl"].at(nkv=self._nkv(g, nend - k0), q0=q0, k0=k0)
-        at["ib"].sync(TO)
-        for p in at["parts"][:-1]:  # _go flushes the last
-            p["o"].sync(TO, 64, 0)
-        self._go(at["run"], f"attn {kv['op']}", at["parts"][-1]["o"])
-        outs = []
-        for p in at["parts"]:
-            p["o"].sync(FROM)
-            outs.append(H.o_unpack(p["om"], t).reshape(t, hg, dh))
-        return np.concatenate(outs, axis=1).reshape(t, h * dh)
 
     # ---- context ----
 

@@ -27,7 +27,6 @@ def load(build_dir):
     _lib.glu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _i, _p]
     _lib.mul_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
     _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _p]
-    _lib.o_unpack.argtypes = [_p, _i, _i, _i, _i, _p]
     _lib.rms_tile.argtypes = [_p, _i, _i, _p, _f, _i, _i, _p]
     _lib.add_rms_tile.argtypes = [_p, _p, _i, _p, _f, _i, _i, _p, _i, _i, _p]
     _l = ctypes.c_long
@@ -129,14 +128,6 @@ def q_pack(q, scale, dst):
     q = _c(q)
     t, h, dh = q.shape
     _lib.q_pack(q.ctypes.data, t, h, dh, dst.shape[1], scale, dst.ctypes.data)
-
-
-def o_unpack(o, t):
-    """o [H, M, dh] bf16 -> new float32 [t, H * dh]."""
-    h, m, dh = o.shape
-    out = np.empty((t, h * dh), np.float32)
-    _lib.o_unpack(o.ctypes.data, t, h, dh, m, out.ctypes.data)
-    return out
 
 
 def _ptr(a):

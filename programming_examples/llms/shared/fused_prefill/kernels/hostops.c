@@ -169,18 +169,6 @@ void q_pack(const float *q, int T, int H, int dh, int M, float scale,
   }
 }
 
-// o [H, M, dh] bf16 -> dst [T, H * dh] f32
-void o_unpack(const uint16_t *o, int T, int H, int dh, int M, float *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
-  for (int t = 0; t < T; t++)
-    for (int k = 0; k < H; k++) {
-      const uint16_t *s = o + ((long)k * M + t) * dh;
-      float *d = dst + ((long)t * H + k) * dh;
-      for (int i = 0; i < dh; i++)
-        d[i] = bf2f(s[i]);
-    }
-}
-
 // one row of the GEMM's A layout: row r of dst [HR][K/TK][TM][TK]
 static inline uint16_t *a_row(uint16_t *dst, int r, int s, int ks, int TM,
                               int TK) {

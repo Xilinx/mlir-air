@@ -3,9 +3,9 @@
 """Gemma4-E2B prefill on the fused prefill device (shared/fused_prefill).
 
 Same interface as Gemma4Q4nxPrefill: prefill(ids) returns the last token's
-logits and kv_stack() the cache for the decoder. The prompt runs in chunks of
-128 tokens, each chunk through every layer, on one hw_context; the LM head is
-the int4 GEMV on a second one. Norms, rope, residuals and the GLU and PLE
+logits and kv_stack() the cache for the decoder. The prompt runs a layer at a
+time in 128-token chunks on one hw_context; the LM head is the int4 GEMV on a
+second one. Norms, rope, residuals and the GLU and PLE
 products run on the host (hostops).
 """
 
@@ -48,16 +48,6 @@ class FusedPrefill(Engine):
         super().__init__(build_dir, CFG, max_len)
         self.current_context_length = 0
         self.rope_cache = {}
-
-    def mlp(self, L, h):
-        return self.ffn(f"{L}.gate", f"{L}.up", f"{L}.down", h)
-
-    def ple(self, L, x, pli):
-        t = x.shape[0]
-        self._write_a(self.sites[f"{L}.ple_gate"]["k"], x)
-        g = self._gemm(f"{L}.ple_gate", 1, t)
-        self.a_from(g["n"], lambda am: H.mul_tile(g["cm"], pli, am, D.TM, D.TK))
-        return self._out(self._gemm(f"{L}.ple_proj", 0, t), t)
 
     def contexts(self):
         return [self.fp, self.lm["ctx"]]
@@ -149,29 +139,6 @@ class FusedPrefill(Engine):
         sn = np.ascontiguousarray(np.stack([r[1] for r in rows])[:, :h], np.float32)
         return cs, sn, rows[0][2]
 
-    def _layer(self, L, x, pli, r0, rope):
-        eps, nm = gw.RMS_EPS, self.norms[L]
-        t = x.shape[0]
-        dh = gw.head_dim(L)
-        cs, sn, rot = rope[dh]
-        x1 = H.rms(x, nm["input"], eps)
-        q = H.rms(self.mm(f"{L}.q", x1).reshape(t, gw.N_Q_HEADS, dh), nm["q_norm"], eps)
-        H.rope(q, cs, sn, rot)
-        if gw.owns_kv(L):
-            k = H.rms(
-                self.mm(f"{L}.k", x1).reshape(t, gw.N_KV_HEADS, dh), nm["k_norm"], eps
-            )
-            v = H.rms(self.mm(f"{L}.v", x1).reshape(t, gw.N_KV_HEADS, dh), None, eps)
-            H.rope(k, cs, sn, rot)
-            self._kv_append(L, r0, k, v)
-        kv = self.kvb[gw.kv_source_layer(L)]
-        o = self.attention(kv, q, r0, float(np.sqrt(dh) * gw.ATTN_SCALE))
-        o1 = H.add_rms(x, self.mm(f"{L}.o", o), nm["post_attn"], eps)
-        h = H.rms(o1, nm["pre_ffn"], eps)
-        o2 = H.add_rms(o1, self.mlp(L, h), nm["post_ffn"], eps)
-        o3 = H.add_rms(o2, self.ple(L, o2, pli), nm["post_ple"], eps)
-        return o3 * nm["out_scale"]
-
     def _kv_append(self, L, r0, k, v):
         """Tokens [r0, r0+T) of layer L (k, v [T, 1, dh]): kept for kv_stack,
         and written as the attention's KV records."""
@@ -191,25 +158,120 @@ class FusedPrefill(Engine):
         tbl = qm.embed_rows("model.per_layer_token_embd.weight", ids)
         tbl = tbl.reshape(n, gw.NUM_LAYERS, gw.PLI_D) * gw.PLE_EMBED_SCALE
         self.kv = {}
-        for r0 in range(0, n, D.M):
-            t = min(D.M, n - r0)
-            x = np.ascontiguousarray(emb[r0 : r0 + t], np.float32)
-            proj = (
-                self.mm("mp", x).reshape(t, gw.NUM_LAYERS, gw.PLI_D)
-                * gw.PLE_MODEL_PROJ_SCALE
-            )
-            pli = (
+        x = np.array(emb, np.float32, order="C")
+        chunks = [(r0, min(D.M, n - r0)) for r0 in range(0, n, D.M)]
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            self._tile(x[r0 : r0 + t], gw.D, c)
+            pend.append(self.gemm_start("mp", c))
+        pli = np.empty((n, gw.NUM_LAYERS, gw.PLI_D), np.float32)
+        for c, (r0, t) in enumerate(chunks):
+            proj = self._f32(pend[c], t).reshape(t, gw.NUM_LAYERS, gw.PLI_D)
+            proj = proj * gw.PLE_MODEL_PROJ_SCALE
+            pli[r0 : r0 + t] = (
                 gw._rmsnorm(proj, self.glob["ple_proj_norm"]) + tbl[r0 : r0 + t]
             ) * gw.PLE_INPUT_SCALE
-            rope = {gw.head_dim(L): self._rope(L, r0, t) for L in self.rope_layers}
-            for L in range(gw.NUM_LAYERS):
-                x = self._layer(L, x, np.ascontiguousarray(pli[:, L]), r0, rope)
+        ropes = [
+            {gw.head_dim(L): self._rope(L, r0, t) for L in self.rope_layers}
+            for r0, t in chunks
+        ]
+        for L in range(gw.NUM_LAYERS):
+            self._layer_all(L, x, pli, chunks, ropes)
         self.current_context_length = n
         last = gw._rmsnorm(x[-1:], self.glob["final_norm"])
         logits = self._lm_head(last)
         if gw.FINAL_LOGIT_SOFTCAP:
             logits = gw.FINAL_LOGIT_SOFTCAP * np.tanh(logits / gw.FINAL_LOGIT_SOFTCAP)
         return logits
+
+    def _tile(self, x, k, c):
+        """x [t, k] float32 as chunk c's A for GEMMs of depth k."""
+        a = self.a_chunk(k, c)
+        H.tile_a(x, a[1], D.TM, D.TK)
+        a[0].sync(TO)
+
+    def _f32(self, pend, t):
+        """A queued GEMM's output rows [0, t) as float32."""
+        return H.bf16_to_f32(self.gemm_wait(pend, t), t, self.sites[pend[4]]["n"])
+
+    def _layer_all(self, L, x, pli, chunks, ropes):
+        """Layer L over the prompt x [n, d], in place; each stage queues one
+        dispatch per chunk, so the host's work on a chunk overlaps the
+        device's on the chunks after it."""
+        eps, nm = gw.RMS_EPS, self.norms[L]
+        dh = gw.head_dim(L)
+        dq = gw.N_Q_HEADS * dh
+        own = gw.owns_kv(L)
+        rows = [x[r0 : r0 + t] for r0, t in chunks]
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            self._tile(H.rms(rows[c], nm["input"], eps), gw.D, c)
+            ps = [self.gemm_start(f"{L}.q", c)]
+            if own:
+                ps += [self.gemm_start(f"{L}.k", c), self.gemm_start(f"{L}.v", c)]
+            pend.append(ps)
+        kv = self.kvb[gw.kv_source_layer(L)]
+        # the kernel divides by sqrt(head_dim); gemma4 scales by ATTN_SCALE
+        scale = float(np.sqrt(dh) * gw.ATTN_SCALE)
+        att = []
+        for c, (r0, t) in enumerate(chunks):
+            cs, sn, rot = ropes[c][dh]
+            q = self._f32(pend[c][0], t).reshape(t, gw.N_Q_HEADS, dh)
+            q = H.rms(q, nm["q_norm"], eps)
+            H.rope(q, cs, sn, rot)
+            if own:
+                k = self._f32(pend[c][1], t).reshape(t, gw.N_KV_HEADS, dh)
+                v = self._f32(pend[c][2], t).reshape(t, gw.N_KV_HEADS, dh)
+                k = H.rms(k, nm["k_norm"], eps)
+                v = H.rms(v, None, eps)
+                H.rope(k, cs, sn, rot)
+                self._kv_append(L, r0, k, v)
+            ch = self.attn_chunk(kv["op"], c)
+            hg = ch["parts"][0]["hg"]
+            for i, p in enumerate(ch["parts"]):
+                H.q_pack(q[:, i * hg : (i + 1) * hg], scale, p["qm"])
+            att.append(self.attn_start(kv, c, r0, t))
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            a = self.a_chunk(dq, c)
+            h0 = 0
+            for om in self.attn_wait(att[c]):
+                H.o_tile(om, t, h0, dq, a[1], D.TM, D.TK)
+                h0 += om.shape[0]
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.o", c))
+        gu = []
+        for c, (r0, t) in enumerate(chunks):
+            rows[c][:] = H.add_rms(rows[c], self._f32(pend[c], t), nm["post_attn"], eps)
+            self._tile(H.rms(rows[c], nm["pre_ffn"], eps), gw.D, c)
+            gu.append(
+                (self.gemm_start(f"{L}.gate", c, 1), self.gemm_start(f"{L}.up", c))
+            )
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            g = self.gemm_wait(gu[c][0], t)
+            u = self.gemm_wait(gu[c][1], t)
+            n = self.sites[f"{L}.gate"]["n"]
+            a = self.a_chunk(n, c)
+            H.glu_tile(g, u, t, n, a[1], D.TM, D.TK)
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.down", c))
+        pg = []
+        for c, (r0, t) in enumerate(chunks):
+            rows[c][:] = H.add_rms(rows[c], self._f32(pend[c], t), nm["post_ffn"], eps)
+            self._tile(rows[c], gw.D, c)
+            pg.append(self.gemm_start(f"{L}.ple_gate", c, 1))
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            g = self.gemm_wait(pg[c], t)
+            n = self.sites[f"{L}.ple_gate"]["n"]
+            a = self.a_chunk(n, c)
+            H.mul_tile(g, np.ascontiguousarray(pli[r0 : r0 + t, L]), a[1], D.TM, D.TK)
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.ple_proj", c))
+        for c, (r0, t) in enumerate(chunks):
+            o3 = H.add_rms(rows[c], self._f32(pend[c], t), nm["post_ple"], eps)
+            rows[c][:] = o3 * nm["out_scale"]
 
     def kv_stack(self):
         """Per layer (shared ones resolved) the prompt's K and V, float32
