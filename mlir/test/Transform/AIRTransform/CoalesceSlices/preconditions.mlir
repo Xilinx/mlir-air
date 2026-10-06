@@ -32,26 +32,30 @@ module attributes {transform.with_named_sequence} {
 
 // -----
 
-// Row offsets that only simplify to constants, through a delinearized loop
-// index: (4 * (j mod 4)) mod 4 is 0, and the other slice's is 1.
+// Column offsets that only simplify to constants through a delinearized loop
+// index: the K step 4 * j split into (group, row block) has row block
+// (4 * j) mod 4 = 0, so 8 times it is 0, next to the constants 32 and 40.
 // CHECK-LABEL: @proven_constant
-// CHECK: %[[R:.*]] = tensor.extract_slice %arg0[0, 0] [2, 8] [1, 1]
-// CHECK: %[[C:.*]] = linalg.copy ins(%[[R]] : tensor<2x8xf32>)
-// CHECK-DAG: tensor.extract_slice %[[C]][0, 0] [1, 8] [1, 1]
-// CHECK-DAG: tensor.extract_slice %[[C]][1, 0] [1, 8] [1, 1]
-func.func @proven_constant(%t: tensor<4x64xf32>, %j: index) -> tensor<1x8xf32> {
-  %g:2 = affine.delinearize_index %j into (8, 4) : index, index
-  %r0 = affine.apply affine_map<(d0) -> ((d0 * 4) mod 4)>(%g#1)
-  %r1 = affine.apply affine_map<(d0) -> ((d0 * 4) mod 4 + 1)>(%g#1)
-  %a = tensor.extract_slice %t[%r0, 0] [1, 8] [1, 1] : tensor<4x64xf32> to tensor<1x8xf32>
-  %b = tensor.extract_slice %t[%r1, 0] [1, 8] [1, 1] : tensor<4x64xf32> to tensor<1x8xf32>
-  %e = tensor.empty() : tensor<1x8xf32>
-  %r = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%a, %b : tensor<1x8xf32>, tensor<1x8xf32>) outs(%e : tensor<1x8xf32>) {
-  ^bb0(%x: f32, %y: f32, %z: f32):
-    %s = arith.addf %x, %y : f32
-    linalg.yield %s : f32
-  } -> tensor<1x8xf32>
-  return %r : tensor<1x8xf32>
+// CHECK: %[[R:.*]] = tensor.extract_slice %arg0[0, 0] [1, 48] [1, 1]
+// CHECK: %[[C:.*]] = linalg.copy ins(%[[R]] : tensor<1x48xi32>)
+// CHECK-DAG: tensor.extract_slice %[[C]][0, 0] [1, 32] [1, 1]
+// CHECK-DAG: tensor.extract_slice %[[C]][0, 32] [1, 8] [1, 1]
+// CHECK-DAG: tensor.extract_slice %[[C]][0, 40] [1, 8] [1, 1]
+func.func @proven_constant(%t: tensor<4x48xi32>, %j: index) -> tensor<1x32xi32> {
+  %k = affine.apply affine_map<(d0) -> (d0 * 4)>(%j)
+  %g:2 = affine.delinearize_index %k into (48, 4) : index, index
+  %c = affine.apply affine_map<(d0) -> (d0 * 8)>(%g#1)
+  %a = tensor.extract_slice %t[0, %c] [1, 32] [1, 1] : tensor<4x48xi32> to tensor<1x32xi32>
+  %s = tensor.extract_slice %t[0, 32] [1, 8] [1, 1] : tensor<4x48xi32> to tensor<1x8xi32>
+  %m = tensor.extract_slice %t[0, 40] [1, 8] [1, 1] : tensor<4x48xi32> to tensor<1x8xi32>
+  %e = tensor.empty() : tensor<1x32xi32>
+  %r = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1 mod 8)>, affine_map<(d0, d1) -> (d0, d1 mod 8)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%a, %s, %m : tensor<1x32xi32>, tensor<1x8xi32>, tensor<1x8xi32>) outs(%e : tensor<1x32xi32>) {
+  ^bb0(%x: i32, %y: i32, %z: i32, %o: i32):
+    %v = arith.muli %x, %y : i32
+    %w = arith.addi %v, %z : i32
+    linalg.yield %w : i32
+  } -> tensor<1x32xi32>
+  return %r : tensor<1x32xi32>
 }
 
 module attributes {transform.with_named_sequence} {

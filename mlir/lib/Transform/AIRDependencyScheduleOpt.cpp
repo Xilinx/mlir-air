@@ -1839,17 +1839,13 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   // inside one handshake races it, and an opaque callee may be that writer.
   // Ops that do model their effects are left alone: a read-only use is fine.
   static bool isUnsafeToDuplicate(scf::ForOp forOp) {
-    // Each air.execute wraps a single memref.alloc and yields it as the
-    // non-token result at index 1 (see AIR.td and HoistMemallocInForPattern).
-    // Map both spellings to the bare alloc result so one buffer counts once.
-    llvm::DenseMap<Value, Value> aliasToCanonical;
+    // The allocations the transform would duplicate. A buffer is reached
+    // through an air.execute result or a view; resolveBufferRoot maps every
+    // spelling to the allocation.
+    llvm::SmallPtrSet<Value, 8> allocs;
     for (auto exec : forOp.getOps<air::ExecuteOp>())
-      for (auto alloc : exec.getOps<memref::AllocOp>()) {
-        Value canonical = alloc->getResult(0);
-        aliasToCanonical[canonical] = canonical;
-        if (exec->getNumResults() >= 2)
-          aliasToCanonical[exec->getResults()[1]] = canonical;
-      }
+      for (auto alloc : exec.getOps<memref::AllocOp>())
+        allocs.insert(alloc.getResult());
 
     auto isDefiniteWrite = [](Operation *op, Value v) {
       if (auto get = dyn_cast<air::ChannelGetOp>(op))
@@ -1889,19 +1885,14 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
       for (auto operand : op->getOperands()) {
         if (!isa<MemRefType>(operand.getType()))
           continue;
-        if (auto it = aliasToCanonical.find(operand);
-            it != aliasToCanonical.end()) {
-          // A view (subview, collapse_shape, ...) does not access the
-          // buffer: its result aliases it, and the first access through
-          // the view is what counts.
+        Value root = air::resolveBufferRoot(operand);
+        if (allocs.contains(root)) {
+          // Taking a view is not an access; the first access through the
+          // view is what counts.
           if (auto view = dyn_cast<ViewLikeOpInterface>(op);
-              view && view.getViewSource() == operand) {
-            for (Value r : op->getResults())
-              if (isa<MemRefType>(r.getType()))
-                aliasToCanonical[r] = it->second;
+              view && view.getViewSource() == operand)
             continue;
-          }
-          if (firstAccessSeen.insert(it->second).second &&
+          if (firstAccessSeen.insert(root).second &&
               !isDefiniteWrite(op, operand))
             unsafe = true;
           continue;
@@ -5741,14 +5732,13 @@ private:
     }
     return false;
   }
-  // Moves the definition of `v` above `a` when it does not dominate it
-  // already and is an allocation: an air.execute holding only a memref.alloc,
-  // whose own operands dominate the new position. That is the L1 buffer a
-  // herd allocates right before the loop nest that fills it; once that nest's
-  // channel op is merged into an earlier nest, the buffer has to exist before
-  // it. Cloning it along with the channel op, as other operands are, would
-  // fill a different buffer. Returns false only for such an allocation that
-  // cannot move; with `dryRun`, reports that without moving anything.
+  // Makes `v` available at `a` when `v` is an allocation (an air.execute
+  // holding only a memref.alloc) that does not dominate `a`: the allocation
+  // moves above the op enclosing `a` in its block, provided its operands
+  // dominate that point. It must move rather than be cloned with the channel
+  // op, which would fill a different buffer; moveValueDefinitions declines
+  // ops with side effects, an allocation among them. Returns false only for
+  // an allocation that cannot move; with `dryRun`, moves nothing.
   bool hoistAllocAbove(Value v, Operation *a, DominanceInfo &dom, bool dryRun) {
     Operation *def = v.getDefiningOp();
     if (!def)

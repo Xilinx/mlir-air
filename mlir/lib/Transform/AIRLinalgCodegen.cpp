@@ -45,6 +45,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -4884,58 +4885,32 @@ namespace {
 /// Check if a value depends on the given loop induction variable
 bool dependsOnLoopIVForHoist(Value val, Value loopIV);
 
-// The coefficient of `iv` in `v` when `v` is linear in it: built from `iv`
-// with arith.addi / subi, arith.muli by a constant, and affine.apply ops
-// linear in their operands. 0 for a value that does not depend on `iv`;
+// The coefficient of `forOp`'s induction variable in `v`, when `v` is that
+// variable times a constant plus values defined outside the loop;
 // std::nullopt otherwise.
-std::optional<int64_t> linearIVCoefficient(Value v, Value iv) {
-  if (v == iv)
-    return 1;
-  if (!dependsOnLoopIVForHoist(v, iv))
-    return 0;
-  if (auto add = v.getDefiningOp<arith::AddIOp>()) {
-    auto a = linearIVCoefficient(add.getLhs(), iv);
-    auto b = linearIVCoefficient(add.getRhs(), iv);
-    if (a && b)
-      return *a + *b;
+std::optional<int64_t> linearIVCoefficient(Value v, scf::ForOp forOp) {
+  Value iv = forOp.getInductionVar();
+  if (!v.getType().isIndex())
     return std::nullopt;
-  }
-  if (auto sub = v.getDefiningOp<arith::SubIOp>()) {
-    auto a = linearIVCoefficient(sub.getLhs(), iv);
-    auto b = linearIVCoefficient(sub.getRhs(), iv);
-    if (a && b)
-      return *a - *b;
+  AffineMap map;
+  ValueDimList operands;
+  auto stop = [&](Value x, std::optional<int64_t>, ValueBoundsConstraintSet &) {
+    return x == iv || forOp.isDefinedOutsideOfLoop(x);
+  };
+  if (failed(ValueBoundsConstraintSet::computeBound(
+          map, operands, presburger::BoundType::EQ,
+          ValueBoundsConstraintSet::Variable(v), stop)))
     return std::nullopt;
-  }
-  if (auto mul = v.getDefiningOp<arith::MulIOp>()) {
-    if (auto c = getConstantIntValue(mul.getRhs()))
-      if (auto a = linearIVCoefficient(mul.getLhs(), iv))
-        return *a * *c;
-    if (auto c = getConstantIntValue(mul.getLhs()))
-      if (auto a = linearIVCoefficient(mul.getRhs(), iv))
-        return *a * *c;
+  // Linear: one column per operand and the constant, no mod or div columns.
+  std::vector<SmallVector<int64_t, 8>> flat;
+  if (map.getNumResults() != 1 || failed(getFlattenedAffineExprs(map, &flat)) ||
+      flat[0].size() != map.getNumInputs() + 1)
     return std::nullopt;
-  }
-  if (auto apply = v.getDefiningOp<affine::AffineApplyOp>()) {
-    // Linear in each operand; sum each operand's coefficient on `iv`.
-    // getAffineApplyCoefficient already sums over every position an operand
-    // takes, so visit each distinct operand once.
-    int64_t total = 0;
-    for (Value operand : llvm::SetVector<Value>(apply.getMapOperands().begin(),
-                                                apply.getMapOperands().end())) {
-      auto inner = linearIVCoefficient(operand, iv);
-      if (!inner)
-        return std::nullopt;
-      if (*inner == 0)
-        continue;
-      auto outer = xilinx::air::getAffineApplyCoefficient(apply, operand);
-      if (!outer)
-        return std::nullopt;
-      total += *outer * *inner;
-    }
-    return total;
-  }
-  return std::nullopt;
+  int64_t coefficient = 0;
+  for (auto [pos, operand] : llvm::enumerate(operands))
+    if (operand.first == iv)
+      coefficient += flat[0][pos];
+  return coefficient;
 }
 
 // Whether `v` can be computed before `forOp` for its first iteration: every
@@ -5091,9 +5066,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       bool flattenable =
           !transferOp.getMask() &&
           transferOp.getPermutationMap().isMinorIdentity() &&
-          llvm::all_of(transferOp.getInBoundsValues(),
-                       [](bool b) { return b; }) &&
-          memrefType.getRank() >= 1 &&
+          !transferOp.hasOutOfBoundsDim() && memrefType.getRank() >= 1 &&
           vectorType.getRank() <= memrefType.getRank() &&
           memref::isStaticShapeAndContiguousRowMajor(memrefType) &&
           vector::isContiguousSlice(memrefType, vectorType);
@@ -5113,7 +5086,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         // The index advances by (its coefficient on the IV) * (the loop
         // step) per iteration. An index not linear in the IV cannot be
         // walked by a constant increment.
-        std::optional<int64_t> coefficient = linearIVCoefficient(idx, loopIV);
+        std::optional<int64_t> coefficient = linearIVCoefficient(idx, forOp);
         if (!flattenable || !coefficient || !loopStep ||
             !isComputableAtLowerBound(idx, forOp)) {
           unsupported = true;
@@ -5922,35 +5895,18 @@ DiagnosedSilenceableFailure transform::NormalizeLoopToUnitStepOp::apply(
 
 namespace {
 
-// b - a, when it is a constant: equal values, equal constants, or the two
-// reach a common value through arith.addi of constants.
+// b - a, when it is provably a constant.
 static std::optional<int64_t> constantDelta(OpFoldResult a, OpFoldResult b) {
-  auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
-  if (ca && cb)
-    return *cb - *ca;
-  auto va = dyn_cast<Value>(a), vb = dyn_cast<Value>(b);
-  if (!va || !vb)
+  using Variable = ValueBoundsConstraintSet::Variable;
+  MLIRContext *ctx = isa<Value>(a) ? cast<Value>(a).getContext()
+                                   : cast<Attribute>(a).getContext();
+  AffineMap diff =
+      AffineMap::get(2, 0, getAffineDimExpr(1, ctx) - getAffineDimExpr(0, ctx));
+  FailureOr<int64_t> d = ValueBoundsConstraintSet::computeConstantBound(
+      presburger::BoundType::EQ, Variable(diff, {Variable(a), Variable(b)}));
+  if (failed(d))
     return std::nullopt;
-  auto split = [](Value v) {
-    int64_t c = 0;
-    while (auto add = v.getDefiningOp<arith::AddIOp>()) {
-      if (auto k = getConstantIntValue(add.getRhs())) {
-        c += *k;
-        v = add.getLhs();
-      } else if (auto k = getConstantIntValue(add.getLhs())) {
-        c += *k;
-        v = add.getRhs();
-      } else {
-        break;
-      }
-    }
-    return std::make_pair(v, c);
-  };
-  auto [baseA, offA] = split(va);
-  auto [baseB, offB] = split(vb);
-  if (baseA != baseB)
-    return std::nullopt;
-  return offB - offA;
+  return *d;
 }
 
 // A memref.copy of a reinterpret_cast view into a fresh buffer that is only
@@ -6207,7 +6163,8 @@ void transform::MergeSiblingCopiesOp::getEffects(
 namespace {
 // `v` as a simplified affine expression of the leaf values it is computed
 // from through affine.apply, affine.delinearize_index and arith add/mul by
-// constants. Leaves become dims.
+// constants. Leaves become dims. ValueBoundsConstraintSet has no model for
+// affine.delinearize_index, through which these offsets are computed.
 struct AffineOfValue {
   SmallVector<Value> leaves;
   std::optional<AffineExpr> build(Value v, MLIRContext *ctx, int depth = 0) {
@@ -6654,7 +6611,7 @@ struct UnrollStridedTransferRead
         map.getNumResults() != 1 || !memrefType)
       return failure();
     // memref.load has no padding: only a read known to be in bounds.
-    if (!llvm::all_of(read.getInBoundsValues(), [](bool b) { return b; }))
+    if (read.hasOutOfBoundsDim())
       return failure();
     auto dim = dyn_cast<AffineDimExpr>(map.getResult(0));
     if (!dim)
@@ -6702,9 +6659,7 @@ struct LinearizeBroadcastToShuffle
     ArrayRef<int64_t> resShape = resType.getShape();
     ArrayRef<int64_t> srcShape = srcType.getShape();
     int64_t lead = resShape.size() - srcShape.size();
-    SmallVector<int64_t> srcStrides(srcShape.size(), 1);
-    for (int64_t d = static_cast<int64_t>(srcShape.size()) - 2; d >= 0; --d)
-      srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
+    SmallVector<int64_t> srcStrides = computeStrides(srcShape);
 
     SmallVector<int64_t> mask;
     mask.reserve(resType.getNumElements());
@@ -6885,10 +6840,9 @@ struct NibbleUnpackFromShifts : public OpRewritePattern<arith::AndIOp> {
         padded);
     Value unpacked = arith::ExtUIOp::create(
         rewriter, loc, VectorType::get({fields}, i8), nibbles);
-    SmallVector<int64_t> first(n);
-    std::iota(first.begin(), first.end(), 0);
     Value lanesN =
-        vector::ShuffleOp::create(rewriter, loc, unpacked, unpacked, first);
+        vector::ShuffleOp::create(rewriter, loc, unpacked, unpacked,
+                                  llvm::to_vector(llvm::seq<int64_t>(0, n)));
     // 0..15 in i8: sign and zero extension agree.
     rewriter.replaceOpWithNewOp<arith::ExtSIOp>(andOp, vt, lanesN);
     if (shOp->use_empty())
@@ -7029,6 +6983,14 @@ struct ExtractSliceToShuffle
   }
 };
 
+// The bf16 value `v` is widened from by arith.extf, or null.
+static Value bf16Source(Value v) {
+  auto ext = v.getDefiningOp<arith::ExtFOp>();
+  if (!ext || !getElementTypeOrSelf(ext.getIn().getType()).isBF16())
+    return nullptr;
+  return ext.getIn();
+}
+
 // `addf(mulf(a, b), c)` on f32 vectors, the product used only there, as
 // vector.fma: with a and b widened from bf16 the AIE lowering makes it one
 // bf16 x bf16 + f32 multiply-accumulate.
@@ -7057,8 +7019,7 @@ struct MulAddToFMA : public OpRewritePattern<arith::AddFOp> {
     auto widened = [](Value v) {
       if (auto sh = v.getDefiningOp<vector::ShuffleOp>())
         v = sh.getV1();
-      auto ext = v.getDefiningOp<arith::ExtFOp>();
-      return ext && getElementTypeOrSelf(ext.getIn().getType()).isBF16();
+      return bf16Source(v) != nullptr;
     };
     for (auto [mulSide, other] : {std::make_pair(add.getLhs(), add.getRhs()),
                                   std::make_pair(add.getRhs(), add.getLhs())}) {
@@ -7092,13 +7053,7 @@ struct WideFMAToMacElem : public OpRewritePattern<vector::FMAOp> {
     if (!vt || vt.getRank() != 1 || vt.getNumElements() != 32 ||
         !vt.getElementType().isF32())
       return failure();
-    auto narrow = [](Value v) -> Value {
-      auto ext = v.getDefiningOp<arith::ExtFOp>();
-      if (!ext || !getElementTypeOrSelf(ext.getIn().getType()).isBF16())
-        return nullptr;
-      return ext.getIn();
-    };
-    Value lhs = narrow(fma.getLhs()), rhs = narrow(fma.getRhs());
+    Value lhs = bf16Source(fma.getLhs()), rhs = bf16Source(fma.getRhs());
     if (!lhs || !rhs)
       return failure();
     rewriter.replaceOpWithNewOp<xilinx::aievec::FMAElemOp>(
@@ -7215,11 +7170,9 @@ struct ByteInterleave4300 : public OpRewritePattern<arith::OrIOp> {
         halves.push_back(callAIE2p(rewriter, loc, v16, "llvm.aie2p.vshuffle",
                                    {words, bias, m}));
       }
-      SmallVector<int64_t> cat;
-      for (int64_t i = 0; i < 32; ++i)
-        cat.push_back(i);
       Value both =
-          vector::ShuffleOp::create(rewriter, loc, halves[0], halves[1], cat);
+          vector::ShuffleOp::create(rewriter, loc, halves[0], halves[1],
+                                    llvm::to_vector(llvm::seq<int64_t>(0, 32)));
       rewriter.replaceOpWithNewOp<vector::BitCastOp>(orOp, vt, both);
       return success();
     }
@@ -7238,13 +7191,7 @@ struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
     if (!vt || vt.getRank() != 1 || vt.getNumElements() != 64 ||
         !vt.getElementType().isF32())
       return failure();
-    auto narrow = [](Value v) -> Value {
-      auto ext = v.getDefiningOp<arith::ExtFOp>();
-      if (!ext || !getElementTypeOrSelf(ext.getIn().getType()).isBF16())
-        return nullptr;
-      return ext.getIn();
-    };
-    Value lhs = narrow(fma.getLhs()), rhs = narrow(fma.getRhs());
+    Value lhs = bf16Source(fma.getLhs()), rhs = bf16Source(fma.getRhs());
     if (!lhs || !rhs)
       return failure();
     if (!canDeclareAIE2p(fma, "llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf",
@@ -7289,16 +7236,11 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
     auto half = VectorType::get({32}, rewriter.getBF16Type());
     Value parts[2];
     for (int k = 0; k < 2; ++k) {
-      SmallVector<int64_t> mask;
-      for (int64_t i = 0; i < 32; ++i)
-        mask.push_back(k * 32 + i);
-      Value acc = vector::ShuffleOp::create(rewriter, loc, trunc.getIn(),
-                                            trunc.getIn(), mask);
+      Value acc = vector::ShuffleOp::create(
+          rewriter, loc, trunc.getIn(), trunc.getIn(),
+          llvm::to_vector(llvm::seq<int64_t>(k * 32, k * 32 + 32)));
       parts[k] = xilinx::aievec::SRSOp::create(rewriter, loc, half, acc, shift);
     }
-    SmallVector<int64_t> cat;
-    for (int64_t i = 0; i < 64; ++i)
-      cat.push_back(i);
     vector::ShapeCastOp cast;
     vector::TransferWriteOp write;
     if (trunc->hasOneUse())
@@ -7312,9 +7254,10 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
         wt.getDimSize(0) % 2 != 0 ||
         !write.getPermutationMap().isMinorIdentity() ||
         write.getPermutationMap().getNumResults() != wt.getRank() ||
-        !llvm::all_of(write.getInBoundsValues(), [](bool b) { return b; })) {
-      rewriter.replaceOpWithNewOp<vector::ShuffleOp>(trunc, parts[0], parts[1],
-                                                     cat);
+        write.hasOutOfBoundsDim()) {
+      rewriter.replaceOpWithNewOp<vector::ShuffleOp>(
+          trunc, parts[0], parts[1],
+          llvm::to_vector(llvm::seq<int64_t>(0, 64)));
       return success();
     }
     SmallVector<int64_t> hs(wt.getShape());
@@ -7370,7 +7313,7 @@ struct DeinterleaveTransferRead
     std::optional<int64_t> k = getConstantIntValue(read.getIndices()[r - 1]);
     if (s < 2 || s > 8 || !k)
       return failure();
-    if (!llvm::all_of(read.getInBoundsValues(), [](bool b) { return b; }))
+    if (read.hasOutOfBoundsDim())
       return failure();
     Location loc = read.getLoc();
     SmallVector<Value> idx(read.getIndices());
