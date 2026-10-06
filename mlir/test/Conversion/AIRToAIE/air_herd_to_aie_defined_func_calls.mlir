@@ -48,6 +48,10 @@ module {
 // CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %[[B:.*]]: memref<64xi32> {llvm.noalias})
 // CHECK: call @store_tile(%{{.*}}, %[[B]]) : (vector<16xi32>, memref<64xi32>) -> ()
 // CHECK: func.func private @store_tile(%{{.*}}: vector<16xi32>, %{{.*}}: memref<64xi32>) {
+// On the host both keep only a declaration.
+// CHECK-LABEL: func.func @nested()
+// CHECK: func.func private @tile_body(memref<64xi32, 2>, memref<64xi32, 2>){{$}}
+// CHECK: func.func private @store_tile(vector<16xi32>, memref<64xi32, 2>){{$}}
 module {
   func.func @nested() {
     %c1 = arith.constant 1 : index
@@ -179,4 +183,166 @@ module {
     vector.transfer_write %v, %b[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32, 2>
     return
   }
+}
+
+// -----
+
+// An external function the cloned one calls is declared in the device as for
+// a call from the core: layout dropped, the core's link_with, and the C
+// interface.
+// CHECK-LABEL: aie.device
+// CHECK: func.func private @tile_body
+// CHECK: %[[C:.*]] = memref.cast %{{.*}} : memref<16xi32, strided<[1], offset: ?>> to memref<16xi32>
+// CHECK: call @ext_kernel(%[[C]]) : (memref<16xi32>) -> ()
+// CHECK: func.func private @ext_kernel(memref<16xi32>) attributes {link_with = "kernel.o", llvm.emit_c_interface}
+module {
+  func.func @nested_external() {
+    %c1 = arith.constant 1 : index
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {link_with = "kernel.o", x_loc = 0 : i64, y_loc = 2 : i64} {
+          %buf = memref.alloc() : memref<64xi32, 2>
+          func.call @tile_body(%buf, %tx) : (memref<64xi32, 2>, index) -> ()
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<64xi32, 2>, %i: index) {
+    %v = memref.subview %a[%i] [16] [1] : memref<64xi32, 2> to memref<16xi32, strided<[1], offset: ?>, 2>
+    func.call @ext_kernel(%v) : (memref<16xi32, strided<[1], offset: ?>, 2>) -> ()
+    return
+  }
+  func.func private @ext_kernel(memref<16xi32, strided<[1], offset: ?>, 2>)
+}
+
+// -----
+
+// A function the host also calls keeps its body there.
+// CHECK-LABEL: aie.device
+// CHECK: func.func private @tile_body
+// CHECK-LABEL: func.func @host_and_herd()
+// CHECK: call @tile_body
+// CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32>) {
+// CHECK: vector.transfer_write
+module {
+  func.func @host_and_herd() {
+    %c1 = arith.constant 1 : index
+    %host = memref.alloc() : memref<64xi32>
+    func.call @tile_body(%host) : (memref<64xi32>) -> ()
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) args(%lh=%host) : memref<64xi32> {
+      air.segment @seg args(%sh=%lh) : memref<64xi32> {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) args(%b=%sh) : memref<64xi32> attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          func.call @tile_body(%b) : (memref<64xi32>) -> ()
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<64xi32>) {
+    %c0 = arith.constant 0 : index
+    %z = arith.constant dense<0> : vector<16xi32>
+    vector.transfer_write %z, %a[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32>
+    return
+  }
+}
+
+// -----
+
+// transform.loop.outline makes public functions. One only herds call is
+// handled as a private one: the host keeps a private declaration.
+// CHECK-LABEL: aie.device
+// CHECK: func.func private @outlined
+// CHECK-LABEL: func.func @public_callee()
+// CHECK: func.func private @outlined(memref<64xi32, 2>){{$}}
+module {
+  func.func @public_callee() {
+    %c1 = arith.constant 1 : index
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %buf = memref.alloc() : memref<64xi32, 2>
+          func.call @outlined(%buf) : (memref<64xi32, 2>) -> ()
+        }
+      }
+    }
+    return
+  }
+  func.func @outlined(%a: memref<64xi32, 2>) {
+    %c0 = arith.constant 0 : index
+    %z = arith.constant dense<0> : vector<16xi32>
+    vector.transfer_write %z, %a[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32, 2>
+    return
+  }
+}
+
+// -----
+
+// A herd of two tiles: each core calls the one clone, with its own buffers.
+// CHECK-LABEL: aie.device
+// CHECK: aie.core
+// CHECK: call @tile_body(%{{.*}}, %{{.*}}) : (memref<64xi32>, memref<64xi32>) -> ()
+// CHECK: aie.core
+// CHECK: call @tile_body(%{{.*}}, %{{.*}}) : (memref<64xi32>, memref<64xi32>) -> ()
+// CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias})
+// CHECK-NOT: func.func private @tile_body
+// CHECK: }
+module {
+  func.func @two_tiles() {
+    %c1 = arith.constant 1 : index
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c2, %hy=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %in = memref.alloc() : memref<64xi32, 2>
+          %out = memref.alloc() : memref<64xi32, 2>
+          func.call @tile_body(%in, %out) : (memref<64xi32, 2>, memref<64xi32, 2>) -> ()
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<64xi32, 2>, %b: memref<64xi32, 2>) {
+    %c0 = arith.constant 0 : index
+    %p = arith.constant 0 : i32
+    %v = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<64xi32, 2>, vector<16xi32>
+    vector.transfer_write %v, %b[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32, 2>
+    return
+  }
+}
+
+// -----
+
+// An LLVM intrinsic the cloned function calls is declared as it is.
+// CHECK-LABEL: aie.device
+// CHECK: call @llvm.aie2p.vshuffle
+// CHECK: func.func private @llvm.aie2p.vshuffle(vector<16xi32>, vector<16xi32>, i32) -> vector<16xi32>{{$}}
+module {
+  func.func @intrinsic() {
+    %c1 = arith.constant 1 : index
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {link_with = "kernel.o", x_loc = 0 : i64, y_loc = 2 : i64} {
+          %buf = memref.alloc() : memref<16xi32, 2>
+          func.call @tile_body(%buf) : (memref<16xi32, 2>) -> ()
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<16xi32, 2>) {
+    %c0 = arith.constant 0 : index
+    %m = arith.constant 20 : i32
+    %p = arith.constant 0 : i32
+    %v = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<16xi32, 2>, vector<16xi32>
+    %s = func.call @llvm.aie2p.vshuffle(%v, %v, %m) : (vector<16xi32>, vector<16xi32>, i32) -> vector<16xi32>
+    vector.transfer_write %s, %a[%c0] {in_bounds = [true]} : vector<16xi32>, memref<16xi32, 2>
+    return
+  }
+  func.func private @llvm.aie2p.vshuffle(vector<16xi32>, vector<16xi32>, i32) -> vector<16xi32>
 }

@@ -335,6 +335,228 @@ void setAIEDeviceDataLayout(OpBuilder &builder, AIE::DeviceOp aie_dev) {
   aie_dev->setAttr(DLTIDialect::kDataLayoutAttrName, dlSpec);
 }
 
+// Every memref type in `f`, its signature included, in the default memory
+// space. aie-normalize-address-spaces leaves a core's buffers there; it retypes
+// a function's signature but not the uses of its arguments.
+static void toDefaultMemorySpace(func::FuncOp f) {
+  auto plain = [](Type t) -> Type {
+    auto m = dyn_cast<MemRefType>(t);
+    if (!m || !m.getMemorySpace())
+      return t;
+    return MemRefType::get(m.getShape(), m.getElementType(), m.getLayout(),
+                           nullptr);
+  };
+  f.walk([&](Operation *o) {
+    for (Value r : o->getResults())
+      r.setType(plain(r.getType()));
+    for (Region &reg : o->getRegions())
+      for (Block &b : reg)
+        for (BlockArgument a : b.getArguments())
+          a.setType(plain(a.getType()));
+  });
+  SmallVector<Type> ins, outs;
+  for (Type t : f.getFunctionType().getInputs())
+    ins.push_back(plain(t));
+  for (Type t : f.getFunctionType().getResults())
+    outs.push_back(plain(t));
+  f.setFunctionType(FunctionType::get(f.getContext(), ins, outs));
+}
+
+// Sets llvm.noalias on the memref arguments of a cloned callee that `call`
+// proves disjoint from its other memref arguments (different buffers, or both
+// only read), and removes it from those it does not. With `firstCall` unset
+// it is only ever removed, so it stays only where every call proves it.
+static void narrowNoAlias(func::CallOp call, func::FuncOp fn, bool firstCall) {
+  auto writes = [&](unsigned i) {
+    llvm::SmallDenseSet<Value> aliases;
+    air::collectBufferAliases(fn.getArgument(i), aliases);
+    for (Value m : aliases)
+      for (Operation *u : m.getUsers()) {
+        if (auto view = dyn_cast<ViewLikeOpInterface>(u);
+            view && view.getViewSource() == m)
+          continue;
+        auto eff = dyn_cast<MemoryEffectOpInterface>(u);
+        if (!eff || eff.getEffectOnValue<MemoryEffects::Write>(m))
+          return true;
+      }
+    return false;
+  };
+  // Distinct roots are distinct buffers only when both are allocations;
+  // block arguments, globals and other definitions may still alias.
+  auto allocated = [](Value root) {
+    return isa_and_present<memref::AllocOp, memref::AllocaOp, AIE::BufferOp>(
+        root.getDefiningOp());
+  };
+  StringRef noalias = LLVM::LLVMDialect::getNoAliasAttrName();
+  unsigned n = call.getNumOperands();
+  for (unsigned i = 0; i < n; ++i) {
+    if (!isa<MemRefType>(call.getOperand(i).getType()))
+      continue;
+    Value ri = air::resolveBufferRoot(call.getOperand(i));
+    bool disjoint = true;
+    for (unsigned j = 0; j < n && disjoint; ++j) {
+      if (j == i || !isa<MemRefType>(call.getOperand(j).getType()))
+        continue;
+      Value rj = air::resolveBufferRoot(call.getOperand(j));
+      bool distinct = ri != rj && allocated(ri) && allocated(rj);
+      if (!distinct && (writes(i) || writes(j)))
+        disjoint = false;
+    }
+    if (firstCall && disjoint)
+      fn.setArgAttr(i, noalias, UnitAttr::get(fn.getContext()));
+    else if (!disjoint)
+      fn.removeArgAttr(i, noalias);
+  }
+}
+
+// A declaration in `device` of the external function `name`, called with
+// `callType`. Memref layouts are dropped: external kernels take bare pointers.
+// LLVM intrinsics (`llvm.*`) are declared as they are.
+static func::FuncOp declareExternalCallee(AIE::DeviceOp device,
+                                          AIE::CoreOp core, StringRef name,
+                                          FunctionType callType) {
+  SmallVector<Type> inputs;
+  for (Type t : callType.getInputs()) {
+    auto m = dyn_cast<MemRefType>(t);
+    inputs.push_back(m ? MemRefType::get(m.getShape(), m.getElementType(),
+                                         MemRefLayoutAttrInterface{},
+                                         m.getMemorySpace())
+                       : t);
+  }
+  auto fn = func::FuncOp::create(
+      device.getLoc(), name,
+      FunctionType::get(device.getContext(), inputs, callType.getResults()));
+  fn.setPrivate();
+  if (name.starts_with("llvm.")) {
+    device.insert(device.getBody()->getTerminator(), fn);
+    return fn;
+  }
+  // Attributes of the host declaration (link_with, llvm.emit_c_interface).
+  if (auto parentModule = device->getParentOfType<ModuleOp>())
+    if (auto origFn = parentModule.lookupSymbol<func::FuncOp>(name))
+      for (auto attr : origFn->getDiscardableAttrs())
+        fn->setAttr(attr.getName(), attr.getValue());
+  if (!fn->hasAttr("link_with"))
+    if (auto attr = core->getAttrOfType<StringAttr>("link_with"))
+      fn->setAttr("link_with", attr);
+  if (!fn->hasAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName()))
+    fn->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
+                UnitAttr::get(device.getContext()));
+  device.insert(device.getBody()->getTerminator(), fn);
+  return fn;
+}
+
+// Casts the operands of `call`, and its results back, where their types
+// differ from `fn`'s in layout or memory space.
+static void matchCallToCallee(func::CallOp call, func::FuncOp fn) {
+  FunctionType fnType = fn.getFunctionType();
+  OpBuilder b(call);
+  SmallVector<Value> newOperands;
+  bool needsUpdate = false;
+  for (auto [operand, inputType] :
+       llvm::zip(call.getOperands(), fnType.getInputs())) {
+    if (operand.getType() == inputType) {
+      newOperands.push_back(operand);
+      continue;
+    }
+    auto om = dyn_cast<MemRefType>(operand.getType());
+    auto im = dyn_cast<MemRefType>(inputType);
+    if (om && im && om.getMemorySpace() != im.getMemorySpace() &&
+        memref::MemorySpaceCastOp::areCastCompatible(om, im)) {
+      newOperands.push_back(memref::MemorySpaceCastOp::create(
+          b, call.getLoc(), inputType, operand));
+      needsUpdate = true;
+      continue;
+    }
+    if (!memref::CastOp::areCastCompatible(operand.getType(), inputType)) {
+      call.emitError("cannot cast operand type ")
+          << operand.getType() << " to normalized function type " << inputType;
+      newOperands.push_back(operand);
+      continue;
+    }
+    newOperands.push_back(
+        memref::CastOp::create(b, call.getLoc(), inputType, operand));
+    needsUpdate = true;
+  }
+  if (needsUpdate)
+    call->setOperands(newOperands);
+  if (call.getResultTypes() == fnType.getResults())
+    return;
+  auto newCall = func::CallOp::create(b, call.getLoc(), fn, call.getOperands());
+  for (auto [oldRes, newRes] :
+       llvm::zip(call.getResults(), newCall.getResults())) {
+    Value v = newRes;
+    if (v.getType() != oldRes.getType())
+      v = memref::MemorySpaceCastOp::create(b, call.getLoc(), oldRes.getType(),
+                                            v);
+    oldRes.replaceAllUsesWith(v);
+  }
+  call->erase();
+}
+
+// Clones `orig`, a function the module defines and a core calls, into
+// `device`, with every function it refers to: defined ones cloned the same
+// way, external ones declared as for a direct call from the core. The callee
+// is kept a function of its own rather than inlined into the core, so that
+// it is compiled separately from the code around the call.
+static FailureOr<func::FuncOp>
+cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
+  ModuleOp parentModule = device->getParentOfType<ModuleOp>();
+  auto clone = [&](func::FuncOp f) -> FailureOr<func::FuncOp> {
+    // Allocations become aie.buffer ops only directly under the core.
+    if (f.walk([](memref::AllocOp) {
+           return WalkResult::interrupt();
+         }).wasInterrupted())
+      return f.emitOpError("is called from a herd and allocates memory; "
+                           "allocate the buffer in the herd and pass it in");
+    auto copy = cast<func::FuncOp>(f->clone());
+    copy.setPrivate();
+    copy->setAttr("air.cloned_callee", UnitAttr::get(copy.getContext()));
+    toDefaultMemorySpace(copy);
+    device.insert(device.getBody()->getTerminator(), copy);
+    return copy;
+  };
+  FailureOr<func::FuncOp> top = clone(orig);
+  if (failed(top))
+    return failure();
+  SmallVector<func::FuncOp> work{*top};
+  while (!work.empty()) {
+    func::FuncOp f = work.pop_back_val();
+    std::optional<SymbolTable::UseRange> uses =
+        SymbolTable::getSymbolUses(&f.getBody());
+    if (!uses)
+      return f.emitOpError("has symbol uses that cannot be resolved");
+    SmallVector<func::CallOp> calls;
+    for (const SymbolTable::SymbolUse &use : *uses) {
+      StringRef name = use.getSymbolRef().getRootReference();
+      if (auto known = device.lookupSymbol<func::FuncOp>(name)) {
+        // Its arguments are now `f`'s, which nothing here proves disjoint.
+        if (known->hasAttr("air.cloned_callee"))
+          for (unsigned i = 0; i < known.getNumArguments(); ++i)
+            known.removeArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName());
+      } else if (auto callee = parentModule.lookupSymbol<func::FuncOp>(name)) {
+        if (callee.isExternal()) {
+          auto call = dyn_cast<func::CallOp>(use.getUser());
+          declareExternalCallee(device, core, name,
+                                call ? call.getCalleeType()
+                                     : callee.getFunctionType());
+        } else {
+          FailureOr<func::FuncOp> copy = clone(callee);
+          if (failed(copy))
+            return failure();
+          work.push_back(*copy);
+        }
+      }
+      if (auto call = dyn_cast<func::CallOp>(use.getUser()))
+        calls.push_back(call);
+    }
+    for (func::CallOp call : calls)
+      if (auto callee = device.lookupSymbol<func::FuncOp>(call.getCallee()))
+        matchCallToCallee(call, callee);
+  }
+  return *top;
+}
+
 LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                               air::HerdOp h,
                               AIRToAIEConversionOptions &options) {
@@ -684,259 +906,36 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       } else
         AIE::EndOp::create(core_builder, hloc);
 
-      // Module-defined callees are cloned into the device in the default
-      // memory space, as aie-normalize-address-spaces leaves the core's
-      // buffers: that pass retypes a function's signature but not the uses of
-      // its arguments.
-      auto plain = [](Type t) -> Type {
-        auto m = dyn_cast<MemRefType>(t);
-        if (!m || !m.getMemorySpace())
-          return t;
-        return MemRefType::get(m.getShape(), m.getElementType(), m.getLayout(),
-                               nullptr);
-      };
-      auto toDefaultMemorySpace = [&](func::FuncOp f) {
-        f.walk([&](Operation *o) {
-          for (Value r : o->getResults())
-            r.setType(plain(r.getType()));
-          for (Region &reg : o->getRegions())
-            for (Block &b : reg)
-              for (BlockArgument a : b.getArguments())
-                a.setType(plain(a.getType()));
-        });
-        SmallVector<Type> ins, outs;
-        for (Type t : f.getFunctionType().getInputs())
-          ins.push_back(plain(t));
-        for (Type t : f.getFunctionType().getResults())
-          outs.push_back(plain(t));
-        f.setFunctionType(FunctionType::get(f.getContext(), ins, outs));
-      };
-      // Inline, the core's buffers are distinct globals; as arguments LLVM
-      // must assume they alias, and stops hoisting loads past the stores. An
-      // argument gets llvm.noalias only while every call proves it disjoint
-      // from the others: different buffers, or both only read.
-      auto narrowNoAlias = [](func::CallOp call, func::FuncOp fn,
-                              bool firstCall) {
-        auto root = [](Value v) {
-          while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
-            v = view.getViewSource();
-          return v;
-        };
-        auto writes = [&](unsigned i) {
-          SmallVector<Value> wl{fn.getArgument(i)};
-          while (!wl.empty()) {
-            Value m = wl.pop_back_val();
-            for (Operation *u : m.getUsers()) {
-              if (auto view = dyn_cast<ViewLikeOpInterface>(u);
-                  view && view.getViewSource() == m) {
-                for (Value r : u->getResults())
-                  wl.push_back(r);
-                continue;
-              }
-              auto eff = dyn_cast<MemoryEffectOpInterface>(u);
-              if (!eff || eff.getEffectOnValue<MemoryEffects::Write>(m))
-                return true;
+      bool calleeFailed = false;
+      core.walk([&](func::CallOp call) {
+        auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
+        if (fn && fn->hasAttr("air.cloned_callee"))
+          narrowNoAlias(call, fn, /*firstCall=*/false);
+        if (!fn) {
+          auto parentModule = aie_device->getParentOfType<ModuleOp>();
+          auto origFn =
+              parentModule
+                  ? parentModule.lookupSymbol<func::FuncOp>(call.getCallee())
+                  : func::FuncOp();
+          if (origFn && !origFn.isExternal()) {
+            FailureOr<func::FuncOp> cloned =
+                cloneDefinedCallee(aie_device, core, origFn);
+            if (failed(cloned)) {
+              calleeFailed = true;
+              return WalkResult::interrupt();
             }
-          }
-          return false;
-        };
-        StringRef noalias = LLVM::LLVMDialect::getNoAliasAttrName();
-        unsigned n = call.getNumOperands();
-        for (unsigned i = 0; i < n; ++i) {
-          if (!isa<MemRefType>(call.getOperand(i).getType()))
-            continue;
-          // Distinct roots prove distinct buffers only when both create
-          // their own storage; block arguments, globals and other
-          // definitions may still alias.
-          auto unique = [](Value v) {
-            Operation *d = v.getDefiningOp();
-            if (!d)
-              return false;
-            if (isa<memref::AllocOp, memref::AllocaOp, AIE::BufferOp>(d))
-              return true;
-            // The async form: an air.execute result yielding its own
-            // allocation.
-            auto exec = dyn_cast<air::ExecuteOp>(d);
-            if (!exec)
-              return false;
-            auto res = cast<OpResult>(v);
-            Operation *term = exec->getRegion(0).front().getTerminator();
-            if (res.getResultNumber() == 0 ||
-                res.getResultNumber() - 1 >= term->getNumOperands())
-              return false;
-            Value yielded = term->getOperand(res.getResultNumber() - 1);
-            auto alloc = yielded.getDefiningOp<memref::AllocOp>();
-            return alloc && alloc->getParentOp() == exec &&
-                   llvm::count(term->getOperands(), yielded) == 1;
-          };
-          Value ri = root(call.getOperand(i));
-          bool disjoint = true;
-          for (unsigned j = 0; j < n && disjoint; ++j) {
-            if (j == i || !isa<MemRefType>(call.getOperand(j).getType()))
-              continue;
-            Value rj = root(call.getOperand(j));
-            bool distinct = ri != rj && unique(ri) && unique(rj);
-            if (!distinct && (writes(i) || writes(j)))
-              disjoint = false;
-          }
-          if (firstCall && disjoint)
-            fn.setArgAttr(i, noalias, UnitAttr::get(fn.getContext()));
-          else if (!disjoint)
-            fn.removeArgAttr(i, noalias);
-        }
-      };
-
-      core.walk([&](Operation *op) {
-        if (auto call = dyn_cast_if_present<func::CallOp>(op)) {
-          auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
-          if (fn && fn->hasAttr("air.cloned_callee"))
-            narrowNoAlias(call, fn, /*firstCall=*/false);
-          // A callee the module defines (a loop nest outlined from the herd,
-          // e.g. by transform.loop.outline) is compiled with the core: clone
-          // it whole instead of declaring an external kernel.
-          if (!fn) {
-            if (auto parentModule = aie_device->getParentOfType<ModuleOp>()) {
-              auto origFn =
-                  parentModule.lookupSymbol<func::FuncOp>(call.getCallee());
-              if (origFn && !origFn.isExternal()) {
-                fn = cast<func::FuncOp>(origFn->clone());
-                fn.setPrivate();
-                fn->setAttr("air.cloned_callee",
-                            UnitAttr::get(fn.getContext()));
-                toDefaultMemorySpace(fn);
-                aie_device.insert(aie_device.getBody()->getTerminator(), fn);
-                narrowNoAlias(call, fn, /*firstCall=*/true);
-                // And whatever it calls, in the same memory space, so that
-                // its calls stay well typed.
-                SmallVector<func::FuncOp> work{fn};
-                while (!work.empty()) {
-                  func::FuncOp f = work.pop_back_val();
-                  f.walk([&](func::CallOp c) {
-                    if (auto known = aie_device.lookupSymbol<func::FuncOp>(
-                            c.getCallee())) {
-                      // Its arguments are this function's; nothing here
-                      // proves them disjoint.
-                      if (known->hasAttr("air.cloned_callee"))
-                        for (unsigned i = 0; i < known.getNumArguments(); ++i)
-                          known.removeArgAttr(
-                              i, LLVM::LLVMDialect::getNoAliasAttrName());
-                      return;
-                    }
-                    auto callee =
-                        parentModule.lookupSymbol<func::FuncOp>(c.getCallee());
-                    if (!callee)
-                      return;
-                    auto copy = cast<func::FuncOp>(callee->clone());
-                    copy.setPrivate();
-                    toDefaultMemorySpace(copy);
-                    aie_device.insert(aie_device.getBody()->getTerminator(),
-                                      copy);
-                    if (!copy.isExternal()) {
-                      copy->setAttr("air.cloned_callee",
-                                    UnitAttr::get(copy.getContext()));
-                      work.push_back(copy);
-                    }
-                  });
-                }
-              }
-            }
-          }
-          if (!fn) {
-            // Normalize memref types: strip strided layout so that
-            // convert-func-to-llvm with bare-ptr calling convention can
-            // handle the declaration. External kernels use C ABI (raw
-            // pointers), so MLIR layout metadata is irrelevant.
-            SmallVector<Type> normalizedInputs;
-            for (Type t : call.getCalleeType().getInputs()) {
-              if (auto memrefTy = dyn_cast<MemRefType>(t)) {
-                normalizedInputs.push_back(MemRefType::get(
-                    memrefTy.getShape(), memrefTy.getElementType(),
-                    MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace()));
-              } else {
-                normalizedInputs.push_back(t);
-              }
-            }
-            auto normalizedType =
-                FunctionType::get(aie_device.getContext(), normalizedInputs,
-                                  call.getCalleeType().getResults());
-            fn = func::FuncOp::create(aie_device.getLoc(), call.getCallee(),
-                                      normalizedType);
-            fn.setPrivate();
-            // Copy attributes from the original declaration in the parent
-            // module (e.g. link_with, llvm.emit_c_interface).
-            if (auto parentModule = aie_device->getParentOfType<ModuleOp>()) {
-              if (auto origFn = parentModule.lookupSymbol<func::FuncOp>(
-                      call.getCallee())) {
-                for (auto attr : origFn->getDiscardableAttrs())
-                  fn->setAttr(attr.getName(), attr.getValue());
-              }
-            }
-            // Fallback: if link_with was not found from parent module,
-            // use the attribute from the aie.core op.
-            if (!fn->hasAttr("link_with")) {
-              if (auto attr = core->getAttrOfType<StringAttr>("link_with"))
-                fn->setAttr("link_with", attr);
-            }
-            if (!fn->hasAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName())) {
-              fn->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
-                          UnitAttr::get(aie_device.getContext()));
-            }
-            aie_device.insert(aie_device.getBody()->getTerminator(), fn);
-          }
-          // Insert memref.cast at call sites where operand types differ
-          // from the (possibly normalized) declaration types.
-          auto fnType = fn.getFunctionType();
-          OpBuilder castBuilder(call);
-          SmallVector<Value> newOperands;
-          bool needsUpdate = false;
-          for (auto [operand, inputType] :
-               llvm::zip(call.getOperands(), fnType.getInputs())) {
-            if (operand.getType() != inputType) {
-              auto om = dyn_cast<MemRefType>(operand.getType());
-              auto im = dyn_cast<MemRefType>(inputType);
-              if (om && im && om.getMemorySpace() != im.getMemorySpace() &&
-                  memref::MemorySpaceCastOp::areCastCompatible(om, im)) {
-                newOperands.push_back(memref::MemorySpaceCastOp::create(
-                    castBuilder, call.getLoc(), inputType, operand));
-                needsUpdate = true;
-                continue;
-              }
-              if (!memref::CastOp::areCastCompatible(operand.getType(),
-                                                     inputType)) {
-                call.emitError("cannot cast operand type ")
-                    << operand.getType() << " to normalized function type "
-                    << inputType;
-                newOperands.push_back(operand);
-                continue;
-              }
-              auto cast = memref::CastOp::create(castBuilder, call.getLoc(),
-                                                 inputType, operand);
-              newOperands.push_back(cast);
-              needsUpdate = true;
-            } else {
-              newOperands.push_back(operand);
-            }
-          }
-          if (needsUpdate)
-            call->setOperands(newOperands);
-          // A cloned callee's memref results were retyped too: call it with
-          // its own result types and cast back for the existing users.
-          if (call.getResultTypes() != fnType.getResults()) {
-            OpBuilder b(call);
-            auto newCall =
-                func::CallOp::create(b, call.getLoc(), fn, call.getOperands());
-            for (auto [oldRes, newRes] :
-                 llvm::zip(call.getResults(), newCall.getResults())) {
-              Value v = newRes;
-              if (v.getType() != oldRes.getType())
-                v = memref::MemorySpaceCastOp::create(b, call.getLoc(),
-                                                      oldRes.getType(), v);
-              oldRes.replaceAllUsesWith(v);
-            }
-            call->erase();
+            fn = *cloned;
+            narrowNoAlias(call, fn, /*firstCall=*/true);
           }
         }
+        if (!fn)
+          fn = declareExternalCallee(aie_device, core, call.getCallee(),
+                                     call.getCalleeType());
+        matchCallToCallee(call, fn);
+        return WalkResult::advance();
       });
+      if (calleeFailed)
+        return failure();
 
       // erase air.herd_termintor ops
       launch_bb->walk([&](air::HerdTerminatorOp op) { op->erase(); });
@@ -8632,34 +8631,37 @@ public:
       removeDeadGlobalOps(device);
     }
 
-    // A module-level function the cores call was cloned into their devices
-    // (see the func.call handling in outlineAIECores); once nothing but the
-    // (already converted) herds calls it, keep only its declaration: the later
-    // func.func passes would otherwise process its body as host code.
+    // A function cloned into the devices keeps only a declaration in the
+    // module once every use of it is in a herd: the later func.func passes
+    // would otherwise compile its body as host code. Erasing one body can
+    // remove the last host use of another, so repeat until nothing changes.
     {
-      llvm::StringSet<> hostCalled, inDevice;
-      module->walk<WalkOrder::PreOrder>([&](Operation *op) {
-        if (auto dev = dyn_cast<AIE::DeviceOp>(op)) {
-          for (auto fn : dev.getOps<func::FuncOp>())
-            inDevice.insert(fn.getSymName());
-          return WalkResult::skip();
-        }
-        // The herds themselves are now cores; air-to-std removes them.
-        if (isa<air::HerdOp>(op))
-          return WalkResult::skip();
-        if (auto call = dyn_cast<func::CallOp>(op))
-          hostCalled.insert(call.getCallee());
-        return WalkResult::advance();
+      llvm::StringSet<> inDevice;
+      module.walk([&](AIE::DeviceOp dev) {
+        for (auto fn : dev.getOps<func::FuncOp>())
+          inDevice.insert(fn.getSymName());
       });
-      for (auto fn : llvm::make_early_inc_range(module.getOps<func::FuncOp>()))
-        if (fn.isPrivate() && !fn.isExternal() &&
-            inDevice.contains(fn.getSymName()) &&
-            !hostCalled.contains(fn.getSymName())) {
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        for (auto fn : module.getOps<func::FuncOp>()) {
+          if (fn.isExternal() || !inDevice.contains(fn.getSymName()))
+            continue;
+          std::optional<SymbolTable::UseRange> uses =
+              SymbolTable::getSymbolUses(fn, module);
+          if (!uses || llvm::any_of(*uses, [](const SymbolTable::SymbolUse &u) {
+                return !u.getUser()->getParentOfType<air::HerdOp>() &&
+                       !u.getUser()->getParentOfType<AIE::DeviceOp>();
+              }))
+            continue;
           for (Block &b : fn.getBody())
             b.dropAllDefinedValueUses();
           fn.getBody().dropAllReferences();
           fn.eraseBody();
+          fn.setPrivate();
+          changed = true;
         }
+      }
     }
 
     // After every device, because specializeL2MemrefsIntoMemtiles partitions an

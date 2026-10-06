@@ -1362,7 +1362,7 @@ def NormalizeLoopToUnitStepOp : Op<Transform_Dialect, "air.normalize_loop_to_uni
 }
 
 def MergeSiblingCopiesOp : Op<Transform_Dialect, "air.merge_sibling_copies",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Copy several views of one buffer as one copy of their bounding region";
   let description = [{
@@ -1393,7 +1393,7 @@ def MergeSiblingCopiesOp : Op<Transform_Dialect, "air.merge_sibling_copies",
 }
 
 def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Read sibling slices of one tensor through a single copy";
   let description = [{
@@ -1512,7 +1512,8 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
     %w1 = arith.mulf %q1, %s1 : vector<32xbf16>
     ```
 
-    `f32_lanes` sets the f32 split width (default 16). AIE2P multiplies
+    `arch` is the target, `"aie2"` (default) or `"aie2p"`. `f32_lanes` sets
+    the f32 split width: 16 (default), or on AIE2P 32 or 64. AIE2P multiplies
     32 bf16 lanes into a 32-lane f32 accumulator, so 32 there halves the
     multiply-accumulates and conversions of a bf16 x bf16 + f32 FMA.
 
@@ -1525,10 +1526,12 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
   }];
 
   let arguments = (ins TransformHandleTypeInterface:$target,
+                   DefaultValuedStrAttr<StrAttr, "aie2">:$arch,
                    DefaultValuedAttr<I64Attr, "16">:$f32_lanes,
                    UnitAttr:$contract);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$target (`arch` `=` $arch^)? (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
 }
 
 def PushUnpackThroughSlicesOp : Op<Transform_Dialect, "air.push_unpack_through_slices",

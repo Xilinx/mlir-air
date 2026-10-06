@@ -121,14 +121,18 @@ func.func @func_scalar_ssa_chain(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %
   return
 }
 
-// A private function (a loop nest outlined from a herd) is not a kernel entry:
-// it is left unwrapped.
-// CHECK-LABEL: func.func private @outlined_helper
+// A function the module calls is not an entry point, whatever its
+// visibility: it is left as it is (its arguments are not a launch grid).
+// CHECK-LABEL: func.func @called_helper
 // CHECK-NOT: scf.parallel
 // CHECK: return
-func.func private @outlined_helper(%arg0: memref<16xf32>, %arg1: memref<16xf32>, %arg2: i32, %arg3: i32) {
+func.func @called_helper(%arg0: memref<16xf32>, %arg1: memref<16xf32>, %arg2: i32, %arg3: i32) {
   %c0 = arith.constant 0 : index
   %v = memref.load %arg0[%c0] : memref<16xf32>
   memref.store %v, %arg1[%c0] : memref<16xf32>
+  return
+}
+func.func @calls_helper(%arg0: memref<16xf32>, %arg1: memref<16xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+  func.call @called_helper(%arg0, %arg1, %arg2, %arg3) : (memref<16xf32>, memref<16xf32>, i32, i32) -> ()
   return
 }

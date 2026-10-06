@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie='device=npu2 row-offset=2' | FileCheck %s
+// RUN: air-opt %s -air-to-aie='device=npu1_1col row-offset=2' | FileCheck %s
 
 // A herd calling a function the module defines (a loop nest outlined from the
 // herd by transform.loop.outline): the function is cloned into the device with
@@ -24,7 +25,7 @@
 // CHECK: call @tile_body(%[[A]], %{{.*}}, %[[B]])
 // CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias})
 // CHECK: call @helper
-// CHECK: func.func private @helper(vector<16xi32>, vector<16xi32>) -> vector<16xi32>
+// CHECK: func.func private @helper(vector<16xi32>, vector<16xi32>) -> vector<16xi32> attributes {llvm.emit_c_interface}
 // CHECK: func.func private @tile_body(memref<64xi32, 2>, memref<64xi32, 2>, memref<64xi32, 2>)
 module {
   func.func @foo() {

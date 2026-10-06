@@ -2130,9 +2130,9 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
                                 PatternRewriter &rewriter) const override {
     if (funcOp.isExternal())
       return failure(); // Ignore external functions
-    // Nor private helpers (e.g. a loop nest outlined from a herd): only the
-    // kernel entry carries the launch grid.
-    if (funcOp.isPrivate())
+    // Only an entry point carries the launch grid; a function the module
+    // calls does not.
+    if (!SymbolTable::symbolKnownUseEmpty(funcOp, funcOp->getParentOp()))
       return failure();
 
     if (loopBounds.empty()) {

@@ -1642,6 +1642,168 @@ findHerdsFeedingSerializedFanIn(func::FuncOp funcOp) {
   return denied;
 }
 
+// A half-open interval per dimension of a memref.
+using MemRefBox = SmallVector<std::pair<int64_t, int64_t>>;
+
+// The elements a write at `indices` of extent `extents` covers over all
+// iterations of the loops enclosing it inside `fn`, shifted by `offsets`.
+// Every op between the write and `fn` must be an air.execute or an scf.for
+// with constant bounds that runs at least once. Each index must be a constant,
+// or a positive multiple of one loop's IV plus a constant that steps by no
+// more than its extent, with each IV used by one index only.
+static FailureOr<MemRefBox> writtenBox(Operation *write, func::FuncOp fn,
+                                       ValueRange indices,
+                                       ArrayRef<int64_t> extents,
+                                       ArrayRef<int64_t> offsets) {
+  llvm::DenseMap<Value, std::tuple<int64_t, int64_t, int64_t>> ivs;
+  for (Operation *p = write->getParentOp(); p != fn; p = p->getParentOp()) {
+    if (isa<air::ExecuteOp>(p))
+      continue;
+    auto forOp = dyn_cast<scf::ForOp>(p);
+    if (!forOp)
+      return failure();
+    std::optional<int64_t> trips = air::getStaticScfForTripCountAsInt(forOp);
+    if (!trips || *trips <= 0)
+      return failure();
+    ivs[forOp.getInductionVar()] = {*getConstantIntValue(forOp.getLowerBound()),
+                                    *getConstantIntValue(forOp.getStep()),
+                                    *trips};
+  }
+  MemRefBox box;
+  llvm::SmallPtrSet<Value, 4> used;
+  for (auto [idx, extent, offset] :
+       llvm::zip_equal(indices, extents, offsets)) {
+    if (std::optional<int64_t> c = getConstantIntValue(idx)) {
+      box.push_back({offset + *c, offset + *c + extent});
+      continue;
+    }
+    // idx = a * iv + b.
+    Value iv = idx;
+    int64_t a = 1, b = 0;
+    if (auto apply = idx.getDefiningOp<affine::AffineApplyOp>()) {
+      if (apply.getMapOperands().size() != 1)
+        return failure();
+      iv = apply.getMapOperands()[0];
+      std::optional<int64_t> coef = air::getAffineApplyCoefficient(apply, iv);
+      SmallVector<Attribute> at0;
+      if (!coef ||
+          failed(apply.getAffineMap().constantFold(
+              {IntegerAttr::get(IndexType::get(fn.getContext()), 0)}, at0)))
+        return failure();
+      a = *coef;
+      b = cast<IntegerAttr>(at0[0]).getInt();
+    }
+    auto it = ivs.find(iv);
+    if (it == ivs.end() || a <= 0 || !used.insert(iv).second)
+      return failure();
+    auto [lb, step, trips] = it->second;
+    if (a * step > extent)
+      return failure();
+    int64_t first = offset + a * lb + b;
+    box.push_back({first, first + a * step * (trips - 1) + extent});
+  }
+  return box;
+}
+
+// Whether `boxes` together cover every element of `shape`.
+static bool coversShape(ArrayRef<MemRefBox> boxes, ArrayRef<int64_t> shape) {
+  // Cut each dimension at every box edge; then each cell is either inside a
+  // box or outside all of them.
+  SmallVector<SmallVector<int64_t>> cuts(shape.size());
+  for (auto [d, extent] : llvm::enumerate(shape)) {
+    cuts[d] = {0, extent};
+    for (const MemRefBox &box : boxes)
+      for (int64_t e : {box[d].first, box[d].second})
+        if (e > 0 && e < extent)
+          cuts[d].push_back(e);
+    llvm::sort(cuts[d]);
+    cuts[d].erase(llvm::unique(cuts[d]), cuts[d].end());
+  }
+  int64_t cells = 1;
+  for (auto &c : cuts)
+    cells *= c.size() - 1;
+  if (cells > 4096)
+    return false;
+  SmallVector<size_t> cell(shape.size(), 0);
+  for (int64_t n = 0; n < cells; ++n) {
+    bool covered = llvm::any_of(boxes, [&](const MemRefBox &box) {
+      for (auto [d, i] : llvm::enumerate(cell))
+        if (cuts[d][i] < box[d].first || cuts[d][i + 1] > box[d].second)
+          return false;
+      return true;
+    });
+    if (!covered)
+      return false;
+    for (int64_t d = shape.size() - 1; d >= 0; --d) {
+      if (++cell[d] + 1 < cuts[d].size())
+        break;
+      cell[d] = 0;
+    }
+  }
+  return true;
+}
+
+// Whether every call to `fn` overwrites all of its memref argument `i` and
+// never reads it. Writes count toward coverage when the analysis can place
+// them: unmasked in-bounds transfer_writes with minor identity maps and
+// memref.stores, on the argument or a static unit-stride subview of it.
+static bool overwritesArgument(func::FuncOp fn, unsigned i) {
+  Value arg = fn.getArgument(i);
+  auto type = dyn_cast<MemRefType>(arg.getType());
+  if (!type || !type.hasStaticShape() || !fn.getBody().hasOneBlock())
+    return false;
+  llvm::SmallDenseSet<Value> aliases;
+  air::collectBufferAliases(arg, aliases);
+  for (Value alias : aliases)
+    for (Operation *user : alias.getUsers()) {
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+          view && view.getViewSource() == alias)
+        continue;
+      auto eff = dyn_cast<MemoryEffectOpInterface>(user);
+      if (!eff || eff.getEffectOnValue<MemoryEffects::Read>(alias))
+        return false;
+    }
+
+  SmallVector<MemRefBox> boxes;
+  std::function<void(Value, SmallVector<int64_t>)> collect =
+      [&](Value m, SmallVector<int64_t> offsets) {
+        for (Operation *user : m.getUsers()) {
+          if (auto sv = dyn_cast<memref::SubViewOp>(user)) {
+            if (sv.getSource() != m ||
+                sv.getType().getRank() != type.getRank() ||
+                !sv.hasUnitStride() ||
+                llvm::any_of(sv.getStaticOffsets(), ShapedType::isDynamic))
+              continue;
+            SmallVector<int64_t> inner(offsets);
+            for (auto [o, s] : llvm::zip_equal(inner, sv.getStaticOffsets()))
+              o += s;
+            collect(sv.getResult(), inner);
+            continue;
+          }
+          FailureOr<MemRefBox> box = failure();
+          if (auto w = dyn_cast<vector::TransferWriteOp>(user)) {
+            if (w.getBase() != m || w.getMask() ||
+                !w.getPermutationMap().isMinorIdentity() ||
+                !llvm::all_of(w.getInBoundsValues(), [](bool b) { return b; }))
+              continue;
+            SmallVector<int64_t> extents(type.getRank(), 1);
+            ArrayRef<int64_t> vs = w.getVectorType().getShape();
+            llvm::copy(vs, extents.end() - vs.size());
+            box = writtenBox(w, fn, w.getIndices(), extents, offsets);
+          } else if (auto st = dyn_cast<memref::StoreOp>(user)) {
+            if (st.getMemRef() != m)
+              continue;
+            box = writtenBox(st, fn, st.getIndices(),
+                             SmallVector<int64_t>(type.getRank(), 1), offsets);
+          }
+          if (succeeded(box))
+            boxes.push_back(*box);
+        }
+      };
+  collect(arg, SmallVector<int64_t>(type.getRank(), 0));
+  return coversShape(boxes, type.getShape());
+}
+
 struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -1692,9 +1854,8 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     auto isDefiniteWrite = [](Operation *op, Value v) {
       if (auto get = dyn_cast<air::ChannelGetOp>(op))
         return get.getMemref() == v;
-      // A call into a function the module defines (a loop nest outlined from
-      // the herd) is a definite write of an argument its body writes and
-      // never reads, directly or through a view.
+      // A call into a function the module defines is a definite write of an
+      // argument that function provably overwrites in full.
       if (auto call = dyn_cast<func::CallOp>(op)) {
         auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
             call, call.getCalleeAttr());
@@ -1704,27 +1865,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
         for (auto [i, operand] : llvm::enumerate(call.getOperands())) {
           if (operand != v)
             continue;
-          SmallVector<Value> worklist{callee.getArgument(i)};
-          bool written = false;
-          while (!worklist.empty()) {
-            Value m = worklist.pop_back_val();
-            for (OpOperand &use : m.getUses()) {
-              Operation *user = use.getOwner();
-              if (auto view = dyn_cast<ViewLikeOpInterface>(user);
-                  view && view.getViewSource() == m) {
-                for (Value r : user->getResults())
-                  if (isa<MemRefType>(r.getType()))
-                    worklist.push_back(r);
-                continue;
-              }
-              auto eff = dyn_cast<MemoryEffectOpInterface>(user);
-              if (!eff || eff.getEffectOnValue<MemoryEffects::Read>(m))
-                return false;
-              written |=
-                  eff.getEffectOnValue<MemoryEffects::Write>(m).has_value();
-            }
-          }
-          if (!written)
+          if (!overwritesArgument(callee, i))
             return false;
           any = true;
         }
