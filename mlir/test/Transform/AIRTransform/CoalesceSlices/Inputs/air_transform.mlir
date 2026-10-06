@@ -5,10 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s | FileCheck %s
-
-// CHECK: transform.air.coalesce_slices
-
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %t = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op

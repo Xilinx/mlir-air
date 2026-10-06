@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
 // A generic reading a packed 16x16 tile reads the unpacked tile through its
 // indexing map instead, and the pack goes away.

@@ -26,7 +26,8 @@
 // CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias})
 // CHECK: call @helper
 // CHECK: func.func private @helper(vector<16xi32>, vector<16xi32>) -> vector<16xi32> attributes {llvm.emit_c_interface}
-// CHECK: func.func private @tile_body(memref<64xi32, 2>, memref<64xi32, 2>, memref<64xi32, 2>)
+// CHECK: func.func private @tile_body(memref<64xi32, 2>, memref<64xi32, 2>, memref<64xi32, 2>){{$}}
+// CHECK: func.func private @helper(vector<16xi32>, vector<16xi32>) -> vector<16xi32>{{$}}
 module {
   func.func @foo() {
     %c1 = arith.constant 1 : index

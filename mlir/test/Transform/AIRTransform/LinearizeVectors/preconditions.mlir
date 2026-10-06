@@ -158,6 +158,96 @@ module attributes {transform.with_named_sequence} {
 
 // -----
 
+// At 32 lanes, without `contract` and without fast-math flags, a widened
+// bf16 multiply and add stay separate.
+// CHECK-LABEL: @mul_add_no_contract
+// CHECK-NOT: aievec.mac_elem
+// CHECK: arith.mulf
+// CHECK: arith.addf
+func.func @mul_add_no_contract(%a: memref<32xbf16>, %b: memref<32xbf16>, %c: memref<32xf32>, %o: memref<32xf32>) {
+  %c0 = arith.constant 0 : index
+  %pb = arith.constant 0.0 : bf16
+  %pf = arith.constant 0.0 : f32
+  %av = vector.transfer_read %a[%c0], %pb {in_bounds = [true]} : memref<32xbf16>, vector<32xbf16>
+  %bv = vector.transfer_read %b[%c0], %pb {in_bounds = [true]} : memref<32xbf16>, vector<32xbf16>
+  %cv = vector.transfer_read %c[%c0], %pf {in_bounds = [true]} : memref<32xf32>, vector<32xf32>
+  %ae = arith.extf %av : vector<32xbf16> to vector<32xf32>
+  %be = arith.extf %bv : vector<32xbf16> to vector<32xf32>
+  %m = arith.mulf %ae, %be : vector<32xf32>
+  %r = arith.addf %m, %cv : vector<32xf32>
+  vector.transfer_write %r, %o[%c0] {in_bounds = [true]} : vector<32xf32>, memref<32xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.linearize_vectors %f arch = "aie2p" f32_lanes = 32 : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// With the contract flag on both ops they become one 32-lane mac_elem.
+// CHECK-LABEL: @mul_add_contract_flags
+// CHECK: aievec.mac_elem %{{.*}}, %{{.*}}, %{{.*}} : vector<32xbf16>, vector<32xbf16>, vector<32xf32>
+// CHECK-NOT: arith.mulf
+func.func @mul_add_contract_flags(%a: memref<32xbf16>, %b: memref<32xbf16>, %c: memref<32xf32>, %o: memref<32xf32>) {
+  %c0 = arith.constant 0 : index
+  %pb = arith.constant 0.0 : bf16
+  %pf = arith.constant 0.0 : f32
+  %av = vector.transfer_read %a[%c0], %pb {in_bounds = [true]} : memref<32xbf16>, vector<32xbf16>
+  %bv = vector.transfer_read %b[%c0], %pb {in_bounds = [true]} : memref<32xbf16>, vector<32xbf16>
+  %cv = vector.transfer_read %c[%c0], %pf {in_bounds = [true]} : memref<32xf32>, vector<32xf32>
+  %ae = arith.extf %av : vector<32xbf16> to vector<32xf32>
+  %be = arith.extf %bv : vector<32xbf16> to vector<32xf32>
+  %m = arith.mulf %ae, %be fastmath<contract> : vector<32xf32>
+  %r = arith.addf %m, %cv fastmath<contract> : vector<32xf32>
+  vector.transfer_write %r, %o[%c0] {in_bounds = [true]} : vector<32xf32>, memref<32xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.linearize_vectors %f arch = "aie2p" f32_lanes = 32 : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// With the flag on the multiply only, they stay separate.
+// CHECK-LABEL: @mul_add_mixed_flags
+// CHECK-NOT: aievec.mac_elem
+// CHECK: arith.mulf
+// CHECK: arith.addf
+func.func @mul_add_mixed_flags(%a: memref<32xbf16>, %b: memref<32xbf16>, %c: memref<32xf32>, %o: memref<32xf32>) {
+  %c0 = arith.constant 0 : index
+  %pb = arith.constant 0.0 : bf16
+  %pf = arith.constant 0.0 : f32
+  %av = vector.transfer_read %a[%c0], %pb {in_bounds = [true]} : memref<32xbf16>, vector<32xbf16>
+  %bv = vector.transfer_read %b[%c0], %pb {in_bounds = [true]} : memref<32xbf16>, vector<32xbf16>
+  %cv = vector.transfer_read %c[%c0], %pf {in_bounds = [true]} : memref<32xf32>, vector<32xf32>
+  %ae = arith.extf %av : vector<32xbf16> to vector<32xf32>
+  %be = arith.extf %bv : vector<32xbf16> to vector<32xf32>
+  %m = arith.mulf %ae, %be fastmath<contract> : vector<32xf32>
+  %r = arith.addf %m, %cv : vector<32xf32>
+  vector.transfer_write %r, %o[%c0] {in_bounds = [true]} : vector<32xf32>, memref<32xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.linearize_vectors %f arch = "aie2p" f32_lanes = 32 : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
     %f = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op

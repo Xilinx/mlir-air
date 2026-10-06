@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
 // A packed buffer P[2][10][4]: rows 0..7 values, row 8 scales, row 9 offsets.
 // The three loads become one copy of rows 0..9 and slices of it. The scale

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/fold_reshapes.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/fold_reshapes.mlir' %s | FileCheck %s
 // RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s --check-prefix=PLAIN
 
 // Two elementwise generics split by a reshape (the unit dim a Triton

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
 // CHECK-LABEL: @step8
 // CHECK: scf.for %[[J:.*]] = %c0{{.*}} to %c32{{.*}} step %c1

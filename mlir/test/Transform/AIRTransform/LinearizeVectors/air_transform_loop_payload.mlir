@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform_loop.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_loop.mlir' %s | FileCheck %s
 
 // The target need not be isolated from above: only the tagged loop's body is
 // linearized, and the elementwise op outside it keeps its n-D type.

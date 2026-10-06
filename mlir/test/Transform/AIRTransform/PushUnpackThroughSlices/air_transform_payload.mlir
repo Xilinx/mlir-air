@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
 // A packed accumulator [N/8, M/8, 8, 8] whose unpacked columns are interleaved
 // pairs (tl.split of [M, N/2, 2]) feeding one elementwise op: each pair slot

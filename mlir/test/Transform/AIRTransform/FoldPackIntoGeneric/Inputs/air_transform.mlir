@@ -5,14 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s | FileCheck %s
-
-// CHECK: transform.air.merge_sibling_copies
-
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
-    %t = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    %r = transform.air.merge_sibling_copies %t : (!transform.any_op) -> !transform.any_op
+    %t = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.fold_pack_into_generic %t : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

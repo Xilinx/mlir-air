@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s --check-prefix=NARROW
-// RUN: air-opt -air-transform='filename=%S/air_transform_contract.mlir' %s | FileCheck %s --check-prefix=CONTRACT
-// RUN: air-opt -air-transform='filename=%S/air_transform_wide.mlir' %s | FileCheck %s --check-prefix=WIDE
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s --check-prefix=NARROW
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_contract.mlir' %s | FileCheck %s --check-prefix=CONTRACT
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide.mlir' %s | FileCheck %s --check-prefix=WIDE
 
 // w = bf16(q * s + base) on 64 lanes, q and s bf16 widened to f32 and the
 // per-column base replicated from 8 f32 values. The multiply and add carry no

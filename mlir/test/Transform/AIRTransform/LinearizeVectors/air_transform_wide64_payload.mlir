@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform_wide64.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s
 
 // A 4-bit dequant tile, w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, in
 // the AIE2P forms a hand-written dequant kernel uses: the 0x4300 | q
@@ -20,9 +20,19 @@
 // CHECK-LABEL: @dequant64
 // CHECK: %[[U:.*]] = aievec.unpack
 // CHECK: %[[W:.*]] = vector.bitcast %[[U]] : vector<64xi8> to vector<16xi32>
-// CHECK-DAG: %[[LO:.*]] = call @llvm.aie2p.vshuffle(%[[W]], %{{.*}}, %c20_i32)
-// CHECK-DAG: %[[HI:.*]] = call @llvm.aie2p.vshuffle(%[[W]], %{{.*}}, %c21_i32)
-// CHECK: %[[MAC:.*]] = call @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf(%{{.*}}, %{{.*}}, %{{.*}}, %c828_i32)
+// 0x43434343: the 0x43 high byte of every bf16 lane.
+// CHECK: %[[BIAS:.*]] = arith.constant dense<1128481603> : vector<16xi32>
+// CHECK: %[[M20:.*]] = arith.constant 20 : i32
+// CHECK: %[[LO:.*]] = call @llvm.aie2p.vshuffle(%[[W]], %[[BIAS]], %[[M20]])
+// CHECK: %[[M21:.*]] = arith.constant 21 : i32
+// CHECK: %[[HI:.*]] = call @llvm.aie2p.vshuffle(%[[W]], %[[BIAS]], %[[M21]])
+// CHECK: %[[CAT:.*]] = vector.shuffle %[[LO]], %[[HI]] [0, 1, {{.*}}, 31] : vector<16xi32>, vector<16xi32>
+// CHECK: %[[Q16:.*]] = vector.bitcast %[[CAT]] : vector<32xi32> to vector<64xi16>
+// CHECK: %[[QB:.*]] = arith.bitcast %[[Q16]] : vector<64xi16> to vector<64xbf16>
+// CHECK: %[[S:.*]] = vector.transfer_read %arg1
+// CHECK: %[[B:.*]] = vector.transfer_read %arg2
+// CHECK: %[[CONF:.*]] = arith.constant 828 : i32
+// CHECK: %[[MAC:.*]] = call @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf(%[[QB]], %[[S]], %[[B]], %[[CONF]])
 // CHECK: %[[A0:.*]] = vector.shuffle %[[MAC]], %[[MAC]] [0, 1, 2
 // CHECK: %[[B0:.*]] = aievec.srs %[[A0]], %{{.*}} : vector<32xf32>, i32, vector<32xbf16>
 // CHECK: %[[A1:.*]] = vector.shuffle %[[MAC]], %[[MAC]] [32, 33, 34

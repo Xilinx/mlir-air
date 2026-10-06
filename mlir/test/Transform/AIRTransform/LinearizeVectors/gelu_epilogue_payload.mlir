@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform_wide.mlir' %s | FileCheck %s
-// RUN: air-opt -air-transform='filename=%S/air_transform_wide.mlir' %s | FileCheck %s --check-prefix=RANK1
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide.mlir' %s | FileCheck %s --check-prefix=RANK1
 
 // A fused gate|up epilogue tile: gate and up are interleaved column pairs of
 // an f32 accumulator, and h = g * sigmoid(c2 * (g + k * g^3)) * u is computed

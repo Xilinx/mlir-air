@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform_wide64.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s
 
 // The module already declares the multiply-accumulate intrinsic's name with
 // another type, so calling it would be ill-typed: the 64-lane FMA stays.

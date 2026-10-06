@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform.mlir' %s | FileCheck %s
 
 // A packed int8 weight tile dequantized with a per-column scale and offset that
 // broadcast along the tile's rows: w = (bf16(0x4300 | q) - 128) * s + m.
