@@ -11,8 +11,14 @@ FUSED_MAIN := $(dir $(lastword $(MAKEFILE_LIST)))dense_main.py
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_JOBS ?= 6
+# The drivers and verify adapters prefill on the build in FUSED_PREFILL_DIR when
+# it has one, else on the per-op prefill; FUSED_PREFILL_DIR= selects the latter.
+FUSED_PREFILL_DIR ?= $(FUSED_DIR)
+export FUSED_PREFILL_DIR
 
 .PHONY: compile-fused-prefill fused-prefill fused-prefill-long
+
+compile: compile-fused-prefill
 
 ## The fused prefill: every op of a 128-token chunk on one configured device,
 ## int4 weights dequantized on the cores.

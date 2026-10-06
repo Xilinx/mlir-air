@@ -56,6 +56,13 @@ TOKENIZER_DEFAULT = os.environ.get("Q4NX_TOKENIZER", "microsoft/Phi-4-mini-instr
 TEMPLATES_DEFAULT = os.environ.get("DECODE_TEMPLATES", str(_THIS_DIR))
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def compile_prefill(seq_len: int) -> None:
     """Build/cache the prefill ELFs (weight-free, CI-runnable)."""
     from phi4_mini_q4nx_prefill import LlamaQ4nxPrefill
@@ -280,10 +287,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--fused-prefill",
-        default=None,
+        default=_fused_build(),
         metavar="BUILD_DIR",
-        help="prefill every prompt on the fused prefill built by "
-        "`make compile-fused-prefill`",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
     )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()

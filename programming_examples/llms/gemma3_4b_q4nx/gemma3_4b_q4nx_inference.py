@@ -59,6 +59,13 @@ EOS_IDS = (1, 106)  # <eos>, <end_of_turn>
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_gemma")
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _ensure_requant_cache(fd, model):
     """Return the decode q4k-cascade cache path, building it from model.q4nx on first
     use (one-time ~pack of 34 layers + lm-head). Honors Q4NX_GEMMA_DECODE_NPZ."""
@@ -585,9 +592,10 @@ def main():
     )
     ap.add_argument(
         "--fused-prefill",
-        default=None,
+        default=_fused_build(),
         metavar="BUILD_DIR",
-        help="prefill on the fused prefill built by `make compile-fused-prefill`",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
     )
     args = ap.parse_args()
 

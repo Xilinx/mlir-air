@@ -53,6 +53,10 @@ FUSED_DIR ?= $(CURDIR)/_fused_prefill
 # Absolute, because run-fused changes to srcdir.
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_JOBS ?= 6
+# The driver and verify adapter prefill on the build in FUSED_PREFILL_DIR when it
+# has one, else on the per-op prefill; FUSED_PREFILL_DIR= selects the latter.
+FUSED_PREFILL_DIR ?= $(FUSED_DIR)
+export FUSED_PREFILL_DIR
 
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Read by the
 # drivers as Q4NX_MODEL_SOURCE, exactly as in the other q4nx examples.
@@ -207,7 +211,7 @@ compile-decode-full:
 
 ## Prefill ELFs + decode templates, the same meaning `compile` has in the other
 ## q4nx examples. Both decode templates: the layer gate's and the token driver's.
-compile: compile-decode compile-decode-full compile-prefill
+compile: compile-decode compile-decode-full compile-prefill compile-fused-prefill
 
 ## Prefill-only correctness gate. Runs the prompt through the NPU prefill and
 ## scores the WHOLE logit vector against the CPU reference, not just the argmax:

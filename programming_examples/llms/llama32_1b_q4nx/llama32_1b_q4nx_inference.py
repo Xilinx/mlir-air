@@ -48,6 +48,13 @@ _stair = None
 _elf = None  # fused_decode/decode_elf.py, imported once fused_decode is on sys.path
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _load_elf_mod():
     global _elf
     if _elf is None:
@@ -257,8 +264,7 @@ def run_prefill(prompt, seq_len, kv_path, warm_ttft=False, fused=None):
     ]
     if warm_ttft:
         cmd.append("--_warm-ttft")
-    if fused:
-        cmd += ["--fused-prefill", str(fused)]
+    cmd += ["--fused-prefill", str(fused or "")]
     subprocess.run(cmd, check=True)
 
 
@@ -1179,9 +1185,10 @@ def main():
     )
     ap.add_argument(
         "--fused-prefill",
-        default=None,
+        default=_fused_build(),
         metavar="BUILD_DIR",
-        help="prefill on the fused prefill built by `make compile-fused-prefill`",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
     )
     ap.add_argument("--_prefill-worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--_warm-ttft", action="store_true", help=argparse.SUPPRESS)
