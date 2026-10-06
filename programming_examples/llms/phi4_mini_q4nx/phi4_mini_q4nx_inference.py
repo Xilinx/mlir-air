@@ -119,6 +119,9 @@ def generate_stream(
         logits = np.asarray(prefiller.prefill(list(prompt_ids)), np.float32)
         kvs = [prefiller.kv_view(L) for L in range(dec.N_LAYERS)]
         dec.seed_kv([k for k, _ in kvs], [v for _, v in kvs])
+        # release the prefill's hw_context for the decoder; prefill() resumes it
+        if hasattr(prefiller, "suspend"):
+            prefiller.suspend()
     else:
         dec.reset_kv()
         logits = None
@@ -167,14 +170,14 @@ def build_prefiller(args, prompt_len=None):
         return dense.load(
             "phi4_mini_q4nx",
             args.fused_prefill,
-            os.environ.get("Q4NX_MODEL_SOURCE", MODEL_SOURCE_DEFAULT),
+            args.model_source,
         )
     if prompt_len is not None and prompt_len < PREFILL_MIN_TOKENS:
         return None
     from phi4_mini_q4nx_prefill import LlamaQ4nxPrefill
 
     pf = LlamaQ4nxPrefill(seq_len=args.seq_len, n_layers=32)
-    pf.load_weights(model=os.environ.get("Q4NX_MODEL_SOURCE", MODEL_SOURCE_DEFAULT))
+    pf.load_weights(model=args.model_source)
     return pf
 
 

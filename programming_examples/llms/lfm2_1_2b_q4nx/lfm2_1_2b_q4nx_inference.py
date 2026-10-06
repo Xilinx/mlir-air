@@ -177,7 +177,7 @@ def _make_prefiller(seq_len, fused=None):
         ).__path__ = [str(_HERE.parents[1])]
         from air_examples.llms.shared.fused_prefill import dense
 
-        return dense.load("lfm2_1_2b_q4nx", fused)
+        return dense.load("lfm2_1_2b_q4nx", fused, os.environ.get("LFM2_MODEL_SOURCE"))
     from lfm2_1_2b_q4nx_prefill import Lfm2Q4nxPrefill
 
     m = Lfm2Q4nxPrefill(seq_len=seq_len)
@@ -1019,6 +1019,9 @@ class Session:
                 V[_l] = np.asarray(self.prefiller.get_v_cache(_l), np.float32)
             else:
                 S[_l] = np.asarray(self.prefiller.get_conv_state(_l), np.float32)
+        # release the prefill's hw_context for the decoder; prefill() resumes it
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()
         ttft = time.perf_counter() - t_ttft0
         print(f"[inference] prefill first token = {first}", flush=True)
         print(f"Time to first token (TTFT): {ttft:.2f}s", flush=True)

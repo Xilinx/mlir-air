@@ -121,6 +121,9 @@ def generate_stream(
         logits = np.asarray(prefiller.prefill(list(prompt_ids)), np.float32)
         kvs = [prefiller.kv_view(L) for L in range(dec.N_LAYERS)]
         dec.seed_kv([k for k, _ in kvs], [v for _, v in kvs])
+        # release the prefill's hw_context for the decoder; prefill() resumes it
+        if hasattr(prefiller, "suspend"):
+            prefiller.suspend()
     else:
         dec.reset_kv()
         logits = None

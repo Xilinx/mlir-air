@@ -492,6 +492,9 @@ def _prefill_turn(pf, prompt):
     logits = pf.prefill(prompt)
     ttft = time.perf_counter() - t0
     Kc, Vc = pf.kv_stack()
+    # release the prefill's hw_context for the decoder; prefill() resumes it
+    if hasattr(pf, "suspend"):
+        pf.suspend()
     return Kc, Vc, int(logits.argmax()), ttft
 
 

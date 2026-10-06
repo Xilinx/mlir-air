@@ -196,7 +196,7 @@ def _make_prefiller(seq_len, fused=None):
         ).__path__ = [str(_HERE.parents[1])]
         from air_examples.llms.shared.fused_prefill import dense
 
-        return dense.load("llama32_1b_q4nx", fused)
+        return dense.load("llama32_1b_q4nx", fused, os.environ.get("Q4NX_MODEL_SOURCE"))
     from llama32_1b_q4nx_prefill import LlamaQ4nxPrefill
 
     m = LlamaQ4nxPrefill(seq_len=seq_len, n_layers=16)
@@ -929,6 +929,9 @@ class Session:
             [np.asarray(self.prefiller.kv_view(l)[1], np.float32) for l in range(16)]
         )
         P = K.shape[1]
+        # release the prefill's hw_context for the decoder; prefill() resumes it
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()
         ttft = time.perf_counter() - t_ttft0
         print(f"[inference] prefill first token = {first}", flush=True)
         print(f"Time to first token (TTFT): {ttft:.2f}s", flush=True)
