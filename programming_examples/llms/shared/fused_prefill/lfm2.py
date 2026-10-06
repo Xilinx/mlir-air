@@ -25,6 +25,7 @@ from q4_0_codec import HFModel, requant_q4_0  # noqa: E402
 from . import device as D  # noqa: E402
 from . import hostops as H  # noqa: E402
 from . import packing as P  # noqa: E402
+from .engine import TO  # noqa: E402
 from .dense import DensePrefill  # noqa: E402
 
 
@@ -117,19 +118,28 @@ class Lfm2Prefill(DensePrefill):
         }
         return self.embed[np.asarray(ids)]
 
-    def _layer(self, L, x, r0):
+    def _mix_all(self, L, x, chunks):
         if L in self.attn_layers:
-            return super()._layer(L, x, r0)
-        nm, d = self.norms[L], self.desc.d
-        bcx = self.mm(f"{L}.in", H.rms(x, nm["input"], self.eps))
-        b, c, v = bcx[:, :d], bcx[:, d : 2 * d], bcx[:, 2 * d :]
-        g = np.concatenate([self.state[L], b * v])
-        taps = self.taps[L]
-        y = sum(taps[j] * g[j : len(g) - self.halo + j] for j in range(len(taps)))
-        self.state[L] = g[-self.halo :]
-        x = x + self.mm(f"{L}.out", np.ascontiguousarray(c * y))
-        h = H.rms(x, nm["post_attn"], self.eps)
-        return x + self.ffn(f"{L}.gate", f"{L}.up", f"{L}.down", h)
+            return super()._mix_all(L, x, chunks)
+        nm, d, TM, TK = self.norms[L], self.desc.d, D.TM, D.TK
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            a = self.a_chunk(d, c)
+            H.rms_tile(x[r0 : r0 + t], nm["input"], self.eps, a[1], TM, TK)
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.in", c))
+        taps, out = self.taps[L], []
+        for c, (r0, t) in enumerate(chunks):
+            bcx = H.bf16_to_f32(self.gemm_wait(pend[c], t), t, 3 * d)
+            b, cx, v = bcx[:, :d], bcx[:, d : 2 * d], bcx[:, 2 * d :]
+            g = np.concatenate([self.state[L], b * v])
+            y = sum(taps[j] * g[j : len(g) - self.halo + j] for j in range(len(taps)))
+            self.state[L] = g[-self.halo :]
+            a = self.a_chunk(d, c)
+            H.tile_a(cx * y, a[1], TM, TK)
+            a[0].sync(TO)
+            out.append(self.gemm_start(f"{L}.out", c))
+        return out
 
     def kv_view(self, L):
         if L not in self.attn_layers:

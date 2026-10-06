@@ -166,6 +166,7 @@ def build_kernels(out, cfg):
             "gcc",
             "-O3",
             "-march=native",
+            "-ffp-contract=off",
             "-fopenmp",
             "-shared",
             "-fPIC",

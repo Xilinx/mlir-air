@@ -18,7 +18,7 @@ from ml_dtypes import bfloat16
 from . import device as D
 from . import hostops as H
 from . import packing as P
-from .engine import Engine
+from .engine import TO, Engine
 from .models import layer_op, spec
 
 
@@ -169,37 +169,6 @@ class DensePrefill(Engine):
             )
         return self.rope_cache[(op, r0, t)]
 
-    def _layer(self, L, x, r0):
-        e, nm, t = self.desc, self.norms[L], x.shape[0]
-        dq, dk = e.heads * e.dh, e.kv_heads * e.dh
-        cs, sn = self._rope(layer_op(e, L), r0, t)
-        qkv = self.mm(f"{L}.qkv", H.rms(x, nm["input"], self.eps))
-        if e.qkv_bias:
-            qkv += self.bias[L]
-        q = np.ascontiguousarray(qkv[:, :dq]).reshape(t, e.heads, e.dh)
-        k = np.ascontiguousarray(qkv[:, dq : dq + dk]).reshape(t, e.kv_heads, e.dh)
-        v = np.ascontiguousarray(qkv[:, dq + dk :]).reshape(t, e.kv_heads, e.dh)
-        if e.qk_norm:
-            q = H.rms(q, nm["q_norm"], self.eps)
-            k = H.rms(k, nm["k_norm"], self.eps)
-        H.rope(q, cs, sn, self.rot)
-        H.rope(k, cs, sn, self.rot)
-        k, v = _bf(k), _bf(v)
-        self.kv[L][0].append(k.reshape(t, dk))
-        self.kv[L][1].append(v.reshape(t, dk))
-        self.kv_append(self.kvb[L], r0, k, v)
-        # the kernel scales by 1/sqrt(dh)
-        a = self.mm(f"{L}.o", self.attention(self.kvb[L], q, r0, 1.0))
-        if e.gemma:
-            x = x + H.rms(a, nm["post_attn"], self.eps)
-            f = self.ffn(
-                f"{L}.gate", f"{L}.up", f"{L}.down", H.rms(x, nm["pre_ffn"], self.eps)
-            )
-            return x + H.rms(f, nm["post_ffn"], self.eps)
-        x = x + a
-        h = H.rms(x, nm["post_attn"], self.eps)
-        return x + self.ffn(f"{L}.gate", f"{L}.up", f"{L}.down", h)
-
     def prefill(self, ids):
         self.resume()
         ids = [int(t) for t in np.asarray(ids).reshape(-1)]
@@ -208,16 +177,141 @@ class DensePrefill(Engine):
             raise ValueError(f"prompt of {n} tokens exceeds max_len {self.max_len}")
         emb = self._embed(ids)
         self.kv = [([], []) for _ in range(self.desc.layers)]
-        for r0 in range(0, n, D.M):
-            t = min(D.M, n - r0)
-            x = np.ascontiguousarray(emb[r0 : r0 + t], np.float32)
-            for L in range(self.desc.layers):
-                x = self._layer(L, x, r0)
+        x = np.array(emb, np.float32, order="C")
+        chunks = [(r0, min(D.M, n - r0)) for r0 in range(0, n, D.M)]
+        for L in range(self.desc.layers):
+            self._ffn_all(L, x, chunks, self._mix_all(L, x, chunks))
         self.current_context_length = n
         last = H.rms(x[-1:], self.final_norm, self.eps)
         return np.concatenate(
             [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
         )
+
+    def _mix_all(self, L, x, chunks):
+        """Attention of layer L over the prompt x [n, d], up to the queued
+        output projections, one per chunk. Each stage queues one dispatch per
+        chunk, so the host's work on a chunk overlaps the device's on the
+        chunks after it."""
+        e, nm, eps = self.desc, self.norms[L], self.eps
+        dq, dk = e.heads * e.dh, e.kv_heads * e.dh
+        op, TM, TK = layer_op(e, L), D.TM, D.TK
+        kvb = self.kvb[L]
+        rows = [x[r0 : r0 + t] for r0, t in chunks]
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            a = self.a_chunk(e.d, c)
+            H.rms_tile(rows[c], nm["input"], eps, a[1], TM, TK)
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.qkv", c))
+        att = []
+        for c, (r0, t) in enumerate(chunks):
+            qkv = self.gemm_wait(pend[c], t)
+            self._qkv_post(L, kvb, c, r0, t, qkv, op)
+            att.append(self.attn_start(kvb, c, r0, t))
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            o = self.attn_wait(att[c])
+            a = self.a_chunk(dq, c)
+            h0 = 0
+            for om in o:
+                H.o_tile(om, t, h0, dq, a[1], TM, TK)
+                h0 += om.shape[0]
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.o", c))
+        return pend
+
+    def _ffn_all(self, L, x, chunks, pend):
+        """The rest of layer L: the residual adds and the FFN, in place on x;
+        pend are the queued output projections of _mix_all."""
+        e, nm, eps, TM, TK = self.desc, self.norms[L], self.eps, D.TM, D.TK
+        rows = [x[r0 : r0 + t] for r0, t in chunks]
+        post = nm.get("post_attn") if e.gemma else None
+        pre = nm["pre_ffn"] if e.gemma else nm["post_attn"]
+        gu = []
+        for c, (r0, t) in enumerate(chunks):
+            o = self.gemm_wait(pend[c], t)
+            a = self.a_chunk(e.d, c)
+            H.add_rms_tile(rows[c], o, t, post, eps, pre, a[1], TM, TK)
+            a[0].sync(TO)
+            gu.append(
+                (self.gemm_start(f"{L}.gate", c, 1), self.gemm_start(f"{L}.up", c))
+            )
+        pend = []
+        for c, (r0, t) in enumerate(chunks):
+            g = self.gemm_wait(gu[c][0], t)
+            u = self.gemm_wait(gu[c][1], t)
+            a = self.a_chunk(e.inter, c)
+            H.glu_tile(g, u, t, e.inter, a[1], TM, TK)
+            a[0].sync(TO)
+            pend.append(self.gemm_start(f"{L}.down", c))
+        post = nm.get("post_ffn") if e.gemma else None
+        for c, (r0, t) in enumerate(chunks):
+            f = self.gemm_wait(pend[c], t)
+            H.add_rms_tile(rows[c], f, t, post, eps, None, None, TM, TK)
+
+    def _qkv_post(self, L, kvb, c, r0, t, qkv, op):
+        """q into chunk c's attention buffers, K/V into the layer's records
+        and the kept cache."""
+        e, nm, eps = self.desc, self.norms[L], self.eps
+        dq, dk, dh = e.heads * e.dh, e.kv_heads * e.dh, e.dh
+        cs, sn = self._rope(op, r0, t)
+        rope = (cs, sn, self.rot)
+        bias = self.bias[L] if e.qkv_bias else None
+        ch = self.attn_chunk(kvb["op"], c)
+        h0 = 0
+        for p in ch["parts"]:
+            qm = p["qm"]
+            hg = qm.shape[0]
+            H.head_post(
+                qkv,
+                t,
+                h0 * dh,
+                hg,
+                dh,
+                bias,
+                nm.get("q_norm"),
+                eps,
+                rope,
+                1.0,
+                qm,
+                D.M * dh,
+                dh,
+            )
+            if t < D.M:
+                qm[:, t:] = 0
+            h0 += hg
+        kb = np.empty((t, dk), bfloat16)
+        vb = np.empty((t, dk), bfloat16)
+        H.head_post(
+            qkv,
+            t,
+            dq,
+            e.kv_heads,
+            dh,
+            bias,
+            nm.get("k_norm"),
+            eps,
+            rope,
+            1.0,
+            kb,
+            dh,
+            dk,
+        )
+        H.head_post(
+            qkv, t, dq + dk, e.kv_heads, dh, bias, None, eps, None, 1.0, vb, dh, dk
+        )
+        self.kv[L][0].append(kb)
+        self.kv[L][1].append(vb)
+        h0 = 0
+        for p in kvb["parts"]:
+            g = self.cfg.attn[p["a"]]
+            b0, rec = r0 // g.lkp, D.kv_rec(g)
+            nblk = p["m"].shape[1]
+            nb = -(-t // g.lkp)
+            for h in range(g.kv_heads):
+                H.kv_rec(kb, vb, (h0 + h) * dh, t, dh, g.lkp, g.dvt, p["m"][h, b0])
+                p["bo"].sync(TO, nb * rec * 2, (h * nblk + b0) * rec * 2)
+            h0 += g.kv_heads
 
     def _embed(self, ids):
         return self.bundle.rows("model.embed_tokens.weight", ids)
@@ -234,13 +328,11 @@ class DensePrefill(Engine):
         return v if idx is None else v[idx]
 
     def kv_view(self, L):
-        return np.concatenate(self.kv[L][0]), np.concatenate(self.kv[L][1])
+        return tuple(np.concatenate(a).astype(np.float32) for a in self.kv[L])
 
     def kv_stack(self):
-        return (
-            np.stack([np.concatenate(k) for k, _ in self.kv]),
-            np.stack([np.concatenate(v) for _, v in self.kv]),
-        )
+        kv = [self.kv_view(L) for L in range(len(self.kv))]
+        return tuple(np.stack([a[i] for a in kv]) for i in range(2))
 
     def clear_context(self):
         self.current_context_length = 0

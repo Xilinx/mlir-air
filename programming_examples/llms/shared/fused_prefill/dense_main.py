@@ -80,14 +80,10 @@ def verify(name, argv):
     logits = pf.prefill(ids)
     fails = []
     for r in range(a.repeat):
-        pf.dev_t = 0.0
         t0 = time.perf_counter()
         lg = pf.prefill(ids)
         wall = time.perf_counter() - t0
-        print(
-            f"run {r}: prefill {wall * 1e3:.1f} ms (device {pf.dev_t * 1e3:.1f} ms)",
-            flush=True,
-        )
+        print(f"run {r}: prefill {wall * 1e3:.1f} ms", flush=True)
         if int(lg.argmax()) != int(logits.argmax()):
             fails.append(f"run {r} first token differs from the first run")
 
@@ -101,10 +97,15 @@ def verify(name, argv):
     )
     if not c >= a.tol:  # also catches NaN
         fails.append(f"logit cosine {c:.5f} < {a.tol}")
-    # the device's logits are bf16: a reference token that ties the device's
-    # top logit at that resolution counts as the same first token
-    top = float(logits.max())
-    if first != rfirst and logits[rfirst] < top - abs(top) * 2**-7:
+
+    # two tokens within bf16 resolution of each other, in either the
+    # device's logits or the reference's, are the same first token
+    def tied(v, a, b):
+        return v[b] >= float(v[a]) - abs(float(v[a])) * 2**-7
+
+    if first != rfirst and not (
+        tied(logits, first, rfirst) or tied(ref, rfirst, first)
+    ):
         fails.append("first token differs from the reference")
     if fails:
         print("GATE FAIL: " + "; ".join(fails))

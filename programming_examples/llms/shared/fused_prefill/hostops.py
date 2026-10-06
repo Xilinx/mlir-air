@@ -28,6 +28,13 @@ def load(build_dir):
     _lib.mul_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
     _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _p]
     _lib.o_unpack.argtypes = [_p, _i, _i, _i, _i, _p]
+    _lib.rms_tile.argtypes = [_p, _i, _i, _p, _f, _i, _i, _p]
+    _lib.add_rms_tile.argtypes = [_p, _p, _i, _p, _f, _i, _i, _p, _i, _i, _p]
+    _l = ctypes.c_long
+    _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
+    _lib.head_post.argtypes += [_p, _l, _l]
+    _lib.kv_rec.argtypes = [_p, _p, _i, _i, _i, _i, _i, _i, _p]
+    _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _p]
 
 
 def tile_a(x, dst, tm, tk):
@@ -128,3 +135,70 @@ def o_unpack(o, t):
     out = np.empty((t, h * dh), np.float32)
     _lib.o_unpack(o.ctypes.data, t, h, dh, m, out.ctypes.data)
     return out
+
+
+def _ptr(a):
+    return None if a is None else a.ctypes.data
+
+
+def rms_tile(x, w, eps, dst, tm, tk):
+    """dst (tiled A) = bf16(rms(x) * w); x [t, n] float32."""
+    t, n = x.shape
+    _lib.rms_tile(_c(x).ctypes.data, t, n, _ptr(w), eps, tm, tk, dst.ctypes.data)
+
+
+def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk):
+    """x[:t] += post ? rms(c) * post : c (c bf16 [R, ld]), in place; then
+    dst (tiled A) = bf16(rms(x) * w) if w is given."""
+    n = x.shape[1]
+    _lib.add_rms_tile(
+        x.ctypes.data,
+        c.ctypes.data,
+        c.shape[1],
+        _ptr(post),
+        eps,
+        t,
+        n,
+        _ptr(w),
+        tm,
+        tk,
+        None if dst is None else dst.ctypes.data,
+    )
+
+
+def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs):
+    """Heads [col0, col0 + nh * dh) of src bf16 [R, ld]: + bias, rms * norm,
+    rotary (rope = (cos, sin, rot) or None), * scale, to bf16 dst[h * hs + r *
+    rs + i] (strides in elements)."""
+    cs, sn, rot = rope or (None, None, 0)
+    _lib.head_post(
+        src.ctypes.data,
+        src.shape[1],
+        t,
+        col0,
+        nh,
+        dh,
+        _ptr(bias),
+        _ptr(norm),
+        eps,
+        _ptr(cs),
+        _ptr(sn),
+        rot,
+        scale,
+        dst.ctypes.data,
+        hs,
+        rs,
+    )
+
+
+def kv_rec(k, v, c0, t, dh, lkp, dvt, dst):
+    """KV records of the head at column c0 of k / v bf16 [t, ld] into dst."""
+    _lib.kv_rec(
+        k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dvt, dst.ctypes.data
+    )
+
+
+def o_tile(o, t, h0, k, dst, tm, tk):
+    """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (tiled A, K = k)."""
+    nh, m, dh = o.shape
+    _lib.o_tile(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, dst.ctypes.data)

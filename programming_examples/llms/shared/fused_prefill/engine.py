@@ -110,6 +110,7 @@ class Engine:
         self.suspended = False
         self.dummy = [self.fp.bo(4096, i) for i in range(self.nargs)]
         self.abuf, self.sites = {}, {}
+        self.chunk_bufs, self.chunk_runs, self.chunk_attn = {}, {}, {}
 
     # ---- device plumbing ----
 
@@ -188,6 +189,62 @@ class Engine:
         ab["a"].sync(TO)
         ab["last"] = object()
 
+    # ---- chunk-parallel GEMMs: per chunk A and C buffers, queued dispatches
+
+    def a_chunk(self, k, c):
+        """The A buffer of chunk c for GEMMs of depth k, and its tiled view."""
+        key = ("a", k, c)
+        if key not in self.chunk_bufs:
+            a = self.fp.bo(D.M * k * 2, 0)
+            am = view(a, bfloat16, (D.HR, k // D.TK, D.TM, D.TK))
+            am[:] = 0
+            self.chunk_bufs[key] = (a, am)
+        return self.chunk_bufs[key]
+
+    def gemm_start(self, site, c, act=0, role=None):
+        """Queue site's GEMM on chunk c's A buffer; gemm_wait returns its
+        output, bf16 [M, n_pad]. Outputs are per (role, chunk), so a role's
+        output is overwritten by its next dispatch on that chunk."""
+        s = self.sites[site]
+        role = role or site.split(".")[-1]
+        name = f"g_{s['k']}_{s['npd']}_{act}_{s['wq']}"
+        key = (name, role, c)
+        if key not in self.chunk_runs:
+            if name not in self.chunk_bufs:
+                ins = self._insts(name, "g")
+                self.chunk_bufs[name] = (self.fp.insts(ins)[0], len(ins))
+            ib, n = self.chunk_bufs[name]
+            ck = ("c", role, s["npd"], c)
+            if ck not in self.chunk_bufs:
+                cb = self.fp.bo(D.M * s["npd"] * 2, 2)
+                self.chunk_bufs[ck] = (cb, view(cb, bfloat16, (D.M, s["npd"])))
+            bos = list(self.dummy)
+            bos[0:3] = [self.a_chunk(s["k"], c)[0], s["w"], self.chunk_bufs[ck][0]]
+            self.chunk_runs[key] = (self.fp.run(ib, n, bos), self.chunk_bufs[ck])
+        run, (cb, cm) = self.chunk_runs[key]
+        run.set_arg(4, s["w"])
+        cb.sync(TO, 64, 0)
+        run.r.start()
+        return run, cb, cm, s["npd"], site.split(".")[-1]
+
+    def wait(self, pend, nbytes=None):
+        run, out, tag = pend[0], pend[1], pend[-1]
+        t0 = time.perf_counter()
+        st = run.r.wait()
+        dt = time.perf_counter() - t0
+        self.dev_t += dt
+        self.by_op[tag] = self.by_op.get(tag, 0.0) + dt
+        if "COMPLETED" not in str(st):
+            raise RuntimeError(f"fused prefill {tag}: {st}")
+        if nbytes is None:
+            out.sync(FROM)
+        else:
+            out.sync(FROM, nbytes, 0)
+
+    def gemm_wait(self, pend, t):
+        self.wait(pend, t * pend[3] * 2)
+        return pend[2]
+
     def ffn(self, gate, up, down, h):
         """down(act(gate h) * up h), the activation in the gate's drain."""
         t = h.shape[0]
@@ -244,6 +301,70 @@ class Engine:
                 iv=iv,
                 run=fp.run(ib, iv.size, bos),
             )
+
+    def attn_chunk(self, op, c):
+        """Chunk c's attention dispatch state for op: per group its q BO and
+        view [hg, M, dh] (q_pack layout), o BO and view, and its own insts and
+        run."""
+        key = (op, c)
+        if key not in self.chunk_attn:
+            at = self.attn[op]
+            fp, bos, parts = self.fp, list(self.dummy), []
+            for a, p0 in zip(at["groups"], at["parts"]):
+                hg, _, dh = p0["qm"].shape
+                s = self.slot[a]
+                q = fp.bo(hg * D.M * dh * 2, s)
+                o = fp.bo(hg * D.M * dh * 2, s + 2)
+                qm = view(q, bfloat16, (hg, D.M, dh))
+                qm[:] = 0
+                bos[s : s + 3] = [q, self.dummy[s + 1], o]
+                parts.append(dict(q=q, qm=qm, o=o, om=view(o, bfloat16, (hg, D.M, dh))))
+            ib, iv = fp.insts(at["tmpl"].at(nkv=1, q0=0, k0=0))
+            self.chunk_attn[key] = dict(
+                parts=parts, ib=ib, iv=iv, run=fp.run(ib, iv.size, bos), pt=None
+            )
+        return self.chunk_attn[key]
+
+    def attn_start(self, kv, c, r0, t):
+        """Queue chunk c's attention (tokens [r0, r0+t)) on its q buffers,
+        which the caller has filled; attn_wait returns the o views."""
+        op = kv["op"]
+        at, ch = self.attn[op], self.attn_chunk(op, c)
+        g = self.cfg.attn[at["groups"][0]]
+        q0 = r0 // g.lkp
+        nend = -(-(r0 + t) // g.lkp)
+        window = (self.cfg.windows or {}).get(op, g.window)
+        k0 = max(0, q0 - window // g.lkp) if window else 0
+        rec = D.kv_rec(g) * 2
+        for a, p, kp in zip(at["groups"], ch["parts"], kv["parts"]):
+            p["q"].sync(TO)
+            sk = (id(kp["bo"]), k0)
+            sub = kp.setdefault("subs", {}).get(sk)
+            if sub is None:
+                sub = xrt.bo(kp["bo"], kp["bo"].size() - k0 * rec, k0 * rec)
+                kp["subs"][sk] = sub
+            ch["run"].set_arg(3 + self.slot[a] + 1, sub)
+            p["o"].sync(TO, 64, 0)
+        pt = (nend - k0, q0, k0)
+        if ch["pt"] != pt:
+            ch["iv"][:] = at["tmpl"].at(nkv=pt[0], q0=q0, k0=k0)
+            ch["ib"].sync(TO)
+            ch["pt"] = pt
+        ch["run"].r.start()
+        return ch["run"], ch, f"attn {op}"
+
+    def attn_wait(self, pend):
+        run, ch, tag = pend
+        t0 = time.perf_counter()
+        st = run.r.wait()
+        dt = time.perf_counter() - t0
+        self.dev_t += dt
+        self.by_op[tag] = self.by_op.get(tag, 0.0) + dt
+        if "COMPLETED" not in str(st):
+            raise RuntimeError(f"fused prefill {tag}: {st}")
+        for p in ch["parts"]:
+            p["o"].sync(FROM)
+        return [p["om"] for p in ch["parts"]]
 
     def kv_bo(self, op):
         """The KV records of one layer for attention op `op`: per group, per

@@ -49,11 +49,18 @@ void bf16_to_f32(const uint16_t *src, int rows, int ld, int n, float *dst) {
 
 #include <math.h>
 
-// sum of squares, in vector lanes (an in-order float sum does not vectorize)
+// sum of squares in 16 fixed lanes: vectorizes, and the order does not depend
+// on the pointer's alignment
 static inline float sumsq(const float *a, int n) {
+  float acc[16] = {0};
+  int j = 0;
+  for (; j + 16 <= n; j += 16)
+    for (int l = 0; l < 16; l++)
+      acc[l] += a[j + l] * a[j + l];
   float s = 0.f;
-#pragma omp simd reduction(+ : s)
-  for (int j = 0; j < n; j++)
+  for (int l = 0; l < 16; l++)
+    s += acc[l];
+  for (; j < n; j++)
     s += a[j] * a[j];
   return s;
 }
@@ -172,4 +179,136 @@ void o_unpack(const uint16_t *o, int T, int H, int dh, int M, float *dst) {
       for (int i = 0; i < dh; i++)
         d[i] = bf2f(s[i]);
     }
+}
+
+// one row of the GEMM's A layout: row r of dst [HR][K/TK][TM][TK]
+static inline uint16_t *a_row(uint16_t *dst, int r, int s, int ks, int TM,
+                              int TK) {
+  return dst + (((long)(r / TM) * ks + s) * TM + r % TM) * TK;
+}
+
+static void tile_row(const float *x, int K, int r, int TM, int TK,
+                     uint16_t *dst) {
+  int ks = K / TK;
+  for (int s = 0; s < ks; s++) {
+    uint16_t *d = a_row(dst, r, s, ks, TM, TK);
+    for (int k = 0; k < TK; k++)
+      d[k] = f2bf(x[s * TK + k]);
+  }
+}
+
+// dst (tiled A, K = n) = bf16(rms(x) * w)
+void rms_tile(const float *x, int t, int n, const float *w, float eps, int TM,
+              int TK, uint16_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    const float *a = x + (long)r * n;
+    float row[n];
+    float inv = 1.f / sqrtf(sumsq(a, n) / n + eps);
+    for (int j = 0; j < n; j++)
+      row[j] = a[j] * inv * w[j];
+    tile_row(row, n, r, TM, TK, dst);
+  }
+}
+
+// x += post ? rms(c) * post : c, c bf16 [t, ldc]; then, if w, dst (tiled A)
+// = bf16(rms(x) * w)
+void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
+                  float eps, int t, int n, const float *w, int TM, int TK,
+                  uint16_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    float *a = x + (long)r * n;
+    float row[n];
+    const uint16_t *cr = c + (long)r * ldc;
+    for (int j = 0; j < n; j++)
+      row[j] = bf2f(cr[j]);
+    if (post) {
+      float inv = 1.f / sqrtf(sumsq(row, n) / n + eps);
+      for (int j = 0; j < n; j++)
+        a[j] += row[j] * inv * post[j];
+    } else {
+      for (int j = 0; j < n; j++)
+        a[j] += row[j];
+    }
+    if (w) {
+      float inv = 1.f / sqrtf(sumsq(a, n) / n + eps);
+      for (int j = 0; j < n; j++)
+        row[j] = a[j] * inv * w[j];
+      tile_row(row, n, r, TM, TK, dst);
+    }
+  }
+}
+
+// nh heads of dh at column col0 of src bf16 [t, ld]: + bias, rms with norm
+// (if given), half-split rotary on the first rot dims, * scale, to bf16
+// dst[h * hs + r * rs + i]
+void head_post(const uint16_t *src, int ld, int t, int col0, int nh, int dh,
+               const float *bias, const float *norm, float eps, const float *cs,
+               const float *sn, int rot, float scale, uint16_t *dst, long hs,
+               long rs) {
+  int hr = rot / 2;
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    float v[dh];
+    for (int h = 0; h < nh; h++) {
+      const uint16_t *s = src + (long)r * ld + col0 + h * dh;
+      for (int i = 0; i < dh; i++)
+        v[i] = bf2f(s[i]) + (bias ? bias[col0 + h * dh + i] : 0.f);
+      if (norm) {
+        float inv = 1.f / sqrtf(sumsq(v, dh) / dh + eps);
+        for (int i = 0; i < dh; i++)
+          v[i] = v[i] * inv * norm[i];
+      }
+      if (rot) {
+        const float *c = cs + (long)r * hr, *sv = sn + (long)r * hr;
+        for (int i = 0; i < hr; i++) {
+          float a = v[i], b = v[i + hr];
+          v[i] = a * c[i] - b * sv[i];
+          v[i + hr] = b * c[i] + a * sv[i];
+        }
+      }
+      uint16_t *d = dst + h * hs + r * rs;
+      for (int i = 0; i < dh; i++)
+        d[i] = f2bf(v[i] * scale);
+    }
+  }
+}
+
+// KV records of one head for rows [0, t): k / v bf16 [t, ld] at column c0;
+// per lkp-row block, the K tile [lkp][dh] then V as dh/dvt tiles [lkp][dvt];
+// rows past t are zero
+void kv_rec(const uint16_t *k, const uint16_t *v, int ld, int c0, int t, int dh,
+            int lkp, int dvt, uint16_t *dst) {
+  int nb = (t + lkp - 1) / lkp, rec = 2 * lkp * dh;
+  for (int b = 0; b < nb; b++) {
+    uint16_t *kd = dst + (long)b * rec, *vd = kd + lkp * dh;
+    for (int i = 0; i < lkp; i++) {
+      int r = b * lkp + i;
+      if (r < t) {
+        memcpy(kd + i * dh, k + (long)r * ld + c0, dh * 2);
+        for (int z = 0; z < dh / dvt; z++)
+          memcpy(vd + ((long)z * lkp + i) * dvt,
+                 v + (long)r * ld + c0 + z * dvt, dvt * 2);
+      } else {
+        memset(kd + i * dh, 0, dh * 2);
+        for (int z = 0; z < dh / dvt; z++)
+          memset(vd + ((long)z * lkp + i) * dvt, 0, dvt * 2);
+      }
+    }
+  }
+}
+
+// o bf16 [nh, M, dh] -> heads [h0, h0 + nh) of dst (tiled A, K)
+void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int h0, int K,
+            int TM, int TK, uint16_t *dst) {
+  int ks = K / TK;
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++)
+    for (int h = 0; h < nh; h++)
+      for (int i = 0; i < dh; i += TK < dh ? TK : dh) {
+        int col = (h0 + h) * dh + i, n = TK < dh ? TK : dh;
+        uint16_t *d = a_row(dst, r, col / TK, ks, TM, TK) + col % TK;
+        memcpy(d, o + ((long)h * M + r) * dh + i, n * 2);
+      }
 }
