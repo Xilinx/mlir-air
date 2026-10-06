@@ -260,9 +260,9 @@ class DensePrefill(Engine):
         bias = self.bias[L] if e.qkv_bias else None
         ch = self.attn_chunk(kvb["op"], c)
         h0 = 0
-        for p in ch["parts"]:
-            qm = p["qm"]
-            hg = qm.shape[0]
+        for a, p in zip(self.attn[kvb["op"]]["groups"], ch["parts"]):
+            g, hg = self.cfg.attn[a], p["hg"]
+            qm = self._q16(hg) if g.kern == "bfp16" else p["qm"]
             H.head_post(
                 qkv,
                 t,
@@ -280,6 +280,8 @@ class DensePrefill(Engine):
             )
             if t < D.M:
                 qm[:, t:] = 0
+            if g.kern == "bfp16":
+                H.q_bfp(qm, g.lkp, p["qm"])
             h0 += hg
         kb = np.empty((t, dk), bfloat16)
         vb = np.empty((t, dk), bfloat16)
@@ -309,10 +311,18 @@ class DensePrefill(Engine):
             b0, rec = r0 // g.lkp, D.kv_rec(g)
             nblk = p["m"].shape[1]
             nb = -(-t // g.lkp)
+            rec_fn = H.kv_rec_bfp if g.kern == "bfp16" else H.kv_rec
+            args = (g.lkp,) if g.kern == "bfp16" else (g.lkp, g.dvt)
             for h in range(g.kv_heads):
-                H.kv_rec(kb, vb, (h0 + h) * dh, t, dh, g.lkp, g.dvt, p["m"][h, b0])
+                rec_fn(kb, vb, (h0 + h) * dh, t, dh, *args, p["m"][h, b0])
                 p["bo"].sync(TO, nb * rec * 2, (h * nblk + b0) * rec * 2)
             h0 += g.kv_heads
+
+    def _q16(self, hg):
+        """bf16 q of hg heads, staged for the bfp16 packing."""
+        if getattr(self, "q16", None) is None or self.q16.shape[0] != hg:
+            self.q16 = np.zeros((hg, D.M, self.desc.dh), bfloat16)
+        return self.q16
 
     def _embed(self, ids):
         return self.bundle.rows("model.embed_tokens.weight", ids)

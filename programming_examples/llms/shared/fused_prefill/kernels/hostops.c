@@ -312,3 +312,91 @@ void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int h0, int K,
         memcpy(d, o + ((long)h * M + r) * dh + i, n * 2);
       }
 }
+
+// bfp16ebs8, the cores' native matmul operand: per 8 values one exponent byte
+// (127 + the largest value's exponent) and 8 int8 mantissas, value * 2^(6 -
+// exponent) rounded to even. A mantissa that rounds to 128 moves the group up
+// an exponent, as the cores' own conversion does.
+static inline void bfp_group(const uint16_t *src, long cs, uint8_t *dst) {
+  uint32_t b[8], emax = 0; // biased exponents; 0 for zeros
+  for (int i = 0; i < 8; i++) {
+    b[i] = src[i * cs];
+    uint32_t e = (b[i] >> 7) & 0xFF;
+    emax = e > emax ? e : emax;
+  }
+  if (emax < 8) { // zeros and values too small to keep
+    memset(dst, 0, 9);
+    return;
+  }
+  float x[8], m[8], top = 0.f;
+  // 2^(6 - (emax - 127)), from its bits
+  uint32_t sb = (260u - emax) << 23;
+  float sc;
+  memcpy(&sc, &sb, 4);
+  for (int i = 0; i < 8; i++) {
+    uint32_t u = b[i] << 16;
+    memcpy(x + i, &u, 4);
+    m[i] = __builtin_rintf(x[i] * sc);
+    float a = __builtin_fabsf(m[i]);
+    top = a > top ? a : top;
+  }
+  if (top > 127.f) {
+    emax++;
+    sc *= 0.5f;
+    for (int i = 0; i < 8; i++)
+      m[i] = __builtin_rintf(x[i] * sc);
+  }
+  dst[0] = (uint8_t)emax;
+  for (int i = 0; i < 8; i++)
+    dst[1 + i] = (uint8_t)(int8_t)m[i];
+}
+
+// an 8x8 block, row g = src[g * rs + c * cs]: 72 bytes
+static void bfp_block(const uint16_t *src, long rs, long cs, uint8_t *dst) {
+  for (int g = 0; g < 8; g++)
+    bfp_group(src + g * rs, cs, dst + 9 * g);
+}
+
+// kv_rec in bfp16: per lkp-row block the K blocks [dh/8][lkp/8] (rows key)
+// then the V blocks [dh/8][lkp/8] transposed (rows d); rows past t are zero
+void kv_rec_bfp(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
+                int dh, int lkp, uint8_t *dst) {
+  int nb = (t + lkp - 1) / lkp;
+  long half = 72L * (dh / 8) * (lkp / 8);
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int b = 0; b < nb; b++) {
+    uint16_t kt[lkp * dh], vt[lkp * dh];
+    for (int i = 0; i < lkp; i++) {
+      int r = b * lkp + i;
+      if (r < t) {
+        memcpy(kt + i * dh, k + (long)r * ld + c0, dh * 2);
+        memcpy(vt + i * dh, v + (long)r * ld + c0, dh * 2);
+      } else {
+        memset(kt + i * dh, 0, dh * 2);
+        memset(vt + i * dh, 0, dh * 2);
+      }
+    }
+    uint8_t *kd_ = dst + b * 2 * half, *vd = kd_ + half;
+    for (int x = 0; x < dh / 8; x++)
+      for (int y = 0; y < lkp / 8; y++) {
+        bfp_block(kt + y * 8 * dh + x * 8, dh, 1,
+                  kd_ + 72 * (x * (lkp / 8) + y));
+        bfp_block(vt + y * 8 * dh + x * 8, 1, dh,
+                  vd + 72 * (x * (lkp / 8) + y));
+      }
+  }
+}
+
+// q bf16 [nh][M][dh] -> bfp16, per head per tq-row tile the blocks [tq/8][dh/8]
+void q_bfp(const uint16_t *q, int nh, int M, int dh, int tq, uint8_t *dst) {
+  int nt = M / tq, nblk = (tq / 8) * (dh / 8);
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int ht = 0; ht < nh * nt; ht++) {
+    const uint16_t *src = q + (long)ht * tq * dh;
+    uint8_t *d = dst + 72L * nblk * ht;
+    for (int mq = 0; mq < tq / 8; mq++)
+      for (int x = 0; x < dh / 8; x++)
+        bfp_block(src + mq * 8 * dh + x * 8, dh, 1,
+                  d + 72 * (mq * (dh / 8) + x));
+  }
+}

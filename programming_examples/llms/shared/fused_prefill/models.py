@@ -48,14 +48,17 @@ class Spec(NamedTuple):
 
 
 def spec(desc):
+    bfp = desc.dh <= 128
     a = D.Attn(
         col=0,
         dh=desc.dh,
         lkp=desc.lkp,
         dvt=min(desc.dh, 128),
         kv_heads=desc.kv_heads // 2,
-        max_blocks=desc.max_len // desc.lkp,
+        # attn_bfp16 reads an even number of blocks, so one past the last
+        max_blocks=desc.max_len // desc.lkp + bfp,
         window_rtp=bool(desc.window),
+        kern="bfp16" if bfp else "npu2",
     )
     groups = ("a0", "a1")
     cfg = D.Config(
@@ -80,7 +83,7 @@ def spec(desc):
         (desc.d, n(n1 - n0), 0, 0 if desc.tied else 1)
         for n0, n1 in D.n_split(desc.vocab)
     }
-    return Spec(cfg, attn_points(desc.heads), tuple(sorted(shapes)))
+    return Spec(cfg, attn_points(desc.heads, even=bfp), tuple(sorted(shapes)))
 
 
 MODELS = {

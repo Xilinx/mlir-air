@@ -294,14 +294,11 @@ class Engine:
             bos = list(self.dummy)
             parts = []
             for a in groups:
-                dh, s = self.cfg.attn[a].dh, self.slot[a]
-                q = fp.bo(hg * D.M * dh * 2, s)
-                o = fp.bo(hg * D.M * dh * 2, s + 2)
-                qm = view(q, bfloat16, (hg, D.M, dh))
-                qm[:] = 0
-                bos[s : s + 3] = [q, self.dummy[s + 1], o]
-                parts.append(dict(q=q, qm=qm, o=o, om=view(o, bfloat16, (hg, D.M, dh))))
-            ib, iv = fp.insts(tmpl.at(nkv=1, q0=0, k0=0))
+                ga, s = self.cfg.attn[a], self.slot[a]
+                parts.append(self._attn_part(ga, hg, s, bos))
+            ib, iv = fp.insts(
+                tmpl.at(**{p: pts["base"][p] for p in ("nkv", "q0", "k0")})
+            )
             self.attn[op] = dict(
                 tmpl=tmpl,
                 groups=groups,
@@ -311,24 +308,37 @@ class Engine:
                 run=fp.run(ib, iv.size, bos),
             )
 
+    def _attn_part(self, g, hg, s, bos):
+        """One group's q and o buffers for hg heads; q is bfp16 for attn_bfp16."""
+        n = hg * D.M * g.dh
+        q = self.fp.bo(n * 9 // 8 if g.kern == "bfp16" else n * 2, s)
+        o = self.fp.bo(n * 2, s + 2)
+        if g.kern == "bfp16":
+            qm = view(q, np.uint8, (hg, D.M * g.dh * 9 // 8))
+        else:
+            qm = view(q, bfloat16, (hg, D.M, g.dh))
+        qm[:] = 0
+        bos[s : s + 3] = [q, self.dummy[s + 1], o]
+        om = view(o, bfloat16, (hg, D.M, g.dh))
+        return dict(q=q, qm=qm, o=o, om=om, hg=hg)
+
+    @staticmethod
+    def _nkv(g, n):
+        """attn_bfp16 reads K blocks in pairs; the extra one is masked."""
+        return n + n % 2 if g.kern == "bfp16" else n
+
     def attn_chunk(self, op, c):
-        """Chunk c's attention dispatch state for op: per group its q BO and
-        view [hg, M, dh] (q_pack layout), o BO and view, and its own insts and
-        run."""
+        """Chunk c's attention dispatch state for op: per group its q and o
+        buffers (_attn_part), and its own insts and run."""
         key = (op, c)
         if key not in self.chunk_attn:
             at = self.attn[op]
             fp, bos, parts = self.fp, list(self.dummy), []
             for a, p0 in zip(at["groups"], at["parts"]):
-                hg, _, dh = p0["qm"].shape
-                s = self.slot[a]
-                q = fp.bo(hg * D.M * dh * 2, s)
-                o = fp.bo(hg * D.M * dh * 2, s + 2)
-                qm = view(q, bfloat16, (hg, D.M, dh))
-                qm[:] = 0
-                bos[s : s + 3] = [q, self.dummy[s + 1], o]
-                parts.append(dict(q=q, qm=qm, o=o, om=view(o, bfloat16, (hg, D.M, dh))))
-            ib, iv = fp.insts(at["tmpl"].at(nkv=1, q0=0, k0=0))
+                parts.append(
+                    self._attn_part(self.cfg.attn[a], p0["hg"], self.slot[a], bos)
+                )
+            ib, iv = fp.insts(at["tmpl"].at(**at["tmpl"].point))
             self.chunk_attn[key] = dict(
                 parts=parts, ib=ib, iv=iv, run=fp.run(ib, iv.size, bos), pt=None
             )
@@ -354,7 +364,7 @@ class Engine:
                 kp["subs"][sk] = sub
             ch["run"].set_arg(3 + self.slot[a] + 1, sub)
             p["o"].sync(TO, 64, 0)
-        pt = (nend - k0, q0, k0)
+        pt = (self._nkv(g, nend - k0), q0, k0)
         if ch["pt"] != pt:
             ch["iv"][:] = at["tmpl"].at(nkv=pt[0], q0=q0, k0=k0)
             ch["ib"].sync(TO)
@@ -397,10 +407,16 @@ class Engine:
             b0 = r0 // g.lkp
             rec = D.kv_rec(g) * 2
             nblk = p["m"].shape[1]
+            nb = -(-k.shape[0] // g.lkp)
             for h in range(g.kv_heads):
-                recs = P.kv_records(g, k[:, h0 + h], v[:, h0 + h])
-                p["m"][h, b0 : b0 + len(recs)] = recs
-                p["bo"].sync(TO, len(recs) * rec, (h * nblk + b0) * rec)
+                if g.kern == "bfp16":
+                    kb = np.ascontiguousarray(k[:, h0 + h]).astype(bfloat16)
+                    vb = np.ascontiguousarray(v[:, h0 + h]).astype(bfloat16)
+                    H.kv_rec_bfp(kb, vb, 0, kb.shape[0], g.dh, g.lkp, p["m"][h, b0])
+                else:
+                    recs = P.kv_records(g, k[:, h0 + h], v[:, h0 + h])
+                    p["m"][h, b0 : b0 + nb] = recs
+                p["bo"].sync(TO, nb * rec, (h * nblk + b0) * rec)
             h0 += g.kv_heads
 
     def attention(self, kv, qe, r0, scale):
@@ -417,13 +433,18 @@ class Engine:
         rec = D.kv_rec(g) * 2
         subs = []
         for i, (a, p, kp) in enumerate(zip(at["groups"], at["parts"], kv["parts"])):
-            H.q_pack(qe[:, i * hg : (i + 1) * hg], scale, p["qm"])
-            p["q"].sync(TO, hg * D.M * dh * 2, 0)
+            if g.kern == "bfp16":
+                qb = np.empty((hg, D.M, dh), bfloat16)
+                H.q_pack(qe[:, i * hg : (i + 1) * hg], scale, qb)
+                H.q_bfp(qb, g.lkp, p["qm"])
+            else:
+                H.q_pack(qe[:, i * hg : (i + 1) * hg], scale, p["qm"])
+            p["q"].sync(TO)
             sub = xrt.bo(kp["bo"], kp["bo"].size() - k0 * rec, k0 * rec)
             at["run"].set_arg(3 + self.slot[a] + 1, sub)
             subs.append(sub)
         at["subs"] = subs
-        at["iv"][:] = at["tmpl"].at(nkv=nend - k0, q0=q0, k0=k0)
+        at["iv"][:] = at["tmpl"].at(nkv=self._nkv(g, nend - k0), q0=q0, k0=k0)
         at["ib"].sync(TO)
         for p in at["parts"][:-1]:  # _go flushes the last
             p["o"].sync(TO, 64, 0)

@@ -35,6 +35,8 @@ def load(build_dir):
     _lib.head_post.argtypes += [_p, _l, _l]
     _lib.kv_rec.argtypes = [_p, _p, _i, _i, _i, _i, _i, _i, _p]
     _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _p]
+    _lib.kv_rec_bfp.argtypes = [_p, _p, _i, _i, _i, _i, _i, _p]
+    _lib.q_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
 
 
 def tile_a(x, dst, tm, tk):
@@ -202,3 +204,16 @@ def o_tile(o, t, h0, k, dst, tm, tk):
     """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (tiled A, K = k)."""
     nh, m, dh = o.shape
     _lib.o_tile(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, dst.ctypes.data)
+
+
+def kv_rec_bfp(k, v, c0, t, dh, lkp, dst):
+    """kv_rec, as bfp16 (attn_bfp16.cc's records)."""
+    _lib.kv_rec_bfp(
+        k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dst.ctypes.data
+    )
+
+
+def q_bfp(q, tq, dst):
+    """q bf16 [nh, M, dh] as bfp16 tiles of tq rows into dst (bytes)."""
+    nh, m, dh = q.shape
+    _lib.q_bfp(q.ctypes.data, nh, m, dh, tq, dst.ctypes.data)

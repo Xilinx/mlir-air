@@ -59,6 +59,9 @@ class Attn(NamedTuple):
     # the window mask with its width an RTP, so ops differing only in the
     # window (Config.windows) share one core program
     window_rtp: bool = False
+    # "bfp16": attn_bfp16.cc, the host packing q, K and V as bfp16 and one
+    # call per K block (dh <= 128, dvt == dh); "npu2": attn_npu2.cc
+    kern: str = "npu2"
 
 
 # a window no prompt reaches, which makes the window mask causal
@@ -96,8 +99,15 @@ def attn_qr(g):
 
 
 def kv_rec(g):
-    """elements of one K block's record: K tile, then the V tiles."""
-    return 2 * g.lkp * g.dh
+    """bf16 elements of one K block's record: K tile, then the V tiles (as
+    bfp16, 9 bytes per 8 values, for attn_bfp16)."""
+    n = 2 * g.lkp * g.dh
+    return n * 9 // 16 if g.kern == "bfp16" else n
+
+
+def q_tile(g):
+    """bf16 elements of one core's q tile as attn_bfp16 takes it (bfp16)."""
+    return g.lkp * g.dh * 9 // 16
 
 
 def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
@@ -226,6 +236,21 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
     return body
 
 
+def _kv_put(kvin, KV, g, nkv, rounds):
+    n = nkv * kv_rec(g)
+    if g.kv_heads == 1:
+        kvin.put(KV[0:n].broadcast_to(rounds, n))
+    else:
+        # rounds walk the heads kv-head-major: each KV head's records
+        # repeat for its group's rounds
+        h = g.kv_heads
+        kvin.put(
+            KV.reshape(h, 1, g.max_blocks * kv_rec(g))[0:h, 0:1, 0:n].broadcast_to(
+                h, rounds // h, n
+            )
+        )
+
+
 def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs):
     """Attention, one head per round, the column's cores splitting the
     round's q rows. The cores read nkv K blocks starting at block k0; the
@@ -271,18 +296,7 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs)
 
     def shim():
         qin.put(Q[0 : rounds * R, 0:dh])
-        n = nkv * kv_rec(g)
-        if g.kv_heads == 1:
-            kvin.put(KV[0:n].broadcast_to(rounds, n))
-        else:
-            # rounds walk the heads kv-head-major: each KV head's records
-            # repeat for its group's rounds
-            h = g.kv_heads
-            kvin.put(
-                KV.reshape(h, 1, g.max_blocks * kv_rec(g))[0:h, 0:1, 0:n].broadcast_to(
-                    h, rounds // h, n
-                )
-            )
+        _kv_put(kvin, KV, g, nkv, rounds)
         gpout.get(O[0 : rounds * R, 0:dh])
 
     puts.append(shim)
@@ -385,6 +399,97 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs)
     return body
 
 
+def _attention_bfp16(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs):
+    """_attention on attn_bfp16.cc: q, K and V arrive as bfp16 (the host packs
+    them), K and V of a block land together and one call runs the block."""
+    col, dh, lkp = g.col, g.dh, g.lkp
+    tq, R, QR = lkp, attn_rows(g), attn_qr(g)
+    assert g.dvt == dh, g
+    suf = f"_d{dh}"
+    obj = f"attn_bfp16{suf}.o"
+
+    def ext(f, **kw):
+        if f + suf not in externs:
+            externs[f + suf] = air.extern(f + suf, link_with=obj, **kw)
+        return externs[f + suf]
+
+    init, fin = ext("attn_init"), ext("attn_fin")
+    blk_fn = ext("attn_blk", scalars=[i32, i32, i32])
+
+    qin = air.channel(f"{name}QIn", size=[1])
+    q2l1 = air.channel(f"{name}Q2L1", size=[NQT])
+    kvin = air.channel(f"{name}KVIn", size=[1])
+    kv2l1 = air.channel(f"{name}KV2L1", size=[1, 1], broadcast_shape=[1, NQT])
+    gp2l2 = air.channel(f"{name}Gp2L2", size=[NQT])
+    gpout = air.channel(f"{name}GpOut", size=[1])
+
+    def shim():
+        qin.put(Q[0 : rounds * NQT * q_tile(g)])
+        _kv_put(kvin, KV, g, nkv, rounds)
+        gpout.get(O[0 : rounds * R, 0:dh])
+
+    puts.append(shim)
+
+    def body(seg):
+        assert nkv % 2 == 0, nkv
+        nk2 = air.rtp(wave * 0 + nkv // 2)
+        nr = air.rtp(wave * 0 + rounds)
+        qb0 = air.rtp(wave * 0 + q0)
+        kb0 = air.rtp(wave * 0 + k0)
+        wb = air.rtp(wave * 0 + win // lkp)
+        qt, kt = q_tile(g), kv_rec(g) // 2
+        q_l2 = air.alloc([NQT * qt], bf16, scope=seg.private(), column=col, split=False)
+        k_l2 = air.alloc([kt], bf16, scope=seg.private(), column=col)
+        v_l2 = air.alloc([kt], bf16, scope=seg.private(), column=col)
+        gp_l2 = air.alloc([R, dh], bf16, scope=seg.private(), column=col, split=False)
+        qin.get(q_l2)
+        for r in range(NQT):
+            q2l1.put(q_l2[r * qt : r * qt + qt], indices=[r])
+        for t in (k_l2, v_l2):
+            kvin.get(t)
+            kv2l1.put(t, indices=[0, 0])
+
+        with air.herd(
+            [range(1), range(NQT)],
+            name=f"{name}attn",
+            shape=(1, NQT),
+            at=(col, 2),
+            link_with=obj,
+            params=[nk2, nr, qb0, kb0, wb],
+        ) as h:
+
+            @h.body
+            def _(tx, ty):
+                q_bfp = air.alloc([qt], bf16, scope=h.private())
+                # two K/V buffers, so a block's DMA overlaps the previous
+                # block's compute
+                k_l1 = [air.alloc([kt], bf16, scope=h.private()) for _ in "01"]
+                v_l1 = [air.alloc([kt], bf16, scope=h.private()) for _ in "01"]
+                gp = air.alloc([tq, dh], bf16, scope=h.private())
+                ml = air.alloc([tq // 2 + tq * 8], f32, scope=h.private())
+                for r in air.sequential(nr):
+                    init(gp, ml)
+                    qb = qb0 + (r % QR) * NQT + ty
+                    q2l1.get(q_bfp, indices=[ty])
+                    for blk in air.sequential(nk2):
+                        for pp in range(2):
+                            kv2l1.get(k_l1[pp], indices=[tx, ty])
+                            kv2l1.get(v_l1[pp], indices=[tx, ty])
+                            kb = kb0 + blk * 2 + pp
+                            blk_fn(q_bfp, k_l1[pp], v_l1[pp], gp, ml, qb, kb, wb)
+                    fin(gp, ml)
+                    gp2l2.put(
+                        gp.reshape(dh // MM, tq // MM, MM, MM).transpose(1, 2, 0, 3),
+                        indices=[ty],
+                    )
+
+        for r in range(NQT):
+            gp2l2.get(gp_l2[r * tq : r * tq + tq, 0:dh], indices=[r])
+        gpout.put(gp_l2)
+
+    return body
+
+
 def _kv_tensor(g, nkv):
     if g.kv_heads == 1:
         return air.tensor([nkv * kv_rec(g)], bf16)
@@ -400,7 +505,13 @@ def build(cfg, op, *shape):
     """
     g = dict(k=2 * TK, n=NR, act=0, wq=1, rounds=1)
     at = {
-        a: dict(nkv=1, q0=0, k0=0, win=NO_WINDOW, rounds=ga.kv_heads)
+        a: dict(
+            nkv=2 if ga.kern == "bfp16" else 1,
+            q0=0,
+            k0=0,
+            win=NO_WINDOW,
+            rounds=ga.kv_heads,
+        )
         for a, ga in cfg.attn.items()
     }
     if op == "g":
@@ -436,7 +547,11 @@ def build(cfg, op, *shape):
     )
     att = {
         a: (
-            air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16),
+            (
+                air.tensor([at[a]["rounds"] * NQT * q_tile(ga)], bf16)
+                if ga.kern == "bfp16"
+                else air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16)
+            ),
             _kv_tensor(ga, at[a]["nkv"]),
             air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16),
         )
@@ -455,8 +570,9 @@ def build(cfg, op, *shape):
             ]
             for a, ga in cfg.attn.items():
                 p = at[a]
+                fn = _attention_bfp16 if ga.kern == "bfp16" else _attention
                 bodies.append(
-                    _attention(
+                    fn(
                         a,
                         ga,
                         wave,

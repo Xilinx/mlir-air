@@ -34,9 +34,17 @@ ATTN_FNS = (
 ).split()
 
 
-def attn_points(heads):
+def attn_points(heads, even=False):
     """Calibration points (heads, nkv, q0, k0): a base, one per parameter,
-    and a check point that moves all three."""
+    and a check point that moves all three; nkv even if `even`."""
+    if even:
+        return {
+            "base": (heads, 2, 0, 0),
+            "nkv": (heads, 4, 0, 0),
+            "q0": (heads, 2, 1, 0),
+            "k0": (heads, 2, 0, 1),
+            "check": (heads, 6, 3, 2),
+        }
     return {
         "base": (heads, 1, 0, 0),
         "nkv": (heads, 2, 0, 0),
@@ -135,9 +143,24 @@ def build_kernels(out, cfg):
     # one attention object per head_dim; groups sharing one must agree on it
     seen = {}
     for g in cfg.attn.values():
+        if g.kern == "bfp16":
+            continue
         key = (g.lkp, g.dvt)
         if seen.setdefault(g.dh, key) != key:
             raise ValueError(f"attention groups with head_dim {g.dh} differ in tiling")
+    for dh in {g.dh for g in cfg.attn.values() if g.kern == "bfp16"}:
+        jobs.append(
+            [
+                cc,
+                *f,
+                "-c",
+                kern / "attn_bfp16.cc",
+                "-o",
+                out / f"attn_bfp16_d{dh}.o",
+                f"-DDH={dh}",
+                *[f"-D{fn}={fn}_d{dh}" for fn in ("attn_init", "attn_blk", "attn_fin")],
+            ]
+        )
     for dh, (lkp, dvt) in seen.items():
         ren = [f"-D{fn}={fn}_d{dh}" for fn in ATTN_FNS]
         jobs.append(
