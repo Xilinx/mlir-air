@@ -5,9 +5,9 @@ column 0, sliding-window attention (head_dim 256) on column 7, GELU drain."""
 
 import gemma4_e2b_q4nx_weights as gw
 
-from air_examples.llms.shared.fused_prefill import device as D
-from air_examples.llms.shared.fused_prefill import lm_gemv
-from air_examples.llms.shared.fused_prefill.build import attn_points
+from ...shared.fused_prefill import device as D
+from ...shared.fused_prefill import lm_gemv
+from ...shared.fused_prefill.build import attn_points
 
 WINDOW = 512
 CFG = D.Config(

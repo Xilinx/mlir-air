@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air_examples.fused_decode.proj_qmm_pack import (
+from ....fused_decode.proj_qmm_pack import (
     BLOCK_BF16,
     COL_BLOCK,
     N_GROUPS,

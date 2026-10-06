@@ -14,11 +14,11 @@ from ml_dtypes import bfloat16
 
 import gemma4_e2b_q4nx_weights as gw
 
-from air_examples.llms.shared.fused_prefill import device as D
-from air_examples.llms.shared.fused_prefill import hostops as H
-from air_examples.llms.shared.fused_prefill import lm_gemv
-from air_examples.llms.shared.fused_prefill import packing as P
-from air_examples.llms.shared.fused_prefill.engine import TO, FROM, Ctx, Engine, view
+from ...shared.fused_prefill import device as D
+from ...shared.fused_prefill import hostops as H
+from ...shared.fused_prefill import lm_gemv
+from ...shared.fused_prefill import packing as P
+from ...shared.fused_prefill.engine import TO, FROM, Ctx, Engine, view
 
 from .spec import CFG
 
