@@ -358,7 +358,14 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
 
   aie::vector<bfloat16, 16> I_val_vec, F_val_vec;
   aie::accum<accfloat, 16> exp_val;
-  aie::vector<bfloat16, 16> input_bf16 = x;
+  // bfloat16_to_int(x, 8) below is 8.8 fixed point, so the
+  // LUT covers [-128, 128). A larger-magnitude input (the causal mask's -inf,
+  // or the -inf running max on the first block) does not saturate: it indexes
+  // a large exp instead of ~0. Every caller passes x = v - max <= 0, so
+  // clamping from below at -127 (exp(-127) ~ 0 in bf16) is exact.
+  aie::vector<bfloat16, 16> input_bf16 =
+      aie::max(aie::vector<bfloat16, 16>(x),
+               aie::broadcast<bfloat16, 16>((bfloat16)-127.0f));
 
   // position of output decimal point = 8, making input become 8 bits, and for
   // LUT_elems = 256 lookup.
