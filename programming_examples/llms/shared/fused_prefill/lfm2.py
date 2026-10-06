@@ -103,6 +103,7 @@ class Lfm2Prefill(DensePrefill):
             self.gemm_site(f"lm.{i}", e.d, n1 - n0, P.pack_bf16(self.embed[n0:n1]), 0)
         self.attn_setup()
         self.kvb = {L: self.kv_bo("a") for L in self.attn_layers}
+        self.warm("0.up")
         # the shape lfm2_1_2b_q4nx's driver reads to lay out its decode seed
         self.config = SimpleNamespace(
             n_layers=e.layers,

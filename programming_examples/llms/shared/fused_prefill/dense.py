@@ -159,6 +159,7 @@ class DensePrefill(Engine):
                 )
         self.attn_setup()
         self.kvb = [self.kv_bo(layer_op(e, L)) for L in range(e.layers)]
+        self.warm("0.up")
 
     def _rope(self, op, r0, t):
         if (op, r0, t) not in self.rope_cache:

@@ -201,12 +201,8 @@ class Engine:
             self.chunk_bufs[key] = (a, am)
         return self.chunk_bufs[key]
 
-    def gemm_start(self, site, c, act=0, role=None):
-        """Queue site's GEMM on chunk c's A buffer; gemm_wait returns its
-        output, bf16 [M, n_pad]. Outputs are per (role, chunk), so a role's
-        output is overwritten by its next dispatch on that chunk."""
+    def _chunk_run(self, site, c, act, role):
         s = self.sites[site]
-        role = role or site.split(".")[-1]
         name = f"g_{s['k']}_{s['npd']}_{act}_{s['wq']}"
         key = (name, role, c)
         if key not in self.chunk_runs:
@@ -221,11 +217,24 @@ class Engine:
             bos = list(self.dummy)
             bos[0:3] = [self.a_chunk(s["k"], c)[0], s["w"], self.chunk_bufs[ck][0]]
             self.chunk_runs[key] = (self.fp.run(ib, n, bos), self.chunk_bufs[ck])
-        run, (cb, cm) = self.chunk_runs[key]
+        return self.chunk_runs[key]
+
+    def gemm_start(self, site, c, act=0, role=None):
+        """Queue site's GEMM on chunk c's A buffer; gemm_wait returns its
+        output, bf16 [M, n_pad]. Outputs are per (role, chunk), so a role's
+        output is overwritten by its next dispatch on that chunk."""
+        s = self.sites[site]
+        tag = site.split(".")[-1]
+        run, (cb, cm) = self._chunk_run(site, c, act, role or tag)
         run.set_arg(4, s["w"])
         cb.sync(TO, 64, 0)
         run.r.start()
-        return run, cb, cm, s["npd"], site.split(".")[-1]
+        return run, cb, cm, s["npd"], tag
+
+    def warm(self, site):
+        """Configure the device now rather than in the first prompt: the first
+        dispatch on a hw_context pays for it (~130 ms)."""
+        self.gemm_wait(self.gemm_start(site, 0), 1)
 
     def wait(self, pend, nbytes=None):
         run, out, tag = pend[0], pend[1], pend[-1]
