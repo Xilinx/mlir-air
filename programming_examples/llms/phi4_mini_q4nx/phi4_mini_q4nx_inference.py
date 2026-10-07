@@ -301,7 +301,7 @@ if __name__ == "__main__":
     # the fused prefill has no padded length, so even a short prompt is
     # cheaper prefilled
     args.prefill_min = 1 if args.fused_prefill else PREFILL_MIN_TOKENS
-    if not args.run_only and not args.fused_prefill:
+    if not args.run_only and (args.compile_only or not args.fused_prefill):
         compile_prefill(args.seq_len)
         if args.compile_only:
             print("\nCompilation passed.")
