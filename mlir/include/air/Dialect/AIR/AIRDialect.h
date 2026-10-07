@@ -42,11 +42,6 @@ constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
 constexpr StringLiteral AwaitAppends = "air.await_appends";
 constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
-// Set by air-to-std (unit attr) on a launch-scope device->host channel drain it
-// armed ahead of the launch's inputs. Its position among the inputs is not
-// load-bearing, so airrt-to-npu may weave it back between the feeds its data
-// comes from (see boundShimFeedBursts).
-constexpr StringLiteral ArmedDrain = "air.armed_drain";
 // Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
 // its BD covers a whole contiguous run merged from several smaller feeds, so
 // consecutive coalesced tasks on the same channel may feed distinct downstream

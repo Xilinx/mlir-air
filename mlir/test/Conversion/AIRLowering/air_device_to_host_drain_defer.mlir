@@ -18,9 +18,7 @@
 
 // CHECK-LABEL: func.func @drain_defer
 // The device->host drain memcpy is issued...
-// It is marked as armed ahead of the inputs, so airrt-to-npu may weave it back
-// between them:
-// CHECK: %[[DRAIN:.*]] = airrt.dma_memcpy_nd({{.*}}{air.armed_drain, {{.*}}metadata = @drainAlloc{{.*}} : !airrt.event
+// CHECK: %[[DRAIN:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @drainAlloc{{.*}} : !airrt.event
 // ...and its own (early) wait_all must NOT wait on it -- the wait is deferred:
 // CHECK-NEXT: airrt.wait_all : !airrt.event
 // A host->device input keeps its normal in-place wait:
@@ -77,9 +75,7 @@ module {
 
 // CHECK-LABEL: func.func @drain_hoist
 // The drain issue is hoisted ahead of the input DMA:
-// CHECK: airrt.dma_memcpy_nd({{.*}}{air.armed_drain, {{.*}}metadata = @drainAlloc2{{.*}} : !airrt.event
-// An input is never marked:
-// CHECK-NOT: air.armed_drain
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @drainAlloc2{{.*}} : !airrt.event
 // CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc2{{.*}} : !airrt.event
 // ...and the drain's wait is still deferred to the launch terminator:
 // CHECK: airrt.wait_all {{.*}}{air.launch_end}

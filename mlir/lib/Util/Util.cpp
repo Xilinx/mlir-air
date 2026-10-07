@@ -1856,6 +1856,36 @@ bool air::isDeviceToHostShimDMA(Operation *op) {
 #endif
 }
 
+std::optional<std::pair<int64_t, int64_t>>
+air::getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
+                          ArrayRef<OpFoldResult> sizes,
+                          ArrayRef<OpFoldResult> strides) {
+  if (offsets.size() != sizes.size() || offsets.size() != strides.size())
+    return std::nullopt;
+  int64_t start = 0, last = 0;
+  for (auto [o, sz, st] : llvm::zip(offsets, sizes, strides)) {
+    auto offset = getConstantIntValue(o);
+    auto size = getConstantIntValue(sz);
+    auto stride = getConstantIntValue(st);
+    if (!offset || !size || !stride)
+      return std::nullopt;
+    int64_t lo = *offset * *stride;
+    int64_t hi = (*offset + *size - 1) * *stride;
+    if (lo > hi) // negative stride
+      std::swap(lo, hi);
+    start += lo;
+    last += hi;
+  }
+  return std::make_pair(start, last + 1);
+}
+
+bool air::mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
+                     std::optional<std::pair<int64_t, int64_t>> b) {
+  if (!a || !b)
+    return true;
+  return a->first < b->second && b->first < a->second;
+}
+
 // Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
 // See header for rationale.
 int air::findLargestAlignedFactor(int num, int max, int alignment) {
