@@ -32,6 +32,7 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -1856,78 +1857,25 @@ bool air::isDeviceToHostShimDMA(Operation *op) {
 #endif
 }
 
-// The closed range [lo, hi] `v` takes: a constant, an scf.for induction
-// variable with constant bounds, or an affine.apply of such values. A linear
-// expression is evaluated at the corners of its operands' ranges, where its
-// extremes are. One with a floordiv, ceildiv or mod can peak between them, so
-// it is evaluated at every point of the operands' ranges, when there are few
-// enough.
+// The closed range [lo, hi] `v` takes, as far as its backward slice bounds it
+// (scf.for bounds, affine.apply, arith).
 static std::optional<std::pair<int64_t, int64_t>>
 getValueRange(OpFoldResult v) {
   if (auto c = getConstantIntValue(v))
     return std::make_pair(*c, *c);
   auto val = dyn_cast_if_present<Value>(v);
-  if (!val)
+  if (!val || !val.getType().isIndex())
     return std::nullopt;
-  if (auto forOp = scf::getForInductionVarOwner(val)) {
-    auto lb = getConstantIntValue(forOp.getLowerBound());
-    auto step = getConstantIntValue(forOp.getStep());
-    auto trips = air::getStaticScfForTripCountAsInt(forOp);
-    if (!lb || !step || !trips || *trips <= 0)
-      return std::nullopt;
-    int64_t last = *lb + (*trips - 1) * *step;
-    return std::make_pair(std::min(*lb, last), std::max(*lb, last));
-  }
-  auto apply = val.getDefiningOp<affine::AffineApplyOp>();
-  if (!apply)
+  using VB = ValueBoundsConstraintSet;
+  ValueBoundsOptions closed;
+  closed.closedUB = true;
+  FailureOr<int64_t> lo =
+      VB::computeConstantBound(presburger::BoundType::LB, VB::Variable(val));
+  FailureOr<int64_t> hi = VB::computeConstantBound(
+      presburger::BoundType::UB, VB::Variable(val), nullptr, closed);
+  if (failed(lo) || failed(hi))
     return std::nullopt;
-  bool linear = true;
-  apply.getAffineMap().getResult(0).walk([&](AffineExpr e) {
-    if (e.getKind() == AffineExprKind::Mod ||
-        e.getKind() == AffineExprKind::FloorDiv ||
-        e.getKind() == AffineExprKind::CeilDiv)
-      linear = false;
-  });
-  SmallVector<std::pair<int64_t, int64_t>> in;
-  // Linear: 2^n corners. Otherwise: every point.
-  constexpr uint64_t maxPoints = 4096;
-  uint64_t points = 1;
-  for (Value operand : apply.getMapOperands()) {
-    auto r = getValueRange(operand);
-    if (!r)
-      return std::nullopt;
-    in.push_back(*r);
-    points *= linear ? 2 : uint64_t(r->second - r->first + 1);
-    if (points > maxPoints)
-      return std::nullopt;
-  }
-  Builder b(apply.getContext());
-  std::optional<std::pair<int64_t, int64_t>> out;
-  SmallVector<int64_t> at =
-      llvm::map_to_vector(in, [](auto r) { return r.first; });
-  while (true) {
-    SmallVector<Attribute> args, folded;
-    for (int64_t x : at)
-      args.push_back(b.getIndexAttr(x));
-    if (failed(apply.getAffineMap().constantFold(args, folded)))
-      return std::nullopt;
-    int64_t x = cast<IntegerAttr>(folded[0]).getInt();
-    out =
-        out ? std::make_pair(std::min(out->first, x), std::max(out->second, x))
-            : std::make_pair(x, x);
-    // Next point: corners step from lo straight to hi.
-    unsigned i = 0;
-    for (; i < at.size(); i++) {
-      if (at[i] < in[i].second) {
-        at[i] = linear ? in[i].second : at[i] + 1;
-        break;
-      }
-      at[i] = in[i].first;
-    }
-    if (i == at.size())
-      break;
-  }
-  return out;
+  return std::make_pair(*lo, *hi);
 }
 
 std::optional<std::pair<int64_t, int64_t>>

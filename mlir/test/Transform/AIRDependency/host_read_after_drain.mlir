@@ -62,8 +62,7 @@ module {
 // CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
 // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
 
-// A mod in the offset map: evaluated at every iteration, rows 2-3, which take
-// in the drained row 3.
+// A mod in the offset map: rows 2-3, which take in the drained row 3.
 // CHECK-LABEL: func.func @wrap
 // CHECK: %[[D:.*]] = air.channel.get async  @drain[]
 // CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
@@ -82,10 +81,10 @@ module {
 // CHECK: %[[W:.*]] = air.wait_all async  {id
 // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
 
-// A mod over too many iterations to evaluate: no bound, so no edge.
+// x mod 4 over 10000 iterations is rows 0-3, which take in the drained row 3.
 // CHECK-LABEL: func.func @huge
-// CHECK: air.channel.get async  @drain[]
-// CHECK: %[[W:.*]] = air.wait_all async  {id
+// CHECK: %[[D:.*]] = air.channel.get async  @drain[]
+// CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
 // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
 
 // A row known only at runtime: no bound, so no edge.
