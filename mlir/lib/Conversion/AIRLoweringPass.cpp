@@ -1338,7 +1338,8 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
 // A launch may read back through host memory what its own drains wrote (a
 // chain of jobs sharing one buffer). With every drain wait deferred to the
 // launch end, nothing orders that read after the drain. So await, right before
-// each input DMA, the drains whose region it reads. A shim channel retires its
+// each input DMA, the drains ahead of it in `window` (program order) whose
+// region it reads. A shim channel retires its
 // tasks in order and an await is matched to the channel's oldest outstanding
 // task, so the drains queued on that channel ahead of the one read are awaited
 // with it. They come off the launch-end wait.
@@ -1521,7 +1522,10 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
         else if (!anchor)
           anchor = op;
       }
-      orderReadsAfterDrains(getLaunchWindow(launchEnd), isDrain, launchEnd);
+      // In program order, not as hoisted: a drain moved above an input that
+      // reads the same region before the drain overwrites it is not what that
+      // input reads.
+      orderReadsAfterDrains(window, isDrain, launchEnd);
       return;
     }
 

@@ -116,3 +116,50 @@ module {
     return
   }
 }
+
+// -----
+
+// In place: the input reads the rows the drain later overwrites (C = A * B + C).
+// The drain is armed ahead of the input, but the input reads what was there
+// before, so nothing waits on the drain before the launch end. (Awaiting it
+// there would wait for an output that needs that input.)
+
+// CHECK-LABEL: func.func @in_place
+// CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc3
+// CHECK-NOT: airrt.wait_all %[[D]]{{$}}
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc3
+// CHECK: airrt.wait_all {{.*}}%[[D]]{{.*}} {air.launch_end}
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @outAlloc3(%t, S2MM, 0)
+    aie.shim_dma_allocation @inAlloc3(%t, MM2S, 0)
+  } {sym_name = "seg2"}
+  air.channel @out3 [1, 1]
+  air.channel @in3 [1, 1]
+  func.func @in_place(%buf: memref<256xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%b=%buf) : memref<256xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_l = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %r = air.channel.put async  @in3[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc3} : (memref<256xi32>)
+      %d = air.channel.get async [%r]  @out3[] (%b[%c0] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc3} : (memref<256xi32>)
+      %e = air.wait_all async [%d, %r] {air.launch_end}
+      %s = air.segment @seg2 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h3 async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %g = air.channel.get async [%tok]  @in3[] (%a[] [] []) {id = 3 : i32} : (memref<64xi32, 2>)
+          %p = air.channel.put async [%g]  @out3[] (%a[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
