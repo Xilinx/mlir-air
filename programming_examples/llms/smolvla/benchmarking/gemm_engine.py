@@ -27,9 +27,17 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-for p in (str(_HERE.parent), str(_HERE.parent.parent), str(_HERE.parent.parent.parent)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if str(_HERE.parent) not in sys.path:
+    sys.path.insert(0, str(_HERE.parent))
+
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(_HERE.parent.parent.parent)
+]
 
 from air import api as air
 from air.api import ops
@@ -288,7 +296,9 @@ def build_gemm_engine(
     whole tiles and all jobs' outputs, of any width, drain as one task per
     channel. B tensors stay separate.
     """
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import bfp_tile_bytes
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        bfp_tile_bytes,
+    )
 
     r, s, t = 8, 8, 8
     tile_bytes = bfp_tile_bytes(tile_n, tile_k_l1)
@@ -941,7 +951,10 @@ def rope_table(lut, n_heads, n_kv_heads, head_dim, v_cols):
 
 
 def compile_mm_engine(tile_m, tile_n, tile_k_l1, sym_suffix, out_name, rms_k=960):
-    from shared.infra.external_kernels import _PROJ_ROOT, _compile_kernel
+    from air_examples.llms.shared.infra.external_kernels import (
+        _PROJ_ROOT,
+        _compile_kernel,
+    )
 
     extra = [
         f"-I{_PROJ_ROOT / 'matrix_multiplication' / 'bf16_x_bfp16'}",
@@ -971,7 +984,9 @@ def build_gemm_engine_loads(
 ):
     """First attempt, ops.load/ops.store per job: one job compiles (same time as
     one launch); two jobs overflow the memtile BDs. jobs: [(k, n, tile_k_l2)]."""
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import bfp_tile_bytes
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        bfp_tile_bytes,
+    )
 
     r, s, t = 8, 8, 8
     tile_bytes = bfp_tile_bytes(tile_n, tile_k_l1)
@@ -1130,7 +1145,11 @@ def build_stitched(
 ):
     """Baseline: the same jobs as separate launches (one configuration each) in one ELF."""
     from gemm_bfp16 import bfp16_extern_syms, bfp16_weight_type, build_gemm_bfp16
-    from shared.infra.stitching import FuncArg, KernelSlice, stitch_elf
+    from air_examples.llms.shared.infra.stitching import (
+        FuncArg,
+        KernelSlice,
+        stitch_elf,
+    )
 
     args, slices = [], []
     for i, (k, n, tk2) in enumerate(jobs):
@@ -1202,8 +1221,10 @@ def main():
         return main_qkv(args)
 
     from gemm_bfp16 import compile_mm_bfp16
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
     m, tile_m, herd = 256, 32, 4
     names = args.jobs.split(",")
@@ -1294,8 +1315,10 @@ def _cos(a, b):
 
 def main_ffn(args):
     """O + residual, RMSNorm + GateUp + SwiGLU, Down + residual as three jobs of one engine launch."""
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
     m, emb, hid, tile_m, herd = 256, 960, 2560, 32, 4
     tn, tk1 = args.tile_n, args.tk1
@@ -1439,8 +1462,10 @@ def main_ffn(args):
 
 def main_qkv(args):
     """RMSNorm + QKV + RoPE as one engine job (q/k head dims pair-interleaved)."""
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
     m, emb, nh, nkv, hd, tile_m, herd = 256, 960, 15, 5, 64, 32, 4
     kv = nkv * hd

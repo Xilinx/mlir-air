@@ -7,11 +7,20 @@ Random activations, zero weights: it checks that the engines compile (core progr
 big the control code is, and what a step and a prefix launch cost. Correctness is the real-weights
 chain in expert_runtime / the probe."""
 import argparse
+import sys
 import time
+import types
 from pathlib import Path
 
 import numpy as np
 from ml_dtypes import bfloat16
+
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
 
 import backbone_npu as bn  # noqa: F401  (sys.path setup)
 import expert_engine_probe as xp
@@ -44,9 +53,11 @@ NL = args.layers
 M, L2N, TN, TK1, HERD, TILE_M = xp.M, xp.L2N, xp.TN, xp.TK1, xp.HERD, xp.TILE_M
 
 from air.backend.xrt import XRTCompileArtifact
-from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
+from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+    pack_b_bfp16ebs8,
+)
 from reconfig_probe import ctrl_kb
-from shared.infra.cache import KernelCache, Profiler
+from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
 compile_mm_engine(TILE_M, TN, TK1, xp.SFX, xp.OBJ, rms_k=xp.E_REAL)
 self_flags = [

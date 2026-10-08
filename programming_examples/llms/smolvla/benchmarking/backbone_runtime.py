@@ -37,7 +37,7 @@ _MASK_ARG, _ROPE_Q_ARG, _ROPE_K_ARG = 9, 5, 7
 
 class BackboneRuntime:
     def __init__(self, policy, profile=False):
-        from shared.infra.cache import KernelCache, Profiler
+        from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
         bn._BFP16.update({k: bn._BFP16_TILES[k] for k in ("qkv", "o", "gu", "dn")})
         bn._TILING.update(rgr=[2, 5], offn=[2, 6])

@@ -35,11 +35,18 @@ from ml_dtypes import bfloat16
 _SMOLVLA = Path(__file__).resolve().parent.parent
 _LLMS = _SMOLVLA.parent
 _LLAMA = _LLMS / "llama32_1b"
-for p in (str(_SMOLVLA), str(_LLMS), str(_LLAMA)):
+for p in (str(_SMOLVLA), str(_LLAMA)):
     if p not in sys.path:
         sys.path.insert(0, p)
-if str(_LLMS.parent) not in sys.path:
-    sys.path.append(str(_LLMS.parent))  # flash_attention.*
+
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(_LLMS.parent)
+]
 
 os.environ.setdefault("SMOLVLA_CPU_BIND", "1")
 os.environ.setdefault("SMOLVLA_CPU_THREADS", "8")
@@ -186,7 +193,9 @@ _ENGINE = {"on": False, "qkv": False, "tile_n": 80, "tile_k_l1": 160, "herd": 4}
 def _engine_offn_weights(lw, emb, hidden):
     """wo, w_gateup (ffn_norm folded in, SwiGLU-permuted) and w_down packed for the engine."""
     from gemm_engine import permute_gate_up
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
 
     tn, tk1 = _ENGINE["tile_n"], _ENGINE["tile_k_l1"]
     f32 = np.float32
@@ -210,7 +219,9 @@ def _engine_qkv_args(lw, rope_lut_bf16, config, seq_len):
     """w_qkv (attn_norm folded in, q/k heads pair-interleaved) packed for the
     engine, and its RoPE table."""
     from gemm_engine import qkv_col_perm, rope_table
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
 
     f32 = np.float32
     nh, nkv, hd = config.n_heads, config.n_kv_heads, config.head_dim
@@ -292,7 +303,9 @@ def _weight(key, w):
     w = np.ascontiguousarray(np.asarray(w, dtype=bfloat16))
     if key not in _BFP16:
         return w
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
 
     tn, _, tk1 = _BFP16[key][:3]
     return pack_b_bfp16ebs8(w, tn, tk1)
@@ -451,9 +464,11 @@ def compile_backbone_kernels(
         o_ffn O/Down         : drain, tile_n=80,  sym_suffix "_m32_n80"  -> mm_m32_n80.o
         o_ffn Gate/Up        : drain, tile_n=128, sym_suffix "_m32_n128"-> mm_m32_n128.o
     """
-    from shared.infra.external_kernels import compile_gemm_mm
-    from shared.builders.rms_gemms_rope_multi import build_rms_gemms_rope_module
-    from shared.builders.o_ffn_multi import build_o_ffn_module
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
+        build_rms_gemms_rope_module,
+    )
+    from air_examples.llms.shared.builders.o_ffn_multi import build_o_ffn_module
 
     compile_gemm_mm(
         tile_m=32, tile_n=80, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
@@ -560,8 +575,10 @@ def compile_backbone_kernels(
             o_ffn_backend,
         )
     if npu_attn:
-        from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import build_module
-        import shared.infra.external_kernels as ek
+        from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+            build_module,
+        )
+        import air_examples.llms.shared.infra.external_kernels as ek
 
         hd = config.head_dim
         kv_dim = config.n_kv_heads * hd
@@ -624,7 +641,7 @@ def compile_backbone_kernels(
             offn_tiling = []
         if qkv_engine:
             from layer_fused import QKV_ENGINE_ORDER, build_engine_layer_module
-            from flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
+            from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
                 build_module,
             )
 
@@ -1345,7 +1362,7 @@ def main():
         / "build"
         / f"backbone_npu_cache{hm_tag}{gu_tag}{qkv_tag}{tl_tag}{bfp_tag}"
     )
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
     cache = KernelCache(cache_dir, verbose=False, profiler=Profiler(enabled=True))
     print(

@@ -32,8 +32,18 @@ Combined args:
   %arg20 output      (seq*emb,)
 """
 import re
+import sys
+import types
+from pathlib import Path
 
-from shared.infra.stitching import FuncArg, KernelSlice, stitch_elf
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+
+from air_examples.llms.shared.infra.stitching import FuncArg, KernelSlice, stitch_elf
 
 # Sub-module operand -> combined arg. o_ffn's operand 8 (the wide gate|up
 # buffer) is dead under the SwiGLU epilogue and is dropped.

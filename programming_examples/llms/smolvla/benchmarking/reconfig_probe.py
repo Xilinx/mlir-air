@@ -19,10 +19,15 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-_PROG = _HERE.parent.parent.parent
-for p in (str(_PROG), str(_HERE.parent.parent)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(_HERE.parent.parent.parent)
+]
 
 
 def pad_src(stores):
@@ -43,7 +48,10 @@ def pad_src(stores):
 
 
 def compile_pad(pad):
-    from shared.infra.external_kernels import _PEANO_FLAGS, _get_peano_clang
+    from air_examples.llms.shared.infra.external_kernels import (
+        _PEANO_FLAGS,
+        _get_peano_clang,
+    )
 
     src = Path("pad_probe.cc")
     src.write_text(pad_src(pad))
@@ -95,7 +103,11 @@ def build_one(pad, cols, rows):
 
 
 def build_module(pad, cols, rows, launches):
-    from shared.infra.stitching import FuncArg, KernelSlice, stitch_elf
+    from air_examples.llms.shared.infra.stitching import (
+        FuncArg,
+        KernelSlice,
+        stitch_elf,
+    )
 
     ir = build_one(pad, cols, rows)
     t = f"memref<{cols * rows}x16xbf16>"
@@ -132,7 +144,7 @@ def main():
     ap.add_argument("--iters", type=int, default=200)
     args = ap.parse_args()
 
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
     for cfg in args.configs.split():
         pad, cols, rows, launches = (int(v) for v in cfg.split(":"))

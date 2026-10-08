@@ -9,6 +9,8 @@ tile_n (o_ffn_fused_gu.interleave_gate_up) and C is SiLU(gate) * up, n/2 wide.
 B is packed on the host by pack_b_bfp16ebs8(w, tile_n, tile_k_l1): shape
 [n/tile_n, k/tile_k_l1, bfp_tile_bytes(tile_n, tile_k_l1)] uint8.
 """
+import sys
+import types
 from pathlib import Path
 
 from air import api as air
@@ -17,9 +19,19 @@ from air.api.types import bf16, f32, i8
 
 _HERE = Path(__file__).resolve().parent
 
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(_HERE.parent.parent.parent)
+]
+
 
 def compile_mm_bfp16(tile_m, tile_n, tile_k_l1, sym_suffix, out_name):
-    from shared.infra.external_kernels import _PROJ_ROOT, _compile_kernel
+    from air_examples.llms.shared.infra.external_kernels import (
+        _PROJ_ROOT,
+        _compile_kernel,
+    )
 
     extra = [
         f"-I{_PROJ_ROOT / 'matrix_multiplication' / 'bf16_x_bfp16'}",
@@ -44,7 +56,9 @@ def bfp16_extern_syms(sym_suffix, swiglu=False):
 
 
 def bfp16_weight_type(k, n, tile_n, tile_k_l1):
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import bfp_tile_bytes
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        bfp_tile_bytes,
+    )
 
     return (
         f"memref<{n // tile_n}x{k // tile_k_l1}x{bfp_tile_bytes(tile_n, tile_k_l1)}xi8>"
@@ -70,7 +84,9 @@ def build_gemm_bfp16(
     bf16, B packed i8, C [m, n or n/2] bf16), one air.launch. The herd's first
     axis is placed along the array columns, each with its own shim DMAs; cols_n
     puts N there (herd_n columns, each streaming its own B slice) instead of M."""
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import bfp_tile_bytes
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        bfp_tile_bytes,
+    )
 
     r, s, t = 8, 8, 8
     assert m % (tile_m * herd_m) == 0 and n % (tile_n * herd_n) == 0

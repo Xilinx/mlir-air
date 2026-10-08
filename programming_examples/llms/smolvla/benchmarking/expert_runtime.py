@@ -67,10 +67,10 @@ def _merge(spans):
 class ExpertRuntime:
     def __init__(self, policy, profile=False):
         from air.backend.xrt import XRTCompileArtifact
-        from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
             pack_b_bfp16ebs8,
         )
-        from shared.infra.cache import KernelCache, Profiler
+        from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
         self._pack_b = pack_b_bfp16ebs8
         self.layers, self.meta = ec.expert_weights(policy)

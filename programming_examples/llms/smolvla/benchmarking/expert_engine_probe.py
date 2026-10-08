@@ -525,9 +525,11 @@ def main():
     full = set(parts) == set(PARTS)
     assert args.real or not args.ondev, "--ondev checks against the real fp32 chain"
     real = RealData() if args.real else None
-    from matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
+    from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+        pack_b_bfp16ebs8,
+    )
     from reconfig_probe import ctrl_kb
-    from shared.infra.cache import KernelCache, Profiler
+    from air_examples.llms.shared.infra.cache import KernelCache, Profiler
 
     compile_mm_engine(TILE_M, TN, TK1, SFX, OBJ, rms_k=E_REAL)
     bfa = lambda a: np.asarray(a, np.float32).astype(bfloat16)  # noqa: E731

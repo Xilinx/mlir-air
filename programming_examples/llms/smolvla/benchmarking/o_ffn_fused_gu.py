@@ -20,19 +20,27 @@ import dataclasses, os, sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_PROG = _HERE.parent.parent.parent
-for p in (str(_PROG), str(_HERE.parent.parent)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(_HERE.parent.parent.parent)
+]
 
 import numpy as np
 from ml_dtypes import bfloat16
 from air import api as air
 from air.api import ops
 from air.api.types import i32
-from shared.builders.rms_gemms_rope_multi import _api_dtype
-from shared.builders.o_ffn_multi import _build_add_2d_to_2d, _build_add_2d_to_1d
-from shared.infra.stitching import (
+from air_examples.llms.shared.builders.rms_gemms_rope_multi import _api_dtype
+from air_examples.llms.shared.builders.o_ffn_multi import (
+    _build_add_2d_to_2d,
+    _build_add_2d_to_1d,
+)
+from air_examples.llms.shared.infra.stitching import (
     _wrap_ir_in_launch,
     stitch_elf,
     KernelSlice,
@@ -107,7 +115,10 @@ def interleave_gate_up(w_gate, w_up, half):
 def _compile_mm_swiglu(tile_m, tile_n, tile_k_l1, sym_suffix, out_name):
     """compile_gemm_mm's flags, on kernels_swiglu/mm_swiglu.cc (mm_aie2p.cc + the
     f32_to_bf16_swiglu_mn drain)."""
-    from shared.infra.external_kernels import _compile_kernel, _PROJ_ROOT
+    from air_examples.llms.shared.infra.external_kernels import (
+        _compile_kernel,
+        _PROJ_ROOT,
+    )
 
     extra = [
         f"-I{_PROJ_ROOT / 'matrix_multiplication' / 'bf16_in_fp32_out'}",
@@ -172,13 +183,15 @@ def build_o_ffn_module_fused_gu(
     matrix (pack_b_bfp16ebs8; w_gateup interleaved first when gu_swiglu).
     """
     bfp16 = bfp16 or {}
-    from shared.builders.gemm_builder import (
+    from air_examples.llms.shared.builders.gemm_builder import (
         _build_gemm_module,
         gemm_registry_config,
         disambiguate_by_tile_n,
     )
-    from shared.infra.external_kernels import compile_gemm_mm
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     n_total = seq_len * emb_dim
 

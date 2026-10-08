@@ -18,13 +18,23 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_PROG = _HERE.parent.parent.parent
-for p in (str(_PROG), str(_HERE.parent.parent)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+import types
+
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(_HERE.parent.parent.parent)
+]
 
 from ml_dtypes import bfloat16
-from shared.infra.stitching import _wrap_ir_in_launch, stitch_elf, KernelSlice, FuncArg
+from air_examples.llms.shared.infra.stitching import (
+    _wrap_ir_in_launch,
+    stitch_elf,
+    KernelSlice,
+    FuncArg,
+)
 from rope_from_wide import build_rope_from_wide
 
 
@@ -61,9 +71,11 @@ def build_rms_gemms_rope_module_fused_qkv(
     bfp16=(tile_n, tile_k_l2, tile_k_l1): the QKV GEMM takes bfp16ebs8 weights
     (gemm_bfp16.py); %arg3 is then the packed w_qkv (pack_b_bfp16ebs8).
     """
-    from shared.builders.gemm_builder import _build_gemm_module
-    from shared.infra.external_kernels import compile_gemm_mm
-    from weighted_rms_norm.weighted_rms_norm import build_module as build_rms
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+    from air_examples.weighted_rms_norm.weighted_rms_norm import (
+        build_module as build_rms,
+    )
 
     qkv_n = emb_dim + 2 * kv_dim  # 960 + 320 + 320 = 1600
 
