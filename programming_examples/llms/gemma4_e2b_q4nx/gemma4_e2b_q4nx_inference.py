@@ -90,6 +90,13 @@ _WCACHE_DIR = Path(
 VOCAB_CHUNK_I2 = "27"
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _load_builder(uni_dec, attn_maxl, kv_src):
     """Import fused_decode_ple with this build's geometry in the environment.
 
@@ -739,9 +746,9 @@ def main():
     ap.add_argument(
         "--fused-prefill",
         metavar="BUILD_DIR",
-        default=None,
-        help="prefill on the one-device chunked prefill built there by "
-        "`make compile-fused-prefill`",
+        default=_fused_build(),
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
     )
     ap.add_argument(
         "--gate",

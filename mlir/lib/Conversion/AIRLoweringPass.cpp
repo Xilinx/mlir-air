@@ -1335,6 +1335,124 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
   return window;
 }
 
+// The drains an input DMA depends on, read from its async dependencies:
+// air-to-std folds a DMA's dependencies into the event it produces
+// (`airrt.wait_all %dma, %deps...`), so follow those wait_alls back to the
+// DMAs they join. air-dependency puts a read of a host buffer after the
+// drains that wrote what it reads.
+using DrainDeps =
+    llvm::DenseMap<Operation *, llvm::SmallSetVector<Operation *, 4>>;
+template <typename IsDrainFn>
+static DrainDeps getDrainDeps(ArrayRef<Operation *> window, IsDrainFn isDrain) {
+  DrainDeps deps;
+  llvm::DenseMap<Value, llvm::SmallSetVector<Operation *, 4>> memo;
+  std::function<llvm::SmallSetVector<Operation *, 4>(Value)> drainsOf =
+      [&](Value v) {
+        if (auto it = memo.find(v); it != memo.end())
+          return it->second;
+        llvm::SmallSetVector<Operation *, 4> found;
+        if (auto dma = v.getDefiningOp<airrt::DmaMemcpyNdOp>()) {
+          if (isDrain(dma))
+            found.insert(dma);
+        } else if (auto wa = v.getDefiningOp<airrt::WaitAllOp>()) {
+          for (Value o : wa->getOperands())
+            found.insert_range(drainsOf(o));
+        }
+        memo[v] = found;
+        return found;
+      };
+  for (Operation *op : window) {
+    auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+    if (!dma || !dma->getNumResults() || isDrain(dma))
+      continue;
+    for (Operation *user : dma->getResult(0).getUsers()) {
+      auto wa = dyn_cast<airrt::WaitAllOp>(user);
+      if (!wa || !wa->getNumResults())
+        continue;
+      for (Value o : wa->getOperands())
+        if (o != dma->getResult(0))
+          deps[op].insert_range(drainsOf(o));
+    }
+  }
+  return deps;
+}
+
+// A launch may read back through host memory what its own drains wrote (a
+// chain of jobs sharing one buffer). With every drain wait deferred to the
+// launch end, nothing orders that read after the drain, and a DMA's
+// dependencies only gate its event, not its issue. So await, right before each
+// input DMA, the drains it depends on. A shim channel retires its tasks in
+// order and an await is matched to the channel's oldest outstanding task, so
+// the drains queued on that channel ahead of the one depended on are awaited
+// with it. They come off the launch-end wait.
+//
+// This orders the launch's drains and inputs as air-dependency's
+// read-after-write edges say, which air-annotate-append-barrier approximates by
+// buffer. Its markers on these DMAs are dropped, unless some marked DMA sits in
+// a nested region this does not look into.
+template <typename IsDrainFn>
+static void orderReadsAfterDrains(ArrayRef<Operation *> window,
+                                  IsDrainFn isDrain, const DrainDeps &deps,
+                                  airrt::WaitAllOp launchEnd) {
+  // Drains not yet awaited, per channel, in issue order.
+  llvm::MapVector<Attribute, SmallVector<airrt::DmaMemcpyNdOp>> pending;
+  llvm::SmallSetVector<Value, 8> awaited;
+  for (Operation *op : window) {
+    auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+    if (!dma || !dma->getNumResults())
+      continue;
+    if (isDrain(dma)) {
+      pending[dma->getAttr("metadata")].push_back(dma);
+      continue;
+    }
+    auto it = deps.find(op);
+    if (it == deps.end())
+      continue;
+    SmallVector<Value> tokens;
+    for (auto &[channel, drains] : pending) {
+      auto last = llvm::find_if(llvm::reverse(drains), [&](auto d) {
+        return it->second.contains(d.getOperation());
+      });
+      if (last == drains.rend())
+        continue;
+      auto end = last.base();
+      for (auto d : llvm::make_range(drains.begin(), end))
+        tokens.push_back(d->getResult(0));
+      drains.erase(drains.begin(), end);
+    }
+    if (tokens.empty())
+      continue;
+    OpBuilder b(op);
+    // No result: a wait_all without one blocks the control program.
+    airrt::WaitAllOp::create(b, op->getLoc(), TypeRange{}, tokens);
+    awaited.insert(tokens.begin(), tokens.end());
+  }
+  SmallVector<Value> leOps;
+  for (Value v : launchEnd->getOperands())
+    if (!awaited.contains(v))
+      leOps.push_back(v);
+  launchEnd->setOperands(leOps);
+
+  SmallVector<Operation *> marked;
+  bool nestedMark = false;
+  for (Operation *op : window)
+    op->walk([&](Operation *o) {
+      if (!o->hasAttr(air::attrs::AppendBarrier) &&
+          !o->hasAttr(air::attrs::AwaitAppends))
+        return;
+      if (o == op)
+        marked.push_back(o);
+      else
+        nestedMark = true;
+    });
+  if (nestedMark)
+    return;
+  for (Operation *o : marked) {
+    o->removeAttr(air::attrs::AppendBarrier);
+    o->removeAttr(air::attrs::AwaitAppends);
+  }
+}
+
 // A launch-scope air.channel.get draining an on-device producer to host DDR
 // lowers to a device->host (S2MM) airrt.dma_memcpy_nd. air-dependency cannot
 // model the implicit @channel put->get backpressure across the herd/segment
@@ -1344,13 +1462,11 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
 // data that cannot exist yet.
 //
 // Per launch window: (1) re-route every drain token to the air.launch_end
-// wait_all (stripping it from earlier wait_alls) so its wait is deferred; and
-// (2) hoist each drain's issue ahead of the launch's compute dispatch so the
-// S2MM receiver is armed before the on-device producer runs. This is safe for
-// the NPU runtime-sequence model: the host never consumes an output mid-launch
-// (the only in-launch consumers are on-device, ordered by device DMA locks), so
-// waiting at the terminator and arming the receiver first cannot reorder a real
-// host-visible dependency.
+// wait_all (stripping it from earlier wait_alls) so its wait is deferred;
+// (2) hoist each drain's issue ahead of the inputs that drive its producer so
+// the S2MM receiver is armed before the on-device producer runs; and (3) where
+// an input reads back what a drain wrote, await that drain right before the
+// input (orderReadsAfterDrains).
 static void deferDeviceToHostDrainWaits(ModuleOp module) {
   // A drain is a launch-scope *channel* get lowered to an S2MM shim DMA.
   // Require the chan_name attribute (set only when lowering air.channel ops) so
@@ -1374,6 +1490,9 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
           drainDmas.push_back(dma);
     if (drainDmas.empty())
       return;
+
+    // Read before (1) strips the drain tokens out of the dependency events.
+    DrainDeps deps = getDrainDeps(window, isDrain);
 
     // (1) Defer the wait: strip drain tokens from every non-terminator wait_all
     // and gather them onto launch_end.
@@ -1405,34 +1524,62 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     // exceeds on-chip buffering then stalls with no host receiver -> the
     // producer never completes -> deadlock.
     //
-    // The producer is dispatched at this launch's compute-dispatch op
-    // (airrt.segment_load / airrt.herd_load), so any site before that arms the
-    // receiver in time. Prefer the first input DMA (arm the drain at the very
-    // front of the arm block); fall back to the compute dispatch when the
-    // launch has no host input DMA (e.g. a drain-only launch whose inputs are
-    // all on-device / L2-resident), so the drain is still armed before the
-    // producer instead of being left last.
+    // Move each drain up past the input DMAs ahead of it, so it is armed
+    // before the inputs that drive its producer, but stop at an input that
+    // depends on an earlier drain: that input waits for the earlier drain
+    // (orderReadsAfterDrains), and a drain moved above the wait would queue
+    // ahead of work it depends on. Every drain moved goes before the same
+    // anchor, so the drains keep their order, which a shim channel retires
+    // them in. A launch whose inputs depend on none of its drains gets every
+    // drain ahead of its first input.
+    auto isInput = [&](Operation *op) {
+      auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+      return dma && dma->getNumResults() && !isDrain(dma);
+    };
+    if (llvm::any_of(window, isInput)) {
+      SmallVector<airrt::DmaMemcpyNdOp> drainsSoFar;
+      Operation *anchor = nullptr;
+      // `window` holds the original order; the moves below only take a drain
+      // up to an anchor that is still ahead of it.
+      for (Operation *op : window) {
+        auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+        if (dma && isDrain(dma)) {
+          // A drain whose slice contains a side-effecting op stays in place.
+          if (anchor)
+            (void)air::moveWithPureBackwardSlice(op, anchor, /*after=*/false);
+          drainsSoFar.push_back(dma);
+          continue;
+        }
+        if (!isInput(op))
+          continue;
+        auto it = deps.find(op);
+        bool dependsOnDrain =
+            it != deps.end() && llvm::any_of(drainsSoFar, [&](auto d) {
+              return it->second.contains(d.getOperation());
+            });
+        if (dependsOnDrain)
+          anchor = nullptr;
+        else if (!anchor)
+          anchor = op;
+      }
+      // In program order, not as hoisted: a drain moved above an input that
+      // reads the same region before the drain overwrites it is not what that
+      // input reads.
+      orderReadsAfterDrains(window, isDrain, deps, launchEnd);
+      return;
+    }
+
+    // No host input: the producer is dispatched at this launch's
+    // compute-dispatch op (airrt.segment_load / airrt.herd_load), so arm the
+    // drains ahead of it rather than leaving them last.
     Operation *anchor = nullptr;
     for (Operation *op : window)
-      if (auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op))
-        if (dma->getNumResults() && !isDrain(dma)) {
-          anchor = op;
-          break;
-        }
-    if (!anchor)
-      for (Operation *op : window)
-        if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(op)) {
-          anchor = op;
-          break;
-        }
+      if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(op)) {
+        anchor = op;
+        break;
+      }
     if (!anchor)
       return;
-
-    // Relocate each drain that currently follows the anchor to just before it,
-    // carrying its same-block operand slice so dominance holds (deps-first).
-    // Drains already ahead of the anchor already dominate it and are left
-    // alone. A drain whose slice contains a side-effecting op is left in place
-    // rather than reordered across the intervening input DMAs.
     for (auto dma : drainDmas)
       if (anchor->isBeforeInBlock(dma.getOperation()))
         (void)air::moveWithPureBackwardSlice(dma.getOperation(), anchor,

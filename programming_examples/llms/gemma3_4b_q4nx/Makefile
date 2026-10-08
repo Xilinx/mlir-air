@@ -315,3 +315,6 @@ _compile_decode_elf_build:
 # "build the decode" has to build it too. Stated as an extra prerequisite rather
 # than folded into the recipe, which stays the xclbin template build.
 compile-decode: compile-decode-elf
+
+FUSED_MODEL := gemma3_4b_q4nx
+include $(srcdir)/../shared/fused_prefill/fused_prefill.mk

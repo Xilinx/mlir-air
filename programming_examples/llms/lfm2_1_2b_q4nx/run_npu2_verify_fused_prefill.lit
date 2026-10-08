@@ -1,0 +1,19 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// lfm2_1_2b_q4nx fused prefill (shared/fused_prefill): build it, then gate one chunk and
+// a three-chunk prompt against the fp32 reference by logit cosine and first
+// token.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hfweights_liquidai_lfm2_1_2b
+//
+// RUN: mkdir -p test_npu2_verify_fused_prefill
+// RUN: cd test_npu2_verify_fused_prefill
+// RUN: make -f %S/Makefile compile-fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=SHORT
+// RUN: make -f %S/Makefile fused-prefill-long PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=LONG
+//
+// SHORT: prompt {{[0-9]+}} tokens (1 chunk(s))
+// SHORT: GATE PASS
+// LONG: prompt {{[0-9]+}} tokens (3 chunk(s))
+// LONG: GATE PASS

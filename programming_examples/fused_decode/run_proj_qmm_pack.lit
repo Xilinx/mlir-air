@@ -1,0 +1,14 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Device-free check that pack_q4k_cascade, which packs a whole matrix at once,
+// emits the same bytes as pack_q4k_block applied block by block.
+//
+// RUN: %PYTHON %S/check_proj_qmm_pack.py | FileCheck %s
+//
+// CHECK: default: cascade matches the per-block packer: True
+// CHECK: core_major: cascade matches the per-block packer: True
+// CHECK: iter_major: cascade matches the per-block packer: True
+// CHECK: dual_chan: cascade matches the per-block packer: True
+// CHECK: iter_major+dual_chan: cascade matches the per-block packer: True
+// CHECK: core_major+dual_chan: cascade matches the per-block packer: True

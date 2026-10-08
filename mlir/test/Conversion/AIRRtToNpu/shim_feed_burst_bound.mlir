@@ -7,9 +7,11 @@
 
 // RUN: air-opt -airrt-to-npu %s | FileCheck %s
 
-// A shim MM2S channel absorbs 6 tasks in flight (its DMA task queue plus an L2
-// ping-pong); past that a push is dropped rather than deferred and the design
-// deadlocks (Xilinx/mlir-air#1822). Runtime-loop tiling unrolls the feed puts,
+// A shim channel's task queue is 4 deep and does not backpressure: past what the
+// channel absorbs, a push is dropped (or, with the toolchain's queue-space poll,
+// waits for an older task to retire), and the design deadlocks when that older
+// task needs a push issued after it (Xilinx/mlir-air#1822). Runtime-loop tiling
+// unrolls the feed puts,
 // so a burst can be far deeper than that, and the conversion emits it
 // channel-major: every task for A, then every task for B.
 //
