@@ -925,7 +925,8 @@ private:
             if (tile == nullptr) {
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
-            } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+            } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst) ||
+                       footprintsIntersectInHostMemory(tile, &memcpy_dst))
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
           }
@@ -2055,6 +2056,52 @@ private:
   // patterns. Returns true if the accesses overlap or cannot be proven
   // disjoint. A full-buffer access (empty offsets) is treated as conflicting
   // with any other access.
+  // Whether a read of `tile_0` reads what a write of `tile_1` wrote, for a
+  // host buffer. A launch can read back from host memory what its own drains
+  // wrote, at an offset inside the drained region or from a loop over it, and
+  // the equal-start test below misses both. Each access's footprint is
+  // bounded over the loops around it; only footprints known to intersect
+  // count, so an access whose footprint is not known keeps the equal-start
+  // test alone. Two accesses with the same strides are compared dimension by
+  // dimension, which keeps one column of a row-major buffer from matching the
+  // next; otherwise by linear range.
+  bool footprintsIntersectInHostMemory(partialMemref *tile_0,
+                                       partialMemref *tile_1) {
+    auto ty = dyn_cast<BaseMemRefType>(tile_0->memrefValue.getType());
+    if (!ty || !air::isL3(ty))
+      return false;
+    auto range = [](OpFoldResult o, OpFoldResult sz, OpFoldResult st) {
+      return air::getLinearAccessRange({o}, {sz}, {st}, /*overLoops=*/true);
+    };
+    auto sameStrides = [&]() {
+      if (tile_0->strides.size() != tile_1->strides.size())
+        return false;
+      for (auto [a, b] : llvm::zip(tile_0->strides, tile_1->strides)) {
+        auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+        if (!ca || !cb || *ca != *cb)
+          return false;
+      }
+      return true;
+    };
+    if (sameStrides() && tile_0->offsets.size() == tile_0->strides.size() &&
+        tile_1->offsets.size() == tile_1->strides.size()) {
+      for (unsigned i = 0; i < tile_0->offsets.size(); i++) {
+        auto r0 =
+            range(tile_0->offsets[i], tile_0->sizes[i], tile_0->strides[i]);
+        auto r1 =
+            range(tile_1->offsets[i], tile_1->sizes[i], tile_1->strides[i]);
+        if (!r0 || !r1 || !air::mayOverlap(r0, r1))
+          return false;
+      }
+      return true;
+    }
+    auto r0 = air::getLinearAccessRange(tile_0->offsets, tile_0->sizes,
+                                        tile_0->strides, /*overLoops=*/true);
+    auto r1 = air::getLinearAccessRange(tile_1->offsets, tile_1->sizes,
+                                        tile_1->strides, /*overLoops=*/true);
+    return r0 && r1 && air::mayOverlap(r0, r1);
+  }
+
   bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
                                    partialMemref *tile_1) {
     // A full-buffer access (empty offsets) overlaps with any other access.

@@ -1335,27 +1335,65 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
   return window;
 }
 
+// The drains an input DMA depends on, read from its async dependencies:
+// air-to-std folds a DMA's dependencies into the event it produces
+// (`airrt.wait_all %dma, %deps...`), so follow those wait_alls back to the
+// DMAs they join. air-dependency puts a read of a host buffer after the
+// drains that wrote what it reads.
+using DrainDeps =
+    llvm::DenseMap<Operation *, llvm::SmallSetVector<Operation *, 4>>;
+template <typename IsDrainFn>
+static DrainDeps getDrainDeps(ArrayRef<Operation *> window, IsDrainFn isDrain) {
+  DrainDeps deps;
+  llvm::DenseMap<Value, llvm::SmallSetVector<Operation *, 4>> memo;
+  std::function<llvm::SmallSetVector<Operation *, 4>(Value)> drainsOf =
+      [&](Value v) {
+        if (auto it = memo.find(v); it != memo.end())
+          return it->second;
+        llvm::SmallSetVector<Operation *, 4> found;
+        if (auto dma = v.getDefiningOp<airrt::DmaMemcpyNdOp>()) {
+          if (isDrain(dma))
+            found.insert(dma);
+        } else if (auto wa = v.getDefiningOp<airrt::WaitAllOp>()) {
+          for (Value o : wa->getOperands())
+            found.insert_range(drainsOf(o));
+        }
+        memo[v] = found;
+        return found;
+      };
+  for (Operation *op : window) {
+    auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+    if (!dma || !dma->getNumResults() || isDrain(dma))
+      continue;
+    for (Operation *user : dma->getResult(0).getUsers()) {
+      auto wa = dyn_cast<airrt::WaitAllOp>(user);
+      if (!wa || !wa->getNumResults())
+        continue;
+      for (Value o : wa->getOperands())
+        if (o != dma->getResult(0))
+          deps[op].insert_range(drainsOf(o));
+    }
+  }
+  return deps;
+}
+
 // A launch may read back through host memory what its own drains wrote (a
 // chain of jobs sharing one buffer). With every drain wait deferred to the
-// launch end, nothing orders that read after the drain. So await, right before
-// each input DMA, the drains ahead of it in `window` (program order) whose
-// region it reads. A shim channel retires its
-// tasks in order and an await is matched to the channel's oldest outstanding
-// task, so the drains queued on that channel ahead of the one read are awaited
+// launch end, nothing orders that read after the drain, and a DMA's
+// dependencies only gate its event, not its issue. So await, right before each
+// input DMA, the drains it depends on. A shim channel retires its tasks in
+// order and an await is matched to the channel's oldest outstanding task, so
+// the drains queued on that channel ahead of the one depended on are awaited
 // with it. They come off the launch-end wait.
 //
-// This orders every read-after-write between the launch's drains and inputs by
-// the regions they touch, which is what air-annotate-append-barrier
-// approximates by buffer. Its markers on these DMAs are dropped, unless some
-// marked DMA sits in a nested region this does not look into.
+// This orders the launch's drains and inputs as air-dependency's
+// read-after-write edges say, which air-annotate-append-barrier approximates by
+// buffer. Its markers on these DMAs are dropped, unless some marked DMA sits in
+// a nested region this does not look into.
 template <typename IsDrainFn>
 static void orderReadsAfterDrains(ArrayRef<Operation *> window,
-                                  IsDrainFn isDrain,
+                                  IsDrainFn isDrain, const DrainDeps &deps,
                                   airrt::WaitAllOp launchEnd) {
-  auto accessRange = [](airrt::DmaMemcpyNdOp dma) {
-    return air::getLinearAccessRange(
-        dma.getMixedOffsets(), dma.getMixedLengths(), dma.getMixedStrides());
-  };
   // Drains not yet awaited, per channel, in issue order.
   llvm::MapVector<Attribute, SmallVector<airrt::DmaMemcpyNdOp>> pending;
   llvm::SmallSetVector<Value, 8> awaited;
@@ -1367,11 +1405,13 @@ static void orderReadsAfterDrains(ArrayRef<Operation *> window,
       pending[dma->getAttr("metadata")].push_back(dma);
       continue;
     }
+    auto it = deps.find(op);
+    if (it == deps.end())
+      continue;
     SmallVector<Value> tokens;
     for (auto &[channel, drains] : pending) {
       auto last = llvm::find_if(llvm::reverse(drains), [&](auto d) {
-        return d.getMemref() == dma.getMemref() &&
-               air::mayOverlap(accessRange(d), accessRange(dma));
+        return it->second.contains(d.getOperation());
       });
       if (last == drains.rend())
         continue;
@@ -1451,6 +1491,9 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (drainDmas.empty())
       return;
 
+    // Read before (1) strips the drain tokens out of the dependency events.
+    DrainDeps deps = getDrainDeps(window, isDrain);
+
     // (1) Defer the wait: strip drain tokens from every non-terminator wait_all
     // and gather them onto launch_end.
     llvm::SmallSetVector<Value, 8> drainTokens;
@@ -1483,19 +1526,15 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     //
     // Move each drain up past the input DMAs ahead of it, so it is armed
     // before the inputs that drive its producer, but stop at an input that
-    // reads what an earlier drain wrote: that input waits for the earlier drain
+    // depends on an earlier drain: that input waits for the earlier drain
     // (orderReadsAfterDrains), and a drain moved above the wait would queue
     // ahead of work it depends on. Every drain moved goes before the same
     // anchor, so the drains keep their order, which a shim channel retires
-    // them in. A launch whose inputs read none of its drains gets every drain
-    // ahead of its first input.
+    // them in. A launch whose inputs depend on none of its drains gets every
+    // drain ahead of its first input.
     auto isInput = [&](Operation *op) {
       auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
       return dma && dma->getNumResults() && !isDrain(dma);
-    };
-    auto accessRange = [](airrt::DmaMemcpyNdOp dma) {
-      return air::getLinearAccessRange(
-          dma.getMixedOffsets(), dma.getMixedLengths(), dma.getMixedStrides());
     };
     if (llvm::any_of(window, isInput)) {
       SmallVector<airrt::DmaMemcpyNdOp> drainsSoFar;
@@ -1513,10 +1552,11 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
         }
         if (!isInput(op))
           continue;
-        bool readsDrain = llvm::any_of(drainsSoFar, [&](auto d) {
-          return d.getMemref() == dma.getMemref() &&
-                 air::mayOverlap(accessRange(d), accessRange(dma));
-        });
+        auto it = deps.find(op);
+        bool readsDrain =
+            it != deps.end() && llvm::any_of(drainsSoFar, [&](auto d) {
+              return it->second.contains(d.getOperation());
+            });
         if (readsDrain)
           anchor = nullptr;
         else if (!anchor)
@@ -1525,7 +1565,7 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
       // In program order, not as hoisted: a drain moved above an input that
       // reads the same region before the drain overwrites it is not what that
       // input reads.
-      orderReadsAfterDrains(window, isDrain, launchEnd);
+      orderReadsAfterDrains(window, isDrain, deps, launchEnd);
       return;
     }
 

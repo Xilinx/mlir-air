@@ -1856,25 +1856,80 @@ bool air::isDeviceToHostShimDMA(Operation *op) {
 #endif
 }
 
+// The closed range [lo, hi] `v` takes: a constant, an scf.for induction
+// variable with constant bounds, or a single-result affine.apply of such
+// values whose expression has no mod. Without mod, the expression is monotone
+// in each operand, so its extremes are at the corners of the operands' ranges.
+static std::optional<std::pair<int64_t, int64_t>>
+getValueRange(OpFoldResult v) {
+  if (auto c = getConstantIntValue(v))
+    return std::make_pair(*c, *c);
+  auto val = dyn_cast_if_present<Value>(v);
+  if (!val)
+    return std::nullopt;
+  if (auto forOp = scf::getForInductionVarOwner(val)) {
+    auto lb = getConstantIntValue(forOp.getLowerBound());
+    auto step = getConstantIntValue(forOp.getStep());
+    auto trips = air::getStaticScfForTripCountAsInt(forOp);
+    if (!lb || !step || !trips || *trips <= 0)
+      return std::nullopt;
+    int64_t last = *lb + (*trips - 1) * *step;
+    return std::make_pair(std::min(*lb, last), std::max(*lb, last));
+  }
+  auto apply = val.getDefiningOp<affine::AffineApplyOp>();
+  constexpr unsigned maxOperands = 8;
+  if (!apply || apply.getMapOperands().size() > maxOperands)
+    return std::nullopt;
+  bool hasMod = false;
+  apply.getAffineMap().getResult(0).walk([&](AffineExpr e) {
+    if (e.getKind() == AffineExprKind::Mod)
+      hasMod = true;
+  });
+  if (hasMod)
+    return std::nullopt;
+  SmallVector<std::pair<int64_t, int64_t>> in;
+  for (Value operand : apply.getMapOperands()) {
+    auto r = getValueRange(operand);
+    if (!r)
+      return std::nullopt;
+    in.push_back(*r);
+  }
+  Builder b(apply.getContext());
+  std::optional<std::pair<int64_t, int64_t>> out;
+  for (unsigned corner = 0; corner < (1u << in.size()); corner++) {
+    SmallVector<Attribute> args, folded;
+    for (auto [i, r] : llvm::enumerate(in))
+      args.push_back(b.getIndexAttr(corner & (1u << i) ? r.second : r.first));
+    if (failed(apply.getAffineMap().constantFold(args, folded)))
+      return std::nullopt;
+    int64_t x = cast<IntegerAttr>(folded[0]).getInt();
+    out =
+        out ? std::make_pair(std::min(out->first, x), std::max(out->second, x))
+            : std::make_pair(x, x);
+  }
+  return out;
+}
+
 std::optional<std::pair<int64_t, int64_t>>
 air::getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
                           ArrayRef<OpFoldResult> sizes,
-                          ArrayRef<OpFoldResult> strides) {
+                          ArrayRef<OpFoldResult> strides, bool overLoops) {
   if (offsets.size() != sizes.size() || offsets.size() != strides.size())
     return std::nullopt;
   int64_t start = 0, last = 0;
   for (auto [o, sz, st] : llvm::zip(offsets, sizes, strides)) {
-    auto offset = getConstantIntValue(o);
+    auto offset = overLoops ? getValueRange(o) : [&]() {
+      auto c = getConstantIntValue(o);
+      return c ? std::optional(std::make_pair(*c, *c)) : std::nullopt;
+    }();
     auto size = getConstantIntValue(sz);
     auto stride = getConstantIntValue(st);
     if (!offset || !size || !stride)
       return std::nullopt;
-    int64_t lo = *offset * *stride;
-    int64_t hi = (*offset + *size - 1) * *stride;
-    if (lo > hi) // negative stride
-      std::swap(lo, hi);
-    start += lo;
-    last += hi;
+    int64_t a = offset->first * *stride;
+    int64_t b = (offset->second + *size - 1) * *stride;
+    start += std::min(a, b); // a negative stride walks down
+    last += std::max(a, b);
   }
   return std::make_pair(start, last + 1);
 }
