@@ -464,7 +464,34 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
     builder.setInsertionPointToStart(module.getBody());
     xilinx::AIEX::ScratchpadParameterOp::create(
         builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
-        /*state_table_idx=*/nullptr, /*kind=*/nullptr);
+        /*state_table_idx=*/nullptr, /*kind=*/nullptr, /*min_value=*/nullptr,
+        /*max_value=*/nullptr);
+  }
+  return name;
+}
+
+// A runtime transfer length `unit * arg + base` that is affine in the runtime
+// sequence's own argument becomes a BD of static length `base` whose
+// `length_parameter` adds `arg * unit` elements at dispatch: the host writes
+// the argument itself, so one parameter per argument serves every unit.
+// Returns the parameter's name, or null if the length is not of that form.
+static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
+                                                 OpBuilder &builder,
+                                                 int64_t &unit, int64_t &base) {
+  if (!module)
+    return nullptr;
+  BlockArgument blockArg = affineInSequenceArg(length, unit, base);
+  if (!blockArg || unit <= 0 || base < 0)
+    return nullptr;
+  auto name = builder.getStringAttr("__air_param_arglen_" +
+                                    std::to_string(blockArg.getArgNumber()));
+  if (!module.lookupSymbol(name)) {
+    OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    xilinx::AIEX::ScratchpadParameterOp::create(
+        builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
+        /*state_table_idx=*/nullptr, /*kind=*/nullptr, /*min_value=*/nullptr,
+        /*max_value=*/nullptr);
   }
   return name;
 }
@@ -1090,7 +1117,38 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // DMA-task path matters: npu.dma_memcpy_nd's dynamic lowering hardwires BD
     // id 0, so a dynamic transfer sharing a shim tile with a task-path one
     // would silently overwrite its descriptor.
-    if (dynLenI32) {
+    // A runtime length in a full ELF has no BD word to compute it into; when
+    // it is affine in the sequence's argument, the scratchpad carries it
+    // instead (see declareBlockArgLengthParameter).
+    // An offset that only varies with a loop folds once the loop unrolls and
+    // stays an operand; one taken from the sequence's argument is a second
+    // runtime word, so such a transfer keeps the runtime length too.
+    int64_t lenUnit = 0, lenBase = 0;
+    StringAttr lenParam =
+        (outputElf && dynLenI32 &&
+         !(dynOffset && reachesSequenceArg(dynOffset)))
+            ? declareBlockArgLengthParameter(op->getParentOfType<ModuleOp>(),
+                                             dynLen, rewriter, lenUnit, lenBase)
+            : nullptr;
+    if (lenParam) {
+      AIE::DMABDOp::create(
+          rewriter, op.getLoc(), memref, dynOffsetI32, /*len=*/Value(),
+          /*static_offset=*/
+          dynOffsetI32 ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
+          /*static_len=*/rewriter.getI32IntegerAttr(lenBase),
+          /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
+          /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
+          /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
+          /*bd_id=*/nullptr, pktAttr,
+          /*out_of_order_id=*/nullptr,
+          /*burst_length=*/nullptr, /*axcache=*/nullptr,
+          /*iteration=*/nullptr,
+          /*offset_parameter=*/nullptr,
+          /*offset_state_table_idx=*/nullptr, FlatSymbolRefAttr::get(lenParam),
+          rewriter.getI32IntegerAttr(lenUnit),
+          /*length_state_table_idx=*/nullptr,
+          /*length_core_encoded=*/nullptr, /*next_bd_id=*/nullptr);
+    } else if (dynLenI32) {
       // A runtime length only arises for a transfer this pass has already
       // checked is one linear run, so the descriptor needs no dimensions --
       // the length carries the whole extent.
@@ -1107,7 +1165,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*burst_length=*/nullptr, /*axcache=*/nullptr,
           /*iteration=*/nullptr,
           /*offset_parameter=*/nullptr,
-          /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
+          /*offset_state_table_idx=*/nullptr, /*length_parameter=*/nullptr,
+          /*length_unit=*/nullptr, /*length_state_table_idx=*/nullptr,
+          /*length_core_encoded=*/nullptr, /*next_bd_id=*/nullptr);
     } else if (dynOffsetI32) {
       // Only the address moves. Build the descriptor exactly as the static path
       // would -- a KV append writes NGRP chunks at a region stride, and
