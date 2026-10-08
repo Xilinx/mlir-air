@@ -62,9 +62,28 @@ module {
 // CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
 // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
 
-// A mod in the offset map: no bound, so no edge, though rows 2-3 take in the
-// drained row 3.
+// A mod in the offset map: evaluated at every iteration, rows 2-3, which take
+// in the drained row 3.
 // CHECK-LABEL: func.func @wrap
+// CHECK: %[[D:.*]] = air.channel.get async  @drain[]
+// CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
+// CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
+
+// 2 * x - 3 * (x floordiv 2) + 2 over x = 0..4 is 2, 4, 3, 5, 4: row 5, which
+// the drain writes, lies between the values at x = 0 and x = 4.
+// CHECK-LABEL: func.func @div
+// CHECK: %[[D:.*]] = air.channel.get async  @drain[]
+// CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
+// CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
+
+// A loop nest over rows 5-7: no edge to a drain of row 3.
+// CHECK-LABEL: func.func @nest_disjoint
+// CHECK: air.channel.get async  @drain[]
+// CHECK: %[[W:.*]] = air.wait_all async  {id
+// CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
+
+// A mod over too many iterations to evaluate: no bound, so no edge.
+// CHECK-LABEL: func.func @huge
 // CHECK: air.channel.get async  @drain[]
 // CHECK: %[[W:.*]] = air.wait_all async  {id
 // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
@@ -83,6 +102,9 @@ module {
 
 #nest = affine_map<()[s0, s1] -> (s0 + s1 + 2)>
 #wrap = affine_map<()[s0] -> (s0 mod 2 + 2)>
+#div = affine_map<()[s0] -> (s0 * 2 - (s0 floordiv 2) * 3 + 2)>
+#far = affine_map<()[s0, s1] -> (s0 + s1 + 5)>
+#huge = affine_map<()[s0] -> (s0 mod 4)>
 module {
   air.channel @drain [1]
   air.channel @feed [1]
@@ -119,6 +141,68 @@ module {
       scf.for %x = %c0 to %c4 step %c1_0 {
         %r = affine.apply #wrap()[%x]
         air.channel.put @feed[] (%b[%r, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) {id = 4 : i32} : (memref<8x4x16xi32>)
+      }
+      air.launch_terminator
+    }
+    return
+  }
+  func.func @div(%buf: memref<8x4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%i) in (%si=%c1) args(%b=%buf) : memref<8x4x16xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c5 = arith.constant 5 : index
+      %cbig = arith.constant 10000 : index
+      %c16 = arith.constant 16 : index
+      %c64 = arith.constant 64 : index
+      %crow = arith.constant 5 : index
+      air.channel.get @drain[] (%b[%crow, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) : (memref<8x4x16xi32>)
+      scf.for %x = %c0 to %c5 step %c1_0 {
+        %r = affine.apply #div()[%x]
+        air.channel.put @feed[] (%b[%r, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) : (memref<8x4x16xi32>)
+      }
+      air.launch_terminator
+    }
+    return
+  }
+  func.func @nest_disjoint(%buf: memref<8x4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%i) in (%si=%c1) args(%b=%buf) : memref<8x4x16xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c5 = arith.constant 5 : index
+      %cbig = arith.constant 10000 : index
+      %c16 = arith.constant 16 : index
+      %c64 = arith.constant 64 : index
+      %crow = arith.constant 3 : index
+      air.channel.get @drain[] (%b[%crow, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) : (memref<8x4x16xi32>)
+      scf.for %x = %c0 to %c2 step %c1_0 {
+        scf.for %y = %c0 to %c2 step %c1_0 {
+          %r = affine.apply #far()[%x, %y]
+          air.channel.put @feed[] (%b[%r, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) : (memref<8x4x16xi32>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+  func.func @huge(%buf: memref<8x4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%i) in (%si=%c1) args(%b=%buf) : memref<8x4x16xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c5 = arith.constant 5 : index
+      %cbig = arith.constant 10000 : index
+      %c16 = arith.constant 16 : index
+      %c64 = arith.constant 64 : index
+      %crow = arith.constant 3 : index
+      air.channel.get @drain[] (%b[%crow, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) : (memref<8x4x16xi32>)
+      scf.for %x = %c0 to %cbig step %c1_0 {
+        %r = affine.apply #huge()[%x]
+        air.channel.put @feed[] (%b[%r, %c0, %c0] [%c1_0, %c1_0, %c16] [%c64, %c16, %c1_0]) : (memref<8x4x16xi32>)
       }
       air.launch_terminator
     }

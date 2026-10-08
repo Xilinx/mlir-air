@@ -3655,9 +3655,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // limit that is the same inversion: drain j cannot retire until the feeds
   // producing its data run, and those now come after it. So the drains ahead
   // of a burst are woven between its feeds in proportion to how far through
-  // the burst each is, and capped like the feeds. Drains between the feeds,
-  // and the drain awaits air-to-std put in front of a feed that reads a drained
-  // region, are woven with the feeds they precede.
+  // the burst each is. Drains between the feeds, and the drain awaits
+  // air-to-std put in front of a feed that reads a drained region, are woven
+  // with the feeds they precede. Every drain on a channel counts toward its
+  // cap, which a drain-only launch gets too.
   //
   // Only bursts that exceed the limit are touched. A design whose channels were
   // already short-run keeps its emission order and its await structure byte for
@@ -3786,11 +3787,30 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           for (const Unit &d : pendingDrains)
             midDrains.push_back({d, ~0u});
           pendingDrains.clear();
-          // Drains with no feed after them (a drain-only launch) are left as
-          // armed: their producer needs nothing later in the sequence, so a
-          // wait on an older drain always retires.
-          if (!fence || run.empty())
+          if (!fence)
             return;
+          if (run.empty()) {
+            // Drains with no feed after them in the block (a drain-only
+            // launch): their producer needs nothing later in the sequence, so a
+            // wait on an older drain always retires, and they are capped like
+            // any other channel.
+            bool feedAfter = false;
+            for (Operation *o = fence; o && !feedAfter; o = o->getNextNode())
+              o->walk([&](AIEX::DMAConfigureTaskForOp c) {
+                if (channelDir(c) != AIE::DMAChannelDir::S2MM)
+                  feedAfter = true;
+              });
+            if (feedAfter)
+              return;
+            llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
+            for (const Unit &u : drains)
+              drainsByChan[u.chan].push_back(u);
+            for (auto &kv : drainsByChan)
+              capChannel(kv.second, [&](unsigned i) {
+                return kv.second[i].cfg.getOperation();
+              });
+            return;
+          }
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
           for (const Unit &u : run)
             byChan[u.chan].push_back(u);
@@ -3800,6 +3820,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           unsigned rounds = 0;
           for (auto &kv : byChan)
             rounds = std::max<unsigned>(rounds, kv.second.size());
+          // Every drain on a channel, ahead of the feeds and between them, in
+          // program order: the order the channel fills them in.
+          llvm::MapVector<StringRef, SmallVector<Unit>> allDrainsByChan;
+          for (const Unit &u : drains)
+            allDrainsByChan[u.chan].push_back(u);
+          for (auto &[u, r] : midDrains)
+            allDrainsByChan[u.chan].push_back(u);
           unsigned deepestDrain = 0;
           for (auto &kv : drainsByChan)
             deepestDrain = std::max<unsigned>(deepestDrain, kv.second.size());
@@ -3822,6 +3849,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           // back until the round after that one, or the wait would be on feeds
           // not yet issued. Round `rounds` means after every feed.
           SmallVector<SmallVector<Unit>> drainsAt(rounds + 1);
+          // The round each leading drain is armed at, per channel; drains
+          // between the feeds come no earlier.
+          llvm::StringMap<unsigned> lastLeadingRound;
           // The round of the first feed that awaits `drain`, or `rounds`.
           auto firstAwaiter = [&](Unit drain) {
             unsigned r = rounds;
@@ -3846,6 +3876,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                   r = std::max(r, lastRound(j - burstLimit) + 1);
                 // Never after a feed that awaits it.
                 r = std::min(r, firstAwaiter(kv.second[j]));
+                if (j)
+                  r = std::max(r, lastLeadingRound[kv.first]);
+                lastLeadingRound[kv.first] = std::min(r, rounds);
                 drainsAt[std::min(r, rounds)].push_back(kv.second[j]);
               }
             }
@@ -3861,6 +3894,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               midByChan[u.chan].push_back({u, std::min(r, firstAwaiter(u))});
             for (auto &kv : midByChan) {
               auto &ds = kv.second;
+              if (auto it = lastLeadingRound.find(kv.first);
+                  it != lastLeadingRound.end() && !ds.empty())
+                ds[0].second = std::max(ds[0].second, it->second);
               for (unsigned j = 1; j < ds.size(); j++)
                 ds[j].second = std::max(ds[j].second, ds[j - 1].second);
               for (unsigned j = ds.size(); j-- > 1;)
@@ -3900,11 +3936,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                        [&](unsigned i) { return kv.second[i].start; });
           // A drain's wait goes ahead of its configure rather than its start,
           // so the BD it frees is free for the configure to take.
-          if (weaveDrains)
-            for (auto &kv : drainsByChan)
-              capChannel(kv.second, [&](unsigned i) {
-                return kv.second[i].cfg.getOperation();
-              });
+          for (auto &kv : allDrainsByChan)
+            capChannel(kv.second, [&](unsigned i) {
+              return kv.second[i].cfg.getOperation();
+            });
         };
 
         // The single start of `cfg` in this block, or null if it has none or

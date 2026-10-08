@@ -1857,9 +1857,11 @@ bool air::isDeviceToHostShimDMA(Operation *op) {
 }
 
 // The closed range [lo, hi] `v` takes: a constant, an scf.for induction
-// variable with constant bounds, or a single-result affine.apply of such
-// values whose expression has no mod. Without mod, the expression is monotone
-// in each operand, so its extremes are at the corners of the operands' ranges.
+// variable with constant bounds, or an affine.apply of such values. A linear
+// expression is evaluated at the corners of its operands' ranges, where its
+// extremes are. One with a floordiv, ceildiv or mod can peak between them, so
+// it is evaluated at every point of the operands' ranges, when there are few
+// enough.
 static std::optional<std::pair<int64_t, int64_t>>
 getValueRange(OpFoldResult v) {
   if (auto c = getConstantIntValue(v))
@@ -1877,36 +1879,53 @@ getValueRange(OpFoldResult v) {
     return std::make_pair(std::min(*lb, last), std::max(*lb, last));
   }
   auto apply = val.getDefiningOp<affine::AffineApplyOp>();
-  // Each operand doubles the corners to evaluate.
-  constexpr unsigned maxOperands = 8;
-  if (!apply || apply.getMapOperands().size() > maxOperands)
+  if (!apply)
     return std::nullopt;
-  bool hasMod = false;
+  bool linear = true;
   apply.getAffineMap().getResult(0).walk([&](AffineExpr e) {
-    if (e.getKind() == AffineExprKind::Mod)
-      hasMod = true;
+    if (e.getKind() == AffineExprKind::Mod ||
+        e.getKind() == AffineExprKind::FloorDiv ||
+        e.getKind() == AffineExprKind::CeilDiv)
+      linear = false;
   });
-  if (hasMod)
-    return std::nullopt;
   SmallVector<std::pair<int64_t, int64_t>> in;
+  // Linear: 2^n corners. Otherwise: every point.
+  constexpr uint64_t maxPoints = 4096;
+  uint64_t points = 1;
   for (Value operand : apply.getMapOperands()) {
     auto r = getValueRange(operand);
     if (!r)
       return std::nullopt;
     in.push_back(*r);
+    points *= linear ? 2 : uint64_t(r->second - r->first + 1);
+    if (points > maxPoints)
+      return std::nullopt;
   }
   Builder b(apply.getContext());
   std::optional<std::pair<int64_t, int64_t>> out;
-  for (unsigned corner = 0; corner < (1u << in.size()); corner++) {
+  SmallVector<int64_t> at =
+      llvm::map_to_vector(in, [](auto r) { return r.first; });
+  while (true) {
     SmallVector<Attribute> args, folded;
-    for (auto [i, r] : llvm::enumerate(in))
-      args.push_back(b.getIndexAttr(corner & (1u << i) ? r.second : r.first));
+    for (int64_t x : at)
+      args.push_back(b.getIndexAttr(x));
     if (failed(apply.getAffineMap().constantFold(args, folded)))
       return std::nullopt;
     int64_t x = cast<IntegerAttr>(folded[0]).getInt();
     out =
         out ? std::make_pair(std::min(out->first, x), std::max(out->second, x))
             : std::make_pair(x, x);
+    // Next point: corners step from lo straight to hi.
+    unsigned i = 0;
+    for (; i < at.size(); i++) {
+      if (at[i] < in[i].second) {
+        at[i] = linear ? in[i].second : at[i] + 1;
+        break;
+      }
+      at[i] = in[i].first;
+    }
+    if (i == at.size())
+      break;
   }
   return out;
 }
