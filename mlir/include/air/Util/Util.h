@@ -393,6 +393,19 @@ void copyPaddingAttributes(Operation *src, Operation *dst);
 // or no matching ShimDMAAllocationOp.
 bool isDeviceToHostShimDMA(Operation *op);
 
+// The linear element range [start, end) an access pattern touches, given one
+// offset, size and stride per dimension (the offset counts in units of that
+// dimension's stride). std::nullopt if any of them is not a constant.
+std::optional<std::pair<int64_t, int64_t>>
+getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
+                     ArrayRef<OpFoldResult> sizes,
+                     ArrayRef<OpFoldResult> strides);
+
+// Whether two access patterns into the same buffer may touch a common element:
+// false only when both linear ranges are known and disjoint.
+bool mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
+                std::optional<std::pair<int64_t, int64_t>> b);
+
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
