@@ -4,6 +4,7 @@
 
 add_mlir_dialect_library(AIRTransformOps
   AIRTransformOps.cpp
+  AIRLinearizeVectors.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/AIR/
@@ -12,6 +13,17 @@ add_mlir_dialect_library(AIRTransformOps
   AIRTransformOpsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRArithDialect
+  MLIRFuncDialect
   MLIRIR
+  MLIRMemRefDialect
   MLIRTransformDialect
+  MLIRTransformUtils
+  MLIRUBDialect
+  MLIRVectorDialect
+  MLIRVectorTransforms
+  MLIRVectorUtils
 )
+if(AIR_ENABLE_AIE)
+  target_link_libraries(AIRTransformOps PUBLIC MLIRAIEVecDialect)
+endif()

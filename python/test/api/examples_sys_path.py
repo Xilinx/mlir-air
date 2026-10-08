@@ -50,7 +50,7 @@ def resolve(node, env, this):
         name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
         if name in ("str", "Path") and node.args:
             return resolve(node.args[0], env, this)
-        if name == "resolve":
+        if name == "resolve" and isinstance(fn, ast.Attribute):
             return resolve(fn.value, env, this)
         if name == "abspath" and node.args:
             return resolve(node.args[0], env, this)

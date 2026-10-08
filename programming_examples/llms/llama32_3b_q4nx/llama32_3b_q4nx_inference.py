@@ -56,6 +56,13 @@ TOKENIZER_DEFAULT = os.environ.get("Q4NX_TOKENIZER", "meta-llama/Llama-3.2-3B-In
 TEMPLATES_DEFAULT = os.environ.get("DECODE_TEMPLATES", str(_THIS_DIR))
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def compile_prefill(seq_len: int) -> None:
     """Build/cache the prefill ELFs (weight-free, CI-runnable). The fused decode
     templates are built separately by `make compile-decode` (~15 min)."""
@@ -119,6 +126,9 @@ def generate_stream(
         logits = np.asarray(prefiller.prefill(list(prompt_ids)), np.float32)
         kvs = [prefiller.kv_view(L) for L in range(dec.N_LAYERS)]
         dec.seed_kv([k for k, _ in kvs], [v for _, v in kvs])
+        # release the prefill's hw_context for the decoder; prefill() resumes it
+        if hasattr(prefiller, "suspend"):
+            prefiller.suspend()
     else:
         dec.reset_kv()
         logits = None
@@ -159,6 +169,16 @@ def build_prefiller(args, prompt_len=None):
     into resident BOs."""
     if args.no_prefill:
         return None
+    if args.fused_prefill:
+        import types
+
+        sys.modules.setdefault(
+            "air_examples", types.ModuleType("air_examples")
+        ).__path__ = [str(Path(__file__).resolve().parents[2])]
+        from air_examples.llms.shared.fused_prefill import dense
+
+        print(f"\nLoading the fused prefill ({args.fused_prefill}) ...")
+        return dense.load("llama32_3b_q4nx", args.fused_prefill, args.model_source)
     if prompt_len is not None and prompt_len < args.prefill_min:
         print(
             f"\nPrompt is {prompt_len} tokens (< --prefill-min {args.prefill_min}); "
@@ -202,7 +222,14 @@ def repl(dec, tokenizer, args, prefiller=None):
             break
         ids = format_prompt(tokenizer, line, args.model)
         pf = prefiller if len(ids) >= args.prefill_min else None
-        _, tp, tg = generate_stream(dec, tokenizer, ids, args.n_tokens, prefiller=pf)
+        _, tp, tg = generate_stream(
+            dec,
+            tokenizer,
+            ids,
+            args.n_tokens,
+            prefiller=pf,
+            min_prefill=args.prefill_min,
+        )
         print(f"\n[{len(ids)} prompt tok in {tp:.2f}s | decode {tg:.2f}s]", flush=True)
 
 
@@ -264,13 +291,23 @@ if __name__ == "__main__":
         help="keep generating past EOS (use with --profile so the decode rate is "
         "measured over the full --n-tokens)",
     )
+    parser.add_argument(
+        "--fused-prefill",
+        default=_fused_build(),
+        metavar="BUILD_DIR",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
+    )
     parser.add_argument("--interactive", action="store_true")
     args = parser.parse_args()
 
     if args.interactive and args.compile_only:
         parser.error("--interactive cannot be combined with --compile-only")
 
-    if not args.run_only:
+    if args.fused_prefill:
+        # no padded length, so even a short prompt is cheaper prefilled
+        args.prefill_min = 1
+    if not args.run_only and (args.compile_only or not args.fused_prefill):
         compile_prefill(args.seq_len)
         if args.compile_only:
             print("\nCompilation passed.")
@@ -297,6 +334,7 @@ if __name__ == "__main__":
         ids,
         args.n_tokens,
         prefiller=prefiller,
+        min_prefill=args.prefill_min,
         stop_on_eos=not args.no_eos_stop,
     )
     if args.profile:

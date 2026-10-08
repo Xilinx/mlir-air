@@ -34,6 +34,7 @@ for _p in (str(_VERIFY), str(_LLAMA1B), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
 # Q4NX Llama-3.2-1B shares the bf16 1B architecture (16 layers, emb=2048,
@@ -98,8 +99,10 @@ class NpuRunner:
         from llama32_1b_q4nx_prefill import LlamaQ4nxPrefill
         from llama32_1b_q4nx_inference import FusedDecoder
 
-        self.prefiller = LlamaQ4nxPrefill(seq_len=max_seq, n_layers=_N_LAYERS)
-        self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
+        self.prefiller = fused_prefill.load("llama32_1b_q4nx", Q4NX_MODEL_SOURCE)
+        if self.prefiller is None:
+            self.prefiller = LlamaQ4nxPrefill(seq_len=max_seq, n_layers=_N_LAYERS)
+            self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
         self.dec = FusedDecoder()
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
@@ -122,6 +125,8 @@ class NpuRunner:
             ]
         )
         self._P = K.shape[1]
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()  # free its hw_context for the decoder
         # Reset + seed the decoder's region-major KV cache from this prefill.
         self.dec.KV[:] = 0
         self.dec.seed_kv(K, V, self._P)

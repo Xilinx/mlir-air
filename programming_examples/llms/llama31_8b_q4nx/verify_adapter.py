@@ -38,6 +38,7 @@ for _p in (str(_VERIFY), str(_LLAMA3B), str(_THIS_DIR)):
     sys.path.insert(0, _p)
 
 from llama31_8b_q4nx_weights import llama31_8b_config  # noqa: E402
+from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 from q4nx_decode_8b import FusedDecode8B  # noqa: E402
 from llama31_8b_q4nx_inference import PREFILL_MIN_TOKENS  # noqa: E402
@@ -104,6 +105,8 @@ class FusedDecodeRunner:
 
     def _prefiller(self):
         if self._pf is None:
+            self._pf = fused_prefill.load("llama31_8b_q4nx", self._model_source)
+        if self._pf is None:
             from llama31_8b_q4nx_prefill import LlamaQ4nxPrefill
 
             self._pf = LlamaQ4nxPrefill(
@@ -115,11 +118,15 @@ class FusedDecodeRunner:
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
         toks = [int(t) for t in np.asarray(prompt_tokens).reshape(-1)]
-        if not self._no_pf and (self._force_pf or len(toks) >= PREFILL_MIN_TOKENS):
+        # the fused prefill costs what its chunks cost, so it takes every prompt
+        long = len(toks) >= PREFILL_MIN_TOKENS or fused_prefill.build_dir()
+        if not self._no_pf and (self._force_pf or long):
             pf = self._prefiller()
             pf.clear_context()
             logits = np.asarray(pf.prefill(toks), np.float32)
             kvs = [pf.kv_view(L) for L in range(self._dec.N_LAYERS)]
+            if hasattr(pf, "suspend"):
+                pf.suspend()  # free its hw_context for the decoder
             self._dec.reset_kv()
             self._dec.seed_kv([k for k, _ in kvs], [v for _, v in kvs])
         else:

@@ -35,6 +35,7 @@ for _p in (str(_VERIFY), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
 from lfm2_1_2b_q4nx_weights import Lfm2Q4nxConfig  # noqa: E402
@@ -91,9 +92,11 @@ class NpuRunner:
         from lfm2_1_2b_q4nx_prefill import Lfm2Q4nxPrefill
         from lfm2_1_2b_q4nx_inference import FusedDecoder
 
-        self.prefiller = Lfm2Q4nxPrefill(seq_len=max_seq)
-        self.prefiller.compile()
-        self.prefiller.load_weights(model=MODEL_SOURCE)
+        self.prefiller = fused_prefill.load("lfm2_1_2b_q4nx", MODEL_SOURCE)
+        if self.prefiller is None:
+            self.prefiller = Lfm2Q4nxPrefill(seq_len=max_seq)
+            self.prefiller.compile()
+            self.prefiller.load_weights(model=MODEL_SOURCE)
         self.cfg = self.prefiller.config
         self.dec = FusedDecoder()
         self.attn_maxl = self.dec.ATTN_MAXL
@@ -121,6 +124,8 @@ class NpuRunner:
             else:
                 S[li] = np.asarray(self.prefiller.get_conv_state(li), np.float32)
         self._P = P
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()  # free its hw_context for the decoder
         self.dec.KVC[:] = 0
         self.dec.seed_state(K, V, S, P)
 

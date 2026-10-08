@@ -59,6 +59,13 @@ EOS_IDS = (1, 106)  # <eos>, <end_of_turn>
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_gemma")
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _ensure_requant_cache(fd, model):
     """Return the decode q4k-cascade cache path, building it from model.q4nx on first
     use (one-time ~pack of 34 layers + lm-head). Honors Q4NX_GEMMA_DECODE_NPZ."""
@@ -422,7 +429,7 @@ class FusedDecoder:
             pass
 
 
-def _prefill_npu(prompt, model, seq_len=None):
+def _prefill_npu(prompt, model, seq_len=None, fused=None):
     """Batched AIR prefill on the NPU -> (Kc, Vc, first_token, ttft_s).
 
     Kc/Vc are [NUM_LAYERS, P, DK] roped-K / raw-V, the layout FusedDecoder.seed_kv
@@ -435,15 +442,24 @@ def _prefill_npu(prompt, model, seq_len=None):
     reported separately."""
     import os
     import time
+    import types
 
-    from gemma3_4b_q4nx_prefill import GemmaQ4nxPrefill
-
-    seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
     t_load = time.perf_counter()
-    pf = GemmaQ4nxPrefill(
-        seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
-    )
-    pf.load_weights(model=model)
+    if fused:
+        sys.modules.setdefault(
+            "air_examples", types.ModuleType("air_examples")
+        ).__path__ = [str(_HERE.parents[1])]
+        from air_examples.llms.shared.fused_prefill import dense
+
+        pf = dense.load("gemma3_4b_q4nx", fused, model)
+    else:
+        from gemma3_4b_q4nx_prefill import GemmaQ4nxPrefill
+
+        seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
+        pf = GemmaQ4nxPrefill(
+            seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+        )
+        pf.load_weights(model=model)
     print(
         f"[inference] model load (dequant + resident BOs): "
         f"{time.perf_counter() - t_load:.1f}s",
@@ -453,10 +469,20 @@ def _prefill_npu(prompt, model, seq_len=None):
     logits = pf.prefill(prompt)
     ttft = time.perf_counter() - t0
     Kc, Vc = pf.kv_stack()
+    # release the prefill's hw_context for the decoder; prefill() resumes it
+    if hasattr(pf, "suspend"):
+        pf.suspend()
     return Kc, Vc, int(logits.argmax()), ttft
 
 
-def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=False):
+def generate(
+    prompt,
+    n_tokens,
+    model=MODEL_DEFAULT,
+    greedy=True,
+    numpy_prefill=False,
+    fused_prefill=None,
+):
     import numpy as np, time
     import gemma3_4b_q4nx_weights as gw
 
@@ -473,7 +499,7 @@ def generate(prompt, n_tokens, model=MODEL_DEFAULT, greedy=True, numpy_prefill=F
         first = int(logits[-1].argmax())
         ttft = time.perf_counter() - t0  # the numpy path fuses load and compute
     else:
-        Kc, Vc, first, ttft = _prefill_npu(prompt, model)
+        Kc, Vc, first, ttft = _prefill_npu(prompt, model, fused=fused_prefill)
     P = Kc.shape[1]
     print(f"[inference] prefill first token = {first} (Paris=9079)", flush=True)
     # Machine-readable line for bench/extract_perf.py (nightly LLM dashboard).
@@ -564,6 +590,13 @@ def main():
         help="seed the KV cache with the numpy reference forward instead of the "
         "AIR NPU prefill (the oracle it is checked against; tens of seconds)",
     )
+    ap.add_argument(
+        "--fused-prefill",
+        default=_fused_build(),
+        metavar="BUILD_DIR",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
+    )
     args = ap.parse_args()
 
     if args.prompt_ids:
@@ -577,7 +610,11 @@ def main():
     print(f"[inference] prompt = {len(prompt)} tokens: {prompt}", flush=True)
 
     gen_ids = generate(
-        prompt, args.n_tokens, model=args.model, numpy_prefill=args.numpy_prefill
+        prompt,
+        args.n_tokens,
+        model=args.model,
+        numpy_prefill=args.numpy_prefill,
+        fused_prefill=args.fused_prefill,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")
