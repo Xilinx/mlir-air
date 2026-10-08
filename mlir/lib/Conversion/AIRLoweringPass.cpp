@@ -1553,11 +1553,11 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
         if (!isInput(op))
           continue;
         auto it = deps.find(op);
-        bool readsDrain =
+        bool dependsOnDrain =
             it != deps.end() && llvm::any_of(drainsSoFar, [&](auto d) {
               return it->second.contains(d.getOperation());
             });
-        if (readsDrain)
+        if (dependsOnDrain)
           anchor = nullptr;
         else if (!anchor)
           anchor = op;

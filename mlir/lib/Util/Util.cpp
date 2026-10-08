@@ -1877,6 +1877,7 @@ getValueRange(OpFoldResult v) {
     return std::make_pair(std::min(*lb, last), std::max(*lb, last));
   }
   auto apply = val.getDefiningOp<affine::AffineApplyOp>();
+  // Each operand doubles the corners to evaluate.
   constexpr unsigned maxOperands = 8;
   if (!apply || apply.getMapOperands().size() > maxOperands)
     return std::nullopt;
@@ -1918,10 +1919,9 @@ air::getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
     return std::nullopt;
   int64_t start = 0, last = 0;
   for (auto [o, sz, st] : llvm::zip(offsets, sizes, strides)) {
-    auto offset = overLoops ? getValueRange(o) : [&]() {
-      auto c = getConstantIntValue(o);
-      return c ? std::optional(std::make_pair(*c, *c)) : std::nullopt;
-    }();
+    auto offset = getValueRange(o);
+    if (!overLoops && !getConstantIntValue(o))
+      offset = std::nullopt;
     auto size = getConstantIntValue(sz);
     auto stride = getConstantIntValue(st);
     if (!offset || !size || !stride)
