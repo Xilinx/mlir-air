@@ -395,11 +395,14 @@ bool isDeviceToHostShimDMA(Operation *op);
 
 // The linear element range [start, end) an access pattern touches, given one
 // offset, size and stride per dimension (the offset counts in units of that
-// dimension's stride). std::nullopt if any of them is not a constant.
+// dimension's stride). std::nullopt if any of them is not a constant. With
+// `overLoops`, an offset may be any index value that value-bounds analysis
+// bounds (loop induction variables, affine.apply, arith), and the range covers
+// every value it can take.
 std::optional<std::pair<int64_t, int64_t>>
 getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
                      ArrayRef<OpFoldResult> sizes,
-                     ArrayRef<OpFoldResult> strides);
+                     ArrayRef<OpFoldResult> strides, bool overLoops = false);
 
 // Whether two access patterns into the same buffer may touch a common element:
 // false only when both linear ranges are known and disjoint.

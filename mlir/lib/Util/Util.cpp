@@ -32,6 +32,7 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -1856,25 +1857,46 @@ bool air::isDeviceToHostShimDMA(Operation *op) {
 #endif
 }
 
+// The closed range [lo, hi] `v` takes, as far as its backward slice bounds it
+// (scf.for bounds, affine.apply, arith).
+static std::optional<std::pair<int64_t, int64_t>>
+getValueRange(OpFoldResult v) {
+  if (auto c = getConstantIntValue(v))
+    return std::make_pair(*c, *c);
+  auto val = dyn_cast_if_present<Value>(v);
+  if (!val || !val.getType().isIndex())
+    return std::nullopt;
+  using VB = ValueBoundsConstraintSet;
+  ValueBoundsOptions closed;
+  closed.closedUB = true;
+  FailureOr<int64_t> lo =
+      VB::computeConstantBound(presburger::BoundType::LB, VB::Variable(val));
+  FailureOr<int64_t> hi = VB::computeConstantBound(
+      presburger::BoundType::UB, VB::Variable(val), nullptr, closed);
+  if (failed(lo) || failed(hi))
+    return std::nullopt;
+  return std::make_pair(*lo, *hi);
+}
+
 std::optional<std::pair<int64_t, int64_t>>
 air::getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
                           ArrayRef<OpFoldResult> sizes,
-                          ArrayRef<OpFoldResult> strides) {
+                          ArrayRef<OpFoldResult> strides, bool overLoops) {
   if (offsets.size() != sizes.size() || offsets.size() != strides.size())
     return std::nullopt;
   int64_t start = 0, last = 0;
   for (auto [o, sz, st] : llvm::zip(offsets, sizes, strides)) {
-    auto offset = getConstantIntValue(o);
+    auto offset = getValueRange(o);
+    if (!overLoops && !getConstantIntValue(o))
+      offset = std::nullopt;
     auto size = getConstantIntValue(sz);
     auto stride = getConstantIntValue(st);
     if (!offset || !size || !stride)
       return std::nullopt;
-    int64_t lo = *offset * *stride;
-    int64_t hi = (*offset + *size - 1) * *stride;
-    if (lo > hi) // negative stride
-      std::swap(lo, hi);
-    start += lo;
-    last += hi;
+    int64_t a = offset->first * *stride;
+    int64_t b = (offset->second + *size - 1) * *stride;
+    start += std::min(a, b); // a negative stride walks down
+    last += std::max(a, b);
   }
   return std::make_pair(start, last + 1);
 }

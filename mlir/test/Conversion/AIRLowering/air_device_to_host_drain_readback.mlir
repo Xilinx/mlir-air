@@ -8,10 +8,11 @@
 // RUN: air-opt %s -air-to-std -split-input-file | FileCheck %s
 
 // A launch that reads back through host memory what its own drains wrote: job r
-// reads row r - 1, which job r - 1 drained. air-to-std awaits each drain right
-// before the first input that reads its region, and moves a drain up past the
-// inputs ahead of it only as far as such a read. The append-barrier markers,
-// which pair the same accesses by buffer, are dropped.
+// reads row r - 1, which job r - 1 drained, and depends on that drain (the edge
+// air-dependency adds; the second one through a wait_all). air-to-std awaits
+// each drain right before the first input that depends on it, and moves a drain
+// up past the inputs ahead of it only as far as such an input. The
+// append-barrier markers, which pair the same accesses by buffer, are dropped.
 
 // CHECK-LABEL: func.func @chain
 // CHECK: %[[D1:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc
@@ -45,9 +46,10 @@ module {
       %d1 = air.channel.get async  @out[] (%b[%c64] [%c64] [%c1_l]) {air.append_barrier, id = 1 : i32, metadata = @outAlloc} : (memref<256xi32>)
       %r0 = air.channel.put async  @in[] (%b[%c0] [%c64] [%c1_l]) {air.await_appends, id = 2 : i32, metadata = @inAlloc} : (memref<256xi32>)
       %d2 = air.channel.get async  @out[] (%b[%c128] [%c64] [%c1_l]) {air.append_barrier, id = 3 : i32, metadata = @outAlloc} : (memref<256xi32>)
-      %r1 = air.channel.put async  @in[] (%b[%c64] [%c64] [%c1_l]) {air.await_appends, id = 4 : i32, metadata = @inAlloc} : (memref<256xi32>)
+      %r1 = air.channel.put async [%d1]  @in[] (%b[%c64] [%c64] [%c1_l]) {air.await_appends, id = 4 : i32, metadata = @inAlloc} : (memref<256xi32>)
       %d3 = air.channel.get async  @out[] (%b[%c192] [%c64] [%c1_l]) {air.append_barrier, id = 5 : i32, metadata = @outAlloc} : (memref<256xi32>)
-      %r2 = air.channel.put async  @in[] (%b[%c128] [%c64] [%c1_l]) {air.await_appends, id = 6 : i32, metadata = @inAlloc} : (memref<256xi32>)
+      %w2 = air.wait_all async [%d2]
+      %r2 = air.channel.put async [%w2]  @in[] (%b[%c128] [%c64] [%c1_l]) {air.await_appends, id = 6 : i32, metadata = @inAlloc} : (memref<256xi32>)
       %e = air.wait_all async [%d1, %r0, %d2, %r1, %d3, %r2] {air.launch_end}
       %s = air.segment @seg0 async {
         %c1_0 = arith.constant 1 : index
@@ -68,11 +70,11 @@ module {
 
 // -----
 
-// The same buffer, but the input reads rows the drain does not write: nothing to
-// order, so the drain is armed ahead of the input, nothing waits on it before
-// the launch end, and the markers the buffer-level pairing put on the two are
-// dropped. (Awaiting the drain before that input would make the job wait for
-// its own output.)
+// The same buffer, but the input reads rows the drain does not write, so it
+// does not depend on the drain: the drain is armed ahead of the input, nothing
+// waits on it before the launch end, and the markers the buffer-level pairing
+// put on the two are dropped. (Awaiting the drain before that input would make
+// the job wait for its own output.)
 
 // CHECK-LABEL: func.func @disjoint
 // CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc2
@@ -156,6 +158,54 @@ module {
           }
           %g = air.channel.get async [%tok]  @in3[] (%a[] [] []) {id = 3 : i32} : (memref<64xi32, 2>)
           %p = air.channel.put async [%g]  @out3[] (%a[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
+
+// -----
+
+// An input that depends only on the second of two drains on one channel. An
+// await takes the channel's oldest outstanding task, so the first drain is
+// awaited with it.
+
+// CHECK-LABEL: func.func @fifo
+// CHECK: %[[D1:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc4
+// CHECK: %[[D2:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc4
+// CHECK: airrt.wait_all %[[D1]], %[[D2]]{{$}}
+// CHECK-NEXT: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc4
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @outAlloc4(%t, S2MM, 0)
+    aie.shim_dma_allocation @inAlloc4(%t, MM2S, 0)
+  } {sym_name = "seg3"}
+  air.channel @out4 [1, 1]
+  air.channel @in4 [1, 1]
+  func.func @fifo(%buf: memref<256xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%b=%buf) : memref<256xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_l = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %d1 = air.channel.get async  @out4[] (%b[%c0] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc4} : (memref<256xi32>)
+      %d2 = air.channel.get async  @out4[] (%b[%c64] [%c64] [%c1_l]) {id = 2 : i32, metadata = @outAlloc4} : (memref<256xi32>)
+      %r = air.channel.put async [%d2]  @in4[] (%b[%c64] [%c64] [%c1_l]) {id = 3 : i32, metadata = @inAlloc4} : (memref<256xi32>)
+      %e = air.wait_all async [%d1, %d2, %r] {air.launch_end}
+      %s = air.segment @seg3 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h4 async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %g = air.channel.get async [%tok]  @in4[] (%a[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+          %p = air.channel.put async [%g]  @out4[] (%a[] [] []) {id = 5 : i32} : (memref<64xi32, 2>)
         }
       }
       air.launch_terminator
