@@ -18,6 +18,7 @@ probe times the device work and checks it against an fp32 reference, not the
 self layers' data flow (their action K/V come from this step's QKV).
 CPU reference point: ~0.96 ms per layer-step (153 ms for 10 steps x 16 layers).
 """
+
 import argparse
 import sys
 from pathlib import Path

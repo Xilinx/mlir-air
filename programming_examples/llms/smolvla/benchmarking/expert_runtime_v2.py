@@ -8,6 +8,7 @@ own-key score / PV jobs read those tiles as bf16 through its third argument, the
 arena buffer. The host only lays the backbone's K/V rows into that buffer (no packing, no
 arithmetic), builds the masks and the per-chunk rotation matrix R(p0), and writes x per call.
 """
+
 import time
 from pathlib import Path
 

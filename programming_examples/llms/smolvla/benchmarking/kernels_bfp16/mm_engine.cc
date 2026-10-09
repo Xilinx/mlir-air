@@ -1,4 +1,5 @@
-//===- mm_engine.cc - GEMM engine kernels: bfp16 GEMM + fused epilogues -*- C++ -*-===//
+//===- mm_engine.cc - GEMM engine kernels: bfp16 GEMM + fused epilogues -*- C++
+//-*-===//
 //
 // SPDX-License-Identifier: MIT
 //
@@ -14,8 +15,8 @@
 //   f32_to_bf16_rms_swiglu drain: row scale by rstd, then SwiGLU, into one half
 //                          of the output tile
 //
-// Layouts: acc (DIM_N/8, DIM_M/8, 8, 8) N-outer; A tile (DIM_M/8, DIM_K/8, 8, 8);
-// every 8x8 block is row-major (m row, n or k column).
+// Layouts: acc (DIM_N/8, DIM_M/8, 8, 8) N-outer; A tile (DIM_M/8, DIM_K/8, 8,
+// 8); every 8x8 block is row-major (m row, n or k column).
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,13 +42,11 @@
 // 8 rows of 8 bf16 (row stride `stride` elements) as one row-major 8x8 block.
 static inline aie::vector<bfloat16, 64> load_block_8x8(const bfloat16 *p,
                                                        unsigned stride) {
-  return aie::concat(aie::load_v<8>(p), aie::load_v<8>(p + stride),
-                     aie::load_v<8>(p + 2 * stride),
-                     aie::load_v<8>(p + 3 * stride),
-                     aie::load_v<8>(p + 4 * stride),
-                     aie::load_v<8>(p + 5 * stride),
-                     aie::load_v<8>(p + 6 * stride),
-                     aie::load_v<8>(p + 7 * stride));
+  return aie::concat(
+      aie::load_v<8>(p), aie::load_v<8>(p + stride),
+      aie::load_v<8>(p + 2 * stride), aie::load_v<8>(p + 3 * stride),
+      aie::load_v<8>(p + 4 * stride), aie::load_v<8>(p + 5 * stride),
+      aie::load_v<8>(p + 6 * stride), aie::load_v<8>(p + 7 * stride));
 }
 
 static inline aie::block_vector<bfp16ebs8, 64>
@@ -109,7 +108,8 @@ static void own_pv(bfloat16 *a, uint8_t *b_bytes, float *acc, unsigned kc,
   const auto ones = to_bfp16(aie::broadcast<bfloat16, 64>((bfloat16)1.0f));
   for (unsigned nb = 0; nb < H; nb++) {
     const unsigned o = o0 + nb * T, j = o / OWN_HD;
-    const unsigned vc = (t * OWN_HPT + j) / OWN_QPG * OWN_HD + o % OWN_HD - col0;
+    const unsigned vc =
+        (t * OWN_HPT + j) / OWN_QPG * OWN_HD + o % OWN_HD - col0;
     for (unsigned cl = 0; cl < 2; cl++) {
       for (unsigned kg = 0; kg < 2; kg++) {
         const unsigned kb = cl * OWN_HPT * 2 + j * 2 + kg;
@@ -191,11 +191,11 @@ void SYM(rows_rstd)(float *ss) {
   }
 }
 
-// RMSNorm row scale, then RoPE on adjacent column pairs: (a, b) -> (a cos - b sin,
-// b cos + a sin), with (cos, sin) the matching column pair of the A tile's half
-// `half` (the table rides the A channel like a residual). Head dims are stored
-// pair-interleaved so each rotation stays inside one 8x8 block; (1, 0) pairs pass
-// columns through unrotated.
+// RMSNorm row scale, then RoPE on adjacent column pairs: (a, b) -> (a cos - b
+// sin, b cos + a sin), with (cos, sin) the matching column pair of the A tile's
+// half `half` (the table rides the A channel like a residual). Head dims are
+// stored pair-interleaved so each rotation stays inside one 8x8 block; (1, 0)
+// pairs pass columns through unrotated.
 void SYM(rms_rope_blocked)(float *acc, float *ss, bfloat16 *a, int32_t half) {
   constexpr unsigned T = 8, NB = DIM_N / T, MB = DIM_M / T, KB = DIM_K / T;
   constexpr unsigned BE = T * T, VW = 16;
@@ -222,8 +222,8 @@ void SYM(rms_rope_blocked)(float *acc, float *ss, bfloat16 *a, int32_t half) {
         aie::accum<accfloat, VW> t0, t1;
         t0.from_vector(aie::load_v<VW>(pa + e));
         t1.from_vector(aie::load_v<VW>(pa + e + VW));
-        auto [co, si] = aie::interleave_unzip(t0.template to_vector<float>(),
-                                              t1.template to_vector<float>(), 1);
+        auto [co, si] = aie::interleave_unzip(
+            t0.template to_vector<float>(), t1.template to_vector<float>(), 1);
         aie::vector<float, VW> oa =
             aie::sub(aie::mul(xa, co).template to_vector<float>(),
                      aie::mul(xb, si).template to_vector<float>());
@@ -257,10 +257,9 @@ void SYM(f32_to_bf16_rms_swiglu)(float *src, float *ss, bfloat16 *dst,
     for (unsigned e = 0; e < BE; e += VW) {
       // e = mb * 64 + r * 8 + t: lanes 0-7 are row mb*8+r, 8-15 the next row.
       const unsigned row = e / T;
-      const aie::vector<bfloat16, VW> sv =
-          aie::select(aie::broadcast<bfloat16, VW>((bfloat16)ss[row]),
-                      aie::broadcast<bfloat16, VW>((bfloat16)ss[row + 1]),
-                      hi_rows);
+      const aie::vector<bfloat16, VW> sv = aie::select(
+          aie::broadcast<bfloat16, VW>((bfloat16)ss[row]),
+          aie::broadcast<bfloat16, VW>((bfloat16)ss[row + 1]), hi_rows);
       ::aie::set_rounding(aie::rounding_mode::conv_even);
       aie::vector<bfloat16, VW> g =
           narrow_f32_to_bf16<VW>(aie::load_v<VW>(pg + e));
@@ -298,9 +297,9 @@ void SYM(f32_to_bf16_exp_mn)(float *src, bfloat16 *dst) {
   }
 }
 
-// Softmax normalisation as a paired drain (the SwiGLU pairing): the tile_n block
-// holds tile_n/2 columns of P.V then tile_n/2 of the matching row sums P.1,
-// and the quotient fills one half of the output tile.
+// Softmax normalisation as a paired drain (the SwiGLU pairing): the tile_n
+// block holds tile_n/2 columns of P.V then tile_n/2 of the matching row sums
+// P.1, and the quotient fills one half of the output tile.
 void SYM(f32_to_bf16_div_mn)(float *src, bfloat16 *dst, int32_t half) {
   constexpr unsigned VW = 16, T = 8;
   constexpr unsigned NB = DIM_N / T, H = NB / 2, BE = DIM_M * T;

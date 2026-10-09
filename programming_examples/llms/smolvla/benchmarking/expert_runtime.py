@@ -10,6 +10,7 @@ the K/V blocks and masks are packed when the prefix changes and written into
 the resident weights and arena buffers; a call writes only x into the arena,
 runs, and reads back only the last layer's output.
 """
+
 import time
 from pathlib import Path
 

@@ -15,6 +15,7 @@ build_padded_add pattern (row-iterate, read a column-slice of one wide buffer
 via `A[r, lo:hi]`) -- already proven correct there for a padded residual add,
 same trick applied to the SiLU*mul activation instead.
 """
+
 from __future__ import annotations
 import dataclasses, os, sys
 from pathlib import Path

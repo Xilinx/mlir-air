@@ -16,6 +16,7 @@ Args: A_j, B_j (packed), C_j per job, in order.
 is the first per-job ops.load version, kept because it shows why the channel
 version is needed.
 """
+
 import argparse
 import os
 from contextlib import ExitStack, nullcontext
@@ -42,7 +43,6 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 from air import api as air
 from air.api import ops
 from air.api.types import bf16, f32, i32, i8
-
 
 # Own-key attention (Job.own) geometry; must match mm_engine.cc's OWN_*: head dim,
 # q heads per kv group, kv groups, and the V columns / rows per herd row a "pv" own

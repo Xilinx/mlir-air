@@ -1198,9 +1198,7 @@ def build_module_gemm_cast(
         privates.add(p.strip())
     privates_str = "\n  ".join(sorted(privates))
 
-    combined = (
-        "\n".join(maps_all)
-        + f"""
+    combined = "\n".join(maps_all) + f"""
 module {{
   {privates_str}
   func.func @gemm_cast_bf16(
@@ -1215,7 +1213,6 @@ module {{
   }}
 }}
 """
-    )
     with Context() as ctx:
         try:
             module = Module.parse(combined, ctx)

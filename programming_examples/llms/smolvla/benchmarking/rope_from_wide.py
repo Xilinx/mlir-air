@@ -14,6 +14,7 @@ column OFFSET within that row of the wide buffer, instead of a flat walk.
 
 New isolated file: does not touch shared/builders/rms_gemms_rope_multi.py.
 """
+
 from __future__ import annotations
 import sys
 from pathlib import Path

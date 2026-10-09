@@ -31,6 +31,7 @@ Combined args:
   %arg19 down        (seq, emb)
   %arg20 output      (seq*emb,)
 """
+
 import re
 import sys
 import types

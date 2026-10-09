@@ -8,6 +8,7 @@ x core count x launches per ELF and prints device time plus the ELF's control
 code size, to split a launch's cost into per-dispatch, per-launch, per-core and
 per-KB-of-program parts.
 """
+
 import argparse
 import os
 import subprocess

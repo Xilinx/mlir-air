@@ -13,6 +13,7 @@ untouched. Tile choice (tile_n=80) matches the REAL registry tiles Q/K/V
 already use unfused (both resolve to tile_n=80 there too -- unlike the GateUp
 case, this is not a repeat of that tile-mismatch mistake).
 """
+
 from __future__ import annotations
 import sys
 from pathlib import Path

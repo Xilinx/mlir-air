@@ -1,4 +1,5 @@
-//===- mm_bfp16.cc - bf16 x bfp16ebs8 GEMM, suffixed, + SwiGLU drain -*- C++ -*-===//
+//===- mm_bfp16.cc - bf16 x bfp16ebs8 GEMM, suffixed, + SwiGLU drain -*- C++
+//-*-===//
 //
 // SPDX-License-Identifier: MIT
 //
