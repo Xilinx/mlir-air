@@ -110,7 +110,7 @@ if os.environ.get("SMOLVLA_CPU_BIND", "1") == "1" and "torch" not in sys.modules
 EXPERT_KV_MEMO = os.environ.get("SMOLVLA_EXPERT_KV_MEMO", "1") == "1"
 
 #   SMOLVLA_NPU_BACKBONE (default 0) EXPERIMENTAL: run the backbone's prefix fill
-#                       on the NPU too (benchmarking/backbone_runtime.py), the
+#                       on the NPU too (backbone_runtime.py), the
 #                       default for run_hybrid_forward's npu_backbone.
 #   SMOLVLA_NPU_ALL (default 0) EXPERIMENTAL: all three stages on the NPU: the two switches below
 #                       plus the expert without host K/V packing (expert_runtime_v2.py). The
@@ -118,7 +118,7 @@ EXPERT_KV_MEMO = os.environ.get("SMOLVLA_EXPERT_KV_MEMO", "1") == "1"
 NPU_ALL = os.environ.get("SMOLVLA_NPU_ALL", "0") == "1"
 NPU_BACKBONE = os.environ.get("SMOLVLA_NPU_BACKBONE", "0") == "1" or NPU_ALL
 #   SMOLVLA_NPU_EXPERT (default 0) EXPERIMENTAL: run the action expert's ten
-#                       denoising calls on the NPU too (benchmarking/expert_runtime.py).
+#                       denoising calls on the NPU too (expert_runtime.py).
 NPU_EXPERT = os.environ.get("SMOLVLA_NPU_EXPERT", "0") == "1" or NPU_ALL
 
 DEFAULT_MODEL = "lerobot/smolvla_base"
@@ -274,9 +274,6 @@ def get_backbone_runtime(policy, profile=False):
     """The NPU backbone runtime for `policy`, built once per process."""
     rt = _BACKBONE_RT.get(id(policy))
     if rt is None:
-        bench = str(_HERE / "benchmarking")
-        if bench not in sys.path:
-            sys.path.insert(0, bench)
         from backbone_runtime import BackboneRuntime
 
         rt = _BACKBONE_RT[id(policy)] = BackboneRuntime(policy, profile=profile)
@@ -290,11 +287,8 @@ def get_expert_runtime(policy, profile=False):
     """The NPU action-expert runtime for `policy`, built once per process."""
     rt = _EXPERT_RT.get(id(policy))
     if rt is None:
-        bench = str(_HERE / "benchmarking")
-        if bench not in sys.path:
-            sys.path.insert(0, bench)
         if NPU_ALL or os.environ.get("SMOLVLA_NPU_EXPERT_V2", "0") == "1":
-            # No host K/V packing: a prefix engine + step engine (benchmarking/expert_runtime_v2.py).
+            # No host K/V packing: a prefix engine + step engine (expert_runtime_v2.py).
             from expert_runtime_v2 import ExpertRuntimeV2 as ExpertRuntime
         else:
             from expert_runtime import ExpertRuntime
@@ -335,7 +329,7 @@ def run_hybrid_forward(
         ten calls, which read the fill's KV cache, stay lerobot's CPU code.
     npu_expert : also run the action expert's ten denoising calls on the NPU
         (experimental; default SMOLVLA_NPU_EXPERT, never for the pure-CPU arm):
-        each call's 16 layers are one launch (benchmarking/expert_runtime.py).
+        each call's 16 layers are one launch (expert_runtime.py).
     """
     import torch
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy

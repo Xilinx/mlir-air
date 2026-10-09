@@ -43,8 +43,9 @@ small stages lose: every launch costs ~85 µs regardless of the work in it, and
 the registry FlashAttention kernel applies no mask, so those two stages fall
 back to attention decomposed into 11 dispatches per layer instead of 1.
 
-The backbone and action-expert NPU paths live under `benchmarking/` and are
-**off by default** (`--npu-backbone`, `--npu-expert`). The reasons above are
+The backbone and action-expert NPU paths (`backbone_npu.py`, `backbone_runtime.py`,
+`expert_runtime.py`, `expert_runtime_v2.py`, `gemm_engine.py`, and their kernel/builder
+dependencies) are **off by default** (`--npu-backbone`, `--npu-expert`). The reasons above are
 why the *early, unfused* ports of those two stages lost; the experimental paths
 get around them (a masked FlashAttention kernel, and GEMM engines that run many
 jobs or a whole layer in one launch) and reach parity, not a win — numbers
@@ -127,7 +128,7 @@ the CPU free. Accuracy is lower than the
 vision-only path (chunk cosine 0.9963 vs 0.9988, nMSE 0.0119; the expert alone
 is 0.9999 per layer against the fp32 reference), still above the 0.99 gate.
 
-How it works, briefly (details in `benchmarking/`):
+How it works, briefly:
 
 * **Backbone**: one fused ELF per layer (RMSNorm, Q/K/V + RoPE, masked
   FlashAttention, O-proj, FFN as one GEMM engine), bfp16 weights, ~2.45 ms/layer
@@ -150,7 +151,7 @@ Prerequisites beyond the vision path (why this stays experimental):
   — no longer needed. A released wheel built before those PRs still lacks it.
 * The expert engine must be built once, with a no-unroll Peano `opt` wrapper
   (the 16 KB core program does not fit the default unrolling):
-  `make compile-expert` (= `python benchmarking/expert_v2_probe.py --layers 16
+  `make compile-expert` (= `python expert_v2_probe.py --layers 16
   --compile-only`), run with that compiler first on `PATH` (about
   2 minutes with the async-dependency speed-up, about an hour without; the patch
   is not upstream either). Self-attention layers are the even layers; an ELF

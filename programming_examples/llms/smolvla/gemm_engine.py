@@ -28,8 +28,8 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
-if str(_HERE.parent) not in sys.path:
-    sys.path.insert(0, str(_HERE.parent))
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 # programming_examples/ is published as the air_examples package rather than
 # put on sys.path: every directory under it would otherwise become a
@@ -37,7 +37,7 @@ if str(_HERE.parent) not in sys.path:
 import types
 
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
-    str(_HERE.parent.parent.parent)
+    str(_HERE.parent.parent)
 ]
 
 from air import api as air
