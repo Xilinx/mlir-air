@@ -1908,6 +1908,114 @@ bool air::mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
   return a->first < b->second && b->first < a->second;
 }
 
+// The contiguous element runs [start, end) of a constant access pattern,
+// sorted by start; std::nullopt if any offset, size or stride is not a
+// constant, a stride is negative, or there are more than `maxRuns` runs.
+static std::optional<SmallVector<std::pair<int64_t, int64_t>>>
+getAccessRuns(ArrayRef<OpFoldResult> offsets, ArrayRef<OpFoldResult> sizes,
+              ArrayRef<OpFoldResult> strides, int64_t maxRuns) {
+  if (offsets.size() != sizes.size() || sizes.size() != strides.size())
+    return std::nullopt;
+  int64_t base = 0;
+  SmallVector<std::pair<int64_t, int64_t>> dims; // (size, stride)
+  for (auto [o, sz, st] : llvm::zip(offsets, sizes, strides)) {
+    auto co = getConstantIntValue(o), csz = getConstantIntValue(sz),
+         cst = getConstantIntValue(st);
+    if (!co || !csz || !cst || *cst < 0)
+      return std::nullopt;
+    if (*csz == 0)
+      return SmallVector<std::pair<int64_t, int64_t>>{};
+    base += *co * *cst;
+    if (*csz > 1 && *cst > 0)
+      dims.push_back({*csz, *cst});
+  }
+  // Fold the innermost dimensions that lay their elements end to end into
+  // one run; a pattern with no dimension left reads a single element.
+  int64_t runLen = 1;
+  while (!dims.empty() && dims.back().second == runLen) {
+    runLen *= dims.back().first;
+    dims.pop_back();
+  }
+  int64_t count = 1;
+  for (auto [sz, st] : dims) {
+    count *= sz;
+    if (count > maxRuns)
+      return std::nullopt;
+  }
+  SmallVector<std::pair<int64_t, int64_t>> runs;
+  runs.reserve(count);
+  for (int64_t i = 0; i < count; i++) {
+    int64_t start = base, rest = i;
+    for (auto [sz, st] : llvm::reverse(dims)) {
+      start += (rest % sz) * st;
+      rest /= sz;
+    }
+    runs.push_back({start, start + runLen});
+  }
+  llvm::sort(runs);
+  return runs;
+}
+
+std::optional<bool> air::accessesIntersect(ArrayRef<OpFoldResult> offsets0,
+                                           ArrayRef<OpFoldResult> sizes0,
+                                           ArrayRef<OpFoldResult> strides0,
+                                           ArrayRef<OpFoldResult> offsets1,
+                                           ArrayRef<OpFoldResult> sizes1,
+                                           ArrayRef<OpFoldResult> strides1) {
+  // Patterns of different shapes (one canonicalized, one flattened) would
+  // otherwise fall back to linear ranges, and an interleaved pattern's range
+  // covers elements it never touches.
+  constexpr int64_t maxRuns = 4096;
+  auto runs0 = getAccessRuns(offsets0, sizes0, strides0, maxRuns);
+  auto runs1 = getAccessRuns(offsets1, sizes1, strides1, maxRuns);
+  if (runs0 && runs1) {
+    for (size_t i = 0, j = 0; i < runs0->size() && j < runs1->size();) {
+      auto [s0, e0] = (*runs0)[i];
+      auto [s1, e1] = (*runs1)[j];
+      if (e0 <= s1)
+        i++;
+      else if (e1 <= s0)
+        j++;
+      else
+        return true;
+    }
+    return false;
+  }
+  auto sameStrides = [&]() {
+    if (strides0.size() != strides1.size())
+      return false;
+    for (auto [a, b] : llvm::zip(strides0, strides1)) {
+      auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+      if (!ca || !cb || *ca != *cb)
+        return false;
+    }
+    return true;
+  };
+  if (sameStrides() && offsets0.size() == strides0.size() &&
+      offsets1.size() == strides1.size()) {
+    bool known = true;
+    for (unsigned i = 0; i < offsets0.size(); i++) {
+      auto r0 = getLinearAccessRange({offsets0[i]}, {sizes0[i]}, {strides0[i]},
+                                     /*overLoops=*/true);
+      auto r1 = getLinearAccessRange({offsets1[i]}, {sizes1[i]}, {strides1[i]},
+                                     /*overLoops=*/true);
+      if (r0 && r1 && !mayOverlap(r0, r1))
+        return false;
+      known &= r0 && r1;
+    }
+    if (known)
+      return true;
+    return std::nullopt;
+  }
+  auto r0 = getLinearAccessRange(offsets0, sizes0, strides0,
+                                 /*overLoops=*/true);
+  auto r1 = getLinearAccessRange(offsets1, sizes1, strides1,
+                                 /*overLoops=*/true);
+  if (!r0 || !r1)
+    return std::nullopt;
+  return mayOverlap(r0, r1);
+}
+
 // Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
 // See header for rationale.
 int air::findLargestAlignedFactor(int num, int max, int alignment) {

@@ -1379,46 +1379,53 @@ static DrainDeps getDrainDeps(ArrayRef<Operation *> window, IsDrainFn isDrain) {
 }
 
 // Await, right before each input DMA among `ops`, the drains among `ops` it
-// depends on: a DMA's dependencies only gate the event it produces, not its
-// issue. A shim channel retires its tasks in order and an await is matched to
-// the channel's oldest outstanding task, so the drains queued on that channel
-// ahead of the one depended on are awaited with it. Returns the drains
-// awaited; `unordered` gets the inputs that depend on a drain not among `ops`.
+// reads back: a DMA's dependencies only gate the event it produces, not its
+// issue. Returns the drains awaited; `unordered` gets the inputs that read back
+// a drain not among `ops`.
+//
+// An input reads back a drain it depends on and whose region of the same
+// buffer it may touch. A dependency alone does not make one: it also orders
+// an input after drains it reaches only through other ops, and awaiting those
+// would block the control program before inputs that do not need them.
 template <typename IsDrainFn>
 static llvm::SmallSetVector<Value, 8>
 awaitDrainsBeforeReads(ArrayRef<Operation *> ops, IsDrainFn isDrain,
                        const DrainDeps &deps,
                        SmallVectorImpl<Operation *> &unordered) {
-  // Drains not yet awaited, per channel, in issue order.
-  llvm::MapVector<Attribute, SmallVector<airrt::DmaMemcpyNdOp>> pending;
-  llvm::SmallPtrSet<Operation *, 8> seen;
+  auto readsBack = [](airrt::DmaMemcpyNdOp in, airrt::DmaMemcpyNdOp drain) {
+    return in.getMemref() == drain.getMemref() &&
+           air::accessesIntersect(in.getMixedOffsets(), in.getMixedLengths(),
+                                  in.getMixedStrides(), drain.getMixedOffsets(),
+                                  drain.getMixedLengths(),
+                                  drain.getMixedStrides())
+               .value_or(true);
+  };
+  // Drains issued so far, in issue order.
+  llvm::SetVector<Operation *> issued;
   llvm::SmallSetVector<Value, 8> awaited;
   for (Operation *op : ops) {
     auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
     if (!dma || !dma->getNumResults())
       continue;
     if (isDrain(dma)) {
-      pending[dma->getAttr("metadata")].push_back(dma);
-      seen.insert(op);
+      issued.insert(op);
       continue;
     }
     auto it = deps.find(op);
     if (it == deps.end())
       continue;
-    if (llvm::any_of(it->second, [&](Operation *d) { return !seen.count(d); }))
-      unordered.push_back(op);
+    auto reads = [&](Operation *d) {
+      return it->second.contains(d) &&
+             readsBack(dma, cast<airrt::DmaMemcpyNdOp>(d));
+    };
     SmallVector<Value> tokens;
-    for (auto &[channel, drains] : pending) {
-      auto last = llvm::find_if(llvm::reverse(drains), [&](auto d) {
-        return it->second.contains(d.getOperation());
-      });
-      if (last == drains.rend())
-        continue;
-      auto end = last.base();
-      for (auto d : llvm::make_range(drains.begin(), end))
+    for (Operation *d : issued)
+      if (reads(d))
         tokens.push_back(d->getResult(0));
-      drains.erase(drains.begin(), end);
-    }
+    if (llvm::any_of(it->second, [&](Operation *d) {
+          return !issued.contains(d) && reads(d);
+        }))
+      unordered.push_back(op);
     if (tokens.empty())
       continue;
     OpBuilder b(op);

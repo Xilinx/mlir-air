@@ -242,3 +242,37 @@ module {
     return
   }
 }
+
+// -----
+
+// Accesses of different shapes over the same buffer: the drain writes column 0
+// of rows 2-4, the reads are flat runs of 16. Their linear ranges overlap for
+// both reads, but only the run in column 0 of row 3 touches what the drain
+// wrote.
+
+// CHECK-LABEL: func.func @shapes
+// CHECK: %[[D:.*]] = air.channel.get async  @drain[]
+// CHECK: air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
+// CHECK: air.channel.put async  @feed[] {{.*}} {id = 3 : i32}
+module {
+  air.channel @drain [1]
+  air.channel @feed [1]
+  func.func @shapes(%buf: memref<8x4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%i) in (%si=%c1) args(%b=%buf) : memref<8x4x16xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c3 = arith.constant 3 : index
+      %c16 = arith.constant 16 : index
+      %c64 = arith.constant 64 : index
+      %c192 = arith.constant 192 : index
+      %c208 = arith.constant 208 : index
+      air.channel.get @drain[] (%b[%c2, %c0, %c0] [%c3, %c1_0, %c16] [%c64, %c16, %c1_0]) {id = 1 : i32} : (memref<8x4x16xi32>)
+      air.channel.put @feed[] (%b[%c192] [%c16] [%c1_0]) {id = 2 : i32} : (memref<8x4x16xi32>)
+      air.channel.put @feed[] (%b[%c208] [%c16] [%c1_0]) {id = 3 : i32} : (memref<8x4x16xi32>)
+      air.launch_terminator
+    }
+    return
+  }
+}

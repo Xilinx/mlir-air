@@ -450,7 +450,8 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
           "paced feeds ahead of the sibling-channel interleave, so enable it "
           "only for feeds verified numerically equivalent when coalesced.">
   ];
-  let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
+  let dependentDialects = ["xilinx::AIEX::AIEXDialect",
+                           "mlir::affine::AffineDialect"];
 }
 
 def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {

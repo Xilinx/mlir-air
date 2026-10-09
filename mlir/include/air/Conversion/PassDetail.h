@@ -12,6 +12,7 @@
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #endif
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
