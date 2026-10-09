@@ -1057,13 +1057,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // weight stream.
     if (op->hasAttr(air::attrs::RuntimeHoist))
       configTaskOp->setAttr(air::attrs::RuntimeHoist, rewriter.getUnitAttr());
-    if (op->hasAttr(air::attrs::AwaitAppends))
-      configTaskOp->setAttr(air::attrs::AwaitAppends, rewriter.getUnitAttr());
-    // Carry the append-barrier marker so the append->readback ordering step can
-    // find this append's completion await and move it before the tagged
-    // readback (see the air.await_appends barrier below).
-    if (op->hasAttr(air::attrs::AppendBarrier))
-      configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
     // Carry the coalesced-feed marker so the double-buffered await synthesis
     // paces this merged channel at depth 1 (no cross-run overlap).
     if (op->hasAttr(air::attrs::CoalescedShimFeed))
@@ -2662,8 +2655,8 @@ static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
         builder, loc, isLast ? eventTy : SmallVector<Type>{}, memcpy_op.getId(),
         memcpy_op.getX(), memcpy_op.getY(), memcpy_op.getMemref(), newOffsets,
         newWraps, newStrides);
-    // Ordering/barrier markers must ride along on every piece, or the split
-    // silently drops the append barrier and the shim order constraint.
+    // Ordering markers must ride along on every piece, or the split silently
+    // drops the shim order constraint.
     lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
   }
   // Where they go does not change the pairing -- FIFO orders waits among
@@ -3380,16 +3373,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
 
-    // Hoist input DMA feeds (air.runtime_hoist) and enforce the
-    // append->readback barrier (air.await_appends). These opt-in orderings
-    // target a single configuration region, so anchor them at the global front
-    // of the sequence.
+    // Hoist input DMA feeds (air.runtime_hoist). This opt-in ordering targets
+    // a single configuration region, so anchor it at the front of the block.
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      // Rolled, the hoisted feeds and the append/readback pair live in the
-      // loop body or a select arm, so scoping to the entry block finds nothing
-      // and the append barrier is silently not applied.
+      // Rolled, the hoisted feeds live in a loop body or a select arm, so
+      // every block is visited, not just the entry block.
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blkPtr : blocks) {
@@ -3435,88 +3425,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
                            "feed was hoisted but its start was not, so the "
                            "requested ordering may not take effect");
-        }
-
-        // air.await_appends barrier: a same-L3 write-after-write / read-after-
-        // write ordering that the async dependence graph cannot express. A
-        // shared- DDR readback tagged `air.await_appends` must observe values
-        // written by one or more device-side appends (S2MM drains into that
-        // same DDR buffer), but an append's completion await is deferred to the
-        // launch terminator, so the readback -- issued in program order after
-        // the append START -- would race the append S2MM and read a stale slot.
-        // Each participating append is tagged `air.append_barrier`; move those
-        // appends' completion awaits to just BEFORE the tagged readback's
-        // start, so the runtime blocks on append completion before reading
-        // back.
-        //
-        // A runtime sequence may contain one or MORE independent readbacks
-        // (e.g. an unrolled loop with N append/readback pairs). Each append's
-        // completion await is moved before the FIRST tagged readback start that
-        // follows the append in program order -- the readback that consumes it.
-        // Collapsing every append onto the first readback would move a later
-        // readback's append await ahead of an earlier readback, violating SSA
-        // dominance and the append->readback ordering. With a single readback
-        // this reduces to moving every append's await before that one readback.
-        SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
-        for (auto &o : blk)
-          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-            if (c->hasAttr(air::attrs::AwaitAppends))
-              awaitCfgs.push_back(c);
-        if (!awaitCfgs.empty()) {
-          // First dma_start_task among a configure task's users, if any.
-          auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
-            for (auto *u : c.getResult().getUsers())
-              if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
-                return s;
-            return AIEX::DMAStartTaskOp(nullptr);
-          };
-          // Program-order index for every op in the block. Only awaits are
-          // relocated below (append/readback starts stay put), so the indices
-          // used for the interval decisions remain valid throughout.
-          DenseMap<Operation *, unsigned> order;
-          unsigned idx = 0;
-          for (auto &o : blk)
-            order[&o] = idx++;
-          // Tagged readback starts, in program order.
-          SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
-          for (auto c : awaitCfgs) {
-            if (auto s = getStart(c))
-              barrierStarts.push_back(s);
-            else
-              c->emitWarning("air.await_appends: tagged readback has no "
-                             "dma_start_task; the "
-                             "append barrier cannot be applied");
-          }
-          bool anyAppendAwait = false;
-          for (auto &o : blk) {
-            auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
-            if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
-              continue;
-            AIEX::DMAAwaitTaskOp aAwait = nullptr;
-            for (auto *u : cfg.getResult().getUsers())
-              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
-                aAwait = aw;
-            if (!aAwait)
-              continue;
-            anyAppendAwait = true;
-            AIEX::DMAStartTaskOp aStart = getStart(cfg);
-            unsigned apos = order[aStart ? aStart.getOperation() : &o];
-            AIEX::DMAStartTaskOp target = nullptr;
-            unsigned best = std::numeric_limits<unsigned>::max();
-            for (auto s : barrierStarts) {
-              unsigned sp = order[s.getOperation()];
-              if (sp > apos && sp < best) {
-                best = sp;
-                target = s;
-              }
-            }
-            if (target)
-              aAwait->moveBefore(target);
-          }
-          if (!anyAppendAwait && !barrierStarts.empty())
-            barrierStarts.front()->emitWarning(
-                "air.await_appends: readback tagged but no air.append_barrier "
-                "appends found to await; no ordering was enforced");
         }
       }
     });
@@ -3677,15 +3585,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       // A feed whose position is already load-bearing is left alone, and fences
       // the burst it sits in: `air.runtime_hoist` was deliberately moved to the
-      // front, the paced/coalesced feeds are bounded by
-      // synthesizeDoubleBufferedAwaits, and the append-barrier feeds carry a
-      // write-after-write ordering the dependence graph cannot express.
+      // front, and the paced/coalesced feeds are bounded by
+      // synthesizeDoubleBufferedAwaits.
       auto channelDir = [&](AIEX::DMAConfigureTaskForOp cfg)
           -> std::optional<AIE::DMAChannelDir> {
         for (StringRef a :
              {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
-              air::attrs::CoalescedShimFeed, air::attrs::AppendBarrier,
-              air::attrs::AwaitAppends})
+              air::attrs::CoalescedShimFeed})
           if (cfg->hasAttr(a))
             return std::nullopt;
         auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(

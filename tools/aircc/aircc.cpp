@@ -1136,10 +1136,6 @@ static LogicalResult runAieCompilation() {
     // Folding up front means every pass downstream sees exactly the IR it saw
     // when the count was written by hand.
     os << "air-annotate-refeed";
-    // Same reasoning: derive from the shape the front end wrote, before any
-    // pass rewrites the channel ops. A shim readback that reads an L3 buffer a
-    // shim append wrote is a RAW pair the runtime does not order on its own.
-    os << ",air-annotate-append-barrier";
     // Same slot, same reason. Derives a demux channel's packet id count from
     // its fan-out shape and checks the ids against the ones its kernel stamps.
     // Header emission is deferred to a second run of this pass, inside the
