@@ -497,10 +497,11 @@ def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::Fun
   let constructor = "xilinx::air::createAIRWrapFuncWithParallelPass()";
   let description = [{
     Wraps the body of a given func.func operation inside an scf.parallel loop.
-    The pass assumes that: 
-    (1) The function arguments consist of: M memref arguments, N loop upper bounds, N loop induction variable indices.
-    (2) The scf.parallel loop is constructed using the N upper bounds and induction variable indices.
-    (3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.
+    The function's last 2N arguments are the N grid sizes followed by the N
+    grid indices, as triton-shared appends them; memref and scalar arguments
+    before them are left alone. The loop's upper bounds come from
+    `loop-bounds`, its induction variables replace the N index arguments, and
+    it wraps all existing operations.
   }];
   let options = [
     ListOption<"clLoopBounds", "loop-bounds", "unsigned",

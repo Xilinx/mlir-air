@@ -2152,12 +2152,11 @@ struct CanonicalizeArithMulIOpToIndexTypePattern
 };
 
 // Wraps the body of a given func.func operation inside an scf.parallel loop.
-// The pass assumes that:
-// (1) The function arguments consist of: M memref arguments, N loop upper
-// bounds, N loop induction variable indices. (2) The scf.parallel loop is
-// constructed using the N upper bounds and induction variable indices. (3) The
-// scf.parallel loop is inserted at the beginning of the function, wrapping all
-// existing operations.
+// The function's last 2N arguments are the N grid sizes followed by the N
+// grid indices, as triton-shared appends them; any arguments before those
+// (memrefs, then kernel scalars) are left alone. The loop's upper bounds come
+// from the `loop-bounds` option and its induction variables replace the N
+// index arguments. The loop wraps all existing operations.
 
 struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
   using OpRewritePattern<func::FuncOp>::OpRewritePattern;
@@ -2206,11 +2205,29 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
       return failure();
     }
 
-    // Extract indices
-    ValueRange inductionVars = args.slice(M + N, N);
+    // The grid indices are the last N arguments. Kernel scalars, if any, sit
+    // between the memrefs and the grid arguments.
+    ValueRange inductionVars = args.slice(numArgs - N, N);
 
-    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); }))
-      return failure();
+    // A body that reads no grid index is wrapped only on a one-point grid,
+    // where a single iteration changes nothing about what runs. Once
+    // wrapped, the body is that loop and the pattern stops.
+    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); })) {
+      bool onePoint =
+          llvm::all_of(loopBounds, [](int64_t bound) { return bound == 1; });
+      // Wrapped: apart from the loop's own bound constants, the body is the
+      // loop and the return.
+      bool wrapped = false;
+      for (Operation &op : funcOp.getBody().front().without_terminator()) {
+        if (isa<arith::ConstantOp>(op))
+          continue;
+        wrapped = isa<scf::ParallelOp>(op) && !wrapped;
+        if (!wrapped)
+          break;
+      }
+      if (!onePoint || wrapped)
+        return failure();
+    }
 
     // Store original function body operations
     SmallVector<Operation *> originalFuncBodyOps;

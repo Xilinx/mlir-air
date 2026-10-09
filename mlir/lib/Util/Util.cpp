@@ -2092,6 +2092,68 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
 // Fold perfectly nested for loops as extra entries in wraps and strides. This
 // method does not directly mutate the for op nor the data movement operation.
 // It only generates the offsets, wraps and strides list after loop folding.
+// The coefficient c such that `v` = c * `iv` + (terms independent of `iv`),
+// or nullopt if `v` depends on `iv` in any other way, for example through a
+// division by a constant.
+static std::optional<int64_t> ivCoefficient(Value v, Value iv,
+                                            unsigned depth = 0) {
+  if (v == iv)
+    return 1;
+  if (depth > 32)
+    return std::nullopt;
+  // Another argument of the loop's own block, such as an iter_arg, can
+  // change every iteration; other block arguments are fixed across it.
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto ivArg = dyn_cast<BlockArgument>(iv);
+    if (ivArg && arg.getOwner() == ivArg.getOwner())
+      return std::nullopt;
+    return 0;
+  }
+  Operation *op = v.getDefiningOp();
+  // An air.execute returns its token first, then what its region yields.
+  if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
+    unsigned idx = cast<OpResult>(v).getResultNumber();
+    if (idx == 0)
+      return std::nullopt;
+    return ivCoefficient(exec.getBody().getTerminator()->getOperand(idx - 1),
+                         iv, depth + 1);
+  }
+  if (getConstantIntValue(v))
+    return 0;
+  SmallVector<std::optional<int64_t>> c;
+  for (Value operand : op->getOperands())
+    c.push_back(ivCoefficient(operand, iv, depth + 1));
+  bool independent =
+      llvm::all_of(c, [](std::optional<int64_t> x) { return x && *x == 0; });
+  if (independent)
+    return 0;
+  if (isa<CastOpInterface>(op) && op->getNumOperands() == 1)
+    return c[0];
+  if (isa<arith::AddIOp, arith::SubIOp>(op)) {
+    if (!c[0] || !c[1])
+      return std::nullopt;
+    return isa<arith::AddIOp>(op) ? *c[0] + *c[1] : *c[0] - *c[1];
+  }
+  if (isa<arith::MulIOp>(op)) {
+    auto lhs = getConstantIntValue(op->getOperand(0));
+    auto rhs = getConstantIntValue(op->getOperand(1));
+    if (rhs && c[0])
+      return *c[0] * *rhs;
+    if (lhs && c[1])
+      return *c[1] * *lhs;
+    return std::nullopt;
+  }
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
+    // Linear only when the IV is a direct operand and no other operand
+    // depends on it.
+    for (auto [operand, coef] : llvm::zip(apply.getOperands(), c))
+      if (operand != iv && (!coef || *coef != 0))
+        return std::nullopt;
+    return air::getAffineApplyCoefficient(apply, iv);
+  }
+  return std::nullopt;
+}
+
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
@@ -2124,38 +2186,29 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         loop_lower_bound = *cst_lower_bound;
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
     }
+    // The loop advances the address by the sum, over the offsets, of each
+    // offset's coefficient in the IV times its stride. An offset that is not
+    // linear in the IV has no single stride to fold.
     int64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
+      if (!iv)
+        break;
+      std::optional<int64_t> coefficient = ivCoefficient(offsets[i], iv);
+      if (!coefficient)
+        return failure();
+      if (*coefficient == 0)
+        continue;
+      auto stride = getConstantIntValue(strides[i]);
+      if (!stride)
+        return failure();
+      ind_var_factor += *stride * *coefficient * stepSize;
       Value offsetVal = offsets[i];
-      // Propagate through cast op
-      if (auto cast = offsetVal.getDefiningOp<CastOpInterface>()) {
+      if (auto cast = offsetVal.getDefiningOp<CastOpInterface>())
         if (cast->getNumOperands() == 1)
           offsetVal = cast->getOperand(0);
-      }
-      if (iv && offsetVal == iv) {
-        ind_var_factor = *getConstantIntValue(strides[i]) * stepSize;
+      if (offsetVal == iv)
         offsets[i] =
             arith::ConstantIndexOp::create(builder, loc, loop_lower_bound);
-        break;
-      } else if (iv && offsetVal.getDefiningOp()) {
-        Operation *iv_consumer = offsetVal.getDefiningOp();
-        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(iv_consumer))
-          iv_consumer = &exec.getChildOps().front();
-        if (auto affop =
-                dyn_cast_if_present<affine::AffineApplyOp>(iv_consumer)) {
-          if (!llvm::is_contained(affop.getOperands(), iv))
-            continue;
-          // A map that is not linear in the IV has no single stride to fold.
-          auto coefficient = air::getAffineApplyCoefficient(affop, iv);
-          if (!coefficient)
-            return failure();
-          ind_var_factor =
-              *getConstantIntValue(strides[i]) * *coefficient * stepSize;
-        } else if (auto arithop =
-                       dyn_cast_if_present<arith::AddIOp>(iv_consumer)) {
-          ind_var_factor = stepSize;
-        }
-      }
     }
     // Skip loops that don't affect the channel offset (stride=0).
     // LLVM 23's canonicalize no longer hoists loop-invariant channel ops,
