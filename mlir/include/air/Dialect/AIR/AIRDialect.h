@@ -39,8 +39,6 @@ namespace air {
 // no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
 namespace attrs {
 constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
-constexpr StringLiteral AwaitAppends = "air.await_appends";
-constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
 // its BD covers a whole contiguous run merged from several smaller feeds, so
@@ -120,12 +118,11 @@ constexpr StringLiteral MemtileCol = "air.memtile_col";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::RuntimeHoist, AwaitAppends, AppendBarrier,
-// RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
-// re-instantiation from src to dst. Single source of truth for the marker set,
-// so copy sites (Util::copyPaddingAttributes, ComposeMemrefOpOnChannelOp,
-// SpecializeChannelBundlePattern) cannot diverge. Both ops must be live (call
-// before erasing src).
+// (attrs::RuntimeHoist, RefeedCount, PacketIDs, KeepPktHeader) that must
+// survive channel-op re-instantiation from src to dst. Single source of truth
+// for the marker set, so copy sites (Util::copyPaddingAttributes,
+// ComposeMemrefOpOnChannelOp, SpecializeChannelBundlePattern) cannot diverge.
+// Both ops must be live (call before erasing src).
 void copyChannelSteeringAttrs(Operation *src, Operation *dst);
 
 void registerAIRRtTranslations();

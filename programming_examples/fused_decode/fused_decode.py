@@ -1037,9 +1037,8 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # the reference-faithful on-device KV append: the rope core writes this token's roped-K/raw-V
 # into the DDR cache (appendK/appendV S2MM -> KVC at slot L-1 = the reference _receive_kv_cache),
 # then the whole cache is read back for the block-loop attention (the reference _move_kv_cache).
-# The append->readback RAW on the shared cache is ordered in the runtime sequence by
-# air-annotate-append-barrier, which derives it from the shared L3 memref (= the
-# reference's dma_wait).
+# The readback names the append as its dependency, so the runtime sequence waits for
+# the append to land before reading the cache back (= the reference's dma_wait).
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
 # IN-PLACE into arg0 (the hidden_states BO), so layer N's output == layer N+1's input
 # in the same buffer -- matching the reference's decoding_layer (output S2MM back to x_arg_id,
@@ -2495,9 +2494,9 @@ def build_module():
                             # (a conv layer has no KV, an attention layer no
                             # state): [BX[t-2] | BX[t-1]] per layer. Read it
                             # out, and write the kernel's shifted state back
-                            # over the SAME slot -- the RAW on this DDR region
-                            # gives air-annotate-append-barrier the read->write
-                            # order, exactly as it does for the KV cache.
+                            # over the SAME slot. The write-back carries what the
+                            # kernel computed from the read, so it cannot land
+                            # before the read has been consumed.
                             _cst = _lbx(CONV_ST_LAYER) + CONV_ST_BASE
 
                             def _conv_state():
@@ -2536,9 +2535,9 @@ def build_module():
                     def _emit_append(_kbase=_kbase):
                         # K and V each drain to a shim S2MM; the allocator
                         # picks distinct shim tiles for the two decls.
-                        # air-annotate-append-barrier derives the
-                        # append->readback ordering from the RAW on the shared DDR
-                        # cache: these gets write it, the readback below reads it.
+                        # The readback below reads what these gets write, at
+                        # offsets that depend on the decode wave, so it names
+                        # them as its dependencies (returned here).
                         # Region-major append (= the reference _receive_kv_cache):
                         # scatter this token's K (resp V) into the NGRP group
                         # regions. Channel delivers [g0 K|g1 K|...] (REGION_W
@@ -2557,12 +2556,15 @@ def build_module():
                                 NGRP, REGION_STRIDE
                             )[:, 0:REGION_W]
 
-                        _CH["appendK"].get(_slot_row(_loi_slot(_kbase, 0)), indices=[0])
-                        _CH["appendV"].get(
+                        k = _CH["appendK"].get(
+                            _slot_row(_loi_slot(_kbase, 0)), indices=[0]
+                        )
+                        v = _CH["appendV"].get(
                             _slot_row(_loi_slot(_kbase, _vreg_off(0))), indices=[0]
                         )
+                        return k, v
 
-                    def _emit_readback(_kbase=_kbase):
+                    def _emit_readback(appended, _kbase=_kbase):
                         # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                         # separate per-block puts). The whole per-CU cache
                         # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
@@ -2648,10 +2650,12 @@ def build_module():
                                 _CH["inKV_K"].put(
                                     _kv_region(_loi(_kbase, _kreg_off(gi) + _coff)),
                                     indices=[gi],
+                                    dependency=appended[0],
                                 )
                                 _CH["inKV_V"].put(
                                     _kv_region(_loi(_kbase, _vreg_off(gi) + _coff)),
                                     indices=[gi],
+                                    dependency=appended[1],
                                 )
                             _ci += _cb
                         return
@@ -2689,8 +2693,7 @@ def build_module():
                         if p == KV_PHASE and ATTN_SUBSYS:
 
                             def _kv_traffic():
-                                _emit_append()
-                                _emit_readback()
+                                _emit_readback(_emit_append())
 
                             # Attention waves only. The KV memtile behind
                             # this cannot be armed (segment scope), but it

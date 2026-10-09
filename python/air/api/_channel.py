@@ -480,6 +480,20 @@ class Channel:
                         "with no routing header, so there is nothing to select."
                     )
                 extra["dest"] = coerce_index(dest).materialize()
+            deps = (
+                []
+                if dependency is None
+                else (
+                    dependency
+                    if isinstance(dependency, (list, tuple))
+                    else [dependency]
+                )
+            )
+            if deps:
+                from air.dialects.air import AsyncTokenType
+
+                extra["async_token"] = AsyncTokenType.get()
+                extra["async_dependencies"] = [d.async_value() for d in deps]
             return op(
                 self.name,
                 endpoint.value,
