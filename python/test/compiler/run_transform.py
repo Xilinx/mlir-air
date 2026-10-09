@@ -68,3 +68,36 @@ def gemm_module():
     transform_ir = Module.parse(transform_ir_string, context=module.context)
     run_transform(transform_ir, module)
     print(module)
+
+
+# A failing transform raises, and the message carries the diagnostic.
+# CHECK-LABEL: TEST: failing_transform
+# CHECK: RuntimeError: transform failed:
+# CHECK-SAME: expected to contain 2 payloads but it contains 1 payloads
+@run
+def failing_transform():
+    module = Module.parse(
+        """
+        func.func @f(%a: memref<4xf32>) {
+          return
+        }
+    """,
+        context=Context(),
+    )
+    transform_ir = Module.parse(
+        """
+        module attributes {transform.with_named_sequence} {
+          transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+            %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+            %a, %b = transform.split_handle %f : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+            transform.yield
+          }
+        }
+        """,
+        context=module.context,
+    )
+    try:
+        run_transform(transform_ir, module)
+        print("no error")
+    except RuntimeError as e:
+        print(f"RuntimeError: {' '.join(str(e).split())}")
