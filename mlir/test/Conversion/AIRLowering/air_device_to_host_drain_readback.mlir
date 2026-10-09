@@ -11,8 +11,7 @@
 // reads row r - 1, which job r - 1 drained, and depends on that drain (the edge
 // air-dependency adds; the second one through a wait_all). air-to-std awaits
 // each drain right before the first input that depends on it, and moves a drain
-// up past the inputs ahead of it only as far as such an input. The
-// append-barrier markers, which pair the same accesses by buffer, are dropped.
+// up past the inputs ahead of it only as far as such an input.
 
 // CHECK-LABEL: func.func @chain
 // CHECK: %[[D1:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc
@@ -24,8 +23,6 @@
 // CHECK: airrt.wait_all %[[D2]]{{$}}
 // CHECK-NEXT: airrt.dma_memcpy_nd({{.*}}[0, 0, 0, 128], [1, 1, 1, 64]{{.*}}metadata = @inAlloc
 // CHECK: airrt.wait_all {{.*}}%[[D3]] {air.launch_end}
-// CHECK-NOT: air.append_barrier
-// CHECK-NOT: air.await_appends
 
 module {
   aie.device(npu2) {
@@ -43,13 +40,13 @@ module {
       %c64 = arith.constant 64 : index
       %c128 = arith.constant 128 : index
       %c192 = arith.constant 192 : index
-      %d1 = air.channel.get async  @out[] (%b[%c64] [%c64] [%c1_l]) {air.append_barrier, id = 1 : i32, metadata = @outAlloc} : (memref<256xi32>)
-      %r0 = air.channel.put async  @in[] (%b[%c0] [%c64] [%c1_l]) {air.await_appends, id = 2 : i32, metadata = @inAlloc} : (memref<256xi32>)
-      %d2 = air.channel.get async  @out[] (%b[%c128] [%c64] [%c1_l]) {air.append_barrier, id = 3 : i32, metadata = @outAlloc} : (memref<256xi32>)
-      %r1 = air.channel.put async [%d1]  @in[] (%b[%c64] [%c64] [%c1_l]) {air.await_appends, id = 4 : i32, metadata = @inAlloc} : (memref<256xi32>)
-      %d3 = air.channel.get async  @out[] (%b[%c192] [%c64] [%c1_l]) {air.append_barrier, id = 5 : i32, metadata = @outAlloc} : (memref<256xi32>)
+      %d1 = air.channel.get async  @out[] (%b[%c64] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc} : (memref<256xi32>)
+      %r0 = air.channel.put async  @in[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc} : (memref<256xi32>)
+      %d2 = air.channel.get async  @out[] (%b[%c128] [%c64] [%c1_l]) {id = 3 : i32, metadata = @outAlloc} : (memref<256xi32>)
+      %r1 = air.channel.put async [%d1]  @in[] (%b[%c64] [%c64] [%c1_l]) {id = 4 : i32, metadata = @inAlloc} : (memref<256xi32>)
+      %d3 = air.channel.get async  @out[] (%b[%c192] [%c64] [%c1_l]) {id = 5 : i32, metadata = @outAlloc} : (memref<256xi32>)
       %w2 = air.wait_all async [%d2]
-      %r2 = air.channel.put async [%w2]  @in[] (%b[%c128] [%c64] [%c1_l]) {air.await_appends, id = 6 : i32, metadata = @inAlloc} : (memref<256xi32>)
+      %r2 = air.channel.put async [%w2]  @in[] (%b[%c128] [%c64] [%c1_l]) {id = 6 : i32, metadata = @inAlloc} : (memref<256xi32>)
       %e = air.wait_all async [%d1, %r0, %d2, %r1, %d3, %r2] {air.launch_end}
       %s = air.segment @seg0 async {
         %c1_0 = arith.constant 1 : index
@@ -72,17 +69,14 @@ module {
 
 // The same buffer, but the input reads rows the drain does not write, so it
 // does not depend on the drain: the drain is armed ahead of the input, nothing
-// waits on it before the launch end, and the markers the buffer-level pairing
-// put on the two are dropped. (Awaiting the drain before that input would make
-// the job wait for its own output.)
+// waits on it before the launch end. (Awaiting the drain before that input
+// would make the job wait for its own output.)
 
 // CHECK-LABEL: func.func @disjoint
 // CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc2
 // CHECK-NOT: airrt.wait_all %[[D]]{{$}}
 // CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc2
 // CHECK: airrt.wait_all {{.*}}%[[D]]{{.*}} {air.launch_end}
-// CHECK-NOT: air.append_barrier
-// CHECK-NOT: air.await_appends
 
 module {
   aie.device(npu2) {
@@ -99,8 +93,8 @@ module {
       %c1_l = arith.constant 1 : index
       %c64 = arith.constant 64 : index
       %c128 = arith.constant 128 : index
-      %w = air.channel.put async  @in2[] (%b[%c0] [%c64] [%c1_l]) {air.await_appends, id = 2 : i32, metadata = @inAlloc2} : (memref<256xi32>)
-      %d = air.channel.get async  @out2[] (%b[%c128] [%c64] [%c1_l]) {air.append_barrier, id = 1 : i32, metadata = @outAlloc2} : (memref<256xi32>)
+      %w = air.channel.put async  @in2[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc2} : (memref<256xi32>)
+      %d = air.channel.get async  @out2[] (%b[%c128] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc2} : (memref<256xi32>)
       %e = air.wait_all async [%d, %w] {air.launch_end}
       %s = air.segment @seg1 async {
         %c1_0 = arith.constant 1 : index

@@ -27,15 +27,42 @@ class Token:
     """Completion token returned by memory ops.
 
     AIR's own asynchrony is built by the ``air-dependency`` pass from the
-    program order this tracer emits, so a v1 token carries no SSA value. It
-    exists so that ``dependency=`` arguments can be *validated* -- passing a
-    non-token is an error rather than being quietly ignored.
+    program order this tracer emits, so ops are emitted synchronous. A token
+    becomes an SSA ``!air.async.token`` only when a channel ``put``/``get``
+    names it in ``dependency=``: that is an ordering program order does not
+    give, and ``air-dependency`` keeps it.
     """
 
     __slots__ = ("op",)
 
     def __init__(self, op=None):
         self.op = op
+
+    def async_value(self):
+        """This op's ``!air.async.token``; a synchronous op is rebuilt in place
+        with one."""
+        from air.dialects.air import AsyncTokenType
+        from air.ir import InsertionPoint, Operation
+
+        if self.op is None:
+            raise TypeError("dependency= names a token with no operation behind it")
+        op = getattr(self.op, "operation", self.op)
+        if len(op.results):
+            return op.results[0]
+        new = Operation.create(
+            op.name,
+            results=[AsyncTokenType.get()],
+            operands=list(op.operands),
+            attributes={
+                op.attributes[i].name: op.attributes[i].attr
+                for i in range(len(op.attributes))
+            },
+            loc=op.location,
+            ip=InsertionPoint(op),
+        )
+        op.erase()
+        self.op = new
+        return new.results[0]
 
     def __repr__(self):
         return "air.api.Token()"

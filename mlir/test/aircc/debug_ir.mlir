@@ -15,15 +15,14 @@
 // Verify per-pass IR files are created
 // RUN: ls %t/debug_ir/pass_000_initial_input.mlir
 // RUN: ls %t/debug_ir/pass_001_after_air-annotate-refeed.mlir
-// RUN: ls %t/debug_ir/pass_002_after_air-annotate-append-barrier.mlir
-// RUN: ls %t/debug_ir/pass_003_after_air-annotate-packet-ids.mlir
-// RUN: ls %t/debug_ir/pass_004_after_air-rank-to-launch.mlir
-// RUN: ls %t/debug_ir/pass_005_after_air-insert-launch-around-herd.mlir
-// RUN: ls %t/debug_ir/pass_008_after_air-dependency.mlir
+// RUN: ls %t/debug_ir/pass_002_after_air-annotate-packet-ids.mlir
+// RUN: ls %t/debug_ir/pass_003_after_air-rank-to-launch.mlir
+// RUN: ls %t/debug_ir/pass_004_after_air-insert-launch-around-herd.mlir
+// RUN: ls %t/debug_ir/pass_007_after_air-dependency.mlir
 // air-annotate-packet-ids runs a SECOND time here, to write routing headers now
 // that air-dependency has created the regions they belong in.
-// RUN: ls %t/debug_ir/pass_009_after_air-annotate-packet-ids.mlir
-// RUN: ls %t/debug_ir/pass_013_after_air-dma-to-channel.mlir
+// RUN: ls %t/debug_ir/pass_008_after_air-annotate-packet-ids.mlir
+// RUN: ls %t/debug_ir/pass_012_after_air-dma-to-channel.mlir
 
 // Verify pass.log exists and has correct structure
 // RUN: FileCheck %s --input-file=%t/debug_ir/pass.log --check-prefix=LOG
@@ -32,16 +31,15 @@
 // CHECK: [DEBUG] Splitting pipeline into
 // CHECK: [PASS 000] Saved initial IR
 // CHECK: [PASS 001] air-annotate-refeed
-// CHECK: [PASS 002] air-annotate-append-barrier
-// CHECK: [PASS 003] air-annotate-packet-ids
-// CHECK: [PASS 004] air-rank-to-launch
-// CHECK: [PASS 005] air-insert-launch-around-herd
-// CHECK: [PASS 008] air-dependency
+// CHECK: [PASS 002] air-annotate-packet-ids
+// CHECK: [PASS 003] air-rank-to-launch
+// CHECK: [PASS 004] air-insert-launch-around-herd
+// CHECK: [PASS 007] air-dependency
 // air-annotate-packet-ids runs twice: ids in the early slot, and the routing
 // header here, once air-dependency has created the regions the store has to
 // share a lock section with.
-// CHECK: [PASS 009] air-annotate-packet-ids
-// CHECK: [PASS 013] air-dma-to-channel
+// CHECK: [PASS 008] air-annotate-packet-ids
+// CHECK: [PASS 012] air-dma-to-channel
 
 // Pass log should have checkpoints
 // LOG: MLIR-AIR Compilation Pass Log
