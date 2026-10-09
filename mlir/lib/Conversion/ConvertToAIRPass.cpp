@@ -2209,8 +2209,25 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
     // between the memrefs and the grid arguments.
     ValueRange inductionVars = args.slice(numArgs - N, N);
 
-    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); }))
-      return failure();
+    // A body that reads no grid index is wrapped only on a one-point grid,
+    // where a single iteration changes nothing about what runs. Once
+    // wrapped, the body is that loop and the pattern stops.
+    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); })) {
+      bool onePoint =
+          llvm::all_of(loopBounds, [](int64_t bound) { return bound == 1; });
+      // Wrapped: apart from the loop's own bound constants, the body is the
+      // loop and the return.
+      bool wrapped = false;
+      for (Operation &op : funcOp.getBody().front().without_terminator()) {
+        if (isa<arith::ConstantOp>(op))
+          continue;
+        wrapped = isa<scf::ParallelOp>(op) && !wrapped;
+        if (!wrapped)
+          break;
+      }
+      if (!onePoint || wrapped)
+        return failure();
+    }
 
     // Store original function body operations
     SmallVector<Operation *> originalFuncBodyOps;
