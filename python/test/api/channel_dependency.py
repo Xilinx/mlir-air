@@ -139,3 +139,54 @@ def one_token_two_readers():
                     again.put(KV[32:64], dependency=drained)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: compute_token_is_rejected
+# A fill is not data movement and cannot carry a token: naming it is an error,
+# not a rebuilt op.
+# CHECK: TypeError: dependency= names the token of linalg.fill, which cannot carry an !air.async.token
+@run
+def compute_token_is_rejected():
+    KV = air.tensor([256], i32)
+    again = air.channel("Again4")
+
+    with air.launch(name="rb4") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg4") as seg:
+
+                @seg.body
+                def _():
+                    acc = air.alloc([64], i32, scope=seg.private())
+                    filled = air.ops.fill(acc, 0)
+                    try:
+                        again.put(KV[0:64], dependency=filled)
+                    except TypeError as e:
+                        print(f"TypeError: {e}")
+
+    launch.mlir()
+
+
+# CHECK-LABEL: TEST: load_token
+# A load is data movement: it becomes asynchronous and the put depends on it.
+# CHECK: %[[L:.*]] = air.dma_memcpy_nd async
+# CHECK: air.channel.put async [%[[L]]]  @Again5[]
+@run
+def load_token():
+    A = air.tensor([64], i32)
+    again = air.channel("Again5")
+
+    with air.launch(name="rb5") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg5") as seg:
+
+                @seg.body
+                def _():
+                    staged = air.alloc([64], i32, scope=seg.private())
+                    loaded = air.ops.load(staged, A)
+                    again.put(staged, dependency=loaded)
+
+    print(launch.mlir())

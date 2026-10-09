@@ -23,6 +23,11 @@ from ._index import coerce_index
 __all__ = ["Token", "Tensor", "TensorSlice", "Buffer", "BufferSlice", "BufferExpr"]
 
 
+# Ops whose async token is an optional result and that hold no region, so
+# rebuilding one with the token adds nothing else.
+_ASYNC_DATA_MOVEMENT = ("air.channel.get", "air.channel.put", "air.dma_memcpy_nd")
+
+
 class Token:
     """Completion token returned by memory ops.
 
@@ -46,7 +51,14 @@ class Token:
 
         if self.op is None:
             raise TypeError("dependency= names a token with no operation behind it")
-        op = getattr(self.op, "operation", self.op)
+        op = getattr(self.op, "owner", self.op)  # a result: its op
+        op = getattr(op, "operation", op)
+        if op.name not in _ASYNC_DATA_MOVEMENT:
+            raise TypeError(
+                f"dependency= names the token of {op.name}, which cannot carry an "
+                "!air.async.token; only data movement (channel put/get, load, "
+                "store) can be named"
+            )
         if len(op.results):
             return op.results[0]
         new = Operation.create(
