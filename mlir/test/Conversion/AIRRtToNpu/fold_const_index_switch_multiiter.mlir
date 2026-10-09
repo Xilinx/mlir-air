@@ -21,13 +21,13 @@
 // CHECK-NOT: scf.index_switch
 // Wave 0 arms with c7 before its feed.
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %c7{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @outBack
 // CHECK: aiex.dma_configure_task_for @feedIn
 // CHECK: aiex.dma_await_task
 // Wave 1 re-arms with c9 (its own arm, not collapsed to the front) before its feed.
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %c9{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @outBack
 // CHECK: aiex.dma_configure_task_for @feedIn
 // CHECK-NOT: aiex.dma_configure_task_for @altIn

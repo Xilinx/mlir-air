@@ -26,7 +26,7 @@
 // CHECK-LABEL: aie.runtime_sequence @ctrl
 // CHECK:         aiex.sync_scratchpad_parameters_from_host
 // CHECK-NOT:     aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0
-// CHECK:         aiex.set_lock(%{{.*}}, 1)
+// CHECK:         aiex.set_lock(%{{.*}}, %c1_i32{{.*}})
 module {
   aiex.scratchpad_parameter @__air_param_herd_0_0 : i32
   aie.device(npu2) @seg {

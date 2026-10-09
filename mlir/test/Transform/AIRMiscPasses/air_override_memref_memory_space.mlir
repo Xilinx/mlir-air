@@ -183,22 +183,22 @@ module {
       air.segment @seg args(%s0=%a0) : memref<*xf32> {
         %c1 = arith.constant 1 : index
         %c64 = arith.constant 64 : index
-        %rc64 = memref.reinterpret_cast %s0 to offset: [0], sizes: [64], strides: [1] : memref<*xf32> to memref<64xf32, strided<[1], offset: ?>>
+        %rc64 = memref.reinterpret_cast %s0 to offset: [0], sizes: [64], strides: [1] : memref<*xf32> to memref<64xf32, strided<[1]>>
         // Unassigned (memory_space=3) alloc at segment level - should be overridden
         %seg_default = memref.alloc() : memref<64xf32, 3>
-        memref.copy %rc64, %seg_default : memref<64xf32, strided<[1], offset: ?>> to memref<64xf32, 3>
+        memref.copy %rc64, %seg_default : memref<64xf32, strided<[1]>> to memref<64xf32, 3>
         // Explicit L2 (memory_space=1) alloc at segment level - should be preserved
         %seg_l2 = memref.alloc() : memref<64xf32, 1 : i32>
-        memref.copy %rc64, %seg_l2 : memref<64xf32, strided<[1], offset: ?>> to memref<64xf32, 1 : i32>
+        memref.copy %rc64, %seg_l2 : memref<64xf32, strided<[1]>> to memref<64xf32, 1 : i32>
         air.herd @herd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%h0=%s0) : memref<*xf32> {
           %c32 = arith.constant 32 : index
-          %rc32 = memref.reinterpret_cast %h0 to offset: [0], sizes: [32], strides: [1] : memref<*xf32> to memref<32xf32, strided<[1], offset: ?>>
+          %rc32 = memref.reinterpret_cast %h0 to offset: [0], sizes: [32], strides: [1] : memref<*xf32> to memref<32xf32, strided<[1]>>
           // Unassigned (memory_space=3) alloc at herd level - should be overridden by scope=herd
           %herd_default = memref.alloc() : memref<32xf32, 3>
-          memref.copy %rc32, %herd_default : memref<32xf32, strided<[1], offset: ?>> to memref<32xf32, 3>
+          memref.copy %rc32, %herd_default : memref<32xf32, strided<[1]>> to memref<32xf32, 3>
           // Explicit L1 (memory_space=2) alloc at herd level - should be preserved
           %herd_l1 = memref.alloc() : memref<32xf32, 2 : i32>
-          memref.copy %rc32, %herd_l1 : memref<32xf32, strided<[1], offset: ?>> to memref<32xf32, 2 : i32>
+          memref.copy %rc32, %herd_l1 : memref<32xf32, strided<[1]>> to memref<32xf32, 2 : i32>
         }
       }
     }

@@ -68,7 +68,7 @@ module {
 // herd_load that emits them appears after it in program order.
 // CHECK: arith.constant 5 : i32
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @weightIn
 module {
   aie.device(npu1) @segment_0 {
