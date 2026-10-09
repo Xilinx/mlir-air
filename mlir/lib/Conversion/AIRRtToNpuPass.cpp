@@ -3523,6 +3523,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Bound how far one shim feed channel may run ahead of its siblings.
     boundShimFeedBursts(module);
+    awaitInChannelOrder(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -3600,38 +3601,71 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  // Bound how far one shim MM2S feed channel may run ahead of its siblings, and
-  // how many tasks it may have in flight at once.
+  // The linear element range one buffer descriptor touches, or std::nullopt
+  // when its offset, length or dimensions are only known at runtime.
+  static std::optional<std::pair<int64_t, int64_t>>
+  bdAccessRange(AIE::DMABDOp bd) {
+    if (bd.getOffset() || bd.getLen() || !bd.getSizes().empty() ||
+        !bd.getStrides().empty())
+      return std::nullopt;
+    auto offset = bd.getStaticOffset();
+    if (!offset)
+      return std::nullopt;
+    auto sizes = bd.getStaticSizesAttr();
+    auto strides = bd.getStaticStridesAttr();
+    if (!sizes || !strides || sizes.empty()) {
+      auto len = bd.getStaticLen();
+      if (!len)
+        return std::nullopt;
+      return std::make_pair(int64_t(*offset), int64_t(*offset) + *len);
+    }
+    Builder b(bd.getContext());
+    SmallVector<OpFoldResult> zeros, sz, st;
+    for (auto [size, stride] :
+         llvm::zip(sizes.asArrayRef(), strides.asArrayRef())) {
+      zeros.push_back(b.getIndexAttr(0));
+      sz.push_back(b.getIndexAttr(size));
+      st.push_back(b.getIndexAttr(stride));
+    }
+    auto range = air::getLinearAccessRange(zeros, sz, st);
+    if (!range)
+      return std::nullopt;
+    return std::make_pair(range->first + *offset, range->second + *offset);
+  }
+
+  // Lay out a launch's shim tasks so the control program never waits on a task
+  // that depends on something issued after it, and bound how many tasks each
+  // shim channel has in flight.
+  //
+  // A shim channel's task queue is a few entries deep and does not
+  // backpressure: a push onto a full queue is lost unless the control program
+  // first waits for a free slot. Either way a push can only go out once an
+  // older task on that channel retires, so an older task must never depend on
+  // a later push -- the launch hangs. How many pushes a channel takes before
+  // that matters depends on the task sizes, so it is not a count to check.
   //
   // Feeds come out of the conversion channel-major -- every task for A, then
-  // every task for B -- because that is the order the channels' puts appear in,
-  // and nothing bounds how many one channel may have outstanding. A shim
-  // channel absorbs only a few: its DMA task queue (4 entries on AIE2) plus
-  // whatever the L2 consumer is double-buffering. Measured on a 2x2 herd GEMM,
-  // <= 6 tasks in flight on one channel completes and >= 7 hangs, independent
-  // of the output drain's structure, the launch count, and the dtype
-  // (Xilinx/mlir-air#1822).
+  // every task for B -- so A can use up its channel before B is fed at all,
+  // and the cores wait on a B chunk that was never sent. They are woven
+  // round-robin instead, and each channel's in-flight set is capped by awaiting
+  // task i-limit before starting task i.
   //
-  // Two things are wrong, and both need fixing:
-  //
-  //   - Channel-major order lets A consume the whole budget before B is fed at
-  //     all, so the cores wait on a B chunk that was never sent. Interleaving
-  //     the burst round-robin fixes that, and costs nothing.
-  //
-  //   - The overflow itself is per channel and absolute: a push past what the
-  //     channel holds is dropped, not deferred. A perfect A/B/A/B weave at 16
-  //     deep still hangs, so interleaving alone is not a fix. Capping each
-  //     channel's in-flight set -- await task i-limit before starting task i --
-  //     is what actually removes the deadlock.
+  // air-to-std arms a launch's drains ahead of the inputs that drive their
+  // producer, so that a drain is running before its producer emits. Past the
+  // limit that is the same inversion: drain j cannot retire until the feeds
+  // producing its data run, and those now come after it. So the drains ahead
+  // of a burst are woven between its feeds in proportion to how far through
+  // the burst each is. Drains between the feeds, and the drain awaits
+  // air-to-std put in front of a feed that reads a drained region, are woven
+  // with the feeds they precede. Every drain on a channel counts toward its
+  // cap, which a drain-only launch gets too.
   //
   // Only bursts that exceed the limit are touched. A design whose channels were
   // already short-run keeps its emission order and its await structure byte for
   // byte, which is what keeps this off the hot path of the tuned LLM decoders.
   void boundShimFeedBursts(ModuleOp module) {
-    // Per-channel tasks in flight that a shim channel absorbs without the
-    // control program blocking on the push: the AIE2 shim DMA task queue depth.
-    // The measured limit is 6 (queue + an L2 ping-pong); staying at the queue
-    // depth alone keeps the bound independent of what the consumer buffers.
+    // Tasks in flight per shim channel: the shim DMA task queue depth, which a
+    // channel holds regardless of how large its tasks are.
     constexpr unsigned burstLimit = 4;
 
     module.walk([&](AIE::RuntimeSequenceOp seq) {
@@ -3646,29 +3680,99 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // front, the paced/coalesced feeds are bounded by
       // synthesizeDoubleBufferedAwaits, and the append-barrier feeds carry a
       // write-after-write ordering the dependence graph cannot express.
-      auto isReorderable = [&](AIEX::DMAConfigureTaskForOp cfg) {
+      auto channelDir = [&](AIEX::DMAConfigureTaskForOp cfg)
+          -> std::optional<AIE::DMAChannelDir> {
         for (StringRef a :
              {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
               air::attrs::CoalescedShimFeed, air::attrs::AppendBarrier,
               air::attrs::AwaitAppends})
           if (cfg->hasAttr(a))
-            return false;
+            return std::nullopt;
         auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(
             device, cfg.getAlloc().getLeafReference().getValue());
-        return allocOp && allocOp.getChannelDir() == AIE::DMAChannelDir::MM2S;
+        if (!allocOp)
+          return std::nullopt;
+        return allocOp.getChannelDir();
+      };
+      auto isReorderable = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        return channelDir(cfg) == AIE::DMAChannelDir::MM2S;
+      };
+      // A drain's position among the feeds is not load-bearing: air-to-std
+      // armed it early, and any feed that reads it back is preceded by an
+      // await of it.
+      auto isDrain = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        return channelDir(cfg) == AIE::DMAChannelDir::S2MM;
+      };
+      // Whether `feed` reads what the drain `await` waits for wrote: the
+      // await air-to-std put in front of a read-back. Unknown footprints
+      // count as overlapping.
+      auto guardsReadBack = [&](AIEX::DMAAwaitTaskOp await,
+                                AIEX::DMAConfigureTaskForOp feed) {
+        auto drain =
+            await.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+        if (!drain || channelDir(drain) != AIE::DMAChannelDir::S2MM)
+          return false;
+        bool overlap = false;
+        drain.getBody().walk([&](AIE::DMABDOp w) {
+          feed.getBody().walk([&](AIE::DMABDOp r) {
+            if (w.getBuffer() == r.getBuffer() &&
+                air::mayOverlap(bdAccessRange(w), bdAccessRange(r)))
+              overlap = true;
+          });
+        });
+        return overlap;
       };
 
       struct Unit {
         AIEX::DMAConfigureTaskForOp cfg;
         Operation *start;
         StringRef chan;
+        // Drain awaits that must stay right in front of this feed: it reads
+        // what those drains wrote (air-to-std put them there).
+        SmallVector<Operation *> prefix = {};
       };
 
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blk : blocks) {
         SmallVector<Unit> run;
+        // Drains ahead of the run's first feed.
+        SmallVector<Unit> drains;
+        // Drains between the run's feeds, each with the round of the feed
+        // after it in its channel (rounds = after every feed when none).
+        SmallVector<std::pair<Unit, unsigned>> midDrains;
+        SmallVector<Unit> pendingDrains;
+        // Drain awaits waiting for the feed they guard.
+        SmallVector<Operation *> pendingAwaits;
+        llvm::SmallPtrSet<Operation *, 8> travelling;
         SmallVector<Operation *> staleFrees;
+
+        // Cap one channel's in-flight set: before starting task i, await the
+        // token from task i-burstLimit, which cannot have retired any later
+        // than that. The await lands at `at(i)`.
+        auto capChannel = [&](SmallVector<Unit> &chan,
+                              function_ref<Operation *(unsigned)> at) {
+          for (unsigned i = burstLimit; i < chan.size(); i++) {
+            AIEX::DMAConfigureTaskForOp older = chan[i - burstLimit].cfg;
+            // An MM2S task issues no completion token by default, so there
+            // would be nothing to wait on.
+            older.setIssueToken(true);
+            Operation *where = at(i);
+            OpBuilder b(where);
+            auto await = AIEX::DMAAwaitTaskOp::create(b, where->getLoc(),
+                                                      older.getResult());
+            // The await also frees the BD, so the fire-and-free this task was
+            // given at conversion would now be a second release. Erase those
+            // only once the block walk is done -- they sit after the burst, so
+            // erasing them here would pull the ground out from under the
+            // iterator. A second await of the task is left to
+            // awaitInChannelOrder, which keeps the first.
+            (void)await;
+            for (auto *u : older.getResult().getUsers())
+              if (isa<AIEX::DMAFreeTaskOp>(u))
+                staleFrees.push_back(u);
+          }
+        };
 
         // Lay the burst back down just before `fence`, round-robin over the
         // channels it feeds, then cap each channel's in-flight set. Each
@@ -3677,102 +3781,353 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // each other. A single-channel burst has nothing to weave and just gets
         // the cap.
         auto flush = [&](Operation *fence) {
-          if (run.size() < 2 || !fence)
+          // Drain awaits after the run's last feed stay behind every feed.
+          SmallVector<Operation *> trailing = std::move(pendingAwaits);
+          pendingAwaits.clear();
+          for (const Unit &d : pendingDrains)
+            midDrains.push_back({d, ~0u});
+          pendingDrains.clear();
+          if (!fence)
             return;
+          if (run.empty()) {
+            // Drains with no feed after them in the block (a drain-only
+            // launch): their producer needs nothing later in the sequence, so a
+            // wait on an older drain always retires, and they are capped like
+            // any other channel.
+            bool feedAfter = false;
+            for (Operation *o = fence; o && !feedAfter; o = o->getNextNode())
+              o->walk([&](AIEX::DMAConfigureTaskForOp c) {
+                if (channelDir(c) != AIE::DMAChannelDir::S2MM)
+                  feedAfter = true;
+              });
+            if (feedAfter)
+              return;
+            llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
+            for (const Unit &u : drains)
+              drainsByChan[u.chan].push_back(u);
+            for (auto &kv : drainsByChan)
+              capChannel(kv.second, [&](unsigned i) {
+                return kv.second[i].cfg.getOperation();
+              });
+            return;
+          }
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
           for (const Unit &u : run)
             byChan[u.chan].push_back(u);
-          unsigned deepest = 0;
+          llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
+          for (const Unit &u : drains)
+            drainsByChan[u.chan].push_back(u);
+          unsigned rounds = 0;
           for (auto &kv : byChan)
-            deepest = std::max<unsigned>(deepest, kv.second.size());
-          if (deepest <= burstLimit)
+            rounds = std::max<unsigned>(rounds, kv.second.size());
+          // Every drain on a channel, ahead of the feeds and between them, in
+          // program order: the order the channel fills them in.
+          llvm::MapVector<StringRef, SmallVector<Unit>> allDrainsByChan;
+          for (const Unit &u : drains)
+            allDrainsByChan[u.chan].push_back(u);
+          for (auto &[u, r] : midDrains)
+            allDrainsByChan[u.chan].push_back(u);
+          unsigned deepestDrain = 0;
+          for (auto &kv : drainsByChan)
+            deepestDrain = std::max<unsigned>(deepestDrain, kv.second.size());
+          bool weaveDrains = deepestDrain > burstLimit;
+          // A feed that reads back a drain waits for it, and that drain's
+          // producer may also need this round's feeds on the other channels;
+          // left channel-major, those come after the wait.
+          bool readsBack = llvm::any_of(
+              run, [](const Unit &u) { return !u.prefix.empty(); });
+          if (rounds <= burstLimit && !weaveDrains && !readsBack &&
+              midDrains.empty())
             return; // already within what a channel absorbs; leave as emitted.
-          for (unsigned i = 0; i < deepest; i++)
-            for (auto &kv : byChan) {
-              if (i >= kv.second.size())
-                continue;
-              const Unit &u = kv.second[i];
+
+          // Drain j of a channel holding D of them is armed at round
+          // floor(j * rounds / D), ahead of that round's feeds, so it is
+          // running before its producer emits. Assuming the drains draw on the
+          // feeds evenly, drain j is complete once round
+          // lastRound(j) = ceil((j + 1) * rounds / D) - 1 has been fed, and the
+          // cap makes drain j wait for drain j - burstLimit; so drain j is held
+          // back until the round after that one, or the wait would be on feeds
+          // not yet issued. Round `rounds` means after every feed.
+          SmallVector<SmallVector<Unit>> drainsAt(rounds + 1);
+          // The round each leading drain is armed at, per channel; drains
+          // between the feeds come no earlier.
+          llvm::StringMap<unsigned> lastLeadingRound;
+          // The round of the first feed that awaits `drain`, or `rounds`.
+          auto firstAwaiter = [&](Unit drain) {
+            unsigned r = rounds;
+            for (auto &ch : byChan)
+              for (auto [i, u] : llvm::enumerate(ch.second))
+                if (llvm::any_of(u.prefix, [&](Operation *a) {
+                      return cast<AIEX::DMAAwaitTaskOp>(a).getTask() ==
+                             drain.cfg.getResult();
+                    }))
+                  r = std::min<unsigned>(r, i);
+            return r;
+          };
+          if (weaveDrains) {
+            for (auto &kv : drainsByChan) {
+              unsigned d = kv.second.size();
+              auto lastRound = [&](unsigned j) {
+                return ((j + 1) * rounds + d - 1) / d - 1;
+              };
+              for (unsigned j = 0; j < d; j++) {
+                unsigned r = j * rounds / d;
+                if (j >= burstLimit)
+                  r = std::max(r, lastRound(j - burstLimit) + 1);
+                // Never after a feed that awaits it.
+                r = std::min(r, firstAwaiter(kv.second[j]));
+                if (j)
+                  r = std::max(r, lastLeadingRound[kv.first]);
+                lastLeadingRound[kv.first] = std::min(r, rounds);
+                drainsAt[std::min(r, rounds)].push_back(kv.second[j]);
+              }
+            }
+          }
+
+          // A drain between feeds is armed at the round of the feed it was
+          // emitted in front of, but never after a feed that awaits it, and in
+          // its channel's order.
+          {
+            llvm::MapVector<StringRef, SmallVector<std::pair<Unit, unsigned>>>
+                midByChan;
+            for (auto &[u, r] : midDrains)
+              midByChan[u.chan].push_back({u, std::min(r, firstAwaiter(u))});
+            for (auto &kv : midByChan) {
+              auto &ds = kv.second;
+              if (auto it = lastLeadingRound.find(kv.first);
+                  it != lastLeadingRound.end() && !ds.empty())
+                ds[0].second = std::max(ds[0].second, it->second);
+              for (unsigned j = 1; j < ds.size(); j++)
+                ds[j].second = std::max(ds[j].second, ds[j - 1].second);
+              for (unsigned j = ds.size(); j-- > 1;)
+                ds[j - 1].second = std::min(ds[j - 1].second, ds[j].second);
+              for (auto &[u, r] : ds)
+                drainsAt[r].push_back(u);
+            }
+          }
+
+          for (unsigned i = 0; i <= rounds; i++) {
+            for (const Unit &u : drainsAt[i]) {
               u.cfg->moveBefore(fence);
               u.start->moveBefore(fence);
             }
-          // Interleaving alone is not enough. It does bound how far one channel
-          // runs ahead, but the overflow is per channel and absolute: a push
-          // past what the channel can hold is dropped, not deferred, so the
-          // chunk is simply never sent. Measured with a perfect A/B/A/B weave
-          // at 16 deep, the design still hangs. So cap each channel's in-flight
-          // set as well: before starting task i, await the token from task
-          // i-burstLimit, which cannot have retired any later than that.
-          for (auto &kv : byChan) {
-            SmallVector<Unit> &chan = kv.second;
-            for (unsigned i = burstLimit; i < chan.size(); i++) {
-              AIEX::DMAConfigureTaskForOp older = chan[i - burstLimit].cfg;
-              // An MM2S task issues no completion token by default, so there
-              // would be nothing to wait on.
-              older.setIssueToken(true);
-              OpBuilder b(chan[i].start);
-              AIEX::DMAAwaitTaskOp::create(b, chan[i].start->getLoc(),
-                                           older.getResult());
-              // An await also frees the BD, so the fire-and-free this task was
-              // given at conversion would now be a second release. Erase those
-              // only once the block walk is done -- a free sits after the
-              // burst, so erasing it here would pull the ground out from under
-              // the iterator.
-              for (auto *u : older.getResult().getUsers())
-                if (isa<AIEX::DMAFreeTaskOp>(u))
-                  staleFrees.push_back(u);
-            }
+            if (i == rounds)
+              break;
+            // Feeds carrying a drain await go last in their round, so the
+            // other channels' feeds of the round are out before the control
+            // program blocks.
+            for (bool awaiting : {false, true})
+              for (auto &kv : byChan) {
+                if (i >= kv.second.size())
+                  continue;
+                const Unit &u = kv.second[i];
+                if (u.prefix.empty() == awaiting)
+                  continue;
+                for (Operation *a : u.prefix)
+                  a->moveBefore(fence);
+                u.cfg->moveBefore(fence);
+                u.start->moveBefore(fence);
+              }
           }
+          for (Operation *a : trailing)
+            a->moveBefore(fence);
+          for (auto &kv : byChan)
+            capChannel(kv.second,
+                       [&](unsigned i) { return kv.second[i].start; });
+          // A drain's wait goes ahead of its configure rather than its start,
+          // so the BD it frees is free for the configure to take.
+          for (auto &kv : allDrainsByChan)
+            capChannel(kv.second, [&](unsigned i) {
+              return kv.second[i].cfg.getOperation();
+            });
         };
 
-        // Walk the block, growing a run of reorderable feeds. Anything that is
-        // not such a feed and is not pure ends it: an await, a free, an RTP
-        // write, a lock set, a PDI load -- each is an ordering point, and a
-        // burst only exists between them. Pure ops (the arith chain narrowing a
-        // runtime length or offset) are transparent; moving a feed above its
-        // operands is repaired by the rematerialization pass below, which is
-        // there for exactly this.
+        // The single start of `cfg` in this block, or null if it has none or
+        // several (then it is not a plain single-shot task).
+        auto singleStart = [&](AIEX::DMAConfigureTaskForOp cfg) -> Operation * {
+          Operation *start = nullptr;
+          for (auto *u : cfg.getResult().getUsers()) {
+            if (!isa<AIEX::DMAStartTaskOp>(u) || u->getBlock() != blk)
+              continue;
+            if (start)
+              return nullptr;
+            start = u;
+          }
+          return start;
+        };
+        auto reset = [&]() {
+          run.clear();
+          drains.clear();
+          midDrains.clear();
+          pendingDrains.clear();
+        };
+
+        // Walk the block, growing a run of reorderable feeds, led by the drains
+        // ahead of it. Anything that is not such a task and is not pure ends
+        // it: an await, a free, an RTP write, a lock set, a PDI load -- each is
+        // an ordering point, and a burst only exists between them. Drains
+        // between the feeds stay in the burst, and so do the drain awaits in
+        // front of a feed that reads a drained region: ending the burst there
+        // would leave the other channels' feeds behind every task before it.
+        // Pure ops (the arith chain narrowing a runtime length or offset) are
+        // transparent; moving a task above its operands is repaired by the
+        // rematerialization pass below, which is there for exactly this.
         for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (auto await = dyn_cast<AIEX::DMAAwaitTaskOp>(&o)) {
+            if (travelling.contains(&o)) {
+              pendingAwaits.push_back(&o);
+              continue;
+            }
+            // A drain await in front of a feed that reads the drain's region
+            // travels with that feed; any other await is an ordering point.
+            // The awaits in front of a feed go together: air-to-std awaits a
+            // channel's older drains along with the one the feed reads.
+            SmallVector<AIEX::DMAAwaitTaskOp> group = {await};
+            Operation *next = o.getNextNode();
+            while (next && (isMemoryEffectFree(next) ||
+                            isa<AIEX::DMAAwaitTaskOp>(next))) {
+              if (auto a = dyn_cast<AIEX::DMAAwaitTaskOp>(next))
+                group.push_back(a);
+              next = next->getNextNode();
+            }
+            auto feed = dyn_cast_or_null<AIEX::DMAConfigureTaskForOp>(next);
+            if (feed && singleStart(feed) && isReorderable(feed) &&
+                llvm::any_of(group, [&](AIEX::DMAAwaitTaskOp a) {
+                  return guardsReadBack(a, feed);
+                })) {
+              for (AIEX::DMAAwaitTaskOp a : group)
+                travelling.insert(a);
+              pendingAwaits.push_back(&o);
+              continue;
+            }
+          }
           if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
-            Operation *start = nullptr;
-            for (auto *u : cfg.getResult().getUsers()) {
-              if (!isa<AIEX::DMAStartTaskOp>(u) || u->getBlock() != blk)
-                continue;
-              if (start) { // more than one start: not a plain single-shot feed
-                start = nullptr;
-                break;
-              }
-              start = u;
+            Operation *start = singleStart(cfg);
+            StringRef chan = cfg.getAlloc().getLeafReference().getValue();
+            if (start && isDrain(cfg)) {
+              (run.empty() ? drains : pendingDrains)
+                  .push_back({cfg, start, chan});
+              continue;
             }
             if (start && isReorderable(cfg)) {
-              run.push_back(
-                  {cfg, start, cfg.getAlloc().getLeafReference().getValue()});
+              unsigned round = llvm::count_if(
+                  run, [&](const Unit &u) { return u.chan == chan; });
+              for (const Unit &d : pendingDrains)
+                midDrains.push_back({d, round});
+              pendingDrains.clear();
+              run.push_back({cfg, start, chan, std::move(pendingAwaits)});
+              pendingAwaits.clear();
               continue;
             }
             flush(&o);
-            run.clear();
+            reset();
             continue;
           }
           if (isa<AIEX::DMAStartTaskOp>(&o)) {
-            // The start of a feed already in the run travels with its configure
-            // and does not break the burst; any other start does.
-            bool owned =
-                llvm::any_of(run, [&](const Unit &u) { return u.start == &o; });
-            if (owned)
+            // The start of a task already in the run travels with its
+            // configure and does not break the burst; any other start does.
+            auto owns = [&](const Unit &u) { return u.start == &o; };
+            if (llvm::any_of(run, owns) || llvm::any_of(drains, owns) ||
+                llvm::any_of(pendingDrains, owns))
               continue;
             flush(&o);
-            run.clear();
+            reset();
             continue;
           }
           if (isMemoryEffectFree(&o))
             continue;
           flush(&o);
-          run.clear();
+          reset();
         }
         if (blk->mightHaveTerminator())
           flush(blk->getTerminator());
-        run.clear();
+        reset();
         for (Operation *f : staleFrees)
           f->erase();
+      }
+    });
+  }
+
+  // Put each channel's awaits in the order its tasks were started, and release
+  // what an await proves finished. A shim channel retires its tasks in order
+  // and an await consumes the oldest completion token outstanding on the
+  // channel, whichever task it names. So an await of task j while an older
+  // token-issuing task i on the channel is still unawaited returns once i
+  // completes, not j: pacing meant to bound the channel lets it run further
+  // ahead, and BD assignment, which models the same rule, cannot release j's
+  // descriptors. This happens when a paced burst's tail is awaited, or only
+  // freed, at the end of the sequence while a later burst on the channel is
+  // already awaiting its own tasks. So await i right before j, which costs
+  // nothing since i completes first, and free the older tasks that issue no
+  // token right after it, instead of holding their descriptors to the end.
+  void awaitInChannelOrder(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blk : blocks) {
+        // Started tasks still holding their descriptors, per channel, in
+        // start order.
+        llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+            open;
+        llvm::SmallPtrSet<Operation *, 16> released;
+        SmallVector<Operation *> stale;
+        auto channelOf = [](AIEX::DMAConfigureTaskForOp cfg) {
+          return cfg.getAlloc().getLeafReference().getValue();
+        };
+        for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (auto start = dyn_cast<AIEX::DMAStartTaskOp>(&o)) {
+            auto cfg =
+                start.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+            if (cfg && cfg->getBlock() == blk && !released.contains(cfg))
+              open[channelOf(cfg)].push_back(cfg);
+            continue;
+          }
+          if (auto free = dyn_cast<AIEX::DMAFreeTaskOp>(&o)) {
+            auto cfg =
+                free.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+            if (!cfg)
+              continue;
+            if (released.contains(cfg)) {
+              stale.push_back(free);
+              continue;
+            }
+            auto &pending = open[channelOf(cfg)];
+            llvm::erase(pending, cfg);
+            released.insert(cfg);
+            continue;
+          }
+          auto await = dyn_cast<AIEX::DMAAwaitTaskOp>(&o);
+          if (!await)
+            continue;
+          auto cfg =
+              await.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+          if (!cfg)
+            continue;
+          if (released.contains(cfg)) {
+            // Already awaited, or freed, in order further up.
+            stale.push_back(await);
+            continue;
+          }
+          auto &pending = open[channelOf(cfg)];
+          auto it = llvm::find(pending, cfg);
+          if (it == pending.end())
+            continue;
+          OpBuilder before(await);
+          OpBuilder after(await->getBlock(), std::next(await->getIterator()));
+          for (auto older : llvm::make_range(pending.begin(), it)) {
+            if (older.getIssueToken())
+              AIEX::DMAAwaitTaskOp::create(before, await.getLoc(),
+                                           older.getResult());
+            else
+              AIEX::DMAFreeTaskOp::create(after, await.getLoc(),
+                                          older.getResult());
+            released.insert(older);
+          }
+          released.insert(cfg);
+          pending.erase(pending.begin(), std::next(it));
+        }
+        for (Operation *op : stale)
+          op->erase();
       }
     });
   }
