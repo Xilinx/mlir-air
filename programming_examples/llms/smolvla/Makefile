@@ -143,9 +143,10 @@ profile-all:
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
 		--profile --reps $(REPS) --cameras $(CAMERAS)
 
-## Build the expert's two engine ELFs once (prefix + step, 16 layers). Run it with a compiler
-## that honours air.order_drains first on PATH (and its python on PYTHONPATH) and
-## PEANO_INSTALL_DIR at a no-unroll Peano; about 2 minutes, an hour without the async-dependency fix.
+## Build the expert's two engine ELFs once (prefix + step, 16 layers). Run it with upstream
+## main's compiler (#2061/#2070, drain ordering is automatic there) on PATH (and its python
+## on PYTHONPATH) and PEANO_INSTALL_DIR at a no-unroll Peano; about 2 minutes with the
+## async-dependency speed-up patch, an hour without it (the patch is not upstream).
 compile-expert:
 	cd $(srcdir)/benchmarking && $(LEROBOT_PYTHON) expert_v2_probe.py --layers 16 --compile-only
 

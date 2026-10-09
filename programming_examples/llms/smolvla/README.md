@@ -143,10 +143,11 @@ How it works, briefly (details in `benchmarking/`):
 
 Prerequisites beyond the vision path (why this stays experimental):
 
-* The engines need a compiler that honours `air.order_drains` (drain ordering
-  for launches whose later jobs read earlier jobs' outputs). That support is
-  not in a released wheel or upstream `main`; it lives on the fork branch
-  `smolvla-ship-compiler-fixes`.
+* The engines need a compiler that orders device-to-host drains by what they
+  depend on, not by position. Upstream `main` does this natively as of #2061
+  and #2070 (no opt-in flag); earlier revisions of this README required the
+  fork branch `smolvla-ship-compiler-fixes` and its opt-in `air.order_drains`
+  — no longer needed. A released wheel built before those PRs still lacks it.
 * The expert engine must be built once, with a no-unroll Peano `opt` wrapper
   (the 16 KB core program does not fit the default unrolling):
   `make compile-expert` (= `python benchmarking/expert_v2_probe.py --layers 16
@@ -155,8 +156,7 @@ Prerequisites beyond the vision path (why this stays experimental):
   is not upstream either). Self-attention layers are the even layers; an ELF
   built with the other pattern produces garbage (cosine −0.39).
 * The backbone layer ELF is compiled lazily on the first `--npu-all` run and needs the same
-  compiler first on `PATH` (with the stock wheel compiler it fails with `Basic sequential
-  allocation also failed`); it is cached afterwards.
+  compiler first on `PATH`; it is cached afterwards.
 * The expert's per-call cost is almost all device time (13 ms of 14.6 ms): it
   streams ~243 MB of weights per call. Remaining levers are the drain-group
   stalls (~20 ms/chunk) and attention per-job cost.
