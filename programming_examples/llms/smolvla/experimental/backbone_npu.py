@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-_SMOLVLA = Path(__file__).resolve().parent
+_SMOLVLA = Path(__file__).resolve().parent.parent
 _LLMS = _SMOLVLA.parent
 _LLAMA = _LLMS / "llama32_1b"
 for p in (str(_SMOLVLA), str(_LLAMA)):

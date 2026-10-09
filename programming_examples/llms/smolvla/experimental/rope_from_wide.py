@@ -27,7 +27,7 @@ _HERE = Path(__file__).resolve().parent
 import types
 
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
-    str(_HERE.parent.parent)
+    str(_HERE.parent.parent.parent)
 ]
 
 from ml_dtypes import bfloat16

@@ -148,9 +148,10 @@ profile-all:
 ## on PYTHONPATH) and PEANO_INSTALL_DIR at a no-unroll Peano; about 2 minutes with the
 ## async-dependency speed-up patch, an hour without it (the patch is not upstream).
 compile-expert:
-	cd $(srcdir) && $(LEROBOT_PYTHON) expert_v2_probe.py --layers 16 --compile-only
+	cd $(srcdir)/experimental && $(LEROBOT_PYTHON) expert_v2_probe.py --layers 16 --compile-only
 
 clean:
 	rm -rf $(srcdir)/$(BUILD_DIR) $(srcdir)/__pycache__
+	rm -rf $(srcdir)/experimental/build $(srcdir)/experimental/__pycache__
 	rm -rf $(srcdir)/../verify/reports
-	@echo "$(BUILD_DIR)/ and verify/reports/ removed. Run 'make compile' to rebuild."
+	@echo "$(BUILD_DIR)/, experimental/build/ and verify/reports/ removed. Run 'make compile' to rebuild."

@@ -24,7 +24,7 @@ _HERE = Path(__file__).resolve().parent
 # put on sys.path: every directory under it would otherwise become a
 # top-level module name and shadow an installed package that shares it.
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
-    str(_HERE.parent.parent)
+    str(_HERE.parent.parent.parent)
 ]
 
 
