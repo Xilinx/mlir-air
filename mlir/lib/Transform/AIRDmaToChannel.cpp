@@ -22,6 +22,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include <map>
+
 using namespace mlir;
 
 #define DEBUG_TYPE "dma-to-channel"
@@ -1589,10 +1591,13 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // span.
     //
     // A broadcast channel whose puts' broadcast_set fixes the herd column
-    // feeds only that column, so it counts against that column alone.
+    // feeds only that column, so it counts against that column alone. The
+    // column is local to the herd, and herds are not placed yet, so the
+    // columns of different herds may coincide: the most any column of a herd
+    // carries is summed over herds.
     //
     // Total per-column pressure:
-    //   numNonBroadcast + max_over_columns(pinned_c)
+    //   numNonBroadcast + sum_over_herds(max_over_columns(pinned_h,c))
     //     + sum_over_spans(ceil(count_i / span_i))
     //
     // Channels with only segment-level endpoints (L3<->L2) are globally
@@ -1638,6 +1643,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     module.walk([&](air::SegmentOp seg) {
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
       int64_t preExistingInputPackets = 0, preExistingOutputPackets = 0;
+      // The herd each channel's herd-side endpoint is in.
+      llvm::StringMap<Operation *> channelHerd;
       for (auto &op : module.getBody()->getOperations()) {
         auto chanOp = dyn_cast<air::ChannelOp>(op);
         if (!chanOp)
@@ -1660,7 +1667,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             return WalkResult::interrupt();
           if (ci.getChanName() != channelName)
             return WalkResult::advance();
-          if (ci->getParentOfType<air::HerdOp>()) {
+          if (auto herd = ci->getParentOfType<air::HerdOp>()) {
+            channelHerd[channelName] = herd;
             if (isa<air::ChannelGetOp>(ci.getOperation()))
               hasHerdSideGet = true;
             else
@@ -1723,14 +1731,15 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
         // Group broadcast channels by their column span.
         llvm::SmallDenseMap<int64_t, int64_t> broadcastCountBySpan;
-        // Broadcast channels feeding one herd column, per column.
-        llvm::SmallDenseMap<int64_t, int64_t> pinnedCountByColumn;
+        // Broadcast channels feeding one herd column, per herd and column.
+        std::map<std::pair<Operation *, int64_t>, int64_t> pinnedCount;
 
         for (auto chanOp : channels) {
           auto pinned = pinnedColumn.find(chanOp.getSymName());
           if (chanOp.isBroadcast() && pinned != pinnedColumn.end() &&
               pinned->second >= 0) {
-            pinnedCountByColumn[pinned->second]++;
+            pinnedCount[{channelHerd.lookup(chanOp.getSymName()),
+                         pinned->second}]++;
           } else if (chanOp.isBroadcast()) {
             int64_t colSpan = 1;
             auto bcastShape = chanOp.getBroadcastShape();
@@ -1750,10 +1759,13 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         int64_t broadcastPressure = 0;
         for (auto &[span, count] : broadcastCountBySpan)
           broadcastPressure += (count + span - 1) / span;
-        int64_t pinnedPressure = 0;
-        for (auto &[column, count] : pinnedCountByColumn)
-          pinnedPressure = std::max(pinnedPressure, count);
-        broadcastPressure += pinnedPressure;
+        llvm::SmallDenseMap<Operation *, int64_t> pinnedPressure;
+        for (auto &[herdColumn, count] : pinnedCount) {
+          int64_t &herdMax = pinnedPressure[herdColumn.first];
+          herdMax = std::max(herdMax, count);
+        }
+        for (auto &[herd, herdMax] : pinnedPressure)
+          broadcastPressure += herdMax;
 
         return numNonBroadcast + broadcastPressure + preExistingPackets;
       };
