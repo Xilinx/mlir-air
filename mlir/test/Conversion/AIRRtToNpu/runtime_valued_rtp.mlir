@@ -17,7 +17,7 @@
 // CHECK-LABEL: aie.runtime_sequence @ctrl
 // CHECK-SAME:    %{{.*}}: memref<64xi32>, %[[L:[a-zA-Z0-9_]+]]: i32
 // CHECK:         aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %[[L]]) : i32
-// CHECK:         aiex.set_lock(%{{.*}}, 1)
+// CHECK:         aiex.set_lock(%{{.*}}, %c1_i32{{.*}})
 module {
   aie.device(npu2) @seg {
     %tile_0_0 = aie.tile(0, 0)
