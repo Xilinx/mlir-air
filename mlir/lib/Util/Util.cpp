@@ -2110,10 +2110,13 @@ static std::optional<int64_t> ivCoefficient(Value v, Value iv,
     return 0;
   }
   Operation *op = v.getDefiningOp();
+  // An air.execute returns its token first, then what its region yields.
   if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
-    if (exec.getChildOps().empty())
+    unsigned idx = cast<OpResult>(v).getResultNumber();
+    if (idx == 0)
       return std::nullopt;
-    op = &exec.getChildOps().front();
+    return ivCoefficient(exec.getBody().getTerminator()->getOperand(idx - 1),
+                         iv, depth + 1);
   }
   if (getConstantIntValue(v))
     return 0;

@@ -124,4 +124,28 @@ func.func @addi_without_iv(%arg0: memref<512x512xbf16>, %row: index) {
   return
 }
 
+// The offset is the value an air.execute yields, as air-dependency wraps it:
+// iv * 128 rows, so the four iterations cover the buffer in one transfer.
+
+// CHECK-LABEL: func.func @execute_offset
+// CHECK: air.channel.put {{.*}}(%arg0[] [] [])
+// CHECK-NOT: air.channel.put
+func.func @execute_offset(%arg0: memref<512x512xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c128 = arith.constant 128 : index
+  %c512 = arith.constant 512 : index
+  %0 = air.wait_all async
+  %1 = scf.for %iv = %c0 to %c4 step %c1 iter_args(%t = %0) -> (!air.async.token) {
+    %tok, %r = air.execute [%t] -> (index) {
+      %m = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%iv]
+      air.execute_terminator %m : index
+    }
+    %put = air.channel.put async [%tok] @channel_0[] (%arg0[%r, %c0] [%c128, %c512] [%c512, %c1]) {metadata = @airMemcpyId1} : (memref<512x512xbf16>)
+    scf.yield %put : !air.async.token
+  }
+  return
+}
+
 air.channel @channel_0 [1, 1]
