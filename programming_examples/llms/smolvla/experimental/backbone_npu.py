@@ -71,6 +71,13 @@ SEQ_REAL = 241
 SEQ_PAD = 256  # 241 padded to a multiple of 64 (llama32_1b_prefill's fused-cast GEMM requirement)
 
 
+def cos(a, b, eps=0.0):
+    """Cosine similarity, float64. `eps` guards a zero-norm denominator (unused
+    by most callers; this module's own diagnostics pass 1e-30)."""
+    a, b = np.asarray(a, np.float64).ravel(), np.asarray(b, np.float64).ravel()
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + eps))
+
+
 def extract_backbone_weights(policy) -> LlamaWeights:
     """Pull the REAL loaded weights straight out of the live nn.Module (not a
     fresh safetensors download) -- guarantees an exact match with the CPU
@@ -1481,8 +1488,7 @@ def main():
         return out
 
     def _cos(a, b):
-        a, b = a.ravel().astype(np.float64), b.ravel().astype(np.float64)
-        return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-30))
+        return cos(a, b, eps=1e-30)
 
     # run_one_layer returns views into shared_nonstatic BOs that the next call
     # overwrites, so every kept output must be copied.

@@ -44,6 +44,8 @@ from air import api as air
 from air.api import ops
 from air.api.types import bf16, f32, i32, i8
 
+from backbone_npu import cos as _cos
+
 # Own-key attention (Job.own) geometry; must match mm_engine.cc's OWN_*: head dim,
 # q heads per kv group, kv groups, and the V columns / rows per herd row a "pv" own
 # chunk carries (two kv groups plus padding, rows past tile_m are padding).
@@ -1306,11 +1308,6 @@ def main():
         f"{tag}: device median {dev[len(dev) // 2] * 1e3:.0f} us (min {dev[0] * 1e3:.0f}, "
         f"p10 {dev[len(dev) // 10] * 1e3:.0f})"
     )
-
-
-def _cos(a, b):
-    a, b = np.asarray(a, np.float32).ravel(), np.asarray(b, np.float32).ravel()
-    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 def main_ffn(args):

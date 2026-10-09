@@ -26,7 +26,8 @@ from pathlib import Path
 import numpy as np
 from ml_dtypes import bfloat16
 
-import backbone_npu as bn  # noqa: F401  (sys.path setup)
+import backbone_npu as bn
+import expert_capture as ec
 from gemm_engine import (
     Job,
     arena_layout,
@@ -315,11 +316,8 @@ def engine_mask(m, n_pre=None):
 def reference_layer(x, w, lut):
     """fp32 expert layer on the real rows/columns. x [M_REAL, E_REAL]."""
 
-    def rms(a, g):
-        return a / np.sqrt((a * a).mean(-1, keepdims=True) + 1e-5) * g
-
     qkv = (
-        rms(x, w["anorm"][:E_REAL])
+        ec.rms(x, w["anorm"][:E_REAL], 1e-5)
         @ np.concatenate([w["wq"], w["wk"], w["wv"]], axis=1)[:E_REAL]
     )
     q = rope_ref(qkv[:, : NH * HD], lut[:M_REAL], NH).reshape(M_REAL, NH, HD)
@@ -331,14 +329,9 @@ def reference_layer(x, w, lut):
         p = np.exp(s - s.max(-1, keepdims=True))
         att[:, h] = (p / p.sum(-1, keepdims=True)) @ v[:, h // (NH // NKV)]
     res1 = att.reshape(M_REAL, -1) @ w["wo"][:, :E_REAL] + x
-    n2 = rms(res1, w["fnorm"][:E_REAL])
+    n2 = ec.rms(res1, w["fnorm"][:E_REAL], 1e-5)
     g, u = n2 @ w["wg"][:E_REAL, :H_REAL], n2 @ w["wu"][:E_REAL, :H_REAL]
     return (g / (1 + np.exp(-g)) * u) @ w["wd"][:H_REAL, :E_REAL] + res1
-
-
-def cos(a, b):
-    a, b = np.asarray(a, np.float64).ravel(), np.asarray(b, np.float64).ravel()
-    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 class RealData:
@@ -686,7 +679,7 @@ def main():
                     if real
                     else reference_layer(xin, w, lut)
                 )
-                per.append(cos(f("x" + str(l + 1))[:, :E_REAL], ref))
+                per.append(bn.cos(f("x" + str(l + 1))[:, :E_REAL], ref))
             if real:
                 chained = chain[n_layers]
             else:
@@ -696,11 +689,11 @@ def main():
             last = f("x" + str(n_layers))
             line = (
                 f"per-layer cosine vs fp32 min {min(per):.6f} ({', '.join(f'{c:.5f}' for c in per)}); "
-                f"chained {cos(last[:, :E_REAL], chained):.6f}; pad cols max |x| "
+                f"chained {bn.cos(last[:, :E_REAL], chained):.6f}; pad cols max |x| "
                 f"{float(np.abs(last[:, E_REAL:]).max()):.3g}"
             )
             if real and n_layers == len(real.layers):
-                line += f"; final-normed vs lerobot {cos(real.final(last[:, :E_REAL]), real.d['out'][step]):.6f}"
+                line += f"; final-normed vs lerobot {bn.cos(real.final(last[:, :E_REAL]), real.d['out'][step]):.6f}"
             return line
 
         x0 = bfa(
@@ -783,7 +776,7 @@ def main():
                     err = np.abs(c - ref)
                     print(
                         f"closed loop, expert = {name}: action chunk {c.shape} vs lerobot cosine "
-                        f"{cos(c, ref):.6f}, max |err| {err.max():.4g}, mean |err| {err.mean():.4g} "
+                        f"{bn.cos(c, ref):.6f}, max |err| {err.max():.4g}, mean |err| {err.mean():.4g} "
                         f"(|lerobot| max {np.abs(ref).max():.3g}, mean {np.abs(ref).mean():.3g})"
                     )
         else:

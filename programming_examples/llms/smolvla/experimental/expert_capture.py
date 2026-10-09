@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-import backbone_npu as bn  # noqa: F401  (sys.path setup)
+import backbone_npu as bn
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = HERE / "build" / "expert_capture.npz"
@@ -194,11 +194,6 @@ def reference_expert(x, layers, meta, k_cache, v_cache, mask, pos, collect=None)
     return rms(x, meta["norm"], meta["eps"])
 
 
-def cos(a, b):
-    a, b = np.asarray(a, np.float64).ravel(), np.asarray(b, np.float64).ravel()
-    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
-
-
 def main():
     policy = load_policy()
     if "--reuse" in sys.argv and CAPTURE.exists():
@@ -232,7 +227,7 @@ def main():
         ref = reference_expert(
             d["x"][i], layers, meta, d["k"][i], d["v"][i], d["mask"][i], d["pos"][i]
         )
-        print(f"step {i}: reference vs lerobot cosine {cos(ref, d['out'][i]):.6f}")
+        print(f"step {i}: reference vs lerobot cosine {bn.cos(ref, d['out'][i]):.6f}")
     return 0
 
 
