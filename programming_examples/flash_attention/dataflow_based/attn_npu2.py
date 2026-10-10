@@ -425,7 +425,10 @@ def parse_args():
         choices=["compile-and-run", "compile-only"],
         default="compile-and-run",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.num_runs < 1:
+        parser.error("--num-runs must be at least 1")
+    return args
 
 
 def reference(q, k, v, causal):

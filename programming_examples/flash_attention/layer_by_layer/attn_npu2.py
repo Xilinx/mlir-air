@@ -33,7 +33,7 @@ import numpy as np
 from air import api as air
 from air.api import ops
 from air.api.types import bf16, i32
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import XRTBackend, get_shared_device
 
 KERNEL = "attn_npu2.o"
 OPS = ("qk", "sm", "pv")
@@ -313,7 +313,10 @@ def parse_args():
         choices=["compile-and-run", "compile-only"],
         default="compile-and-run",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.num_runs < 1:
+        parser.error("--num-runs must be at least 1")
+    return args
 
 
 def reference(q, k, v, causal):
@@ -344,6 +347,8 @@ def main():
         return 0
 
     root = os.getcwd()
+    # The three operators are loaded together, so they share one device.
+    device = get_shared_device() if args.compile_mode == "compile-and-run" else None
     backends, artifacts = {}, {}
     for op in OPS:
         d = os.path.join(root, op)
@@ -359,6 +364,7 @@ def main():
             output_format=args.output_format,
             instance_name="attention_bf16",
             target_device=launch.target,
+            device=device,
         )
         artifacts[op] = backends[op].compile(mlir_module)
         os.chdir(root)
