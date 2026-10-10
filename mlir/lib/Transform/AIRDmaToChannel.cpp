@@ -10,6 +10,7 @@
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -20,6 +21,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
+
+#include <map>
 
 using namespace mlir;
 
@@ -1595,17 +1598,61 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // grouped separately since they can only distribute within their own
     // span.
     //
+    // A broadcast channel whose puts' broadcast_set fixes the herd column
+    // feeds only that column, so it counts against that column alone. The
+    // column is local to the herd, and herds are not placed yet, so the
+    // columns of different herds may coincide: the most any column of a herd
+    // carries is summed over herds.
+    //
     // Total per-column pressure:
-    //   numNonBroadcast + sum_over_spans(ceil(count_i / span_i))
+    //   numNonBroadcast + sum_over_herds(max_over_columns(pinned_h,c))
+    //     + sum_over_spans(ceil(count_i / span_i))
     //
     // Channels with only segment-level endpoints (L3<->L2) are globally
     // allocated across columns and do NOT create per-column pressure.
     //
     // Pre-existing dma_packet channels count toward pressure but are
     // not upgraded (already packet flow).
+
+    // The herd column a broadcast channel feeds alone, by channel name; -1
+    // where its puts do not all fix the same column.
+    llvm::StringMap<int64_t> pinnedColumn;
+    auto fixedColumn = [](air::ChannelPutOp put) -> int64_t {
+      auto set = put->getAttrOfType<IntegerSetAttr>("broadcast_set");
+      if (!set)
+        return -1;
+      IntegerSet s = set.getValue();
+      for (unsigned i = 0; i < s.getNumConstraints(); i++) {
+        if (!s.isEq(i))
+          continue;
+        SmallVector<int64_t> flat;
+        if (failed(getFlattenedAffineExpr(s.getConstraint(i), s.getNumDims(),
+                                          s.getNumSymbols(), &flat)))
+          continue;
+        // Only the column symbol, with coefficient 1 or -1: c * s0 + k == 0.
+        unsigned col = s.getNumDims();
+        int64_t c = flat[col];
+        bool onlyColumn = c == 1 || c == -1;
+        for (unsigned j = 0; j + 1 < flat.size(); j++)
+          if (j != col && flat[j] != 0)
+            onlyColumn = false;
+        if (onlyColumn)
+          return -flat.back() / c;
+      }
+      return -1;
+    };
+    module.walk([&](air::ChannelPutOp put) {
+      int64_t column = fixedColumn(put);
+      auto [it, inserted] = pinnedColumn.try_emplace(put.getChanName(), column);
+      if (!inserted && it->second != column)
+        it->second = -1;
+    });
+
     module.walk([&](air::SegmentOp seg) {
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
       int64_t preExistingInputPackets = 0, preExistingOutputPackets = 0;
+      // The herd each channel's herd-side endpoint is in.
+      llvm::StringMap<Operation *> channelHerd;
       for (auto &op : module.getBody()->getOperations()) {
         auto chanOp = dyn_cast<air::ChannelOp>(op);
         if (!chanOp)
@@ -1628,7 +1675,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             return WalkResult::interrupt();
           if (ci.getChanName() != channelName)
             return WalkResult::advance();
-          if (ci->getParentOfType<air::HerdOp>()) {
+          if (auto herd = ci->getParentOfType<air::HerdOp>()) {
+            channelHerd[channelName] = herd;
             if (isa<air::ChannelGetOp>(ci.getOperation()))
               hasHerdSideGet = true;
             else
@@ -1685,15 +1733,22 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       // for the same column. Broadcast channels are grouped by column span
       // since channels with different spans distribute independently.
       auto computePerColumnPressure =
-          [](const SmallVector<air::ChannelOp> &channels,
-             int64_t preExistingPackets) -> int64_t {
+          [&](const SmallVector<air::ChannelOp> &channels,
+              int64_t preExistingPackets) -> int64_t {
         int64_t numNonBroadcast = 0;
 
         // Group broadcast channels by their column span.
         llvm::SmallDenseMap<int64_t, int64_t> broadcastCountBySpan;
+        // Broadcast channels feeding one herd column, per herd and column.
+        std::map<std::pair<Operation *, int64_t>, int64_t> pinnedCount;
 
         for (auto chanOp : channels) {
-          if (chanOp.isBroadcast()) {
+          auto pinned = pinnedColumn.find(chanOp.getSymName());
+          if (chanOp.isBroadcast() && pinned != pinnedColumn.end() &&
+              pinned->second >= 0) {
+            pinnedCount[{channelHerd.lookup(chanOp.getSymName()),
+                         pinned->second}]++;
+          } else if (chanOp.isBroadcast()) {
             int64_t colSpan = 1;
             auto bcastShape = chanOp.getBroadcastShape();
             if (bcastShape && bcastShape.size() > 0) {
@@ -1712,6 +1767,13 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         int64_t broadcastPressure = 0;
         for (auto &[span, count] : broadcastCountBySpan)
           broadcastPressure += (count + span - 1) / span;
+        llvm::SmallDenseMap<Operation *, int64_t> pinnedPressure;
+        for (auto &[herdColumn, count] : pinnedCount) {
+          int64_t &herdMax = pinnedPressure[herdColumn.first];
+          herdMax = std::max(herdMax, count);
+        }
+        for (auto &[herd, herdMax] : pinnedPressure)
+          broadcastPressure += herdMax;
 
         return numNonBroadcast + broadcastPressure + preExistingPackets;
       };

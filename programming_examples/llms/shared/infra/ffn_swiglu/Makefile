@@ -22,7 +22,6 @@ all: run
 compile-kernel:
 	mkdir -p $(BUILD_DIR)/air_project
 	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
-		-include aie_kernels/aie_kernel_utils.h \
 		-c $(srcdir)/silu_and_mul.cc -o $(BUILD_DIR)/air_project/silu_and_mul.o
 
 # Print combined MLIR module

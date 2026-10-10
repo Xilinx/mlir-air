@@ -7,9 +7,8 @@ herd group and the others never get a lock release.
 
 LinearInsts covers an op whose insts depend on a few integer parameters, such
 as attention's K-block count and offsets. The op is built at a base point and
-once more per parameter at base + delta. Each word that changes must change by
-an integer multiple of the delta, and the insts at any point are then
-base + sum(coef * (value - base)).
+once more per parameter at base + delta, and the insts at any point are then
+base + sum(change * (value - base) / delta), which must come out whole.
 """
 
 import struct
@@ -66,15 +65,16 @@ class LinearInsts:
                 raise ValueError(f"{name}: the insts change length with the parameter")
             d = w - self.base
             idx = np.nonzero(d)[0]
-            if np.any(d[idx] % delta):
-                raise ValueError(f"{name}: a word moves by a non-multiple of {delta}")
-            self.coef[name] = (idx, d[idx] // delta)
+            self.coef[name] = (idx, d[idx], delta)
 
     def at(self, **point):
         w = self.base.copy()
         for name, v in point.items():
-            idx, c = self.coef[name]
-            w[idx] += c * (v - self.point[name])
+            idx, d, delta = self.coef[name]
+            num = d * (v - self.point[name])
+            if np.any(num % delta):
+                raise ValueError(f"{name} = {v} is off the insts' lattice")
+            w[idx] += num // delta
         if w.min() < 0 or w.max() >= 1 << 32:
             raise ValueError(f"insts word out of range at {point}")
         return w.astype(np.uint32)

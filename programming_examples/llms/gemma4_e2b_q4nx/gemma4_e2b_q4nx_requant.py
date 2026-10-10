@@ -5,8 +5,10 @@
 # Mirrors gemma3_4b_q4nx_requant.py; the Gemma4 deltas are all consequences of
 # ONE design decision in fused_decode_ple.py -- every layer's attention is built
 # at the WIDEST layer's geometry and the sliding layers are padded up to it. The
-# narrow-FFN layers are packed at their own width and the KV-shared layers
-# without k/v rows (the device skips the rest).
+# narrow-FFN layers are packed at their own width, the KV-shared layers
+# without k/v rows, and the sliding layers' attention unpadded: the device
+# skips the rest, and its rope kernel spreads a sliding wave's compact heads
+# into the padded layout below.
 #
 # Padding ATTENTION is not trivial, and the two traps below were both found by
 # measurement, not inspection:
@@ -23,9 +25,10 @@
 #      the true 256 head, so it scales by sqrt(2). Folding 1/sqrt(2) into the
 #      norm weight cancels it exactly (measured max rel err 4e-7).
 #
-# Everything the padding touches -- q, k, v, the o-proj's contraction columns,
-# and the q/k norm weights -- has to use the SAME interleave, or the heads
-# silently mismatch and the model degrades without failing.
+# q, k, the K cache and the q/k norm weights have to use the SAME interleave,
+# or the heads silently mismatch and the model degrades without failing. V
+# needs no pairing: a sliding layer's sits at the front of its slot, which
+# leaves the o-proj's odd X blocks zero.
 import os
 
 import numpy as np
@@ -135,8 +138,11 @@ def pack_layer_weights(fd, L, w):
     NQ, NKV = fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
     dh = gw.head_dim(L)
 
-    # --- attention, padded into the build's head geometry ---
-    q = _pad_head(w["q"], NQ, dh, DH)
+    # --- attention: a sliding layer's heads go compact (the device spreads
+    # them, see fused_decode_ple CLASS_GEOM), a full layer's are DH wide ---
+    swa = fd.arm_of_layer(L) & fd.SWA_ARM_BIT
+    pad = (lambda a, n: a) if swa else (lambda a, n: _pad_head(a, n, dh, DH))
+    q = pad(w["q"], NQ)
     if "k" in w:
         # MQA against a 2-CU build: the device wants NKV kv heads, the model
         # has one, and each CU needs its own copy (see the N_ATTN_CU note in
@@ -145,8 +151,8 @@ def pack_layer_weights(fd, L, w):
         _rep = NKV // (w["k"].shape[0] // dh)
         qkv = [
             q,
-            _pad_head(np.tile(w["k"], (_rep, 1)), NKV, dh, DH),
-            _pad_head(np.tile(w["v"], (_rep, 1)), NKV, dh, DH),
+            pad(np.tile(w["k"], (_rep, 1)), NKV),
+            pad(np.tile(w["v"], (_rep, 1)), NKV),
         ]
     elif fd.PER_CLASS:
         # A KV-shared layer reuses a lower layer's cache and streams q only.
@@ -155,7 +161,9 @@ def pack_layer_weights(fd, L, w):
         # Without per-class geometry the QKV phase has one shape for every
         # layer, so a KV-shared layer's k/v rows are zero.
         qkv = [q, np.zeros((2 * NKV * DH, K), np.float32)]
-    o = _pad_head(w["o"], NQ, dh, DH, axis=1)
+    # A sliding head's v sits at the front of its slot, so its o-proj columns
+    # are the even X blocks, which are all the device streams.
+    o = w["o"] if swa else _pad_head(w["o"], NQ, dh, DH, axis=1)
 
     # --- FFN: at its own width on a per-class build, else padded up to the
     # widest layer ---

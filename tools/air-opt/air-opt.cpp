@@ -12,6 +12,7 @@
 
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIEVec/IR/AIEVecDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #endif
 
@@ -40,6 +41,8 @@ int main(int argc, char **argv) {
 #if AIR_ENABLE_AIE
   registry.insert<xilinx::AIE::AIEDialect>();
   registry.insert<xilinx::AIEX::AIEXDialect>();
+  // transform.air.linearize_vectors emits aievec.unpack.
+  registry.insert<xilinx::aievec::AIEVecDialect>();
 #endif
 
   registerAllExtensions(registry);

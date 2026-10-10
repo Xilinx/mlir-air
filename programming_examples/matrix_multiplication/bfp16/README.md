@@ -13,7 +13,7 @@ out.
 NPU2 (Strix) only, and Peano only -- `xchesscc` has no `bfp16ebs8` codegen path.
 
 [ref]: https://github.com/Xilinx/mlir-aie/tree/main/programming_examples/ml/block_datatypes/matrix_multiplication
-[kernel]: https://github.com/Xilinx/mlir-aie/blob/main/aie_kernels/aie2p/mm_bfp.cc
+[kernel]: https://github.com/Xilinx/mlir-aie/blob/main/aie_kernels/linalg/mm_bfp.cc
 
 ## Available Make Targets
 

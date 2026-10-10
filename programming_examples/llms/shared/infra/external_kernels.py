@@ -122,12 +122,7 @@ _PROJ_ROOT = (
 def compile_silu_and_mul():
     """Compile silu_and_mul.o from programming_examples/silu_and_mul/silu_and_mul.cc."""
     src = _PROJ_ROOT / "silu_and_mul" / "silu_and_mul.cc"
-    include_dir = _get_aie_include_dir()
-    utils_header = Path(include_dir) / "aie_kernels" / "aie_kernel_utils.h"
-    extra = []
-    if utils_header.exists():
-        extra = [f"-include", str(utils_header)]
-    _compile_kernel(src, "silu_and_mul.o", extra_flags=extra)
+    _compile_kernel(src, "silu_and_mul.o")
 
 
 def compile_gelu_and_mul():
@@ -136,12 +131,7 @@ def compile_gelu_and_mul():
     The GELU-tanh twin of silu_and_mul.o, for models whose GLU uses
     gelu_pytorch_tanh (Gemma3) rather than SiLU."""
     src = _PROJ_ROOT / "gelu_and_mul" / "gelu_and_mul.cc"
-    include_dir = _get_aie_include_dir()
-    utils_header = Path(include_dir) / "aie_kernels" / "aie_kernel_utils.h"
-    extra = []
-    if utils_header.exists():
-        extra = [f"-include", str(utils_header)]
-    _compile_kernel(src, "gelu_and_mul.o", extra_flags=extra)
+    _compile_kernel(src, "gelu_and_mul.o")
 
 
 def compile_gemm_mm(

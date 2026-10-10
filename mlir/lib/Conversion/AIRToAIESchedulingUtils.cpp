@@ -839,14 +839,18 @@ bool xilinx::air::allocation_info_t::valid() {
 AIE::TileLike xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
 
 bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
-  if (channel_op) {
-    for (auto o : memcpyOps) {
-      if (auto chan_op = dyn_cast_if_present<air::ChannelInterface>(o)) {
-        auto chan_declr = getChannelDeclarationThroughSymbol(chan_op);
-        if (chan_declr == channel_op)
-          return true;
-      }
-    }
+  if (!channel_op)
+    return false;
+  // Resolving a channel declaration scans the enclosing symbol tables (the
+  // aie.device holds every lowered op), and memcpyOps grows with the program.
+  // Ops on a different channel cannot resolve to this declaration, so compare
+  // the symbol names first and resolve only the ops that could match.
+  StringRef name = channel_op.getSymName();
+  for (auto o : memcpyOps) {
+    auto chan_op = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (chan_op && chan_op.getChanName() == name &&
+        getChannelDeclarationThroughSymbol(chan_op) == channel_op)
+      return true;
   }
   return false;
 }
@@ -2454,10 +2458,10 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
 
   // Search for existing dma channel allocation by air.channel symbol.
+  auto memcpyDecl = getChannelDeclarationThroughSymbol(
+      dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation()));
   for (auto &t : *allocs) {
-    if (t.foundAlloc(getChannelDeclarationThroughSymbol(
-            dyn_cast_if_present<air::ChannelInterface>(
-                memcpyOp.getOperation())))) {
+    if (t.foundAlloc(memcpyDecl)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -4040,15 +4044,18 @@ air::verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
        << " channel " << chan;
     return str;
   };
-  // air.tile_dma_channel is the explicit override: two flows pinned to the
-  // same channel are left as pinned.
+  // air.tile_dma_channel is the explicit override, but only where the result
+  // can still be routed: two pinned flows may broadcast from one circuit
+  // source, while a port of mixed switching kinds or a circuit destination
+  // with two sources is rejected by aie.device's verifier whatever pinned it.
   auto pinned = [](MemcpyBundleAsFlow *flow) {
     return flow->air_flow_op &&
            flow->air_flow_op->hasAttr(air::attrs::TileDmaChannel);
   };
   auto conflict = [&](MemcpyBundleAsFlow *flow, MemcpyBundleAsFlow *other,
-                      const Port &port, const Twine &problem) -> LogicalResult {
-    if (pinned(flow) && pinned(other))
+                      const Port &port, const Twine &problem,
+                      bool pinsOverride = false) -> LogicalResult {
+    if (pinsOverride && pinned(flow) && pinned(other))
       return success();
     auto diag = flow->air_flow_op->emitOpError()
                 << describe(port) << " " << problem;
@@ -4118,7 +4125,8 @@ air::verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
           failed(conflict(flow, first, src,
                           "streams to different destinations for two "
                           "circuit-switched flows, so each would receive the "
-                          "other's data")))
+                          "other's data",
+                          /*pinsOverride=*/true)))
         return failure();
   }
   return success();

@@ -22,13 +22,10 @@
 // CHECK: [[I:v[0-9]+]] = (int64_t) [[P]]
 // CHECK: [[U:v[0-9]+]] = (uint64_t) [[I]]
 // CHECK: [[PROD:v[0-9]+]] = [[U]] * v{{[0-9]+}}
-// CHECK: [[N32:v[0-9]+]] = (int32_t) v{{[0-9]+}}
-// CHECK: [[NU:v[0-9]+]] = (uint32_t) [[N32]]
-// CHECK: [[BYTES:v[0-9]+]] = [[NU]] * v{{[0-9]+}}
-// CHECK: [[B32:v[0-9]+]] = (int32_t) [[BYTES]]
-// CHECK: [[BU:v[0-9]+]] = (uint32_t) [[B32]]
-// CHECK: [[WORDS:v[0-9]+]] = [[BU]] / v{{[0-9]+}}
-// CHECK: [[LEN:v[0-9]+]] = (int32_t) [[WORDS]]
+// The builder checks the runtime extent fits the BD and refuses it otherwise,
+// rather than truncating it, then converts it to the BD length.
+// CHECK: return aie_runtime::txn_refused("a runtime DMA d0 size must be in [
+// CHECK: [[LEN:v[0-9]+]] = (int32_t) v{{[0-9]+}}
 // mlir-aie #3559 packs the shim BD's register block into one blockwrite, so the
 // length is now word 0 of that block rather than its own write32. Same property:
 // the runtime-derived length reaches 0x1d000.

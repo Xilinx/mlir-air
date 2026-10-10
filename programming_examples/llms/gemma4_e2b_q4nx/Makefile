@@ -53,6 +53,10 @@ FUSED_DIR ?= $(CURDIR)/_fused_prefill
 # Absolute, because run-fused changes to srcdir.
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_JOBS ?= 6
+# The driver and verify adapter prefill on the build in FUSED_PREFILL_DIR when it
+# has one, else on the per-op prefill; FUSED_PREFILL_DIR= selects the latter.
+FUSED_PREFILL_DIR ?= $(FUSED_DIR)
+export FUSED_PREFILL_DIR
 
 # Weight source: HF repo id (model.q4nx bundle) or a local dir/file. Read by the
 # drivers as Q4NX_MODEL_SOURCE, exactly as in the other q4nx examples.
@@ -89,6 +93,7 @@ SWEEP_UNI_DEC ?= 35
 # attend a zero key at their own position. seed_kv fans the prompt's rows out,
 # so only generation degrades. Derived, not written out: a wrong map builds
 # fine and decodes to garbage. Recursive (=) to keep the import off `make help`.
+SLIDING_WINDOW = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(gw.SLIDING_WINDOW)")
 SWEEP_KV_SRC = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(','.join(str(gw.kv_source_layer(i)) for i in range($(SWEEP_UNI_DEC))))")
 
 # ATTN_MAXL the TOKEN driver's template is built for, i.e. the session context
@@ -206,7 +211,7 @@ compile-decode-full:
 
 ## Prefill ELFs + decode templates, the same meaning `compile` has in the other
 ## q4nx examples. Both decode templates: the layer gate's and the token driver's.
-compile: compile-decode compile-decode-full compile-prefill
+compile: compile-decode compile-decode-full compile-prefill compile-fused-prefill
 
 ## Prefill-only correctness gate. Runs the prompt through the NPU prefill and
 ## scores the WHOLE logit vector against the CPU reference, not just the argmax:
@@ -217,7 +222,7 @@ prefill:
 	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --gate --tol $(PREFILL_TOL)
 
 ## The fused prefill: every op of a 128-token chunk on one configured device,
-## int4 weights dequantized on the cores (fused_prefill/device.py).
+## int4 weights dequantized on the cores (../shared/fused_prefill).
 compile-fused-prefill:
 	$(PYTHON) $(FUSED)/build.py $(FUSED_DIR) -j $(FUSED_JOBS)
 
@@ -280,12 +285,36 @@ profile-prefill:
 _compile_decode_build:
 	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
 	@set -e; for L in $(LBUILD) $(LREF); do \
-	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
+	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
 	    UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
 	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
 	  mv -f $(DEC)/decode.xclbin    $(srcdir)/decode_L$$L.xclbin; \
 	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$$L.insts.bin; \
 	done
+	@# The cores run ceil(L/16) KV blocks (DECODE_RT_ROUNDS), so the host cuts the
+	@# readback to match; this one-block-shorter build locates its length words.
+	@# decode_L<N>.rt_rounds tells the consumers this template needs that .rb.
+	@set -e; R=$$(( ($(LBUILD) + 15) / 16 - 1 )); rm -f $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
+	echo 1 > $(srcdir)/decode_L$(LBUILD).rt_rounds; \
+	if [ $$R -ge 1 ]; then \
+	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 DECODE_RB_ROUNDS=$$R $(MAKE) --no-print-directory -C $(DEC) compile-decode \
+	    LBUILD=$(LBUILD) UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
+	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
+	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
+	  rm -f $(DEC)/decode.xclbin; \
+	fi
+	@# A sliding-window wave's cores start at the block its window opens in
+	@# (DECODE_RT_WINDOW); this build, with that wave's readback one block later,
+	@# locates the words the host moves. decode_L<N>.rt_window holds the window.
+	@set -e; W=$(SLIDING_WINDOW); rm -f $(srcdir)/decode_L$(LBUILD).sw.insts.bin; \
+	echo $$W > $(srcdir)/decode_L$(LBUILD).rt_window; \
+	if [ $(LBUILD) -gt $$W ]; then \
+	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 DECODE_RB_SWA_SKIP=1 $(MAKE) --no-print-directory -C $(DEC) compile-decode \
+	    LBUILD=$(LBUILD) UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
+	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
+	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$(LBUILD).sw.insts.bin; \
+	  rm -f $(DEC)/decode.xclbin; \
+	fi
 	@echo "Gemma4 decode templates built: decode_L$(LBUILD) + decode_L$(LREF) (UNI_DEC=$(SWEEP_UNI_DEC))."
 
 ## One dispatch is not a verdict on this hardware. A few percent of NPU2
@@ -427,6 +456,6 @@ sublayer-ref:
 clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
-	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
+	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds $(srcdir)/decode_L*.rt_window 2>/dev/null || true
 	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano $(FUSED_DIR) 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."

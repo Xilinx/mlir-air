@@ -25,6 +25,32 @@ module attributes {transform.with_named_sequence} {
   %func3 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_iv_in_higher_dimension"} in %arg1 : (!transform.any_op) -> !transform.any_op
   %loop3 = transform.structured.match ops{["scf.for"]} in %func3 : (!transform.any_op) -> !transform.any_op
   %hoisted3 = transform.air.hoist_vector_transfer_pointers %loop3 : (!transform.any_op) -> !transform.any_op
+
+  // A non-unit step, and a broadcasting read that must be left alone.
+  %func4 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_non_unit_step"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop4 = transform.structured.match ops{["scf.for"]} in %func4 : (!transform.any_op) -> !transform.any_op
+  %hoisted4 = transform.air.hoist_vector_transfer_pointers %loop4 : (!transform.any_op) -> !transform.any_op
+  %func5 = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_hoist_broadcast_read"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop5 = transform.structured.match ops{["scf.for"]} in %func5 : (!transform.any_op) -> !transform.any_op
+  %hoisted5 = transform.air.hoist_vector_transfer_pointers %loop5 : (!transform.any_op) -> !transform.any_op
+  %func6 = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_hoist_non_contiguous_block"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop6 = transform.structured.match ops{["scf.for"]} in %func6 : (!transform.any_op) -> !transform.any_op
+  %hoisted6 = transform.air.hoist_vector_transfer_pointers %loop6 : (!transform.any_op) -> !transform.any_op
+  %func_inv = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_flatten_invariant_broadcast"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop_inv = transform.structured.match ops{["scf.for"]} in %func_inv : (!transform.any_op) -> !transform.any_op
+  %hoisted_inv = transform.air.hoist_vector_transfer_pointers %loop_inv : (!transform.any_op) -> !transform.any_op
+  %func_blk = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_flatten_invariant_block"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop_blk = transform.structured.match ops{["scf.for"]} in %func_blk : (!transform.any_op) -> !transform.any_op
+  %hoisted_blk = transform.air.hoist_vector_transfer_pointers %loop_blk : (!transform.any_op) -> !transform.any_op
+  %func_rb = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_flatten_rank_broadcast"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop_rb = transform.structured.match ops{["scf.for"]} in %func_rb : (!transform.any_op) -> !transform.any_op
+  %hoisted_rb = transform.air.hoist_vector_transfer_pointers %loop_rb : (!transform.any_op) -> !transform.any_op
+  %func_ip = transform.structured.match ops{["func.func"]} attributes{sym_name = "no_hoist_impure_index"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop_ip = transform.structured.match ops{["scf.for"]} in %func_ip : (!transform.any_op) -> !transform.any_op
+  %hoisted_ip = transform.air.hoist_vector_transfer_pointers %loop_ip : (!transform.any_op) -> !transform.any_op
+  %func7 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_iv_plus_constant"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop7 = transform.structured.match ops{["scf.for"]} in %func7 : (!transform.any_op) -> !transform.any_op
+  %hoisted7 = transform.air.hoist_vector_transfer_pointers %loop7 : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

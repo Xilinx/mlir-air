@@ -10,8 +10,9 @@
 // Once every DMA channel is allocated, air-to-aie rejects a port shared in a
 // way the switchbox cannot carry. A tile out of free channels gets a flow
 // wrapped onto a channel already in use; these are the cases where that
-// joined two flows that cannot share it. Every case puts more flows on one
-// memtile than it has DMA channels on that side (6).
+// joined two flows that cannot share it. Every case but the last three puts
+// more flows on one memtile than it has DMA channels on that side (6); those
+// three pin two flows onto one port with air.tile_dma_channel.
 
 // Seven circuit-switched flows out of one memtile: the seventh shares MM2S 0
 // with the first, and both cores would receive both flows' data.
@@ -183,6 +184,110 @@ module {
           memref.dealloc %buf : memref<64xi32, 2>
         }
         memref.dealloc %l2 : memref<7x64xi32, 1>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// air.tile_dma_channel cannot force a packet- and a circuit-switched flow onto
+// one port: the switchbox still cannot carry it, so the pin is rejected rather
+// than left for aie.device's verifier.
+
+module {
+  // expected-note @+1 {{the other flow}}
+  air.channel @q4 [1] {air.tile_dma_channel = 0 : i32}
+  // expected-error @+1 {{carries both a packet-switched and a circuit-switched flow}}
+  air.channel @k4 [1] {air.tile_dma_channel = 0 : i32, channel_type = "npu_dma_packet"}
+  func.func @pinned_mixed_kinds(%ext: memref<8xbf16>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+      air.segment @seg4 args(%se=%e) : memref<8xbf16> {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h4 tile(%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {
+          %bq = memref.alloc() : memref<8xbf16, 2>
+          %bk = memref.alloc() : memref<8xbf16, 2>
+          air.channel.put @q4[%tx, %ty] (%bq[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
+          air.channel.put @k4[%tx, %ty] (%bk[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)
+          memref.dealloc %bq : memref<8xbf16, 2>
+          memref.dealloc %bk : memref<8xbf16, 2>
+        }
+        %lq = memref.alloc() : memref<8xbf16, 1>
+        %lk = memref.alloc() : memref<8xbf16, 1>
+        air.channel.get @q4[] (%lq[] [] []) {id = 3 : i32} : (memref<8xbf16, 1>)
+        air.channel.get @k4[] (%lk[] [] []) {id = 4 : i32} : (memref<8xbf16, 1>)
+        memref.dealloc %lq : memref<8xbf16, 1>
+        memref.dealloc %lk : memref<8xbf16, 1>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Nor can it make two circuit-switched flows converge on one destination port:
+// a circuit-switched destination still takes one source.
+
+module {
+  // expected-note @+1 {{the other flow}}
+  air.channel @a5 [1] {air.tile_dma_channel = 0 : i32}
+  // expected-error @+1 {{is fed by two circuit-switched sources}}
+  air.channel @b5 [1] {air.tile_dma_channel = 0 : i32}
+  func.func @pinned_fan_in(%ext: memref<8xbf16>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+      air.segment @seg5 args(%se=%e) : memref<8xbf16> {
+        %c1_0 = arith.constant 1 : index
+        %la = memref.alloc() : memref<8xbf16, 1>
+        %lb = memref.alloc() : memref<8xbf16, 1>
+        air.channel.put @a5[] (%la[] [] []) {id = 1 : i32} : (memref<8xbf16, 1>)
+        air.channel.put @b5[] (%lb[] [] []) {id = 2 : i32} : (memref<8xbf16, 1>)
+        air.herd @h5 tile(%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {
+          %ba = memref.alloc() : memref<8xbf16, 2>
+          %bb = memref.alloc() : memref<8xbf16, 2>
+          air.channel.get @a5[%tx, %ty] (%ba[] [] []) {id = 3 : i32} : (memref<8xbf16, 2>)
+          air.channel.get @b5[%tx, %ty] (%bb[] [] []) {id = 4 : i32} : (memref<8xbf16, 2>)
+          memref.dealloc %ba : memref<8xbf16, 2>
+          memref.dealloc %bb : memref<8xbf16, 2>
+        }
+        memref.dealloc %la : memref<8xbf16, 1>
+        memref.dealloc %lb : memref<8xbf16, 1>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A pin still overrides the broadcast rule: two circuit-switched flows pinned to
+// one source port go to both destinations, which the switchbox can route.
+
+module {
+  air.channel @c6 [1] {air.tile_dma_channel = 0 : i32}
+  air.channel @d6 [1] {air.tile_dma_channel = 0 : i32}
+  func.func @pinned_broadcast(%ext: memref<8xbf16>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+      air.segment @seg6 args(%se=%e) : memref<8xbf16> {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h6 tile(%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {
+          %bc = memref.alloc() : memref<8xbf16, 2>
+          %bd = memref.alloc() : memref<8xbf16, 2>
+          air.channel.put @c6[%tx, %ty] (%bc[] [] []) {id = 1 : i32} : (memref<8xbf16, 2>)
+          air.channel.put @d6[%tx, %ty] (%bd[] [] []) {id = 2 : i32} : (memref<8xbf16, 2>)
+          memref.dealloc %bc : memref<8xbf16, 2>
+          memref.dealloc %bd : memref<8xbf16, 2>
+        }
+        %lc = memref.alloc() : memref<8xbf16, 1>
+        %ld = memref.alloc() : memref<8xbf16, 1>
+        air.channel.get @c6[] (%lc[] [] []) {id = 3 : i32} : (memref<8xbf16, 1>)
+        air.channel.get @d6[] (%ld[] [] []) {id = 4 : i32} : (memref<8xbf16, 1>)
+        memref.dealloc %lc : memref<8xbf16, 1>
+        memref.dealloc %ld : memref<8xbf16, 1>
       }
     }
     return

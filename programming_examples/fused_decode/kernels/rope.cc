@@ -196,6 +196,39 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   }
 }
 
+#ifdef HAS_SWA_HEADS
+static inline void copy_v(bf16 *dst, const bf16 *src, int n) {
+  for (int i = 0; i < n; i += 16)
+    aie::store_v(dst + i, aie::load_v<16>(src + i));
+}
+
+static inline void zero_v(bf16 *dst, int n) {
+  for (int i = 0; i < n; i += 16)
+    aie::store_v(dst + i, aie::zeros<bf16, 16>());
+}
+
+// A sliding layer's q/k/v heads arrive compact, SWA_DH each. Spread them in
+// place into their DH slots: q and k as [lo | 0 | hi | 0], so the (i, i + DH/2)
+// pairing rotates the head's own (i, i + SWA_DH/2) pairs, and v as [v | 0].
+// Last head first, so no slot overwrites a compact head not yet moved.
+static void spread_swa_heads(bf16 *qkv) {
+  constexpr int H = SWA_DH / 2;
+  constexpr int NQK = NUM_KV_HEADS * (Q_HEADS_PER_GROUP + 1);
+  for (int h = NQK + NUM_KV_HEADS - 1; h >= 0; h--) {
+    bf16 *src = qkv + h * SWA_DH, *dst = qkv + h * DH;
+    if (h >= NQK) {
+      copy_v(dst, src, SWA_DH);
+      zero_v(dst + SWA_DH, DH - SWA_DH);
+    } else {
+      copy_v(dst + DH / 2, src + H, H); // before head 0's lo overwrites it
+      copy_v(dst, src, H);
+      zero_v(dst + H, DH / 2 - H);
+      zero_v(dst + DH / 2 + H, DH / 2 - H);
+    }
+  }
+}
+#endif
+
 extern "C" {
 
 void rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
@@ -240,6 +273,18 @@ void rope_compute(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
 #endif
   pseduo_rope(q, k, v, qkv, rope_w);
 }
+
+#ifdef HAS_SWA_HEADS
+// rope_compute for a model with sliding-window layers. _arm & 4 is the
+// builder's SWA_ARM_BIT: a sliding wave, whose heads arrive compact.
+void rope_compute_swa(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
+                      bf16 *restrict qkv, bf16 *restrict rope_w, int _arm) {
+  aie_round_nearest_even();
+  if (_arm & 4)
+    spread_swa_heads(qkv);
+  pseduo_rope(q, k, v, qkv, rope_w);
+}
+#endif
 
 // Arm-switched entry for the HYBRID (one binary, two layer types). Identical to
 // rope_compute on an attention wave; a defined no-op on a ShortConv one.

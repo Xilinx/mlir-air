@@ -257,6 +257,9 @@ _MODELS = {
         HAS_QK_NORM=True,  # rope_w = [cos/sin(DH), q_norm(DH), k_norm(DH)] = 3*DH
         VOCAB_SIZE=262208,
         UNI_DEC=34,  # 34 decoder layers
+        # Five local layers to one global.
+        SLIDING_WINDOW=1024,
+        FULL_LAYERS=(5, 11, 17, 23, 29),
         # LM-head vocab chunking: VOCAB_SIZE_PADDED_FULL = ceil(262208/2560)*2560 =
         # 263680 -> 8240 rowblocks = 16*515, 515=5*103. VOCAB_ROWBLKS = 16*VOCAB_I2
         # (PAIR_ROWS=1) must divide 8240 -> VOCAB_I2 in {5,103}. VOCAB_I2=5 keeps the
@@ -985,8 +988,7 @@ ATTN_ROUNDS = (ATTN_L + 15) // 16
 # DECODE_RB_ROUNDS overrides the shim KV-readback nd-DMA outer block count (default ATTN_ROUNDS).
 # Used to (a) locate the readback-count word in insts.bin by diffing two builds, and (b) let the
 # host patch it to ceil(L/16) per token so the shim pushes exactly what the runtime core consumes.
-# Shim KV-readback outer block count: always ceil(ATTN_L/16).
-RB_ROUNDS = (ATTN_L + 15) // 16
+RB_ROUNDS = int(_os.environ.get("DECODE_RB_ROUNDS", str((ATTN_L + 15) // 16)))
 # DECODE_DYNSEQ=1: take the context length as a runtime scalar instead of baking it
 # in. It becomes a launch operand that drives BOTH the shim readback's block count
 # and the attention herd's RTP-L, so the shim pushes exactly what the cores consume
@@ -1005,6 +1007,10 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # skip the far blocks by masking exactly as the xclbin design does.
 DYNSEQ_RTP = DYNSEQ_APPEND = bool(DYNSEQ)
 DYNSEQ_RB = DYNSEQ_MEM = DYNSEQ_TRIP = False
+# DECODE_RT_ROUNDS=1, xclbin path: the cores run ceil(L/16) KV blocks from their
+# RTP word, and the host cuts the readback to match with the build's
+# decode_L<N>.rb.insts.bin (see decode_insts_gen). The memtile ring is count-free.
+RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
 
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 # Cross-wave shim-feed coalescing: always on (the un-coalesced feed was an A/B).
@@ -1031,9 +1037,8 @@ APPEND_OFF = (ATTN_L - 1) * KVSZ_TOK  # this token's slot in the cache
 # the reference-faithful on-device KV append: the rope core writes this token's roped-K/raw-V
 # into the DDR cache (appendK/appendV S2MM -> KVC at slot L-1 = the reference _receive_kv_cache),
 # then the whole cache is read back for the block-loop attention (the reference _move_kv_cache).
-# The append->readback RAW on the shared cache is ordered in the runtime sequence by
-# air-annotate-append-barrier, which derives it from the shared L3 memref (= the
-# reference's dma_wait).
+# The readback names the append as its dependency, so the runtime sequence waits for
+# the append to land before reading the cache back (= the reference's dma_wait).
 # the reference layer-chaining ABI: the layer output (res2 = new hidden states) is written
 # IN-PLACE into arg0 (the hidden_states BO), so layer N's output == layer N+1's input
 # in the same buffer -- matching the reference's decoding_layer (output S2MM back to x_arg_id,
@@ -1241,6 +1246,8 @@ UNI_WAVES = UNI_DEC + UNI_LM
 # reduction of a hybrid model still wants the hybrid machinery compiled in, it
 # just has no attention wave to run it on.
 ATTN_WAVES = tuple(_k for _k in ATTN_LAYERS if _k < UNI_DEC)
+# Waves that attend the whole context in a model with a sliding window.
+FULL_WAVES = tuple(_k for _k in MODEL.get("FULL_LAYERS", ()) if _k < UNI_DEC)
 # Wave-range override (keeps ABI/CDO fixed at UNI_DEC/UNI_LM; only restricts which
 # waves the fused launch loop drives). Used to split the fused sequence into a
 # decode-part [0,UNI_DEC) and a vocab-part [UNI_DEC,UNI_WAVES) that share ONE CDO,
@@ -2487,9 +2494,9 @@ def build_module():
                             # (a conv layer has no KV, an attention layer no
                             # state): [BX[t-2] | BX[t-1]] per layer. Read it
                             # out, and write the kernel's shifted state back
-                            # over the SAME slot -- the RAW on this DDR region
-                            # gives air-annotate-append-barrier the read->write
-                            # order, exactly as it does for the KV cache.
+                            # over the SAME slot. The write-back carries what the
+                            # kernel computed from the read, so it cannot land
+                            # before the read has been consumed.
                             _cst = _lbx(CONV_ST_LAYER) + CONV_ST_BASE
 
                             def _conv_state():
@@ -2528,9 +2535,9 @@ def build_module():
                     def _emit_append(_kbase=_kbase):
                         # K and V each drain to a shim S2MM; the allocator
                         # picks distinct shim tiles for the two decls.
-                        # air-annotate-append-barrier derives the
-                        # append->readback ordering from the RAW on the shared DDR
-                        # cache: these gets write it, the readback below reads it.
+                        # The readback below reads what these gets write, at
+                        # offsets that depend on the decode wave, so it names
+                        # them as its dependencies (returned here).
                         # Region-major append (= the reference _receive_kv_cache):
                         # scatter this token's K (resp V) into the NGRP group
                         # regions. Channel delivers [g0 K|g1 K|...] (REGION_W
@@ -2549,12 +2556,15 @@ def build_module():
                                 NGRP, REGION_STRIDE
                             )[:, 0:REGION_W]
 
-                        _CH["appendK"].get(_slot_row(_loi_slot(_kbase, 0)), indices=[0])
-                        _CH["appendV"].get(
+                        k = _CH["appendK"].get(
+                            _slot_row(_loi_slot(_kbase, 0)), indices=[0]
+                        )
+                        v = _CH["appendV"].get(
                             _slot_row(_loi_slot(_kbase, _vreg_off(0))), indices=[0]
                         )
+                        return k, v
 
-                    def _emit_readback(_kbase=_kbase):
+                    def _emit_readback(appended, _kbase=_kbase):
                         # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                         # separate per-block puts). The whole per-CU cache
                         # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
@@ -2640,10 +2650,12 @@ def build_module():
                                 _CH["inKV_K"].put(
                                     _kv_region(_loi(_kbase, _kreg_off(gi) + _coff)),
                                     indices=[gi],
+                                    dependency=appended[0],
                                 )
                                 _CH["inKV_V"].put(
                                     _kv_region(_loi(_kbase, _vreg_off(gi) + _coff)),
                                     indices=[gi],
+                                    dependency=appended[1],
                                 )
                             _ci += _cb
                         return
@@ -2681,8 +2693,7 @@ def build_module():
                         if p == KV_PHASE and ATTN_SUBSYS:
 
                             def _kv_traffic():
-                                _emit_append()
-                                _emit_readback()
+                                _emit_readback(_emit_append())
 
                             # Attention waves only. The KV memtile behind
                             # this cannot be armed (segment scope), but it
@@ -2784,9 +2795,35 @@ def build_module():
                 else None
             )
 
-            _seg = air_api.segment(
-                name="seg", params=[_seg_arm_rt] if _seg_arm_rt is not None else None
+            # The cores' window word (see attn_window_lo()), 0 on a full-attention
+            # wave. Not packed into L: on the full ELF, L is a scratchpad
+            # parameter, which holds one value per dispatch.
+            _WINDOWED = (
+                bool(MODEL.get("SLIDING_WINDOW", 0))
+                and a_iv is not None
+                and len(FULL_WAVES) < UNI_DEC
             )
+            _seg_win_rt = None
+            if _WINDOWED:
+                _sw = MODEL["SLIDING_WINDOW"]
+                assert _sw % 16 == 0 and 0 < _sw // 16 < 2048, _sw
+                assert ATTN_MAXL <= 0xFFFFF, ATTN_MAXL
+                _c32 = lambda v: arith.ConstantOp(IntegerAttr.get(i32, v), None).result
+                _win = arith.select(
+                    arith.cmpi(arith.CmpIPredicate.slt, a_iv, idx(UNI_DEC)),
+                    _c32((_sw // 16) << 20),
+                    _c32(0),
+                )
+                for _full in FULL_WAVES:
+                    _win = arith.select(
+                        arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_full)),
+                        _c32(0),
+                        _win,
+                    )
+                _seg_win_rt = air_api.rtp(_win)
+
+            _seg_params = [p for p in (_seg_arm_rt, _seg_win_rt) if p is not None]
+            _seg = air_api.segment(name="seg", params=_seg_params or None)
 
             @_seg.body
             def seg():
@@ -3622,7 +3659,7 @@ def build_module():
                         def _core_rounds(Lh):
                             """The core-side attention loop bound.
 
-                            With DYNSEQ_TRIP this is ceil(Lh/16) built from the
+                            With DYNSEQ_TRIP or RT_ROUNDS this is ceil(Lh/16) built from the
                             RTP-L herd block-arg, so it is opaque to folding and
                             survives to core codegen as a real runtime trip count
                             -- the same count the shim's readback BD pushes, which
@@ -3636,8 +3673,15 @@ def build_module():
                             the only form the full-ELF path can build; the shim's
                             push count is then fixed and agrees by construction.
                             """
-                            if not DYNSEQ_TRIP:
+                            if not (DYNSEQ_TRIP or RT_ROUNDS):
                                 return idx(ATTN_ROUNDS)
+                            if _seg_win_rt is not None:
+                                Lh = arith.andi(
+                                    Lh,
+                                    arith.ConstantOp(
+                                        IntegerAttr.get(i32, 0xFFFFF), None
+                                    ).result,
+                                )
                             _s = arith.addi(
                                 Lh,
                                 arith.ConstantOp(IntegerAttr.get(i32, 15), None).result,
@@ -3826,13 +3870,26 @@ def build_module():
                             _attn_col(ty_arg, shs, Lh, 1, _arm)  # second attn col
                             yield_([])
 
+                    _win_params = (
+                        [air_api.rtp(_seg_win_rt.value)]
+                        if _seg_win_rt is not None
+                        else []
+                    )
+
+                    def _with_window(h, Lh):
+                        """L with this wave's window word packed above it."""
+                        if _seg_win_rt is None:
+                            return Lh
+                        return arith.ori(Lh, h.params[-1].value)
+
                     if _seg_arm_i is not None:
 
                         _attn_h = air_api.herd(
                             [range(ATTN_HERD_SIZES[0]), range(ATTN_HERD_SIZES[1])],
                             name="attn_blk",
                             at=(ATTN_CU_LOC[0][0], 2),
-                            params=[air_api.rtp(_Lc), air_api.rtp(_core_arm)],
+                            params=[air_api.rtp(_Lc), air_api.rtp(_core_arm)]
+                            + _win_params,
                         )
 
                         @_attn_h.body
@@ -3841,7 +3898,7 @@ def build_module():
                             # Buffers, not raw values: the kernel call narrows or passes
                             # each one as its shape says.
                             shs = list(_sh)
-                            Lh = _attn_h.params[0].value
+                            Lh = _with_window(_attn_h, _attn_h.params[0].value)
                             _arm = _attn_h.params[1].value
 
                             def _voc():
@@ -3881,7 +3938,7 @@ def build_module():
                             [range(ATTN_HERD_SIZES[0]), range(ATTN_HERD_SIZES[1])],
                             name="attn_blk",
                             at=(ATTN_CU_LOC[0][0], 2),
-                            params=[air_api.rtp(_Lc)],
+                            params=[air_api.rtp(_Lc)] + _win_params,
                         )
 
                         @_attn_h.body
@@ -3890,7 +3947,7 @@ def build_module():
                                 _raw(_tx_ix),
                                 _raw(_ty_ix),
                                 list(_sh),
-                                _attn_h.params[0].value,
+                                _with_window(_attn_h, _attn_h.params[0].value),
                             )
 
                 # o gather memtile (reference mem_5_1 o_buffer): gather the 4
@@ -4774,6 +4831,11 @@ def run():
     out_fmt = _os.environ.get("DECODE_OUTPUT_FORMAT", "xclbin")
     if out_fmt not in ("xclbin", "elf"):
         raise SystemExit(f"DECODE_OUTPUT_FORMAT must be xclbin or elf, got {out_fmt!r}")
+    if RT_ROUNDS and out_fmt == "elf":
+        raise SystemExit(
+            "DECODE_RT_ROUNDS needs the host to cut the KV readback per token, "
+            "which an ELF's embedded instruction stream does not allow"
+        )
 
     # For ELF, XRT resolves the kernel as "main:<instance_name>", and
     # instance_name must be the module's func.func name -- the OUTER runtime

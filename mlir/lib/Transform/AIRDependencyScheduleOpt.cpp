@@ -9,6 +9,7 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/DirectedAdjacencyMap.h"
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -1642,6 +1643,168 @@ findHerdsFeedingSerializedFanIn(func::FuncOp funcOp) {
   return denied;
 }
 
+// A half-open interval per dimension of a memref.
+using MemRefBox = SmallVector<std::pair<int64_t, int64_t>>;
+
+// The elements a write at `indices` of extent `extents` covers over all
+// iterations of the loops enclosing it inside `fn`, shifted by `offsets`.
+// Every op between the write and `fn` must be an air.execute or an scf.for
+// with constant bounds that runs at least once. Each index must be a constant,
+// or a positive multiple of one loop's IV plus a constant that steps by no
+// more than its extent, with each IV used by one index only.
+static FailureOr<MemRefBox> writtenBox(Operation *write, func::FuncOp fn,
+                                       ValueRange indices,
+                                       ArrayRef<int64_t> extents,
+                                       ArrayRef<int64_t> offsets) {
+  llvm::DenseMap<Value, std::tuple<int64_t, int64_t, int64_t>> ivs;
+  for (Operation *p = write->getParentOp(); p != fn; p = p->getParentOp()) {
+    if (isa<air::ExecuteOp>(p))
+      continue;
+    auto forOp = dyn_cast<scf::ForOp>(p);
+    if (!forOp)
+      return failure();
+    std::optional<int64_t> trips = air::getStaticScfForTripCountAsInt(forOp);
+    if (!trips || *trips <= 0)
+      return failure();
+    ivs[forOp.getInductionVar()] = {*getConstantIntValue(forOp.getLowerBound()),
+                                    *getConstantIntValue(forOp.getStep()),
+                                    *trips};
+  }
+  MemRefBox box;
+  llvm::SmallPtrSet<Value, 4> used;
+  for (auto [idx, extent, offset] :
+       llvm::zip_equal(indices, extents, offsets)) {
+    if (std::optional<int64_t> c = getConstantIntValue(idx)) {
+      box.push_back({offset + *c, offset + *c + extent});
+      continue;
+    }
+    // idx = a * iv + b.
+    Value iv = idx;
+    int64_t a = 1, b = 0;
+    if (auto apply = idx.getDefiningOp<affine::AffineApplyOp>()) {
+      if (apply.getMapOperands().size() != 1)
+        return failure();
+      iv = apply.getMapOperands()[0];
+      std::optional<int64_t> coef = air::getAffineApplyCoefficient(apply, iv);
+      SmallVector<Attribute> at0;
+      if (!coef ||
+          failed(apply.getAffineMap().constantFold(
+              {IntegerAttr::get(IndexType::get(fn.getContext()), 0)}, at0)))
+        return failure();
+      a = *coef;
+      b = cast<IntegerAttr>(at0[0]).getInt();
+    }
+    auto it = ivs.find(iv);
+    if (it == ivs.end() || a <= 0 || !used.insert(iv).second)
+      return failure();
+    auto [lb, step, trips] = it->second;
+    if (a * step > extent)
+      return failure();
+    int64_t first = offset + a * lb + b;
+    box.push_back({first, first + a * step * (trips - 1) + extent});
+  }
+  return box;
+}
+
+// Whether `boxes` together cover every element of `shape`.
+static bool coversShape(ArrayRef<MemRefBox> boxes, ArrayRef<int64_t> shape) {
+  // Cut each dimension at every box edge; then each cell is either inside a
+  // box or outside all of them.
+  SmallVector<SmallVector<int64_t>> cuts(shape.size());
+  for (auto [d, extent] : llvm::enumerate(shape)) {
+    cuts[d] = {0, extent};
+    for (const MemRefBox &box : boxes)
+      for (int64_t e : {box[d].first, box[d].second})
+        if (e > 0 && e < extent)
+          cuts[d].push_back(e);
+    llvm::sort(cuts[d]);
+    cuts[d].erase(llvm::unique(cuts[d]), cuts[d].end());
+  }
+  int64_t cells = 1;
+  for (auto &c : cuts)
+    cells *= c.size() - 1;
+  if (cells > 4096)
+    return false;
+  SmallVector<size_t> cell(shape.size(), 0);
+  for (int64_t n = 0; n < cells; ++n) {
+    bool covered = llvm::any_of(boxes, [&](const MemRefBox &box) {
+      for (auto [d, i] : llvm::enumerate(cell))
+        if (cuts[d][i] < box[d].first || cuts[d][i + 1] > box[d].second)
+          return false;
+      return true;
+    });
+    if (!covered)
+      return false;
+    for (int64_t d = shape.size() - 1; d >= 0; --d) {
+      if (++cell[d] + 1 < cuts[d].size())
+        break;
+      cell[d] = 0;
+    }
+  }
+  return true;
+}
+
+// Whether every call to `fn` overwrites all of its memref argument `i` and
+// never reads it. Writes count toward coverage when the analysis can place
+// them: unmasked in-bounds transfer_writes with minor identity maps and
+// memref.stores, on the argument or a static unit-stride subview of it.
+static bool overwritesArgument(func::FuncOp fn, unsigned i) {
+  Value arg = fn.getArgument(i);
+  auto type = dyn_cast<MemRefType>(arg.getType());
+  if (!type || !type.hasStaticShape() || !fn.getBody().hasOneBlock())
+    return false;
+  llvm::SmallDenseSet<Value> aliases;
+  air::collectBufferAliases(arg, aliases);
+  for (Value alias : aliases)
+    for (Operation *user : alias.getUsers()) {
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+          view && view.getViewSource() == alias)
+        continue;
+      auto eff = dyn_cast<MemoryEffectOpInterface>(user);
+      if (!eff || eff.getEffectOnValue<MemoryEffects::Read>(alias))
+        return false;
+    }
+
+  SmallVector<MemRefBox> boxes;
+  std::function<void(Value, SmallVector<int64_t>)> collect =
+      [&](Value m, SmallVector<int64_t> offsets) {
+        for (Operation *user : m.getUsers()) {
+          if (auto sv = dyn_cast<memref::SubViewOp>(user)) {
+            if (sv.getSource() != m ||
+                sv.getType().getRank() != type.getRank() ||
+                !sv.hasUnitStride() ||
+                llvm::any_of(sv.getStaticOffsets(), ShapedType::isDynamic))
+              continue;
+            SmallVector<int64_t> inner(offsets);
+            for (auto [o, s] : llvm::zip_equal(inner, sv.getStaticOffsets()))
+              o += s;
+            collect(sv.getResult(), inner);
+            continue;
+          }
+          FailureOr<MemRefBox> box = failure();
+          if (auto w = dyn_cast<vector::TransferWriteOp>(user)) {
+            if (w.getBase() != m || w.getMask() ||
+                !w.getPermutationMap().isMinorIdentity() ||
+                !llvm::all_of(w.getInBoundsValues(), [](bool b) { return b; }))
+              continue;
+            SmallVector<int64_t> extents(type.getRank(), 1);
+            ArrayRef<int64_t> vs = w.getVectorType().getShape();
+            llvm::copy(vs, extents.end() - vs.size());
+            box = writtenBox(w, fn, w.getIndices(), extents, offsets);
+          } else if (auto st = dyn_cast<memref::StoreOp>(user)) {
+            if (st.getMemRef() != m)
+              continue;
+            box = writtenBox(st, fn, st.getIndices(),
+                             SmallVector<int64_t>(type.getRank(), 1), offsets);
+          }
+          if (succeeded(box))
+            boxes.push_back(*box);
+        }
+      };
+  collect(arg, SmallVector<int64_t>(type.getRank(), 0));
+  return coversShape(boxes, type.getShape());
+}
+
 struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -1677,21 +1840,34 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   // inside one handshake races it, and an opaque callee may be that writer.
   // Ops that do model their effects are left alone: a read-only use is fine.
   static bool isUnsafeToDuplicate(scf::ForOp forOp) {
-    // Each air.execute wraps a single memref.alloc and yields it as the
-    // non-token result at index 1 (see AIR.td and HoistMemallocInForPattern).
-    // Map both spellings to the bare alloc result so one buffer counts once.
-    llvm::DenseMap<Value, Value> aliasToCanonical;
+    // The allocations the transform would duplicate. A buffer is reached
+    // through an air.execute result or a view; resolveBufferRoot maps every
+    // spelling to the allocation.
+    llvm::SmallPtrSet<Value, 8> allocs;
     for (auto exec : forOp.getOps<air::ExecuteOp>())
-      for (auto alloc : exec.getOps<memref::AllocOp>()) {
-        Value canonical = alloc->getResult(0);
-        aliasToCanonical[canonical] = canonical;
-        if (exec->getNumResults() >= 2)
-          aliasToCanonical[exec->getResults()[1]] = canonical;
-      }
+      for (auto alloc : exec.getOps<memref::AllocOp>())
+        allocs.insert(alloc.getResult());
 
     auto isDefiniteWrite = [](Operation *op, Value v) {
       if (auto get = dyn_cast<air::ChannelGetOp>(op))
         return get.getMemref() == v;
+      // A call into a function the module defines is a definite write of an
+      // argument that function provably overwrites in full.
+      if (auto call = dyn_cast<func::CallOp>(op)) {
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            call, call.getCalleeAttr());
+        if (!callee || callee.isExternal())
+          return false;
+        bool any = false;
+        for (auto [i, operand] : llvm::enumerate(call.getOperands())) {
+          if (operand != v)
+            continue;
+          if (!overwritesArgument(callee, i))
+            return false;
+          any = true;
+        }
+        return any;
+      }
       auto effects = dyn_cast<MemoryEffectOpInterface>(op);
       if (!effects)
         return false;
@@ -1710,9 +1886,14 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
       for (auto operand : op->getOperands()) {
         if (!isa<MemRefType>(operand.getType()))
           continue;
-        if (auto it = aliasToCanonical.find(operand);
-            it != aliasToCanonical.end()) {
-          if (firstAccessSeen.insert(it->second).second &&
+        Value root = air::resolveBufferRoot(operand);
+        if (allocs.contains(root)) {
+          // Taking a view is not an access; the first access through the
+          // view is what counts.
+          if (auto view = dyn_cast<ViewLikeOpInterface>(op);
+              view && view.getViewSource() == operand)
+            continue;
+          if (firstAccessSeen.insert(root).second &&
               !isDefiniteWrite(op, operand))
             unsafe = true;
           continue;
@@ -4850,7 +5031,8 @@ public:
           if (!checkIfMergeable(channelOps[i], channelOps[j]))
             continue;
           // Aggressively fuse air.channels by time multiplexing.
-          mergeChannels(rewriter, channelOps[i], channelOps[j]);
+          if (!mergeChannels(rewriter, channelOps[i], channelOps[j]))
+            continue;
           invalidateChannelIndex();
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
@@ -5635,12 +5817,53 @@ private:
     }
     return false;
   }
-  void mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
-                       air::ChannelInterface b) {
+  // Makes `v` available at `a` when `v` is an allocation (an air.execute
+  // holding only a memref.alloc) that does not dominate `a`: the allocation
+  // moves above the op enclosing `a` in its block, provided its operands
+  // dominate that point. It must move rather than be cloned with the channel
+  // op, which would fill a different buffer; moveValueDefinitions declines
+  // ops with side effects, an allocation among them. Returns false only for
+  // an allocation that cannot move; with `dryRun`, moves nothing.
+  bool hoistAllocAbove(Value v, Operation *a, DominanceInfo &dom, bool dryRun) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return true;
+    auto exec = dyn_cast<air::ExecuteOp>(def);
+    // The body is the alloc and the terminator yielding it.
+    if (!exec || exec.getChildOps().size() != 2 ||
+        !isa<memref::AllocOp>(exec.getChildOps().front()))
+      return true;
+    if (dom.properlyDominates(def, a))
+      return true;
+    Operation *anchor = def->getBlock()->findAncestorOpInBlock(*a);
+    if (!anchor || !anchor->isBeforeInBlock(def))
+      return false;
+    for (Value operand : def->getOperands())
+      if (!dom.properlyDominates(operand, anchor))
+        return false;
+    if (!dryRun)
+      def->moveBefore(anchor);
+    return true;
+  }
+
+  // With `dryRun`, only reports whether the merge is possible.
+  bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
+                       air::ChannelInterface b, bool dryRun = false) {
     // fuse a and b under the same loop nest, if a and b are under different
     // loop nests
     if (a->getParentRegion() == b->getParentRegion())
-      return;
+      return true;
+    // b is cloned next to a. What b uses from a region enclosing both nests
+    // is not cloned with it, so it has to be defined before a.
+    DominanceInfo dom(a->getParentOfType<func::FuncOp>());
+    for (Value operand : b->getOperands()) {
+      Operation *def = operand.getDefiningOp();
+      if (def && def->getParentRegion()->isAncestor(a->getParentRegion()) &&
+          !hoistAllocAbove(operand, a, dom, dryRun))
+        return false;
+    }
+    if (dryRun)
+      return true;
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);
@@ -5662,16 +5885,18 @@ private:
       air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
     }
     b->erase();
+    return true;
   }
   // Fuse parent region nests to both a and b, interleaving pairs of
   // air::ChannelInterface ops, originating from a and b loop nests
   // respectively, into the fused loop nest.
-  void fuseParentRegionNestByIneterleaving(RewriterBase &rewriter, Operation *a,
-                                           Operation *b) {
+  // With `dryRun`, only reports whether every pair can be merged.
+  bool fuseParentRegionNestByIneterleaving(RewriterBase &rewriter, Operation *a,
+                                           Operation *b, bool dryRun = false) {
     if (!a->getParentOfType<LoopLikeOpInterface>())
-      return;
+      return true;
     if (!b->getParentOfType<LoopLikeOpInterface>())
-      return;
+      return true;
     Region *aRegion = a->getParentRegion();
     Region *bRegion = b->getParentRegion();
     while (!aRegion->getParentOp()->getParentRegion()->isAncestor(
@@ -5688,10 +5913,11 @@ private:
       bChanOps.push_back(chanOp);
     });
     if (aChanOps.size() != bChanOps.size())
-      return;
+      return true;
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
-      mergeChannelOps(rewriter, aOtherOp, bOtherOp);
-    return;
+      if (!mergeChannelOps(rewriter, aOtherOp, bOtherOp, dryRun))
+        return false;
+    return true;
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
@@ -5734,7 +5960,10 @@ private:
     }
     b->erase();
   }
-  void mergeChannels(RewriterBase &rewriter, air::ChannelOp chan_a,
+  // Returns false, changing nothing, when some pair of b's ops cannot be
+  // merged into a's nests: merging only one side of a channel pair would
+  // interleave on one side and not the other.
+  bool mergeChannels(RewriterBase &rewriter, air::ChannelOp chan_a,
                      air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
@@ -5744,11 +5973,20 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
+    for (unsigned i = 0; i < a_puts.size(); i++)
+      if (!fuseParentRegionNestByIneterleaving(rewriter, a_puts[i], b_puts[i],
+                                               /*dryRun=*/true))
+        return false;
+    for (unsigned i = 0; i < a_gets.size(); i++)
+      if (!fuseParentRegionNestByIneterleaving(rewriter, a_gets[i], b_gets[i],
+                                               /*dryRun=*/true))
+        return false;
     // Interleave puts and gets
     for (unsigned i = 0; i < a_puts.size(); i++)
       fuseParentRegionNestByIneterleaving(rewriter, a_puts[i], b_puts[i]);
     for (unsigned i = 0; i < a_gets.size(); i++)
       fuseParentRegionNestByIneterleaving(rewriter, a_gets[i], b_gets[i]);
+    return true;
   }
   void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
                                  std::string mergeByLBOrUB) {
@@ -6089,7 +6327,7 @@ private:
       visited.insert(node);
       component.insert(node);
       for (Operation *neighbour : graph[node])
-        if (llvm::find(visited, neighbour) == visited.end())
+        if (!visited.contains(neighbour))
           dfs(neighbour, graph, visited, component);
       return;
     };
@@ -6102,7 +6340,7 @@ private:
           llvm::SetVector<Operation *> visited;
           SmallVector<llvm::SetVector<Operation *>> connectedComponents;
           for (const auto &[node, neighbours] : graph) {
-            if (llvm::find(visited, node) == visited.end()) {
+            if (!visited.contains(node)) {
               llvm::SetVector<Operation *> component;
               dfs(node, graph, visited, component);
               connectedComponents.push_back(component);
@@ -6138,12 +6376,35 @@ private:
             return true;
       return false;
     };
+    // Async dependencies among this body's ops, closed transitively. Every op
+    // on a dependency path from one body op to another is dominated by the
+    // first, so the path stays in this body.
+    Block *body = for_op.getBody();
+    air::TypedDirectedAdjacencyMap<Operation *> bodyGraph;
+    llvm::DenseMap<Operation *, air::DirectedAdjacencyMap::VertexId> vertex;
+    for (Operation &o : body->getOperations()) {
+      if (!isAsyncOp(&o))
+        continue;
+      auto v = bodyGraph.addVertex();
+      bodyGraph[v] = &o;
+      vertex[&o] = v;
+    }
+    for (Operation &o : body->getOperations())
+      for (Value dep : getAsyncDependenciesFromOp(&o))
+        if (auto src = vertex.find(dep.getDefiningOp()); src != vertex.end())
+          if (auto dst = vertex.find(&o); dst != vertex.end())
+            bodyGraph.addEdge(src->second, dst->second);
+    auto closure = bodyGraph.getClosure();
+    auto dependsOn = [&](Operation *a, Operation *b) {
+      return closure[vertex[a]][vertex[b]];
+    };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (sourceOp != sinkOp && (areAsyncDependent(sourceOp, sinkOp) ||
-                                   haveChannelResourceDep(sourceOp, sinkOp)))
+        if (sourceOp != sinkOp &&
+            (areAsyncDependent(sourceOp, sinkOp, dependsOn) ||
+             haveChannelResourceDep(sourceOp, sinkOp)))
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.

@@ -26,7 +26,7 @@
 // Iteration 0: arm, then BOTH outputs (@appendOut, @outBack) configure+start
 // BEFORE the input feed @feedIn.
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @appendOut
 // CHECK: aiex.dma_configure_task_for @outBack
 // CHECK: aiex.dma_configure_task_for @feedIn
@@ -35,7 +35,7 @@
 // Iteration 1: re-arm lands AFTER iteration 0's drain (no global hoist), and its
 // single output @outBack is configured before @feedIn. @appendOut is absent.
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @outBack
 // CHECK-NOT: aiex.dma_configure_task_for @appendOut
 // CHECK: aiex.dma_configure_task_for @feedIn

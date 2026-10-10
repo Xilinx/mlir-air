@@ -90,6 +90,13 @@ _WCACHE_DIR = Path(
 VOCAB_CHUNK_I2 = "27"
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _load_builder(uni_dec, attn_maxl, kv_src):
     """Import fused_decode_ple with this build's geometry in the environment.
 
@@ -113,7 +120,7 @@ def _wcache_path(uni_dec, fingerprint):
     """
     return (
         _WCACHE_DIR
-        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_{fingerprint}.npz"
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_{fingerprint}.npz"
     )
 
 
@@ -206,6 +213,7 @@ class FusedDecoder:
         self.UNI_LM = fd.UNI_LM
         self.REGION_W, self.NGRP = fd.REGION_W, fd.NGRP
         self.KV_LAYER = fd.KV_LAYER
+        self.SWA = {L for L in range(self.UNI) if fd.arm_of_layer(L) & fd.SWA_ARM_BIT}
         self.PLE_LAYER = fd.PLE_LAYER
         self.PLE_EMB_OFF, self.PLE_NORMW_OFF = fd.PLE_EMB_OFF, fd.PLE_NORMW_OFF
         self.VOCAB_SIZE, self.VP = fd.VOCAB_SIZE, fd.VOCAB_SIZE_PADDED
@@ -312,14 +320,15 @@ class FusedDecoder:
         stack. Each device row is REGION_W wide and holds the single MQA head twice,
         once per attention CU.
 
-        A 256-wide head does NOT sit contiguously in its 512-wide slot. Every layer
-        is built at the widest layer's geometry and the narrow heads are scattered
-        as [real_lo | zeros | real_hi | zeros] so that the rope kernel's fixed
-        (i, i+DH_A/2) pairing lands on the real (i, i+128) pairs -- see
+        A 256-wide K head does NOT sit contiguously in its 512-wide slot. Every
+        layer is built at the widest layer's geometry and the narrow heads are
+        scattered as [real_lo | zeros | real_hi | zeros] so that the rope kernel's
+        fixed (i, i+DH_A/2) pairing lands on the real (i, i+128) pairs -- see
         gemma4_e2b_q4nx_requant's module docstring, where that interleave is
         recorded as measured-correct and the contiguous layout as measured-wrong.
         Seeding contiguously does not fail: it produces a correct first token
-        (which comes from the prefill) followed by fluent garbage.
+        (which comes from the prefill) followed by fluent garbage. A sliding
+        layer's V head sits at the front of its slot instead.
         """
         np = self.np
         from gemma4_e2b_q4nx_requant import _head_perm
@@ -331,8 +340,10 @@ class FusedDecoder:
         for L in range(self.UNI):
             # _head_perm is the identity at dh == DH_A, so the full layers take
             # the same path rather than a special case.
-            perm = _head_perm(self.gw.head_dim(L), self.DH_A)
-            for reg, src in ((0, ks[L]), (1, vs[L])):
+            dh = self.gw.head_dim(L)
+            perm = _head_perm(dh, self.DH_A)
+            vperm = np.arange(dh) if L in self.SWA else perm
+            for reg, src, p in ((0, ks[L], perm), (1, vs[L], vperm)):
                 src = np.asarray(src, np.float32).reshape(P, -1)
                 dh = src.shape[1]
                 if dh != self.gw.head_dim(L):
@@ -341,8 +352,8 @@ class FusedDecoder:
                         f"{self.gw.head_dim(L)}"
                     )
                 rows = self.KV[L, reg * RS : reg * RS + P * RW].reshape(P, RW)
-                rows[:, perm] = src.astype(self.bf16)
-                rows[:, self.DH_A + perm] = src.astype(self.bf16)
+                rows[:, p] = src.astype(self.bf16)
+                rows[:, self.DH_A + p] = src.astype(self.bf16)
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.kvc.write(np.ascontiguousarray(self.KV).reshape(-1).view(np.int16), 0)
         self.kvc.sync(TO)
@@ -354,16 +365,30 @@ class FusedDecoder:
         the full ones 128 of 512 at theta 1e6 (partial rotary, folded into the
         bundle's rope_freqs divisor). The LUT is DH_A wide with cos in the low half
         and sin in the high half, so a 256-wide layer fills a quarter of each.
+
+        The norms are laid out once. A LUT depends on its layer only through the
+        layer class, so per position each class's cos/sin is computed once and
+        scattered to its layers.
         """
         np = self.np
-        out = []
-        for L in range(self.UNI):
-            cos, sin, dh = self.gw.rope_lut(p, L, rope_freqs=self.rope_freqs)
-            lut = np.zeros(self.DH_A, np.float32)
-            lut[: dh // 2] = cos
-            lut[self.DH_A // 2 : self.DH_A // 2 + dh // 2] = sin
-            out += [lut.astype(self.bf16), self.QNORM[L], self.KNORM[L]]
-        return np.concatenate(out)
+        if not hasattr(self, "_rope_tpl"):
+            out, cls, off = [], {}, 0
+            for L in range(self.UNI):
+                seg = [np.zeros(self.DH_A, self.bf16), self.QNORM[L], self.KNORM[L]]
+                cls.setdefault(self.gw.is_sliding(L), [L, []])[1].append(off)
+                out += seg
+                off += sum(a.size for a in seg)
+            self._rope_tpl = np.concatenate(out)
+            self._rope_cls = []
+            for rep, offs in cls.values():
+                h = self.gw.head_dim(rep) // 2
+                at = np.asarray(offs)[:, None] + np.arange(h)
+                self._rope_cls.append((rep, at, at + self.DH_A // 2))
+        for rep, at_cos, at_sin in self._rope_cls:
+            cos, sin, _dh = self.gw.rope_lut(p, rep, rope_freqs=self.rope_freqs)
+            self._rope_tpl[at_cos] = cos.astype(self.bf16)
+            self._rope_tpl[at_sin] = sin.astype(self.bf16)
+        return self._rope_tpl
 
     def _ple_embed(self, tok):
         """This token's per-layer embedding slice, [UNI, PLI_D].
@@ -410,18 +435,18 @@ class FusedDecoder:
             self._patch(self.pw_bo, emb[i], i * self.PLE_LAYER + self.PLE_EMB_OFF)
         self._patch(self.r_bo, self._rope_slab(p), self._rope_base)
 
-        st = self.kern(
-            3,
-            self.ib,
-            insts_size,
-            self.x_bo,
-            self.w_bo,
-            self.r_bo,
-            self.y_bo,
-            self.kvc,
-            self.pw_bo,
-            self.px_bo,
-        ).wait(60000)
+        # The run's arguments are bound once; they change only with the window.
+        key = (id(self.kern), id(self.ib), insts_size)
+        if getattr(self, "_run_key", None) != key:
+            self._run = xrt.run(self.kern)
+            for i, a in enumerate(
+                (3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo)
+                + (self.y_bo, self.kvc, self.pw_bo, self.px_bo)
+            ):
+                self._run.set_arg(i, a)
+            self._run_key = key
+        self._run.start()
+        st = self._run.wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
         _voc_n = self.UNI_LM * self.VP
@@ -434,7 +459,11 @@ class FusedDecoder:
         cap = self.gw.FINAL_LOGIT_SOFTCAP
         # Monotonic, so it cannot move the argmax -- but it IS the model's output,
         # and anything scoring logits against the CPU reference needs it applied.
-        return cap * np.tanh(yv / cap) if cap else yv
+        if cap:
+            yv /= cap
+            np.tanh(yv, out=yv)
+            yv *= cap
+        return yv
 
     # Kernels, insts states and BOs are all created against self.dev, but self.dev
     # is assigned first and CPython clears an instance __dict__ in insertion order,
@@ -444,6 +473,7 @@ class FusedDecoder:
     # dropped ahead of it or they keep that state (and its cacheable BO) alive past
     # the device.
     _XRT_RELEASE_ORDER = (
+        "_run",
         "ib",
         "_st",
         "_ist",
@@ -716,9 +746,9 @@ def main():
     ap.add_argument(
         "--fused-prefill",
         metavar="BUILD_DIR",
-        default=None,
-        help="prefill on the one-device chunked prefill built there by "
-        "`make compile-fused-prefill`",
+        default=_fused_build(),
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
     )
     ap.add_argument(
         "--gate",

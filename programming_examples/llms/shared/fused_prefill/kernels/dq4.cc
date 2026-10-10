@@ -32,38 +32,41 @@ void dq4_bf16(uint8_t *__restrict packed, bfloat16 *__restrict out) {
   constexpr unsigned LANES = 64;
   constexpr unsigned Q_BYTES = DQ_TN * DQ_TK / 2;
   constexpr unsigned NG = DQ_TK / DQ_GROUP;
-  constexpr unsigned TILES_PER_G = DQ_GROUP / 8;
   const bfloat16 *sc = (const bfloat16 *)(packed + Q_BYTES);
   const bfloat16 *mn = sc + NG * DQ_TN;
-  const aie::vector<uint8, LANES> bias = aie::broadcast<uint8, LANES>(0x43);
-  for (unsigned nb = 0; nb < DQ_TN / 8; nb++) {
-    const uint4 *q = (const uint4 *)packed + nb * (DQ_TK / 8) * LANES / 2;
-    bfloat16 *o = out + nb * (DQ_TK / 8) * LANES;
-    for (unsigned g = 0; g < NG; g++) {
-      // lane kk * 8 + nn of a tile is column nn: the 8 scales repeat per k row
-      aie::vector<bfloat16, 8> s8 = aie::load_v<8>(sc + g * DQ_TN + nb * 8);
-      aie::vector<bfloat16, 8> m8 = aie::load_v<8>(mn + g * DQ_TN + nb * 8);
-      aie::vector<bfloat16, 16> s16 = aie::concat(s8, s8);
-      aie::vector<bfloat16, 16> m16 = aie::concat(m8, m8);
-      aie::vector<bfloat16, 32> s32 = aie::concat(s16, s16);
-      aie::vector<bfloat16, 32> m32 = aie::concat(m16, m16);
-      aie::vector<bfloat16, LANES> sv = aie::concat(s32, s32);
-      aie::vector<bfloat16, LANES> mv = aie::concat(m32, m32);
-      aie::accum<accfloat, LANES> base;
-      base.from_vector(mv);
-      base = aie::msc(base, sv, bfloat16(128.0f));
-      for (unsigned t = 0; t < TILES_PER_G; t++)
-        chess_prepare_for_pipelining chess_loop_range(TILES_PER_G,
-                                                      TILES_PER_G) {
-          aie::vector<uint4, LANES> qr = aie::load_v<LANES>(q);
-          q += LANES / 2;
-          aie::vector<uint8, LANES> qb = aie::unpack(qr);
-          auto z = aie::interleave_zip(qb, bias, 1);
-          aie::vector<bfloat16, LANES> w =
-              aie::vector_cast<bfloat16>(aie::concat(z.first, z.second));
-          aie::store_v(o, aie::mac(base, w, sv).template to_vector<bfloat16>());
-          o += LANES;
-        }
+  const aie::vector<uint8, 2 * LANES> bias =
+      aie::broadcast<uint8, 2 * LANES>(0x43);
+  const uint4 *q = (const uint4 *)packed;
+  bfloat16 *o = out;
+  // one flat loop over (column block, K group), the group's tiles unrolled
+  // two at a time: one load and one zip give two tiles
+#pragma clang loop min_iteration_count(DQ_TN / 8 * NG)
+#pragma clang loop max_iteration_count(DQ_TN / 8 * NG)
+  for (unsigned i = 0; i < DQ_TN / 8 * NG; i++) {
+    unsigned nb = i / NG, g = i % NG;
+    // lane kk * 8 + nn of a tile is column nn: the 8 scales repeat per k row
+    aie::vector<bfloat16, 8> s8 = aie::load_v<8>(sc + g * DQ_TN + nb * 8);
+    aie::vector<bfloat16, 8> m8 = aie::load_v<8>(mn + g * DQ_TN + nb * 8);
+    aie::vector<bfloat16, 16> s16 = aie::concat(s8, s8);
+    aie::vector<bfloat16, 16> m16 = aie::concat(m8, m8);
+    aie::vector<bfloat16, 32> s32 = aie::concat(s16, s16);
+    aie::vector<bfloat16, 32> m32 = aie::concat(m16, m16);
+    aie::vector<bfloat16, LANES> sv = aie::concat(s32, s32);
+    aie::vector<bfloat16, LANES> mv = aie::concat(m32, m32);
+    aie::accum<accfloat, LANES> base;
+    base.from_vector(mv);
+    base = aie::msc(base, sv, bfloat16(128.0f));
+#pragma clang loop unroll(full)
+    for (unsigned t = 0; t < DQ_GROUP / 16; t++) {
+      aie::vector<uint4, 2 * LANES> qr = aie::load_v<2 * LANES>(q);
+      q += LANES;
+      auto z = aie::interleave_zip(aie::unpack(qr), bias, 1);
+      aie::store_v(o, aie::mac(base, aie::vector_cast<bfloat16>(z.first), sv)
+                          .template to_vector<bfloat16>());
+      aie::store_v(o + LANES,
+                   aie::mac(base, aie::vector_cast<bfloat16>(z.second), sv)
+                       .template to_vector<bfloat16>());
+      o += 2 * LANES;
     }
   }
 }
