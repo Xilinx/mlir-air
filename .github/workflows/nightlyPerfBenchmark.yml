@@ -26,7 +26,7 @@
 # the same reason. Decode streams the whole weight set per token, so both of
 # those and any unrelated load competing for DRAM bandwidth show up directly.
 
-name: Nightly LLM Perf Benchmark
+name: Nightly LLM/VLA Perf Benchmark
 
 on:
   schedule:
@@ -94,7 +94,7 @@ env:
 
 jobs:
   benchmark:
-    name: LLM perf benchmark
+    name: LLM/VLA perf benchmark
     runs-on: amdryzenai5pro340
     # actions: write so the final step can dispatch generateDocs.yml to refresh
     # the GitHub Pages LLM benchmark section with this run's perf.json artifact.
@@ -473,6 +473,18 @@ jobs:
                   if prev is None or rank[st] > rank[prev]:
                       vstatus[model] = st
 
+          # A profile lit may record a variant under its own model name (the
+          # --model it passes to extract_perf.py, e.g. smolvla_all). The variant
+          # is verified by its directory's run_npu2_verify* lits, so it takes that
+          # status, and if its profile writes no record the loop below still
+          # gives it a null row.
+          for lit in glob.glob("programming_examples/llms/*/run_npu2_profile*.lit"):
+              model_dir = lit.split(os.sep)[2]
+              if model_dir not in vstatus:
+                  continue
+              for m in re.findall(r"extract_perf\.py\b.*--model\s+(\S+)", open(lit).read()):
+                  vstatus.setdefault(m, vstatus[model_dir])
+
           recs = []
           for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
               # A timeout or cancel truncates one model's file mid-write. That
@@ -656,7 +668,7 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, os
           recs = json.load(open("perf.json")) if os.path.exists("perf.json") else []
-          print("### LLM perf benchmark\n")
+          print("### LLM/VLA perf benchmark\n")
           if not recs:
               print("**No results produced** — see step logs.")
           else:

@@ -820,12 +820,15 @@ def run_profile(
     # other models' summaries use, so the shared extractor needs one regex and
     # no model-specific branch. prompt_len is the prefix the backbone attends
     # over (3 x 64 image + 48 language + 1 state), the analogue of the siblings'
-    # prefill length.
+    # prefill length. With the experimental arms measured, it reports the arm
+    # that runs the most stages on the NPU, so `make profile-all` records the
+    # all-NPU chunk.
+    label, wall = "NPU vision", npu
+    if extra:
+        label, key = extra[-1][0], extra[-1][1]
+        wall = xrows[key]["wall"]
     print()
-    print(
-        f"  Action chunk (NPU vision): {med(npu):.1f} ms, "
-        f"prompt_len={64 * n_cam + 49}"
-    )
+    print(f"  Action chunk ({label}): {med(wall):.1f} ms, prompt_len={64 * n_cam + 49}")
     print("=" * 74)
     return 0
 

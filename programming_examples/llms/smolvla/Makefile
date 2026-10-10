@@ -1,16 +1,16 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# SmolVLA on NPU2 (MLIR-AIR) — SigLIP vision encoder + connector on the NPU.
+# SmolVLA on NPU2 (MLIR-AIR).
 #
-# Pipeline: NPU vision tower + connector -> CPU prefix assembly -> CPU language
-# backbone -> CPU action expert, all in ONE process. The backbone and the action
-# expert stay on the CPU because they measure SLOWER on the NPU at their shapes
-# (seq 241 and seq 50); see README.md.
+# Pipeline, all in one process: NPU vision tower + connector -> CPU prefix
+# assembly -> language backbone -> action expert. The backbone and the action
+# expert run on the CPU by default and on the NPU with the *-all targets
+# (--npu-all); see README.md.
 #
-# Correctness is a continuous-output REGRESSION gate on the (1,50,6) action
-# chunk against the unmodified CPU model — not the token-set gate the
-# autoregressive LLM siblings use, because SmolVLA does not emit tokens.
+# Correctness is a regression gate on the continuous (1,50,6) action chunk
+# against the unmodified CPU model, not the token-set gate the autoregressive
+# LLM examples use: SmolVLA does not emit tokens.
 #
 # One process: with the mlir-air environment sourced and requirements.txt
 # installed, one interpreter has torch + lerobot AND air + pyxrt, so the NPU
@@ -20,8 +20,8 @@
 # On a machine where several sessions share one NPU, wrap the device-touching
 # targets the way the sibling examples are wrapped:
 #     flock -x -w 1800 /tmp/mlir-air-npu.lock make verify
-# The recipes deliberately do NOT take that lock themselves — doing so would
-# deadlock exactly that invocation. `shared/infra/cache.py` separately holds
+# The recipes do not take that lock themselves; if they did, that invocation
+# would deadlock. `shared/infra/cache.py` separately holds
 # /tmp/npu.lock around each dispatch, which keeps concurrent runs correct; the
 # outer lock is what keeps a timing run from being interleaved with someone
 # else's.
@@ -62,7 +62,7 @@ FRAMES         ?= 100
 
 help:
 	@echo "=================================================================="
-	@echo " SmolVLA on NPU2 — SigLIP vision encoder on the NPU, one process"
+	@echo " SmolVLA on NPU2: vision on the NPU, or every stage with *-all"
 	@echo "=================================================================="
 	@echo "  make compile   Build every vision ELF (no NPU dispatch, no download)"
 	@echo "  make cpu-baseline  Run the unmodified CPU model; dumps it for inspection"
@@ -92,7 +92,7 @@ compile:
 ## Run the unmodified lerobot model on CPU and dump the action chunk to
 ## smolvla_oracle.npz. For inspecting what the baseline does -- `make verify`
 ## does NOT read this file, it computes its reference live.
-## CPU only — no NPU, so no lock.
+## CPU only: no NPU, so no lock.
 cpu-baseline:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_cpu_baseline.py
@@ -124,9 +124,9 @@ profile:
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py \
 		--profile --reps $(REPS) --cameras $(CAMERAS)
 
-## EXPERIMENTAL all-NPU path (vision + language backbone + action expert, --npu-all). Same
-## targets as above with every stage on the NPU; see the README ("Experimental: backbone and
-## expert on the NPU") for what it needs and what it costs. verify-all is the same gate.
+## Experimental all-NPU path (vision + language backbone + action expert, --npu-all): the
+## same targets as above with every stage on the NPU; see the README, "The all-NPU path".
+## verify-all is the same gate.
 run-all:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
@@ -143,10 +143,8 @@ profile-all:
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
 		--profile --reps $(REPS) --cameras $(CAMERAS)
 
-## Build the expert's two engine ELFs once (prefix + step, 16 layers). Run it with upstream
-## main's compiler (#2061/#2070, drain ordering is automatic there) on PATH (and its python
-## on PYTHONPATH) and PEANO_INSTALL_DIR at a no-unroll Peano; about 2 minutes with the
-## async-dependency speed-up patch, an hour without it (the patch is not upstream).
+## Build the action expert's two engine ELFs (prefix and step, 16 layers), which the *-all
+## targets need. Uses the aircc and Peano of the sourced environment.
 compile-expert:
 	cd $(srcdir)/experimental && $(LEROBOT_PYTHON) expert_v2_probe.py --layers 16 --compile-only
 
