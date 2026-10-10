@@ -9,6 +9,7 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/DirectedAdjacencyMap.h"
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -6242,7 +6243,7 @@ private:
       visited.insert(node);
       component.insert(node);
       for (Operation *neighbour : graph[node])
-        if (llvm::find(visited, neighbour) == visited.end())
+        if (!visited.contains(neighbour))
           dfs(neighbour, graph, visited, component);
       return;
     };
@@ -6255,7 +6256,7 @@ private:
           llvm::SetVector<Operation *> visited;
           SmallVector<llvm::SetVector<Operation *>> connectedComponents;
           for (const auto &[node, neighbours] : graph) {
-            if (llvm::find(visited, node) == visited.end()) {
+            if (!visited.contains(node)) {
               llvm::SetVector<Operation *> component;
               dfs(node, graph, visited, component);
               connectedComponents.push_back(component);
@@ -6291,12 +6292,35 @@ private:
             return true;
       return false;
     };
+    // Async dependencies among this body's ops, closed transitively. Every op
+    // on a dependency path from one body op to another is dominated by the
+    // first, so the path stays in this body.
+    Block *body = for_op.getBody();
+    air::TypedDirectedAdjacencyMap<Operation *> bodyGraph;
+    llvm::DenseMap<Operation *, air::DirectedAdjacencyMap::VertexId> vertex;
+    for (Operation &o : body->getOperations()) {
+      if (!isAsyncOp(&o))
+        continue;
+      auto v = bodyGraph.addVertex();
+      bodyGraph[v] = &o;
+      vertex[&o] = v;
+    }
+    for (Operation &o : body->getOperations())
+      for (Value dep : getAsyncDependenciesFromOp(&o))
+        if (auto src = vertex.find(dep.getDefiningOp()); src != vertex.end())
+          if (auto dst = vertex.find(&o); dst != vertex.end())
+            bodyGraph.addEdge(src->second, dst->second);
+    auto closure = bodyGraph.getClosure();
+    auto dependsOn = [&](Operation *a, Operation *b) {
+      return closure[vertex[a]][vertex[b]];
+    };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (sourceOp != sinkOp && (areAsyncDependent(sourceOp, sinkOp) ||
-                                   haveChannelResourceDep(sourceOp, sinkOp)))
+        if (sourceOp != sinkOp &&
+            (areAsyncDependent(sourceOp, sinkOp, dependsOn) ||
+             haveChannelResourceDep(sourceOp, sinkOp)))
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.

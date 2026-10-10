@@ -71,6 +71,11 @@ Value getAsyncTokenFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
 bool areAsyncDependent(Operation *a, Operation *b);
+// As above, with `dependsOn(x, y)` answering whether y depends on x through
+// other async ops, for callers that precompute it.
+bool areAsyncDependent(
+    Operation *a, Operation *b,
+    llvm::function_ref<bool(Operation *, Operation *)> dependsOn);
 bool isAsyncDependent(Operation *a, Operation *b);
 air::WaitAllOp generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
                                                bool isBlocking = true);
